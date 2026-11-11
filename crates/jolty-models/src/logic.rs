@@ -140,6 +140,23 @@ pub trait Logic: fmt::Debug + Send {
         let _ = input;
         0.0
     }
+
+    /// Where the device's timing holds, if anywhere less than everywhere: a characterized
+    /// cell's, where it was measured.
+    fn domain(&self) -> Option<&Domain> {
+        None
+    }
+}
+
+/// Where a logic device's timing holds: the ranges it was measured over.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Domain {
+    /// The least and the most input transition, in seconds.
+    pub slews: (f64, f64),
+    /// The least and the most output load, in farads.
+    pub loads: (f64, f64),
+    /// The voltage from ground to supply it was measured at, if it was.
+    pub supply: Option<f64>,
 }
 
 /// How a logic device's pins may join electrical nets: through connect elements between the
@@ -320,6 +337,9 @@ pub struct CharacterizedTiming {
     pub loads: Vec<f64>,
     /// Every arc: each change of an input that changes an output.
     pub arcs: Vec<ArcParameters>,
+    /// The voltage from ground to supply the tables were measured at, in volts.
+    #[serde(default)]
+    pub supply: Option<f64>,
 }
 
 /// How a logic cell's outputs follow its inputs in time.
@@ -406,6 +426,7 @@ struct Tables {
     slews: Vec<f64>,
     loads: Vec<f64>,
     arcs: BTreeMap<(usize, usize, usize), Arc>,
+    domain: Domain,
 }
 
 /// One arc's tables, and the level its output reaches.
@@ -488,10 +509,19 @@ impl Tables {
             };
             arcs.insert((input, row, output), arc_tables);
         }
+        if let Some(supply) = timing.supply {
+            ParameterError::positive("the supply the tables were measured at", supply)?;
+        }
+        let domain = Domain {
+            slews: (timing.slews[0], timing.slews[timing.slews.len() - 1]),
+            loads: (timing.loads[0], timing.loads[timing.loads.len() - 1]),
+            supply: timing.supply,
+        };
         Ok(Self {
             slews: timing.slews,
             loads: timing.loads,
             arcs,
+            domain,
         })
     }
 
@@ -730,6 +760,13 @@ impl Logic for LogicCell {
 
     fn input_capacitance(&self, input: usize) -> f64 {
         self.input_capacitances[input]
+    }
+
+    fn domain(&self) -> Option<&Domain> {
+        match &self.timing {
+            CellTiming::Fixed(_) => None,
+            CellTiming::Characterized(tables) => Some(&tables.domain),
+        }
     }
 }
 

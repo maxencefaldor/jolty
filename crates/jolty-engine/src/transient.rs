@@ -281,6 +281,7 @@ impl Simulator {
             let (breakpoint, gap) = breakpoints.after(stepper.time);
             match self.step_toward(&mut stepper, breakpoint, gap, options)? {
                 Step::Accepted(settles) => {
+                    self.watch_supplies(&stepper.x, stepper.time, options);
                     times.push(stepper.time);
                     values.push(stepper.x.clone());
                     for time in settles {

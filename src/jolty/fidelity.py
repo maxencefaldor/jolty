@@ -35,7 +35,8 @@ from jolty import devices, ir, results
 from jolty.errors import CharacterizationError, JoltyError
 from jolty.plan import Ac, Characterized, OperatingPoint, Plan, Transient
 from jolty.results import Result
-from jolty.simulate import Simulation, kelvins
+from jolty.simulate import Excursion, Simulation, kelvins
+from jolty.specs import Verdict
 from jolty.units import FREQUENCY, TIME, VOLTAGE, Quantity, format_si
 
 LEVEL_MARGIN: Final = 0.1
@@ -114,6 +115,7 @@ class Characterization(BaseModel):
                     "slews": list(self.slews),
                     "loads": list(self.loads),
                     "arcs": [arc.model_dump(mode="json") for arc in self.arcs],
+                    "supply": self.supply,
                 }
             },
             "electrical": {
@@ -765,13 +767,88 @@ class Contract(BaseModel):
         return "\n".join(lines)
 
 
+_UNITS: Final = {"input transition": "s", "load": "F", "supply": "V"}
+
+
+class Outside(BaseModel):
+    """An analysis that used a model outside its domain."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    analysis: str
+    excursion: Excursion
+
+    def describe(self) -> str:
+        """The fact as text, at the rule outside-validity's level."""
+        found = self.excursion
+        unit = _UNITS[found.bound]
+        times = "once" if found.count == 1 else f"{found.count} times"
+        return (
+            f"warn[outside-validity]: {found.path}'s {found.bound} reads "
+            f"{format_si(found.value, unit)} in {self.analysis}, outside the "
+            f"{format_si(found.low, unit)} to {format_si(found.high, unit)} its "
+            f"model was characterized over; first at {format_si(found.time, 's')}, "
+            f"{times}"
+        )
+
+
+class Dependence(BaseModel):
+    """A requirement whose verdict changes when an instance runs as its circuit."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    instance: str
+    modeled: Verdict = Field(description="The verdict with every model.")
+    exact: Verdict = Field(description="The verdict with the instance's circuit.")
+
+    def describe(self) -> str:
+        """The fact as text, at the rule fidelity-dependence's level."""
+        return (
+            f"warn[fidelity-dependence]: {self.modeled.requirement}: "
+            f"{self.modeled.status}{_reading(self.modeled)} with every model, "
+            f"{self.exact.status}{_reading(self.exact)} with {self.instance} at its "
+            "circuit's fidelity"
+        )
+
+
+def _reading(verdict: Verdict) -> str:
+    """What a verdict read, as a clause, or nothing when it read nothing."""
+    if verdict.value is None or verdict.unit is None:
+        return ""
+    return f", reading {format_si(verdict.value, verdict.unit)},"
+
+
+def dependences(
+    instance: str, modeled: Sequence[Verdict], exact: Sequence[Verdict]
+) -> list[Dependence]:
+    """The requirements whose verdict differs between `modeled` and `exact`.
+
+    `modeled` holds the verdicts with every model, and `exact` those with `instance` at
+    its circuit's fidelity.
+    """
+    return [
+        Dependence(instance=instance, modeled=first, exact=second)
+        for first, second in zip(modeled, exact, strict=True)
+        if first.status != second.status
+    ]
+
+
 class FidelityReport(BaseModel):
-    """The models a plan's fidelity chose, and its spot checks."""
+    """The models a plan's fidelity chose, its spot checks, and what they found."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     models: tuple[Model, ...]
     contracts: tuple[Contract, ...]
+    dependences: tuple[Dependence, ...] = Field(
+        default=(),
+        description="The requirements whose verdict changes when a spot-checked "
+        "instance runs at its circuit's fidelity.",
+    )
+    outside: tuple[Outside, ...] = Field(
+        default=(),
+        description="Where the plan's analyses used a model outside its domain.",
+    )
 
     @property
     def ok(self) -> bool:
@@ -786,6 +863,8 @@ class FidelityReport(BaseModel):
             "  " + contract.describe().replace("\n", "\n  ")
             for contract in self.contracts
         )
+        lines.extend(f"  {found.describe()}" for found in self.dependences)
+        lines.extend(f"  {found.describe()}" for found in self.outside)
         return "\n".join(lines)
 
 

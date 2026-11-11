@@ -54,8 +54,32 @@ fidelity:
 
 A violated contract fails the simulation, as a failed spec does.
 
+## Validity and dependence
+
+A characterized cell's timing holds where it was measured: between its least and its most input transition and load, at its supply.
+The engine watches every analysis for a cell read outside that domain, a supply further from its own than the relative tolerance included, and the report states each one at the rule `outside-validity`, a warning:
+
+```text
+warn[outside-validity]: X1's load reads 500 fF in step, outside the 0 F to 19.86 fF its model was characterized over; first at 1.05 ns, once
+```
+
+Outside its domain, a cell holds its tables' edge, and its timing is a guess.
+
+When the plan defines specs, each spot check measures them again, with its instance at its circuit's fidelity.
+A requirement whose verdict changes there depends on the model, and the report states it at the rule `fidelity-dependence`, a warning:
+
+```text
+warn[fidelity-dependence]: first falling crossing of 1.65 V by mid in step ≤ 2.37 ns: passed, reading 1.198 ns, with every model, failed, reading 3.542 ns, with X1 at its circuit's fidelity
+```
+
+## Limits
+
 A cell's arcs each measure one input changing alone.
 Where a gate's inputs change within its delay of each other, as inside an XOR built of NAND gates, its output may turn back before reaching its rail in ways no single arc measures, and the gate follows its cell less closely; the spot checks measure how closely.
+A cell draws no current from its supply, and stands for its circuit's nominal parts, whatever their tolerances.
+
+## From transistors to a full adder
+
 The example [`full_adder.py`](https://github.com/maxencefaldor/jolty/blob/main/examples/full_adder.py) builds a full adder of nine NAND gates of four transistors each, runs it on characterized cells, and holds them to half a mean delay:
 
 ![The full adder: nine NAND gates between the inputs a, b and carry_in on the left and the outputs sum and carry_out on the right](../images/full_adder.adder.schematic.png)

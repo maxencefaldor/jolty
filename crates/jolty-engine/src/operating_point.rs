@@ -2,10 +2,10 @@
 
 use std::f64::consts::TAU;
 
-use jolty_models::Level;
+use jolty_models::{Input, Level};
 use jolty_numerics::{Complex64, SparseLu};
 
-use crate::logic::{Events, detected};
+use crate::logic::{Bound, Events, detected};
 use crate::newton::{Failure, Mode};
 use crate::{Options, SimulationError, Simulator};
 
@@ -142,6 +142,25 @@ impl Simulator {
         }
     }
 
+    /// Records each characterized logic device whose supply at `values`, at `time`, lies
+    /// further from the supply it was measured at than the relative tolerance.
+    pub(crate) fn watch_supplies(&mut self, values: &[f64], time: f64, options: &Options) {
+        let input = Input::new(values, time, 0.0);
+        for (index, placed) in self.system.logic.devices.iter().enumerate() {
+            let (Some(nominal), &[supply, ground]) = (
+                placed.device.domain().and_then(|domain| domain.supply),
+                placed.nodes(),
+            ) else {
+                continue;
+            };
+            let voltage = input.value(supply) - input.value(ground);
+            let slack = options.relative_tolerance * nominal;
+            let range = (nominal - slack, nominal + slack);
+            self.events
+                .watch(index, Bound::Supply, voltage, range, time);
+        }
+    }
+
     /// Settles the logic with the analog solution `solved`, holding each driver at its net's
     /// level and solving again until the detectors read what the logic settled with.
     pub(crate) fn settle(
@@ -160,7 +179,7 @@ impl Simulator {
                 .iter()
                 .map(|&(element, _)| {
                     let sense = self.system.devices[element].device.as_detector();
-                    let input = jolty_models::Input::new(&solved.values, 0.0, 0.0);
+                    let input = Input::new(&solved.values, 0.0, 0.0);
                     sense.map_or(Level::Unknown, |sense| {
                         detected(sense.margin(&input), Level::Unknown)
                     })
@@ -188,6 +207,7 @@ impl Simulator {
             solved = self.solve_dc(solved.values, options)?;
         }
         self.measure_loads(&solved.values, options);
+        self.watch_supplies(&solved.values, 0.0, options);
         Ok(OperatingPoint {
             values: solved.values,
             logic: self.events.levels().to_vec(),

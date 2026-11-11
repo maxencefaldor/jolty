@@ -23,9 +23,9 @@ Examples:
 
 import json
 from collections.abc import Mapping
-from typing import overload
+from typing import Literal, overload
 
-from pydantic import JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from jolty import _core, checks, ir, results
 from jolty.builder import Component, circuit
@@ -46,6 +46,24 @@ def kelvins(temperature: Quantity | None) -> float:
     return temperature.to(TEMPERATURE, "a temperature")
 
 
+class Excursion(BaseModel):
+    """A logic device used outside its domain, where its timing was never measured."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(description="The device's path.")
+    bound: Literal["input transition", "load", "supply"] = Field(
+        description="What left the domain."
+    )
+    low: float = Field(description="The domain's least value, in SI base units.")
+    high: float = Field(description="The domain's most value.")
+    value: float = Field(description="The value furthest outside it.")
+    time: float = Field(
+        description="When it first left, in seconds; zero at an operating point."
+    )
+    count: int = Field(description="How many times it was read outside.")
+
+
 class Simulation:
     """A circuit elaborated once, ready to run any number of analyses."""
 
@@ -63,6 +81,9 @@ class Simulation:
 
     temperature: float
     """The temperature the devices are simulated at, in kelvins."""
+
+    excursions: tuple[Excursion, ...]
+    """Where the last analysis used logic devices outside their domains."""
 
     def __init__(
         self,
@@ -108,6 +129,7 @@ class Simulation:
         )
         self.nets = tuple(self._core.nets)
         self.devices = self._core.devices
+        self.excursions = ()
 
     def check(self) -> tuple[checks.Diagnostic, ...]:
         """Every diagnostic the structural checks find, at its rule's default level."""
@@ -140,6 +162,10 @@ class Simulation:
             outcome = self._core.run(encoded, settings)
         except _core.SimulationError as error:
             raise SimulationError(str(error)) from None
+        finally:
+            self.excursions = tuple(
+                Excursion.model_validate(found) for found in self._core.excursions()
+            )
         return self._result(outcome)
 
     def run_plan(self, plan: Plan) -> dict[str, results.Result]:

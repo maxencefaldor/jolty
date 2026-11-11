@@ -5,10 +5,11 @@ A compiler and simulator for electronic circuits, built for AI agents.
 An AI agent writes a circuit as a Python script of reusable components, and jolty builds it the way a compiler builds code.
 Each build checks every device and connection, reports each problem with the script line behind it, and simulates the circuit with a native engine written in Rust.
 
-jolty is on its third milestone, real parts: board-level circuits of passive devices, sources, diodes and transistors, simulated at the operating point, over DC sweeps, in frequency and in time.
+jolty is on its sixth milestone, fidelity: board-level circuits of passive devices, sources, diodes and transistors, simulated at the operating point, over DC sweeps, in frequency and in time, beside logic that an event scheduler simulates.
 Vendors' SPICE macromodels, such as an op-amp's, read as components and agree with ngspice.
 Every build checks the circuit's structure and draws its schematic, and every simulation plots its analyses, so an agent sees what it built.
 Specs state what a circuit must do, and every simulation measures its results against them, at every temperature and corner its plan names, and over Monte Carlo samples of its parts' tolerances.
+A plan can run a component as a logic cell characterized from its own circuit, as the full adder example runs its nine transistor-level NAND gates, and spot checks hold each cell to its circuit.
 
 The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.
 

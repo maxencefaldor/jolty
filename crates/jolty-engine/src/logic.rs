@@ -8,7 +8,7 @@
 //! happens never happens.
 
 use std::cmp::{Ordering, Reverse};
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BinaryHeap};
 
 use jolty_models::{Change, Input, Level, Logic, Node, Pins, Stimulus};
 
@@ -106,6 +106,53 @@ impl PlacedLogic {
     #[must_use]
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
+    }
+}
+
+/// What a logic device's timing reads that its domain bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Bound {
+    /// An input's transition.
+    Transition,
+    /// The load an output drives.
+    Load,
+    /// The voltage from its ground to its supply.
+    Supply,
+}
+
+impl Bound {
+    /// The bound in words, such as `input transition`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Transition => "input transition",
+            Self::Load => "load",
+            Self::Supply => "supply",
+        }
+    }
+}
+
+/// A logic device used outside its domain: where its timing was never measured.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Excursion {
+    /// The device's index among [`Simulator::logic_devices`](crate::Simulator::logic_devices).
+    pub device: usize,
+    /// What left the domain.
+    pub bound: Bound,
+    /// The domain's least and most value.
+    pub range: (f64, f64),
+    /// The value furthest outside it.
+    pub value: f64,
+    /// The time it first left, in seconds; zero at an operating point.
+    pub time: f64,
+    /// How many times it was read outside.
+    pub count: usize,
+}
+
+impl Excursion {
+    /// How far `value` lies outside `range`, zero within it.
+    fn outside(value: f64, (low, high): (f64, f64)) -> f64 {
+        (low - value).max(value - high).max(0.0)
     }
 }
 
@@ -283,6 +330,8 @@ pub(crate) struct Events {
     driven: Vec<Level>,
     /// The capacitance each net's outputs drive, in farads.
     loads: Vec<f64>,
+    /// Where the devices were used outside their domains, by device and bound.
+    excursions: BTreeMap<(usize, Bound), Excursion>,
 }
 
 impl Events {
@@ -305,7 +354,41 @@ impl Events {
             commands: Vec::new(),
             driven: vec![Level::Unknown; logic.drivers.len()],
             loads: logic.nets.iter().map(|net| net.load).collect(),
+            excursions: BTreeMap::new(),
         }
+    }
+
+    /// Records that `device` read `value` of `bound` at `time`, if it lies outside
+    /// `range`.
+    pub(crate) fn watch(
+        &mut self,
+        device: usize,
+        bound: Bound,
+        value: f64,
+        range: (f64, f64),
+        time: f64,
+    ) {
+        let outside = Excursion::outside(value, range);
+        if outside <= 0.0 {
+            return;
+        }
+        let excursion = self.excursions.entry((device, bound)).or_insert(Excursion {
+            device,
+            bound,
+            range,
+            value,
+            time,
+            count: 0,
+        });
+        excursion.count += 1;
+        if outside > Excursion::outside(excursion.value, range) {
+            excursion.value = value;
+        }
+    }
+
+    /// Where the devices were used outside their domains, by device then bound.
+    pub(crate) fn excursions(&self) -> Vec<Excursion> {
+        self.excursions.values().cloned().collect()
     }
 
     /// Takes `load` as the capacitance the outputs on `net` drive.
@@ -533,6 +616,10 @@ impl Events {
             input,
             slew: self.transitions[placed.inputs[input]],
         };
+        let domain = placed.device.domain().cloned();
+        if let Some(domain) = &domain {
+            self.watch(device, Bound::Transition, change.slew, domain.slews, time);
+        }
         for (output, &level) in outputs.iter().enumerate() {
             let drive = logic.output_drive(device, output);
             let state = self.drives[drive];
@@ -547,6 +634,9 @@ impl Events {
                 continue;
             }
             let net = placed.outputs[output];
+            if let Some(domain) = &domain {
+                self.watch(device, Bound::Load, self.loads[net], domain.loads, time);
+            }
             let timing = placed
                 .device
                 .timing(&change, output, level, self.loads[net]);

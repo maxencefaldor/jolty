@@ -192,7 +192,8 @@ def _run(job: Job, directory: Path) -> Built:
             simulation = chosen.simulation()
         except ElaborationError as error:
             return Built(circuit=built, problems=error.problems)
-    solved, reports = _analyses(simulation, plan, job.listed)
+    outside: list[fidelity.Outside] = []
+    solved, reports = _analyses(simulation, plan, job.listed, outside)
     if solved:
         files.save_results(directory / RESULTS, solved)
     corners: list[report.CornerReport] = []
@@ -209,6 +210,7 @@ def _run(job: Job, directory: Path) -> Built:
     verdicts = (
         () if specs is None else evaluate(specs, plan.analyses, solved, at_corners)
     )
+    checked = _fidelity(chosen, plan, solved, specs)
     monte_carlo = (
         None
         if plan.monte_carlo is None
@@ -220,28 +222,43 @@ def _run(job: Job, directory: Path) -> Built:
             "corners": tuple(corners),
             "monte_carlo": monte_carlo,
             "specs": verdicts,
-            "fidelity": _fidelity(chosen, plan, solved),
+            "fidelity": checked
+            and checked.model_copy(update={"outside": tuple(outside)}),
         }
     )
 
 
 def _fidelity(
-    chosen: fidelity.Fidelity, plan: Plan, solved: Mapping[str, Result]
+    chosen: fidelity.Fidelity,
+    plan: Plan,
+    solved: Mapping[str, Result],
+    specs: Specs | None,
 ) -> FidelityReport | None:
     """The models `chosen` holds, and the spot checks of `plan`'s results `solved`.
 
-    It is None when no model stands in for an instance.
+    Each spot check holds its instance to its contract, and measures `specs` again to
+    find the requirements whose verdict depends on the instance's fidelity. It is None
+    when no model stands in for an instance.
     """
     if not chosen.matched:
         return None
     contracts = []
+    dependences: list[fidelity.Dependence] = []
+    modeled = () if specs is None else evaluate(specs, plan.analyses, solved)
     for path in fidelity.sampled(chosen, plan):
         try:
             opened, _ = _analyses(chosen.simulation(opened=path), plan, 1)
         except ElaborationError:
             opened = {}
         contracts.append(fidelity.contract(chosen, plan, path, solved, opened))
-    return FidelityReport(models=fidelity.models(chosen), contracts=tuple(contracts))
+        if specs is not None:
+            exact = evaluate(specs, plan.analyses, opened)
+            dependences.extend(fidelity.dependences(path, modeled, exact))
+    return FidelityReport(
+        models=fidelity.models(chosen),
+        contracts=tuple(contracts),
+        dependences=tuple(dependences),
+    )
 
 
 def _corner(
@@ -348,9 +365,15 @@ def _specs(script: Path, namespaces: dict[Path, dict[str, object]]) -> Specs | N
 
 
 def _analyses(
-    simulation: Simulation, plan: Plan, listed: int
+    simulation: Simulation,
+    plan: Plan,
+    listed: int,
+    outside: list[fidelity.Outside] | None = None,
 ) -> tuple[dict[str, Result], tuple[report.AnalysisReport, ...]]:
-    """The results of the analyses of `plan` that end, by name, and a report on each."""
+    """The results of the analyses of `plan` that end, by name, and a report on each.
+
+    Each analysis's excursions outside its logic devices' domains join `outside`.
+    """
     solved: dict[str, Result] = {}
     reports: list[report.AnalysisReport] = []
     for name, analysis in plan.analyses.items():
@@ -361,6 +384,11 @@ def _analyses(
         else:
             solved[name] = result
             reports.append(report.report(name, result, listed))
+        if outside is not None:
+            outside.extend(
+                fidelity.Outside(analysis=name, excursion=excursion)
+                for excursion in simulation.excursions
+            )
     return solved, tuple(reports)
 
 

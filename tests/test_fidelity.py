@@ -1,5 +1,7 @@
 # Copyright 2026 Maxence Faldor
 
+from typing import Final
+
 import pytest
 
 from jolty import (
@@ -7,6 +9,7 @@ from jolty import (
     CharacterizationError,
     Component,
     Role,
+    Simulation,
     circuit,
     component,
     devices,
@@ -14,7 +17,9 @@ from jolty import (
 )
 from jolty.errors import JoltyError
 from jolty.plan import Characterized, Plan, Transient
-from jolty.units import V, fF, nm, ns, ps, um
+from jolty.results import Result
+from jolty.specs import Specs, crossing, evaluate
+from jolty.units import TIME, Quantity, V, fF, format_si, nm, ns, ps, um
 from jolty.waveforms import Pulse
 
 SUPPLY = 3.3 * V
@@ -118,16 +123,28 @@ def test_a_plan_s_characterizations_are_checked() -> None:
         Plan({"step": Transient(stop=1 * ns)}, fidelity={"X1": 1.0})  # ty: ignore[invalid-argument-type]
 
 
+PLAN: Final = Plan(
+    {"step": Transient(stop=6 * ns)}, fidelity={"X1": Characterized(SUPPLY)}
+)
+
+
+def runs(
+    top: Component,
+) -> tuple[fidelity.Fidelity, Simulation, dict[str, Result], dict[str, Result]]:
+    """The fidelity of `top`, and its simulation and results with every model.
+
+    Last come its results with X1 at its circuit's fidelity.
+    """
+    chosen = fidelity.resolve(circuit(top), PLAN, None, {})
+    simulation = chosen.simulation()
+    modeled = simulation.run_plan(PLAN)
+    opened = chosen.simulation(opened="X1").run_plan(PLAN)
+    return chosen, simulation, modeled, opened
+
+
 def spot_check(top: Component) -> fidelity.Contract:
-    built = circuit(top)
-    plan = Plan(
-        {"step": Transient(stop=6 * ns)},
-        fidelity={"X1": Characterized(SUPPLY)},
-    )
-    chosen = fidelity.resolve(built, plan, None, {})
-    modeled = chosen.simulation().run_plan(plan)
-    opened = chosen.simulation(opened="X1").run_plan(plan)
-    return fidelity.contract(chosen, plan, "X1", modeled, opened)
+    chosen, _, modeled, opened = runs(top)
+    return fidelity.contract(chosen, PLAN, "X1", modeled, opened)
 
 
 def test_contract_violated() -> None:
@@ -139,3 +156,31 @@ def test_contract_violated() -> None:
     assert not violated.held
     assert violated.divergences[0].startswith("step: output y changes to 0 at")
     assert violated.describe().startswith("error[contract-violated]: X1's model")
+
+
+def test_outside_validity() -> None:
+    _, simulation, _, _ = runs(chain())
+    assert simulation.excursions == ()
+    _, simulation, _, _ = runs(chain(load=500.0))
+    (excursion,) = simulation.excursions
+    assert (excursion.path, excursion.bound) == ("X1", "load")
+    assert excursion.value > excursion.high
+    outside = fidelity.Outside(analysis="step", excursion=excursion)
+    assert outside.describe().startswith("warn[outside-validity]: X1's load reads")
+
+
+def test_fidelity_dependence() -> None:
+    _, _, modeled, opened = runs(chain(load=500.0))
+    delay = crossing("step", "mid", SUPPLY / 2, edge="falling")
+    times = [delay.read(found["step"]).value for found in (modeled, opened)]
+    specs = Specs([delay <= Quantity(sum(times) / 2, TIME)])
+    first = evaluate(specs, PLAN.analyses, modeled)
+    second = evaluate(specs, PLAN.analyses, opened)
+    (found,) = fidelity.dependences("X1", first, second)
+    assert found.describe() == (
+        "warn[fidelity-dependence]: first falling crossing of 1.65 V by mid in step "
+        f"≤ {found.modeled.requirement.split('≤ ')[1]}: passed, reading "
+        f"{format_si(times[0], 's')}, with every model, failed, reading "
+        f"{format_si(times[1], 's')}, with X1 at its circuit's fidelity"
+    )
+    assert fidelity.dependences("X1", first, first) == []

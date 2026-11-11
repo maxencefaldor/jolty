@@ -51,8 +51,8 @@ pub use evaluation::{Input, Output};
 pub use jfet::{Channel, Jfet, JfetParameters};
 pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
 pub use logic::{
-    Change, Detect, Drive, Electrical, ElectricalParameters, FixedTiming, Level, Logic, LogicCell,
-    LogicCellParameters, LogicDriver, LogicDriverParameters, LogicModel, LogicSource,
+    Change, Detect, Domain, Drive, Electrical, ElectricalParameters, FixedTiming, Level, Logic,
+    LogicCell, LogicCellParameters, LogicDriver, LogicDriverParameters, LogicModel, LogicSource,
     LogicSourceParameters, MAX_INPUTS, NativeLogic, NativeLogicModel, OutputParameters, Pins,
     Stimulus, ThresholdDetector, ThresholdDetectorParameters, Timing, TimingParameters,
 };

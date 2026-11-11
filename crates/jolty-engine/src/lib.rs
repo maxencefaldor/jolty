@@ -57,7 +57,7 @@ pub use ac::{Ac, Response};
 pub use analysis::{Analysis, Outcome};
 pub use elaborate::{ElaborationError, ElaborationProblem, Location, Placed};
 pub use jolty_numerics::integration::Method;
-pub use logic::{Endpoint, LogicNet, PlacedLogic};
+pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;
 pub use sweep::{DcSweep, Sweep};
@@ -161,6 +161,13 @@ impl Simulator {
     #[must_use]
     pub fn devices(&self) -> &[Placed] {
         &self.system.devices
+    }
+
+    /// Where the last analysis used logic devices outside their domains: each device and
+    /// bound once, with the value furthest outside and when it first left.
+    #[must_use]
+    pub fn excursions(&self) -> Vec<Excursion> {
+        self.events.excursions()
     }
 
     /// The number of connect elements among [`Simulator::devices`], all at its end.

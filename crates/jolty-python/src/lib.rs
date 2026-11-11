@@ -128,6 +128,30 @@ impl Simulator {
         Ok(diagnostics)
     }
 
+    /// Where the last analysis used logic devices outside their domains, each a dictionary
+    /// of the device's `path`, the `bound` it left, such as `"load"`, the domain's `low`
+    /// and `high`, the `value` furthest outside, the `time` it first left, and the `count`
+    /// of times it was read outside.
+    fn excursions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let simulator = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let found = PyList::empty(py);
+        for excursion in simulator.excursions() {
+            let item = PyDict::new(py);
+            item.set_item("path", simulator.logic_devices()[excursion.device].path())?;
+            item.set_item("bound", excursion.bound.name())?;
+            item.set_item("low", excursion.range.0)?;
+            item.set_item("high", excursion.range.1)?;
+            item.set_item("value", excursion.value)?;
+            item.set_item("time", excursion.time)?;
+            item.set_item("count", excursion.count)?;
+            found.append(item)?;
+        }
+        Ok(found)
+    }
+
     /// Runs the analysis whose JSON text is `analysis` with the options whose JSON text is
     /// `options`, releasing the interpreter while it runs.
     fn run<'py>(

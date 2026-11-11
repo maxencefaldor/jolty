@@ -2,7 +2,7 @@
 //! known in closed form.
 
 use jolty_engine::{
-    Conditions, DcSweep, ElaborationProblem, Endpoint, Options, Simulator, Transient,
+    Bound, Conditions, DcSweep, ElaborationProblem, Endpoint, Options, Simulator, Transient,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library};
@@ -563,4 +563,66 @@ fn a_driver_s_load_counts_the_analog_capacitance_it_drives() {
         "{}",
         crossing(0.5e-12)
     );
+}
+
+/// A characterized cell records where it is used outside the ranges it was measured over:
+/// its supply, its inputs' transitions and its outputs' loads.
+#[test]
+fn a_cell_used_outside_its_domain_says_where() {
+    let inverter = json!({
+        "inputs": ["a"], "outputs": [{"name": "y", "table": "10"}],
+        "timing": {"characterized": {
+            "slews": [1e-11, 2e-11], "loads": [0, 1e-14], "supply": 1.0,
+            "arcs": [
+                {"input": "a", "before": "0", "output": "y",
+                 "delay": [[1e-10, 1e-10], [1e-10, 1e-10]],
+                 "transition": [[1e-11, 1e-11], [1e-11, 1e-11]]},
+                {"input": "a", "before": "1", "output": "y",
+                 "delay": [[1e-10, 1e-10], [1e-10, 1e-10]],
+                 "transition": [[1e-11, 1e-11], [1e-11, 1e-11]]}
+            ]}},
+        "electrical": {"input_capacitances": [0]},
+    });
+    let circuit = circuit(&[
+        (
+            "VDD",
+            "voltage_source",
+            json!({"waveform": {"dc": 1.2}}),
+            &[("positive", "vdd"), ("negative", "0")],
+        ),
+        (
+            "A",
+            "logic_source",
+            json!({"initial": "0", "changes": [[1e-9, "1"]], "transition": 1e-9}),
+            &[("output", "a")],
+        ),
+        (
+            "U1",
+            "logic_cell",
+            inverter,
+            &[("a", "a"), ("y", "y"), ("supply", "vdd"), ("ground", "0")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": 1e-13}),
+            &[("a", "y"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    simulator
+        .transient(&transient(5e-9), &Options::default())
+        .unwrap();
+    let found: Vec<(Bound, f64, f64)> = simulator
+        .excursions()
+        .iter()
+        .map(|excursion| (excursion.bound, excursion.value, excursion.time))
+        .collect();
+    assert_eq!(found.len(), 3, "{found:?}");
+    assert_eq!((found[0].0, found[0].2), (Bound::Transition, 1e-9));
+    assert!((found[0].1 - 1e-9).abs() < 1e-24);
+    assert_eq!(found[1].0, Bound::Load);
+    assert!((found[1].1 - 1e-13).abs() < 1e-18, "{found:?}");
+    assert_eq!((found[2].0, found[2].2), (Bound::Supply, 0.0));
+    assert!((found[2].1 - 1.2).abs() < 1e-12);
 }
