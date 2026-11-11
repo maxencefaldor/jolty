@@ -11,6 +11,7 @@ repository = "https://github.com/maxencefaldor/jolty"
 authors = ["Maxence Faldor"]
 
 [workspace.dependencies]
+jolty-checks = { path = "crates/jolty-checks" }
 jolty-engine = { path = "crates/jolty-engine" }
 jolty-ir = { path = "crates/jolty-ir" }
 jolty-models = { path = "crates/jolty-models" }

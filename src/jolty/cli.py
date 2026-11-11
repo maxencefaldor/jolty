@@ -57,6 +57,22 @@ class SimulateCommand(service.SimulateRequest, _Output):
         self.emit(await service.simulate(self, Settings.load()))
 
 
+class CheckCommand(service.CheckRequest, _Output):
+    """Check the structure of a saved circuit file."""
+
+    async def cli_cmd(self) -> None:
+        """Runs the command."""
+        self.emit(await service.check(self, Settings.load()))
+
+
+class ExplainCommand(service.ExplainRequest, _Output):
+    """Explain rules: the exact condition each checks, and its level."""
+
+    async def cli_cmd(self) -> None:
+        """Runs the command."""
+        self.emit(await service.explain(self, Settings.load()))
+
+
 class Jolty(BaseSettings):
     """Build and simulate electronic circuits written as Python scripts."""
 
@@ -74,6 +90,12 @@ class Jolty(BaseSettings):
     )
     simulate: CliSubCommand[SimulateCommand] = Field(
         description="Build a script's circuit and run a plan's analyses on it."
+    )
+    check: CliSubCommand[CheckCommand] = Field(
+        description="Check the structure of a saved circuit file."
+    )
+    explain: CliSubCommand[ExplainCommand] = Field(
+        description="Explain rules and their levels."
     )
 
     @classmethod
@@ -100,7 +122,8 @@ class Jolty(BaseSettings):
 def main(argv: Sequence[str] | None = None) -> None:
     """Runs the command line.
 
-    The exit status is 1 when a circuit does not elaborate or an analysis fails, and 2
+    The exit status is 1 when a circuit does not elaborate, a check finds an error or an
+    analysis fails, and 2
     when the arguments or settings are invalid, a command needs a subcommand, or a
     command fails, as when a script raises. The lone argument ``--version`` prints the
     version.

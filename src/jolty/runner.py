@@ -25,7 +25,7 @@ from typing import Annotated, Final, Literal, override
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from jolty import files, ir, report
+from jolty import checks, files, ir, report
 from jolty.builder import Component, circuit
 from jolty.errors import ElaborationError, JoltyError, ScriptError
 from jolty.plan import Plan
@@ -86,6 +86,10 @@ class Built(BaseModel):
     problems: tuple[str, ...] = Field(
         default=(), description="Why the circuit does not elaborate."
     )
+    diagnostics: tuple[checks.Diagnostic, ...] = Field(
+        default=(),
+        description="The structural checks' diagnostics, at their default levels.",
+    )
     analyses: tuple[report.AnalysisReport, ...] = Field(
         default=(), description="A report per analysis of the plan, in its order."
     )
@@ -109,7 +113,7 @@ class Failure(BaseModel):
         head = f"{self.error}: {self.message}" if self.message else self.error
         if not self.frames:
             return head
-        innermost, *callers = (_where(frame) for frame in self.frames)
+        innermost, *callers = (str(frame) for frame in self.frames)
         return f"{innermost}: {head}" + "".join(
             f"\n  called from {caller}" for caller in callers
         )
@@ -154,9 +158,14 @@ def _run(job: Job, directory: Path) -> Built:
         simulation = Simulation(built)
     except ElaborationError as error:
         return Built(circuit=built, problems=error.problems)
-    devices, unknowns = simulation.devices, len(simulation.unknowns)
+    elaborated = Built(
+        circuit=built,
+        devices=simulation.devices,
+        unknowns=len(simulation.unknowns),
+        diagnostics=simulation.check(),
+    )
     if job.plan is None:
-        return Built(circuit=built, devices=devices, unknowns=unknowns)
+        return elaborated
     plan = _call(job.plan, "plan", namespaces)
     if not isinstance(plan, Plan):
         message = f"plan() returned {type(plan).__name__}, not a Plan"
@@ -173,9 +182,7 @@ def _run(job: Job, directory: Path) -> Built:
             reports.append(report.report(name, result, job.listed))
     if solved:
         files.save_results(directory / RESULTS, solved)
-    return Built(
-        circuit=built, devices=devices, unknowns=unknowns, analyses=tuple(reports)
-    )
+    return elaborated.model_copy(update={"analyses": tuple(reports)})
 
 
 def _call(script: Path, name: str, namespaces: dict[Path, dict[str, object]]) -> object:
@@ -235,16 +242,6 @@ def _relative(filename: str) -> str:
         if path.is_relative_to(Path.cwd())
         else path.as_posix()
     )
-
-
-def _where(source: ir.Source) -> str:
-    """A script line, such as ``rc_filter.py:12 in stage()``."""
-    within = (
-        "at module level"
-        if source.function in {None, "<module>"}
-        else f"in {source.function}()"
-    )
-    return f"{source.file}:{source.line} {within}"
 
 
 def main(argv: list[str] | None = None) -> None:

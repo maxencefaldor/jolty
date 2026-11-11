@@ -1,8 +1,8 @@
 use serde::Deserialize;
 
 use crate::{
-    Binding, Device, Input, NativeDevice, Node, Output, ParameterError, Quantity, TerminalPair,
-    Unknown,
+    Binding, Branch, BranchKind, Device, Input, NativeDevice, Node, Output, ParameterError,
+    Quantity, TerminalPair, Unknown,
 };
 use jolty_numerics::Entry;
 
@@ -24,6 +24,7 @@ pub struct ResistorParameters {
 impl NativeDevice for Resistor {
     const NAME: &'static str = "resistor";
     const TERMINALS: &'static [&'static str] = &["a", "b"];
+    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::Conductive)];
     type Parameters = ResistorParameters;
 
     fn new(
@@ -65,6 +66,7 @@ pub struct CapacitorParameters {
 impl NativeDevice for Capacitor {
     const NAME: &'static str = "capacitor";
     const TERMINALS: &'static [&'static str] = &["a", "b"];
+    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::Capacitive)];
     type Parameters = CapacitorParameters;
 
     fn new(
@@ -113,6 +115,7 @@ pub struct InductorParameters {
 impl NativeDevice for Inductor {
     const NAME: &'static str = "inductor";
     const TERMINALS: &'static [&'static str] = &["a", "b"];
+    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::Inductive)];
     type Parameters = InductorParameters;
 
     fn new(

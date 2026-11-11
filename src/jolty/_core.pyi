@@ -45,10 +45,28 @@ class WaveformsOutcome(TypedDict):
 
 type Outcome = OperatingPointOutcome | SweepOutcome | ResponseOutcome | WaveformsOutcome
 
+class SourceOutcome(TypedDict):
+    file: str
+    line: int
+    function: str | None
+
+class InstanceOutcome(TypedDict):
+    path: str
+    source: SourceOutcome | None
+
+class DiagnosticOutcome(TypedDict):
+    rule: str
+    message: str
+    instances: list[InstanceOutcome]
+    nets: list[str]
+
+def rules() -> list[tuple[str, Literal["error", "warn", "ignore"], str]]: ...
+
 class Simulator:
     def __init__(self, circuit: str) -> None: ...
     @property
     def unknowns(self) -> list[tuple[str, Literal["voltage", "current"]]]: ...
     @property
     def devices(self) -> int: ...
+    def check(self) -> list[DiagnosticOutcome]: ...
     def run(self, analysis: str, options: str) -> Outcome: ...

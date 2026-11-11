@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use jolty_ir::{Circuit, Component, Instance, Name, Of, Parameters, Problem, Role, Source};
-use jolty_models::{Binding, Device, Library, Model, Node, Quantity, Unknown, UnknownInfo};
+use jolty_models::{Binding, Branch, Device, Library, Model, Node, Quantity, Unknown, UnknownInfo};
 use jolty_numerics::{Entry, Pattern, PatternBuilder};
 
 /// A circuit flattened into devices bound to unknowns, with the pattern of its matrix.
@@ -16,17 +16,62 @@ use jolty_numerics::{Entry, Pattern, PatternBuilder};
 pub(crate) struct System {
     pub(crate) unknowns: Vec<UnknownInfo>,
     pub(crate) devices: Vec<Placed>,
+    /// The name of the reference node: the top component's ground port.
+    pub(crate) reference: Name,
     pub(crate) pattern: Arc<Pattern>,
     /// The diagonal entry of every node voltage's equation, where gmin stepping adds a
     /// conductance to the reference.
     pub(crate) node_diagonals: Vec<(Unknown, Entry)>,
 }
 
-/// A device and the path of its instance.
+/// A device placed in the flattened circuit: where its instance is, what model it is, and
+/// the node each of its terminals joins.
 #[derive(Debug)]
-pub(crate) struct Placed {
-    pub(crate) path: String,
+pub struct Placed {
+    location: Location,
+    model: &'static str,
+    terminals: &'static [&'static str],
+    branches: &'static [Branch],
+    nodes: Vec<Node>,
     pub(crate) device: Box<dyn Device>,
+}
+
+impl Placed {
+    /// Where the instance is: its path and the script line that placed it.
+    #[must_use]
+    pub fn location(&self) -> &Location {
+        &self.location
+    }
+
+    /// The instance's path through the hierarchy, such as `amplifier/R1`.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.location.path
+    }
+
+    /// The name of the device's model, such as `resistor`.
+    #[must_use]
+    pub fn model(&self) -> &'static str {
+        self.model
+    }
+
+    /// The names of the device's terminals, in the order of [`Placed::nodes`].
+    #[must_use]
+    pub fn terminals(&self) -> &'static [&'static str] {
+        self.terminals
+    }
+
+    /// The device's branches between its terminals.
+    #[must_use]
+    pub fn branches(&self) -> &'static [Branch] {
+        self.branches
+    }
+
+    /// The node each terminal joins: a node voltage's unknown, or `None` for the reference.
+    #[must_use]
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
+    }
 }
 
 /// Where an instance is: its hierarchical path and the source line that placed it.
@@ -159,17 +204,21 @@ pub(crate) fn elaborate(circuit: &Circuit, library: &Library) -> Result<System, 
     // Without a single reference, the walk numbers every net and goes on to find the
     // instances' problems, so the error lists them all.
     let mut problems = Vec::new();
-    let mut reference: BTreeMap<&Name, Node> = BTreeMap::new();
-    match grounds.as_slice() {
-        [ground] => {
-            reference.insert(*ground, None);
+    let ground = match grounds.as_slice() {
+        [ground] => Some(*ground),
+        [] => {
+            problems.push(ElaborationProblem::NoReference(circuit.top.clone()));
+            None
         }
-        [] => problems.push(ElaborationProblem::NoReference(circuit.top.clone())),
-        _ => problems.push(ElaborationProblem::SeveralReferences {
-            top: circuit.top.clone(),
-            count: grounds.len(),
-        }),
-    }
+        _ => {
+            problems.push(ElaborationProblem::SeveralReferences {
+                top: circuit.top.clone(),
+                count: grounds.len(),
+            });
+            None
+        }
+    };
+    let reference: BTreeMap<&Name, Node> = ground.iter().map(|&name| (name, None)).collect();
 
     let mut walk = Walk {
         circuit,
@@ -201,7 +250,11 @@ pub(crate) fn elaborate(circuit: &Circuit, library: &Library) -> Result<System, 
         );
         match pending.model.instantiate(pending.parameters, &mut binding) {
             Ok(device) => placed.push(Placed {
-                path: pending.at.path,
+                location: pending.at,
+                model: pending.model.name(),
+                terminals: pending.model.terminals(),
+                branches: pending.model.branches(),
+                nodes: pending.terminals,
                 device,
             }),
             Err(error) => problems.push(ElaborationProblem::Parameters {
@@ -210,13 +263,15 @@ pub(crate) fn elaborate(circuit: &Circuit, library: &Library) -> Result<System, 
             }),
         }
     }
-    if !problems.is_empty() {
+    // Without a single ground, a problem says so.
+    let (Some(ground), true) = (ground, problems.is_empty()) else {
         return Err(ElaborationError(problems));
-    }
+    };
     let pattern = Arc::new(builder.finish(unknowns.len()));
     Ok(System {
         unknowns,
         devices: placed,
+        reference: ground.clone(),
         pattern,
         node_diagonals,
     })
@@ -382,11 +437,7 @@ mod tests {
             .map(|unknown| unknown.name.as_str())
             .collect();
         assert_eq!(names, ["in", "X1/mid", "V1:current"]);
-        let paths: Vec<&str> = system
-            .devices
-            .iter()
-            .map(|placed| placed.path.as_str())
-            .collect();
+        let paths: Vec<&str> = system.devices.iter().map(Placed::path).collect();
         assert_eq!(paths, ["V1", "X1/R1", "X1/R2"]);
     }
 

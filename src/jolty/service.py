@@ -21,12 +21,30 @@ from typing import override
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import CliPositionalArg
 
-from jolty import files, report, runner
-from jolty.errors import JoltyError
-from jolty.settings import Settings
+from jolty import checks, files, runner
+from jolty.errors import ElaborationError, JoltyError
+from jolty.report import AnalysisReport, FailureReport
+from jolty.settings import Level, Settings
+from jolty.simulate import Simulation
 
 _SCRIPT_DESCRIPTION = (
     "Python file defining build(), which returns the top Component of the circuit."
+)
+_CHECK_DESCRIPTION = "Check the circuit's structure after building it."
+_ERROR_DESCRIPTION = (
+    "Rules to report as errors, such as 'shorted-device', or 'all' for every rule; "
+    "overrides the configured levels."
+)
+_WARN_DESCRIPTION = (
+    "Rules to report as warnings, such as 'no-dc-path', or 'all' for every rule; "
+    "overrides the configured levels."
+)
+_IGNORE_DESCRIPTION = (
+    "Rules to leave out, such as 'shorted-device', or 'all' for every rule; "
+    "overrides the configured levels."
+)
+_MAX_DIAGNOSTICS_DESCRIPTION = (
+    "Diagnostics to list at most; defaults to the configured limit."
 )
 
 
@@ -112,26 +130,38 @@ class BuildRequest(_Model):
         default=None,
         description="Where to save the circuit; defaults to <script>.jolty.json.",
     )
+    check: bool = Field(default=True, description=_CHECK_DESCRIPTION)
+    error: list[str] = Field(default_factory=list, description=_ERROR_DESCRIPTION)
+    warn: list[str] = Field(default_factory=list, description=_WARN_DESCRIPTION)
+    ignore: list[str] = Field(default_factory=list, description=_IGNORE_DESCRIPTION)
+    max_diagnostics: int | None = Field(
+        default=None, ge=1, description=_MAX_DIAGNOSTICS_DESCRIPTION
+    )
 
 
 class BuildResult(CommandResult):
     """What a build produced."""
 
     circuit: CircuitSummary
+    report: checks.Report | None = Field(
+        description="What the structural checks found; null when checking is off or "
+        "the circuit does not elaborate."
+    )
     output: ScriptOutput = Field(description="What the script printed.")
     seconds: float = Field(description="Seconds the command took.")
 
     @property
     @override
     def ok(self) -> bool:
-        """Whether the circuit elaborates."""
-        return not self.circuit.problems
+        """Whether the circuit elaborates and its checks found no error."""
+        return not self.circuit.problems and (self.report is None or self.report.ok)
 
     @override
     def describe(self) -> str:
         """The result as text."""
         blocks = [
             self.circuit.describe(),
+            self.report.describe() if self.report else "",
             self.output.describe(),
             f"took {self.seconds:.2f} s",
         ]
@@ -161,16 +191,27 @@ class SimulateRequest(_Model):
         default=None,
         description="Where to save the results; defaults to <script>.results.npz.",
     )
+    check: bool = Field(default=True, description=_CHECK_DESCRIPTION)
+    error: list[str] = Field(default_factory=list, description=_ERROR_DESCRIPTION)
+    warn: list[str] = Field(default_factory=list, description=_WARN_DESCRIPTION)
+    ignore: list[str] = Field(default_factory=list, description=_IGNORE_DESCRIPTION)
+    max_diagnostics: int | None = Field(
+        default=None, ge=1, description=_MAX_DIAGNOSTICS_DESCRIPTION
+    )
 
 
 class SimulateResult(CommandResult):
     """What a simulation produced."""
 
     circuit: CircuitSummary
+    report: checks.Report | None = Field(
+        description="What the structural checks found; null when checking is off or "
+        "the circuit does not elaborate."
+    )
     results: Path | None = Field(
         description="The saved results file; null when no analysis ran to its end."
     )
-    analyses: tuple[report.AnalysisReport, ...] = Field(
+    analyses: tuple[AnalysisReport, ...] = Field(
         description="A report per analysis, in the plan's order."
     )
     output: ScriptOutput = Field(description="What the scripts printed.")
@@ -179,15 +220,24 @@ class SimulateResult(CommandResult):
     @property
     @override
     def ok(self) -> bool:
-        """Whether the circuit elaborates and every analysis ran to its end."""
-        return not self.circuit.problems and not any(
-            isinstance(analysis, report.FailureReport) for analysis in self.analyses
+        """Whether the circuit elaborates, checks clean, and every analysis ends."""
+        checked = self.report is None or self.report.ok
+        return (
+            not self.circuit.problems
+            and checked
+            and not any(
+                isinstance(analysis, FailureReport) for analysis in self.analyses
+            )
         )
 
     @override
     def describe(self) -> str:
         """The result as text."""
-        blocks = [self.circuit.describe(), self.output.describe()]
+        blocks = [
+            self.circuit.describe(),
+            self.report.describe() if self.report else "",
+            self.output.describe(),
+        ]
         if self.results is not None:
             blocks.append(f"saved {self.results}")
         blocks.extend(analysis.describe() for analysis in self.analyses)
@@ -203,13 +253,17 @@ async def build(request: BuildRequest, settings: Settings) -> BuildResult:
             circuit.
     """
     started = time.perf_counter()
+    chosen = _levels(request, settings)
     script = await _existing(request.script)
     job = runner.Job(script=script, listed=settings.listed_unknowns)
     path = request.output or files.circuit_path(request.script)
     built, output = await _run(job, settings, results=None)
     circuit = await asyncio.to_thread(_save, built, path)
     return BuildResult(
-        circuit=circuit, output=output, seconds=time.perf_counter() - started
+        circuit=circuit,
+        report=_report(built, request, chosen, settings),
+        output=output,
+        seconds=time.perf_counter() - started,
     )
 
 
@@ -225,6 +279,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
             circuit or no plan.
     """
     started = time.perf_counter()
+    chosen = _levels(request, settings)
     script = await _existing(request.script)
     plan = script if request.plan is None else await _existing(request.plan)
     job = runner.Job(script=script, plan=plan, listed=settings.listed_unknowns)
@@ -235,11 +290,178 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     saved = await asyncio.to_thread(results.is_file)
     return SimulateResult(
         circuit=circuit,
+        report=_report(built, request, chosen, settings),
         results=results if saved else None,
         analyses=built.analyses,
         output=output,
         seconds=time.perf_counter() - started,
     )
+
+
+class CheckRequest(_Model):
+    """Check the structure of a saved circuit file."""
+
+    circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
+    error: list[str] = Field(default_factory=list, description=_ERROR_DESCRIPTION)
+    warn: list[str] = Field(default_factory=list, description=_WARN_DESCRIPTION)
+    ignore: list[str] = Field(default_factory=list, description=_IGNORE_DESCRIPTION)
+    max_diagnostics: int | None = Field(
+        default=None, ge=1, description=_MAX_DIAGNOSTICS_DESCRIPTION
+    )
+
+
+class CheckResult(CommandResult):
+    """What a check found."""
+
+    circuit: Path = Field(description="The circuit file.")
+    problems: tuple[str, ...] = Field(
+        description="Why the circuit does not elaborate, each naming an instance and "
+        "the script line that placed it."
+    )
+    report: checks.Report | None = Field(
+        description="What the structural checks found; null when the circuit does "
+        "not elaborate."
+    )
+
+    @property
+    @override
+    def ok(self) -> bool:
+        """Whether the circuit elaborates and its checks found no error."""
+        return not self.problems and self.report is not None and self.report.ok
+
+    @override
+    def describe(self) -> str:
+        """The result as text."""
+        if self.report is None:
+            listed = "\n".join(f"  {problem}" for problem in self.problems)
+            return f"{self.circuit} does not elaborate:\n{listed}"
+        return self.report.describe()
+
+
+async def check(request: CheckRequest, settings: Settings) -> CheckResult:
+    """Elaborates a saved circuit and checks its structure.
+
+    Raises:
+        JoltyError: When the file is missing or holds no circuit, or a rule named in
+            the options or settings does not exist.
+    """
+    chosen = _levels(request, settings)
+    try:
+        circuit = await asyncio.to_thread(files.load_circuit, request.circuit)
+    except FileNotFoundError:
+        message = f"no such circuit file: {request.circuit}"
+        raise JoltyError(message) from None
+    except ValidationError as error:
+        message = (
+            f"{request.circuit} is not a circuit file: {error.error_count()} errors"
+        )
+        raise JoltyError(message) from None
+    try:
+        simulation = await asyncio.to_thread(Simulation, circuit)
+    except ElaborationError as error:
+        return CheckResult(
+            circuit=request.circuit, problems=error.problems, report=None
+        )
+    limit = request.max_diagnostics or settings.max_diagnostics
+    found = await asyncio.to_thread(simulation.check)
+    return CheckResult(
+        circuit=request.circuit,
+        problems=(),
+        report=checks.report(found, chosen, limit),
+    )
+
+
+class ExplainRequest(_Model):
+    """Explain rules: the exact condition each checks, and its level."""
+
+    rules: CliPositionalArg[list[str]] = Field(
+        default_factory=list, description="Rules to explain; every rule by default."
+    )
+
+
+class RuleInfo(_Model):
+    """One rule: its name, its levels and its condition."""
+
+    name: str
+    level: Level = Field(description="The level the settings give it.")
+    default_level: Level = Field(description="The level it has unless configured.")
+    condition: str = Field(description="The exact condition it checks.")
+
+
+class ExplainResult(CommandResult):
+    """The rules explained."""
+
+    rules: tuple[RuleInfo, ...]
+
+    @property
+    @override
+    def ok(self) -> bool:
+        """Always: explaining finds nothing wrong."""
+        return True
+
+    @override
+    def describe(self) -> str:
+        """The rules as text, one paragraph each."""
+        return "\n\n".join(
+            f"{rule.name} ({rule.level}"
+            + (
+                ""
+                if rule.level == rule.default_level
+                else f", default {rule.default_level}"
+            )
+            + f"): {rule.condition}"
+            for rule in self.rules
+        )
+
+
+async def explain(request: ExplainRequest, settings: Settings) -> ExplainResult:
+    """Explains the rules `request` names, or every rule.
+
+    Raises:
+        JoltyError: When a name is no rule, or the settings name a rule that does not
+            exist.
+    """
+    known = checks.rules()
+    chosen = checks.levels(settings.rules)
+    unknown = [name for name in request.rules if name not in known]
+    if unknown:
+        message = (
+            f"no rule is named {', '.join(unknown)}; the rules are {', '.join(known)}"
+        )
+        raise JoltyError(message)
+    names = request.rules or list(known)
+    return ExplainResult(
+        rules=tuple(
+            RuleInfo(
+                name=name,
+                level=chosen[name],
+                default_level=known[name].level,
+                condition=known[name].condition,
+            )
+            for name in names
+        )
+    )
+
+
+def _levels(
+    request: BuildRequest | SimulateRequest | CheckRequest, settings: Settings
+) -> dict[str, Level]:
+    return checks.levels(
+        settings.rules, error=request.error, warn=request.warn, ignore=request.ignore
+    )
+
+
+def _report(
+    built: runner.Built,
+    request: BuildRequest | SimulateRequest,
+    chosen: dict[str, Level],
+    settings: Settings,
+) -> checks.Report | None:
+    """The report of the checks the runner made, when the request asks for it."""
+    if not request.check or built.problems:
+        return None
+    limit = request.max_diagnostics or settings.max_diagnostics
+    return checks.report(built.diagnostics, chosen, limit)
 
 
 async def _existing(script: Path) -> Path:

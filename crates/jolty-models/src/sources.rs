@@ -3,7 +3,8 @@ use serde::Deserialize;
 
 use crate::waveform::Waveform;
 use crate::{
-    Binding, Device, Input, NativeDevice, Node, Output, ParameterError, Quantity, Source, Unknown,
+    Binding, Branch, BranchKind, Device, Input, NativeDevice, Node, Output, ParameterError,
+    Quantity, Source, Unknown,
 };
 
 /// The parameters of an independent source.
@@ -34,6 +35,7 @@ pub struct VoltageSource {
 impl NativeDevice for VoltageSource {
     const NAME: &'static str = "voltage_source";
     const TERMINALS: &'static [&'static str] = &["positive", "negative"];
+    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::VoltageSource)];
     type Parameters = SourceParameters;
 
     fn new(
@@ -117,6 +119,7 @@ pub struct CurrentSource {
 impl NativeDevice for CurrentSource {
     const NAME: &'static str = "current_source";
     const TERMINALS: &'static [&'static str] = &["positive", "negative"];
+    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::CurrentSource)];
     type Parameters = SourceParameters;
 
     fn new(

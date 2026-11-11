@@ -1,0 +1,20 @@
+[package]
+name = "jolty-checks"
+description = "The structural checks of jolty: facts about a circuit's topology, found before any analysis."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jolty-engine.workspace = true
+jolty-models.workspace = true
+
+[dev-dependencies]
+jolty-ir.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

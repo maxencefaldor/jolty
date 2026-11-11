@@ -1,0 +1,58 @@
+# Checks
+
+Every build checks the circuit's structure before any analysis, and reports each fact it finds the way a compiler reports an error.
+
+## What a check finds
+
+The checks read the flattened circuit as a graph: nodes joined by the branches of its devices.
+Each device declares its branches: a resistor or a diode conducts, a capacitor stores charge and is open at DC, an inductor is a short at DC, a voltage source fixes a voltage, and a current source fixes a current.
+A controlled source's control inputs only sense their nodes.
+
+From that graph alone, the checks find what makes a circuit's equations singular or meaningless: a terminal that connects to nothing, a source shorted by its own net, a loop of voltage sources, or a group of nodes with no DC path to the ground.
+The [rules reference](../reference/rules.md) gives each rule's exact condition.
+
+## Diagnostics
+
+Each diagnostic names its level and rule, states the fact, and lists the instances involved with the script line that placed each one:
+
+```text
+error[no-dc-path]: `mid` and `out` have no DC path to `ground`
+  = C1, coupled.py:9 in coupled()
+  = R1, coupled.py:10 in coupled()
+  = C2, coupled.py:11 in coupled()
+
+1 error, 0 warnings
+```
+
+A diagnostic states a fact and never how to change the circuit: a capacitor-coupled node may be a mistake, or a stage the agent will bias later.
+The command `jolty explain no-dc-path` prints the exact condition behind a rule.
+
+## Levels
+
+A check reports each rule at a level, as ty names them:
+
+- `error`: the fact surely breaks the circuit, and the command exits with 1.
+- `warn`: the fact may break the circuit; the command still exits with 0.
+- `ignore`: the check leaves the rule out.
+
+Each rule has a default level, and the settings set others in the `[tool.jolty.rules]` table of `pyproject.toml`, where `all` sets every rule and a rule's own entry overrides it:
+
+```toml title="pyproject.toml"
+[tool.jolty.rules]
+all = "error"
+shorted-device = "ignore"
+```
+
+The options `--error`, `--warn` and `--ignore` then apply over the settings, for one command:
+
+```sh
+uv run jolty build coupled.py --warn no-dc-path
+```
+
+## When checks run
+
+`jolty build` and `jolty simulate` check every circuit they build, unless given `--no-check`.
+`jolty check` checks a saved circuit file, with no script to run.
+A report lists the errors first, up to the setting `max_diagnostics`, and counts the rest.
+
+A circuit the engine cannot elaborate, such as one with a negative resistance or no ground port, is not checked: the command lists every reason it does not elaborate instead.

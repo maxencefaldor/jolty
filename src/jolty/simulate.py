@@ -26,7 +26,7 @@ from typing import overload
 
 from pydantic import JsonValue
 
-from jolty import _core, ir, results
+from jolty import _core, checks, ir, results
 from jolty.builder import Component, circuit
 from jolty.errors import ElaborationError, SimulationError
 from jolty.plan import Ac, Analysis, DcSweep, OperatingPoint, Options, Plan, Transient
@@ -65,6 +65,10 @@ class Simulation:
             results.Unknown(name, quantity) for name, quantity in self._core.unknowns
         )
         self.devices = self._core.devices
+
+    def check(self) -> tuple[checks.Diagnostic, ...]:
+        """Every diagnostic the structural checks find, at its rule's default level."""
+        return checks.diagnostics(self._core.check())
 
     @overload
     def run(

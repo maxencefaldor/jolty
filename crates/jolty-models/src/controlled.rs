@@ -2,7 +2,8 @@ use jolty_numerics::Entry;
 use serde::Deserialize;
 
 use crate::{
-    Binding, Device, Input, NativeDevice, Node, Output, ParameterError, Quantity, Unknown,
+    Binding, Branch, BranchKind, Device, Input, NativeDevice, Node, Output, ParameterError,
+    Quantity, Unknown,
 };
 
 /// The terminals of a controlled source: an output pair and a control pair.
@@ -38,6 +39,7 @@ pub struct VoltageControlledVoltageSourceParameters {
 impl NativeDevice for VoltageControlledVoltageSource {
     const NAME: &'static str = "voltage_controlled_voltage_source";
     const TERMINALS: &'static [&'static str] = CONTROLLED_TERMINALS;
+    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::VoltageSource)];
     type Parameters = VoltageControlledVoltageSourceParameters;
 
     fn new(
@@ -114,6 +116,7 @@ pub struct VoltageControlledCurrentSourceParameters {
 impl NativeDevice for VoltageControlledCurrentSource {
     const NAME: &'static str = "voltage_controlled_current_source";
     const TERMINALS: &'static [&'static str] = CONTROLLED_TERMINALS;
+    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::CurrentSource)];
     type Parameters = VoltageControlledCurrentSourceParameters;
 
     fn new(

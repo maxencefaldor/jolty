@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use jolty_ir::Parameters;
 use serde::de::DeserializeOwned;
 
-use crate::{Binding, Input, Output};
+use crate::{Binding, Branch, Input, Output};
 
 /// One placed device, bound to its unknowns.
 pub trait Device: fmt::Debug + Send {
@@ -42,6 +42,10 @@ pub trait Model: Send + Sync {
     /// The names of the device's terminals, in the order [`Binding::terminal`] indexes them.
     fn terminals(&self) -> &'static [&'static str];
 
+    /// The device's branches between its terminals; a terminal on none only senses its
+    /// node.
+    fn branches(&self) -> &'static [Branch];
+
     /// Reads `parameters` and makes a device bound through `binding`.
     ///
     /// # Errors
@@ -60,6 +64,8 @@ pub trait NativeDevice: Device + Sized + 'static {
     const NAME: &'static str;
     /// The model's terminals.
     const TERMINALS: &'static [&'static str];
+    /// The model's branches between its terminals.
+    const BRANCHES: &'static [Branch];
     /// The parameters, deserialized from the instance's parameter map.
     type Parameters: DeserializeOwned;
 
@@ -102,6 +108,10 @@ impl<D: NativeDevice> Model for Native<D> {
 
     fn terminals(&self) -> &'static [&'static str] {
         D::TERMINALS
+    }
+
+    fn branches(&self) -> &'static [Branch] {
+        D::BRANCHES
     }
 
     fn instantiate(

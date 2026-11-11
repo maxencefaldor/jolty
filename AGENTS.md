@@ -31,6 +31,7 @@ Each crate depends only on the crates listed before it:
 1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, and integration formulas.
 1. `jolty-models`: the interface every device implements, and the standard library of devices.
 1. `jolty-engine`: elaboration of a hierarchy into devices bound to unknowns, Newton iteration with SPICE's convergence aids, and the analyses.
+1. `jolty-checks`: the structural rules, which read the elaborated circuit through the branches each device declares.
 1. `jolty-python`: the Python extension module `jolty._core`, which adapts the engine and nothing more.
 
 The Python package, `src/jolty`, is ordered too.
@@ -39,7 +40,7 @@ Each module imports only from the modules listed before it:
 1. `errors`, `settings`: the errors front ends show as a message, and configuration.
 1. `units`, `waveforms`, `ir`: dimensioned quantities, the levels of sources over time, and the circuit format.
 1. `devices`, `builder`: the devices a script places, and components written as Python functions.
-1. `plan`, `results`, `simulate`: analyses and their options, their results, and the engine's Python face.
+1. `plan`, `checks`, `results`, `simulate`: analyses and their options, the rules and their diagnostics, results, and the engine's Python face.
 1. `files`, `report`: circuit and results files, and what each analysis found, as data and as text.
 1. `runner`, `service`: scripts in child processes, and every command defined once.
 1. `cli`, `mcp`: front ends that only adapt `service`.
@@ -63,6 +64,11 @@ Each module imports only from the modules listed before it:
 - **Feedback is facts:** jolty tells the agent what is true about its circuit and never fixes it or says how to.
   A problem names the instance by its path and the script line that placed it.
   The engine reports every problem it finds, not only the first.
+- **Problems and rules:** a problem stops the engine from elaborating a circuit, such as a negative resistance, and always fails a build.
+  A rule states a fact about a circuit that elaborates, such as a node with no DC path to the ground, at a level people configure.
+- **Rules, as in ty:** a rule's name is lowercase words joined by hyphens, and its level is `error`, `warn` or `ignore`.
+  A rule whose fact surely breaks the circuit defaults to `error`; any other defaults to `warn`.
+  Each rule states its exact condition (`jolty explain`), and has a test that raises it and one that passes.
 - **Scripts run in their own process** (`jolty.runner`), never in the command line or the MCP server: their output is captured, a timeout stops them, and a crash ends only the runner.
 - **Numbers in messages** are written in their shortest exact form, such as `-1e-9`; reports write them with SI prefixes, such as `-1 nV`.
 - **Tests:** the engine is checked against closed-form solutions, by property tests of the laws every circuit obeys, such as Kirchhoff's current law, and against ngspice on a corpus of circuits (`tests/test_ngspice.py`, skipped when ngspice is not installed).

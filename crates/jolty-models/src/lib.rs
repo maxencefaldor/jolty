@@ -18,6 +18,7 @@ mod passive;
 mod sources;
 #[cfg(test)]
 mod testing;
+mod topology;
 pub mod waveform;
 
 use std::collections::BTreeMap;
@@ -34,6 +35,7 @@ pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
 };
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
+pub use topology::{Branch, BranchKind};
 
 /// The models a circuit can use, by name.
 #[derive(Default)]

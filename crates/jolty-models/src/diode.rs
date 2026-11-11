@@ -1,6 +1,9 @@
 use serde::Deserialize;
 
-use crate::{Binding, Device, Input, NativeDevice, Output, ParameterError, Quantity, TerminalPair};
+use crate::{
+    Binding, Branch, BranchKind, Device, Input, NativeDevice, Output, ParameterError, Quantity,
+    TerminalPair,
+};
 
 /// The Boltzmann constant, in joules per kelvin.
 const BOLTZMANN: f64 = 1.380_649e-23;
@@ -129,6 +132,7 @@ impl Depletion {
 impl NativeDevice for Diode {
     const NAME: &'static str = "diode";
     const TERMINALS: &'static [&'static str] = &["anode", "cathode"];
+    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::Conductive)];
     type Parameters = DiodeParameters;
 
     fn new(parameters: DiodeParameters, binding: &mut Binding<'_>) -> Result<Self, ParameterError> {

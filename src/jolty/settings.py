@@ -6,9 +6,10 @@ environment variables, or the ``[tool.jolty]`` table of ``pyproject.toml`` in th
 working directory.
 """
 
-from typing import Self, override
+from enum import StrEnum
+from typing import Annotated, Final, Self, override
 
-from pydantic import Field, ValidationError
+from pydantic import Field, StringConstraints, ValidationError
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -18,6 +19,21 @@ from pydantic_settings import (
 )
 
 from jolty.errors import JoltyError
+
+ALL: Final = "all"
+"""The key that sets the level of every rule at once."""
+
+
+class Level(StrEnum):
+    """How a check reports a rule's diagnostics, by the names ty gives its levels."""
+
+    ERROR = "error"
+    WARN = "warn"
+    IGNORE = "ignore"
+
+
+type RuleKey = Annotated[str, StringConstraints(pattern=r"^[a-z]+(-[a-z]+)*$")]
+"""A rule's name, such as ``no-dc-path``, or ``all`` for every rule."""
 
 
 class Settings(BaseSettings):
@@ -47,6 +63,17 @@ class Settings(BaseSettings):
         ge=1,
         description="Unknowns a report lists for each analysis; "
         "the results file holds every one.",
+    )
+    max_diagnostics: int = Field(
+        default=20,
+        ge=1,
+        description="Diagnostics a check report lists; it counts the rest.",
+    )
+    rules: dict[RuleKey, Level] = Field(
+        default_factory=dict,
+        description="Level of each rule by name, or of every rule with 'all': error, "
+        "warn or ignore. A rule's own entry overrides 'all', and rules left out keep "
+        "their default level.",
     )
 
     @classmethod

@@ -68,21 +68,36 @@ def test_tools_mirror_the_service_requests() -> None:
             return (await client.list_tools()).tools
 
     tools = {tool.name: tool for tool in asyncio.run(go())}
-    assert set(tools) == {"build_circuit", "simulate_circuit"}
+    assert set(tools) == {
+        "build_circuit",
+        "simulate_circuit",
+        "check_circuit",
+        "explain_rule",
+    }
     simulate = tools["simulate_circuit"]
     assert set(simulate.input_schema["properties"]) == {
         "script",
         "plan",
         "output",
         "results",
+        "check",
+        "error",
+        "warn",
+        "ignore",
+        "max_diagnostics",
     }
     assert simulate.input_schema["required"] == ["script"]
     assert simulate.description is not None
     assert simulate.description.startswith("Build a script's circuit")
-    for tool in tools.values():
-        assert tool.output_schema is not None
-        assert tool.annotations is not None
-        assert tool.annotations.destructive_hint is True  # a script runs any Python
+    for name in ("build_circuit", "simulate_circuit"):
+        annotations = tools[name].annotations
+        assert annotations is not None
+        assert annotations.destructive_hint is True  # a script runs any Python
+    for name in ("check_circuit", "explain_rule"):
+        annotations = tools[name].annotations
+        assert annotations is not None
+        assert annotations.read_only_hint is True
+    assert all(tool.output_schema is not None for tool in tools.values())
 
 
 def test_simulate_answers_with_text_and_structured_content(script: Path) -> None:

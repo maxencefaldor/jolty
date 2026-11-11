@@ -50,7 +50,9 @@ The server offers one tool per command:
 | --- | --- |
 | `build_circuit` | `jolty build` |
 | `simulate_circuit` | `jolty simulate` |
+| `check_circuit` | `jolty check` |
+| `explain_rule` | `jolty explain` |
 
 Each tool answers with the text the command prints, and with the result itself as structured content.
 Scripts run in a process of their own, with the configured time limit, so nothing a script prints can reach the protocol stream.
-The tools run any Python the script holds, with the user's permissions, so a harness should ask before each call.
+The build and simulate tools run any Python the script holds, with the user's permissions, so a harness should ask before each call; the check and explain tools only read.

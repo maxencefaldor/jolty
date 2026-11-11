@@ -49,7 +49,7 @@ use jolty_numerics::{LinearError, SparseLu};
 
 pub use ac::{Ac, Response};
 pub use analysis::{Analysis, Outcome};
-pub use elaborate::{ElaborationError, ElaborationProblem, Location};
+pub use elaborate::{ElaborationError, ElaborationProblem, Location, Placed};
 pub use jolty_numerics::integration::Method;
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;
@@ -92,10 +92,16 @@ impl Simulator {
         &self.system.unknowns
     }
 
-    /// The number of devices, with every component instance unfolded.
+    /// The devices, with every component instance unfolded, in the order they were placed.
     #[must_use]
-    pub fn device_count(&self) -> usize {
-        self.system.devices.len()
+    pub fn devices(&self) -> &[Placed] {
+        &self.system.devices
+    }
+
+    /// The name of the reference node, the net of the top component's ground port.
+    #[must_use]
+    pub fn reference(&self) -> &str {
+        self.system.reference.as_str()
     }
 
     /// The unknown named `name`: a net's path such as `amplifier/mid`, or an instance's path

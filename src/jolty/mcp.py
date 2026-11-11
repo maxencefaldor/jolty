@@ -30,11 +30,13 @@ jolty builds and simulates electronic circuits written as Python scripts.
 
 Workflow: write a script whose build() returns the top component of a circuit, and call
 build_circuit on it. It saves the circuit and says how many devices and unknowns it has,
-or every reason the engine cannot elaborate it, each naming an instance and the script
-line that placed it. Then add plan(), returning a jolty.Plan of named analyses, and call
-simulate_circuit: it reports each analysis and saves every result to a .npz file that
-jolty.files.load_results reads back. Fix the script and run again until the reports
-show the intended behavior.
+or every reason the engine cannot elaborate it, and checks its structure: each
+diagnostic, such as error[no-dc-path], names the instances and the script lines that
+placed them. explain_rule gives the exact condition behind a rule. Then add plan(),
+returning a jolty.Plan of named analyses, and call simulate_circuit: it reports each
+analysis and saves every result to a .npz file that jolty.files.load_results reads back.
+Fix the script and run again until the report has no errors and the analyses show the
+intended behavior.
 
 Components: decorate a function taking a jolty.Builder with @jolty.component. Inside,
 c.port(name, role) declares a port (Role.SIGNAL, SUPPLY or GROUND), c.place(device or
@@ -55,6 +57,9 @@ Ac(source, frequencies) with decade(start, stop, per_decade), and Transient(stop
 max_step, method). Unknowns are named by path: a net such as out or stage/mid, and the
 current through a source or inductor such as V1:current.
 """
+
+READS_FILES: Final = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+"""A check reads a circuit file and changes nothing."""
 
 RUNS_CODE: Final = ToolAnnotations(
     read_only_hint=False,
@@ -111,27 +116,47 @@ def tool_from[Request: BaseModel, Result: service.CommandResult](
 def create_server(settings: Settings) -> MCPServer:
     """The jolty MCP server, with all its tools, running commands with `settings`."""
     server = MCPServer("jolty", version=version("jolty"), instructions=INSTRUCTIONS)
-    server.add_tool(
-        tool_from(
-            "build_circuit",
-            service.BuildRequest,
-            service.build,
-            service.BuildResult,
-            settings,
-        ),
-        annotations=RUNS_CODE,
-        structured_output=True,
+
+    def register[Request: BaseModel, Result: service.CommandResult](
+        name: str,
+        request_type: type[Request],
+        handler: Callable[[Request, Settings], Awaitable[Result]],
+        result_type: type[Result],
+        annotations: ToolAnnotations,
+    ) -> None:
+        server.add_tool(
+            tool_from(name, request_type, handler, result_type, settings),
+            annotations=annotations,
+            structured_output=True,
+        )
+
+    register(
+        "build_circuit",
+        service.BuildRequest,
+        service.build,
+        service.BuildResult,
+        RUNS_CODE,
     )
-    server.add_tool(
-        tool_from(
-            "simulate_circuit",
-            service.SimulateRequest,
-            service.simulate,
-            service.SimulateResult,
-            settings,
-        ),
-        annotations=RUNS_CODE,
-        structured_output=True,
+    register(
+        "simulate_circuit",
+        service.SimulateRequest,
+        service.simulate,
+        service.SimulateResult,
+        RUNS_CODE,
+    )
+    register(
+        "check_circuit",
+        service.CheckRequest,
+        service.check,
+        service.CheckResult,
+        READS_FILES,
+    )
+    register(
+        "explain_rule",
+        service.ExplainRequest,
+        service.explain,
+        service.ExplainResult,
+        READS_FILES,
     )
     return server
 

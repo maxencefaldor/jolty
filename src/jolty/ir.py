@@ -8,7 +8,7 @@ SI base units.
 """
 
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, override
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
@@ -50,6 +50,16 @@ class Source(_Model):
     file: str
     line: int
     function: str | None = None
+
+    @override
+    def __str__(self) -> str:
+        """The line, such as ``filter.py:12 in low_pass()``."""
+        within = (
+            "at module level"
+            if self.function in {None, "<module>"}
+            else f"in {self.function}()"
+        )
+        return f"{self.file}:{self.line} {within}"
 
 
 class Instance(_Model):

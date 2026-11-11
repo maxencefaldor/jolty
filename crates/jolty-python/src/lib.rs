@@ -1,8 +1,9 @@
 //! The Python extension module `jolty._core`.
 //!
-//! It exposes one class, [`Simulator`], that elaborates a circuit from its JSON text and runs
-//! analyses described in JSON, returning arrays as `NumPy` arrays. Everything an agent or a
-//! person reads, from units to reports, is built on top of it in Python.
+//! It exposes one class, [`Simulator`], that elaborates a circuit from its JSON text, checks
+//! its structure, and runs analyses described in JSON, returning arrays as `NumPy` arrays,
+//! and the table of the structural checks' [`rules`]. Everything an agent or a person reads,
+//! from units to reports, is built on top of it in Python.
 
 use std::sync::Mutex;
 
@@ -13,7 +14,7 @@ use numpy::{PyArray1, PyArray2};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 create_exception!(
     _core,
@@ -54,7 +55,7 @@ impl Simulator {
                 (unknown.name.clone(), quantity)
             })
             .collect();
-        let devices = inner.device_count();
+        let devices = inner.devices().len();
         Ok(Self {
             inner: Mutex::new(inner),
             unknowns,
@@ -73,6 +74,43 @@ impl Simulator {
     #[getter]
     fn devices(&self) -> usize {
         self.devices
+    }
+
+    /// Every diagnostic of the structural checks, each a dictionary of its `rule`, its
+    /// `message`, its `instances` and its `nets`; each instance is a dictionary of its `path`
+    /// and its `source`, the script line that placed it or `None`.
+    fn check<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let simulator = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let diagnostics = PyList::empty(py);
+        for diagnostic in jolty_checks::check(&simulator) {
+            let item = PyDict::new(py);
+            item.set_item("rule", diagnostic.rule)?;
+            item.set_item("message", diagnostic.message)?;
+            let instances = PyList::empty(py);
+            for location in diagnostic.instances {
+                let instance = PyDict::new(py);
+                instance.set_item("path", location.path)?;
+                let source = match location.source {
+                    Some(source) => {
+                        let line = PyDict::new(py);
+                        line.set_item("file", source.file)?;
+                        line.set_item("line", source.line)?;
+                        line.set_item("function", source.function)?;
+                        Some(line)
+                    }
+                    None => None,
+                };
+                instance.set_item("source", source)?;
+                instances.append(instance)?;
+            }
+            item.set_item("instances", instances)?;
+            item.set_item("nets", diagnostic.nets)?;
+            diagnostics.append(item)?;
+        }
+        Ok(diagnostics)
     }
 
     /// Runs the analysis whose JSON text is `analysis` with the options whose JSON text is
@@ -160,10 +198,21 @@ fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Boun
 }
 
 /// The Rust core of jolty.
+/// Every rule of the structural checks, in the order a check reports them: its name, its
+/// default level and its condition.
+#[pyfunction]
+fn rules() -> Vec<(&'static str, &'static str, &'static str)> {
+    jolty_checks::RULES
+        .iter()
+        .map(|rule| (rule.name, rule.level.name(), rule.condition))
+        .collect()
+}
+
 #[pymodule]
 fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     module.add_class::<Simulator>()?;
+    module.add_function(wrap_pyfunction!(rules, module)?)?;
     module.add("ElaborationError", py.get_type::<ElaborationError>())?;
     module.add("SimulationError", py.get_type::<SimulationError>())?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;

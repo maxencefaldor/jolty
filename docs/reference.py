@@ -1,11 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""Write the reference pages that come from the code: commands and settings.
+"""Write the reference pages that come from the code: commands, rules and settings.
 
 Run from the repository root: ``uv run python docs/reference.py``. Every option's flag,
-default and description come from the request models in :mod:`jolty.service`, the
-single definition the command line and the MCP server share, and every setting comes
-from :class:`jolty.settings.Settings`. The pages therefore match the tools exactly, and
-CI fails when a page is stale.
+default and description come from the request models in `jolty.service`, the single
+definition the command line and the MCP server share; every rule's level and condition
+come from the engine, as ``jolty explain`` prints them; and every setting comes from
+`jolty.settings.Settings`. The pages therefore match the tools exactly, and CI fails
+when a page is stale.
 """
 
 import re
@@ -17,6 +18,7 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
+from jolty.checks import rules
 from jolty.cli import Jolty
 from jolty.settings import Settings
 
@@ -31,9 +33,9 @@ The `jolty` command builds and simulates circuits from the shell.
 Every command takes `--output-format json` to print its result as JSON for programs; \
 the default, `text`, is for people and agents.
 The command `jolty --version` prints the version.
-The exit status is 0 for success, 1 when a circuit does not elaborate or an analysis \
-fails, and 2 for invalid arguments or settings, or a failed command, as when a script \
-raises.
+The exit status is 0 for success, 1 when a circuit does not elaborate, a check finds \
+an error or an analysis fails, and 2 for invalid arguments or settings, or a failed \
+command, as when a script raises.
 Each command's options come from a request model in `jolty.service`, which the \
 [MCP server](../agents/connect.md#mcp-server) shares, so a tool takes the same \
 arguments as its command.
@@ -52,14 +54,29 @@ variable, or the `[tool.jolty]` table of the `pyproject.toml` in the working dir
 
 SETTINGS_EXAMPLE: Final = """\
 
-A project whose transients run long might raise the time limit and list more unknowns:
+A project whose transients run long might raise the time limit, and one that couples \
+stages through capacitors on purpose might report floating nodes as warnings:
 
 ```toml title="pyproject.toml"
 [tool.jolty]
 timeout = 1800
-listed_unknowns = 100
+
+[tool.jolty.rules]
+no-dc-path = "warn"
 ```
 """
+
+RULES_INTRODUCTION: Final = """\
+# Rules
+
+Each rule names one fact the structural checks can state about a circuit, and \
+`jolty explain` prints the same condition as this page.
+A check reports each rule at its level: `error`, `warn` or `ignore`.
+The default levels below hold until settings or options set others (see \
+[Checks](../guide/checks.md#levels)).
+"""
+
+_SENTENCE_END: Final = re.compile(r"(?<=[.:])\s+(?=[A-Z`(])")
 
 
 def _positional(field: FieldInfo) -> bool:
@@ -149,11 +166,27 @@ def settings_page() -> str:
     return SETTINGS_INTRODUCTION + "\n".join(rows) + "\n" + SETTINGS_EXAMPLE
 
 
+def rules_page() -> str:
+    """The page of rules: a table, then each rule's condition, one sentence a line."""
+    known = rules()
+    lines = [
+        RULES_INTRODUCTION,
+        "| Rule | Default level |",
+        "| --- | --- |",
+        *(f"| [`{name}`](#{name}) | `{rule.level}` |" for name, rule in known.items()),
+    ]
+    for name, rule in known.items():
+        lines.extend(("", f"## {name}", ""))
+        lines.extend(_SENTENCE_END.split(rule.condition))
+    return "\n".join(lines) + "\n"
+
+
 def main() -> None:
     """Writes every page."""
     REFERENCE.mkdir(parents=True, exist_ok=True)
     pages = {
         REFERENCE / "cli.md": cli_page(),
+        REFERENCE / "rules.md": rules_page(),
         REFERENCE / "configuration.md": settings_page(),
     }
     for page, text in pages.items():

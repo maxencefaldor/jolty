@@ -87,7 +87,7 @@ impl Simulator {
             .system
             .devices
             .iter()
-            .position(|placed| placed.path == path)
+            .position(|placed| placed.path() == path)
             .ok_or_else(|| SimulationError::UnknownSource(path.to_owned()))?;
         if self.system.devices[index].device.as_source().is_none() {
             return Err(SimulationError::NotASource(path.to_owned()));
