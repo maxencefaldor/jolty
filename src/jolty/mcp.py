@@ -3,12 +3,14 @@
 
 Every tool derives from a request model of [`jolty.service`][jolty.service], so its
 arguments, defaults and descriptions match the ``jolty`` command line exactly. Each tool
-answers with the text the command line prints and with the result as structured content.
+answers with the text the command line prints, with the result as structured content,
+and with the images it drew.
 
 Scripts run in a process of their own, outside the server, so nothing a script prints
 can reach the protocol stream. Serve with ``jolty-mcp`` or ``python -m jolty.mcp``.
 """
 
+import base64
 import copy
 import inspect
 import sys
@@ -18,7 +20,13 @@ from typing import Annotated, Final
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from mcp.types import (
+    CallToolResult,
+    ContentBlock,
+    ImageContent,
+    TextContent,
+    ToolAnnotations,
+)
 from pydantic import BaseModel
 
 from jolty import service
@@ -34,7 +42,8 @@ or every reason the engine cannot elaborate it, and checks its structure: each
 diagnostic, such as error[no-dc-path], names the instances and the script lines that
 placed them. explain_rule gives the exact condition behind a rule. Then add plan(),
 returning a jolty.Plan of named analyses, and call simulate_circuit: it reports each
-analysis and saves every result to a .npz file that jolty.files.load_results reads back.
+analysis, plots each one but operating points, and saves every result to a .npz file
+that jolty.files.load_results reads back; plot_results draws other unknowns from it.
 Fix the script and run again until the report has no errors and the analyses show the
 intended behavior.
 
@@ -60,6 +69,14 @@ current through a source or inductor such as V1:current.
 
 READS_FILES: Final = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 """A check reads a circuit file and changes nothing."""
+
+WRITES_FILES: Final = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+"""A plot writes images beside the results it reads, the same ones each time."""
 
 RUNS_CODE: Final = ToolAnnotations(
     read_only_hint=False,
@@ -100,9 +117,17 @@ def tool_from[Request: BaseModel, Result: service.CommandResult](
             result = await handler(request, settings)
         except JoltyError as error:
             raise ToolError(str(error)) from error
+        content: list[ContentBlock] = [TextContent(type="text", text=result.describe())]
+        content.extend(
+            ImageContent(
+                type="image",
+                data=base64.b64encode(path.read_bytes()).decode("ascii"),
+                mime_type="image/png",
+            )
+            for path in result.images()
+        )
         return CallToolResult(
-            content=[TextContent(type="text", text=result.describe())],
-            structured_content=result.model_dump(mode="json"),
+            content=content, structured_content=result.model_dump(mode="json")
         )
 
     tool.__signature__ = inspect.Signature(  # ty: ignore[missing-attribute]
@@ -143,6 +168,13 @@ def create_server(settings: Settings) -> MCPServer:
         service.simulate,
         service.SimulateResult,
         RUNS_CODE,
+    )
+    register(
+        "plot_results",
+        service.PlotRequest,
+        service.plot,
+        service.PlotResult,
+        WRITES_FILES,
     )
     register(
         "check_circuit",

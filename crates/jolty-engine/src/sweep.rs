@@ -1,5 +1,6 @@
 //! The DC sweep: operating points while one source steps through levels.
 
+use jolty_models::{BranchKind, Quantity};
 use serde::Deserialize;
 
 use crate::newton::Mode;
@@ -18,6 +19,10 @@ pub struct DcSweep {
 /// The operating points of a DC sweep.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sweep {
+    /// The path of the swept source.
+    pub source: String,
+    /// Whether the levels are voltages or currents.
+    pub quantity: Quantity,
     /// The levels of the swept source.
     pub levels: Vec<f64>,
     /// The value of every unknown at each level.
@@ -47,6 +52,8 @@ impl Simulator {
         let result = self.sweep_source(index, &sweep.levels, options);
         self.hold_source(index, None);
         Ok(Sweep {
+            source: sweep.source.clone(),
+            quantity: self.source_quantity(index),
             levels: sweep.levels.clone(),
             values: result?,
         })
@@ -93,6 +100,19 @@ impl Simulator {
             return Err(SimulationError::NotASource(path.to_owned()));
         }
         Ok(index)
+    }
+
+    /// Whether the source of the device at `index` holds a voltage or drives a current.
+    pub(crate) fn source_quantity(&self, index: usize) -> Quantity {
+        let drives_current = self.system.devices[index]
+            .branches()
+            .iter()
+            .any(|branch| branch.kind == BranchKind::CurrentSource);
+        if drives_current {
+            Quantity::Current
+        } else {
+            Quantity::Voltage
+        }
     }
 
     fn hold_source(&mut self, index: usize, level: Option<f64>) {

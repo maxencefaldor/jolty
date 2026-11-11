@@ -22,11 +22,14 @@ class OperatingPointOutcome(TypedDict):
 
 class SweepOutcome(TypedDict):
     kind: Literal["dc_sweep"]
+    source: str
+    quantity: Literal["voltage", "current"]
     levels: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
 
 class ResponseOutcome(TypedDict):
     kind: Literal["ac"]
+    source: str
     frequencies: npt.NDArray[np.float64]
     values: npt.NDArray[np.complex128]
     operating_point: SolvedPoint

@@ -24,9 +24,11 @@ def every_kind() -> dict[str, results.Result]:
     point = results.OperatingPoint(UNKNOWNS, np.array([1.0, -1e-3]), "gmin_stepping")
     return {
         "op": point,
-        "sweep": results.Sweep(UNKNOWNS, np.array([0.0, 1.0]), np.eye(2)),
+        "sweep": results.Sweep(
+            UNKNOWNS, "V1", "voltage", np.array([0.0, 1.0]), np.eye(2)
+        ),
         "bode": results.Response(
-            UNKNOWNS, np.array([1e3]), np.array([[0.5 - 0.5j, 1j]]), point
+            UNKNOWNS, "V1", np.array([1e3]), np.array([[0.5 - 0.5j, 1j]]), point
         ),
         "step": results.Waveforms(
             UNKNOWNS, np.array([0.0, 1e-6]), np.ones((2, 2)), STATISTICS
@@ -45,8 +47,12 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
         assert type(loaded) is type(result)
         assert loaded.unknowns == UNKNOWNS
         np.testing.assert_array_equal(loaded.values, result.values)
+    sweep = read["sweep"]
+    assert isinstance(sweep, results.Sweep)
+    assert (sweep.source, sweep.quantity) == ("V1", "voltage")
     bode = read["bode"]
     assert isinstance(bode, results.Response)
+    assert bode.source == "V1"
     assert bode.operating_point.strategy == "gmin_stepping"
     step = read["step"]
     assert isinstance(step, results.Waveforms)

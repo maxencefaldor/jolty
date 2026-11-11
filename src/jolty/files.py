@@ -50,10 +50,13 @@ class _Point(_Model):
 
 class _Sweep(_Model):
     kind: Literal["dc_sweep"] = "dc_sweep"
+    source: str
+    quantity: Literal["voltage", "current"]
 
 
 class _Response(_Model):
     kind: Literal["ac"] = "ac"
+    source: str
     strategy: str
 
 
@@ -84,6 +87,17 @@ def results_path(script: Path) -> Path:
     return script.with_name(script.stem + RESULTS_SUFFIX)
 
 
+def plot_path(results: Path, analysis: str) -> Path:
+    """Where the plot of `analysis` goes beside its results, as ``<stem>.<name>.png``.
+
+    Examples:
+        >>> plot_path(Path("rc.results.npz"), "step").name
+        'rc.step.png'
+    """
+    stem = results.name.removesuffix(RESULTS_SUFFIX).removesuffix(".npz")
+    return results.with_name(f"{stem}.{analysis}.png")
+
+
 def save_circuit(path: Path, circuit: ir.Circuit) -> None:
     """Writes `circuit` to `path` as JSON."""
     path.write_text(circuit.model_dump_json(indent=2) + "\n", encoding="utf-8")
@@ -112,11 +126,13 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
                 entries[name] = _Point(strategy=result.strategy)
                 arrays[f"{name}.values"] = result.values
             case results.Sweep():
-                entries[name] = _Sweep()
+                entries[name] = _Sweep(source=result.source, quantity=result.quantity)
                 arrays[f"{name}.levels"] = result.levels
                 arrays[f"{name}.values"] = result.values
             case results.Response():
-                entries[name] = _Response(strategy=result.operating_point.strategy)
+                entries[name] = _Response(
+                    source=result.source, strategy=result.operating_point.strategy
+                )
                 arrays[f"{name}.frequencies"] = result.frequencies
                 arrays[f"{name}.values"] = result.values
                 arrays[f"{name}.operating_point"] = result.operating_point.values
@@ -149,16 +165,18 @@ def load_results(path: Path) -> dict[str, results.Result]:
             match entry:
                 case _Point(strategy=strategy):
                     loaded[name] = results.OperatingPoint(unknowns, values, strategy)
-                case _Sweep():
+                case _Sweep(source=source, quantity=quantity):
                     levels = data[f"{name}.levels"]
-                    loaded[name] = results.Sweep(unknowns, levels, values)
-                case _Response(strategy=strategy):
+                    loaded[name] = results.Sweep(
+                        unknowns, source, quantity, levels, values
+                    )
+                case _Response(source=source, strategy=strategy):
                     point = results.OperatingPoint(
                         unknowns, data[f"{name}.operating_point"], strategy
                     )
                     frequencies = data[f"{name}.frequencies"]
                     loaded[name] = results.Response(
-                        unknowns, frequencies, values, point
+                        unknowns, source, frequencies, values, point
                     )
                 case _Waveforms(statistics=statistics):
                     times = data[f"{name}.times"]

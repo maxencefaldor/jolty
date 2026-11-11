@@ -18,6 +18,8 @@ Each build checks every device and connection, reports each problem with the scr
 
 [Get started](get-started.md){ .md-button .md-button--primary } [Guide](guide/index.md){ .md-button }
 
+![The Bode plot of an RC low-pass filter, as jolty draws it after a simulation](images/rc_filter.bode.png)
+
 </div>
 
 <div class="grid cards jolty-links" markdown>

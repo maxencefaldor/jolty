@@ -129,14 +129,24 @@ class Simulation:
                     unknowns, outcome["values"], outcome["strategy"]
                 )
             case "dc_sweep":
-                return results.Sweep(unknowns, outcome["levels"], outcome["values"])
+                return results.Sweep(
+                    unknowns,
+                    outcome["source"],
+                    outcome["quantity"],
+                    outcome["levels"],
+                    outcome["values"],
+                )
             case "ac":
                 solved = outcome["operating_point"]
                 point = results.OperatingPoint(
                     unknowns, solved["values"], solved["strategy"]
                 )
                 return results.Response(
-                    unknowns, outcome["frequencies"], outcome["values"], point
+                    unknowns,
+                    outcome["source"],
+                    outcome["frequencies"],
+                    outcome["values"],
+                    point,
                 )
             case "transient":
                 statistics = results.Statistics(**outcome["statistics"])

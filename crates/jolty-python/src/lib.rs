@@ -47,13 +47,7 @@ impl Simulator {
         let unknowns = inner
             .unknowns()
             .iter()
-            .map(|unknown| {
-                let quantity = match unknown.quantity {
-                    Quantity::Voltage => "voltage",
-                    Quantity::Current => "current",
-                };
-                (unknown.name.clone(), quantity)
-            })
+            .map(|unknown| (unknown.name.clone(), quantity_name(unknown.quantity)))
             .collect();
         let devices = inner.devices().len();
         Ok(Self {
@@ -143,6 +137,14 @@ fn unreadable(error: &impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(error.to_string())
 }
 
+/// The name of a quantity: `"voltage"` or `"current"`.
+fn quantity_name(quantity: Quantity) -> &'static str {
+    match quantity {
+        Quantity::Voltage => "voltage",
+        Quantity::Current => "current",
+    }
+}
+
 /// The outcome of an analysis as a dictionary whose `kind` names the analysis.
 fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyDict>> {
     let result = PyDict::new(py);
@@ -153,11 +155,14 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
         }
         Outcome::DcSweep(sweep) => {
             result.set_item("kind", "dc_sweep")?;
+            result.set_item("source", sweep.source)?;
+            result.set_item("quantity", quantity_name(sweep.quantity))?;
             result.set_item("levels", PyArray1::from_vec(py, sweep.levels))?;
             result.set_item("values", PyArray2::from_vec2(py, &sweep.values)?)?;
         }
         Outcome::Ac(response) => {
             result.set_item("kind", "ac")?;
+            result.set_item("source", response.source)?;
             result.set_item("frequencies", PyArray1::from_vec(py, response.frequencies))?;
             result.set_item("values", PyArray2::from_vec2(py, &response.values)?)?;
             let operating_point = PyDict::new(py);

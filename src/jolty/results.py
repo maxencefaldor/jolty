@@ -25,7 +25,12 @@ class Unknown:
     quantity: Literal["voltage", "current"]
 
 
-def _index(unknowns: tuple[Unknown, ...], name: str) -> int:
+def column(unknowns: tuple[Unknown, ...], name: str) -> int:
+    """The column of the unknown `name` in the values of a result over `unknowns`.
+
+    Raises:
+        KeyError: When no unknown has that name; the message suggests the closest names.
+    """
     for index, unknown in enumerate(unknowns):
         if unknown.name == name:
             return index
@@ -51,29 +56,33 @@ class OperatingPoint:
     def voltage(self, net: str, reference: str | None = None) -> float:
         """The voltage of `net`, relative to `reference` or to ground."""
         offset = 0.0 if reference is None else self.voltage(reference)
-        return float(self.values[_index(self.unknowns, net)]) - offset
+        return float(self.values[column(self.unknowns, net)]) - offset
 
     def current(self, instance: str) -> float:
         """The current through `instance`, a source or an inductor, in its direction."""
-        return float(self.values[_index(self.unknowns, _current(instance))])
+        return float(self.values[column(self.unknowns, _current(instance))])
 
 
 @dataclass(frozen=True, slots=True)
 class Sweep:
-    """The operating points of a DC sweep, one row per level."""
+    """The operating points of a DC sweep, one row per level of its source."""
 
     unknowns: tuple[Unknown, ...]
+    source: str
+    """The path of the swept source, such as ``V1``."""
+    quantity: Literal["voltage", "current"]
+    """Whether the levels are voltages or currents."""
     levels: Real
     values: Real
 
     def voltage(self, net: str, reference: str | None = None) -> Real:
         """The voltage of `net` at each level, relative to `reference` or to ground."""
-        column = self.values[:, _index(self.unknowns, net)]
-        return column if reference is None else column - self.voltage(reference)
+        values = self.values[:, column(self.unknowns, net)]
+        return values if reference is None else values - self.voltage(reference)
 
     def current(self, instance: str) -> Real:
         """The current through `instance` at each level."""
-        return self.values[:, _index(self.unknowns, _current(instance))]
+        return self.values[:, column(self.unknowns, _current(instance))]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,18 +90,20 @@ class Response:
     """A small-signal response: phasors per unit excitation, one row per frequency."""
 
     unknowns: tuple[Unknown, ...]
+    source: str
+    """The path of the excited source, such as ``V1``."""
     frequencies: Real
     values: Complex
     operating_point: OperatingPoint
 
     def voltage(self, net: str, reference: str | None = None) -> Complex:
         """The phasor of `net` at each frequency, relative to `reference` or ground."""
-        column = self.values[:, _index(self.unknowns, net)]
-        return column if reference is None else column - self.voltage(reference)
+        values = self.values[:, column(self.unknowns, net)]
+        return values if reference is None else values - self.voltage(reference)
 
     def current(self, instance: str) -> Complex:
         """The phasor of the current through `instance` at each frequency."""
-        return self.values[:, _index(self.unknowns, _current(instance))]
+        return self.values[:, column(self.unknowns, _current(instance))]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,12 +127,12 @@ class Waveforms:
 
     def voltage(self, net: str, reference: str | None = None) -> Real:
         """The voltage of `net` over time, relative to `reference` or to ground."""
-        column = self.values[:, _index(self.unknowns, net)]
-        return column if reference is None else column - self.voltage(reference)
+        values = self.values[:, column(self.unknowns, net)]
+        return values if reference is None else values - self.voltage(reference)
 
     def current(self, instance: str) -> Real:
         """The current through `instance` over time."""
-        return self.values[:, _index(self.unknowns, _current(instance))]
+        return self.values[:, column(self.unknowns, _current(instance))]
 
 
 type Result = OperatingPoint | Sweep | Response | Waveforms

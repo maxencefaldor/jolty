@@ -57,6 +57,14 @@ class SimulateCommand(service.SimulateRequest, _Output):
         self.emit(await service.simulate(self, Settings.load()))
 
 
+class PlotCommand(service.PlotRequest, _Output):
+    """Plot the analyses of a saved results file."""
+
+    async def cli_cmd(self) -> None:
+        """Runs the command."""
+        self.emit(await service.plot(self, Settings.load()))
+
+
 class CheckCommand(service.CheckRequest, _Output):
     """Check the structure of a saved circuit file."""
 
@@ -90,6 +98,9 @@ class Jolty(BaseSettings):
     )
     simulate: CliSubCommand[SimulateCommand] = Field(
         description="Build a script's circuit and run a plan's analyses on it."
+    )
+    plot: CliSubCommand[PlotCommand] = Field(
+        description="Plot the analyses of a saved results file."
     )
     check: CliSubCommand[CheckCommand] = Field(
         description="Check the structure of a saved circuit file."

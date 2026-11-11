@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
-from mcp.types import CallToolResult, TextContent, Tool
+from mcp.types import CallToolResult, ImageContent, TextContent, Tool
 
 from jolty.mcp import create_server, main
 from jolty.settings import Settings
@@ -57,7 +57,8 @@ def call(name: str, arguments: Mapping[str, object]) -> CallToolResult:
 
 
 def text_of(result: CallToolResult) -> str:
-    (content,) = result.content
+    """The text of a tool result's first content, which is always text."""
+    content = result.content[0]
     assert isinstance(content, TextContent)
     return content.text
 
@@ -71,6 +72,7 @@ def test_tools_mirror_the_service_requests() -> None:
     assert set(tools) == {
         "build_circuit",
         "simulate_circuit",
+        "plot_results",
         "check_circuit",
         "explain_rule",
     }
@@ -85,6 +87,8 @@ def test_tools_mirror_the_service_requests() -> None:
         "warn",
         "ignore",
         "max_diagnostics",
+        "plot",
+        "probes",
     }
     assert simulate.input_schema["required"] == ["script"]
     assert simulate.description is not None
@@ -104,6 +108,8 @@ def test_simulate_answers_with_text_and_structured_content(script: Path) -> None
     result = call("simulate_circuit", {"script": str(script)})
     assert not result.is_error
     assert "op: operating point, found by Newton iteration" in text_of(result)
+    assert result.structured_content is not None
+    assert result.structured_content["plots"] == []
     data = result.structured_content
     assert data is not None
     assert data["circuit"]["unknowns"] == 3
@@ -160,3 +166,21 @@ def test_the_command_stops_on_invalid_settings(
         main([])
     assert exit_.value.code == 2
     assert "invalid settings: timeout" in capsys.readouterr().err
+
+
+def test_plots_come_back_as_images(script: Path) -> None:
+    script.write_text(
+        DIVIDER.replace(
+            '{"op": OperatingPoint()}', '{"sweep": DcSweep("V1", [V, 2 * V])}'
+        ).replace("OperatingPoint, Plan", "DcSweep, Plan"),
+        encoding="utf-8",
+    )
+    simulated = call("simulate_circuit", {"script": str(script)})
+    assert not simulated.is_error, text_of(simulated)
+    (image,) = simulated.content[1:]
+    assert isinstance(image, ImageContent)
+    assert image.mime_type == "image/png"
+    results = script.with_name("divider.results.npz")
+    plotted = call("plot_results", {"results": str(results), "probes": ["out"]})
+    assert "plotted sweep: " in text_of(plotted)
+    assert isinstance(plotted.content[1], ImageContent)

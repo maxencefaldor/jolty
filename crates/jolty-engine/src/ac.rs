@@ -20,6 +20,8 @@ pub struct Ac {
 /// The small-signal response of every unknown to a unit excitation, at each frequency.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Response {
+    /// The path of the excited source.
+    pub source: String,
     /// The operating point the circuit was linearized at.
     pub operating_point: OperatingPoint,
     /// The frequencies, in hertz.
@@ -81,6 +83,7 @@ impl Simulator {
             values.push(phasors);
         }
         Ok(Response {
+            source: ac.source.clone(),
             operating_point,
             frequencies: ac.frequencies.clone(),
             values,

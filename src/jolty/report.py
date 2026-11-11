@@ -75,13 +75,24 @@ class SweepReport(_Model):
 
     kind: Literal["dc_sweep"] = "dc_sweep"
     name: str
+    source: str = Field(description="The swept source's path.")
+    quantity: Quantity = Field(
+        description="Whether its levels are voltages or currents."
+    )
+    first: float = Field(description="The first level, in volts or amperes.")
+    last: float = Field(description="The last level, in volts or amperes.")
     levels: int = Field(description="Levels the sweep solved.")
     extents: tuple[Extent, ...]
     unlisted: int = Field(description="Unknowns left out of the list.")
 
     def describe(self) -> str:
         """The report as text."""
-        head = f"{self.name}: DC sweep over {self.levels} levels"
+        unit = _SYMBOLS[self.quantity]
+        head = (
+            f"{self.name}: DC sweep of {self.source} from "
+            f"{format_si(self.first, unit)} to {format_si(self.last, unit)} "
+            f"in {self.levels} levels"
+        )
         return _join(head, _extents(self.extents), self.unlisted)
 
 
@@ -90,6 +101,7 @@ class ResponseReport(_Model):
 
     kind: Literal["ac"] = "ac"
     name: str
+    source: str = Field(description="The excited source's path.")
     lowest: float = Field(description="Lowest frequency, in hertz.")
     highest: float = Field(description="Highest frequency, in hertz.")
     frequencies: int = Field(description="Frequencies the analysis solved.")
@@ -102,7 +114,8 @@ class ResponseReport(_Model):
     def describe(self) -> str:
         """The report as text."""
         head = (
-            f"{self.name}: response at {self.frequencies} frequencies from "
+            f"{self.name}: response to {self.source} at {self.frequencies} "
+            "frequencies from "
             f"{format_si(self.lowest, 'Hz')} to {format_si(self.highest, 'Hz')}, "
             "magnitudes per unit excitation"
         )
@@ -166,6 +179,10 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
         case results.Sweep():
             return SweepReport(
                 name=name,
+                source=result.source,
+                quantity=result.quantity,
+                first=float(result.levels[0]),
+                last=float(result.levels[-1]),
                 levels=len(result.levels),
                 extents=_extents_of(unknowns, result.values[:, :listed]),
                 unlisted=unlisted,
@@ -173,6 +190,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
         case results.Response():
             return ResponseReport(
                 name=name,
+                source=result.source,
                 lowest=float(result.frequencies[0]),
                 highest=float(result.frequencies[-1]),
                 frequencies=len(result.frequencies),

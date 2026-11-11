@@ -21,7 +21,7 @@ from typing import override
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import CliPositionalArg
 
-from jolty import checks, files, runner
+from jolty import checks, files, plots, results, runner
 from jolty.errors import ElaborationError, JoltyError
 from jolty.report import AnalysisReport, FailureReport
 from jolty.settings import Level, Settings
@@ -46,6 +46,10 @@ _IGNORE_DESCRIPTION = (
 _MAX_DIAGNOSTICS_DESCRIPTION = (
     "Diagnostics to list at most; defaults to the configured limit."
 )
+_PROBES_DESCRIPTION = (
+    "Unknowns to plot, such as 'out', 'X1/mid' or 'V1:current'; defaults to the "
+    "nets the top component names, up to eight."
+)
 
 
 class _Model(BaseModel):
@@ -63,6 +67,10 @@ class CommandResult(_Model, ABC):
     @abstractmethod
     def describe(self) -> str:
         """The result as text, for people and agents."""
+
+    def images(self) -> tuple[Path, ...]:
+        """The images the command wrote, which the MCP server sends with its text."""
+        return ()
 
 
 class ScriptOutput(_Model):
@@ -84,6 +92,13 @@ class ScriptOutput(_Model):
         if self.truncated:
             blocks.append("(output cut at the configured limit)")
         return "\n\n".join(blocks)
+
+
+class Plot(_Model):
+    """A plot of an analysis's results."""
+
+    analysis: str = Field(description="The analysis's name.")
+    path: Path = Field(description="The PNG image.")
 
 
 class CircuitSummary(_Model):
@@ -198,6 +213,11 @@ class SimulateRequest(_Model):
     max_diagnostics: int | None = Field(
         default=None, ge=1, description=_MAX_DIAGNOSTICS_DESCRIPTION
     )
+    plot: bool = Field(
+        default=True,
+        description="Plot every analysis but operating points beside the results.",
+    )
+    probes: list[str] = Field(default_factory=list, description=_PROBES_DESCRIPTION)
 
 
 class SimulateResult(CommandResult):
@@ -214,8 +234,17 @@ class SimulateResult(CommandResult):
     analyses: tuple[AnalysisReport, ...] = Field(
         description="A report per analysis, in the plan's order."
     )
+    plots: tuple[Plot, ...] = Field(
+        description="A plot per analysis but operating points; empty when plotting "
+        "is off or no analysis ran to its end."
+    )
     output: ScriptOutput = Field(description="What the scripts printed.")
     seconds: float = Field(description="Seconds the command took.")
+
+    @override
+    def images(self) -> tuple[Path, ...]:
+        """The plots."""
+        return tuple(plot.path for plot in self.plots)
 
     @property
     @override
@@ -241,6 +270,8 @@ class SimulateResult(CommandResult):
         if self.results is not None:
             blocks.append(f"saved {self.results}")
         blocks.extend(analysis.describe() for analysis in self.analyses)
+        if self.plots:
+            blocks.append(_describe_plots(self.plots))
         blocks.append(f"took {self.seconds:.2f} s")
         return "\n\n".join(block for block in blocks if block)
 
@@ -284,18 +315,108 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     plan = script if request.plan is None else await _existing(request.plan)
     job = runner.Job(script=script, plan=plan, listed=settings.listed_unknowns)
     path = request.output or files.circuit_path(request.script)
-    results = request.results or files.results_path(request.script)
-    built, output = await _run(job, settings, results=results)
+    target = request.results or files.results_path(request.script)
+    built, output = await _run(job, settings, results=target)
     circuit = await asyncio.to_thread(_save, built, path)
-    saved = await asyncio.to_thread(results.is_file)
+    saved = await asyncio.to_thread(target.is_file)
+    drawn = (
+        await asyncio.to_thread(_plot, target, [], request.probes)
+        if saved and request.plot
+        else ()
+    )
     return SimulateResult(
         circuit=circuit,
         report=_report(built, request, chosen, settings),
-        results=results if saved else None,
+        results=target if saved else None,
         analyses=built.analyses,
+        plots=drawn,
         output=output,
         seconds=time.perf_counter() - started,
     )
+
+
+class PlotRequest(_Model):
+    """Plot the analyses of a saved results file."""
+
+    results: CliPositionalArg[Path] = Field(description="A .results.npz file.")
+    analyses: list[str] = Field(
+        default_factory=list,
+        description="Analyses to plot, by name; every one but operating points by "
+        "default.",
+    )
+    probes: list[str] = Field(default_factory=list, description=_PROBES_DESCRIPTION)
+
+
+class PlotResult(CommandResult):
+    """The plots drawn."""
+
+    plots: tuple[Plot, ...] = Field(description="A plot per analysis.")
+
+    @property
+    @override
+    def ok(self) -> bool:
+        """Always: plotting finds nothing wrong."""
+        return True
+
+    @override
+    def describe(self) -> str:
+        """The plots, one line each."""
+        return _describe_plots(self.plots) if self.plots else "nothing to plot"
+
+    @override
+    def images(self) -> tuple[Path, ...]:
+        """The plots."""
+        return tuple(plot.path for plot in self.plots)
+
+
+async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
+    """Plots the analyses of a saved results file beside it; settings play no part.
+
+    Raises:
+        JoltyError: When the file is missing or holds no results, an analysis named is
+            not in it or is an operating point, or a probe names no unknown.
+    """
+    del settings
+    drawn = await asyncio.to_thread(
+        _plot, request.results, request.analyses, request.probes
+    )
+    return PlotResult(plots=drawn)
+
+
+def _plot(path: Path, analyses: list[str], probes: list[str]) -> tuple[Plot, ...]:
+    """Plots the `analyses` of the results file at `path`, or all of them, beside it.
+
+    Raises:
+        JoltyError: When the file is missing or holds no results, an analysis named is
+            not in it or is an operating point, or a probe names no unknown.
+    """
+    try:
+        loaded = files.load_results(path)
+    except FileNotFoundError:
+        message = f"no such results file: {path}"
+        raise JoltyError(message) from None
+    missing = [name for name in analyses if name not in loaded]
+    if missing:
+        message = f"{path} holds no analysis named {', '.join(missing)}"
+        raise JoltyError(message)
+    drawn = []
+    for name, result in loaded.items():
+        if analyses and name not in analyses:
+            continue
+        if isinstance(result, results.OperatingPoint):
+            if analyses:
+                message = f"{name} is an operating point, which has nothing to plot"
+                raise JoltyError(message)
+            continue
+        chosen = probes or plots.default_probes(result.unknowns)
+        target = files.plot_path(path, name)
+        plots.save(plots.plot(name, result, chosen), target)
+        drawn.append(Plot(analysis=name, path=target))
+    return tuple(drawn)
+
+
+def _describe_plots(drawn: tuple[Plot, ...]) -> str:
+    return "\n".join(f"plotted {plot.analysis}: {plot.path}" for plot in drawn)
 
 
 class CheckRequest(_Model):

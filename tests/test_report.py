@@ -57,13 +57,13 @@ def test_a_transient_states_the_range_of_each_unknown() -> None:
 def test_a_response_states_magnitudes() -> None:
     point = results.OperatingPoint(UNKNOWNS, np.zeros(3), "direct")
     values = np.array([[1.0, 1.0, 0.0], [1.0, -1j, 1e-3j]])
-    response = results.Response(UNKNOWNS, np.array([1e3, 1e6]), values, point)
+    response = results.Response(UNKNOWNS, "V1", np.array([1e3, 1e6]), values, point)
     summary = report.report("bode", response, listed=10)
     assert isinstance(summary, report.ResponseReport)
     assert (summary.lowest, summary.highest, summary.frequencies) == (1e3, 1e6, 2)
     assert [extent.maximum for extent in summary.magnitudes] == [1.0, 1.0, 1e-3]
     assert summary.describe().startswith(
-        "bode: response at 2 frequencies from 1 kHz to 1 MHz"
+        "bode: response to V1 at 2 frequencies from 1 kHz to 1 MHz"
     )
 
 
