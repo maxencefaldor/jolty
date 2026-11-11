@@ -1,0 +1,89 @@
+# jolty
+
+A compiler and simulator for electronic circuits, built for AI agents.
+
+An AI agent writes a circuit as a Python script of reusable components, and jolty builds it the way a compiler builds code.
+Each build checks every device and connection, reports each problem with the script line behind it, and simulates the circuit with a native engine written in Rust.
+
+jolty is at its first milestone: board-level circuits of passive devices, sources and diodes, simulated at the operating point, over DC sweeps, in frequency and in time.
+
+## 🚀 Quick start
+
+Building jolty needs [uv](https://docs.astral.sh/uv/), which installs Python 3.14, and a [Rust toolchain](https://rustup.rs/).
+
+```sh
+git clone https://github.com/maxencefaldor/jolty
+cd jolty
+uv sync                                        # builds the Rust engine and installs jolty
+uv run jolty simulate examples/rc_filter.py    # builds the filter and runs its plan
+```
+
+The command saves the circuit to `examples/rc_filter.jolty.json`, the results to `examples/rc_filter.results.npz`, and prints a report:
+
+```text
+step: transient to 10 µs in 67 steps, 0 rejected
+              first  min        max       last
+  in          0 V    0 V        1 V       1 V
+  out         0 V    0 V        999.9 mV  999.9 mV
+  V1:current  0 A    -999.5 µA  0 A       -119.6 nA
+```
+
+## 🤖 Use it with an agent
+
+An agent reaches jolty through one of two front ends, which share every argument and print the same text:
+
+- **The command line**, for any harness that runs shell commands: `uv run jolty build` and `uv run jolty simulate`.
+- **The MCP server**, for any harness that speaks the Model Context Protocol: `claude mcp add jolty -- uv run --project /path/to/jolty jolty-mcp` adds it to Claude Code.
+
+Scripts run in a process of their own, with a time limit, so nothing they print reaches the protocol stream.
+
+## ⚡ How it works
+
+A component is a Python function that declares ports, places devices and other components, and connects their terminals:
+
+```python
+@component
+def low_pass(c: Builder, resistance: Quantity, capacitance: Quantity) -> None:
+    source = c.port("input")
+    output = c.port("output")
+    ground = c.port("ground", Role.GROUND)
+    resistor = c.place(devices.resistor(resistance), id="R")
+    capacitor = c.place(devices.capacitor(capacitance), id="C")
+    c.connect(source, resistor.a)
+    c.connect(resistor.b, capacitor.a, output)
+    c.connect(capacitor.b, ground)
+```
+
+Calling `low_pass(1 * kohm, 1 * nF)` returns a component that any other component places, so circuits grow into hierarchies of boxes.
+Values carry units, and a capacitance passed where a resistance belongs fails on the line that passed it.
+
+A plan says how to simulate a circuit, apart from the circuit itself:
+
+```python
+def plan() -> Plan:
+    return Plan(
+        {
+            "op": OperatingPoint(),
+            "step": Transient(stop=10 * us),
+            "bode": Ac("V1", decade(1 * kHz, 100 * MHz, 10)),
+        }
+    )
+```
+
+The engine solves the charge-oriented equations `f(x) + d/dt q(x) = 0` of modified nodal analysis by Newton iteration, with SPICE's convergence aids, one sparse LU factorization shared by every analysis, and adaptive time steps controlled by the local truncation error.
+
+## 🏗️ Architecture
+
+The Rust workspace in `crates/` holds the engine, each crate built on the ones before it:
+
+1. `jolty-ir`: the circuit format, its names and its validation.
+1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, and integration formulas.
+1. `jolty-models`: the interface every device implements, and the standard library of devices.
+1. `jolty-engine`: elaboration of a hierarchy into devices bound to unknowns, Newton iteration, and the analyses.
+1. `jolty-python`: the Python extension module `jolty._core`.
+
+The Python package in `src/jolty` holds everything an agent reads and writes: units, the builder, plans, results, reports, the command line and the MCP server.
+
+## 📄 License
+
+jolty is licensed under the [Apache License 2.0](LICENSE).

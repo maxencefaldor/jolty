@@ -1,0 +1,174 @@
+# Copyright 2026 Maxence Faldor
+"""The MCP server: jolty's commands as tools, for any agent harness.
+
+Every tool derives from a request model of :mod:`jolty.service`, so its arguments,
+defaults and descriptions match the ``jolty`` command line exactly. Each tool answers
+with the text the command line prints and with the result as structured content.
+
+Scripts run in a process of their own, outside the server, so nothing a script prints
+can reach the protocol stream. Serve with ``jolty-mcp`` or ``python -m jolty.mcp``.
+"""
+
+import copy
+import inspect
+import sys
+from collections.abc import Awaitable, Callable, Sequence
+from importlib.metadata import version
+from typing import Annotated, Final
+
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from pydantic import BaseModel
+
+from jolty import service
+from jolty.errors import JoltyError
+from jolty.settings import Settings
+
+INSTRUCTIONS: Final = """\
+jolty builds and simulates electronic circuits written as Python scripts.
+
+Workflow: write a script whose build() returns the top component of a circuit, and call
+build_circuit on it. It saves the circuit and says how many devices and unknowns it has,
+or every reason the engine cannot elaborate it, each naming an instance and the script
+line that placed it. Then add plan(), returning a jolty.Plan of named analyses, and call
+simulate_circuit: it reports each analysis and saves every result to a .npz file that
+jolty.files.load_results reads back. Fix the script and run again until the reports
+show the intended behavior.
+
+Components: decorate a function taking a jolty.Builder with @jolty.component. Inside,
+c.port(name, role) declares a port (Role.SIGNAL, SUPPLY or GROUND), c.place(device or
+component, id=...) places an instance whose terminals are its attributes, and
+c.connect(*points, name=...) joins terminals and nets into one net, named if given.
+Calling the decorated function with its parameters returns a component that another
+component places. The top component has a ground port, the reference of every voltage.
+
+Devices, in jolty.devices: resistor (a, b), capacitor (a, b), inductor (a, b),
+voltage_source and current_source (positive, negative; a level or a waveform of
+jolty.waveforms: Dc, Pulse, Sine, Piecewise), voltage_controlled_voltage_source and
+voltage_controlled_current_source (positive, negative, control_positive,
+control_negative), and diode (anode, cathode; SPICE parameters). Values carry units:
+10 * kohm, 4.7 * uF, from jolty.units.
+
+Analyses, in jolty.plan: OperatingPoint(), DcSweep(source, levels),
+Ac(source, frequencies) with decade(start, stop, per_decade), and Transient(stop,
+max_step, method). Unknowns are named by path: a net such as out or stage/mid, and the
+current through a source or inductor such as V1:current.
+"""
+
+RUNS_CODE: Final = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=True,
+)
+"""A command runs any Python with the user's permissions, so harnesses should ask."""
+
+
+def tool_from[Request: BaseModel, Result: service.CommandResult](
+    name: str,
+    request_type: type[Request],
+    handler: Callable[[Request, Settings], Awaitable[Result]],
+    result_type: type[Result],
+    settings: Settings,
+) -> Callable[..., Awaitable[CallToolResult]]:
+    """An async tool whose parameters are exactly the fields of `request_type`.
+
+    Each parameter's default is a copy of the request field's ``FieldInfo``, so the
+    tool's schema carries the request model's descriptions, defaults and constraints.
+    The tool answers with the result's text, and with the result itself as structured
+    content, validated against `result_type`.
+    """
+    parameters = [
+        inspect.Parameter(
+            field,
+            inspect.Parameter.KEYWORD_ONLY,
+            default=copy.copy(info),
+            annotation=info.annotation,
+        )
+        for field, info in request_type.model_fields.items()
+    ]
+
+    async def tool(**arguments: object) -> CallToolResult:
+        try:
+            request = request_type.model_validate(arguments)
+            result = await handler(request, settings)
+        except JoltyError as error:
+            raise ToolError(str(error)) from error
+        return CallToolResult(
+            content=[TextContent(type="text", text=result.describe())],
+            structured_content=result.model_dump(mode="json"),
+        )
+
+    tool.__signature__ = inspect.Signature(  # ty: ignore[missing-attribute]
+        parameters, return_annotation=Annotated[CallToolResult, result_type]
+    )
+    tool.__name__ = name
+    tool.__doc__ = request_type.__doc__
+    return tool
+
+
+def create_server(settings: Settings) -> MCPServer:
+    """The jolty MCP server, with all its tools, running commands with `settings`."""
+    server = MCPServer("jolty", version=version("jolty"), instructions=INSTRUCTIONS)
+    server.add_tool(
+        tool_from(
+            "build_circuit",
+            service.BuildRequest,
+            service.build,
+            service.BuildResult,
+            settings,
+        ),
+        annotations=RUNS_CODE,
+        structured_output=True,
+    )
+    server.add_tool(
+        tool_from(
+            "simulate_circuit",
+            service.SimulateRequest,
+            service.simulate,
+            service.SimulateResult,
+            settings,
+        ),
+        annotations=RUNS_CODE,
+        structured_output=True,
+    )
+    return server
+
+
+USAGE: Final = """\
+usage: jolty-mcp [--help | --version]
+
+Serve jolty's tools to an agent harness over the Model Context Protocol, on stdio.
+"""
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Serves over stdio, or answers ``--help`` or ``--version``.
+
+    The exit status is 2 for invalid arguments or settings.
+    """
+    arguments = sys.argv[1:] if argv is None else list(argv)
+    if arguments == ["--version"]:
+        sys.stdout.write(f"jolty-mcp {version('jolty')}\n")
+        return
+    if arguments in (["--help"], ["-h"]):
+        sys.stdout.write(USAGE)
+        return
+    if arguments:
+        sys.stderr.write(USAGE)
+        raise SystemExit(2)
+    try:
+        settings = Settings.load()
+    except JoltyError as error:
+        sys.stderr.write(f"error: {error}\n")
+        raise SystemExit(2) from None
+    if sys.stdin.isatty():
+        sys.stderr.write(
+            "jolty-mcp serves MCP on stdio for a harness to start; Ctrl-C stops it.\n"
+        )
+    create_server(settings).run()
+
+
+if __name__ == "__main__":
+    main()
