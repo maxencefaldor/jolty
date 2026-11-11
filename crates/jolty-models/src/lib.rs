@@ -86,8 +86,8 @@ impl Library {
         library.add(Native::<Resistor>::new());
         library.add(Native::<Capacitor>::new());
         library.add(Native::<Inductor>::new());
-        library.add(Plain::<VoltageSource>::new());
-        library.add(Plain::<CurrentSource>::new());
+        library.add(Native::<VoltageSource>::new());
+        library.add(Native::<CurrentSource>::new());
         library.add(Plain::<CurrentControlledCurrentSource>::new());
         library.add(Plain::<CurrentControlledVoltageSource>::new());
         library.add(Plain::<VoltageControlledVoltageSource>::new());

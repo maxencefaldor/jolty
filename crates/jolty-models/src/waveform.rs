@@ -18,67 +18,68 @@ use std::f64::consts::TAU;
 
 use serde::Deserialize;
 
-use crate::ParameterError;
+use crate::{ParameterError, Real};
 
 /// The level of an independent source over time, in volts or amperes.
 ///
 /// Every analysis but a transient one reads the level at time zero. A waveform is checked as
-/// it is read, so every value of this type is a valid waveform.
+/// it is read, so every value of this type is a valid waveform. Its numbers are plain, or
+/// carry their derivatives with respect to a parameter.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(try_from = "Spec")]
-pub struct Waveform(Shape);
+#[serde(try_from = "Spec<R>", bound = "")]
+pub struct Waveform<R: Real = f64>(Shape<R>);
 
 #[derive(Debug, Clone, PartialEq)]
-enum Shape {
-    Dc(f64),
-    Pulse(Pulse),
-    Sine(Sine),
+enum Shape<R: Real> {
+    Dc(R),
+    Pulse(Pulse<R>),
+    Sine(Sine<R>),
     /// At least one point, in strictly increasing time.
-    Piecewise(Vec<(f64, f64)>),
+    Piecewise(Vec<(R, R)>),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Pulse {
-    initial: f64,
-    pulsed: f64,
+#[serde(deny_unknown_fields, bound = "")]
+struct Pulse<R: Real> {
+    initial: R,
+    pulsed: R,
     #[serde(default)]
-    delay: f64,
-    rise: f64,
-    fall: f64,
-    width: f64,
+    delay: R,
+    rise: R,
+    fall: R,
+    width: R,
     #[serde(default)]
-    period: Option<f64>,
+    period: Option<R>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Sine {
-    offset: f64,
-    amplitude: f64,
-    frequency: f64,
+#[serde(deny_unknown_fields, bound = "")]
+struct Sine<R: Real> {
+    offset: R,
+    amplitude: R,
+    frequency: R,
     #[serde(default)]
-    delay: f64,
+    delay: R,
     #[serde(default)]
-    damping: f64,
+    damping: R,
     #[serde(default)]
-    phase: f64,
+    phase: R,
 }
 
 /// The JSON form of a waveform, before it is checked.
 #[derive(Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum Spec {
-    Dc(f64),
-    Pulse(Pulse),
-    Sine(Sine),
-    Piecewise { points: Vec<(f64, f64)> },
+#[serde(rename_all = "snake_case", deny_unknown_fields, bound = "")]
+enum Spec<R: Real> {
+    Dc(R),
+    Pulse(Pulse<R>),
+    Sine(Sine<R>),
+    Piecewise { points: Vec<(R, R)> },
 }
 
-impl TryFrom<Spec> for Waveform {
+impl<R: Real> TryFrom<Spec<R>> for Waveform<R> {
     type Error = ParameterError;
 
-    fn try_from(spec: Spec) -> Result<Self, Self::Error> {
+    fn try_from(spec: Spec<R>) -> Result<Self, Self::Error> {
         let shape = match spec {
             Spec::Dc(level) => Shape::Dc(level),
             Spec::Pulse(pulse) => {
@@ -86,8 +87,8 @@ impl TryFrom<Spec> for Waveform {
                 ParameterError::positive("pulse rise", pulse.rise)?;
                 ParameterError::positive("pulse fall", pulse.fall)?;
                 ParameterError::non_negative("pulse width", pulse.width)?;
-                let duration = pulse.rise + pulse.width + pulse.fall;
-                if let Some(period) = pulse.period
+                let duration = (pulse.rise + pulse.width + pulse.fall).value();
+                if let Some(period) = pulse.period.map(Real::value)
                     && period < duration
                 {
                     return Err(ParameterError(format!(
@@ -107,7 +108,10 @@ impl TryFrom<Spec> for Waveform {
                         "a piecewise waveform needs a point".to_owned(),
                     ));
                 }
-                if points.windows(2).any(|pair| pair[1].0 <= pair[0].0) {
+                if points
+                    .windows(2)
+                    .any(|pair| pair[1].0.value() <= pair[0].0.value())
+                {
                     return Err(ParameterError(
                         "the times of a piecewise waveform must increase".to_owned(),
                     ));
@@ -125,10 +129,12 @@ impl Waveform {
     pub fn dc(level: f64) -> Self {
         Self(Shape::Dc(level))
     }
+}
 
+impl<R: Real> Waveform<R> {
     /// The level at `time`.
     #[must_use]
-    pub fn value(&self, time: f64) -> f64 {
+    pub fn value(&self, time: f64) -> R {
         match &self.0 {
             Shape::Dc(level) => *level,
             Shape::Pulse(pulse) => pulse.value(time),
@@ -147,46 +153,48 @@ impl Waveform {
         match &self.0 {
             Shape::Dc(_) => {}
             Shape::Pulse(pulse) => {
-                let top = pulse.rise + pulse.width;
-                let corners = [0.0, pulse.rise, top, top + pulse.fall];
-                let mut origin = pulse.delay;
+                let (rise, width, fall) =
+                    (pulse.rise.value(), pulse.width.value(), pulse.fall.value());
+                let top = rise + width;
+                let corners = [0.0, rise, top, top + fall];
+                let mut origin = pulse.delay.value();
                 while origin <= stop {
                     for corner in corners {
                         push(origin + corner);
                     }
                     let Some(period) = pulse.period else { break };
-                    origin += period;
+                    origin += period.value();
                 }
             }
             Shape::Sine(sine) => {
-                if sine.delay > 0.0 {
-                    push(sine.delay);
+                if sine.delay.value() > 0.0 {
+                    push(sine.delay.value());
                 }
             }
             Shape::Piecewise(points) => {
                 for &(time, _) in points {
-                    push(time);
+                    push(time.value());
                 }
             }
         }
     }
 }
 
-impl Pulse {
-    fn value(&self, time: f64) -> f64 {
-        if time < self.delay {
+impl<R: Real> Pulse<R> {
+    fn value(&self, time: f64) -> R {
+        if time < self.delay.value() {
             return self.initial;
         }
-        let elapsed = time - self.delay;
+        let elapsed = -(self.delay - time);
         let local = self
             .period
             .map_or(elapsed, |period| elapsed.rem_euclid(period));
         let top = self.rise + self.width;
-        if local < self.rise {
+        if local.value() < self.rise.value() {
             self.initial + (self.pulsed - self.initial) * local / self.rise
-        } else if local < top {
+        } else if local.value() < top.value() {
             self.pulsed
-        } else if local < top + self.fall {
+        } else if local.value() < (top + self.fall).value() {
             self.pulsed + (self.initial - self.pulsed) * (local - top) / self.fall
         } else {
             self.initial
@@ -194,17 +202,17 @@ impl Pulse {
     }
 }
 
-impl Sine {
-    fn value(&self, time: f64) -> f64 {
-        let since = (time - self.delay).max(0.0);
+impl<R: Real> Sine<R> {
+    fn value(&self, time: f64) -> R {
+        let since = (-(self.delay - time)).max(R::constant(0.0));
         let envelope = (-self.damping * since).exp();
-        self.offset + self.amplitude * envelope * (TAU * self.frequency * since + self.phase).sin()
+        self.offset + self.amplitude * envelope * (self.frequency * TAU * since + self.phase).sin()
     }
 }
 
 /// Interpolates between `points`, which hold at least one point in increasing time.
-fn piecewise(points: &[(f64, f64)], time: f64) -> f64 {
-    let after = points.partition_point(|&(t, _)| t <= time);
+fn piecewise<R: Real>(points: &[(R, R)], time: f64) -> R {
+    let after = points.partition_point(|&(t, _)| t.value() <= time);
     if after == 0 {
         return points[0].1;
     }
@@ -212,7 +220,7 @@ fn piecewise(points: &[(f64, f64)], time: f64) -> f64 {
         return points[after - 1].1;
     }
     let ((t0, v0), (t1, v1)) = (points[after - 1], points[after]);
-    v0 + (v1 - v0) * (time - t0) / (t1 - t0)
+    v0 + (v1 - v0) * (-(t0 - time)) / (t1 - t0)
 }
 
 #[cfg(test)]

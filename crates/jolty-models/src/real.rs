@@ -87,6 +87,20 @@ pub trait Real:
         if self.value() < 0.0 { -self } else { self }
     }
 
+    /// The sine, of an angle in radians.
+    #[must_use]
+    fn sin(self) -> Self {
+        self.chain(self.value().sin(), self.value().cos())
+    }
+
+    /// The least non-negative remainder of division by `divisor`: the number less
+    /// `divisor` times the floor of their quotient.
+    #[must_use]
+    fn rem_euclid(self, divisor: Self) -> Self {
+        let quotient = self.value().div_euclid(divisor.value());
+        self - divisor * quotient
+    }
+
     /// The larger of the two, by value.
     #[must_use]
     fn max(self, other: Self) -> Self {
@@ -147,6 +161,14 @@ impl Real for f64 {
 
     fn abs(self) -> Self {
         f64::abs(self)
+    }
+
+    fn sin(self) -> Self {
+        f64::sin(self)
+    }
+
+    fn rem_euclid(self, divisor: Self) -> Self {
+        f64::rem_euclid(self, divisor)
     }
 
     fn max(self, other: Self) -> Self {
@@ -358,6 +380,11 @@ mod tests {
         check(
             |g| g.min(Gradient::constant(2.0)) / 4.0 - 1.0,
             |v| v.min(2.0) / 4.0 - 1.0,
+        );
+        check(|g| (g * 3.0).sin(), |v| (3.0 * v).sin());
+        check(
+            |g| (g * 10.0).rem_euclid(g + 1.0),
+            |v| (10.0 * v).rem_euclid(v + 1.0),
         );
     }
 
