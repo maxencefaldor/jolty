@@ -73,7 +73,8 @@ def test_build_saves_the_circuit_and_reports_its_size(
     assert out.startswith(
         "saved low_pass.jolty.json: 1 component, 3 devices, 3 unknowns\n\n"
         "0 errors, 0 warnings\n\n"
-        "script output:\n  building the filter\n\ntook "
+        "script output:\n  building the filter\n\n"
+        "drew low_pass.schematic.png\n\ntook "
     )
     assert json.loads(script.with_name("low_pass.jolty.json").read_text())["top"] == (
         "low_pass"

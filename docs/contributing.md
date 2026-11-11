@@ -8,7 +8,7 @@ The docs build with [Zensical](https://zensical.org):
 
 ```sh
 uv run python docs/reference.py     # write the reference pages generated from the code
-uv run python docs/illustrate.py    # draw the images from the examples into docs/images
+uv run python docs/illustrate.py    # draw the schematics and plots of the examples into docs/images
 uv run --group docs zensical serve  # preview the site at http://localhost:8000
 ```
 

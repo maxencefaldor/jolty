@@ -65,6 +65,14 @@ class PlotCommand(service.PlotRequest, _Output):
         self.emit(await service.plot(self, Settings.load()))
 
 
+class DrawCommand(service.DrawRequest, _Output):
+    """Draw the schematic of a saved circuit's top component, or of an instance's."""
+
+    async def cli_cmd(self) -> None:
+        """Runs the command."""
+        self.emit(await service.draw(self, Settings.load()))
+
+
 class CheckCommand(service.CheckRequest, _Output):
     """Check the structure of a saved circuit file."""
 
@@ -101,6 +109,9 @@ class Jolty(BaseSettings):
     )
     plot: CliSubCommand[PlotCommand] = Field(
         description="Plot the analyses of a saved results file."
+    )
+    draw: CliSubCommand[DrawCommand] = Field(
+        description="Draw a component of a saved circuit file."
     )
     check: CliSubCommand[CheckCommand] = Field(
         description="Check the structure of a saved circuit file."

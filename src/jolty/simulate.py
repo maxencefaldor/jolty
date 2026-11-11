@@ -113,10 +113,12 @@ class Simulation:
 
     def _level(self, sweep: DcSweep) -> Dimension:
         """The dimension of the swept source's level, so its levels are checked."""
-        model = _model_at(self.circuit, sweep.source)
-        if model == "current_source":
-            return CURRENT
-        if model == "voltage_source" or not sweep.levels:
+        match self.circuit.find(sweep.source):
+            case ir.Instance(of=ir.DeviceOf(device="current_source")):
+                return CURRENT
+            case ir.Instance(of=ir.DeviceOf(device="voltage_source")):
+                return VOLTAGE
+        if not sweep.levels:
             return VOLTAGE
         # Not an independent source: the engine reports it, whatever the levels.
         return sweep.levels[0].dimension
@@ -153,26 +155,3 @@ class Simulation:
                 return results.Waveforms(
                     unknowns, outcome["times"], outcome["values"], statistics
                 )
-
-
-def _model_at(circuit: ir.Circuit, path: str) -> str | None:
-    """The model of the device instance at `path`, or None if no device is there."""
-    component = circuit.components.get(circuit.top)
-    *parents, last = path.split("/")
-    for id in parents:
-        instance = _instance(component, id)
-        if instance is None or not isinstance(instance.of, ir.ComponentOf):
-            return None
-        component = circuit.components.get(instance.of.component)
-    instance = _instance(component, last)
-    if instance is None or not isinstance(instance.of, ir.DeviceOf):
-        return None
-    return instance.of.device
-
-
-def _instance(component: ir.Component | None, id: str) -> ir.Instance | None:
-    if component is None:
-        return None
-    return next(
-        (instance for instance in component.instances if instance.id == id), None
-    )

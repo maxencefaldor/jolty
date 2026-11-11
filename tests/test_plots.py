@@ -85,8 +85,9 @@ def test_the_plot_command_draws_saved_results(
     save_results(path, {"op": point, "step": waveforms()})
     assert run("plot", str(path), "--output-format", "json") == 0
     (drawn,) = json.loads(capsys.readouterr().out)["plots"]
-    assert drawn == {"analysis": "step", "path": str(tmp_path / "rc.step.png")}
-    assert (tmp_path / "rc.step.png").read_bytes().startswith(b"\x89PNG")
+    target = tmp_path / "rc.step.plot.png"
+    assert drawn == {"analysis": "step", "path": str(target)}
+    assert target.read_bytes().startswith(b"\x89PNG")
     assert run("plot", str(path), "--analyses", "op") == 2
     assert "op is an operating point" in capsys.readouterr().err
     assert run("plot", str(path), "--analyses", "ac") == 2

@@ -16,17 +16,17 @@ With `--output-format json`, the command prints the same report as data.
 
 ## Plots
 
-`jolty simulate` plots every analysis but operating points beside its results, as `<script>.<analysis>.png`, and the MCP server sends the images with its text.
+`jolty simulate` plots every analysis but operating points beside its results, as `<script>.<analysis>.plot.png`, and the MCP server sends the images with its text.
 A transient plots over time, a sweep along its source's levels, and a frequency response as a Bode plot:
 
-![The step response of the RC low-pass filter: the input steps to 1 V at 1 µs and the output charges toward it](../images/rc_filter.step.png)
+![The step response of the RC low-pass filter: the input steps to 1 V at 1 µs and the output charges toward it](../images/rc_filter.step.plot.png)
 
-![The Bode plot of the RC low-pass filter: flat to its corner at 159 kHz, then falling 20 dB a decade as its phase falls to -90°](../images/rc_filter.bode.png)
+![The Bode plot of the RC low-pass filter: flat to its corner at 159 kHz, then falling 20 dB a decade as its phase falls to -90°](../images/rc_filter.bode.plot.png)
 
 Voltages and currents never share an axis: each quantity has a panel of its own, and a frequency response has two, its magnitude in decibels and its phase.
 A legend names the series, and up to four are also labeled at their end:
 
-![The half-wave rectifier over three periods: the output holds near the peak of the input, and the source delivers a pulse of current at each peak](../images/rectifier.ripple.png)
+![The half-wave rectifier over three periods: the output holds near the peak of the input, and the source delivers a pulse of current at each peak](../images/rectifier.ripple.plot.png)
 
 By default a plot draws the nets the top component names, up to eight.
 The option `--probes` chooses other unknowns, such as `X1/mid` or `V1:current`, and `jolty plot` draws a saved results file again, with other probes, without simulating:

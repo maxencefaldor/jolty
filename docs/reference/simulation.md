@@ -10,8 +10,4 @@ A simulation runs a plan's analyses on a circuit, and its results read by net an
 
 ::: jolty.files
     options:
-      members: [load_results, save_results, load_circuit, save_circuit, circuit_path, results_path, plot_path]
-
-::: jolty.plots
-    options:
-      members: [plot, default_probes, save, COLORS, MAX_SERIES]
+      members: [load_results, save_results, load_circuit, save_circuit, circuit_path, results_path, plot_path, schematic_path]

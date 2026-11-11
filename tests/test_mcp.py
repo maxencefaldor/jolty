@@ -73,6 +73,7 @@ def test_tools_mirror_the_service_requests() -> None:
         "build_circuit",
         "simulate_circuit",
         "plot_results",
+        "draw_schematic",
         "check_circuit",
         "explain_rule",
     }
@@ -87,6 +88,7 @@ def test_tools_mirror_the_service_requests() -> None:
         "warn",
         "ignore",
         "max_diagnostics",
+        "schematic",
         "plot",
         "probes",
     }
@@ -168,7 +170,7 @@ def test_the_command_stops_on_invalid_settings(
     assert "invalid settings: timeout" in capsys.readouterr().err
 
 
-def test_plots_come_back_as_images(script: Path) -> None:
+def test_schematics_and_plots_come_back_as_images(script: Path) -> None:
     script.write_text(
         DIVIDER.replace(
             '{"op": OperatingPoint()}', '{"sweep": DcSweep("V1", [V, 2 * V])}'
@@ -177,9 +179,10 @@ def test_plots_come_back_as_images(script: Path) -> None:
     )
     simulated = call("simulate_circuit", {"script": str(script)})
     assert not simulated.is_error, text_of(simulated)
-    (image,) = simulated.content[1:]
-    assert isinstance(image, ImageContent)
-    assert image.mime_type == "image/png"
+    schematic, plot = simulated.content[1:]
+    for image in (schematic, plot):
+        assert isinstance(image, ImageContent)
+        assert image.mime_type == "image/png"
     results = script.with_name("divider.results.npz")
     plotted = call("plot_results", {"results": str(results), "probes": ["out"]})
     assert "plotted sweep: " in text_of(plotted)

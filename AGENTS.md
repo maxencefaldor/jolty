@@ -13,7 +13,7 @@ uv run ruff check           # lint Python, with every rule enabled
 uv run ty check             # types
 uv run rumdl check .        # Markdown
 uv run python docs/reference.py  # regenerate the reference pages from the code
-uv run python docs/illustrate.py # redraw the docs' images from the examples
+uv run python docs/illustrate.py # redraw the docs' schematics and plots from the examples
 cargo fmt --all             # format Rust
 cargo clippy --workspace --all-targets -- -D warnings  # lint Rust
 cargo test --workspace      # Rust tests
@@ -43,6 +43,7 @@ Each module imports only from the modules listed before it:
 1. `devices`, `builder`: the devices a script places, and components written as Python functions.
 1. `plan`, `checks`, `results`, `simulate`: analyses and their options, the rules and their diagnostics, results, and the engine's Python face.
 1. `files`, `report`, `plots`: circuit and results files, what each analysis found as data and as text, and plots of results.
+1. `layout`, `schematic`: where a schematic places each instance and runs each wire, and the schematic drawn.
 1. `runner`, `service`: scripts in child processes, and every command defined once.
 1. `cli`, `mcp`: front ends that only adapt `service`.
 
@@ -70,8 +71,10 @@ Each module imports only from the modules listed before it:
 - **Rules, as in ty:** a rule's name is lowercase words joined by hyphens, and its level is `error`, `warn` or `ignore`.
   A rule whose fact surely breaks the circuit defaults to `error`; any other defaults to `warn`.
   Each rule states its exact condition (`jolty explain`), and has a test that raises it and one that passes.
-- **Images are feedback:** every simulation plots its analyses, and the MCP server sends the images with its text.
+- **Images are feedback:** every build draws its schematic and every simulation plots its analyses, and the MCP server sends the images with its text.
+  A schematic comes from the connections alone: a script holds no coordinates.
   Plots never put two quantities on one axis, and take their colors in a fixed order checked for color-vision deficiencies.
 - **Scripts run in their own process** (`jolty.runner`), never in the command line or the MCP server: their output is captured, a timeout stops them, and a crash ends only the runner.
 - **Numbers in messages** are written in their shortest exact form, such as `-1e-9`; reports write them with SI prefixes, such as `-1 nV`.
 - **Tests:** the engine is checked against closed-form solutions, by property tests of the laws every circuit obeys, such as Kirchhoff's current law, and against ngspice on a corpus of circuits (`tests/test_ngspice.py`, skipped when ngspice is not installed).
+  The layout is checked by property tests over random circuits: nets never touch, and wires never cross a symbol.

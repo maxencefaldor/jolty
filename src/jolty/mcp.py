@@ -38,14 +38,16 @@ jolty builds and simulates electronic circuits written as Python scripts.
 
 Workflow: write a script whose build() returns the top component of a circuit, and call
 build_circuit on it. It saves the circuit and says how many devices and unknowns it has,
-or every reason the engine cannot elaborate it, and checks its structure: each
-diagnostic, such as error[no-dc-path], names the instances and the script lines that
-placed them. explain_rule gives the exact condition behind a rule. Then add plan(),
-returning a jolty.Plan of named analyses, and call simulate_circuit: it reports each
-analysis, plots each one but operating points, and saves every result to a .npz file
-that jolty.files.load_results reads back; plot_results draws other unknowns from it.
-Fix the script and run again until the report has no errors and the analyses show the
-intended behavior.
+or every reason the engine cannot elaborate it, checks its structure, and draws its
+schematic: each diagnostic, such as error[no-dc-path], names the instances and the
+script lines that placed them, and the schematic marks them in red. explain_rule gives
+the exact condition behind a rule. Then add plan(), returning a jolty.Plan of named
+analyses, and call simulate_circuit: it reports each analysis, writes the first
+operating point's voltages on the schematic, plots each analysis but operating points,
+and saves every result to a .npz file that jolty.files.load_results reads back;
+plot_results draws other unknowns from it, and draw_schematic draws the component
+inside an instance. Fix the script and run again until the report has no errors and
+the analyses show the intended behavior.
 
 Components: decorate a function taking a jolty.Builder with @jolty.component. Inside,
 c.port(name, role) declares a port (Role.SIGNAL, SUPPLY or GROUND), c.place(device or
@@ -76,7 +78,7 @@ WRITES_FILES: Final = ToolAnnotations(
     idempotent_hint=True,
     open_world_hint=False,
 )
-"""A plot writes images beside the results it reads, the same ones each time."""
+"""A plot or schematic writes an image beside the file it reads, the same each time."""
 
 RUNS_CODE: Final = ToolAnnotations(
     read_only_hint=False,
@@ -174,6 +176,13 @@ def create_server(settings: Settings) -> MCPServer:
         service.PlotRequest,
         service.plot,
         service.PlotResult,
+        WRITES_FILES,
+    )
+    register(
+        "draw_schematic",
+        service.DrawRequest,
+        service.draw,
+        service.DrawResult,
         WRITES_FILES,
     )
     register(

@@ -11,7 +11,7 @@ A component is a function, so a filter of any order or an amplifier with any gai
 ## Topology is the source
 
 A script declares components, ports and connections, with no coordinates.
-Everything else is derived from it: the circuit file, the simulation, the report and, later, the schematic and the plots.
+Everything else is derived from it: the circuit file, the schematic, the simulation, the report and the plots.
 An agent never moves a wire on a canvas; it changes a connection and builds again.
 
 ## Feedback is facts

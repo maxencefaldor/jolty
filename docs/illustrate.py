@@ -2,49 +2,74 @@
 """Draw the docs' images by simulating the examples, as an agent would.
 
 Run from the repository root: ``uv run python docs/illustrate.py``. Each example runs
-through `jolty.service.simulate`, the same function behind ``jolty simulate``, and its
-plots land in ``docs/images`` as ``<example>.<analysis>.png``.
+through `jolty.service.simulate`, the same function behind ``jolty simulate``, and the
+component inside each of its instances through `jolty.service.draw`, behind
+``jolty draw``. The images land in ``docs/images`` under the names the commands give
+them, such as ``rc_filter.step.plot.png`` and ``rc_filter.X1.schematic.png``.
 """
 
 import asyncio
 import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Final
+from typing import Final, NamedTuple
 
 from jolty import service
+from jolty.report import PointReport
 from jolty.settings import Settings
 
 ROOT: Final = Path(__file__).resolve().parent.parent
 IMAGES: Final = ROOT / "docs" / "images"
+
+
+class Example(NamedTuple):
+    """What to draw of an example."""
+
+    probes: list[str]
+    """The unknowns to plot, or none for the defaults."""
+    inside: list[str]
+    """The instances whose components to draw."""
+
+
 EXAMPLES: Final = {
-    "rc_filter": [],
-    "rectifier": ["in", "out", "V1:current"],
+    "rc_filter": Example(probes=[], inside=["X1"]),
+    "rectifier": Example(probes=["in", "out", "V1:current"], inside=["X1"]),
 }
-"""Each example to draw, with the unknowns to plot, or none for the defaults."""
 
 
-async def draw(example: str, probes: list[str], scratch: Path) -> None:
-    """Simulates `example` and copies its plots into the docs' images."""
+async def illustrate(name: str, example: Example, scratch: Path) -> None:
+    """Simulates the example `name` and copies its images into the docs' images."""
     request = service.SimulateRequest(
-        script=ROOT / "examples" / f"{example}.py",
-        output=scratch / f"{example}.jolty.json",
-        results=scratch / f"{example}.results.npz",
-        probes=probes,
+        script=ROOT / "examples" / f"{name}.py",
+        output=scratch / f"{name}.jolty.json",
+        results=scratch / f"{name}.results.npz",
+        probes=example.probes,
     )
-    result = await service.simulate(request, Settings())
-    for plot in result.plots:
-        target = IMAGES / plot.path.name
-        shutil.copyfile(plot.path, target)
+    simulated = await service.simulate(request, Settings())
+    pointed = any(isinstance(report, PointReport) for report in simulated.analyses)
+    images = list(simulated.images())
+    for instance in example.inside:
+        inside = service.DrawRequest(
+            circuit=simulated.circuit.path,
+            instance=instance,
+            results=simulated.results if pointed else None,
+        )
+        drawn = await service.draw(inside, Settings())
+        images.extend(drawn.images())
+    for image in images:
+        target = IMAGES / image.name
+        shutil.copyfile(image, target)
         print(f"wrote {target.relative_to(ROOT)}")
 
 
 async def main() -> None:
-    """Draws every image."""
+    """Draws every image, replacing those drawn before."""
     IMAGES.mkdir(parents=True, exist_ok=True)
+    for stale in IMAGES.glob("*.png"):
+        stale.unlink()
     with TemporaryDirectory() as scratch:
-        for example, probes in EXAMPLES.items():
-            await draw(example, probes, Path(scratch))
+        for name, example in EXAMPLES.items():
+            await illustrate(name, example, Path(scratch))
 
 
 if __name__ == "__main__":

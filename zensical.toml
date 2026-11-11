@@ -20,6 +20,7 @@ nav = [
     { "Units" = "guide/units.md" },
     { "Devices" = "guide/devices.md" },
     { "Checks" = "guide/checks.md" },
+    { "Schematics" = "guide/schematics.md" },
     { "Simulation" = "guide/simulation.md" },
     { "Results" = "guide/results.md" },
   ] },
@@ -36,6 +37,7 @@ nav = [
     { "Python API" = [
       { "Circuits" = "reference/circuits.md" },
       { "Simulation" = "reference/simulation.md" },
+      { "Images" = "reference/images.md" },
     ] },
   ] },
   { "Contributing" = "contributing.md" },

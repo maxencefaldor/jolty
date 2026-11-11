@@ -21,6 +21,7 @@ Build a script's circuit and elaborate it.
 | `--warn` |  | Rules to report as warnings, such as 'no-dc-path', or 'all' for every rule; overrides the configured levels. |
 | `--ignore` |  | Rules to leave out, such as 'shorted-device', or 'all' for every rule; overrides the configured levels. |
 | `--max-diagnostics` |  | Diagnostics to list at most; defaults to the configured limit. |
+| `--schematic`, `--no-schematic` | `True` | Draw the top component's schematic beside the circuit, marking the instances the listed diagnostics name. |
 
 ## `jolty simulate`
 
@@ -38,6 +39,7 @@ Build a script's circuit and run a plan's analyses on it.
 | `--warn` |  | Rules to report as warnings, such as 'no-dc-path', or 'all' for every rule; overrides the configured levels. |
 | `--ignore` |  | Rules to leave out, such as 'shorted-device', or 'all' for every rule; overrides the configured levels. |
 | `--max-diagnostics` |  | Diagnostics to list at most; defaults to the configured limit. |
+| `--schematic`, `--no-schematic` | `True` | Draw the top component's schematic beside the circuit, marking the instances the listed diagnostics name and writing the voltages of the plan's first operating point. |
 | `--plot`, `--no-plot` | `True` | Plot every analysis but operating points beside the results. |
 | `--probes` |  | Unknowns to plot, such as 'out', 'X1/mid' or 'V1:current'; defaults to the nets the top component names, up to eight. |
 
@@ -51,6 +53,18 @@ Plot the analyses of a saved results file.
 | `RESULTS` | required | A .results.npz file. |
 | `--analyses` |  | Analyses to plot, by name; every one but operating points by default. |
 | `--probes` |  | Unknowns to plot, such as 'out', 'X1/mid' or 'V1:current'; defaults to the nets the top component names, up to eight. |
+
+## `jolty draw`
+
+Draw a component of a saved circuit file.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
+| `CIRCUIT` | required | A .jolty.json circuit file. |
+| `--instance` |  | The path of the component instance to draw, such as 'X1' or 'X1/X2'; the top component by default. |
+| `--results` |  | A .results.npz file of the circuit, whose first operating point gives the voltage written on each net. |
+| `--output` |  | Where to save the image; defaults to &lt;stem&gt;.schematic.png beside the circuit, or &lt;stem&gt;.X1.X2.schematic.png for the instance X1/X2. |
 
 ## `jolty check`
 

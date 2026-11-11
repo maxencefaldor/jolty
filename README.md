@@ -5,7 +5,8 @@ A compiler and simulator for electronic circuits, built for AI agents.
 An AI agent writes a circuit as a Python script of reusable components, and jolty builds it the way a compiler builds code.
 Each build checks every device and connection, reports each problem with the script line behind it, and simulates the circuit with a native engine written in Rust.
 
-jolty is at its first milestone: board-level circuits of passive devices, sources and diodes, simulated at the operating point, over DC sweeps, in frequency and in time.
+jolty is at its second milestone: board-level circuits of passive devices, sources and diodes, simulated at the operating point, over DC sweeps, in frequency and in time.
+Every build checks the circuit's structure and draws its schematic, and every simulation plots its analyses, so an agent sees what it built.
 
 The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.
 
@@ -20,7 +21,7 @@ uv sync                                        # builds the Rust engine and inst
 uv run jolty simulate examples/rc_filter.py    # builds the filter and runs its plan
 ```
 
-The command saves the circuit to `examples/rc_filter.jolty.json`, the results to `examples/rc_filter.results.npz`, and prints a report:
+The command saves the circuit to `examples/rc_filter.jolty.json` and draws it to `examples/rc_filter.schematic.png`, saves the results to `examples/rc_filter.results.npz` and plots them beside it, and prints a report:
 
 ```text
 step: transient to 10 µs in 67 steps, 0 rejected

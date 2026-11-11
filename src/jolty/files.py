@@ -88,14 +88,32 @@ def results_path(script: Path) -> Path:
 
 
 def plot_path(results: Path, analysis: str) -> Path:
-    """Where the plot of `analysis` goes beside its results, as ``<stem>.<name>.png``.
+    """Where the plot of `analysis` goes beside its results: ``<stem>.<name>.plot.png``.
 
     Examples:
         >>> plot_path(Path("rc.results.npz"), "step").name
-        'rc.step.png'
+        'rc.step.plot.png'
     """
     stem = results.name.removesuffix(RESULTS_SUFFIX).removesuffix(".npz")
-    return results.with_name(f"{stem}.{analysis}.png")
+    return results.with_name(f"{stem}.{analysis}.plot.png")
+
+
+def schematic_path(circuit: Path, instance: str = "") -> Path:
+    """Where the schematic of the component at `instance` goes beside its circuit.
+
+    The top component's is ``<stem>.schematic.png``; another's carries the ids of its
+    instance's path, joined by dots, as ``<stem>.X1.X2.schematic.png``. The suffixes
+    keep schematics and plots apart, whatever their names.
+
+    Examples:
+        >>> schematic_path(Path("rc.jolty.json")).name
+        'rc.schematic.png'
+        >>> schematic_path(Path("rc.jolty.json"), "X1/X2").name
+        'rc.X1.X2.schematic.png'
+    """
+    stem = circuit.name.removesuffix(CIRCUIT_SUFFIX).removesuffix(".json")
+    parts = [stem, *instance.split("/")] if instance else [stem]
+    return circuit.with_name(".".join([*parts, "schematic.png"]))
 
 
 def save_circuit(path: Path, circuit: ir.Circuit) -> None:

@@ -14,6 +14,7 @@ import shutil
 import sys
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import override
@@ -21,7 +22,7 @@ from typing import override
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import CliPositionalArg
 
-from jolty import checks, files, plots, results, runner
+from jolty import checks, files, ir, plots, results, runner, schematic
 from jolty.errors import ElaborationError, JoltyError
 from jolty.report import AnalysisReport, FailureReport
 from jolty.settings import Level, Settings
@@ -45,6 +46,15 @@ _IGNORE_DESCRIPTION = (
 )
 _MAX_DIAGNOSTICS_DESCRIPTION = (
     "Diagnostics to list at most; defaults to the configured limit."
+)
+_SCHEMATIC_DESCRIPTION = (
+    "Draw the top component's schematic beside the circuit, marking the instances the "
+    "listed diagnostics name."
+)
+_ANNOTATED_DESCRIPTION = (
+    "Draw the top component's schematic beside the circuit, marking the instances the "
+    "listed diagnostics name and writing the voltages of the plan's first operating "
+    "point."
 )
 _PROBES_DESCRIPTION = (
     "Unknowns to plot, such as 'out', 'X1/mid' or 'V1:current'; defaults to the "
@@ -152,6 +162,7 @@ class BuildRequest(_Model):
     max_diagnostics: int | None = Field(
         default=None, ge=1, description=_MAX_DIAGNOSTICS_DESCRIPTION
     )
+    schematic: bool = Field(default=True, description=_SCHEMATIC_DESCRIPTION)
 
 
 class BuildResult(CommandResult):
@@ -161,6 +172,9 @@ class BuildResult(CommandResult):
     report: checks.Report | None = Field(
         description="What the structural checks found; null when checking is off or "
         "the circuit does not elaborate."
+    )
+    schematic: Path | None = Field(
+        description="The top component's schematic; null when drawing is off."
     )
     output: ScriptOutput = Field(description="What the script printed.")
     seconds: float = Field(description="Seconds the command took.")
@@ -178,9 +192,15 @@ class BuildResult(CommandResult):
             self.circuit.describe(),
             self.report.describe() if self.report else "",
             self.output.describe(),
+            f"drew {self.schematic}" if self.schematic else "",
             f"took {self.seconds:.2f} s",
         ]
         return "\n\n".join(block for block in blocks if block)
+
+    @override
+    def images(self) -> tuple[Path, ...]:
+        """The schematic."""
+        return (self.schematic,) if self.schematic else ()
 
 
 class SimulateRequest(_Model):
@@ -213,6 +233,7 @@ class SimulateRequest(_Model):
     max_diagnostics: int | None = Field(
         default=None, ge=1, description=_MAX_DIAGNOSTICS_DESCRIPTION
     )
+    schematic: bool = Field(default=True, description=_ANNOTATED_DESCRIPTION)
     plot: bool = Field(
         default=True,
         description="Plot every analysis but operating points beside the results.",
@@ -234,6 +255,9 @@ class SimulateResult(CommandResult):
     analyses: tuple[AnalysisReport, ...] = Field(
         description="A report per analysis, in the plan's order."
     )
+    schematic: Path | None = Field(
+        description="The top component's schematic; null when drawing is off."
+    )
     plots: tuple[Plot, ...] = Field(
         description="A plot per analysis but operating points; empty when plotting "
         "is off or no analysis ran to its end."
@@ -243,8 +267,9 @@ class SimulateResult(CommandResult):
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """The plots."""
-        return tuple(plot.path for plot in self.plots)
+        """The schematic, then the plots."""
+        drawn = (self.schematic,) if self.schematic else ()
+        return (*drawn, *(plot.path for plot in self.plots))
 
     @property
     @override
@@ -270,6 +295,8 @@ class SimulateResult(CommandResult):
         if self.results is not None:
             blocks.append(f"saved {self.results}")
         blocks.extend(analysis.describe() for analysis in self.analyses)
+        if self.schematic:
+            blocks.append(f"drew {self.schematic}")
         if self.plots:
             blocks.append(_describe_plots(self.plots))
         blocks.append(f"took {self.seconds:.2f} s")
@@ -290,9 +317,18 @@ async def build(request: BuildRequest, settings: Settings) -> BuildResult:
     path = request.output or files.circuit_path(request.script)
     built, output = await _run(job, settings, results=None)
     circuit = await asyncio.to_thread(_save, built, path)
+    report = _report(built, request, chosen, settings)
+    drawn = (
+        await asyncio.to_thread(
+            _draw, built.circuit, files.schematic_path(path), marked=_marked(report)
+        )
+        if request.schematic
+        else None
+    )
     return BuildResult(
         circuit=circuit,
-        report=_report(built, request, chosen, settings),
+        report=report,
+        schematic=drawn,
         output=output,
         seconds=time.perf_counter() - started,
     )
@@ -318,18 +354,32 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     target = request.results or files.results_path(request.script)
     built, output = await _run(job, settings, results=target)
     circuit = await asyncio.to_thread(_save, built, path)
+    report = _report(built, request, chosen, settings)
     saved = await asyncio.to_thread(target.is_file)
+    loaded = await asyncio.to_thread(_load, target) if saved else {}
     drawn = (
-        await asyncio.to_thread(_plot, target, [], request.probes)
-        if saved and request.plot
+        await asyncio.to_thread(
+            _draw,
+            built.circuit,
+            files.schematic_path(path),
+            point=_first_point(loaded),
+            marked=_marked(report),
+        )
+        if request.schematic
+        else None
+    )
+    plotted = (
+        await asyncio.to_thread(_plot, target, loaded, [], request.probes)
+        if request.plot
         else ()
     )
     return SimulateResult(
         circuit=circuit,
-        report=_report(built, request, chosen, settings),
+        report=report,
         results=target if saved else None,
         analyses=built.analyses,
-        plots=drawn,
+        schematic=drawn,
+        plots=plotted,
         output=output,
         seconds=time.perf_counter() - started,
     )
@@ -377,24 +427,38 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
             not in it or is an operating point, or a probe names no unknown.
     """
     del settings
+    loaded = await asyncio.to_thread(_load, request.results)
     drawn = await asyncio.to_thread(
-        _plot, request.results, request.analyses, request.probes
+        _plot, request.results, loaded, request.analyses, request.probes
     )
     return PlotResult(plots=drawn)
 
 
-def _plot(path: Path, analyses: list[str], probes: list[str]) -> tuple[Plot, ...]:
-    """Plots the `analyses` of the results file at `path`, or all of them, beside it.
+def _load(path: Path) -> dict[str, results.Result]:
+    """The results saved at `path`, by analysis.
 
     Raises:
-        JoltyError: When the file is missing or holds no results, an analysis named is
-            not in it or is an operating point, or a probe names no unknown.
+        JoltyError: When there is no such file.
     """
     try:
-        loaded = files.load_results(path)
+        return files.load_results(path)
     except FileNotFoundError:
         message = f"no such results file: {path}"
         raise JoltyError(message) from None
+
+
+def _plot(
+    path: Path,
+    loaded: Mapping[str, results.Result],
+    analyses: list[str],
+    probes: list[str],
+) -> tuple[Plot, ...]:
+    """Plots the `analyses` of the results `loaded` from `path`, or all, beside it.
+
+    Raises:
+        JoltyError: When an analysis named is not in the results or is an operating
+            point, or a probe names no unknown.
+    """
     missing = [name for name in analyses if name not in loaded]
     if missing:
         message = f"{path} holds no analysis named {', '.join(missing)}"
@@ -417,6 +481,116 @@ def _plot(path: Path, analyses: list[str], probes: list[str]) -> tuple[Plot, ...
 
 def _describe_plots(drawn: tuple[Plot, ...]) -> str:
     return "\n".join(f"plotted {plot.analysis}: {plot.path}" for plot in drawn)
+
+
+class DrawRequest(_Model):
+    """Draw the schematic of a saved circuit's top component, or of an instance's."""
+
+    circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
+    instance: str = Field(
+        default="",
+        description="The path of the component instance to draw, such as 'X1' or "
+        "'X1/X2'; the top component by default.",
+    )
+    results: Path | None = Field(
+        default=None,
+        description="A .results.npz file of the circuit, whose first operating point "
+        "gives the voltage written on each net.",
+    )
+    output: Path | None = Field(
+        default=None,
+        description="Where to save the image; defaults to <stem>.schematic.png beside "
+        "the circuit, or <stem>.X1.X2.schematic.png for the instance X1/X2.",
+    )
+
+
+class DrawResult(CommandResult):
+    """The schematic drawn."""
+
+    schematic: Path = Field(description="The PNG image.")
+
+    @property
+    @override
+    def ok(self) -> bool:
+        """Always: drawing finds nothing wrong."""
+        return True
+
+    @override
+    def describe(self) -> str:
+        """The schematic, in one line."""
+        return f"drew {self.schematic}"
+
+    @override
+    def images(self) -> tuple[Path, ...]:
+        """The schematic."""
+        return (self.schematic,)
+
+
+async def draw(request: DrawRequest, settings: Settings) -> DrawResult:
+    """Draws a component of a saved circuit beside it; settings play no part.
+
+    Raises:
+        JoltyError: When a file is missing or holds no circuit, no component instance
+            is at the path, or the results hold no operating point.
+    """
+    del settings
+    circuit = await asyncio.to_thread(_load_circuit, request.circuit)
+    point = None
+    if request.results is not None:
+        loaded = await asyncio.to_thread(_load, request.results)
+        point = _first_point(loaded)
+        if point is None:
+            message = f"{request.results} holds no operating point"
+            raise JoltyError(message)
+    target = request.output or files.schematic_path(request.circuit, request.instance)
+    drawn = await asyncio.to_thread(
+        _draw, circuit, target, request.instance, point=point
+    )
+    return DrawResult(schematic=drawn)
+
+
+def _draw(
+    circuit: ir.Circuit,
+    path: Path,
+    instance: str = "",
+    *,
+    point: results.OperatingPoint | None = None,
+    marked: Collection[str] = (),
+) -> Path:
+    """Draws the component at `instance` to `path`, and returns `path`.
+
+    Raises:
+        JoltyError: When no component instance is at `instance`.
+    """
+    figure = schematic.draw(circuit, instance, point=point, marked=marked)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    schematic.save(figure, path)
+    return path
+
+
+def _first_point(
+    loaded: Mapping[str, results.Result],
+) -> results.OperatingPoint | None:
+    """The first operating point among the results, if any."""
+    return next(
+        (
+            result
+            for result in loaded.values()
+            if isinstance(result, results.OperatingPoint)
+        ),
+        None,
+    )
+
+
+def _marked(report: checks.Report | None) -> tuple[str, ...]:
+    """The paths of the instances the listed diagnostics name."""
+    if report is None:
+        return ()
+    return tuple(
+        instance.path
+        for diagnostic in report.diagnostics
+        for instance in diagnostic.instances
+    )
 
 
 class CheckRequest(_Model):
@@ -467,16 +641,7 @@ async def check(request: CheckRequest, settings: Settings) -> CheckResult:
             the options or settings does not exist.
     """
     chosen = _levels(request, settings)
-    try:
-        circuit = await asyncio.to_thread(files.load_circuit, request.circuit)
-    except FileNotFoundError:
-        message = f"no such circuit file: {request.circuit}"
-        raise JoltyError(message) from None
-    except ValidationError as error:
-        message = (
-            f"{request.circuit} is not a circuit file: {error.error_count()} errors"
-        )
-        raise JoltyError(message) from None
+    circuit = await asyncio.to_thread(_load_circuit, request.circuit)
     try:
         simulation = await asyncio.to_thread(Simulation, circuit)
     except ElaborationError as error:
@@ -562,6 +727,22 @@ async def explain(request: ExplainRequest, settings: Settings) -> ExplainResult:
             for name in names
         )
     )
+
+
+def _load_circuit(path: Path) -> ir.Circuit:
+    """The circuit saved at `path`.
+
+    Raises:
+        JoltyError: When there is no such file, or it holds no circuit.
+    """
+    try:
+        return files.load_circuit(path)
+    except FileNotFoundError:
+        message = f"no such circuit file: {path}"
+        raise JoltyError(message) from None
+    except ValidationError as error:
+        message = f"{path} is not a circuit file: {error.error_count()} errors"
+        raise JoltyError(message) from None
 
 
 def _levels(

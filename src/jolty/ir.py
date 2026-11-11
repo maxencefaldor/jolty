@@ -78,6 +78,12 @@ class Component(_Model):
     ports: tuple[Port, ...] = ()
     instances: tuple[Instance, ...] = ()
 
+    def instance(self, id: str) -> Instance | None:
+        """The instance `id`, or None when the component places none by that id."""
+        return next(
+            (instance for instance in self.instances if instance.id == id), None
+        )
+
 
 class Circuit(_Model):
     """A circuit: every component, and the one at the top of the hierarchy."""
@@ -86,3 +92,18 @@ class Circuit(_Model):
     version: Literal[1] = 1
     top: str
     components: dict[str, Component]
+
+    def find(self, path: str) -> Instance | None:
+        """The instance at `path`, such as ``X1/R1``, or None when there is none."""
+        component = self.components.get(self.top)
+        found = None
+        for id in path.split("/"):
+            found = component.instance(id) if component is not None else None
+            if found is None:
+                return None
+            component = (
+                self.components.get(found.of.component)
+                if isinstance(found.of, ComponentOf)
+                else None
+            )
+        return found

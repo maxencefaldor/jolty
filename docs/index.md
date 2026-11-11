@@ -18,7 +18,7 @@ Each build checks every device and connection, reports each problem with the scr
 
 [Get started](get-started.md){ .md-button .md-button--primary } [Guide](guide/index.md){ .md-button }
 
-![The Bode plot of an RC low-pass filter, as jolty draws it after a simulation](images/rc_filter.bode.png)
+![The Bode plot of an RC low-pass filter, as jolty draws it after a simulation](images/rc_filter.bode.plot.png)
 
 </div>
 
@@ -26,7 +26,7 @@ Each build checks every device and connection, reports each problem with the scr
 
 -   📘 **[Guide](guide/index.md)**
 
-    One page per concept: components, units, devices, simulation and results.
+    One page per concept: components, units, devices, checks, schematics, simulation and results.
 
 -   🤖 **[Agents](agents/index.md)**
 
