@@ -18,6 +18,7 @@ from jolty.units import V, kohm
 
 UNKNOWNS = (results.Unknown("out", "voltage"), results.Unknown("V1:current", "current"))
 STATISTICS = results.Statistics(initial="direct", accepted=2, rejected=1, iterations=7)
+PARAMETER = results.Parameter("X1/R1", "resistance", 1e3)
 
 
 def every_kind() -> dict[str, results.Result]:
@@ -33,6 +34,13 @@ def every_kind() -> dict[str, results.Result]:
         "step": results.Waveforms(
             UNKNOWNS, np.array([0.0, 1e-6]), np.ones((2, 2)), STATISTICS
         ),
+        "sensitivity": results.Sensitivities(
+            UNKNOWNS,
+            ("out",),
+            (PARAMETER, results.Parameter("V1", "waveform.dc", 5.0)),
+            np.array([[-2e-4, 0.4]]),
+            point,
+        ),
     }
 
 
@@ -46,7 +54,12 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
         loaded = read[name]
         assert type(loaded) is type(result)
         assert loaded.unknowns == UNKNOWNS
-        np.testing.assert_array_equal(loaded.values, result.values)
+        if isinstance(result, results.Sensitivities):
+            assert isinstance(loaded, results.Sensitivities)
+            np.testing.assert_array_equal(loaded.derivatives, result.derivatives)
+        else:
+            assert not isinstance(loaded, results.Sensitivities)
+            np.testing.assert_array_equal(loaded.values, result.values)
     sweep = read["sweep"]
     assert isinstance(sweep, results.Sweep)
     assert (sweep.source, sweep.quantity) == ("V1", "voltage")
@@ -57,6 +70,12 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     step = read["step"]
     assert isinstance(step, results.Waveforms)
     assert step.statistics == STATISTICS
+    sensitivity = read["sensitivity"]
+    assert isinstance(sensitivity, results.Sensitivities)
+    assert sensitivity.outputs == ("out",)
+    assert sensitivity.parameters[0] == PARAMETER
+    assert sensitivity.derivative("out", "V1", "waveform.dc") == 0.4
+    assert sensitivity.operating_point.strategy == "gmin_stepping"
 
 
 def test_a_results_file_describes_one_circuit(tmp_path: Path) -> None:

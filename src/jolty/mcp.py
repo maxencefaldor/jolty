@@ -43,11 +43,11 @@ schematic: each diagnostic, such as error[no-dc-path], names the instances and t
 script lines that placed them, and the schematic marks them in red. explain_rule gives
 the exact condition behind a rule. Then add plan(), returning a jolty.Plan of named
 analyses, and call simulate_circuit: it reports each analysis, writes the first
-operating point's voltages on the schematic, plots each analysis but operating points,
-and saves every result to a .npz file that jolty.files.load_results reads back;
-plot_results draws other unknowns from it, and draw_schematic draws the component
-inside an instance. Fix the script and run again until the report has no errors and
-the analyses show the intended behavior.
+operating point's voltages on the schematic, plots each analysis but operating points
+and sensitivities, and saves every result to a .npz file that
+jolty.files.load_results reads back; plot_results draws other unknowns from it, and
+draw_schematic draws the component inside an instance. Fix the script and run again
+until the report has no errors and the analyses show the intended behavior.
 
 Components: decorate a function taking a jolty.Builder with @jolty.component. Inside,
 c.port(name, role) declares a port (Role.SIGNAL, SUPPLY or GROUND), c.place(device or
@@ -72,9 +72,11 @@ matches as logic cells characterized from their circuits, whose ports are Role.I
 Role.OUTPUT, one supply and one ground, and spot checks hold each cell to its circuit.
 
 Analyses, in jolty.plan: OperatingPoint(), DcSweep(source, levels),
-Ac(source, frequencies) with decade(start, stop, per_decade), and Transient(stop,
-max_step, method). Unknowns are named by path: a net such as out or stage/mid, and the
-current through a source or inductor such as V1:current.
+Ac(source, frequencies) with decade(start, stop, per_decade), Transient(stop,
+max_step, method), and Sensitivity(outputs): the derivative of each output unknown with
+respect to every number of every device's parameters at the operating point. Unknowns
+are named by path: a net such as out or stage/mid, and the current through a source or
+inductor such as V1:current.
 """
 
 READS_FILES: Final = ToolAnnotations(read_only_hint=True, open_world_hint=False)

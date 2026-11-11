@@ -82,13 +82,19 @@ def test_the_plot_command_draws_saved_results(
 ) -> None:
     path = tmp_path / "rc.results.npz"
     point = results.OperatingPoint(UNKNOWNS, np.zeros(5), "direct")
-    save_results(path, {"op": point, "step": waveforms()})
+    parameter = results.Parameter("R1", "resistance", 1e3)
+    sensitivity = results.Sensitivities(
+        UNKNOWNS, ("out",), (parameter,), np.ones((1, 1)), point
+    )
+    save_results(path, {"op": point, "step": waveforms(), "sens": sensitivity})
     assert run("plot", str(path), "--output-format", "json") == 0
     (drawn,) = json.loads(capsys.readouterr().out)["plots"]
     target = tmp_path / "rc.step.plot.png"
     assert drawn == {"analysis": "step", "path": str(target)}
     assert target.read_bytes().startswith(b"\x89PNG")
-    assert run("plot", str(path), "--analyses", "op") == 2
-    assert "op is an operating point" in capsys.readouterr().err
+    for unplotted in ("op", "sens"):
+        assert run("plot", str(path), "--analyses", unplotted) == 2
+        message = f"{unplotted} is taken at one operating point: nothing to plot"
+        assert message in capsys.readouterr().err
     assert run("plot", str(path), "--analyses", "ac") == 2
     assert run("plot", str(tmp_path / "missing.results.npz")) == 2

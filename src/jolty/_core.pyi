@@ -54,7 +54,21 @@ class WaveformsOutcome(TypedDict):
     logic: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
     statistics: StatisticsOutcome
 
-type Outcome = OperatingPointOutcome | SweepOutcome | ResponseOutcome | WaveformsOutcome
+class SensitivityOutcome(TypedDict):
+    kind: Literal["sensitivity"]
+    outputs: list[str]
+    parameters: list[tuple[str, str]]
+    values: npt.NDArray[np.float64]
+    derivatives: npt.NDArray[np.float64]
+    operating_point: SolvedPoint
+
+type Outcome = (
+    OperatingPointOutcome
+    | SweepOutcome
+    | ResponseOutcome
+    | WaveformsOutcome
+    | SensitivityOutcome
+)
 
 class SourceOutcome(TypedDict):
     file: str

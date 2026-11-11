@@ -18,6 +18,7 @@ from jolty import (
     Options,
     Plan,
     Role,
+    Sensitivity,
     Simulation,
     SimulationError,
     Transient,
@@ -105,6 +106,36 @@ def test_a_divider_divides_at_any_scale(
     point = Simulation(circuit).run(OperatingPoint())
     expected = level * lower / (upper + lower)
     assert point.voltage("out") == pytest.approx(expected, rel=1e-6, abs=1e-9)
+
+
+def test_sensitivities_are_the_derivatives_of_a_divider() -> None:
+    simulation = Simulation(divider(5 * V, 1 * kohm, 4 * kohm))
+    found = simulation.run(Sensitivity(["out", "V1:current"]))
+    assert [(p.instance, p.name, p.value) for p in found.parameters] == [
+        ("V1", "waveform.dc", 5.0),
+        ("R1", "resistance", 1e3),
+        ("R2", "resistance", 4e3),
+    ]
+    level, upper, lower = 5.0, 1e3, 4e3
+    total = upper + lower
+    expected = {
+        ("V1", "waveform.dc"): (lower / total, -1 / total),
+        ("R1", "resistance"): (-level * lower / total**2, level / total**2),
+        ("R2", "resistance"): (level * upper / total**2, level / total**2),
+    }
+    for (instance, name), (out, current) in expected.items():
+        assert found.derivative("out", instance, name) == pytest.approx(out, rel=1e-6)
+        assert found.derivative("V1:current", instance, name) == pytest.approx(
+            current, rel=1e-6
+        )
+    assert found.operating_point.voltage("out") == pytest.approx(4.0)
+    np.testing.assert_allclose(found.per_percent("out"), [0.04, -8e-3, 8e-3], rtol=1e-6)
+    with pytest.raises(KeyError, match="no output named 'in'"):
+        found.per_percent("in")
+    with pytest.raises(KeyError, match="close names: R1 resistance"):
+        found.derivative("out", "R1", "resistanc")
+    with pytest.raises(SimulationError, match="no unknown named `nowhere`"):
+        simulation.run(Sensitivity(["nowhere"]))
 
 
 def test_a_dc_sweep_solves_each_level() -> None:

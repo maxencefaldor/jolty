@@ -65,8 +65,16 @@ class _Waveforms(_Model):
     statistics: results.Statistics
 
 
+class _Sensitivities(_Model):
+    kind: Literal["sensitivity"] = "sensitivity"
+    outputs: tuple[str, ...]
+    parameters: tuple[tuple[str, str], ...]
+    strategy: str
+
+
 type _Entry = Annotated[
-    _Point | _Sweep | _Response | _Waveforms, Field(discriminator="kind")
+    _Point | _Sweep | _Response | _Waveforms | _Sensitivities,
+    Field(discriminator="kind"),
 ]
 
 
@@ -156,8 +164,7 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
                 )
                 arrays[f"{name}.frequencies"] = result.frequencies
                 arrays[f"{name}.values"] = result.values
-                arrays[f"{name}.operating_point"] = result.operating_point.values
-                arrays[f"{name}.operating_point.logic"] = result.operating_point.logic
+                arrays.update(_point_arrays(name, result.operating_point))
             case results.Waveforms():
                 entries[name] = _Waveforms(statistics=result.statistics)
                 arrays[f"{name}.times"] = result.times
@@ -172,6 +179,20 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
                 arrays[f"{name}.logic.levels"] = np.concatenate(
                     [np.empty(0), *(trace.levels for trace in traces)]
                 )
+            case results.Sensitivities():
+                entries[name] = _Sensitivities(
+                    outputs=result.outputs,
+                    parameters=tuple(
+                        (parameter.instance, parameter.name)
+                        for parameter in result.parameters
+                    ),
+                    strategy=result.operating_point.strategy,
+                )
+                arrays[f"{name}.parameters"] = np.array(
+                    [parameter.value for parameter in result.parameters], dtype=float
+                )
+                arrays[f"{name}.values"] = result.derivatives
+                arrays.update(_point_arrays(name, result.operating_point))
     unknowns, nets = circuits.pop()
     header = _Header(unknowns=unknowns, nets=nets, analyses=entries)
     arrays[_HEADER] = np.array(header.model_dump_json())
@@ -212,13 +233,7 @@ def load_results(path: Path) -> dict[str, results.Result]:
                         data[f"{name}.logic"],
                     )
                 case _Response(source=source, strategy=strategy):
-                    point = results.OperatingPoint(
-                        unknowns,
-                        data[f"{name}.operating_point"],
-                        strategy,
-                        nets,
-                        data[f"{name}.operating_point.logic"],
-                    )
+                    point = _point(data, name, strategy, unknowns, nets)
                     frequencies = data[f"{name}.frequencies"]
                     loaded[name] = results.Response(
                         unknowns, source, frequencies, values, point
@@ -228,14 +243,52 @@ def load_results(path: Path) -> dict[str, results.Result]:
                     loaded[name] = results.Waveforms(
                         unknowns, times, values, statistics, nets, _traces(data, name)
                     )
+                case _Sensitivities(
+                    outputs=outputs, parameters=named, strategy=strategy
+                ):
+                    parameters = tuple(
+                        results.Parameter(instance, parameter, float(value))
+                        for (instance, parameter), value in zip(
+                            named, data[f"{name}.parameters"], strict=True
+                        )
+                    )
+                    point = _point(data, name, strategy, unknowns, nets)
+                    loaded[name] = results.Sensitivities(
+                        unknowns, outputs, parameters, values, point
+                    )
     return loaded
 
 
 def _nets(result: results.Result) -> tuple[str, ...]:
     """The logic nets of `result`."""
-    if isinstance(result, results.Response):
+    if isinstance(result, results.Response | results.Sensitivities):
         return result.operating_point.nets
     return result.nets
+
+
+def _point_arrays(name: str, point: results.OperatingPoint) -> dict[str, np.ndarray]:
+    """The arrays of the operating point that the analysis `name` holds."""
+    return {
+        f"{name}.operating_point": point.values,
+        f"{name}.operating_point.logic": point.logic,
+    }
+
+
+def _point(
+    data: Mapping[str, np.ndarray],
+    name: str,
+    strategy: str,
+    unknowns: tuple[results.Unknown, ...],
+    nets: tuple[str, ...],
+) -> results.OperatingPoint:
+    """The operating point that the analysis `name` holds in `data`."""
+    return results.OperatingPoint(
+        unknowns,
+        data[f"{name}.operating_point"],
+        strategy,
+        nets,
+        data[f"{name}.operating_point.logic"],
+    )
 
 
 def _traces(data: Mapping[str, np.ndarray], name: str) -> tuple[results.Trace, ...]:

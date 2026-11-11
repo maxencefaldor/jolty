@@ -41,7 +41,8 @@ def column(unknowns: tuple[Unknown, ...], name: str) -> int:
     Raises:
         KeyError: When no unknown has that name; the message suggests the closest names.
     """
-    return _find([unknown.name for unknown in unknowns], name, "unknown")
+    names = [unknown.name for unknown in unknowns]
+    return _find(names, name, "the circuit has no unknown")
 
 
 def net_column(nets: tuple[str, ...], name: str) -> int:
@@ -50,15 +51,21 @@ def net_column(nets: tuple[str, ...], name: str) -> int:
     Raises:
         KeyError: When no logic net has that name; the message suggests the closest.
     """
-    return _find(list(nets), name, "logic net")
+    return _find(list(nets), name, "the circuit has no logic net")
 
 
-def _find(names: list[str], name: str, kind: str) -> int:
+def _find(names: list[str], name: str, missing: str) -> int:
+    """The index of `name` among `names`.
+
+    Raises:
+        KeyError: Saying `missing`, such as "the circuit has no unknown", named `name`,
+            and the closest names.
+    """
     if name in names:
         return names.index(name)
     close = difflib.get_close_matches(name, names, n=3)
     hint = f"; close names: {', '.join(close)}" if close else ""
-    message = f"the circuit has no {kind} named {name!r}{hint}"
+    message = f"{missing} named {name!r}{hint}"
     raise KeyError(message)
 
 
@@ -199,5 +206,68 @@ class Waveforms:
         return self.values[:, column(self.unknowns, _current(instance))]
 
 
-type Result = OperatingPoint | Sweep | Response | Waveforms
+@dataclass(frozen=True, slots=True)
+class Parameter:
+    """One number of the parameters of a device instance."""
+
+    instance: str
+    """The device's path, such as ``X1/R1``."""
+    name: str
+    """The parameter's name, its keys joined by dots within an object, such as
+    ``resistance`` or ``waveform.dc``."""
+    value: float
+    """Its value, in SI base units."""
+
+
+@dataclass(frozen=True, slots=True)
+class Sensitivities:
+    """DC sensitivities: each output's derivative with respect to each parameter.
+
+    `derivatives` has one row per output and one column per parameter, in SI base
+    units, at `operating_point`.
+
+    Examples:
+        >>> point = OperatingPoint((Unknown("out", "voltage"),), np.array([2.0]), "")
+        >>> sensitivities = Sensitivities(
+        ...     point.unknowns,
+        ...     ("out",),
+        ...     (Parameter("R1", "resistance", 1e3), Parameter("V1", "waveform.dc", 5)),
+        ...     np.array([[-1e-3, 0.4]]),
+        ...     point,
+        ... )
+        >>> sensitivities.derivative("out", "V1", "waveform.dc")
+        0.4
+        >>> sensitivities.per_percent("out").tolist()
+        [-0.01, 0.02]
+    """
+
+    unknowns: tuple[Unknown, ...]
+    outputs: tuple[str, ...]
+    """The unknowns differentiated, by name, in the order of `derivatives`' rows."""
+    parameters: tuple[Parameter, ...]
+    """Every parameter, in the order of `derivatives`' columns."""
+    derivatives: Real
+    operating_point: OperatingPoint
+
+    def derivative(self, output: str, instance: str, parameter: str) -> float:
+        """The derivative of `output` with respect to `parameter` of `instance`.
+
+        Raises:
+            KeyError: When the analysis has no such output or parameter.
+        """
+        labels = [f"{found.instance} {found.name}" for found in self.parameters]
+        missing = "the analysis has no parameter"
+        index = _find(labels, f"{instance} {parameter}", missing)
+        return float(self.derivatives[self._row(output), index])
+
+    def per_percent(self, output: str) -> Real:
+        """How much `output` moves, to first order, as each parameter grows by 1 %."""
+        values = np.array([parameter.value for parameter in self.parameters])
+        return self.derivatives[self._row(output)] * values / 100
+
+    def _row(self, output: str) -> int:
+        return _find(list(self.outputs), output, "the analysis has no output")
+
+
+type Result = OperatingPoint | Sweep | Response | Waveforms | Sensitivities
 """The result of any analysis."""

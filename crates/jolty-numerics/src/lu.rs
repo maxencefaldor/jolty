@@ -178,11 +178,39 @@ impl<T: Scalar> Factors<'_, T> {
             Par::Seq,
             MemStack::new(self.workspace),
         );
-        if rhs.iter().all(|&value| value.is_finite()) {
-            Ok(())
-        } else {
-            Err(LinearError::Singular)
-        }
+        finite(rhs)
+    }
+
+    /// Solves `Aᵀ x = rhs`, the transposed system, and leaves `x` in `rhs`: the adjoint
+    /// system whose solution weighs every equation's effect on one unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinearError::Singular`] when the solution is not finite, which a zero pivot
+    /// causes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rhs` does not hold one value per row.
+    pub fn solve_transpose(&mut self, rhs: &mut [T]) -> Result<(), LinearError> {
+        let rows = self.factors.symbolic().nrows();
+        assert_eq!(rhs.len(), rows, "one right-hand side value per row");
+        self.factors.solve_transpose_in_place_with_conj(
+            Conj::No,
+            MatMut::from_column_major_slice_mut(rhs, rows, 1),
+            Par::Seq,
+            MemStack::new(self.workspace),
+        );
+        finite(rhs)
+    }
+}
+
+/// `Ok` when every value of a solution is finite.
+fn finite<T: Scalar>(solution: &[T]) -> Result<(), LinearError> {
+    if solution.iter().all(|&value| value.is_finite()) {
+        Ok(())
+    } else {
+        Err(LinearError::Singular)
     }
 }
 
@@ -217,6 +245,22 @@ mod tests {
         lu.factor(&values).unwrap().solve(&mut rhs).unwrap();
         assert!(
             (rhs[0] - 2.5).abs() < 1e-15 && (rhs[1] - 1.0).abs() < 1e-15,
+            "{rhs:?}"
+        );
+    }
+
+    #[test]
+    fn solves_the_transposed_system() {
+        let (pattern, values) = dense(&[vec![0.0, 1.0], vec![2.0, 3.0]]);
+        let mut lu = SparseLu::new(pattern).unwrap();
+        // [[0, 2], [1, 3]] x = [4, 7] has x = [1, 2].
+        let mut rhs = [4.0, 7.0];
+        lu.factor(&values)
+            .unwrap()
+            .solve_transpose(&mut rhs)
+            .unwrap();
+        assert!(
+            (rhs[0] - 1.0).abs() < 1e-15 && (rhs[1] - 2.0).abs() < 1e-15,
             "{rhs:?}"
         );
     }

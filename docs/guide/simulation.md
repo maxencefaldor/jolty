@@ -32,11 +32,27 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `DcSweep(source, levels)` | the DC solution at each level of one independent source |
 | `Ac(source, frequencies)` | the small-signal response to a unit excitation of one source, around the operating point |
 | `Transient(stop, max_step=None, method="trapezoidal")` | the response over time, from the operating point until `stop` |
+| `Sensitivity(outputs)` | the derivative of each output with respect to every number of every device's parameters, at the operating point |
 
 A source is named by its path, such as `V1` or `bias/I1`.
 `linear(start, stop, points)` spaces levels evenly, and `decade(start, stop, per_decade)` spaces frequencies evenly on a log scale.
 A transient's method is `"trapezoidal"`, `"gear2"` for stiff circuits that ring, or `"backward_euler"` for the most damping.
 Its longest step defaults to a fiftieth of `stop`.
+
+## Sensitivities
+
+A sensitivity analysis differentiates unknowns, such as `out` or `V1:current`, with respect to every parameter of every device, at the operating point:
+
+```python
+Plan({"sensitivity": Sensitivity(["out", "V1:current"])})
+```
+
+A parameter is a number of a device's parameters, named by the device's path and its keys, such as `R1` and `resistance`, or `V1` and `waveform.dc` within an object; numbers within lists, such as a piecewise waveform's points, are left out.
+The derivatives come from the adjoint method: one solve with the transposed Jacobian per output serves every parameter, so many parameters cost little.
+Each device's own derivative with respect to a parameter is a central difference of that device alone, made again with the parameter a millionth above and below its value, so the circuit is solved once, yet the derivatives agree with finite differences of the whole circuit to within a hundred-thousandth.
+A number its model cannot take a little away from its value, such as a model's level, has no derivative and is left out.
+
+The result's `derivative(output, instance, parameter)` reads one derivative in SI base units, and `per_percent(output)` how much the output moves, to first order, as each parameter grows by 1 %.
 
 ## Temperature
 

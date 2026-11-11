@@ -243,7 +243,8 @@ class SimulateRequest(_Model):
     schematic: bool = Field(default=True, description=_ANNOTATED_DESCRIPTION)
     plot: bool = Field(
         default=True,
-        description="Plot every analysis but operating points beside the results.",
+        description="Plot every analysis but operating points and sensitivities "
+        "beside the results.",
     )
     probes: list[str] = Field(default_factory=list, description=_PROBES_DESCRIPTION)
 
@@ -280,8 +281,8 @@ class SimulateResult(CommandResult):
         description="The top component's schematic; null when drawing is off."
     )
     plots: tuple[Plot, ...] = Field(
-        description="A plot per analysis but operating points; empty when plotting "
-        "is off or no analysis ran to its end."
+        description="A plot per analysis but operating points and sensitivities; "
+        "empty when plotting is off or no analysis ran to its end."
     )
     output: ScriptOutput = Field(description="What the scripts printed.")
     seconds: float = Field(description="Seconds the command took.")
@@ -437,8 +438,8 @@ class PlotRequest(_Model):
     results: CliPositionalArg[Path] = Field(description="A .results.npz file.")
     analyses: list[str] = Field(
         default_factory=list,
-        description="Analyses to plot, by name; every one but operating points by "
-        "default.",
+        description="Analyses to plot, by name; every one but operating points and "
+        "sensitivities by default.",
     )
     probes: list[str] = Field(default_factory=list, description=_PROBES_DESCRIPTION)
 
@@ -470,7 +471,7 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
 
     Raises:
         JoltyError: When the file is missing or holds no results, an analysis named is
-            not in it or is an operating point, or a probe names no unknown.
+            not in it or is taken at one operating point, or a probe names no unknown.
     """
     del settings
     loaded = await asyncio.to_thread(_load, request.results)
@@ -502,8 +503,8 @@ def _plot(
     """Plots the `analyses` of the results `loaded` from `path`, or all, beside it.
 
     Raises:
-        JoltyError: When an analysis named is not in the results or is an operating
-            point, or a probe names no unknown.
+        JoltyError: When an analysis named is not in the results or is taken at one
+            operating point, or a probe names no unknown.
     """
     missing = [name for name in analyses if name not in loaded]
     if missing:
@@ -513,9 +514,9 @@ def _plot(
     for name, result in loaded.items():
         if analyses and name not in analyses:
             continue
-        if isinstance(result, results.OperatingPoint):
+        if isinstance(result, results.OperatingPoint | results.Sensitivities):
             if analyses:
-                message = f"{name} is an operating point, which has nothing to plot"
+                message = f"{name} is taken at one operating point: nothing to plot"
                 raise JoltyError(message)
             continue
         nets = () if isinstance(result, results.Response) else result.nets

@@ -33,6 +33,7 @@ mod topology;
 pub mod waveform;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub use behavioral::{
     Behavior, BehavioralCurrentSource, BehavioralParameters, BehavioralVoltageSource,
@@ -68,7 +69,7 @@ pub use topology::{Branch, BranchKind, Interface};
 /// same name.
 #[derive(Default)]
 pub struct Library {
-    models: BTreeMap<&'static str, Box<dyn Model>>,
+    models: BTreeMap<&'static str, Arc<dyn Model>>,
     logic: BTreeMap<&'static str, Box<dyn LogicModel>>,
 }
 
@@ -101,7 +102,7 @@ impl Library {
     /// Adds `model`, replacing any model of the same name.
     pub fn add(&mut self, model: impl Model + 'static) {
         self.logic.remove(model.name());
-        self.models.insert(model.name(), Box::new(model));
+        self.models.insert(model.name(), Arc::new(model));
     }
 
     /// Adds the logic model `model`, replacing any model of the same name.
@@ -113,7 +114,13 @@ impl Library {
     /// The analog model named `name`.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&dyn Model> {
-        self.models.get(name).map(Box::as_ref)
+        self.models.get(name).map(AsRef::as_ref)
+    }
+
+    /// The analog model named `name`, shared, for a device to keep and be made again from.
+    #[must_use]
+    pub fn shared(&self, name: &str) -> Option<Arc<dyn Model>> {
+        self.models.get(name).cloned()
     }
 
     /// The logic model named `name`.

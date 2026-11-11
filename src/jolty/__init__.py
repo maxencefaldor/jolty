@@ -33,6 +33,7 @@ from jolty.plan import (
     OperatingPoint,
     Options,
     Plan,
+    Sensitivity,
     Transient,
 )
 from jolty.simulate import Simulation
@@ -61,6 +62,7 @@ __all__ = [
     "Plan",
     "Role",
     "ScriptError",
+    "Sensitivity",
     "Simulation",
     "SimulationError",
     "Specs",

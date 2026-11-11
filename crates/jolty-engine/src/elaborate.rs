@@ -33,6 +33,8 @@ pub(crate) struct System {
     /// The diagonal entry of every node voltage's equation, where gmin stepping adds a
     /// conductance to the reference.
     pub(crate) node_diagonals: Vec<(Unknown, Entry)>,
+    /// The devices' temperature, in kelvins.
+    pub(crate) temperature: f64,
 }
 
 /// A device placed in the flattened circuit: where its instance is, what model it is, and
@@ -43,7 +45,26 @@ pub struct Placed {
     model: &'static str,
     interface: Interface,
     nodes: Vec<Node>,
+    /// What the device was made from, to make it again; none for a connect element.
+    pub(crate) made: Option<Made>,
+    /// How many unknowns there were before the device added its own.
+    pub(crate) first_internal: usize,
     pub(crate) device: Box<dyn Device>,
+}
+
+/// The model and the parameters a device was made from.
+pub(crate) struct Made {
+    pub(crate) model: Arc<dyn Model>,
+    pub(crate) parameters: Parameters,
+}
+
+impl fmt::Debug for Made {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Made")
+            .field("model", &self.model.name())
+            .field("parameters", &self.parameters)
+            .finish()
+    }
 }
 
 impl Placed {
@@ -307,6 +328,7 @@ pub(crate) fn elaborate(
         reference: ground.clone(),
         pattern,
         node_diagonals,
+        temperature: conditions.temperature,
     })
 }
 
@@ -415,6 +437,7 @@ impl Elements<'_> {
             .iter()
             .map(|&net| classes.node(net))
             .collect();
+        let first_internal = self.unknowns.len();
         let mut binding = Binding::new(
             &pending.at.path,
             &terminals,
@@ -428,6 +451,11 @@ impl Elements<'_> {
                 model: pending.model.name(),
                 interface: pending.interface,
                 nodes: terminals,
+                made: Some(Made {
+                    model: pending.model,
+                    parameters: pending.parameters.into_owned(),
+                }),
+                first_internal,
                 device,
             }),
             Err(error) => self.problems.push(ElaborationProblem::Parameters {
@@ -574,6 +602,7 @@ impl Elements<'_> {
         interface: Interface,
         parameters: D::Parameters,
     ) -> usize {
+        let first_internal = self.unknowns.len();
         let mut binding = Binding::new(
             &at.path,
             &terminals,
@@ -590,6 +619,8 @@ impl Elements<'_> {
             model: D::NAME,
             interface,
             nodes: terminals.to_vec(),
+            made: None,
+            first_internal,
             device,
         });
         self.placed.len() - 1
@@ -610,7 +641,7 @@ struct NetRecord {
 /// A device instance found by the walk, waiting for every net to be classified.
 struct Pending<'a> {
     at: Location,
-    model: &'a dyn Model,
+    model: Arc<dyn Model>,
     /// The instance's parameters, with those the conditions replace.
     parameters: Cow<'a, Parameters>,
     interface: Interface,
@@ -730,7 +761,7 @@ impl<'a> Walk<'a> {
             at,
             model: model_name,
         } = placement;
-        if let Some(model) = self.library.get(model_name.as_str()) {
+        if let Some(model) = self.library.shared(model_name.as_str()) {
             let interface = match model.interface(&parameters) {
                 Ok(interface) => interface,
                 Err(error) => {

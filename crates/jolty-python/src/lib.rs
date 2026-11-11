@@ -235,6 +235,21 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
                 statistics_to_python(py, waveforms.statistics)?,
             )?;
         }
+        Outcome::Sensitivity(sensitivities) => {
+            result.set_item("kind", "sensitivity")?;
+            result.set_item("outputs", sensitivities.outputs)?;
+            let (parameters, values): (Vec<(String, String)>, Vec<f64>) = sensitivities
+                .parameters
+                .into_iter()
+                .map(|parameter| ((parameter.device, parameter.name), parameter.value))
+                .unzip();
+            result.set_item("parameters", parameters)?;
+            result.set_item("values", PyArray1::from_vec(py, values))?;
+            result.set_item("derivatives", matrix(py, &sensitivities.derivatives)?)?;
+            let operating_point = PyDict::new(py);
+            add_operating_point(&operating_point, sensitivities.operating_point)?;
+            result.set_item("operating_point", operating_point)?;
+        }
     }
     Ok(result)
 }

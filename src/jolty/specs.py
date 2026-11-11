@@ -60,6 +60,11 @@ type Bound = Quantity | float
 type Edge = Literal["rising", "falling", "either"]
 """Which way a signal crosses a level."""
 
+type _Solved = (
+    results.OperatingPoint | results.Sweep | results.Response | results.Waveforms
+)
+"""A result that holds values of the circuit's unknowns."""
+
 type Status = Literal["passed", "marginal", "failed", "unmeasured"]
 """What became of a requirement."""
 
@@ -529,10 +534,10 @@ def value(
             case results.OperatingPoint():
                 message = f"an operating point holds one value, not one at {at}"
                 raise MeasurementError(message)
-            case results.Response():
+            case results.Response() | results.Sensitivities():
                 message = (
                     "a value reads an operating point, a transient or a DC sweep, "
-                    "not a small-signal response"
+                    f"not {_kind(result)}"
                 )
                 raise MeasurementError(message)
         axis, values, dimension = _traced(result, traced, "a value")
@@ -912,7 +917,7 @@ class _Signal:
     name: str
     reference: str | None = None
 
-    def trace(self, result: results.Result) -> tuple[npt.NDArray[Any], Dimension]:
+    def trace(self, result: _Solved) -> tuple[npt.NDArray[Any], Dimension]:
         """The signal's values in `result`, and their dimension.
 
         Raises:
@@ -1184,6 +1189,8 @@ def _kind(result: results.Result) -> str:
             return "a small-signal response"
         case results.Waveforms():
             return "a transient"
+        case results.Sensitivities():
+            return "sensitivities"
 
 
 def _check(point: Quantity | None, name: str) -> None:

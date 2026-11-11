@@ -88,7 +88,24 @@ class Transient:
         return {"transient": transient}
 
 
-type Analysis = OperatingPoint | DcSweep | Ac | Transient
+@dataclass(frozen=True, slots=True)
+class Sensitivity:
+    """How unknowns move with every number of every device's parameters.
+
+    The derivatives are taken at the operating point. Each output is an unknown by
+    name, a voltage such as ``out`` or a current such as ``V1:current``. One solve per
+    output serves every parameter, however many.
+    """
+
+    outputs: Sequence[str]
+
+    def to_json(self) -> JsonValue:
+        """The analysis in the engine's format."""
+        outputs: list[JsonValue] = list(self.outputs)
+        return {"sensitivity": {"outputs": outputs}}
+
+
+type Analysis = OperatingPoint | DcSweep | Ac | Transient | Sensitivity
 """Any analysis."""
 
 

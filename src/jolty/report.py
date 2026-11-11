@@ -10,7 +10,7 @@ A corner's report states whether the circuit elaborates there and which analyses
 and a Monte Carlo analysis's what each requirement read over its samples and the yield.
 """
 
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,6 +22,9 @@ from jolty.units import format_si
 type Quantity = Literal["voltage", "current"]
 
 _SYMBOLS = {"voltage": "V", "current": "A"}
+
+INFLUENCES: Final = 5
+"""The parameters a sensitivity report lists per output, those it moves most with."""
 
 _STRATEGIES = {
     "direct": "Newton iteration",
@@ -176,6 +179,79 @@ class TransientReport(_Model):
         return _join(head, lines, self.unlisted)
 
 
+class Influence(_Model):
+    """How one output moves with one parameter."""
+
+    instance: str = Field(description="The device's path.")
+    parameter: str = Field(description="The parameter's name, such as resistance.")
+    value: float = Field(description="The parameter's value, in SI base units.")
+    derivative: float = Field(
+        description="The output's derivative with respect to the parameter, in SI "
+        "base units."
+    )
+    change: float = Field(
+        description="How much the output moves, to first order, as the parameter "
+        "grows by 1 %, in volts or amperes."
+    )
+
+
+class OutputSensitivity(_Model):
+    """The parameters one output moves most with."""
+
+    output: str
+    quantity: Quantity
+    value: float = Field(description="Its value, in volts or amperes.")
+    influences: tuple[Influence, ...] = Field(
+        description="The parameters it moves with, most first; none it does not "
+        "move with."
+    )
+
+
+class SensitivityReport(_Model):
+    """DC sensitivities."""
+
+    kind: Literal["sensitivity"] = "sensitivity"
+    name: str
+    strategy: str = Field(
+        description="How the engine found the operating point: direct, "
+        "gmin_stepping or source_stepping."
+    )
+    parameters: int = Field(
+        description="Parameters the derivatives are with respect to."
+    )
+    outputs: tuple[OutputSensitivity, ...]
+
+    def describe(self) -> str:
+        """The report as text."""
+        strategy = _STRATEGIES.get(self.strategy, self.strategy)
+        head = (
+            f"{self.name}: sensitivities to {self.parameters} parameters at the "
+            f"operating point, found by {strategy}"
+        )
+        lines = [head]
+        for output in self.outputs:
+            unit = _SYMBOLS[output.quantity]
+            value = format_si(output.value, unit)
+            if not output.influences:
+                lines.append(f"  {output.output} = {value} moves with no parameter")
+                continue
+            lines.append(
+                f"  {output.output} = {value} moves, as each parameter grows by 1 %, by"
+            )
+            rows = [
+                [
+                    influence.instance,
+                    influence.parameter,
+                    f"{influence.value:.4g}",
+                    ("+" if influence.change > 0 else "")
+                    + format_si(influence.change, unit),
+                ]
+                for influence in output.influences
+            ]
+            lines.extend(f"  {row}" for row in _table(rows))
+        return "\n".join(lines)
+
+
 class FailureReport(_Model):
     """An analysis that failed."""
 
@@ -252,7 +328,12 @@ class MonteCarloReport(_Model):
 
 
 type AnalysisReport = Annotated[
-    PointReport | SweepReport | ResponseReport | TransientReport | FailureReport,
+    PointReport
+    | SweepReport
+    | ResponseReport
+    | TransientReport
+    | SensitivityReport
+    | FailureReport,
     Field(discriminator="kind"),
 ]
 """The report of any analysis."""
@@ -320,11 +401,45 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 ),
                 unlisted=unlisted,
             )
+        case results.Sensitivities():
+            return SensitivityReport(
+                name=name,
+                strategy=result.operating_point.strategy,
+                parameters=len(result.parameters),
+                outputs=tuple(_output(result, output) for output in result.outputs),
+            )
+
+
+def _output(result: results.Sensitivities, output: str) -> OutputSensitivity:
+    """The parameters `output` moves most with, up to `INFLUENCES` of them."""
+    changes = result.per_percent(output)
+    largest = np.argsort(-np.abs(changes), kind="stable")[:INFLUENCES]
+    row = result.outputs.index(output)
+    influences = tuple(
+        Influence(
+            instance=result.parameters[index].instance,
+            parameter=result.parameters[index].name,
+            value=result.parameters[index].value,
+            derivative=float(result.derivatives[row, index]),
+            change=float(changes[index]),
+        )
+        for index in largest
+        if changes[index] != 0
+    )
+    column = results.column(result.unknowns, output)
+    return OutputSensitivity(
+        output=output,
+        quantity=result.unknowns[column].quantity,
+        value=float(result.operating_point.values[column]),
+        influences=influences,
+    )
 
 
 def _nets(result: results.Result) -> tuple[str, ...]:
-    """The logic nets of `result`; a frequency response has none of its own."""
-    return () if isinstance(result, results.Response) else result.nets
+    """The logic nets of `result`; responses and sensitivities have none of theirs."""
+    if isinstance(result, results.Response | results.Sensitivities):
+        return ()
+    return result.nets
 
 
 def _level(level: float) -> LogicLevel:

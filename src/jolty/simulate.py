@@ -31,7 +31,16 @@ from jolty import _core, checks, ir, results
 from jolty.builder import Component, circuit
 from jolty.devices import Device
 from jolty.errors import ElaborationError, SimulationError
-from jolty.plan import Ac, Analysis, DcSweep, OperatingPoint, Options, Plan, Transient
+from jolty.plan import (
+    Ac,
+    Analysis,
+    DcSweep,
+    OperatingPoint,
+    Options,
+    Plan,
+    Sensitivity,
+    Transient,
+)
 from jolty.units import CURRENT, TEMPERATURE, VOLTAGE, Dimension, Quantity
 
 
@@ -149,6 +158,10 @@ class Simulation:
     def run(
         self, analysis: Transient, options: Options | None = None
     ) -> results.Waveforms: ...
+    @overload
+    def run(
+        self, analysis: Sensitivity, options: Options | None = None
+    ) -> results.Sensitivities: ...
     def run(self, analysis: Analysis, options: Options | None = None) -> results.Result:
         """Runs `analysis` with `options`, or with the engine's defaults.
 
@@ -208,13 +221,7 @@ class Simulation:
         unknowns, nets = self.unknowns, self.nets
         match outcome["kind"]:
             case "operating_point":
-                return results.OperatingPoint(
-                    unknowns,
-                    outcome["values"],
-                    outcome["strategy"],
-                    nets,
-                    outcome["logic"],
-                )
+                return self._point(outcome)
             case "dc_sweep":
                 return results.Sweep(
                     unknowns,
@@ -226,20 +233,12 @@ class Simulation:
                     outcome["logic"],
                 )
             case "ac":
-                solved = outcome["operating_point"]
-                point = results.OperatingPoint(
-                    unknowns,
-                    solved["values"],
-                    solved["strategy"],
-                    nets,
-                    solved["logic"],
-                )
                 return results.Response(
                     unknowns,
                     outcome["source"],
                     outcome["frequencies"],
                     outcome["values"],
-                    point,
+                    self._point(outcome["operating_point"]),
                 )
             case "transient":
                 statistics = results.Statistics(**outcome["statistics"])
@@ -254,3 +253,26 @@ class Simulation:
                     nets,
                     traces,
                 )
+            case "sensitivity":
+                parameters = tuple(
+                    results.Parameter(instance, name, float(value))
+                    for (instance, name), value in zip(
+                        outcome["parameters"], outcome["values"], strict=True
+                    )
+                )
+                return results.Sensitivities(
+                    unknowns,
+                    tuple(outcome["outputs"]),
+                    parameters,
+                    outcome["derivatives"],
+                    self._point(outcome["operating_point"]),
+                )
+
+    def _point(self, solved: _core.SolvedPoint) -> results.OperatingPoint:
+        return results.OperatingPoint(
+            self.unknowns,
+            solved["values"],
+            solved["strategy"],
+            self.nets,
+            solved["logic"],
+        )

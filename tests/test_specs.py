@@ -238,6 +238,13 @@ def test_a_requirement_is_unmeasured_when_it_cannot_be_read() -> None:
     assert unread(rise_time("t", "out") <= 1 * s, point(1.0)) == (
         "a rise time reads a transient, not an operating point"
     )
+    parameter = results.Parameter("R1", "resistance", 1e3)
+    sensitivities = results.Sensitivities(
+        UNKNOWNS, ("out",), (parameter,), np.ones((1, 1)), point(1.0)
+    )
+    assert unread(value("sens", "out") >= 0 * V, sensitivities) == (
+        "a value reads an operating point, a transient or a DC sweep, not sensitivities"
+    )
     flat = waveforms(np.linspace(0, 1, 11), np.ones(11))
     assert (
         unread(overshoot("t", "out") <= 1, flat) == "out ends where it starts, at 1 V"

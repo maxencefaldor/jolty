@@ -3,8 +3,8 @@
 use serde::Deserialize;
 
 use crate::{
-    Ac, DcSweep, OperatingPoint, Options, Response, SimulationError, Simulator, Sweep, Transient,
-    Waveforms,
+    Ac, DcSweep, OperatingPoint, Options, Response, Sensitivities, Sensitivity, SimulationError,
+    Simulator, Sweep, Transient, Waveforms,
 };
 
 /// An analysis to run.
@@ -22,6 +22,8 @@ pub enum Analysis {
     Ac(Ac),
     /// A transient analysis.
     Transient(Transient),
+    /// The DC sensitivities of some unknowns to every device parameter.
+    Sensitivity(Sensitivity),
 }
 
 /// The result of an [`Analysis`].
@@ -35,6 +37,8 @@ pub enum Outcome {
     Ac(Response),
     /// The waveforms of a transient analysis.
     Transient(Waveforms),
+    /// The DC sensitivities.
+    Sensitivity(Sensitivities),
 }
 
 impl Simulator {
@@ -54,6 +58,9 @@ impl Simulator {
             Analysis::Ac(ac) => Outcome::Ac(self.ac(ac, options)?),
             Analysis::Transient(transient) => {
                 Outcome::Transient(self.transient(transient, options)?)
+            }
+            Analysis::Sensitivity(sensitivity) => {
+                Outcome::Sensitivity(self.sensitivity(sensitivity, options)?)
             }
         })
     }

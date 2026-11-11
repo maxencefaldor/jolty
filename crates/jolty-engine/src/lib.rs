@@ -43,6 +43,7 @@ mod logic;
 mod newton;
 mod operating_point;
 mod options;
+mod sensitivity;
 mod sweep;
 mod transient;
 
@@ -60,6 +61,7 @@ pub use jolty_numerics::integration::Method;
 pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;
+pub use sensitivity::{Parameter, Sensitivities, Sensitivity};
 pub use sweep::{DcSweep, Sweep};
 pub use transient::{Statistics, Transient, Waveforms};
 
@@ -235,6 +237,9 @@ pub enum SimulationError {
         /// The smallest step allowed, in seconds.
         minimum: f64,
     },
+    /// A sensitivity analysis names an output that is no unknown.
+    #[error("there is no unknown named `{0}`")]
+    UnknownOutput(String),
     /// An analysis names a source that does not exist.
     #[error("there is no instance at `{0}`")]
     UnknownSource(String),
