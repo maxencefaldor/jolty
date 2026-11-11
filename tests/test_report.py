@@ -67,42 +67,34 @@ def test_a_response_states_magnitudes() -> None:
     )
 
 
-def test_sensitivities_list_the_parameters_each_output_moves_most_with() -> None:
+def test_sensitivities_list_each_derivative_in_the_circuit_s_order() -> None:
     point = results.OperatingPoint(UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct")
     parameters = tuple(
-        results.Parameter(f"R{index}", "resistance", 1e3) for index in range(7)
+        results.Parameter(f"R{index}", "resistance", 1e3) for index in range(3)
     )
-    derivatives = np.array(
-        [[1e-6, -2e-6, 3e-6, -4e-6, 5e-6, -6e-6, 0], [0, 0, 0, 0, 0, 0, 1e-9]]
-    )
+    derivatives = np.array([[1e-6, -2e-6, 0.0], [0.0, 0.0, 1e-9]])
     sensitivities = results.Sensitivities(
         UNKNOWNS, ("out", "V1:current"), parameters, derivatives, point
     )
-    summary = report.report("sens", sensitivities, listed=10)
+    summary = report.report("sens", sensitivities, listed=2)
     assert isinstance(summary, report.SensitivityReport)
     out, current = summary.outputs
-    assert [influence.instance for influence in out.influences] == [
-        "R5",
-        "R4",
-        "R3",
-        "R2",
-        "R1",
-    ]
-    assert out.influences[0] == report.Influence(
-        instance="R5", parameter="resistance", value=1e3, derivative=-6e-6, change=-6e-5
+    assert out.derivatives[1] == report.Derivative(
+        instance="R1", parameter="resistance", value=1e3, derivative=-2e-6
     )
-    assert [influence.instance for influence in current.influences] == ["R6"]
+    assert [each.derivative for each in current.derivatives] == [0.0, 0.0]
+    assert summary.unlisted == 1
     assert summary.describe() == (
-        "sens: sensitivities to 7 parameters at the operating point, found by Newton "
-        "iteration\n"
-        "  out = 4 V moves, as each parameter grows by 1 %, by\n"
-        "    R5  resistance  1000  -60 µV\n"
-        "    R4  resistance  1000  +50 µV\n"
-        "    R3  resistance  1000  -40 µV\n"
-        "    R2  resistance  1000  +30 µV\n"
-        "    R1  resistance  1000  -20 µV\n"
-        "  V1:current = -1 mA moves, as each parameter grows by 1 %, by\n"
-        "    R6  resistance  1000  +10 nA"
+        "sens: derivatives with respect to 3 parameters at the operating point, found "
+        "by Newton iteration\n"
+        "  out = 4 V\n"
+        "    R0  resistance  at 1000.0  1e-06\n"
+        "    R1  resistance  at 1000.0  -2e-06\n"
+        "      ... and 1 more in the results file\n"
+        "  V1:current = -1 mA\n"
+        "    R0  resistance  at 1000.0  0.0\n"
+        "    R1  resistance  at 1000.0  0.0\n"
+        "      ... and 1 more in the results file"
     )
 
 

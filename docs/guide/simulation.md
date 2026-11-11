@@ -48,12 +48,12 @@ A sensitivity analysis differentiates unknowns, such as `out` or `V1:current`, w
 Plan({"sensitivity": Sensitivity(["out", "V1:current"])})
 ```
 
-A parameter is a number of a device's parameters, named by the device's path and its keys, such as `R1` and `resistance`, or `V1` and `waveform.dc` within an object; numbers within lists, such as a piecewise waveform's points, are left out.
+A parameter is a number of a device's parameters, named by the device's path and its keys, such as `R1` and `resistance`, or `V1` and `waveform.dc` within an object; a list's entries are keyed by their index from 0, such as `waveform.piecewise.1.1`.
 The derivatives come from the adjoint method: one solve with the transposed Jacobian per output serves every parameter, so many parameters cost little.
 Each device's own derivative with respect to a parameter is a central difference of that device alone, made again with the parameter a millionth above and below its value, so the circuit is solved once, yet the derivatives agree with finite differences of the whole circuit to within a hundred-thousandth.
 A number its model cannot take a little away from its value, such as a model's level, has no derivative and is left out.
 
-The result's `derivative(output, instance, parameter)` reads one derivative in SI base units, and `per_percent(output)` how much the output moves, to first order, as each parameter grows by 1 %.
+The result's `derivative(output, instance, parameter)` reads one derivative in SI base units, and `gradient(output)` an output's derivative with respect to every parameter, in the order of `parameters`.
 
 ## Temperature
 

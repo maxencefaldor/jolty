@@ -129,9 +129,9 @@ def test_sensitivities_are_the_derivatives_of_a_divider() -> None:
             current, rel=1e-6
         )
     assert found.operating_point.voltage("out") == pytest.approx(4.0)
-    np.testing.assert_allclose(found.per_percent("out"), [0.04, -8e-3, 8e-3], rtol=1e-6)
+    np.testing.assert_allclose(found.gradient("out"), [0.8, -8e-4, 2e-4], rtol=1e-6)
     with pytest.raises(KeyError, match="no output named 'in'"):
-        found.per_percent("in")
+        found.gradient("in")
     with pytest.raises(KeyError, match="close names: R1 resistance"):
         found.derivative("out", "R1", "resistanc")
     with pytest.raises(SimulationError, match="no unknown named `nowhere`"):

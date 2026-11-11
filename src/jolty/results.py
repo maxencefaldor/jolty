@@ -287,8 +287,8 @@ class Parameter:
     instance: str
     """The device's path, such as ``X1/R1``."""
     name: str
-    """The parameter's name, its keys joined by dots within an object, such as
-    ``resistance`` or ``waveform.dc``."""
+    """The parameter's name, its keys joined by dots within an object and a list's
+    entries keyed by their index from 0, such as ``resistance`` or ``waveform.dc``."""
     value: float
     """Its value, in SI base units."""
 
@@ -311,8 +311,8 @@ class Sensitivities:
         ... )
         >>> sensitivities.derivative("out", "V1", "waveform.dc")
         0.4
-        >>> sensitivities.per_percent("out").tolist()
-        [-0.01, 0.02]
+        >>> sensitivities.gradient("out").tolist()
+        [-0.001, 0.4]
     """
 
     unknowns: tuple[Unknown, ...]
@@ -334,10 +334,9 @@ class Sensitivities:
         index = _find(labels, f"{instance} {parameter}", missing)
         return float(self.derivatives[self._row(output), index])
 
-    def per_percent(self, output: str) -> Real:
-        """How much `output` moves, to first order, as each parameter grows by 1 %."""
-        values = np.array([parameter.value for parameter in self.parameters])
-        return self.derivatives[self._row(output)] * values / 100
+    def gradient(self, output: str) -> Real:
+        """The derivative of `output` with respect to each parameter, in their order."""
+        return self.derivatives[self._row(output)]
 
     def _row(self, output: str) -> int:
         return _find(list(self.outputs), output, "the analysis has no output")

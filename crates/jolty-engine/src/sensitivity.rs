@@ -29,14 +29,14 @@ pub struct Sensitivity {
     pub outputs: Vec<String>,
 }
 
-/// One number of a device's parameters, outside lists such as a piecewise waveform's
-/// points.
+/// One number of a device's parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     /// The device's path, such as `X1/R1`.
     pub device: String,
-    /// The parameter's name, its keys joined by dots within an object, such as
-    /// `resistance` or `waveform.dc`.
+    /// The parameter's name, its keys joined by dots within an object and a list's
+    /// entries keyed by their index from 0, such as `resistance`, `waveform.dc` or
+    /// `waveform.piecewise.1.1`.
     pub name: String,
     /// Its value, in SI base units.
     pub value: f64,
@@ -185,10 +185,17 @@ impl Simulator {
     }
 }
 
-/// Every number in `parameters` outside lists, with its name: its keys joined by dots
-/// within objects.
+/// Every number in `parameters`, with its name: its keys joined by dots, a list's
+/// entries keyed by their index from 0.
 fn leaves(parameters: &Parameters) -> Vec<(String, f64)> {
     fn walk(prefix: &str, value: &Value, found: &mut Vec<(String, f64)>) {
+        let name = |key: &dyn std::fmt::Display| {
+            if prefix.is_empty() {
+                key.to_string()
+            } else {
+                format!("{prefix}.{key}")
+            }
+        };
         match value {
             Value::Number(number) => {
                 if let Some(number) = number.as_f64() {
@@ -197,15 +204,15 @@ fn leaves(parameters: &Parameters) -> Vec<(String, f64)> {
             }
             Value::Object(object) => {
                 for (key, inner) in object {
-                    let name = if prefix.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{prefix}.{key}")
-                    };
-                    walk(&name, inner, found);
+                    walk(&name(key), inner, found);
                 }
             }
-            _ => {}
+            Value::Array(items) => {
+                for (index, inner) in items.iter().enumerate() {
+                    walk(&name(&index), inner, found);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::String(_) => {}
         }
     }
     let mut found = Vec::new();
@@ -215,12 +222,28 @@ fn leaves(parameters: &Parameters) -> Vec<(String, f64)> {
     found
 }
 
+/// The value named `key` within `value`: an object's entry, or a list's by its index.
+fn inner<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    match value {
+        Value::Array(items) => items.get(key.parse::<usize>().ok()?),
+        _ => value.get(key),
+    }
+}
+
+/// The value named `key` within `value`, to change.
+fn inner_mut<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value> {
+    match value {
+        Value::Array(items) => items.get_mut(key.parse::<usize>().ok()?),
+        _ => value.get_mut(key),
+    }
+}
+
 /// The number named `name` in `parameters`.
 fn leaf(parameters: &Parameters, name: &str) -> Option<f64> {
     let mut keys = name.split('.');
     let mut value = parameters.get(keys.next()?)?;
     for key in keys {
-        value = value.get(key)?;
+        value = inner(value, key)?;
     }
     value.as_f64()
 }
@@ -231,7 +254,7 @@ fn set_leaf(parameters: &mut Parameters, name: &str, number: f64) -> Option<()> 
     let mut keys = name.split('.');
     let mut value = parameters.get_mut(keys.next()?)?;
     for key in keys {
-        value = value.get_mut(key)?;
+        value = inner_mut(value, key)?;
     }
     *value = Value::Number(serde_json::Number::from_f64(number)?);
     Some(())
@@ -257,11 +280,16 @@ mod tests {
         assert_eq!(
             names,
             [
+                "points.0.0",
+                "points.0.1",
                 "resistance",
                 "waveform.pulse.initial",
                 "waveform.pulse.pulsed"
             ]
         );
+        assert_eq!(set_leaf(&mut parameters, "points.0.1", 2.0), Some(()));
+        assert_eq!(leaf(&parameters, "points.0.1"), Some(2.0));
+        assert_eq!(set_leaf(&mut parameters, "points.1.0", 2.0), None);
         assert_eq!(
             set_leaf(&mut parameters, "waveform.pulse.pulsed", 3.3),
             Some(())

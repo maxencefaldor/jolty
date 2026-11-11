@@ -10,7 +10,7 @@ A corner's report states whether the circuit elaborates there and which analyses
 and a Monte Carlo analysis's what each requirement read over its samples and the yield.
 """
 
-from typing import Annotated, Final, Literal
+from typing import Annotated, Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,9 +22,6 @@ from jolty.units import format_si
 type Quantity = Literal["voltage", "current"]
 
 _SYMBOLS = {"voltage": "V", "current": "A"}
-
-INFLUENCES: Final = 5
-"""The parameters a sensitivity report lists per output, those it moves most with."""
 
 _STRATEGIES = {
     "direct": "Newton iteration",
@@ -179,8 +176,8 @@ class TransientReport(_Model):
         return _join(head, lines, self.unlisted)
 
 
-class Influence(_Model):
-    """How one output moves with one parameter."""
+class Derivative(_Model):
+    """An output's derivative with respect to one parameter."""
 
     instance: str = Field(description="The device's path.")
     parameter: str = Field(description="The parameter's name, such as resistance.")
@@ -189,21 +186,17 @@ class Influence(_Model):
         description="The output's derivative with respect to the parameter, in SI "
         "base units."
     )
-    change: float = Field(
-        description="How much the output moves, to first order, as the parameter "
-        "grows by 1 %, in volts or amperes."
-    )
 
 
 class OutputSensitivity(_Model):
-    """The parameters one output moves most with."""
+    """An output's derivatives with respect to the parameters."""
 
     output: str
     quantity: Quantity
     value: float = Field(description="Its value, in volts or amperes.")
-    influences: tuple[Influence, ...] = Field(
-        description="The parameters it moves with, most first; none it does not "
-        "move with."
+    derivatives: tuple[Derivative, ...] = Field(
+        description="Its derivative with respect to the first parameters, in the "
+        "circuit's order."
     )
 
 
@@ -220,35 +213,31 @@ class SensitivityReport(_Model):
         description="Parameters the derivatives are with respect to."
     )
     outputs: tuple[OutputSensitivity, ...]
+    unlisted: int = Field(description="Parameters left out of each output's list.")
 
     def describe(self) -> str:
         """The report as text."""
         strategy = _STRATEGIES.get(self.strategy, self.strategy)
         head = (
-            f"{self.name}: sensitivities to {self.parameters} parameters at the "
-            f"operating point, found by {strategy}"
+            f"{self.name}: derivatives with respect to {self.parameters} parameters "
+            f"at the operating point, found by {strategy}"
         )
         lines = [head]
         for output in self.outputs:
-            unit = _SYMBOLS[output.quantity]
-            value = format_si(output.value, unit)
-            if not output.influences:
-                lines.append(f"  {output.output} = {value} moves with no parameter")
-                continue
-            lines.append(
-                f"  {output.output} = {value} moves, as each parameter grows by 1 %, by"
-            )
+            value = format_si(output.value, _SYMBOLS[output.quantity])
+            lines.append(f"  {output.output} = {value}")
             rows = [
                 [
-                    influence.instance,
-                    influence.parameter,
-                    f"{influence.value:.4g}",
-                    ("+" if influence.change > 0 else "")
-                    + format_si(influence.change, unit),
+                    each.instance,
+                    each.parameter,
+                    f"at {each.value!r}",
+                    f"{each.derivative!r}",
                 ]
-                for influence in output.influences
+                for each in output.derivatives
             ]
             lines.extend(f"  {row}" for row in _table(rows))
+            if self.unlisted:
+                lines.append(f"      ... and {self.unlisted} more in the results file")
         return "\n".join(lines)
 
 
@@ -402,36 +391,41 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 unlisted=unlisted,
             )
         case results.Sensitivities():
+            listed_parameters = result.parameters[:listed]
             return SensitivityReport(
                 name=name,
                 strategy=result.operating_point.strategy,
                 parameters=len(result.parameters),
-                outputs=tuple(_output(result, output) for output in result.outputs),
+                outputs=tuple(
+                    _output(result, output, len(listed_parameters))
+                    for output in result.outputs
+                ),
+                unlisted=len(result.parameters) - len(listed_parameters),
             )
 
 
-def _output(result: results.Sensitivities, output: str) -> OutputSensitivity:
-    """The parameters `output` moves most with, up to `INFLUENCES` of them."""
-    changes = result.per_percent(output)
-    largest = np.argsort(-np.abs(changes), kind="stable")[:INFLUENCES]
-    row = result.outputs.index(output)
-    influences = tuple(
-        Influence(
-            instance=result.parameters[index].instance,
-            parameter=result.parameters[index].name,
-            value=result.parameters[index].value,
-            derivative=float(result.derivatives[row, index]),
-            change=float(changes[index]),
+def _output(
+    result: results.Sensitivities, output: str, listed: int
+) -> OutputSensitivity:
+    """The value of `output`, and its derivatives by the first `listed` parameters."""
+    gradient = result.gradient(output)
+    derivatives = tuple(
+        Derivative(
+            instance=parameter.instance,
+            parameter=parameter.name,
+            value=parameter.value,
+            derivative=float(derivative),
         )
-        for index in largest
-        if changes[index] != 0
+        for parameter, derivative in zip(
+            result.parameters[:listed], gradient[:listed], strict=True
+        )
     )
     column = results.column(result.unknowns, output)
     return OutputSensitivity(
         output=output,
         quantity=result.unknowns[column].quantity,
         value=float(result.operating_point.values[column]),
-        influences=influences,
+        derivatives=derivatives,
     )
 
 
