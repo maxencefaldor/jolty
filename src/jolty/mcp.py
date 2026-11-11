@@ -48,6 +48,9 @@ and sensitivities, and saves every result to a .npz file that
 jolty.files.load_results reads back; plot_results draws other unknowns from it, and
 draw_schematic draws the component inside an instance. Fix the script and run again
 until the report has no errors and the analyses show the intended behavior.
+price_circuit prices the device instances of a component of a saved circuit with a
+catalog file of parts: each resistor, capacitor and inductor takes the cheapest part of
+its value whose tolerance is within its own.
 
 Components: decorate a function taking a jolty.Builder with @jolty.component. Inside,
 c.port(name, role) declares a port (Role.SIGNAL, SUPPLY or GROUND), c.place(device or
@@ -207,6 +210,13 @@ def create_server(settings: Settings) -> MCPServer:
         service.ExplainRequest,
         service.explain,
         service.ExplainResult,
+        READS_FILES,
+    )
+    register(
+        "price_circuit",
+        service.CostRequest,
+        service.cost,
+        service.CostResult,
         READS_FILES,
     )
     return server

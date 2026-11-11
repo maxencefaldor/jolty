@@ -76,6 +76,7 @@ def test_tools_mirror_the_service_requests() -> None:
         "draw_schematic",
         "check_circuit",
         "explain_rule",
+        "price_circuit",
     }
     simulate = tools["simulate_circuit"]
     assert set(simulate.input_schema["properties"]) == {
@@ -99,7 +100,7 @@ def test_tools_mirror_the_service_requests() -> None:
         annotations = tools[name].annotations
         assert annotations is not None
         assert annotations.destructive_hint is True  # a script runs any Python
-    for name in ("check_circuit", "explain_rule"):
+    for name in ("check_circuit", "explain_rule", "price_circuit"):
         annotations = tools[name].annotations
         assert annotations is not None
         assert annotations.read_only_hint is True

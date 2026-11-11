@@ -89,6 +89,14 @@ class ExplainCommand(service.ExplainRequest, _Output):
         self.emit(await service.explain(self, Settings.load()))
 
 
+class CostCommand(service.CostRequest, _Output):
+    """Price a component of a saved circuit file with a catalog's parts."""
+
+    async def cli_cmd(self) -> None:
+        """Runs the command."""
+        self.emit(await service.cost(self, Settings.load()))
+
+
 class Jolty(BaseSettings):
     """Build and simulate electronic circuits written as Python scripts."""
 
@@ -119,6 +127,9 @@ class Jolty(BaseSettings):
     explain: CliSubCommand[ExplainCommand] = Field(
         description="Explain rules and their levels."
     )
+    cost: CliSubCommand[CostCommand] = Field(
+        description="Price a component of a saved circuit file with a catalog."
+    )
 
     @classmethod
     @override
@@ -144,11 +155,10 @@ class Jolty(BaseSettings):
 def main(argv: Sequence[str] | None = None) -> None:
     """Runs the command line.
 
-    The exit status is 1 when a circuit does not elaborate, a check finds an error or an
-    analysis fails, and 2
-    when the arguments or settings are invalid, a command needs a subcommand, or a
-    command fails, as when a script raises. The lone argument ``--version`` prints the
-    version.
+    The exit status is 1 when a circuit does not elaborate, a check finds an error, an
+    analysis fails or no part prices a device instance, and 2 when the arguments or
+    settings are invalid, a command needs a subcommand, or a command fails, as when a
+    script raises. The lone argument ``--version`` prints the version.
     """
     arguments = sys.argv[1:] if argv is None else list(argv)
     if arguments == ["--version"]:

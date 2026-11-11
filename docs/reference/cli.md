@@ -87,3 +87,14 @@ Explain rules and their levels.
 | --- | --- | --- |
 | `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
 | `RULES` |  | Rules to explain; every rule by default. |
+
+## `jolty cost`
+
+Price a component of a saved circuit file with a catalog.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
+| `CIRCUIT` | required | A .jolty.json circuit file. |
+| `--catalog` | required | A catalog file of parts and their prices. |
+| `--instance` |  | The path of the component instance to price, such as 'X1'; the top component by default. |

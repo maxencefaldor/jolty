@@ -22,7 +22,7 @@ from typing import override
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import CliPositionalArg
 
-from jolty import checks, files, ir, plots, results, runner, schematic, specs
+from jolty import catalog, checks, files, ir, plots, results, runner, schematic, specs
 from jolty.errors import ElaborationError, JoltyError
 from jolty.fidelity import FidelityReport
 from jolty.report import AnalysisReport, CornerReport, FailureReport, MonteCarloReport
@@ -595,6 +595,67 @@ async def draw(request: DrawRequest, settings: Settings) -> DrawResult:
         _draw, circuit, target, request.instance, point=point
     )
     return DrawResult(schematic=drawn)
+
+
+class CostRequest(_Model):
+    """Price a saved circuit's top component, or an instance's, with a catalog."""
+
+    circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
+    catalog: Path = Field(description="A catalog file of parts and their prices.")
+    instance: str = Field(
+        default="",
+        description="The path of the component instance to price, such as 'X1'; the "
+        "top component by default.",
+    )
+
+
+class CostResult(CommandResult):
+    """The bill of materials."""
+
+    bill: catalog.Bill
+
+    @property
+    @override
+    def ok(self) -> bool:
+        """Whether a part builds every device instance."""
+        return not self.bill.unpriced
+
+    @override
+    def describe(self) -> str:
+        """The bill, a line per instance."""
+        return self.bill.describe()
+
+
+async def cost(request: CostRequest, settings: Settings) -> CostResult:
+    """Prices a component of a saved circuit with a catalog; settings play no part.
+
+    Raises:
+        JoltyError: When a file is missing or holds no circuit or no catalog, or no
+            component instance is at the path.
+    """
+    del settings
+    circuit = await asyncio.to_thread(_load_circuit, request.circuit)
+    parts = await asyncio.to_thread(_load_catalog, request.catalog)
+    try:
+        return CostResult(bill=catalog.bill(circuit, parts, request.instance))
+    except KeyError as error:
+        raise JoltyError(error.args[0]) from None
+
+
+def _load_catalog(path: Path) -> catalog.Catalog:
+    """The catalog saved at `path`.
+
+    Raises:
+        JoltyError: When there is no such file, or it holds no catalog.
+    """
+    try:
+        return catalog.Catalog.load(path)
+    except FileNotFoundError:
+        message = f"no such catalog file: {path}"
+        raise JoltyError(message) from None
+    except ValidationError as error:
+        message = f"{path} is not a catalog file: {error.error_count()} errors"
+        raise JoltyError(message) from None
 
 
 def _draw(
