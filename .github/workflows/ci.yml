@@ -48,6 +48,8 @@ jobs:
         with:
           enable-cache: true
       - uses: Swatinem/rust-cache@v2
+      - name: Install ngspice, the reference simulator of the differential tests
+        run: sudo apt-get update && sudo apt-get install --yes ngspice
       - name: Install
         run: uv sync
       - name: Format

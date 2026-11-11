@@ -64,4 +64,4 @@ Each module imports only from the modules listed before it:
   The engine reports every problem it finds, not only the first.
 - **Scripts run in their own process** (`jolty.runner`), never in the command line or the MCP server: their output is captured, a timeout stops them, and a crash ends only the runner.
 - **Numbers in messages** are written in their shortest exact form, such as `-1e-9`; reports write them with SI prefixes, such as `-1 nV`.
-- **Tests:** the engine is checked against closed-form solutions and by property tests of the laws every circuit obeys, such as Kirchhoff's current law.
+- **Tests:** the engine is checked against closed-form solutions, by property tests of the laws every circuit obeys, such as Kirchhoff's current law, and against ngspice on a corpus of circuits (`tests/test_ngspice.py`, skipped when ngspice is not installed).
