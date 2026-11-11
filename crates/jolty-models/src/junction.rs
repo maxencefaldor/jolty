@@ -22,8 +22,8 @@ pub const fn thermal_voltage(temperature: f64) -> f64 {
 }
 
 /// Silicon's band gap at `temperature`, in electronvolts, as SPICE models it.
-pub(crate) fn band_gap(temperature: f64) -> f64 {
-    1.16 - 7.02e-4 * temperature * temperature / (temperature + 1108.0)
+pub(crate) fn band_gap<R: Real>(temperature: R) -> R {
+    -(temperature * 7.02e-4 * temperature / (temperature + 1108.0) - 1.16)
 }
 
 /// The temperature a device is evaluated at, and the nominal temperature its parameters
@@ -64,21 +64,21 @@ impl<R: Real> Temperatures<R> {
     }
 }
 
-impl Temperatures {
+impl<R: Real> Temperatures<R> {
     /// The thermal voltage at the device's temperature.
     pub(crate) const fn thermal_voltage(self) -> f64 {
         thermal_voltage(self.actual)
     }
 
     /// The device's temperature over the nominal temperature.
-    pub(crate) fn ratio(self) -> f64 {
-        self.actual / self.nominal
+    pub(crate) fn ratio(self) -> R {
+        R::constant(self.actual) / self.nominal
     }
 
     /// The factor that scales a saturation current with `emission` coefficient, given the
     /// `energy_gap` in volts and the temperature `exponent`, SPICE's XTI:
     /// `exp(((T/Tn − 1) · Eg / Vt + XTI · ln(T/Tn)) / n)`.
-    pub(crate) fn saturation(self, energy_gap: f64, exponent: f64, emission: f64) -> f64 {
+    pub(crate) fn saturation(self, energy_gap: R, exponent: R, emission: R) -> R {
         let ratio = self.ratio();
         (((ratio - 1.0) * energy_gap / self.thermal_voltage() + exponent * ratio.ln()) / emission)
             .exp()
@@ -86,29 +86,33 @@ impl Temperatures {
 
     /// A junction's built-in `potential` and zero-bias `capacitance`, of `grading`
     /// coefficient, scaled to the device's temperature.
-    pub(crate) fn junction(self, potential: f64, capacitance: f64, grading: f64) -> (f64, f64) {
+    pub(crate) fn junction(self, potential: R, capacitance: R, grading: R) -> (R, R) {
         let nominal = self.nominal / REFERENCE_TEMPERATURE;
         let intrinsic = (potential - potential_shift(self.nominal)) / nominal;
-        let scaled = self.actual / REFERENCE_TEMPERATURE * intrinsic + potential_shift(self.actual);
-        let stretch = |temperature: f64, potential: f64| {
-            1.0 + grading
-                * (4e-4 * (temperature - REFERENCE_TEMPERATURE)
+        let scaled = intrinsic * (self.actual / REFERENCE_TEMPERATURE)
+            + potential_shift(R::constant(self.actual));
+        let stretch = |temperature: R, potential: R| {
+            grading
+                * ((temperature - REFERENCE_TEMPERATURE) * 4e-4
                     - (potential - intrinsic) / intrinsic)
+                + 1.0
         };
         (
             scaled,
-            capacitance * stretch(self.actual, scaled) / stretch(self.nominal, potential),
+            capacitance * stretch(R::constant(self.actual), scaled)
+                / stretch(self.nominal, potential),
         )
     }
 }
 
 /// How far a junction's built-in potential at `temperature` lies from the reference
 /// temperature's, through silicon's band gap and intrinsic concentration: SPICE's `pbfact`.
-fn potential_shift(temperature: f64) -> f64 {
-    let gap = -band_gap(temperature) / (2.0 * BOLTZMANN * temperature)
+fn potential_shift<R: Real>(temperature: R) -> R {
+    let gap = -band_gap(temperature) / (temperature * (2.0 * BOLTZMANN))
         + 1.115_087_7 / (2.0 * BOLTZMANN * REFERENCE_TEMPERATURE);
-    -2.0 * thermal_voltage(temperature)
-        * (1.5 * (temperature / REFERENCE_TEMPERATURE).ln() + ELEMENTARY_CHARGE * gap)
+    temperature * BOLTZMANN / ELEMENTARY_CHARGE
+        * -2.0
+        * ((temperature / REFERENCE_TEMPERATURE).ln() * 1.5 + gap * ELEMENTARY_CHARGE)
 }
 
 /// The current through a junction at `voltage`, and its derivative, with `saturation`
@@ -117,19 +121,19 @@ fn potential_shift(temperature: f64) -> f64 {
 /// Forward and slightly reversed, the current is `Is · (e^{v / slope} − 1)`. Below three
 /// slopes of reverse bias it follows SPICE's form, `−Is · (1 + (3·slope / (e·v))³)`, which
 /// joins the exponential with its slope and settles on `−Is`.
-pub(crate) fn junction_current(voltage: f64, saturation: f64, slope: f64) -> (f64, f64) {
-    if voltage >= -3.0 * slope {
-        let exponential = (voltage / slope).exp();
+pub(crate) fn junction_current<R: Real>(voltage: f64, saturation: R, slope: R) -> (R, R) {
+    if voltage >= -(slope.value() * 3.0) {
+        let exponential = (R::constant(voltage) / slope).exp();
         (
             saturation * (exponential - 1.0),
             saturation * exponential / slope,
         )
     } else {
-        let ratio = 3.0 * slope / (voltage * std::f64::consts::E);
+        let ratio = slope * 3.0 / (voltage * std::f64::consts::E);
         let cube = ratio * ratio * ratio;
         (
-            -saturation * (1.0 + cube),
-            3.0 * saturation * cube / voltage,
+            -saturation * (cube + 1.0),
+            saturation * 3.0 * cube / voltage,
         )
     }
 }
@@ -227,43 +231,38 @@ pub(crate) fn limit_drain(new: f64, old: f64) -> Option<f64> {
 /// The depletion charge of a junction: the classic power law below `threshold`, extended
 /// linearly in capacitance above it, where the power law would diverge.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Depletion {
-    capacitance: f64,
-    potential: f64,
-    grading: f64,
-    threshold: f64,
+pub(crate) struct Depletion<R: Real = f64> {
+    capacitance: R,
+    potential: R,
+    grading: R,
+    threshold: R,
     /// The charge at the threshold, divided by the zero-bias capacitance.
-    charge_at_threshold: f64,
+    charge_at_threshold: R,
     /// `(1 − fc)^{1 + m}`.
-    divisor: f64,
+    divisor: R,
     /// `1 − fc · (1 + m)`.
-    offset: f64,
+    offset: R,
 }
 
-impl Depletion {
+impl<R: Real> Depletion<R> {
     /// The depletion of a junction with zero-bias `capacitance`, built-in `potential`,
     /// `grading` coefficient and depletion `coefficient`, the fraction of the potential
     /// above which the capacitance is extended linearly; `None` without capacitance.
-    pub(crate) fn new(
-        capacitance: f64,
-        potential: f64,
-        grading: f64,
-        coefficient: f64,
-    ) -> Option<Self> {
-        (capacitance > 0.0).then(|| Self {
+    pub(crate) fn new(capacitance: R, potential: R, grading: R, coefficient: R) -> Option<Self> {
+        (capacitance.value() > 0.0).then(|| Self {
             capacitance,
             potential,
             grading,
             threshold: coefficient * potential,
-            charge_at_threshold: potential * (1.0 - (1.0 - coefficient).powf(1.0 - grading))
-                / (1.0 - grading),
-            divisor: (1.0 - coefficient).powf(1.0 + grading),
-            offset: 1.0 - coefficient * (1.0 + grading),
+            charge_at_threshold: potential * -((-(coefficient - 1.0)).pow(-(grading - 1.0)) - 1.0)
+                / -(grading - 1.0),
+            divisor: (-(coefficient - 1.0)).pow(grading + 1.0),
+            offset: -(coefficient * (grading + 1.0) - 1.0),
         })
     }
 
     /// The charge and capacitance at junction voltage `voltage`.
-    pub(crate) fn evaluate(&self, voltage: f64) -> (f64, f64) {
+    pub(crate) fn evaluate(&self, voltage: f64) -> (R, R) {
         let Self {
             capacitance,
             potential,
@@ -271,17 +270,17 @@ impl Depletion {
             threshold,
             ..
         } = *self;
-        if voltage < threshold {
-            let remaining = 1.0 - voltage / potential;
-            let factor = remaining.powf(-grading);
-            let charge = capacitance * potential * (1.0 - remaining * factor) / (1.0 - grading);
+        if voltage < threshold.value() {
+            let remaining = -(R::constant(voltage) / potential - 1.0);
+            let factor = remaining.pow(-grading);
+            let charge = capacitance * potential * -(remaining * factor - 1.0) / -(grading - 1.0);
             (charge, capacitance * factor)
         } else {
-            let above = voltage - threshold;
-            let square = voltage * voltage - threshold * threshold;
+            let above = -(threshold - voltage);
+            let square = -(threshold * threshold - voltage * voltage);
             let charge = capacitance
                 * (self.charge_at_threshold
-                    + (self.offset * above + grading / (2.0 * potential) * square) / self.divisor);
+                    + (self.offset * above + grading / (potential * 2.0) * square) / self.divisor);
             (
                 charge,
                 capacitance / self.divisor * (self.offset + grading * voltage / potential),
@@ -295,10 +294,11 @@ impl Depletion {
 /// # Errors
 ///
 /// Returns an error naming `parameter` otherwise.
-pub(crate) fn below_one(parameter: &str, value: f64) -> Result<f64, ParameterError> {
-    if (0.0..1.0).contains(&value) {
+pub(crate) fn below_one<R: Real>(parameter: &str, value: R) -> Result<R, ParameterError> {
+    if (0.0..1.0).contains(&value.value()) {
         Ok(value)
     } else {
+        let value = value.value();
         Err(ParameterError(format!(
             "{parameter} must be at least 0 and below 1, not {value:?}"
         )))
@@ -306,8 +306,9 @@ pub(crate) fn below_one(parameter: &str, value: f64) -> Result<f64, ParameterErr
 }
 
 /// The charge and capacitance of an optional depletion at `voltage`, zero without one.
-pub(crate) fn depletion_charge(depletion: Option<&Depletion>, voltage: f64) -> (f64, f64) {
-    depletion.map_or((0.0, 0.0), |depletion| depletion.evaluate(voltage))
+pub(crate) fn depletion_charge<R: Real>(depletion: Option<&Depletion<R>>, voltage: f64) -> (R, R) {
+    let zero = R::constant(0.0);
+    depletion.map_or((zero, zero), |depletion| depletion.evaluate(voltage))
 }
 
 #[cfg(test)]

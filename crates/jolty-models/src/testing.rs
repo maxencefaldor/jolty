@@ -326,29 +326,46 @@ pub(crate) fn assert_parameter_gradients_match_at<M: NativeModel>(
         let value = at(&mut changed, &path).as_f64().expect("a number");
         *at(&mut changed, &path) = serde_json::json!({"value": value, "derivative": 1.0});
         let (exact, exact_charge) = rig.exact(&object(&changed), (x, time));
-        let step = 1e-6 * value.abs().max(1e-12);
-        *at(&mut changed, &path) = serde_json::json!(value + step);
-        let (above, above_charge) = rig.plain(&object(&changed), (x, time));
-        *at(&mut changed, &path) = serde_json::json!(value - step);
-        let (below, below_charge) = rig.plain(&object(&changed), (x, time));
+        // Central differences at a step and at half of it, extrapolated to a zero step:
+        // the step large enough that a model's own iterations, such as a diode's matching
+        // of its breakdown, settle alike above and below.
+        let step = 1e-4 * value.abs().max(1e-12);
+        let mut central = |step: f64| {
+            *at(&mut changed, &path) = serde_json::json!(value + step);
+            let above = rig.plain(&object(&changed), (x, time));
+            *at(&mut changed, &path) = serde_json::json!(value - step);
+            let below = rig.plain(&object(&changed), (x, time));
+            let difference = |above: &[f64], below: &[f64]| -> Vec<(f64, f64)> {
+                above
+                    .iter()
+                    .zip(below)
+                    .map(|(above, below)| ((above - below) / (2.0 * step), above.abs()))
+                    .collect()
+            };
+            (
+                difference(&above.0, &below.0),
+                difference(&above.1, &below.1),
+            )
+        };
+        let (wide, narrow) = (central(step), central(step / 2.0));
         let rows = [
-            ("residual", exact, plain.clone(), above, below),
+            ("residual", exact, plain.clone(), wide.0, narrow.0),
             (
                 "charge",
                 exact_charge,
                 plain_charge.clone(),
-                above_charge,
-                below_charge,
+                wide.1,
+                narrow.1,
             ),
         ];
-        for (kind, exact, plain, above, below) in rows {
+        for (kind, exact, plain, wide, narrow) in rows {
             for (row, exact) in exact.iter().enumerate() {
-                let numeric = (above[row] - below[row]) / (2.0 * step);
-                let rounding = 16.0 * f64::EPSILON * above[row].abs().max(below[row].abs()) / step;
-                let tolerance = 1e-5 * exact.derivative.abs().max(numeric.abs()) + rounding;
+                let numeric = (4.0 * narrow[row].0 - wide[row].0) / 3.0;
+                let rounding = 64.0 * f64::EPSILON * wide[row].1 / step;
+                let tolerance = 1e-6 * exact.derivative.abs().max(numeric.abs()) + rounding;
                 assert!(
                     (exact.derivative - numeric).abs() <= tolerance + 1e-30,
-                    "{} d{kind}[{row}]/d{name}: exact {}, numeric {numeric}",
+                    "{} d{kind}[{row}]/d{name} at {x:?}: exact {}, numeric {numeric}",
                     <M::Device<f64> as NativeDevice>::NAME,
                     exact.derivative
                 );
