@@ -80,8 +80,8 @@ impl Library {
     #[must_use]
     pub fn standard() -> Self {
         let mut library = Self::default();
-        library.add(Plain::<BehavioralCurrentSource>::new());
-        library.add(Plain::<BehavioralVoltageSource>::new());
+        library.add(Native::<BehavioralCurrentSource>::new());
+        library.add(Native::<BehavioralVoltageSource>::new());
         library.add(Plain::<BipolarTransistor>::new());
         library.add(Native::<Resistor>::new());
         library.add(Native::<Capacitor>::new());

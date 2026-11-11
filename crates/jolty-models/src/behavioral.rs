@@ -1,10 +1,12 @@
+use std::marker::PhantomData;
+
 use jolty_expressions::{Expression, Variable, Workspace};
 use jolty_numerics::Entry;
 use serde::Deserialize;
 
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
-    ParameterError, Quantity, Unknown,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
+    ParameterError, Quantity, Real, Unknown,
 };
 
 /// An expression a behavioral source follows: an [expression](jolty_expressions) of the
@@ -141,23 +143,26 @@ impl Port {
     }
 
     /// Adds the port's current to its terminals, and its equation: no voltage across it.
-    fn add(&self, input: &Input<'_>, output: &mut Output<'_>) {
+    fn add<R: Real>(&self, input: &Input<'_>, output: &mut Output<'_, R>) {
         let row = Some(self.current);
         let [positive, negative] = self.nodes;
         let current = input.value(row);
-        output.add_residual(positive, current);
-        output.add_residual(negative, -current);
-        output.add_residual(row, input.value(positive) - input.value(negative));
+        output.add_residual(positive, R::constant(current));
+        output.add_residual(negative, R::constant(-current));
+        output.add_residual(
+            row,
+            R::constant(input.value(positive) - input.value(negative)),
+        );
         let [
             positive_current,
             negative_current,
             current_positive,
             current_negative,
         ] = self.entries;
-        output.add_conductance(positive_current, 1.0);
-        output.add_conductance(negative_current, -1.0);
-        output.add_conductance(current_positive, 1.0);
-        output.add_conductance(current_negative, -1.0);
+        output.add_conductance(positive_current, R::constant(1.0));
+        output.add_conductance(negative_current, R::constant(-1.0));
+        output.add_conductance(current_positive, R::constant(1.0));
+        output.add_conductance(current_negative, R::constant(-1.0));
     }
 }
 
@@ -244,7 +249,7 @@ impl Formula {
 
     /// Adds the expression's value to its rows, with its derivatives, and the ports'
     /// equations.
-    fn add(&mut self, input: &Input<'_>, output: &mut Output<'_>) {
+    fn add<R: Real>(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
         for (value, read) in self.values.iter_mut().zip(&self.reads) {
             *value = match *read {
                 Read::Voltage(positive, negative) => input.value(positive) - input.value(negative),
@@ -262,11 +267,11 @@ impl Formula {
             output.mark_limited();
         }
         for &(row, factor) in &self.rows {
-            output.add_residual(row, factor * value);
+            output.add_residual(row, R::constant(factor * value));
         }
         for (entries, derivative) in self.entries.iter().zip(&self.gradient) {
             for &(entry, factor) in entries {
-                output.add_conductance(entry, factor * derivative);
+                output.add_conductance(entry, R::constant(factor * derivative));
             }
         }
         for port in &self.ports {
@@ -280,11 +285,16 @@ impl Formula {
 ///
 /// It drives the expression's value from `positive` through the source to `negative`.
 #[derive(Debug)]
-pub struct BehavioralCurrentSource {
+pub struct BehavioralCurrentSource<R: Real = f64> {
+    real: PhantomData<fn() -> R>,
     formula: Formula,
 }
 
-impl NativeDevice for BehavioralCurrentSource {
+impl NativeModel for BehavioralCurrentSource {
+    type Device<R: Real> = BehavioralCurrentSource<R>;
+}
+
+impl<R: Real> NativeDevice<R> for BehavioralCurrentSource<R> {
     const NAME: &'static str = "behavioral_current_source";
     type Parameters = BehavioralParameters;
 
@@ -298,13 +308,14 @@ impl NativeDevice for BehavioralCurrentSource {
     ) -> Result<Self, ParameterError> {
         let rows = vec![(binding.terminal(0), 1.0), (binding.terminal(1), -1.0)];
         Ok(Self {
+            real: PhantomData,
             formula: Formula::new(parameters.expression, binding, rows),
         })
     }
 }
 
-impl Device for BehavioralCurrentSource {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_>) {
+impl<R: Real> Device<R> for BehavioralCurrentSource<R> {
+    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
         self.formula.add(input, output);
     }
 }
@@ -315,7 +326,8 @@ impl Device for BehavioralCurrentSource {
 /// It holds `v_positive − v_negative` at the expression's value. Its current, flowing from
 /// `positive` through the source to `negative`, is an unknown labelled `current`.
 #[derive(Debug)]
-pub struct BehavioralVoltageSource {
+pub struct BehavioralVoltageSource<R: Real = f64> {
+    real: PhantomData<fn() -> R>,
     formula: Formula,
     nodes: [Node; 2],
     current: Unknown,
@@ -323,7 +335,11 @@ pub struct BehavioralVoltageSource {
     entries: [Option<Entry>; 4],
 }
 
-impl NativeDevice for BehavioralVoltageSource {
+impl NativeModel for BehavioralVoltageSource {
+    type Device<R: Real> = BehavioralVoltageSource<R>;
+}
+
+impl<R: Real> NativeDevice<R> for BehavioralVoltageSource<R> {
     const NAME: &'static str = "behavioral_voltage_source";
     type Parameters = BehavioralParameters;
 
@@ -345,6 +361,7 @@ impl NativeDevice for BehavioralVoltageSource {
             binding.entry(row, nodes[1]),
         ];
         Ok(Self {
+            real: PhantomData,
             formula: Formula::new(parameters.expression, binding, vec![(row, -1.0)]),
             nodes,
             current,
@@ -353,24 +370,27 @@ impl NativeDevice for BehavioralVoltageSource {
     }
 }
 
-impl Device for BehavioralVoltageSource {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_>) {
+impl<R: Real> Device<R> for BehavioralVoltageSource<R> {
+    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
         let row = Some(self.current);
         let [positive, negative] = self.nodes;
         let current = input.value(row);
-        output.add_residual(positive, current);
-        output.add_residual(negative, -current);
-        output.add_residual(row, input.value(positive) - input.value(negative));
+        output.add_residual(positive, R::constant(current));
+        output.add_residual(negative, R::constant(-current));
+        output.add_residual(
+            row,
+            R::constant(input.value(positive) - input.value(negative)),
+        );
         let [
             positive_current,
             negative_current,
             current_positive,
             current_negative,
         ] = self.entries;
-        output.add_conductance(positive_current, 1.0);
-        output.add_conductance(negative_current, -1.0);
-        output.add_conductance(current_positive, 1.0);
-        output.add_conductance(current_negative, -1.0);
+        output.add_conductance(positive_current, R::constant(1.0));
+        output.add_conductance(negative_current, R::constant(-1.0));
+        output.add_conductance(current_positive, R::constant(1.0));
+        output.add_conductance(current_negative, R::constant(-1.0));
         self.formula.add(input, output);
     }
 }
