@@ -19,12 +19,13 @@ A device's terminal joins a node that no other terminal joins and that is not th
 
 ## shorted-source
 
-A voltage or current source, independent or controlled, has both ends of its output on one node.
-A voltage source then holds its voltage across nothing, and a current source drives its current through nothing.
+A voltage or current source, independent or controlled, has both ends of its output on one node, or a current-controlled source has both ends of the port that senses its control current on one node.
+A voltage source then holds its voltage across nothing, a current source drives its current through nothing, and a sensing port senses no current.
 
 ## shorted-device
 
-A resistor, capacitor, inductor or diode has both terminals on one node, so it carries no current and does nothing.
+A resistor, capacitor, inductor, diode or transistor has every terminal on one node, so it carries no current and does nothing.
+A transistor with only some terminals joined, such as a diode-connected one, raises nothing.
 
 ## voltage-loop
 

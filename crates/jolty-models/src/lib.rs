@@ -30,6 +30,8 @@ use std::collections::BTreeMap;
 pub use binding::{Binding, Node, Quantity, TerminalPair, Unknown, UnknownInfo};
 pub use bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
 pub use controlled::{
+    CurrentControlledCurrentSource, CurrentControlledCurrentSourceParameters,
+    CurrentControlledVoltageSource, CurrentControlledVoltageSourceParameters,
     VoltageControlledCurrentSource, VoltageControlledCurrentSourceParameters,
     VoltageControlledVoltageSource, VoltageControlledVoltageSourceParameters,
 };
@@ -60,6 +62,8 @@ impl Library {
         library.add(Native::<Inductor>::new());
         library.add(Native::<VoltageSource>::new());
         library.add(Native::<CurrentSource>::new());
+        library.add(Native::<CurrentControlledCurrentSource>::new());
+        library.add(Native::<CurrentControlledVoltageSource>::new());
         library.add(Native::<VoltageControlledVoltageSource>::new());
         library.add(Native::<VoltageControlledCurrentSource>::new());
         library.add(Native::<Diode>::new());
@@ -102,6 +106,8 @@ mod tests {
             [
                 "bipolar_transistor",
                 "capacitor",
+                "current_controlled_current_source",
+                "current_controlled_voltage_source",
                 "current_source",
                 "diode",
                 "inductor",

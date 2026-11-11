@@ -111,6 +111,32 @@ def voltage_controlled_current_source(transconductance: Quantity) -> Device:
     return Device("voltage_controlled_current_source", _CONTROLLED, parameters)
 
 
+def current_controlled_current_source(gain: float) -> Device:
+    """A source driving `gain` times a sensed current through itself.
+
+    The control port, from ``control_positive`` to ``control_negative``, is a short
+    circuit that senses the current through it, the unknown ``control``; placed in
+    series with a branch, it senses that branch's current. The output current flows
+    from ``positive`` through the source to ``negative``.
+    """
+    parameters: dict[str, JsonValue] = {"gain": finite(gain, "gain")}
+    return Device("current_controlled_current_source", _CONTROLLED, parameters)
+
+
+def current_controlled_voltage_source(transresistance: Quantity) -> Device:
+    """A source holding its output at `transresistance` times a sensed current.
+
+    The control port, from ``control_positive`` to ``control_negative``, is a short
+    circuit that senses the current through it, the unknown ``control``. The output,
+    ``positive`` minus ``negative``, is held at the transresistance times that current;
+    its current, from ``positive`` through the source to ``negative``, is the unknown
+    ``current``, as a voltage source's is.
+    """
+    value = transresistance.to(RESISTANCE, "transresistance")
+    parameters: dict[str, JsonValue] = {"transresistance": value}
+    return Device("current_controlled_voltage_source", _CONTROLLED, parameters)
+
+
 def diode(  # noqa: PLR0913 - the SPICE junction model has eight parameters
     *,
     saturation_current: Quantity | None = None,

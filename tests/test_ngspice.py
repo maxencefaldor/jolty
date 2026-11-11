@@ -453,6 +453,31 @@ def pnp_mirror(c: Builder) -> None:
     c.connect(supply.negative, reference.b, load.b, ground)
 
 
+@component
+def current_controlled(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(2 * V), id="V1")
+    feed = c.place(devices.resistor(1 * kohm), id="R1")
+    amplifier = c.place(devices.current_controlled_current_source(3.0), id="F1")
+    load = c.place(devices.resistor(2 * kohm), id="R2")
+    transducer = c.place(devices.current_controlled_voltage_source(500 * ohm), id="H1")
+    output = c.place(devices.resistor(4.7 * kohm), id="R3")
+    c.connect(source.positive, feed.a, name="in")
+    c.connect(feed.b, amplifier.control_positive, name="sensed")
+    c.connect(amplifier.negative, transducer.control_positive, name="mid")
+    c.connect(transducer.control_negative, load.a, name="loaded")
+    c.connect(transducer.positive, output.a, name="out")
+    c.connect(
+        source.negative,
+        amplifier.control_negative,
+        amplifier.positive,
+        load.b,
+        transducer.negative,
+        output.b,
+        ground,
+    )
+
+
 # Netlists and raw files.
 
 
@@ -474,6 +499,8 @@ ELEMENTS = {
     "current_source": Element("I", ("positive", "negative")),
     "voltage_controlled_voltage_source": Element("E", _CONTROLLED),
     "voltage_controlled_current_source": Element("G", _CONTROLLED),
+    "current_controlled_current_source": Element("F", _CONTROLLED),
+    "current_controlled_voltage_source": Element("H", _CONTROLLED),
     "diode": Element("D", ("anode", "cathode")),
     "jfet": Element("J", ("drain", "gate", "source")),
     "bipolar_transistor": Element("Q", ("collector", "base", "emitter")),
@@ -522,6 +549,18 @@ def netlist(circuit: ir.Circuit, *, excited: str | None = None) -> list[str]:
             case "voltage_source" | "current_source":
                 ac = " AC 1" if instance.id == excited else ""
                 value = _waveform(values["waveform"]) + ac
+            case (
+                "current_controlled_current_source"
+                | "current_controlled_voltage_source"
+            ):
+                # ngspice senses a current through a voltage source: a zero-volt one in
+                # the control port's place.
+                *output, control_positive, control_negative = nodes.split()
+                sense = _sense(instance)
+                lines.append(f"{sense} {control_positive} {control_negative} DC 0")
+                nodes = " ".join(output)
+                (number,) = values.values()
+                value = f"{sense} {number!r}"
             case "diode" | "jfet" | "bipolar_transistor":
                 value = f"M{instance.id}"
                 kind, spice = _model_card(model, values)
@@ -533,14 +572,20 @@ def netlist(circuit: ir.Circuit, *, excited: str | None = None) -> list[str]:
     return lines
 
 
+def _sense(instance: ir.Instance) -> str:
+    """The zero-volt source sensing a current-controlled source's control current."""
+    return f"V{element(instance)}SENSE"
+
+
 def vector(circuit: ir.Circuit, unknown: results.Unknown) -> str:
     """The name of the ngspice vector of a jolty unknown, a voltage or a current."""
     if unknown.quantity == "voltage":
         return f"v({unknown.name.lower()})"
-    id = unknown.name.removesuffix(":current")
+    id, _, label = unknown.name.partition(":")
     instances = circuit.components[circuit.top].instances
     (instance,) = (instance for instance in instances if instance.id == id)
-    return f"i({element(instance).lower()})"
+    source = _sense(instance) if label == "control" else element(instance)
+    return f"i({source.lower()})"
 
 
 def _waveform(spec: JsonValue) -> str:
@@ -670,12 +715,12 @@ def compared(simulation: Simulation) -> list[tuple[int, results.Unknown]]:
     """The unknowns both engines report, with their columns in jolty's results.
 
     ngspice names a device's internal nodes, behind its series resistances, its own
-    way, so only nets and source currents are compared.
+    way, so only nets, source currents and sensed currents are compared.
     """
     return [
         (column, unknown)
         for column, unknown in enumerate(simulation.unknowns)
-        if ":" not in unknown.name or unknown.name.endswith(":current")
+        if ":" not in unknown.name or unknown.name.endswith((":current", ":control"))
     ]
 
 
@@ -691,6 +736,7 @@ def compared(simulation: Simulation) -> list[tuple[int, results.Unknown]]:
         bjt_stage,
         bjt_amplifier,
         pnp_mirror,
+        current_controlled,
     ],
 )
 def test_operating_points_agree(top: Callable[[], Component], tmp_path: Path) -> None:
@@ -713,6 +759,7 @@ def test_operating_points_agree(top: Callable[[], Component], tmp_path: Path) ->
         (p_jfet_follower, "V1", linear(-4 * V, 2 * V, 61)),
         (bjt_stage, "V1", linear(-1 * V, 3 * V, 81)),
         (pnp_mirror, "V1", linear(0 * V, 12 * V, 61)),
+        (current_controlled, "V1", linear(-3 * V, 3 * V, 13)),
     ],
 )
 def test_dc_sweeps_agree(
@@ -730,7 +777,8 @@ def test_dc_sweeps_agree(
 
 
 @pytest.mark.parametrize(
-    "top", [low_pass, resonator, amplifier, jfet_stage, bjt_amplifier]
+    "top",
+    [low_pass, resonator, amplifier, jfet_stage, bjt_amplifier, current_controlled],
 )
 def test_ac_responses_agree(top: Callable[[], Component], tmp_path: Path) -> None:
     simulation = Simulation(top())

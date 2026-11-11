@@ -45,10 +45,14 @@ The transient analysis lands a time step on every corner of a waveform, so a pul
 | --- | --- | --- |
 | `voltage_controlled_voltage_source(gain)` | `positive`, `negative`, `control_positive`, `control_negative` | a gain, a plain number |
 | `voltage_controlled_current_source(transconductance)` | the same | a transconductance |
+| `current_controlled_current_source(gain)` | the same | a gain, a plain number |
+| `current_controlled_voltage_source(transresistance)` | the same | a transresistance |
 
-The control voltage is `control_positive` minus `control_negative`, and the control terminals draw no current.
-A voltage-controlled voltage source holds its output at the gain times the control voltage, and adds its current to the unknowns as a voltage source does.
-A voltage-controlled current source drives the transconductance times the control voltage from `positive` through itself to `negative`.
+A voltage-controlled source's control voltage is `control_positive` minus `control_negative`, and its control terminals draw no current.
+A current-controlled source's control port, as in Modelica, is a short circuit from `control_positive` to `control_negative` that senses the current through it: placed in series with a branch, it senses that branch's current, which it adds to the unknowns as `F1:control` for a source `F1`.
+
+A voltage-controlled or current-controlled voltage source holds its output at the gain or transresistance times its control, and adds its current to the unknowns as a voltage source does.
+A current source of either kind drives the transconductance or gain times its control from `positive` through itself to `negative`.
 
 ## Diode
 

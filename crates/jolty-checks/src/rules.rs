@@ -22,15 +22,18 @@ const SHORTED_SOURCE: Rule = Rule {
     name: "shorted-source",
     level: Level::Error,
     condition: "A voltage or current source, independent or controlled, has both ends of its \
-                output on one node. A voltage source then holds its voltage across nothing, \
-                and a current source drives its current through nothing.",
+                output on one node, or a current-controlled source has both ends of the port \
+                that senses its control current on one node. A voltage source then holds its \
+                voltage across nothing, a current source drives its current through nothing, \
+                and a sensing port senses no current.",
 };
 
 const SHORTED_DEVICE: Rule = Rule {
     name: "shorted-device",
     level: Level::Warn,
-    condition: "A resistor, capacitor, inductor or diode has both terminals on one node, so \
-                it carries no current and does nothing.",
+    condition: "A resistor, capacitor, inductor, diode or transistor has every terminal on \
+                one node, so it carries no current and does nothing. A transistor with only \
+                some terminals joined, such as a diode-connected one, raises nothing.",
 };
 
 const VOLTAGE_LOOP: Rule = Rule {
@@ -91,48 +94,72 @@ pub(crate) fn unconnected_terminals(structure: &Structure<'_>, diagnostics: &mut
     }
 }
 
-/// Each source whose output joins a node to itself.
+/// Each source branch, an output or a sensing port, that joins a node to itself.
 pub(crate) fn shorted_sources(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
-    shorted(structure, diagnostics, &SHORTED_SOURCE, |kind| {
-        matches!(kind, BranchKind::VoltageSource | BranchKind::CurrentSource)
-    });
-}
-
-/// Each resistor, capacitor, inductor or diode that joins a node to itself.
-pub(crate) fn shorted_devices(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
-    shorted(structure, diagnostics, &SHORTED_DEVICE, |kind| {
-        matches!(
-            kind,
-            BranchKind::Conductive | BranchKind::Capacitive | BranchKind::Inductive
-        )
-    });
-}
-
-fn shorted(
-    structure: &Structure<'_>,
-    diagnostics: &mut Vec<Diagnostic>,
-    rule: &Rule,
-    applies: impl Fn(BranchKind) -> bool,
-) {
     for device in structure.devices() {
         for &branch in device.branches() {
             let (from, to) = ends(device, branch);
-            if from == to && applies(branch.kind) {
-                let terminals = device.terminals();
-                diagnostics.push(Diagnostic {
-                    rule: rule.name,
-                    message: format!(
-                        "`{}` has `{}` and `{}` both on `{}`",
-                        device.path(),
-                        terminals[branch.from],
-                        terminals[branch.to],
-                        structure.name(from),
-                    ),
-                    instances: vec![device.location().clone()],
-                    nets: vec![structure.name(from).to_owned()],
-                });
+            let source = matches!(
+                branch.kind,
+                BranchKind::VoltageSource | BranchKind::CurrentSource
+            );
+            if from == to && source {
+                let terminals = [
+                    device.terminals()[branch.from],
+                    device.terminals()[branch.to],
+                ];
+                diagnostics.push(joined(structure, &SHORTED_SOURCE, device, &terminals, from));
             }
         }
+    }
+}
+
+/// Each resistor, capacitor, inductor, diode or transistor with every terminal on one
+/// node.
+pub(crate) fn shorted_devices(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
+    for device in structure.devices() {
+        let passive = device.branches().iter().any(|branch| {
+            matches!(
+                branch.kind,
+                BranchKind::Conductive | BranchKind::Capacitive | BranchKind::Inductive
+            )
+        });
+        let node = index(device.nodes()[0]);
+        if passive && device.nodes().iter().all(|other| index(*other) == node) {
+            diagnostics.push(joined(
+                structure,
+                &SHORTED_DEVICE,
+                device,
+                device.terminals(),
+                node,
+            ));
+        }
+    }
+}
+
+/// The diagnostic of `rule` for `device`, whose `terminals` all sit on `node`.
+fn joined(
+    structure: &Structure<'_>,
+    rule: &Rule,
+    device: &Placed,
+    terminals: &[&str],
+    node: usize,
+) -> Diagnostic {
+    let named: Vec<String> = terminals.iter().map(|name| format!("`{name}`")).collect();
+    let listed = match named.as_slice() {
+        [first, second] => format!("{first} and {second} both"),
+        [rest @ .., last] => format!("{} and {last} all", rest.join(", ")),
+        [] => String::new(),
+    };
+    Diagnostic {
+        rule: rule.name,
+        message: format!(
+            "`{}` has {listed} on `{}`",
+            device.path(),
+            structure.name(node)
+        ),
+        instances: vec![device.location().clone()],
+        nets: vec![structure.name(node).to_owned()],
     }
 }
 
@@ -367,7 +394,7 @@ mod tests {
         id: &'static str,
         model: &'static str,
         parameters: Value,
-        terminals: [(&'static str, &'static str); 2],
+        terminals: Vec<(&'static str, &'static str)>,
     }
 
     /// The diagnostics of a circuit whose top component has a ground port `0` and places
@@ -410,7 +437,43 @@ mod tests {
             id,
             model,
             parameters,
-            terminals: [(a, first), (b, second)],
+            terminals: vec![(a, first), (b, second)],
+        }
+    }
+
+    fn transistor(
+        id: &'static str,
+        collector: &'static str,
+        base: &'static str,
+        emitter: &'static str,
+    ) -> Device {
+        Device {
+            id,
+            model: "bipolar_transistor",
+            parameters: json!({}),
+            terminals: vec![
+                ("collector", collector),
+                ("base", base),
+                ("emitter", emitter),
+            ],
+        }
+    }
+
+    fn current_controlled(
+        id: &'static str,
+        [positive, negative]: [&'static str; 2],
+        [control_positive, control_negative]: [&'static str; 2],
+    ) -> Device {
+        Device {
+            id,
+            model: "current_controlled_current_source",
+            parameters: json!({"gain": 10.0}),
+            terminals: vec![
+                ("positive", positive),
+                ("negative", negative),
+                ("control_positive", control_positive),
+                ("control_negative", control_negative),
+            ],
         }
     }
 
@@ -480,6 +543,24 @@ mod tests {
             resistor("R2", "x", "0"),
         ]);
         assert_eq!(rules(&current), ["shorted-source"]);
+        let sensing = diagnostics(&[
+            voltage("V1", "in", "0"),
+            resistor("R1", "in", "0"),
+            current_controlled("F1", ["out", "0"], ["in", "in"]),
+            resistor("R2", "out", "0"),
+        ]);
+        assert_eq!(rules(&sensing), ["shorted-source"]);
+        assert_eq!(
+            sensing[0].message,
+            "`F1` has `control_positive` and `control_negative` both on `in`"
+        );
+        let sensed = diagnostics(&[
+            voltage("V1", "in", "0"),
+            current_controlled("F1", ["out", "0"], ["in", "x"]),
+            resistor("R1", "x", "0"),
+            resistor("R2", "out", "0"),
+        ]);
+        assert_eq!(sensed, []);
     }
 
     #[test]
@@ -491,6 +572,23 @@ mod tests {
         ]);
         assert_eq!(rules(&found), ["shorted-device"]);
         assert_eq!(found[0].message, "`C1` has `a` and `b` both on `in`");
+        let joined = diagnostics(&[
+            voltage("V1", "in", "0"),
+            resistor("R1", "in", "0"),
+            transistor("Q1", "in", "in", "in"),
+        ]);
+        assert_eq!(rules(&joined), ["shorted-device"]);
+        assert_eq!(
+            joined[0].message,
+            "`Q1` has `collector`, `base` and `emitter` all on `in`"
+        );
+        // A diode-connected transistor joins its base and collector, and does something.
+        let diode_connected = diagnostics(&[
+            voltage("V1", "in", "0"),
+            resistor("R1", "in", "x"),
+            transistor("Q1", "x", "x", "0"),
+        ]);
+        assert_eq!(diode_connected, []);
     }
 
     #[test]
