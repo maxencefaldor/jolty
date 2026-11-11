@@ -48,6 +48,29 @@ Plan({"op": OperatingPoint()}, temperature=celsius(85))
 `celsius(degrees)` gives a temperature in kelvins, as every temperature is.
 Away from each device's nominal temperature, its parameters scale as [Devices](devices.md) says.
 
+## Corners
+
+A plan's corners run its analyses again in other conditions: another temperature, or other arguments to the build script's `build()`, which builds the circuit again with them:
+
+```python
+def build(supply: Quantity = 3.3 * V) -> Component:
+    return bench(supply)
+
+
+def plan() -> Plan:
+    return Plan(
+        {"op": OperatingPoint(), "bode": Ac("V1", decade(10 * Hz, 10 * MHz, 20))},
+        corners={
+            "cold": Corner(temperature=celsius(-40), supply=3.0 * V),
+            "hot": Corner(temperature=celsius(125), supply=3.6 * V),
+        },
+    )
+```
+
+Each corner is named by a Python identifier, and runs at the plan's temperature unless it gives its own.
+The report, the results file and the plots hold the plan's own run; a corner's report says whether the circuit elaborates there and which analyses failed.
+[Specs](specs.md) hold at every corner.
+
 ## Options
 
 `Options` sets the tolerances; each one left out takes SPICE's default.

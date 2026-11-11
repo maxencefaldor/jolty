@@ -58,12 +58,13 @@ Each requirement's verdict is one of four:
 - **failed:** the value lies outside its bounds;
 - **unmeasured:** its analysis failed or is not in the plan, or the measurement cannot be read, such as a crossing that never happens.
 
-A verdict states the value read and the slack, how far the value lies inside its bounds, negative outside them, and the script line that stated the requirement:
+A requirement holds at the plan's own conditions and at each of its [corners](simulation.md#corners), and its verdict is the worst of them: failed, then unmeasured, then marginal, then passed, and the least slack among equals.
+A verdict states the value read and the slack, how far the value lies inside its bounds, negative outside them, the corner it comes from, and the script line that stated the requirement:
 
 ```text
-failed: rise time of out in step ≤ 2 µs: read 2.192 µs, slack -192.5 ns
+failed: rise time of out in step ≤ 2 µs: read 2.192 µs at the corner hot, slack -192.5 ns
   = rc_filter.py:62 in specs()
 ```
 
-`jolty simulate` exits with 1 when a requirement fails or is unmeasured, as when an analysis fails.
+`jolty simulate` exits with 1 when a requirement fails or is unmeasured, as when an analysis fails at the plan's own conditions or at a corner.
 With `--output-format json`, the verdicts come as data, values and slacks in SI base units.

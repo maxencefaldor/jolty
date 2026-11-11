@@ -4,6 +4,7 @@
 A report states facts: the value of every unknown at an operating point, and the first,
 lowest, highest and last value of every unknown over a sweep, a frequency response or a
 transient. It lists the first unknowns, up to a limit; the results file holds them all.
+A corner's report states whether the circuit elaborates there and which analyses fail.
 """
 
 from typing import Annotated, Literal
@@ -152,6 +153,38 @@ class FailureReport(_Model):
     def describe(self) -> str:
         """The report as text."""
         return f"{self.name}: failed: {self.error}"
+
+
+class CornerReport(_Model):
+    """What a corner of the plan found.
+
+    It lists why the circuit does not elaborate there, or which analyses failed there.
+    """
+
+    name: str
+    temperature: float = Field(description="The corner's temperature, in kelvins.")
+    problems: tuple[str, ...] = Field(
+        default=(), description="Why the circuit does not elaborate at the corner."
+    )
+    failures: tuple[FailureReport, ...] = Field(
+        default=(), description="The analyses that failed at the corner."
+    )
+
+    @property
+    def ok(self) -> bool:
+        """Whether the circuit elaborates at the corner and every analysis ends."""
+        return not self.problems and not self.failures
+
+    def describe(self) -> str:
+        """The report as text."""
+        head = f"corner {self.name}, at {self.temperature - 273.15:.4g} °C"
+        if self.problems:
+            listed = "".join(f"\n  {problem}" for problem in self.problems)
+            return f"{head}: the circuit does not elaborate:{listed}"
+        if self.failures:
+            listed = "".join(f"\n  {failure.describe()}" for failure in self.failures)
+            return f"{head}:{listed}"
+        return f"{head}: every analysis ended"
 
 
 type AnalysisReport = Annotated[

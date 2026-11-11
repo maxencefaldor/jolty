@@ -24,7 +24,7 @@ from pydantic_settings import CliPositionalArg
 
 from jolty import checks, files, ir, plots, results, runner, schematic, specs
 from jolty.errors import ElaborationError, JoltyError
-from jolty.report import AnalysisReport, FailureReport
+from jolty.report import AnalysisReport, CornerReport, FailureReport
 from jolty.settings import Level, Settings
 from jolty.simulate import Simulation
 from jolty.specs import Verdict
@@ -207,10 +207,12 @@ class BuildResult(CommandResult):
 class SimulateRequest(_Model):
     """Build a script's circuit, run every analysis of a plan on it, check its specs.
 
-    A plan is a Python file defining plan(), which returns a jolty Plan: named analyses
-    and the numerical options they share. It may define specs(), which returns jolty
-    Specs: requirements on measurements of the analyses' results, each of which
-    passes, is marginal, fails or goes unmeasured. It can be the build script itself.
+    A plan is a Python file defining plan(), which returns a jolty Plan: named analyses,
+    the numerical options they share, a temperature, and corners, other temperatures
+    or arguments to build() at which the analyses run again. It may define specs(),
+    which returns jolty Specs: requirements on measurements of the analyses' results,
+    each of which passes, is marginal, fails or goes unmeasured, at its worst corner.
+    It can be the build script itself.
     The scripts run as ordinary Python with the user's permissions, in their own process
     with a time limit; that process is not a sandbox.
     """
@@ -258,6 +260,9 @@ class SimulateResult(CommandResult):
     analyses: tuple[AnalysisReport, ...] = Field(
         description="A report per analysis, in the plan's order."
     )
+    corners: tuple[CornerReport, ...] = Field(
+        description="A report per corner of the plan, in its order."
+    )
     specs: tuple[Verdict, ...] = Field(
         description="The verdict on each requirement of the plan's specs, in order; "
         "empty when the plan defines no specs()."
@@ -283,8 +288,8 @@ class SimulateResult(CommandResult):
     def ok(self) -> bool:
         """Whether the circuit elaborates, checks clean, and meets its plan.
 
-        It meets its plan when every analysis ends and every requirement passes, if
-        only marginally.
+        It meets its plan when every analysis ends, at the plan's own conditions and
+        at every corner, and every requirement passes, if only marginally.
         """
         checked = self.report is None or self.report.ok
         return (
@@ -293,6 +298,7 @@ class SimulateResult(CommandResult):
             and not any(
                 isinstance(analysis, FailureReport) for analysis in self.analyses
             )
+            and all(corner.ok for corner in self.corners)
             and all(verdict.status in {"passed", "marginal"} for verdict in self.specs)
         )
 
@@ -307,6 +313,7 @@ class SimulateResult(CommandResult):
         if self.results is not None:
             blocks.append(f"saved {self.results}")
         blocks.extend(analysis.describe() for analysis in self.analyses)
+        blocks.extend(corner.describe() for corner in self.corners)
         if self.specs:
             blocks.append(specs.describe(self.specs))
         if self.schematic:
@@ -392,6 +399,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         report=report,
         results=target if saved else None,
         analyses=built.analyses,
+        corners=built.corners,
         specs=built.specs,
         schematic=drawn,
         plots=plotted,

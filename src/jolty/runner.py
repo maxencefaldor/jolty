@@ -4,11 +4,13 @@
 The service starts ``python -P -m jolty.runner DIRECTORY`` for every command that runs
 scripts. The runner reads the [`Job`][jolty.runner.Job] in ``DIRECTORY/job.json``. It
 calls the script's ``build()`` and elaborates the circuit it returns, then, when the job
-names a plan, calls the plan's ``plan()`` and runs each analysis, then evaluates the
-requirements its ``specs()`` returns, when it defines one. It writes the
+names a plan, calls the plan's ``plan()`` and runs each analysis, at the plan's own
+conditions then at each of its corners, building the circuit again with a corner's
+arguments. It then evaluates the requirements its ``specs()`` returns, when it defines
+one, on every run. It writes the
 [`Outcome`][jolty.runner.Outcome], what was built or why it failed, to
-``DIRECTORY/outcome.json``, and the results of the analyses to
-``DIRECTORY/results.npz``.
+``DIRECTORY/outcome.json``, and the results of the analyses at the plan's
+own conditions to ``DIRECTORY/results.npz``.
 
 Scripts and analyses therefore run outside the command line and the MCP server, whose
 standard output may be a protocol channel: what a script prints is captured, a timeout
@@ -19,7 +21,7 @@ import runpy
 import sys
 import sysconfig
 import traceback
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Final, Literal, override
@@ -29,9 +31,9 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from jolty import checks, files, ir, report
 from jolty.builder import Component, circuit
 from jolty.errors import ElaborationError, JoltyError, ScriptError
-from jolty.plan import Plan
+from jolty.plan import Corner, Plan
 from jolty.results import Result
-from jolty.simulate import Simulation
+from jolty.simulate import Simulation, kelvins
 from jolty.specs import Specs, Verdict, evaluate
 
 JOB: Final = "job.json"
@@ -95,6 +97,9 @@ class Built(BaseModel):
     analyses: tuple[report.AnalysisReport, ...] = Field(
         default=(), description="A report per analysis of the plan, in its order."
     )
+    corners: tuple[report.CornerReport, ...] = Field(
+        default=(), description="A report per corner of the plan, in its order."
+    )
     specs: tuple[Verdict, ...] = Field(
         default=(),
         description="The verdict on each requirement of the plan's specs, in order; "
@@ -150,7 +155,7 @@ def run(job: Job, directory: Path) -> Outcome:
 
 def _run(job: Job, directory: Path) -> Built:
     namespaces: dict[Path, dict[str, object]] = {}
-    built = _built(job.script, namespaces)
+    built = _built(job.script, namespaces, {})
     try:
         simulation = Simulation(built)
     except ElaborationError as error:
@@ -175,17 +180,56 @@ def _run(job: Job, directory: Path) -> Built:
     solved, reports = _analyses(simulation, plan, job.listed)
     if solved:
         files.save_results(directory / RESULTS, solved)
-    verdicts = _verdicts(job.plan, namespaces, solved, plan)
-    return elaborated.model_copy(update={"analyses": reports, "specs": verdicts})
+    corners: list[report.CornerReport] = []
+    at_corners: dict[str, dict[str, Result]] = {}
+    for name, corner in plan.corners.items():
+        rebuilt = (
+            _built(job.script, namespaces, corner.arguments)
+            if corner.arguments
+            else built
+        )
+        found, at_corners[name] = _corner(name, corner, rebuilt, plan)
+        corners.append(found)
+    verdicts = _verdicts(job.plan, namespaces, plan, solved, at_corners)
+    return elaborated.model_copy(
+        update={"analyses": reports, "corners": tuple(corners), "specs": verdicts}
+    )
 
 
-def _built(script: Path, namespaces: dict[Path, dict[str, object]]) -> ir.Circuit:
-    """The circuit `script`'s ``build()`` returns.
+def _corner(
+    name: str, corner: Corner, built: ir.Circuit, plan: Plan
+) -> tuple[report.CornerReport, dict[str, Result]]:
+    """What `plan`'s analyses find on the circuit `built` at `corner`.
+
+    Returns the corner's report, and the results of the analyses that end, by name.
+    """
+    temperature = plan.temperature_at(corner)
+    try:
+        simulation = Simulation(built, temperature)
+    except ElaborationError as error:
+        found = report.CornerReport(
+            name=name, temperature=kelvins(temperature), problems=error.problems
+        )
+        return found, {}
+    solved, reports = _analyses(simulation, plan, 1)
+    failures = tuple(r for r in reports if isinstance(r, report.FailureReport))
+    found = report.CornerReport(
+        name=name, temperature=simulation.temperature, failures=failures
+    )
+    return found, solved
+
+
+def _built(
+    script: Path,
+    namespaces: dict[Path, dict[str, object]],
+    arguments: Mapping[str, object],
+) -> ir.Circuit:
+    """The circuit `script`'s ``build()`` returns, called with `arguments`.
 
     Raises:
         ScriptError: When it returns neither a component nor a circuit.
     """
-    match _call(script, "build", namespaces):
+    match _call(script, "build", namespaces, arguments=arguments):
         case Component() as top:
             return circuit(top)
         case ir.Circuit() as built:
@@ -200,8 +244,9 @@ def _built(script: Path, namespaces: dict[Path, dict[str, object]]) -> ir.Circui
 def _verdicts(
     script: Path,
     namespaces: dict[Path, dict[str, object]],
-    solved: dict[str, Result],
     plan: Plan,
+    solved: dict[str, Result],
+    corners: dict[str, dict[str, Result]],
 ) -> tuple[Verdict, ...]:
     """The verdict on each requirement of `script`'s specs, on the `solved` results.
 
@@ -214,7 +259,7 @@ def _verdicts(
         case None:
             return ()
         case Specs() as specs:
-            return evaluate(specs, solved, plan.analyses)
+            return evaluate(specs, plan.analyses, solved, corners)
         case other:
             message = f"specs() returned {type(other).__name__}, not Specs"
             raise ScriptError(message)
@@ -243,9 +288,11 @@ def _call(
     namespaces: dict[Path, dict[str, object]],
     *,
     required: bool = True,
+    arguments: Mapping[str, object] | None = None,
 ) -> object:
-    """Calls the function `name` of `script`, which runs once however often it is used.
+    """Calls the function `name` of `script` with `arguments`.
 
+    The script runs once however often it is used.
     A script that defines no function `name` returns None when it is not `required`.
 
     Raises:
@@ -255,7 +302,7 @@ def _call(
         namespaces[script] = runpy.run_path(str(script), run_name="__jolty__")
     function = namespaces[script].get(name)
     if callable(function):
-        return function()
+        return function(**(arguments or {}))
     if not required:
         return None
     message = f"{_relative(str(script))} defines no {name}() function"

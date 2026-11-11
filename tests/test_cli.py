@@ -143,6 +143,29 @@ def specs():
     assert "  = low_pass.py:30 in specs()" in out
 
 
+def test_corners_report_what_they_found(
+    script: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    patched = FILTER.replace("def low_pass(c: Builder)", "def low_pass(c: Builder, f)")
+    patched = patched.replace("devices.capacitor(1 * nF)", "devices.capacitor(f * nF)")
+    patched = patched.replace("def build():", "def build(f=1):")
+    patched = patched.replace("return low_pass()", "return low_pass(f)")
+    corners = """
+
+def plan():
+    from jolty import Corner
+    from jolty.units import celsius
+
+    corners = {"cold": Corner(temperature=celsius(-40)), "broken": Corner(f=-1)}
+    return Plan({"step": Transient(stop=5 * us)}, corners=corners)
+"""
+    script.write_text(patched + corners, encoding="utf-8")
+    assert run("simulate", "low_pass.py", "--no-plot", "--no-schematic") == 1
+    out = capsys.readouterr().out
+    assert "corner cold, at -40 °C: every analysis ended" in out
+    assert "corner broken, at 27 °C: the circuit does not elaborate:" in out
+
+
 def test_failing_scripts_exit_with_2_and_say_why(
     script: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

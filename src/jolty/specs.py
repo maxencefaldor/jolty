@@ -6,9 +6,10 @@ analysis, such as the gain of ``out`` at 1 kHz in the analysis ``bode``. Compari
 with a bound makes a [`Requirement`][jolty.specs.Requirement], and a plan script's
 ``specs()`` returns its requirements as [`Specs`][jolty.specs.Specs]. Each requirement
 passes, fails, or goes unmeasured when its analysis did not end or its measurement
-cannot be read; one that passes by less than its margin is marginal. Its
-[`Verdict`][jolty.specs.Verdict] states the value read and the slack: how far the value
-lies inside its bounds, negative outside them.
+cannot be read; one that passes by less than its margin is marginal. A requirement
+holds at the plan's own conditions and at each of its corners, and its
+[`Verdict`][jolty.specs.Verdict] is the worst of them: it states the value read there
+and the slack, how far the value lies inside its bounds, negative outside them.
 
 A measurement reads a signal, an unknown of the circuit such as the voltage ``out`` or
 the current ``V1:current``, or a voltage relative to the voltage of a ``reference``.
@@ -60,6 +61,14 @@ type Status = Literal["passed", "marginal", "failed", "unmeasured"]
 """What became of a requirement."""
 
 _STATUSES: Final[tuple[Status, ...]] = ("passed", "marginal", "failed", "unmeasured")
+
+_SEVERITY: Final[dict[Status, int]] = {
+    "failed": 0,
+    "unmeasured": 1,
+    "marginal": 2,
+    "passed": 3,
+}
+"""How bad each status is, the worst first: the order a verdict picks its run by."""
 
 _ON_AXIS: Final = 1e-9
 """How far past an end of an axis, relative to its span, a point still lies on it."""
@@ -249,6 +258,11 @@ class Verdict(BaseModel):
         default=None,
         description="How far the value lies inside the bounds, negative outside them.",
     )
+    corner: str | None = Field(
+        default=None,
+        description="The corner of the plan the verdict comes from; null for the "
+        "plan's own conditions.",
+    )
     reason: str | None = Field(
         default=None, description="Why the requirement is unmeasured."
     )
@@ -258,12 +272,13 @@ class Verdict(BaseModel):
 
     def describe(self) -> str:
         """The verdict, then the script line that stated the requirement."""
+        at = "" if self.corner is None else f" at the corner {self.corner}"
         if self.value is None or self.unit is None or self.slack is None:
-            head = f"unmeasured: {self.requirement}: {self.reason}"
+            head = f"unmeasured: {self.requirement}: {self.reason}{at}"
         else:
             read = _format(self.value, self.unit)
             slack = _format(self.slack, self.unit)
-            head = f"{self.status}: {self.requirement}: read {read}, slack {slack}"
+            head = f"{self.status}: {self.requirement}: read {read}{at}, slack {slack}"
         return head if self.source is None else f"{head}\n  = {self.source}"
 
 
@@ -279,24 +294,44 @@ def describe(verdicts: Sequence[Verdict]) -> str:
 
 
 def evaluate(
-    specs: Specs, solved: Mapping[str, results.Result], planned: Collection[str]
+    specs: Specs,
+    planned: Collection[str],
+    solved: Mapping[str, results.Result],
+    corners: Mapping[str, Mapping[str, results.Result]] | None = None,
 ) -> tuple[Verdict, ...]:
-    """The verdict of each requirement, read from the `solved` results by analysis name.
+    """The verdict on each requirement, the worst of the plan's own run and its corners.
 
     `planned` names every analysis of the plan; one planned but not solved failed.
+    `solved` holds the results of the plan's own run by analysis, and `corners` the
+    results of each corner's run, by corner then by analysis.
     """
+    runs = [(None, solved), *(corners or {}).items()]
     return tuple(
-        _verdict(requirement, solved, planned) for requirement in specs.requirements
+        min(
+            (_verdict(requirement, planned, found, corner) for corner, found in runs),
+            key=_badness,
+        )
+        for requirement in specs.requirements
     )
+
+
+def _badness(verdict: Verdict) -> tuple[int, float]:
+    """How bad a verdict is, the worst least: by status, then by slack."""
+    slack = math.inf if verdict.slack is None else verdict.slack
+    return _SEVERITY[verdict.status], slack
 
 
 def _verdict(
     requirement: Requirement,
-    solved: Mapping[str, results.Result],
     planned: Collection[str],
+    solved: Mapping[str, results.Result],
+    corner: str | None,
 ) -> Verdict:
     stated = Verdict(
-        requirement=str(requirement), status="unmeasured", source=requirement.source
+        requirement=str(requirement),
+        status="unmeasured",
+        source=requirement.source,
+        corner=corner,
     )
     analysis = requirement.measurement.analysis
     if analysis not in planned:

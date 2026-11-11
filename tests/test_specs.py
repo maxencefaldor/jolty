@@ -72,11 +72,8 @@ def low_pass() -> results.Response:
 
 
 def verdict_of(requirement: Requirement, result: results.Result) -> Verdict:
-    (verdict,) = evaluate(
-        Specs([requirement]),
-        {requirement.measurement.analysis: result},
-        [requirement.measurement.analysis],
-    )
+    analysis = requirement.measurement.analysis
+    (verdict,) = evaluate(Specs([requirement]), [analysis], {analysis: result})
     return verdict
 
 
@@ -255,7 +252,7 @@ def test_a_requirement_is_unmeasured_when_it_cannot_be_read() -> None:
 
 def test_unplanned_and_failed_analyses_leave_requirements_unmeasured() -> None:
     specs = Specs([value("op", "out") >= 0 * V, value("dc", "out") >= 0 * V])
-    planned, failed = evaluate(specs, {}, ["op"])
+    planned, failed = evaluate(specs, ["op"], {})
     assert (planned.reason, failed.reason) == (
         "the analysis op failed",
         "the plan runs no analysis named dc",
@@ -336,3 +333,80 @@ def test_specs_must_be_specs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     outcome = run_specs(tmp_path, monkeypatch, '[value("op", "out") >= 1 * V]')
     assert isinstance(outcome, Failure)
     assert outcome.message == "specs() returned list, not Specs"
+
+
+CORNERED = """
+from jolty import Ac, Builder, Corner, OperatingPoint, Plan, Role, Specs
+from jolty import component, devices
+from jolty.plan import decade
+from jolty.specs import bandwidth
+from jolty.units import K, MHz, V, celsius, kHz, kohm, nF
+
+
+@component
+def low_pass(c: Builder, resistance) -> None:
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(0 * V), id="V1")
+    resistor = c.place(
+        devices.resistor(resistance, temperature_coefficient=4e-3 / K), id="R1"
+    )
+    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    c.connect(source.positive, resistor.a, name="in")
+    c.connect(resistor.b, capacitor.a, name="out")
+    c.connect(capacitor.b, source.negative, ground)
+
+
+def build(resistance=1 * kohm):
+    return low_pass(resistance)
+
+
+def plan():
+    return Plan(
+        {"bode": Ac("V1", decade(1 * kHz, 10 * MHz, 50))},
+        corners={
+            "hot": Corner(temperature=celsius(125)),
+            "slow": Corner(resistance=1.2 * kohm),
+            "broken": Corner(resistance=-1 * kohm),
+        },
+    )
+
+
+def specs():
+    return Specs([bandwidth("bode", "out") >= 120 * kHz])
+"""
+
+
+def test_requirements_hold_at_their_worst_corner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "filter.py"
+    script.write_text(CORNERED, encoding="utf-8")
+    outcome = run(Job(script=script, plan=script, listed=10), tmp_path)
+    assert isinstance(outcome, Built), str(outcome)
+    hot, slow, broken = outcome.corners
+    assert (hot.name, hot.temperature) == ("hot", pytest.approx(398.15))
+    assert hot.ok
+    assert slow.ok
+    assert not broken.ok
+    assert "resistance must be positive" in broken.problems[0]
+    # At 125 °C, the resistance has grown by 39 %, and the corner falls to 114 kHz.
+    (verdict,) = outcome.specs
+    assert (verdict.status, verdict.corner) == ("failed", "hot")
+    assert verdict.describe().startswith(
+        "failed: 3 dB bandwidth of out in bode ≥ 120 kHz: read 114.1 kHz at the "
+        "corner hot, slack"
+    )
+
+
+def test_a_verdict_is_the_worst_of_every_run() -> None:
+    requirement = value("op", "out") >= 1 * V
+    runs = {"low": {"op": point(0.5)}, "high": {"op": point(3.0)}, "lost": {}}
+    verdict, unmeasured = evaluate(
+        Specs([requirement, value("op", "out") <= 4 * V]),
+        ["op"],
+        {"op": point(2.0)},
+        runs,
+    )
+    assert (verdict.status, verdict.corner, verdict.value) == ("failed", "low", 0.5)
+    assert (unmeasured.status, unmeasured.corner) == ("unmeasured", "lost")

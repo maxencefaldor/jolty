@@ -10,6 +10,7 @@ from hypothesis import strategies as st
 from jolty import (
     Ac,
     Builder,
+    Corner,
     DcSweep,
     DimensionError,
     ElaborationError,
@@ -236,6 +237,21 @@ def test_a_plan_runs_at_the_simulation_s_temperature() -> None:
         Simulation(divider(5 * V, 1 * kohm, 1 * kohm)).run_plan(plan)
     with pytest.raises(DimensionError, match="a plan's temperature"):
         Plan({"op": OperatingPoint()}, temperature=85 * V)
+
+
+def test_corners_are_named_by_identifiers_at_a_temperature() -> None:
+    analyses = {"op": OperatingPoint()}
+    corner = Corner(temperature=celsius(-40), supply=3 * V)
+    plan = Plan(analyses, temperature=celsius(85), corners={"cold": corner})
+    assert plan.temperature_at(corner) == celsius(-40)
+    assert plan.temperature_at(Corner(supply=3 * V)) == celsius(85)
+    assert plan.temperature_at() == celsius(85)
+    with pytest.raises(ValueError, match="a corner is named by a Python identifier"):
+        Plan(analyses, corners={"cold 1": corner})
+    with pytest.raises(TypeError, match="not a Corner"):
+        Plan(analyses, corners={"cold": celsius(-40)})  # ty: ignore[invalid-argument-type]
+    with pytest.raises(DimensionError, match="a corner's temperature"):
+        Corner(temperature=5 * V)
 
 
 def test_plans_name_their_analyses_by_identifiers() -> None:

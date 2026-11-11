@@ -33,6 +33,17 @@ from jolty.plan import Ac, Analysis, DcSweep, OperatingPoint, Options, Plan, Tra
 from jolty.units import CURRENT, TEMPERATURE, VOLTAGE, Dimension, Quantity
 
 
+def kelvins(temperature: Quantity | None) -> float:
+    """`temperature` in kelvins; 27 °C when it is None.
+
+    Raises:
+        DimensionError: When the temperature is not one.
+    """
+    if temperature is None:
+        return _core.REFERENCE_TEMPERATURE
+    return temperature.to(TEMPERATURE, "a temperature")
+
+
 class Simulation:
     """A circuit elaborated once, ready to run any number of analyses."""
 
@@ -67,11 +78,7 @@ class Simulation:
             if isinstance(circuit_or_top, ir.Circuit)
             else circuit(circuit_or_top)
         )
-        self.temperature = (
-            _core.REFERENCE_TEMPERATURE
-            if temperature is None
-            else temperature.to(TEMPERATURE, "a temperature")
-        )
+        self.temperature = kelvins(temperature)
         try:
             self._core = _core.Simulator(
                 self.circuit.model_dump_json(), self.temperature

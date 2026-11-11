@@ -1,8 +1,9 @@
 # Copyright 2026 Maxence Faldor
-"""Simulation plans: the analyses to run on a circuit, and the numerical options.
+"""Simulation plans: the analyses to run on a circuit, how, and in which conditions.
 
 A plan is kept apart from the circuit: the circuit says what exists, the plan how to
-simulate it.
+simulate it. A plan runs its analyses at its temperature, then again at each of its
+corners: another temperature, or other arguments to the build script's ``build()``.
 
 Examples:
     >>> from jolty.units import us
@@ -110,24 +111,58 @@ class Options:
         return {name: value for name, value in values.items() if value is not None}
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class Corner:
+    """Conditions a plan also runs its analyses at.
+
+    A corner gives a temperature, the plan's unless given, and arguments to the build
+    script's ``build()``, which builds the circuit again with them, such as a lower
+    supply voltage.
+
+    Examples:
+        >>> from jolty.units import V, celsius
+        >>> corner = Corner(temperature=celsius(-40), supply=3 * V)
+        >>> str(corner.arguments["supply"])
+        '3 V'
+    """
+
+    temperature: Quantity | None
+    arguments: Mapping[str, object]
+
+    def __init__(
+        self, *, temperature: Quantity | None = None, **arguments: object
+    ) -> None:
+        """A corner at `temperature`, building the circuit with `arguments`.
+
+        Raises:
+            DimensionError: When the temperature is not one.
+        """
+        if temperature is not None:
+            temperature.to(TEMPERATURE, "a corner's temperature")
+        object.__setattr__(self, "temperature", temperature)
+        object.__setattr__(self, "arguments", arguments)
+
+
 @dataclass(frozen=True, slots=True)
 class Plan:
-    """Named analyses to run on a circuit, the options they share, and its temperature.
+    """Named analyses to run on a circuit, the options they share, and its conditions.
 
     Each analysis is named by a Python identifier, such as ``step`` or ``bode``, which
     names its results too. The circuit's devices are simulated at `temperature`, 27 °C
-    unless given.
+    unless given, then at each of the `corners`, each named by an identifier too.
     """
 
     analyses: Mapping[str, Analysis]
     options: Options = field(default_factory=Options)
     temperature: Quantity | None = None
+    corners: Mapping[str, Corner] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Checks that the plan runs an analysis or more, each named by an identifier.
+        """Checks that the plan runs an analysis or more, all named by identifiers.
 
         Raises:
             ValueError: When the plan runs no analysis, or a name is not an identifier.
+            TypeError: When a corner is not one.
             DimensionError: When the temperature is not one.
         """
         if self.temperature is not None:
@@ -135,10 +170,23 @@ class Plan:
         if not self.analyses:
             message = "a plan runs at least one analysis"
             raise ValueError(message)
-        for name in self.analyses:
+        for kind, name in [
+            *(("an analysis", name) for name in self.analyses),
+            *(("a corner", name) for name in self.corners),
+        ]:
             if not name.isidentifier():
-                message = f"an analysis is named by a Python identifier, not {name!r}"
+                message = f"{kind} is named by a Python identifier, not {name!r}"
                 raise ValueError(message)
+        for name, corner in self.corners.items():
+            if not isinstance(corner, Corner):
+                message = f"the corner {name} is {corner!r}, not a Corner"
+                raise TypeError(message)
+
+    def temperature_at(self, corner: Corner | None = None) -> Quantity | None:
+        """The temperature of the plan's own run, or of `corner`'s; None for 27 °C."""
+        if corner is not None and corner.temperature is not None:
+            return corner.temperature
+        return self.temperature
 
 
 def decade(start: Quantity, stop: Quantity, per_decade: int) -> list[Quantity]:
