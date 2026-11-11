@@ -2,8 +2,8 @@ use jolty_numerics::Entry;
 use serde::Deserialize;
 
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
-    ParameterError,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
+    ParameterError, Real,
 };
 
 /// A voltage-controlled switch, in PSpice's model: a resistance between `positive` and
@@ -15,51 +15,55 @@ use crate::{
 /// where `L = ln(r_on / r_off)`: a cubic that reaches each resistance with zero slope at
 /// each end, beyond which the resistance holds. The control terminals draw no current.
 #[derive(Debug)]
-pub struct VoltageControlledSwitch {
+pub struct VoltageControlledSwitch<R: Real = f64> {
     nodes: [Node; 4],
-    off_voltage: f64,
+    off_voltage: R,
     /// The on voltage less the off voltage.
-    span: f64,
-    on_conductance: f64,
-    off_conductance: f64,
+    span: R,
+    on_conductance: R,
+    off_conductance: R,
     /// `ln √(r_on · r_off)`.
-    log_mean: f64,
+    log_mean: R,
     /// `ln(r_on / r_off)`.
-    log_ratio: f64,
+    log_ratio: R,
     /// The entries joining each output terminal to every terminal.
     entries: [[Option<Entry>; 4]; 2],
 }
 
 /// The parameters of a [`VoltageControlledSwitch`], with PSpice's defaults.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct VoltageControlledSwitchParameters {
+#[serde(default, deny_unknown_fields, bound = "")]
+pub struct VoltageControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on voltage, in ohms; default 1.
-    pub on_resistance: f64,
+    pub on_resistance: R,
     /// The resistance with the control at or past the off voltage, in ohms; default 1e6.
-    pub off_resistance: f64,
+    pub off_resistance: R,
     /// The control voltage at which the switch is on, in volts; default 1.
-    pub on_voltage: f64,
+    pub on_voltage: R,
     /// The control voltage at which the switch is off, in volts; default 0.
-    pub off_voltage: f64,
+    pub off_voltage: R,
 }
 
-impl Default for VoltageControlledSwitchParameters {
+impl<R: Real> Default for VoltageControlledSwitchParameters<R> {
     fn default() -> Self {
         Self {
-            on_resistance: 1.0,
-            off_resistance: 1e6,
-            on_voltage: 1.0,
-            off_voltage: 0.0,
+            on_resistance: R::constant(1.0),
+            off_resistance: R::constant(1e6),
+            on_voltage: R::constant(1.0),
+            off_voltage: R::constant(0.0),
         }
     }
 }
 
-impl NativeDevice for VoltageControlledSwitch {
-    const NAME: &'static str = "voltage_controlled_switch";
-    type Parameters = VoltageControlledSwitchParameters;
+impl NativeModel for VoltageControlledSwitch {
+    type Device<R: Real> = VoltageControlledSwitch<R>;
+}
 
-    fn interface(_: &VoltageControlledSwitchParameters) -> Interface {
+impl<R: Real> NativeDevice<R> for VoltageControlledSwitch<R> {
+    const NAME: &'static str = "voltage_controlled_switch";
+    type Parameters = VoltageControlledSwitchParameters<R>;
+
+    fn interface(_: &VoltageControlledSwitchParameters<R>) -> Interface {
         Interface::new(
             &[
                 "positive",
@@ -72,7 +76,7 @@ impl NativeDevice for VoltageControlledSwitch {
     }
 
     fn new(
-        parameters: VoltageControlledSwitchParameters,
+        parameters: VoltageControlledSwitchParameters<R>,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
         let VoltageControlledSwitchParameters {
@@ -84,7 +88,8 @@ impl NativeDevice for VoltageControlledSwitch {
         ParameterError::positive("on_resistance", on_resistance)?;
         ParameterError::positive("off_resistance", off_resistance)?;
         let span = on_voltage - off_voltage;
-        if span == 0.0 {
+        if span.value() == 0.0 {
+            let on_voltage = on_voltage.value();
             return Err(ParameterError(format!(
                 "on_voltage and off_voltage must differ, not both be {on_voltage:?}"
             )));
@@ -96,8 +101,8 @@ impl NativeDevice for VoltageControlledSwitch {
             nodes,
             off_voltage,
             span,
-            on_conductance: 1.0 / on_resistance,
-            off_conductance: 1.0 / off_resistance,
+            on_conductance: on_resistance.recip(),
+            off_conductance: off_resistance.recip(),
             log_mean: (on_resistance * off_resistance).sqrt().ln(),
             log_ratio: (on_resistance / off_resistance).ln(),
             entries,
@@ -105,26 +110,26 @@ impl NativeDevice for VoltageControlledSwitch {
     }
 }
 
-impl VoltageControlledSwitch {
+impl<R: Real> VoltageControlledSwitch<R> {
     /// The conductance at `control`, and its derivative with respect to it.
-    fn conductance(&self, control: f64) -> (f64, f64) {
-        let fraction = (control - self.off_voltage) / self.span;
-        if fraction >= 1.0 {
-            return (self.on_conductance, 0.0);
+    fn conductance(&self, control: f64) -> (R, R) {
+        let fraction = -(self.off_voltage - control) / self.span;
+        if fraction.value() >= 1.0 {
+            return (self.on_conductance, R::constant(0.0));
         }
-        if fraction <= 0.0 {
-            return (self.off_conductance, 0.0);
+        if fraction.value() <= 0.0 {
+            return (self.off_conductance, R::constant(0.0));
         }
         let m = fraction - 0.5;
-        let log_resistance = self.log_mean + self.log_ratio * m * (1.5 - 2.0 * m * m);
+        let log_resistance = self.log_mean + self.log_ratio * m * -(m * 2.0 * m - 1.5);
         let conductance = (-log_resistance).exp();
-        let slope = self.log_ratio * (1.5 - 6.0 * m * m) / self.span;
+        let slope = self.log_ratio * -(m * 6.0 * m - 1.5) / self.span;
         (conductance, -conductance * slope)
     }
 }
 
-impl Device for VoltageControlledSwitch {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_>) {
+impl<R: Real> Device<R> for VoltageControlledSwitch<R> {
+    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
         let [positive, negative, control_positive, control_negative] = self.nodes;
         let voltage = input.value(positive) - input.value(negative);
         let control = input.value(control_positive) - input.value(control_negative);
@@ -136,7 +141,7 @@ impl Device for VoltageControlledSwitch {
         let derivatives = [conductance, -conductance, slope * voltage, -slope * voltage];
         for (row, sign) in self.entries.iter().zip([1.0, -1.0]) {
             for (&entry, derivative) in row.iter().zip(derivatives) {
-                output.add_conductance(entry, sign * derivative);
+                output.add_conductance(entry, derivative * sign);
             }
         }
     }
@@ -147,7 +152,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::testing::{Bench, assert_jacobians_match};
+    use crate::testing::{Bench, assert_jacobians_match, assert_parameter_gradients_match};
 
     const SWITCH: &str = r#"{"on_resistance": 10, "off_resistance": 1e6,
         "on_voltage": 2, "off_voltage": 1}"#;
@@ -172,6 +177,16 @@ mod tests {
             "on_voltage": 1, "off_voltage": 2}"#;
         assert!(close(resistance(reversed, 0.0), 10.0));
         assert!(close(resistance(reversed, 1.25), resistance(SWITCH, 1.75)));
+    }
+
+    #[test]
+    fn parameter_gradients_are_exact() {
+        for control in [0.5, 1.3, 2.5] {
+            assert_parameter_gradients_match::<VoltageControlledSwitch>(
+                SWITCH,
+                &[1.0, -0.5, control, 0.0],
+            );
+        }
     }
 
     #[test]

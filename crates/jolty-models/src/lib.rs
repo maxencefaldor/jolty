@@ -88,11 +88,11 @@ impl Library {
         library.add(Native::<Inductor>::new());
         library.add(Native::<VoltageSource>::new());
         library.add(Native::<CurrentSource>::new());
-        library.add(Plain::<CurrentControlledCurrentSource>::new());
-        library.add(Plain::<CurrentControlledVoltageSource>::new());
-        library.add(Plain::<VoltageControlledVoltageSource>::new());
-        library.add(Plain::<VoltageControlledCurrentSource>::new());
-        library.add(Plain::<VoltageControlledSwitch>::new());
+        library.add(Native::<CurrentControlledCurrentSource>::new());
+        library.add(Native::<CurrentControlledVoltageSource>::new());
+        library.add(Native::<VoltageControlledVoltageSource>::new());
+        library.add(Native::<VoltageControlledCurrentSource>::new());
+        library.add(Native::<VoltageControlledSwitch>::new());
         library.add(Plain::<Diode>::new());
         library.add(Plain::<Jfet>::new());
         library.add(Plain::<Mosfet>::new());
