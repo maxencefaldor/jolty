@@ -2,7 +2,7 @@
 
 use jolty_engine::{Options, Simulator};
 use jolty_ir::Circuit;
-use jolty_models::Library;
+use jolty_models::{Library, REFERENCE_TEMPERATURE};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
@@ -104,8 +104,8 @@ impl Network {
     /// Every node's voltage at the operating point, by node number, the ground being zero.
     fn voltages(&self, reversed: bool) -> Vec<f64> {
         let circuit = circuit(self, reversed);
-        let mut simulator =
-            Simulator::new(&circuit, &Library::standard()).expect("an elaborated circuit");
+        let mut simulator = Simulator::new(&circuit, &Library::standard(), REFERENCE_TEMPERATURE)
+            .expect("an elaborated circuit");
         let solution = simulator
             .operating_point(&tight())
             .expect("an operating point");

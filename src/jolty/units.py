@@ -226,6 +226,16 @@ class Quantity:
         return f"{float(f'{self.value:.4g}'):g} {self.dimension}"
 
 
+def celsius(degrees: float) -> Quantity:
+    """The temperature of `degrees` Celsius, in kelvins.
+
+    Examples:
+        >>> celsius(27).value
+        300.15
+    """
+    return Quantity(degrees + 273.15, TEMPERATURE)
+
+
 def finite(value: float, name: str) -> float:
     """`value`, after checking it is finite.
 

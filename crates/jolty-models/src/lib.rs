@@ -46,7 +46,7 @@ pub use device::{Device, Model, Native, NativeDevice, ParameterError, Source};
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Input, Output};
 pub use jfet::{Channel, Jfet, JfetParameters};
-pub use junction::THERMAL_VOLTAGE;
+pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
 pub use mosfet::{GateMaterial, Mosfet, MosfetParameters};
 pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,

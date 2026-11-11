@@ -1,12 +1,12 @@
 use serde::Deserialize;
 
 use crate::junction::{
-    Depletion, THERMAL_VOLTAGE, below_one, critical_voltage, depletion_charge, junction_current,
+    Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Output, ParameterError,
-    Quantity, TerminalPair,
+    Quantity, REFERENCE_TEMPERATURE, TerminalPair,
 };
 
 /// A junction diode from terminal `anode` to terminal `cathode`, in the SPICE model.
@@ -18,6 +18,10 @@ use crate::{
 /// it, matched to the breakdown current there as ngspice matches it. Steps of the junction
 /// voltage are limited the way SPICE limits them, so Newton iterations cannot overflow the
 /// exponential.
+///
+/// Away from its nominal temperature, its saturation current scales with the energy gap,
+/// its junction potential and capacitance with silicon's band gap, and its breakdown
+/// voltage by its temperature coefficient, as ngspice scales them.
 #[derive(Debug)]
 pub struct Diode {
     series: Option<(TerminalPair, f64)>,
@@ -45,15 +49,14 @@ struct Breakdown {
 
 impl Breakdown {
     /// The breakdown of a junction with `saturation` current, broken down at `voltage`
-    /// with `current`, and exponential `slope`.
+    /// with `current`, and exponential `slope`, at thermal voltage `vt`.
     ///
     /// ngspice moves the breakdown voltage so the current there is the breakdown current,
     /// by a fixed-point iteration, and leaves it where a breakdown current too small for
     /// the saturation current cannot be met.
-    fn new(voltage: f64, current: f64, saturation: f64, slope: f64) -> Self {
+    fn new(voltage: f64, current: f64, saturation: f64, slope: f64, vt: f64) -> Self {
         /// How closely the current at the matched voltage meets the breakdown current.
         const MATCH: f64 = 1e-12;
-        let vt = THERMAL_VOLTAGE;
         if current < saturation * voltage / vt {
             return Self { voltage, slope };
         }
@@ -100,6 +103,17 @@ pub struct DiodeParameters {
     pub breakdown_current: f64,
     /// The breakdown emission coefficient; the emission coefficient by default.
     pub breakdown_emission_coefficient: Option<f64>,
+    /// How fast the breakdown voltage falls with temperature, in volts per kelvin;
+    /// default 0.
+    pub breakdown_temperature_coefficient: f64,
+    /// The energy gap that scales the saturation current with temperature, in volts;
+    /// default 1.11, silicon's.
+    pub energy_gap: f64,
+    /// The exponent of the temperature ratio in the saturation current's scaling;
+    /// default 3.
+    pub saturation_current_temperature_exponent: f64,
+    /// The temperature the parameters were measured at, in kelvins; default 27 °C.
+    pub nominal_temperature: f64,
 }
 
 impl Default for DiodeParameters {
@@ -116,6 +130,10 @@ impl Default for DiodeParameters {
             breakdown_voltage: None,
             breakdown_current: 1e-3,
             breakdown_emission_coefficient: None,
+            breakdown_temperature_coefficient: 0.0,
+            energy_gap: 1.11,
+            saturation_current_temperature_exponent: 3.0,
+            nominal_temperature: REFERENCE_TEMPERATURE,
         }
     }
 }
@@ -144,6 +162,10 @@ impl NativeDevice for Diode {
             breakdown_voltage,
             breakdown_current,
             breakdown_emission_coefficient,
+            breakdown_temperature_coefficient,
+            energy_gap,
+            saturation_current_temperature_exponent,
+            nominal_temperature,
         } = parameters;
         ParameterError::positive("saturation_current", saturation_current)?;
         ParameterError::positive("emission_coefficient", emission_coefficient)?;
@@ -156,14 +178,32 @@ impl NativeDevice for Diode {
         ParameterError::positive("breakdown_current", breakdown_current)?;
         let breakdown_emission = breakdown_emission_coefficient.unwrap_or(emission_coefficient);
         ParameterError::positive("breakdown_emission_coefficient", breakdown_emission)?;
+        ParameterError::non_negative("energy_gap", energy_gap)?;
+
+        let temperatures = Temperatures::new(binding.temperature(), nominal_temperature)?;
+        let vt = temperatures.thermal_voltage();
+        let saturation_current = saturation_current
+            * temperatures.saturation(
+                energy_gap,
+                saturation_current_temperature_exponent,
+                emission_coefficient,
+            );
+        let (junction_potential, junction_capacitance) = temperatures.junction(
+            junction_potential,
+            junction_capacitance,
+            grading_coefficient,
+        );
+        // ngspice holds the depletion threshold at or below the junction potential.
+        let junction_potential = junction_potential.min(1.0 / depletion_coefficient);
         let breakdown = breakdown_voltage
             .map(|voltage| {
                 ParameterError::positive("breakdown_voltage", voltage).map(|voltage| {
                     Breakdown::new(
-                        voltage,
+                        voltage - breakdown_temperature_coefficient * temperatures.difference(),
                         breakdown_current,
                         saturation_current,
-                        breakdown_emission * THERMAL_VOLTAGE,
+                        breakdown_emission * vt,
+                        vt,
                     )
                 })
             })
@@ -180,7 +220,7 @@ impl NativeDevice for Diode {
         } else {
             (None, TerminalPair::new(binding, anode, cathode))
         };
-        let slope = emission_coefficient * THERMAL_VOLTAGE;
+        let slope = emission_coefficient * vt;
         Ok(Self {
             series,
             junction,
@@ -282,6 +322,9 @@ mod tests {
 
     use super::*;
     use crate::testing::{Bench, assert_jacobians_match};
+    use crate::thermal_voltage;
+
+    const THERMAL_VOLTAGE: f64 = thermal_voltage(REFERENCE_TEMPERATURE);
 
     const CHARGED: &str =
         r#"{"junction_capacitance": 2e-12, "transit_time": 1e-9, "grading_coefficient": 0.4}"#;
@@ -291,6 +334,21 @@ mod tests {
         let mut bench = Bench::new::<Diode>("{}");
         let current = bench.settle(&[0.6, 0.0]).residual[0];
         let expected = 1e-14 * ((0.6 / THERMAL_VOLTAGE).exp() - 1.0);
+        assert!(
+            (current / expected - 1.0).abs() < 1e-12,
+            "{current} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn the_saturation_current_scales_with_temperature() {
+        let (hot, emission) = (350.0, 1.5);
+        let mut bench = Bench::at::<Diode>(r#"{"emission_coefficient": 1.5}"#, hot);
+        let current = bench.settle(&[0.6, 0.0]).residual[0];
+        let vt = thermal_voltage(hot);
+        let ratio = hot / REFERENCE_TEMPERATURE;
+        let saturation = 1e-14 * (((ratio - 1.0) * 1.11 / vt + 3.0 * ratio.ln()) / emission).exp();
+        let expected = saturation * ((0.6 / (emission * vt)).exp() - 1.0);
         assert!(
             (current / expected - 1.0).abs() < 1e-12,
             "{current} vs {expected}"

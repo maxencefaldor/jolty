@@ -8,13 +8,106 @@
 use crate::ParameterError;
 
 /// The Boltzmann constant, in joules per kelvin.
-pub(crate) const BOLTZMANN: f64 = 1.380_649e-23;
+pub const BOLTZMANN: f64 = 1.380_649e-23;
 /// The elementary charge, in coulombs.
-pub(crate) const ELEMENTARY_CHARGE: f64 = 1.602_176_634e-19;
-/// The temperature devices are evaluated at: 27 °C, in kelvins.
-pub(crate) const TEMPERATURE: f64 = 300.15;
-/// The thermal voltage at [`TEMPERATURE`], in volts.
-pub const THERMAL_VOLTAGE: f64 = BOLTZMANN * TEMPERATURE / ELEMENTARY_CHARGE;
+pub const ELEMENTARY_CHARGE: f64 = 1.602_176_634e-19;
+/// SPICE's reference temperature, 27 °C, in kelvins: the temperature a circuit is simulated
+/// at, and its devices' parameters were measured at, unless said otherwise.
+pub const REFERENCE_TEMPERATURE: f64 = 300.15;
+
+/// The thermal voltage `k·T / q` at `temperature`, in volts.
+#[must_use]
+pub const fn thermal_voltage(temperature: f64) -> f64 {
+    BOLTZMANN * temperature / ELEMENTARY_CHARGE
+}
+
+/// Silicon's band gap at `temperature`, in electronvolts, as SPICE models it.
+pub(crate) fn band_gap(temperature: f64) -> f64 {
+    1.16 - 7.02e-4 * temperature * temperature / (temperature + 1108.0)
+}
+
+/// The temperature a device is evaluated at, and the nominal temperature its parameters
+/// were measured at, in kelvins.
+///
+/// It scales parameters from the nominal temperature as ngspice does: saturation currents
+/// with the energy gap, built-in potentials and depletion capacitances with silicon's band
+/// gap, and other parameters by their own coefficients.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Temperatures {
+    /// The temperature the device is evaluated at.
+    pub(crate) actual: f64,
+    /// The temperature its parameters were measured at.
+    pub(crate) nominal: f64,
+}
+
+impl Temperatures {
+    /// The device's temperature, `actual`, and its parameters' `nominal` temperature.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the nominal temperature is not positive.
+    pub(crate) fn new(actual: f64, nominal: f64) -> Result<Self, ParameterError> {
+        ParameterError::positive("nominal_temperature", nominal)?;
+        Ok(Self { actual, nominal })
+    }
+
+    /// The thermal voltage at the device's temperature.
+    pub(crate) const fn thermal_voltage(self) -> f64 {
+        thermal_voltage(self.actual)
+    }
+
+    /// The device's temperature over the nominal temperature.
+    pub(crate) fn ratio(self) -> f64 {
+        self.actual / self.nominal
+    }
+
+    /// The device's temperature less the nominal temperature.
+    pub(crate) fn difference(self) -> f64 {
+        self.actual - self.nominal
+    }
+
+    /// The factor `1 + tc1 · ΔT + tc2 · ΔT²` of a parameter with linear coefficient
+    /// `linear` and quadratic coefficient `quadratic`.
+    pub(crate) fn polynomial(self, linear: f64, quadratic: f64) -> f64 {
+        let difference = self.difference();
+        1.0 + (linear + quadratic * difference) * difference
+    }
+
+    /// The factor that scales a saturation current with `emission` coefficient, given the
+    /// `energy_gap` in volts and the temperature `exponent`, SPICE's XTI:
+    /// `exp(((T/Tn − 1) · Eg / Vt + XTI · ln(T/Tn)) / n)`.
+    pub(crate) fn saturation(self, energy_gap: f64, exponent: f64, emission: f64) -> f64 {
+        let ratio = self.ratio();
+        (((ratio - 1.0) * energy_gap / self.thermal_voltage() + exponent * ratio.ln()) / emission)
+            .exp()
+    }
+
+    /// A junction's built-in `potential` and zero-bias `capacitance`, of `grading`
+    /// coefficient, scaled to the device's temperature.
+    pub(crate) fn junction(self, potential: f64, capacitance: f64, grading: f64) -> (f64, f64) {
+        let nominal = self.nominal / REFERENCE_TEMPERATURE;
+        let intrinsic = (potential - potential_shift(self.nominal)) / nominal;
+        let scaled = self.actual / REFERENCE_TEMPERATURE * intrinsic + potential_shift(self.actual);
+        let stretch = |temperature: f64, potential: f64| {
+            1.0 + grading
+                * (4e-4 * (temperature - REFERENCE_TEMPERATURE)
+                    - (potential - intrinsic) / intrinsic)
+        };
+        (
+            scaled,
+            capacitance * stretch(self.actual, scaled) / stretch(self.nominal, potential),
+        )
+    }
+}
+
+/// How far a junction's built-in potential at `temperature` lies from the reference
+/// temperature's, through silicon's band gap and intrinsic concentration: SPICE's `pbfact`.
+fn potential_shift(temperature: f64) -> f64 {
+    let gap = -band_gap(temperature) / (2.0 * BOLTZMANN * temperature)
+        + 1.115_087_7 / (2.0 * BOLTZMANN * REFERENCE_TEMPERATURE);
+    -2.0 * thermal_voltage(temperature)
+        * (1.5 * (temperature / REFERENCE_TEMPERATURE).ln() + ELEMENTARY_CHARGE * gap)
+}
 
 /// The current through a junction at `voltage`, and its derivative, with `saturation`
 /// current and exponential `slope` (the emission coefficient times the thermal voltage).
@@ -227,7 +320,7 @@ mod tests {
         fn the_junction_current_is_smooth_and_its_slope_is_its_derivative(
             voltage in -10.0..0.8f64,
         ) {
-            let slope = 1.5 * THERMAL_VOLTAGE;
+            let slope = 1.5 * thermal_voltage(REFERENCE_TEMPERATURE);
             let (current, conductance) = junction_current(voltage, 1e-12, slope);
             let step = 1e-7;
             let above = junction_current(voltage + step, 1e-12, slope).0;
@@ -241,7 +334,7 @@ mod tests {
         /// drain step at or above the source stay between the old voltage and the new one.
         #[test]
         fn limiting_never_overshoots(new in -20.0..20.0f64, old in -20.0..20.0f64) {
-            let slope = THERMAL_VOLTAGE;
+            let slope = thermal_voltage(REFERENCE_TEMPERATURE);
             let critical = critical_voltage(1e-14, slope);
             let between = |limited: f64| {
                 limited.is_finite() && (limited - old).abs() <= (new - old).abs() + 1e-12
@@ -264,7 +357,7 @@ mod tests {
 
     #[test]
     fn the_reverse_form_meets_the_exponential_at_three_slopes() {
-        let slope = THERMAL_VOLTAGE;
+        let slope = thermal_voltage(REFERENCE_TEMPERATURE);
         let boundary = -3.0 * slope;
         let (exponential, exponential_slope) = junction_current(boundary, 1e-14, slope);
         let (cubic, cubic_slope) = junction_current(boundary - 1e-15, 1e-14, slope);

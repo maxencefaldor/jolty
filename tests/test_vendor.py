@@ -18,7 +18,6 @@ import pytest
 from differential import (
     SKIP,
     SPICE_OPTIONS,
-    SPICE_TEMPERATURE,
     TIGHT,
     VOLTAGE_TOLERANCE,
     closest,
@@ -43,7 +42,7 @@ from jolty import (
     spice,
 )
 from jolty.plan import decade, linear
-from jolty.units import Hz, MHz, Quantity, V, kHz, kohm, ms, us
+from jolty.units import Hz, MHz, Quantity, V, celsius, kHz, kohm, ms, us
 from jolty.waveforms import Sine
 
 pytestmark = SKIP
@@ -241,15 +240,13 @@ BENCHES = {
         options=replace(TIGHT, current_tolerance=1e-12),
         spice_options=(
             f".options reltol=1e-6 vntol={VOLTAGE_TOLERANCE!r} abstol=1e-12"
-            f" chgtol=1e-18 {SPICE_TEMPERATURE}"
+            " chgtol=1e-18"
         ),
     ),
     # ngspice finds this amplifier's operating point at its default tolerances only. It
     # runs the amplifier's switches as XSPICE's, which stamp the negative of their
     # conductance in an AC analysis.
-    "opa171": Bench(
-        _opa171, None, None, ac=False, spice_options=f".options {SPICE_TEMPERATURE}"
-    ),
+    "opa171": Bench(_opa171, None, None, ac=False, spice_options=""),
 }
 """The benches, by name."""
 
@@ -271,6 +268,45 @@ def test_operating_points_agree(name: str, downloads: Path) -> None:
         libraries=(file,),
         pspice=bench.pspice,
         options=bench.spice_options,
+    )
+    for column, unknown in compared(simulation):
+        spice_value = raw.real(vector(simulation.circuit, unknown))[0]
+        compare(
+            point.values[column],
+            spice_value,
+            unknown,
+            scale=abs(spice_value),
+            tolerance=1e-6,
+        )
+
+
+_TEMPERATURES = [
+    pytest.param(name, degrees, id=f"{name}-{degrees}C")
+    for name in _benches("op")
+    for degrees in (-40, 125)
+    # ngspice scales a transistor's base-collector saturation current by its area
+    # twice, which the AD22057's leakage at 125 °C makes visible.
+    if (name, degrees) != ("ad22057", 125)
+]
+"""The benches, and the temperatures in degrees Celsius both also run them at."""
+
+
+@pytest.mark.parametrize(("name", "degrees"), _TEMPERATURES)
+def test_operating_points_agree_across_temperatures(
+    name: str, degrees: float, downloads: Path
+) -> None:
+    bench = BENCHES[name]
+    top, file = bench.build(downloads)
+    temperature = celsius(degrees)
+    simulation = Simulation(top, temperature)
+    point = simulation.run(OperatingPoint(), bench.options)
+    raw = ngspice(
+        netlist(simulation.circuit),
+        "op",
+        libraries=(file,),
+        pspice=bench.pspice,
+        options=bench.spice_options,
+        temperature=temperature.value,
     )
     for column, unknown in compared(simulation):
         spice_value = raw.real(vector(simulation.circuit, unknown))[0]

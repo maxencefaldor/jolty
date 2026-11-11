@@ -1,12 +1,18 @@
 use serde::Deserialize;
 
+use crate::junction::Temperatures;
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
-    ParameterError, Quantity, TerminalPair, Unknown,
+    ParameterError, Quantity, REFERENCE_TEMPERATURE, TerminalPair, Unknown,
 };
 use jolty_numerics::Entry;
 
-/// A linear resistor between terminals `a` and `b`.
+/// The default nominal temperature, at which a passive device's value was measured.
+const fn reference_temperature() -> f64 {
+    REFERENCE_TEMPERATURE
+}
+
+/// A linear resistor between terminals `a` and `b`, whose resistance drifts with temperature.
 #[derive(Debug)]
 pub struct Resistor {
     pair: TerminalPair,
@@ -17,8 +23,21 @@ pub struct Resistor {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResistorParameters {
-    /// The resistance, in ohms; positive.
+    /// The resistance, in ohms, at the nominal temperature; positive.
     pub resistance: f64,
+    /// The linear temperature coefficient `tc1`, per kelvin; default 0.
+    #[serde(default)]
+    pub temperature_coefficient: f64,
+    /// The quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
+    #[serde(default)]
+    pub quadratic_temperature_coefficient: f64,
+    /// The exponential temperature coefficient `tce`, in percent per kelvin: given, the
+    /// resistance is multiplied by `1.01^(tce · ΔT)` instead of the polynomial.
+    #[serde(default)]
+    pub exponential_temperature_coefficient: Option<f64>,
+    /// The temperature the resistance was measured at, in kelvins; default 27 °C.
+    #[serde(default = "reference_temperature")]
+    pub nominal_temperature: f64,
 }
 
 impl NativeDevice for Resistor {
@@ -34,10 +53,35 @@ impl NativeDevice for Resistor {
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
         let resistance = ParameterError::positive("resistance", parameters.resistance)?;
+        let temperatures =
+            Temperatures::new(binding.temperature(), parameters.nominal_temperature)?;
+        let (linear, quadratic) = (
+            parameters.temperature_coefficient,
+            parameters.quadratic_temperature_coefficient,
+        );
+        let factor = match parameters.exponential_temperature_coefficient {
+            None => temperatures.polynomial(linear, quadratic),
+            Some(exponential) if linear == 0.0 && quadratic == 0.0 => {
+                1.01_f64.powf(exponential * temperatures.difference())
+            }
+            Some(_) => {
+                return Err(ParameterError(
+                    "an exponential temperature coefficient excludes the linear and \
+                     quadratic ones"
+                        .to_owned(),
+                ));
+            }
+        };
+        if factor == 0.0 {
+            return Err(ParameterError(format!(
+                "the temperature coefficients scale the resistance to zero at {:?} K",
+                temperatures.actual
+            )));
+        }
         let (a, b) = (binding.terminal(0), binding.terminal(1));
         Ok(Self {
             pair: TerminalPair::new(binding, a, b),
-            conductance: 1.0 / resistance,
+            conductance: 1.0 / (resistance * factor),
         })
     }
 }
@@ -50,7 +94,8 @@ impl Device for Resistor {
     }
 }
 
-/// A linear capacitor between terminals `a` and `b`.
+/// A linear capacitor between terminals `a` and `b`, whose capacitance drifts with
+/// temperature.
 #[derive(Debug)]
 pub struct Capacitor {
     pair: TerminalPair,
@@ -61,8 +106,17 @@ pub struct Capacitor {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapacitorParameters {
-    /// The capacitance, in farads; zero or positive.
+    /// The capacitance, in farads, at the nominal temperature; zero or positive.
     pub capacitance: f64,
+    /// The linear temperature coefficient `tc1`, per kelvin; default 0.
+    #[serde(default)]
+    pub temperature_coefficient: f64,
+    /// The quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
+    #[serde(default)]
+    pub quadratic_temperature_coefficient: f64,
+    /// The temperature the capacitance was measured at, in kelvins; default 27 °C.
+    #[serde(default = "reference_temperature")]
+    pub nominal_temperature: f64,
 }
 
 impl NativeDevice for Capacitor {
@@ -77,7 +131,11 @@ impl NativeDevice for Capacitor {
         parameters: CapacitorParameters,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let capacitance = ParameterError::non_negative("capacitance", parameters.capacitance)?;
+        let capacitance = ParameterError::non_negative("capacitance", parameters.capacitance)?
+            * Temperatures::new(binding.temperature(), parameters.nominal_temperature)?.polynomial(
+                parameters.temperature_coefficient,
+                parameters.quadratic_temperature_coefficient,
+            );
         let (a, b) = (binding.terminal(0), binding.terminal(1));
         Ok(Self {
             pair: TerminalPair::new(binding, a, b),
@@ -94,7 +152,8 @@ impl Device for Capacitor {
     }
 }
 
-/// A linear inductor between terminals `a` and `b`.
+/// A linear inductor between terminals `a` and `b`, whose inductance drifts with
+/// temperature.
 ///
 /// Its current, flowing from `a` through the inductor to `b`, is an unknown labelled
 /// `current`. Its equation is `v_a − v_b − d/dt (L·i) = 0`, so at DC it is a short circuit.
@@ -112,8 +171,17 @@ pub struct Inductor {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InductorParameters {
-    /// The inductance, in henries; positive.
+    /// The inductance, in henries, at the nominal temperature; positive.
     pub inductance: f64,
+    /// The linear temperature coefficient `tc1`, per kelvin; default 0.
+    #[serde(default)]
+    pub temperature_coefficient: f64,
+    /// The quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
+    #[serde(default)]
+    pub quadratic_temperature_coefficient: f64,
+    /// The temperature the inductance was measured at, in kelvins; default 27 °C.
+    #[serde(default = "reference_temperature")]
+    pub nominal_temperature: f64,
 }
 
 impl NativeDevice for Inductor {
@@ -128,7 +196,11 @@ impl NativeDevice for Inductor {
         parameters: InductorParameters,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let inductance = ParameterError::positive("inductance", parameters.inductance)?;
+        let inductance = ParameterError::positive("inductance", parameters.inductance)?
+            * Temperatures::new(binding.temperature(), parameters.nominal_temperature)?.polynomial(
+                parameters.temperature_coefficient,
+                parameters.quadratic_temperature_coefficient,
+            );
         let (a, b) = (binding.terminal(0), binding.terminal(1));
         let current = binding.internal("current", Quantity::Current);
         let branch = Some(current);
@@ -189,6 +261,37 @@ mod tests {
     fn an_inductor_adds_its_current_as_an_unknown() {
         let bench = Bench::new::<Inductor>(r#"{"inductance": 1e-3}"#);
         assert_eq!(bench.unknowns(), ["n0", "n1", "device:current"]);
+    }
+
+    #[test]
+    fn values_drift_with_their_temperature_coefficients() {
+        let parameters = r#"{"resistance": 1000, "temperature_coefficient": 1e-3,
+            "quadratic_temperature_coefficient": 1e-5, "nominal_temperature": 300}"#;
+        let mut bench = Bench::at::<Resistor>(parameters, 310.0);
+        let factor = 1.0 + 1e-3 * 10.0 + 1e-5 * 100.0;
+        assert_close(
+            &bench.evaluate(&[1.0, 0.0]).residual,
+            &[1e-3 / factor, -1e-3 / factor],
+        );
+        let mut bench = Bench::at::<Resistor>(
+            r#"{"resistance": 1000, "exponential_temperature_coefficient": 0.5}"#,
+            REFERENCE_TEMPERATURE + 10.0,
+        );
+        let factor = 1.01_f64.powf(5.0);
+        assert_close(
+            &bench.evaluate(&[1.0, 0.0]).residual,
+            &[1e-3 / factor, -1e-3 / factor],
+        );
+        let error = Bench::try_at::<Resistor>(
+            r#"{"resistance": 1000, "temperature_coefficient": -0.1}"#,
+            REFERENCE_TEMPERATURE + 10.0,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .0
+                .starts_with("the temperature coefficients scale the resistance to zero")
+        );
     }
 
     #[test]

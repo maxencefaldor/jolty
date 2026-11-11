@@ -47,22 +47,23 @@ TIGHT = Options(
 _SPICE_THERMAL_VOLTAGE_PER_KELVIN = 1.38064852e-23 / 1.6021766208e-19
 """ngspice's Boltzmann constant over the elementary charge, from CODATA 2014."""
 
-_SPICE_TEMPERATURE = _core.THERMAL_VOLTAGE / _SPICE_THERMAL_VOLTAGE_PER_KELVIN - 273.15
-"""The temperature, in degrees Celsius, at which ngspice's thermal voltage is jolty's.
 
-Running ngspice there, with its models' nominal temperature there too so no parameter
-scales with temperature, compares the devices rather than the physical constants.
-"""
+def spice_celsius(temperature: float) -> float:
+    """Where ngspice's thermal voltage is jolty's at `temperature`, in degrees Celsius.
 
-SPICE_TEMPERATURE = f"temp={_SPICE_TEMPERATURE!r} tnom={_SPICE_TEMPERATURE!r}"
-"""ngspice's options that run it, and its models' nominal temperature, at jolty's
-thermal voltage."""
+    The temperature is in kelvins. Running ngspice there, and its models' nominal
+    temperature where it is jolty's, compares the devices rather than the physical
+    constants.
+    """
+    thermal_voltage = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
+    return thermal_voltage / _SPICE_THERMAL_VOLTAGE_PER_KELVIN - 273.15
+
 
 SPICE_OPTIONS = (
     ".options reltol=1e-6"
     f" vntol={VOLTAGE_TOLERANCE!r} abstol={CURRENT_TOLERANCE!r} chgtol=1e-18"
-    f" {SPICE_TEMPERATURE}"
 )
+"""ngspice's options, as tight as jolty's."""
 
 # Netlists and raw files.
 
@@ -132,6 +133,7 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
             instance = _spice(models.MOSFET_INSTANCE)
         case _:
             pytest.fail(f"{model} has no model card")
+    names["nominal_temperature"] = ("tnom", 1.0)
     given = {
         key: value
         for key, value in values.items()
@@ -157,6 +159,8 @@ def _spice_value(key: str, value: JsonValue, factor: float) -> str:
             return repr(_NUMBERED[key][name])
         case int(number):
             return repr(number)
+        case float() if key == "nominal_temperature":
+            return repr(spice_celsius(value))
         case float():
             return repr(float(value) * factor)
     pytest.fail(f"no SPICE value for {value}")
@@ -227,6 +231,12 @@ def netlist(circuit: ir.Circuit, *, excited: str | None = None) -> list[str]:
                     f".model M{instance.id} pswitch({card} r_cntl_in=1e30 log=TRUE)"
                 )
                 value = f"M{instance.id}"
+            case "resistor" | "capacitor" | "inductor":
+                number, *drift = values.items()
+                value = " ".join(
+                    [repr(number[1])]
+                    + [f"{_PASSIVE_DRIFT[key]}={amount!r}" for key, amount in drift]
+                )
             case _:
                 (number,) = values.values()
                 value = repr(number)
@@ -253,6 +263,13 @@ def _subcircuit(circuit: ir.Circuit, instance: ir.Instance, ground: str) -> str:
     parameters = f" params: {listed.replace(',', ' ')}" if listed else ""
     return f"X{instance.id} {nodes} {subcircuit}{parameters}"
 
+
+_PASSIVE_DRIFT = {
+    "temperature_coefficient": "tc1",
+    "quadratic_temperature_coefficient": "tc2",
+    "exponential_temperature_coefficient": "tce",
+}
+"""The SPICE name of each temperature coefficient of a passive device."""
 
 _SWITCH_PARAMETERS = {
     "on_voltage": "cntl_on",
@@ -361,24 +378,28 @@ class Raw:
         return self.vectors[name].real
 
 
-def ngspice(
+def ngspice(  # noqa: PLR0913 - a deck, its analysis, and how ngspice runs it
     lines: list[str],
     analysis: str,
     *,
     libraries: tuple[Path, ...] = (),
     pspice: bool = False,
     options: str = SPICE_OPTIONS,
+    temperature: float = _core.REFERENCE_TEMPERATURE,
 ) -> Raw:
     """Runs one analysis command in ngspice and reads the raw file it writes.
 
     ngspice includes `libraries`, and reads them as PSpice writes them, in its PSpice
-    compatibility mode, if `pspice`. `options` replaces the tight options.
+    compatibility mode, if `pspice`. `options` replaces the tight options. It runs at
+    jolty's `temperature`, in kelvins, its models' nominal temperature at jolty's 27 °C.
     """
+    nominal = spice_celsius(_core.REFERENCE_TEMPERATURE)
     deck = [
         lines[0],
         *(f".include {library.resolve()}" for library in libraries),
         *lines[1:],
         options,
+        f".options temp={spice_celsius(temperature)!r} tnom={nominal!r}",
         ".control",
         "set filetype=ascii",
         analysis,

@@ -37,6 +37,7 @@ from jolty.spice.expressions import (
 )
 from jolty.spice.models import ModelCard
 from jolty.spice.netlist import Statement, statements, tokens
+from jolty.units import celsius
 
 GROUND: Final = "ground"
 """The port through which a subcircuit reaches SPICE's global ground, node ``0``."""
@@ -476,10 +477,16 @@ def _keywords(words: list[str]) -> tuple[list[str], dict[str, list[str]]]:
     return positional, assigned
 
 
-_IGNORED_KEYWORDS: Final = frozenset({"tc", "tc1", "tc2", "tce", "temp", "dtemp", "ic"})
-"""Element keywords that change nothing jolty computes: temperature coefficients, which
-only act away from 27 °C, and initial conditions, which only act when a transient skips
-its operating point."""
+_IGNORED_KEYWORDS: Final = frozenset({"ic"})
+"""Element keywords that change nothing jolty computes: initial conditions, which only
+act when a transient skips its operating point."""
+
+_DRIFT: Final = {
+    "tc1": "temperature_coefficient",
+    "tc2": "quadratic_temperature_coefficient",
+    "tce": "exponential_temperature_coefficient",
+}
+"""The temperature coefficients of a resistor, capacitor or inductor, by SPICE name."""
 
 
 def _passive(
@@ -487,13 +494,17 @@ def _passive(
 ) -> Callable[[_Translation, Statement], None]:
     """The translation of a resistor, capacitor or inductor.
 
-    Its model card, of type `kind`, scales its value by the parameter of its letter.
+    Its model card, of type `kind`, scales its value by the parameter of its letter, and
+    gives its temperature coefficients and nominal temperature. The element's own
+    coefficients, ``TC=tc1,tc2`` or each by name, override the card's. Only a resistor
+    has an exponential coefficient, ``TCE``.
     """
     letter = kind[0]
+    drifts = frozenset(_DRIFT) if model == "resistor" else frozenset({"tc1", "tc2"})
 
     def translated(translation: _Translation, statement: Statement) -> None:
         positional, assigned = _keywords(tokens(statement.text))
-        _check_keywords(statement, assigned, frozenset({letter}))
+        _check_keywords(statement, assigned, frozenset({letter, "tc", *drifts}))
         if len(positional) < 3:  # noqa: PLR2004 - a name and two nodes
             message = "an element joins two nodes"
             raise statement.fail(message)
@@ -512,18 +523,82 @@ def _passive(
             message = f"a {model} has one value"
             raise statement.fail(message)
         value = translation.value(values[0])
+        given: dict[str, float] = {}
         if card is not None:
             scale = card.parameters.get(letter, Number(1.0))
             value *= evaluate(scale, translation.scope)
-            _check_model(card, translation.scope, frozenset({letter}), statement)
+            read = models.NOMINAL_TEMPERATURES | models.OWN_TEMPERATURES | drifts
+            _check_model(card, translation.scope, read | {letter}, statement)
+            given = {
+                name: evaluate(expression, translation.scope)
+                for name, expression in card.parameters.items()
+                if name in read
+            }
+        given |= _coefficients(translation, statement, assigned, drifts)
+        parameters: dict[str, JsonValue] = {parameter: value}
+        parameters |= _temperatures(model, given, statement)
         translation.add(
             statement,
             model,
-            {parameter: value},
+            parameters,
             {"a": translation.net(a), "b": translation.net(b)},
         )
 
     return translated
+
+
+def _temperatures(
+    model: str, given: Mapping[str, float], statement: Statement
+) -> dict[str, JsonValue]:
+    """A resistor's, capacitor's or inductor's temperature parameters, by jolty name.
+
+    They come from those `given` by SPICE name.
+
+    Raises:
+        SpiceError: When it drifts and sets a temperature of its own.
+    """
+    parameters: dict[str, JsonValue] = {}
+    for name, amount in given.items():
+        if name in models.NOMINAL_TEMPERATURES:
+            parameters["nominal_temperature"] = celsius(amount).value
+        elif name in _DRIFT:
+            parameters[_DRIFT[name]] = amount
+    own = sorted(name for name in given if name in models.OWN_TEMPERATURES)
+    if own and any(given.get(name) for name in _DRIFT):
+        message = (
+            f"jolty simulates a {model} at the circuit's temperature, not at its own "
+            f"`{own[0].upper()}`"
+        )
+        raise statement.fail(message)
+    return parameters
+
+
+def _coefficients(
+    translation: _Translation,
+    statement: Statement,
+    assigned: Mapping[str, list[str]],
+    drifts: frozenset[str],
+) -> dict[str, float]:
+    """The temperature coefficients an element gives, by SPICE name.
+
+    It gives them as ``TC=tc1,tc2``, or each of `drifts` by name.
+
+    Raises:
+        SpiceError: When ``TC`` gives more than two.
+    """
+    listed = assigned.get("tc", [])
+    if len(listed) > 2:  # noqa: PLR2004 - the linear and the quadratic coefficient
+        message = "`TC` gives two coefficients at most"
+        raise statement.fail(message)
+    given = {
+        name: translation.value(word)
+        for name, word in zip(("tc1", "tc2"), listed, strict=False)
+    }
+    for name in drifts:
+        words = assigned.get(name)
+        if words is not None:
+            given[name] = translation.value(words[0])
+    return given
 
 
 def _check_keywords(
@@ -548,7 +623,7 @@ def _check_model(
         SpiceError: When a parameter is neither `allowed` nor one that changes nothing.
     """
     for name, expression in card.parameters.items():
-        if name in allowed or name in models.TEMPERATURE or name in models.NOISE:
+        if name in allowed or name in models.NOISE:
             continue
         if evaluate(expression, scope) != 0:
             raise models.unmatched(card, name, statement)

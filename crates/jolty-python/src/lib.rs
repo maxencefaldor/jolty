@@ -34,12 +34,13 @@ struct Simulator {
 
 #[pymethods]
 impl Simulator {
-    /// Elaborates the circuit whose JSON text is `circuit`.
+    /// Elaborates the circuit whose JSON text is `circuit`, its devices at `temperature`,
+    /// in kelvins.
     #[new]
-    fn new(circuit: &str) -> PyResult<Self> {
+    fn new(circuit: &str, temperature: f64) -> PyResult<Self> {
         let circuit = Circuit::from_json(circuit).map_err(|error| unreadable(&error))?;
-        let inner =
-            jolty_engine::Simulator::new(&circuit, &Library::standard()).map_err(|error| {
+        let inner = jolty_engine::Simulator::new(&circuit, &Library::standard(), temperature)
+            .map_err(|error| {
                 let problems: Vec<String> =
                     error.problems().iter().map(ToString::to_string).collect();
                 ElaborationError::new_err((problems,))
@@ -252,7 +253,9 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
     module.add_function(wrap_pyfunction!(constant, module)?)?;
     module.add("EXPRESSIONS", jolty_expressions::LANGUAGE)?;
-    module.add("THERMAL_VOLTAGE", jolty_models::THERMAL_VOLTAGE)?;
+    module.add("BOLTZMANN", jolty_models::BOLTZMANN)?;
+    module.add("ELEMENTARY_CHARGE", jolty_models::ELEMENTARY_CHARGE)?;
+    module.add("REFERENCE_TEMPERATURE", jolty_models::REFERENCE_TEMPERATURE)?;
     module.add("ElaborationError", py.get_type::<ElaborationError>())?;
     module.add("SimulationError", py.get_type::<SimulationError>())?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;

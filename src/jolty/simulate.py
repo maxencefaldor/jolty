@@ -1,8 +1,8 @@
 # Copyright 2026 Maxence Faldor
 """Run analyses on a circuit with the Rust engine.
 
-A [`Simulation`][jolty.simulate.Simulation] elaborates a circuit once and runs any
-number of analyses on it.
+A [`Simulation`][jolty.simulate.Simulation] elaborates a circuit once, its devices at
+one temperature, 27 °C unless given, and runs any number of analyses on it.
 
 Examples:
     >>> from jolty import Builder, Role, component, devices
@@ -30,7 +30,7 @@ from jolty import _core, checks, ir, results
 from jolty.builder import Component, circuit
 from jolty.errors import ElaborationError, SimulationError
 from jolty.plan import Ac, Analysis, DcSweep, OperatingPoint, Options, Plan, Transient
-from jolty.units import CURRENT, VOLTAGE, Dimension
+from jolty.units import CURRENT, TEMPERATURE, VOLTAGE, Dimension, Quantity
 
 
 class Simulation:
@@ -45,20 +45,37 @@ class Simulation:
     devices: int
     """The number of devices, with every component instance unfolded."""
 
-    def __init__(self, circuit_or_top: ir.Circuit | Component) -> None:
+    temperature: float
+    """The temperature the devices are simulated at, in kelvins."""
+
+    def __init__(
+        self,
+        circuit_or_top: ir.Circuit | Component,
+        temperature: Quantity | None = None,
+    ) -> None:
         """Elaborates a circuit, or the circuit with a component at its top.
+
+        Its devices are simulated at `temperature`, 27 °C unless given.
 
         Raises:
             ElaborationError: With every problem the engine finds, each naming the
                 instance and the line of the build script that placed it.
+            DimensionError: When the temperature is not one.
         """
         self.circuit = (
             circuit_or_top
             if isinstance(circuit_or_top, ir.Circuit)
             else circuit(circuit_or_top)
         )
+        self.temperature = (
+            _core.REFERENCE_TEMPERATURE
+            if temperature is None
+            else temperature.to(TEMPERATURE, "a temperature")
+        )
         try:
-            self._core = _core.Simulator(self.circuit.model_dump_json())
+            self._core = _core.Simulator(
+                self.circuit.model_dump_json(), self.temperature
+            )
         except _core.ElaborationError as error:
             raise ElaborationError(error.args[0]) from None
         self.unknowns = tuple(
@@ -100,7 +117,19 @@ class Simulation:
         return self._result(outcome)
 
     def run_plan(self, plan: Plan) -> dict[str, results.Result]:
-        """Runs every analysis of `plan`, by name, with its options."""
+        """Runs every analysis of `plan`, by name, with its options.
+
+        Raises:
+            ValueError: When the plan gives a temperature other than the simulation's.
+        """
+        if plan.temperature is not None:
+            temperature = plan.temperature.to(TEMPERATURE, "a plan's temperature")
+            if temperature != self.temperature:
+                message = (
+                    f"the plan's temperature, {plan.temperature}, is not the "
+                    f"simulation's, {Quantity(self.temperature, TEMPERATURE)}"
+                )
+                raise ValueError(message)
         return {
             name: self.run(analysis, plan.options)
             for name, analysis in plan.analyses.items()

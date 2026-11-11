@@ -150,17 +150,7 @@ def run(job: Job, directory: Path) -> Outcome:
 
 def _run(job: Job, directory: Path) -> Built:
     namespaces: dict[Path, dict[str, object]] = {}
-    top = _call(job.script, "build", namespaces)
-    match top:
-        case Component():
-            built = circuit(top)
-        case ir.Circuit():
-            built = top
-        case _:
-            message = (
-                f"build() returned {type(top).__name__}, not a Component or a Circuit"
-            )
-            raise ScriptError(message)
+    built = _built(job.script, namespaces)
     try:
         simulation = Simulation(built)
     except ElaborationError as error:
@@ -177,18 +167,57 @@ def _run(job: Job, directory: Path) -> Built:
     if not isinstance(plan, Plan):
         message = f"plan() returned {type(plan).__name__}, not a Plan"
         raise ScriptError(message)
+    if plan.temperature is not None:
+        try:
+            simulation = Simulation(built, plan.temperature)
+        except ElaborationError as error:
+            return Built(circuit=built, problems=error.problems)
     solved, reports = _analyses(simulation, plan, job.listed)
     if solved:
         files.save_results(directory / RESULTS, solved)
-    match _call(job.plan, "specs", namespaces, required=False):
+    verdicts = _verdicts(job.plan, namespaces, solved, plan)
+    return elaborated.model_copy(update={"analyses": reports, "specs": verdicts})
+
+
+def _built(script: Path, namespaces: dict[Path, dict[str, object]]) -> ir.Circuit:
+    """The circuit `script`'s ``build()`` returns.
+
+    Raises:
+        ScriptError: When it returns neither a component nor a circuit.
+    """
+    match _call(script, "build", namespaces):
+        case Component() as top:
+            return circuit(top)
+        case ir.Circuit() as built:
+            return built
+        case other:
+            message = (
+                f"build() returned {type(other).__name__}, not a Component or a Circuit"
+            )
+            raise ScriptError(message)
+
+
+def _verdicts(
+    script: Path,
+    namespaces: dict[Path, dict[str, object]],
+    solved: dict[str, Result],
+    plan: Plan,
+) -> tuple[Verdict, ...]:
+    """The verdict on each requirement of `script`'s specs, on the `solved` results.
+
+    A script that defines no ``specs()`` has none.
+
+    Raises:
+        ScriptError: When ``specs()`` returns no specs.
+    """
+    match _call(script, "specs", namespaces, required=False):
         case None:
-            verdicts: tuple[Verdict, ...] = ()
+            return ()
         case Specs() as specs:
-            verdicts = evaluate(specs, solved, plan.analyses)
+            return evaluate(specs, solved, plan.analyses)
         case other:
             message = f"specs() returned {type(other).__name__}, not Specs"
             raise ScriptError(message)
-    return elaborated.model_copy(update={"analyses": reports, "specs": verdicts})
 
 
 def _analyses(

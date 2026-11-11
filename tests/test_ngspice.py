@@ -46,16 +46,19 @@ from jolty.units import (
     A,
     F,
     Hz,
+    K,
     MHz,
     Mohm,
     Quantity,
     V,
+    celsius,
     fA,
     fF,
     kHz,
     kohm,
     m,
     mA,
+    mF,
     mH,
     ms,
     mV,
@@ -556,6 +559,115 @@ def level_three_curves(c: Builder) -> None:
 
 
 @component
+def drifting(c: Builder) -> None:
+    """Every temperature coefficient jolty models, on every kind of device.
+
+    A zener reference biases a bipolar stage and a MOSFET, beside a JFET current source.
+    """
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(12 * V), id="V1")
+    feed = c.place(
+        devices.resistor(
+            2 * kohm,
+            temperature_coefficient=3e-3 / K,
+            quadratic_temperature_coefficient=1e-5 / K**2,
+        ),
+        id="R1",
+    )
+    zener = c.place(
+        devices.diode(
+            saturation_current=1 * nA,
+            emission_coefficient=1.2,
+            junction_capacitance=10 * pF,
+            breakdown_voltage=5.1 * V,
+            breakdown_current=5 * mA,
+            breakdown_temperature_coefficient=2 * mV / K,
+            energy_gap=1.2 * V,
+            saturation_current_temperature_exponent=2.5,
+            nominal_temperature=celsius(50),
+        ),
+        id="D1",
+    )
+    hold = c.place(
+        devices.capacitor(100 * pF, temperature_coefficient=-1e-3 / K), id="C1"
+    )
+    base = c.place(devices.resistor(47 * kohm), id="RB")
+    bipolar = c.place(
+        devices.bipolar_transistor(
+            saturation_current=10 * fA,
+            forward_beta=150,
+            reverse_beta=2,
+            base_emitter_leakage_current=10 * fA,
+            base_collector_leakage_current=5 * fA,
+            base_emitter_capacitance=2 * pF,
+            base_collector_capacitance=1 * pF,
+            substrate="vertical",
+            substrate_saturation_current=1 * fA,
+            substrate_capacitance=1 * pF,
+            energy_gap=1.15 * V,
+            saturation_current_temperature_exponent=3.5,
+            beta_temperature_exponent=1.5,
+            nominal_temperature=celsius(35),
+        ),
+        id="Q1",
+    )
+    collector = c.place(
+        devices.resistor(4.7 * kohm, exponential_temperature_coefficient=0.3), id="RC"
+    )
+    emitter = c.place(devices.resistor(1 * kohm), id="RE")
+    unipolar = c.place(
+        devices.jfet(
+            threshold_voltage=-2 * V,
+            transconductance_parameter=1 * mA / V**2,
+            saturation_current=1 * fA,
+            gate_source_capacitance=2 * pF,
+            gate_drain_capacitance=1 * pF,
+            threshold_temperature_coefficient=-2 * mV / K,
+            beta_temperature_exponent=-1.5,
+            energy_gap=1.1 * V,
+            saturation_current_temperature_exponent=2,
+        ),
+        id="J1",
+    )
+    sense = c.place(devices.resistor(1 * kohm), id="RS")
+    channel = c.place(
+        devices.mosfet(
+            width=20 * um,
+            length=2 * um,
+            oxide_thickness=40 * nm,
+            substrate_doping=1e22 / m**3,
+            bottom_capacitance=0.3 * mF / m**2,
+            drain_area=40 * um**2,
+            source_area=40 * um**2,
+            nominal_temperature=celsius(40),
+        ),
+        id="M1",
+    )
+    drain = c.place(devices.resistor(10 * kohm), id="RD")
+    c.connect(
+        supply.positive, feed.a, collector.a, unipolar.drain, drain.a, name="supply"
+    )
+    c.connect(feed.b, zener.cathode, hold.a, base.a, channel.gate, name="reference")
+    c.connect(base.b, bipolar.base, name="base")
+    c.connect(collector.b, bipolar.collector, name="out")
+    c.connect(bipolar.emitter, emitter.a, name="emitter")
+    c.connect(unipolar.source, sense.a, name="sink")
+    c.connect(drain.b, channel.drain, name="channel")
+    c.connect(
+        supply.negative,
+        zener.anode,
+        hold.b,
+        emitter.b,
+        bipolar.substrate,
+        unipolar.gate,
+        sense.b,
+        channel.source,
+        channel.bulk,
+        ground,
+    )
+
+
+@component
 def nmos_stage(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(9 * V), id="V2")
@@ -779,6 +891,89 @@ def test_operating_points_agree(top: Callable[[], Component]) -> None:
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))[0]
         compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
+
+
+TEMPERATURES = {"cold": celsius(-40), "hot": celsius(125)}
+"""The temperatures, away from the nominal 27 °C, at which both engines also run."""
+
+
+@pytest.mark.parametrize("temperature", TEMPERATURES.values(), ids=TEMPERATURES.keys())
+@pytest.mark.parametrize(
+    "top",
+    [
+        clipper,
+        zener_clamp,
+        jfet_stage,
+        p_jfet_follower,
+        bjt_stage,
+        integrated_stage,
+        pnp_mirror,
+        nmos_stage,
+        level_three_stage,
+        cmos_inverter,
+        drifting,
+    ],
+)
+def test_operating_points_agree_across_temperatures(
+    top: Callable[[], Component], temperature: Quantity
+) -> None:
+    simulation = Simulation(top(), temperature)
+    point = simulation.run(OperatingPoint(), TIGHT)
+    raw = ngspice(netlist(simulation.circuit), "op", temperature=temperature.value)
+    for column, unknown in compared(simulation):
+        spice = raw.real(vector(simulation.circuit, unknown))[0]
+        compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
+
+
+@pytest.mark.parametrize("temperature", TEMPERATURES.values(), ids=TEMPERATURES.keys())
+@pytest.mark.parametrize(
+    ("top", "source", "levels"),
+    [
+        (zener_clamp, "V1", linear(-12 * V, 2 * V, 141)),
+        (jfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
+        (pnp_mirror, "V1", linear(0 * V, 12 * V, 61)),
+        (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
+        (level_three_curves, "V1", linear(-0.5 * V, 3 * V, 71)),
+        (drifting, "V1", linear(0 * V, 15 * V, 76)),
+    ],
+)
+def test_dc_sweeps_agree_across_temperatures(
+    top: Callable[[], Component],
+    source: str,
+    levels: list[Quantity],
+    temperature: Quantity,
+) -> None:
+    simulation = Simulation(top(), temperature)
+    sweep = simulation.run(DcSweep(source, levels), TIGHT)
+    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    step = (last - first) / (len(levels) - 1)
+    command = f"dc V{source} {first!r} {last!r} {step!r}"
+    raw = ngspice(netlist(simulation.circuit), command, temperature=temperature.value)
+    for column, unknown in compared(simulation):
+        spice = raw.real(vector(simulation.circuit, unknown))
+        compare(
+            sweep.values[:, column], spice, unknown, scale=size(spice), tolerance=1e-6
+        )
+
+
+@pytest.mark.parametrize("temperature", TEMPERATURES.values(), ids=TEMPERATURES.keys())
+@pytest.mark.parametrize("top", [bjt_amplifier, nmos_stage, drifting])
+def test_ac_responses_agree_across_temperatures(
+    top: Callable[[], Component], temperature: Quantity
+) -> None:
+    simulation = Simulation(top(), temperature)
+    response = simulation.run(Ac("V1", decade(10 * Hz, 10 * MHz, 20)), TIGHT)
+    lines = netlist(simulation.circuit, excited="V1")
+    raw = ngspice(lines, "ac dec 20 10 10meg", temperature=temperature.value)
+    for column, unknown in compared(simulation):
+        spice = raw.vectors[vector(simulation.circuit, unknown)]
+        compare(
+            response.values[:, column],
+            spice,
+            unknown,
+            scale=size(spice),
+            tolerance=1e-6,
+        )
 
 
 @pytest.mark.parametrize(

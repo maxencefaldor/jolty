@@ -10,7 +10,7 @@
 //! ```
 //! use jolty_engine::Simulator;
 //! use jolty_ir::Circuit;
-//! use jolty_models::Library;
+//! use jolty_models::{Library, REFERENCE_TEMPERATURE};
 //!
 //! let circuit = Circuit::from_json(r#"{
 //!     "format": "jolty-circuit", "version": 1, "top": "top",
@@ -26,7 +26,7 @@
 //!         ]
 //!     }}
 //! }"#)?;
-//! let simulator = Simulator::new(&circuit, &Library::standard())?;
+//! let simulator = Simulator::new(&circuit, &Library::standard(), REFERENCE_TEMPERATURE)?;
 //! let diagnostics = jolty_checks::check(&simulator);
 //! assert_eq!(diagnostics[0].rule, "current-cutset");
 //! # Ok::<(), Box<dyn std::error::Error>>(())

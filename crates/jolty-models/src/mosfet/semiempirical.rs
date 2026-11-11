@@ -2,7 +2,6 @@
 
 use super::Conduction;
 use crate::dual::Dual;
-use crate::junction::THERMAL_VOLTAGE;
 
 /// The coefficients of the depletion's lateral reach into a short channel, in SPICE's
 /// polynomial of the depletion width over the junction depth.
@@ -38,6 +37,8 @@ pub(super) struct Semiempirical {
     pub(super) max_drift_velocity: f64,
     /// The surface mobility, in square meters per volt-second.
     pub(super) mobility: f64,
+    /// The thermal voltage at the transistor's temperature.
+    pub(super) thermal_voltage: f64,
     /// The fast surface states' capacitance relative to the oxide's, zero for none,
     /// which turns on weak inversion.
     pub(super) surface_states: f64,
@@ -66,7 +67,7 @@ impl Semiempirical {
         let vth = -vds * self.static_feedback + self.built_in + charge;
         let weak = (self.surface_states != 0.0)
             .then(|| charge / (phibs * 2.0) + (1.0 + self.surface_states));
-        let von = weak.map_or(vth, |xn| vth + xn * THERMAL_VOLTAGE);
+        let von = weak.map_or(vth, |xn| vth + xn * self.thermal_voltage);
         let off = Conduction {
             current: Dual::constant(0.0),
             threshold: von,
@@ -97,7 +98,7 @@ impl Semiempirical {
         if let Some(xn) = weak
             && vgs.value < von.value
         {
-            current = current * ((vgs - von) / (xn * THERMAL_VOLTAGE)).exp();
+            current = current * ((vgs - von) / (xn * self.thermal_voltage)).exp();
         }
         Conduction {
             current: if forward { current } else { -current },

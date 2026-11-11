@@ -222,7 +222,11 @@ def test_bipolar_transistors_have_spice_s_substrate() -> None:
         (".subckt a 0\nR1 0 0 1\n.ends", "a pin named `0`"),
         (".model D1 D(IKF=5)\n.subckt a x\nD1 x 0 D1\n.ends", "counterpart to `IKF`"),
         (".model M1 NMOS(LEVEL=2)\n.subckt a x\nM1 x x 0 0 M1\n.ends", "level 2"),
-        (".model D1 D(TNOM=50)\n.subckt a x\nD1 x 0 D1\n.ends", "measured at 50.0 °C"),
+        (
+            ".model RX RES(TC1=1m T_ABS=50)\n.subckt a x\nR1 x 0 RX 1k\n.ends",
+            "not at its own `T_ABS`",
+        ),
+        (".subckt a x\nR1 x 0 1k TC=1m,2u,3n\n.ends", "two coefficients at most"),
         (".subckt a x\nF1 x 0 Vmissing 2\n.ends", "`Vmissing` is no source in `a`"),
         (".subckt a x\nE1 x 0 POLY(2) x 0 1\n.ends", r"POLY\(2\) reads 2 controls"),
     ],
@@ -236,12 +240,41 @@ def test_what_jolty_cannot_read_is_an_error_where_it_is(
 
 def test_parameters_that_change_nothing_are_left_out() -> None:
     parts = library(
-        ".model DX D(IS=1e-14 XTI=3 EG=1.11 KF=0 AF=1)\n"
-        ".subckt a x\nD1 x 0 DX\nR1 x 0 1k TC=1m,2u\n.ends"
+        ".model DX D(IS=1e-14 KF=0 AF=1)\n.model QUIET RES(T_ABS=-273.15)\n"
+        ".subckt a x\nD1 x 0 DX\nR1 x 0 QUIET 1k\n.ends"
     )
     diode, resistor = parts.component("a").definition.instances
     assert diode.parameters == {"saturation_current": 1e-14}
     assert resistor.parameters == {"resistance": 1e3}
+
+
+def test_temperature_parameters_come_in_kelvins() -> None:
+    parts = library(
+        ".model DX D(IS=1e-14 XTI=2 EG=1.2 TNOM=50)\n.model RX RES(TCE=0.5 TNOM=0)\n"
+        ".subckt a x\nD1 x 0 DX\nR1 x 0 1k TC=1m,2u\nR2 x 0 RX 1k\n"
+        "C1 x 0 1n TC1=3m\n.ends"
+    )
+    diode, first, second, capacitor = parts.component("a").definition.instances
+    assert diode.parameters == {
+        "saturation_current": 1e-14,
+        "saturation_current_temperature_exponent": 2.0,
+        "energy_gap": 1.2,
+        "nominal_temperature": pytest.approx(323.15),
+    }
+    assert first.parameters == {
+        "resistance": 1e3,
+        "temperature_coefficient": 1e-3,
+        "quadratic_temperature_coefficient": 2e-6,
+    }
+    assert second.parameters == {
+        "resistance": 1e3,
+        "exponential_temperature_coefficient": 0.5,
+        "nominal_temperature": 273.15,
+    }
+    assert capacitor.parameters == {
+        "capacitance": 1e-9,
+        "temperature_coefficient": 3e-3,
+    }
 
 
 def test_a_download_is_checked_and_kept(tmp_path: Path) -> None:

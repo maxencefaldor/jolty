@@ -24,7 +24,21 @@ from jolty import (
     devices,
 )
 from jolty.plan import decade, linear
-from jolty.units import A, Hz, Quantity, V, kHz, kohm, mA, nF, ohm, uA, us
+from jolty.units import (
+    A,
+    Hz,
+    K,
+    Quantity,
+    V,
+    celsius,
+    kHz,
+    kohm,
+    mA,
+    nF,
+    ohm,
+    uA,
+    us,
+)
 from jolty.waveforms import Piecewise
 
 
@@ -109,6 +123,37 @@ def test_a_diode_conducts_forward_and_blocks_in_reverse() -> None:
     assert current[-1] == pytest.approx((5 - anode[-1]) / 1e3)
 
 
+def test_a_diode_s_forward_voltage_falls_as_it_warms() -> None:
+    forward = DcSweep("V1", [5 * V])
+    anodes = [
+        Simulation(diode_load(), temperature).run(forward).voltage("anode")[0]
+        for temperature in (celsius(0), celsius(100))
+    ]
+    slope = (anodes[1] - anodes[0]) / 100
+    assert -2.5e-3 < slope < -1.5e-3
+
+
+def test_a_resistance_drifts_with_its_temperature_coefficients() -> None:
+    @component
+    def drifting(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V), id="V1")
+        load = c.place(
+            devices.resistor(
+                1 * kohm,
+                temperature_coefficient=1e-3 / K,
+                quadratic_temperature_coefficient=1e-6 / K**2,
+                nominal_temperature=celsius(25),
+            ),
+            id="R1",
+        )
+        c.connect(source.positive, load.a)
+        c.connect(source.negative, load.b, ground)
+
+    point = Simulation(drifting(), celsius(75)).run(OperatingPoint())
+    assert -point.current("V1") == pytest.approx(1e-3 / (1 + 50e-3 + 2.5e-3))
+
+
 def test_the_ac_response_of_a_low_pass_filter() -> None:
     cutoff = 1 / (2 * math.pi * 1e3 * 1e-9)
     frequencies = [*decade(1 * kHz, 1e5 * kHz, 10), cutoff * kHz / 1e3]
@@ -181,6 +226,16 @@ def test_a_plan_runs_its_analyses_by_name() -> None:
     plan = Plan({"op": OperatingPoint(), "sweep": DcSweep("V1", [1 * V, 2 * V])})
     results = simulation.run_plan(plan)
     assert list(results) == ["op", "sweep"]
+
+
+def test_a_plan_runs_at_the_simulation_s_temperature() -> None:
+    plan = Plan({"op": OperatingPoint()}, temperature=celsius(85))
+    simulation = Simulation(divider(5 * V, 1 * kohm, 1 * kohm), celsius(85))
+    assert list(simulation.run_plan(plan)) == ["op"]
+    with pytest.raises(ValueError, match=r"is not the simulation's, 300\.1 K"):
+        Simulation(divider(5 * V, 1 * kohm, 1 * kohm)).run_plan(plan)
+    with pytest.raises(DimensionError, match="a plan's temperature"):
+        Plan({"op": OperatingPoint()}, temperature=85 * V)
 
 
 def test_plans_name_their_analyses_by_identifiers() -> None:

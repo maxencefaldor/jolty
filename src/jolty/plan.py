@@ -16,7 +16,7 @@ from typing import Literal
 
 from pydantic import JsonValue
 
-from jolty.units import FREQUENCY, TIME, Dimension, Quantity
+from jolty.units import FREQUENCY, TEMPERATURE, TIME, Dimension, Quantity
 
 type Method = Literal["trapezoidal", "gear2", "backward_euler"]
 """An integration method: trapezoidal by default, Gear2 for stiff circuits that ring,
@@ -112,21 +112,26 @@ class Options:
 
 @dataclass(frozen=True, slots=True)
 class Plan:
-    """Named analyses to run on a circuit, and the options they share.
+    """Named analyses to run on a circuit, the options they share, and its temperature.
 
     Each analysis is named by a Python identifier, such as ``step`` or ``bode``, which
-    names its results too.
+    names its results too. The circuit's devices are simulated at `temperature`, 27 °C
+    unless given.
     """
 
     analyses: Mapping[str, Analysis]
     options: Options = field(default_factory=Options)
+    temperature: Quantity | None = None
 
     def __post_init__(self) -> None:
         """Checks that the plan runs an analysis or more, each named by an identifier.
 
         Raises:
             ValueError: When the plan runs no analysis, or a name is not an identifier.
+            DimensionError: When the temperature is not one.
         """
+        if self.temperature is not None:
+            self.temperature.to(TEMPERATURE, "a plan's temperature")
         if not self.analyses:
             message = "a plan runs at least one analysis"
             raise ValueError(message)

@@ -27,6 +27,7 @@ from jolty.units import (
     INDUCTANCE,
     LENGTH,
     RESISTANCE,
+    TEMPERATURE,
     TIME,
     VOLTAGE,
     Dimension,
@@ -45,24 +46,98 @@ class Device:
     parameters: dict[str, JsonValue]
 
 
-def resistor(resistance: Quantity) -> Device:
-    """A linear resistor between terminals ``a`` and ``b``."""
-    return device("resistor", {"resistance": resistance.to(RESISTANCE, "resistance")})
+PER_KELVIN: Final = DIMENSIONLESS / TEMPERATURE
+"""The dimension of a linear temperature coefficient, K⁻¹."""
+
+PER_KELVIN_SQUARED: Final = DIMENSIONLESS / TEMPERATURE**2
+"""The dimension of a quadratic temperature coefficient, K⁻²."""
 
 
-def capacitor(capacitance: Quantity) -> Device:
-    """A linear capacitor between terminals ``a`` and ``b``."""
-    value = capacitance.to(CAPACITANCE, "capacitance")
-    return device("capacitor", {"capacitance": value})
+def resistor(
+    resistance: Quantity,
+    *,
+    temperature_coefficient: Quantity | None = None,
+    quadratic_temperature_coefficient: Quantity | None = None,
+    exponential_temperature_coefficient: float | None = None,
+    nominal_temperature: Quantity | None = None,
+) -> Device:
+    """A linear resistor between terminals ``a`` and ``b``.
+
+    Its resistance drifts with temperature, by ``1 + tc1 · ΔT + tc2 · ΔT²`` from its
+    value at the nominal temperature, 27 °C unless given, with the linear and quadratic
+    temperature coefficients, none unless given. An exponential temperature coefficient,
+    in percent per kelvin as SPICE's ``TCE``, drifts it by ``1.01^(tce · ΔT)`` instead.
+
+    Examples:
+        >>> from jolty.units import K, kohm
+        >>> resistor(1 * kohm, temperature_coefficient=1e-4 / K).parameters
+        {'resistance': 1000.0, 'temperature_coefficient': 0.0001}
+    """
+    parameters: dict[str, JsonValue] = {
+        "resistance": resistance.to(RESISTANCE, "resistance")
+    }
+    parameters |= _drift(
+        temperature_coefficient, quadratic_temperature_coefficient, nominal_temperature
+    )
+    parameters |= _parameters(
+        {}, {"exponential_temperature_coefficient": exponential_temperature_coefficient}
+    )
+    return device("resistor", parameters)
 
 
-def inductor(inductance: Quantity) -> Device:
+def capacitor(
+    capacitance: Quantity,
+    *,
+    temperature_coefficient: Quantity | None = None,
+    quadratic_temperature_coefficient: Quantity | None = None,
+    nominal_temperature: Quantity | None = None,
+) -> Device:
+    """A linear capacitor between terminals ``a`` and ``b``.
+
+    Its capacitance drifts with temperature as a resistor's resistance does.
+    """
+    parameters: dict[str, JsonValue] = {
+        "capacitance": capacitance.to(CAPACITANCE, "capacitance")
+    }
+    parameters |= _drift(
+        temperature_coefficient, quadratic_temperature_coefficient, nominal_temperature
+    )
+    return device("capacitor", parameters)
+
+
+def inductor(
+    inductance: Quantity,
+    *,
+    temperature_coefficient: Quantity | None = None,
+    quadratic_temperature_coefficient: Quantity | None = None,
+    nominal_temperature: Quantity | None = None,
+) -> Device:
     """A linear inductor between terminals ``a`` and ``b``.
 
     Its current, from ``a`` through the inductor to ``b``, is the unknown ``current``.
+    Its inductance drifts with temperature as a resistor's resistance does.
     """
-    value = inductance.to(INDUCTANCE, "inductance")
-    return device("inductor", {"inductance": value})
+    parameters: dict[str, JsonValue] = {
+        "inductance": inductance.to(INDUCTANCE, "inductance")
+    }
+    parameters |= _drift(
+        temperature_coefficient, quadratic_temperature_coefficient, nominal_temperature
+    )
+    return device("inductor", parameters)
+
+
+def _drift(
+    linear: Quantity | None, quadratic: Quantity | None, nominal: Quantity | None
+) -> dict[str, JsonValue]:
+    """A passive device's temperature coefficients and nominal temperature, as given."""
+    return _parameters(
+        {
+            "temperature_coefficient": (linear, PER_KELVIN),
+            "quadratic_temperature_coefficient": (quadratic, PER_KELVIN_SQUARED),
+            "nominal_temperature": (nominal, TEMPERATURE),
+        },
+        {},
+    )
 
 
 def voltage_source(waveform: Waveform | Quantity) -> Device:
@@ -200,7 +275,7 @@ def voltage_controlled_switch(
     return device("voltage_controlled_switch", parameters)
 
 
-def diode(  # noqa: PLR0913 - the SPICE junction model has eleven parameters
+def diode(  # noqa: PLR0913 - the SPICE junction model has fifteen parameters
     *,
     saturation_current: Quantity | None = None,
     emission_coefficient: float | None = None,
@@ -213,6 +288,10 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has eleven parameters
     breakdown_voltage: Quantity | None = None,
     breakdown_current: Quantity | None = None,
     breakdown_emission_coefficient: float | None = None,
+    breakdown_temperature_coefficient: Quantity | None = None,
+    energy_gap: Quantity | None = None,
+    saturation_current_temperature_exponent: float | None = None,
+    nominal_temperature: Quantity | None = None,
 ) -> Device:
     """A junction diode from ``anode`` to ``cathode``, in the SPICE model.
 
@@ -221,6 +300,12 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has eleven parameters
     time, a junction potential of 1 V, and grading and depletion coefficients of 0.5.
     Given a breakdown voltage, the reverse current grows exponentially beyond it, with
     a breakdown current of 1 mA there and the emission coefficient unless given.
+
+    Away from the nominal temperature, 27 °C unless given, the saturation current scales
+    with the energy gap, 1.11 V unless given, and the temperature exponent, 3 unless
+    given; the junction potential and capacitance follow silicon's band gap, and the
+    breakdown voltage falls by its temperature coefficient, none unless given, as in
+    ngspice.
     """
     parameters = _parameters(
         {
@@ -231,12 +316,21 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has eleven parameters
             "transit_time": (transit_time, TIME),
             "breakdown_voltage": (breakdown_voltage, VOLTAGE),
             "breakdown_current": (breakdown_current, CURRENT),
+            "breakdown_temperature_coefficient": (
+                breakdown_temperature_coefficient,
+                VOLTS_PER_KELVIN,
+            ),
+            "energy_gap": (energy_gap, VOLTAGE),
+            "nominal_temperature": (nominal_temperature, TEMPERATURE),
         },
         {
             "emission_coefficient": emission_coefficient,
             "grading_coefficient": grading_coefficient,
             "depletion_coefficient": depletion_coefficient,
             "breakdown_emission_coefficient": breakdown_emission_coefficient,
+            "saturation_current_temperature_exponent": (
+                saturation_current_temperature_exponent
+            ),
         },
     )
     return device("diode", parameters)
@@ -251,8 +345,11 @@ PER_VOLT: Final = DIMENSIONLESS / VOLTAGE
 MOBILITY: Final = LENGTH**2 / (VOLTAGE * TIME)
 """The dimension of a carrier mobility, m²/(V·s)."""
 
+VOLTS_PER_KELVIN: Final = VOLTAGE / TEMPERATURE
+"""The dimension of a voltage's temperature coefficient, V/K."""
 
-def jfet(  # noqa: PLR0913 - the SPICE JFET model has twelve parameters
+
+def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
     *,
     channel: Literal["n", "p"] | None = None,
     threshold_voltage: Quantity | None = None,
@@ -266,6 +363,11 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has twelve parameters
     saturation_current: Quantity | None = None,
     depletion_coefficient: float | None = None,
     doping_tail: float | None = None,
+    threshold_temperature_coefficient: Quantity | None = None,
+    beta_temperature_exponent: float | None = None,
+    energy_gap: Quantity | None = None,
+    saturation_current_temperature_exponent: float | None = None,
+    nominal_temperature: Quantity | None = None,
 ) -> Device:
     """A junction field-effect transistor between ``drain``, ``gate`` and ``source``.
 
@@ -277,6 +379,13 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has twelve parameters
     current of 10 fA, a depletion coefficient of 0.5, and a doping tail of 1, the plain
     square law. A drain or source resistance adds an internal node, the unknown
     ``drain`` or ``source``.
+
+    Away from the nominal temperature, 27 °C unless given, the gate junctions'
+    saturation current scales with the energy gap, 1.11 V unless given, and the
+    temperature exponent, none unless given; their potential and capacitances follow
+    silicon's band gap; the threshold moves by its temperature coefficient and the
+    transconductance parameter scales by its temperature exponent, neither unless given,
+    as in ngspice.
 
     Examples:
         >>> from jolty.units import V, mA
@@ -298,13 +407,26 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has twelve parameters
             "gate_drain_capacitance": (gate_drain_capacitance, CAPACITANCE),
             "junction_potential": (junction_potential, VOLTAGE),
             "saturation_current": (saturation_current, CURRENT),
+            "threshold_temperature_coefficient": (
+                threshold_temperature_coefficient,
+                VOLTS_PER_KELVIN,
+            ),
+            "energy_gap": (energy_gap, VOLTAGE),
+            "nominal_temperature": (nominal_temperature, TEMPERATURE),
         },
-        {"depletion_coefficient": depletion_coefficient, "doping_tail": doping_tail},
+        {
+            "depletion_coefficient": depletion_coefficient,
+            "doping_tail": doping_tail,
+            "beta_temperature_exponent": beta_temperature_exponent,
+            "saturation_current_temperature_exponent": (
+                saturation_current_temperature_exponent
+            ),
+        },
     )
     return device("jfet", parameters)
 
 
-def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 38 parameters
+def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 parameters
     *,
     polarity: Literal["npn", "pnp"] | None = None,
     saturation_current: Quantity | None = None,
@@ -344,6 +466,10 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 38 paramete
     substrate_capacitance: Quantity | None = None,
     substrate_potential: Quantity | None = None,
     substrate_grading: float | None = None,
+    energy_gap: Quantity | None = None,
+    saturation_current_temperature_exponent: float | None = None,
+    beta_temperature_exponent: float | None = None,
+    nominal_temperature: Quantity | None = None,
 ) -> Device:
     """A bipolar junction transistor between ``collector``, ``base`` and ``emitter``.
 
@@ -360,6 +486,11 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 38 paramete
     junction conducts the minimum conductance, and a diode's current with a substrate
     saturation current; its depletion capacitance grows linearly in forward bias. The
     substrate parameters need a substrate.
+
+    Away from the nominal temperature, 27 °C unless given, the saturation currents scale
+    with the energy gap, 1.11 V unless given, and the temperature exponent, 3 unless
+    given; the betas scale by their temperature exponent, none unless given, and the
+    junctions' potentials and capacitances follow silicon's band gap, as in ngspice.
 
     Examples:
         >>> from jolty.units import V, fA
@@ -401,6 +532,8 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 38 paramete
             "substrate_saturation_current": (substrate_saturation_current, CURRENT),
             "substrate_capacitance": (substrate_capacitance, CAPACITANCE),
             "substrate_potential": (substrate_potential, VOLTAGE),
+            "energy_gap": (energy_gap, VOLTAGE),
+            "nominal_temperature": (nominal_temperature, TEMPERATURE),
         },
         {
             "forward_beta": forward_beta,
@@ -420,12 +553,16 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 38 paramete
             "depletion_coefficient": depletion_coefficient,
             "substrate_emission_coefficient": substrate_emission_coefficient,
             "substrate_grading": substrate_grading,
+            "saturation_current_temperature_exponent": (
+                saturation_current_temperature_exponent
+            ),
+            "beta_temperature_exponent": beta_temperature_exponent,
         },
     )
     return device("bipolar_transistor", parameters)
 
 
-def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 49 parameters
+def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
     *,
     level: Literal[1, 3] | None = None,
     channel: Literal["n", "p"] | None = None,
@@ -465,6 +602,7 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 49 parameters
     gate_source_overlap: Quantity | None = None,
     gate_drain_overlap: Quantity | None = None,
     gate_bulk_overlap: Quantity | None = None,
+    nominal_temperature: Quantity | None = None,
     max_drift_velocity: Quantity | None = None,
     junction_depth: Quantity | None = None,
     fast_surface_state_density: Quantity | None = None,
@@ -493,6 +631,12 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 49 parameters
     substrate doping, it derives the threshold, the body effect and the surface
     potential left out, as SPICE derives them. The body effect is a number of
     square-root volts.
+
+    Away from the nominal temperature, 27 °C unless given, the transconductance
+    parameter and the mobility fall as the temperature to the power -1.5, the surface
+    potential follows silicon's band gap and the threshold with it, and the junctions'
+    saturation currents, potential and capacitances follow the band gap too, as in
+    ngspice.
 
     At ``level=3``, the channel follows SPICE's semi-empirical law of short channels
     instead, and the parameters from ``max_drift_velocity`` on, level 3's alone, model
@@ -559,6 +703,7 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 49 parameters
             "gate_source_overlap": (gate_source_overlap, capacitance_per_length),
             "gate_drain_overlap": (gate_drain_overlap, capacitance_per_length),
             "gate_bulk_overlap": (gate_bulk_overlap, capacitance_per_length),
+            "nominal_temperature": (nominal_temperature, TEMPERATURE),
             "max_drift_velocity": (max_drift_velocity, LENGTH / TIME),
             "junction_depth": (junction_depth, LENGTH),
             "fast_surface_state_density": (

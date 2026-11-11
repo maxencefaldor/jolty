@@ -3,6 +3,9 @@
 The module `jolty.devices` holds every device a script can place.
 Each function checks its parameters' units and returns a device ready to place; parameters left out take the engine's defaults.
 
+Devices are simulated at the plan's temperature, 27 °C unless it gives one, and each device's parameters were measured at its `nominal_temperature`, 27 °C unless given.
+Away from it, passive values drift by their temperature coefficients, and semiconductors scale as ngspice scales them, as the sections below say.
+
 ## Passive devices
 
 | Function | Terminals | Parameter |
@@ -12,6 +15,17 @@ Each function checks its parameters' units and returns a device ready to place; 
 | `inductor(inductance)` | `a`, `b` | a positive inductance |
 
 An inductor adds its current to the unknowns, as `L1:current` for an inductor `L1`: the current from `a` through the inductor to `b`.
+
+Each value drifts with temperature by `1 + tc1 · ΔT + tc2 · ΔT²`, where `ΔT` is the temperature less the nominal one, as SPICE's do:
+
+| Parameter | SPICE | Unit | Default |
+| --- | --- | --- | --- |
+| `temperature_coefficient` | `TC1` | K⁻¹ | 0 |
+| `quadratic_temperature_coefficient` | `TC2` | K⁻² | 0 |
+| `exponential_temperature_coefficient` | `TCE` | percent per kelvin, a number | none: a resistor drifts by `1.01^(tce · ΔT)` instead |
+| `nominal_temperature` | `TNOM` | K | 27 °C |
+
+Only a resistor has an exponential coefficient, and a resistance the coefficients scale to zero is a problem.
 
 ## Independent sources
 
@@ -83,7 +97,7 @@ The control terminals draw no current.
 
 ## Diode
 
-`diode(...)` is a junction diode from `anode` to `cathode`, in the SPICE model, at 27 °C.
+`diode(...)` is a junction diode from `anode` to `cathode`, in the SPICE model.
 Every parameter is optional:
 
 | Parameter | Unit | Default |
@@ -99,11 +113,18 @@ Every parameter is optional:
 | `breakdown_voltage` | V | none: no breakdown |
 | `breakdown_current` | A | 1 mA |
 | `breakdown_emission_coefficient` | none | the emission coefficient |
+| `breakdown_temperature_coefficient` | V/K | 0 |
+| `energy_gap` | V | 1.11 V, silicon's |
+| `saturation_current_temperature_exponent` | none | 3 |
+| `nominal_temperature` | K | 27 °C |
 
 A diode with a series resistance adds the voltage of its junction to the unknowns, as `D1:junction` for a diode `D1`.
 
 The junction follows SPICE as ngspice implements it, its reverse current settling on the saturation current below three thermal voltages of reverse bias.
 Given a breakdown voltage, the reverse current grows exponentially beyond it; ngspice moves the voltage slightly so the current there is the breakdown current, and jolty does the same.
+
+Away from the nominal temperature `Tn`, the saturation current scales by `(T/Tn)^(XTI/n) · exp((T/Tn − 1) · Eg / (n · Vt))`, with `Eg` the energy gap, `XTI` its temperature exponent and `Vt` the thermal voltage at `T`.
+The junction potential and capacitance follow silicon's band gap, and the breakdown voltage falls by its temperature coefficient, as in ngspice.
 
 ## JFET
 
@@ -125,8 +146,16 @@ Every parameter is optional:
 | `saturation_current` | `IS` | A | 10 fA |
 | `depletion_coefficient` | `FC` | none | 0.5 |
 | `doping_tail` | `B` | none | 1, the plain square law |
+| `threshold_temperature_coefficient` | `VTOTC`, or `−TCV` | V/K | 0 |
+| `beta_temperature_exponent` | `BEX` | none | 0 |
+| `energy_gap` | `EG` | V | 1.11 V, silicon's |
+| `saturation_current_temperature_exponent` | `XTI` | none | 0 |
+| `nominal_temperature` | `TNOM` | K | 27 °C |
 
 A drain or source resistance adds an internal node to the unknowns, as `J1:drain` or `J1:source` for a JFET `J1`.
+
+Away from the nominal temperature, the gate junctions' saturation current scales with the energy gap as a diode's, and their potential and capacitances follow silicon's band gap; the threshold moves by its temperature coefficient, and the transconductance parameter scales as `(T/Tn)^BEX`.
+ngspice scales a JFET's saturation current by its temperature exponent only when given, so it defaults to 0.
 
 ## Bipolar transistor
 
@@ -157,12 +186,17 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 | `substrate` | `SUBS`, 1 or −1 | `"vertical"` or `"lateral"` | none: no substrate |
 | `substrate_saturation_current`, `substrate_emission_coefficient` | `ISS`, `NS` | A, none | none: no diode, 1 |
 | `substrate_capacitance`, `substrate_potential`, `substrate_grading` | `CJS`, `VJS`, `MJS` | F, V, none | 0, 0.75 V, 0 |
+| `energy_gap` | `EG` | V | 1.11 V, silicon's |
+| `saturation_current_temperature_exponent`, `beta_temperature_exponent` | `XTI`, `XTB` | none | 3, 0 |
+| `nominal_temperature` | `TNOM` | K | 27 °C |
 
 A base, collector or emitter resistance adds an internal node to the unknowns, as `Q1:base`, `Q1:collector` or `Q1:emitter` for a transistor `Q1`.
 
 A transistor built `"vertical"` or `"lateral"` has a fourth terminal, `substrate`, joined by a junction to its internal collector if vertical or to its internal base if lateral.
 The junction conducts the minimum conductance, as ngspice's does, and a diode's current given a substrate saturation current; its depletion capacitance grows linearly in forward bias.
 The substrate parameters need a substrate.
+
+Away from the nominal temperature, the saturation currents scale with the energy gap as a diode's, the leakage currents with their own emission coefficients; the betas scale as `(T/Tn)^XTB`, dividing the leakage currents too, and the junctions' potentials and capacitances follow silicon's band gap, as in ngspice.
 
 ngspice leaves out of its small-signal model and its Newton steps how a falling base resistance depends on the junction voltages; jolty keeps every derivative, so its frequency response is the exact slope of its DC model, and its Newton steps converge faster to the same operating point.
 
@@ -201,6 +235,7 @@ Every parameter is optional:
 | `sidewall_capacitance`, `sidewall_grading` | `CJSW`, `MJSW` | F/m, none | 0, 0.5 at level 1 |
 | `depletion_coefficient` | `FC` | none | 0.5 |
 | `gate_source_overlap`, `gate_drain_overlap`, `gate_bulk_overlap` | `CGSO`, `CGDO`, `CGBO` | F/m | 0 |
+| `nominal_temperature` | `TNOM` | K | 27 °C |
 | `level` | `LEVEL` | 1 or 3 | 1 |
 
 Level 3 replaces the square law with a law of short channels, takes no channel-length modulation, gives the oxide a thickness of 0.1 µm and the sidewall a grading coefficient of 0.33 unless given, and adds parameters of its own:
@@ -222,6 +257,9 @@ The channel shortens beyond saturation only given a substrate doping.
 
 SPICE writes the surface mobility, the substrate doping and the surface state density in centimeters; jolty takes SI units, as everywhere.
 The saturation current density replaces the saturation current when it and both areas are nonzero.
+
+Away from the nominal temperature, the transconductance parameter and the surface mobility fall as `(T/Tn)^−1.5`, the surface potential follows silicon's band gap and intrinsic concentration, and the threshold moves with them; the junctions' saturation currents, potential and capacitances follow the band gap too, as in ngspice.
+A process derived from the substrate doping is derived at the nominal temperature.
 
 A drain or source resistance adds an internal node to the unknowns, as `M1:drain` or `M1:source` for a transistor `M1`.
 Meyer's capacitances depend on every terminal voltage, and no charge yields them, so each carries a current `C(v) · dv/dt` that follows a current of the transistor's own: the displacement current through the whole oxide towards the source, the drain or the bulk, the unknowns `M1:gate_source_displacement`, `M1:gate_drain_displacement` and `M1:gate_bulk_displacement`.

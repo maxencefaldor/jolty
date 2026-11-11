@@ -88,6 +88,20 @@ def test_a_plan_runs_its_analyses_and_saves_their_results(tmp_path: Path) -> Non
     assert set(load_results(tmp_path / RESULTS)) == {"op", "step"}
 
 
+def test_a_plan_runs_at_its_temperature(tmp_path: Path) -> None:
+    drifting = DIVIDER.replace(
+        'devices.resistor(1 * kohm), id="R2"',
+        'devices.resistor(1 * kohm, temperature_coefficient=1e-2 / K), id="R2"',
+    ).replace("import V, kohm, us", "import K, V, kohm, us")
+    hot = "def plan():\n    return Plan({'op': OperatingPoint()}, temperature=400 * K)"
+    script = write(tmp_path, f"{drifting}\n\n{hot}\n")
+    outcome = built(run(Job(script=script, plan=script, listed=10), tmp_path))
+    (point,) = outcome.analyses
+    assert isinstance(point, report.PointReport)
+    factor = 1 + 1e-2 * (400 - 300.15)
+    assert point.values[1].value == pytest.approx(5 * factor / (1 + factor))
+
+
 def test_a_plan_may_live_in_its_own_script(tmp_path: Path) -> None:
     script = write(tmp_path, DIVIDER)
     plan = write(tmp_path, NO_FREQUENCIES, "plan.py")

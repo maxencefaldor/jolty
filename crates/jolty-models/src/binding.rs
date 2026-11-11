@@ -61,30 +61,41 @@ pub struct UnknownInfo {
 }
 
 /// What a device being instantiated reaches: the nodes of its terminals, new internal
-/// unknowns, and the matrix pattern it claims entries in.
+/// unknowns, the matrix pattern it claims entries in, and the temperature it is simulated
+/// at.
 #[derive(Debug)]
 pub struct Binding<'a> {
     path: &'a str,
     terminals: &'a [Node],
     unknowns: &'a mut Vec<UnknownInfo>,
     pattern: &'a mut PatternBuilder,
+    temperature: f64,
 }
 
 impl<'a> Binding<'a> {
     /// A binding for the instance at `path`, whose terminals connect to `terminals` in the
-    /// order its model declares them. Internal unknowns are appended to `unknowns`.
+    /// order its model declares them, simulated at `temperature`, in kelvins. Internal
+    /// unknowns are appended to `unknowns`.
     pub fn new(
         path: &'a str,
         terminals: &'a [Node],
         unknowns: &'a mut Vec<UnknownInfo>,
         pattern: &'a mut PatternBuilder,
+        temperature: f64,
     ) -> Self {
         Self {
             path,
             terminals,
             unknowns,
             pattern,
+            temperature,
         }
+    }
+
+    /// The temperature the device is simulated at, in kelvins.
+    #[must_use]
+    pub const fn temperature(&self) -> f64 {
+        self.temperature
     }
 
     /// The node of the terminal at `index` in the model's terminal order.

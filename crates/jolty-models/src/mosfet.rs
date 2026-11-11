@@ -7,13 +7,13 @@ use self::semiempirical::Semiempirical;
 use crate::dual::Dual;
 use crate::jfet::Channel;
 use crate::junction::{
-    Depletion, ELEMENTARY_CHARGE, TEMPERATURE, THERMAL_VOLTAGE, below_one, critical_voltage,
-    depletion_charge, junction_current, limit_drain, limit_gate, limit_junction,
+    BOLTZMANN, Depletion, ELEMENTARY_CHARGE, Temperatures, band_gap, below_one, critical_voltage,
+    depletion_charge, junction_current, limit_drain, limit_gate, limit_junction, thermal_voltage,
 };
 use crate::stamp::Stamp;
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
-    ParameterError, Quantity, Unknown,
+    ParameterError, Quantity, REFERENCE_TEMPERATURE, Unknown,
 };
 
 /// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,
@@ -23,7 +23,7 @@ const VACUUM_PERMITTIVITY: f64 = 8.854_214_871e-12;
 const OXIDE_PERMITTIVITY: f64 = 3.9 * VACUUM_PERMITTIVITY;
 /// The permittivity of silicon, in farads per meter.
 const SILICON_PERMITTIVITY: f64 = 11.7 * VACUUM_PERMITTIVITY;
-/// Silicon's intrinsic carrier concentration, per cubic meter.
+/// Silicon's intrinsic carrier concentration at 300 K, per cubic meter.
 const INTRINSIC_CONCENTRATION: f64 = 1.45e16;
 /// The oxide thickness of a level 3 transistor that gives none, in meters.
 const LEVEL_THREE_OXIDE_THICKNESS: f64 = 1e-7;
@@ -221,6 +221,8 @@ pub struct MosfetParameters {
     pub gate_drain_overlap: f64,
     /// The gate-bulk overlap capacitance per length, in farads per meter; default 0.
     pub gate_bulk_overlap: f64,
+    /// The temperature the parameters were measured at, in kelvins; default 27 °C.
+    pub nominal_temperature: f64,
     /// Level 3: the carriers' maximum drift velocity, `vmax`, in meters per second;
     /// default none, for no velocity saturation.
     pub max_drift_velocity: Option<f64>,
@@ -290,6 +292,7 @@ impl Default for MosfetParameters {
             gate_source_overlap: 0.0,
             gate_drain_overlap: 0.0,
             gate_bulk_overlap: 0.0,
+            nominal_temperature: REFERENCE_TEMPERATURE,
             max_drift_velocity: None,
             junction_depth: None,
             fast_surface_state_density: None,
@@ -314,6 +317,38 @@ struct Process {
     body_effect: f64,
     surface_potential: f64,
     oxide: Option<f64>,
+}
+
+impl Process {
+    /// The process parameters of a transistor of channel `sign` at `temperatures`, scaled
+    /// from the nominal temperature's as ngspice scales them: `kp` falls as `T^−1.5`, `φ`
+    /// follows silicon's band gap and intrinsic concentration, and `vto` moves with the
+    /// band gap and `φ`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the surface potential falls to zero or below.
+    fn at(self, temperatures: Temperatures, sign: f64) -> Result<Self, ParameterError> {
+        let nominal = self.surface_potential;
+        let (potential, _) = temperatures.junction(nominal, 0.0, 0.0);
+        if potential <= 0.0 {
+            return Err(ParameterError(format!(
+                "the surface potential falls to {potential:?} at {:?} K",
+                temperatures.actual
+            )));
+        }
+        let gap_shift = 0.5 * (band_gap(temperatures.nominal) - band_gap(temperatures.actual));
+        Ok(Self {
+            threshold: self.threshold
+                + gap_shift
+                + sign
+                    * (0.5 * (potential - nominal)
+                        + self.body_effect * (potential.sqrt() - nominal.sqrt())),
+            transconductance: self.transconductance / temperatures.ratio().powf(1.5),
+            surface_potential: potential,
+            ..self
+        })
+    }
 }
 
 impl MosfetParameters {
@@ -353,23 +388,37 @@ impl MosfetParameters {
     }
 
     /// Derives what was not given of `φ`, `γ` and `vto` from the substrate `doping` and the
-    /// `oxide` capacitance per area.
+    /// `oxide` capacitance per area, at the nominal temperature.
     fn derive(&self, process: &mut Process, doping: f64, oxide: f64) -> Result<(), ParameterError> {
-        if doping <= INTRINSIC_CONCENTRATION {
+        let nominal = self.nominal_temperature;
+        // Silicon's band gap, in electronvolts.
+        let gap = band_gap(nominal);
+        // Level 1 takes silicon's intrinsic concentration at 300 K; level 3 scales it to
+        // the nominal temperature.
+        let intrinsic = match self.level {
+            Level::One => INTRINSIC_CONCENTRATION,
+            Level::Three => {
+                let ratio = nominal / 300.0;
+                INTRINSIC_CONCENTRATION
+                    * ratio
+                    * ratio.sqrt()
+                    * (0.5 * gap * ELEMENTARY_CHARGE / BOLTZMANN * (1.0 / 300.0 - 1.0 / nominal))
+                        .exp()
+            }
+        };
+        if doping <= intrinsic {
             return Err(ParameterError(format!(
                 "substrate_doping must exceed silicon's intrinsic concentration, \
-                 {INTRINSIC_CONCENTRATION:e} per cubic meter, not {doping:?}"
+                 {intrinsic:e} per cubic meter, not {doping:?}"
             )));
         }
         let sign = self.channel.sign();
         let potential = self.surface_potential.unwrap_or_else(|| {
-            (2.0 * THERMAL_VOLTAGE * (doping / INTRINSIC_CONCENTRATION).ln()).max(0.1)
+            (2.0 * thermal_voltage(nominal) * (doping / intrinsic).ln()).max(0.1)
         });
         let body_effect = self.body_effect.unwrap_or_else(|| {
             (2.0 * SILICON_PERMITTIVITY * ELEMENTARY_CHARGE * doping).sqrt() / oxide
         });
-        // Silicon's band gap, in electronvolts.
-        let gap = 1.16 - 7.02e-4 * TEMPERATURE * TEMPERATURE / (TEMPERATURE + 1108.0);
         let gate_work_function = match self.gate_material {
             GateMaterial::Aluminum => 3.2,
             GateMaterial::OppositeDoping => 3.25 + 0.5 * gap - sign * 0.5 * gap,
@@ -471,6 +520,8 @@ impl Law {
 #[derive(Debug, Clone, Copy)]
 struct BulkJunction {
     saturation_current: f64,
+    /// The thermal voltage at the transistor's temperature.
+    thermal_voltage: f64,
     critical_voltage: f64,
     bottom: Option<Depletion>,
     sidewall: Option<Depletion>,
@@ -482,7 +533,7 @@ impl BulkJunction {
         let current = voltage.chain(junction_current(
             voltage.value,
             self.saturation_current,
-            THERMAL_VOLTAGE,
+            self.thermal_voltage,
         )) + voltage * gmin;
         let charge = voltage.chain(depletion_charge(self.bottom.as_ref(), voltage.value))
             + voltage.chain(depletion_charge(self.sidewall.as_ref(), voltage.value));
@@ -637,11 +688,15 @@ impl NativeDevice for Mosfet {
         parameters: MosfetParameters,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let process = parameters.process()?;
+        let temperatures =
+            Temperatures::new(binding.temperature(), parameters.nominal_temperature)?;
+        let process = parameters
+            .process()?
+            .at(temperatures, parameters.channel.sign())?;
         let geometry = Geometry::new(&parameters)?;
-        let junctions = parameters.junctions(&geometry)?;
+        let junctions = parameters.junctions(&geometry, temperatures)?;
         let [drain_resistance, source_resistance] = parameters.series_resistances()?;
-        let channel = parameters.law(&process, &geometry)?;
+        let channel = parameters.law(&process, &geometry, temperatures)?;
         let mut overlaps = [0.0; 3];
         for (overlap, (name, per_length, extent)) in overlaps.iter_mut().zip([
             (
@@ -762,8 +817,12 @@ impl Geometry {
 }
 
 impl MosfetParameters {
-    /// The bulk-drain and bulk-source junctions.
-    fn junctions(&self, geometry: &Geometry) -> Result<[BulkJunction; 2], ParameterError> {
+    /// The bulk-drain and bulk-source junctions at `temperatures`.
+    fn junctions(
+        &self,
+        geometry: &Geometry,
+        temperatures: Temperatures,
+    ) -> Result<[BulkJunction; 2], ParameterError> {
         let multiplier = geometry.multiplier;
         let saturation = ParameterError::positive("saturation_current", self.saturation_current)?;
         let density = ParameterError::non_negative(
@@ -786,10 +845,18 @@ impl MosfetParameters {
         let sidewall_capacitance =
             ParameterError::non_negative("sidewall_capacitance", self.sidewall_capacitance)?;
         let by_density = density > 0.0 && self.drain_area > 0.0 && self.source_area > 0.0;
+        let vt = temperatures.thermal_voltage();
+        let scaling = (band_gap(temperatures.nominal) / thermal_voltage(temperatures.nominal)
+            - band_gap(temperatures.actual) / vt)
+            .exp();
+        let (scaled_potential, bottom_scaling) =
+            temperatures.junction(potential, 1.0, bottom_grading);
+        let (_, sidewall_scaling) = temperatures.junction(potential, 1.0, sidewall_grading);
         let junction = |name, capacitance: Option<f64>, area: f64, perimeter: f64| {
             ParameterError::non_negative(&format!("{name}_area"), area)?;
             ParameterError::non_negative(&format!("{name}_perimeter"), perimeter)?;
             let saturation_current = multiplier
+                * scaling
                 * if by_density {
                     density * area
                 } else {
@@ -803,11 +870,17 @@ impl MosfetParameters {
             };
             Ok(BulkJunction {
                 saturation_current,
-                critical_voltage: critical_voltage(saturation_current, THERMAL_VOLTAGE),
-                bottom: Depletion::new(multiplier * bottom, potential, bottom_grading, coefficient),
+                thermal_voltage: vt,
+                critical_voltage: critical_voltage(saturation_current, vt),
+                bottom: Depletion::new(
+                    multiplier * bottom * bottom_scaling,
+                    scaled_potential,
+                    bottom_grading,
+                    coefficient,
+                ),
                 sidewall: Depletion::new(
-                    multiplier * sidewall_capacitance * perimeter,
-                    potential,
+                    multiplier * sidewall_capacitance * perimeter * sidewall_scaling,
+                    scaled_potential,
                     sidewall_grading,
                     coefficient,
                 ),
@@ -829,9 +902,14 @@ impl MosfetParameters {
         ])
     }
 
-    /// The channel's law, of the transistor's level, once each of its parameters is
-    /// checked.
-    fn law(&self, process: &Process, geometry: &Geometry) -> Result<Law, ParameterError> {
+    /// The channel's law, of the transistor's level, with `process` at `temperatures`,
+    /// once each of its parameters is checked.
+    fn law(
+        &self,
+        process: &Process,
+        geometry: &Geometry,
+        temperatures: Temperatures,
+    ) -> Result<Law, ParameterError> {
         let sign = self.channel.sign();
         let root_potential = process.surface_potential.sqrt();
         let built_in =
@@ -900,7 +978,8 @@ impl MosfetParameters {
             junction_depth: non_negative("junction_depth", self.junction_depth)?,
             lateral_diffusion: self.lateral_diffusion,
             max_drift_velocity: non_negative("max_drift_velocity", self.max_drift_velocity)?,
-            mobility: self.surface_mobility,
+            mobility: self.surface_mobility / temperatures.ratio().powf(1.5),
+            thermal_voltage: temperatures.thermal_voltage(),
             surface_states: non_negative(
                 "fast_surface_state_density",
                 self.fast_surface_state_density,
@@ -995,7 +1074,7 @@ impl Mosfet {
             let limit = limit_junction(
                 applied_vbs,
                 previous_bulk,
-                THERMAL_VOLTAGE,
+                source.thermal_voltage,
                 source.critical_voltage,
             );
             apply(applied_vbs, limit)
@@ -1005,7 +1084,7 @@ impl Mosfet {
             let limit = limit_junction(
                 vbd,
                 previous_junction,
-                THERMAL_VOLTAGE,
+                drain.thermal_voltage,
                 drain.critical_voltage,
             );
             apply(vbd, limit) + vds

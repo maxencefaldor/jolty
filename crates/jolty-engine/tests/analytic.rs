@@ -7,7 +7,7 @@ use jolty_engine::{
     Transient,
 };
 use jolty_ir::Circuit;
-use jolty_models::Library;
+use jolty_models::{Library, REFERENCE_TEMPERATURE};
 use jolty_numerics::Complex64;
 use serde_json::{Value, json};
 
@@ -42,7 +42,8 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
 }
 
 fn simulator(circuit: &Circuit) -> Simulator {
-    Simulator::new(circuit, &Library::standard()).expect("an elaborated circuit")
+    Simulator::new(circuit, &Library::standard(), REFERENCE_TEMPERATURE)
+        .expect("an elaborated circuit")
 }
 
 fn index(simulator: &Simulator, name: &str) -> usize {

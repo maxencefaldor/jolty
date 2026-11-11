@@ -4,7 +4,7 @@ use jolty_numerics::{Pattern, PatternBuilder};
 
 use crate::{
     Binding, Device, Input, Model, Native, NativeDevice, Node, Output, ParameterError, Quantity,
-    Unknown, UnknownInfo,
+    REFERENCE_TEMPERATURE, Unknown, UnknownInfo,
 };
 
 /// One device whose terminals each connect to an unknown of their own.
@@ -28,10 +28,22 @@ impl Bench {
     /// A bench for a device of `D` with `parameters`, a JSON object, each of whose
     /// terminals connects to an unknown of its own.
     pub(crate) fn new<D: NativeDevice>(parameters: &str) -> Self {
-        Self::try_new::<D>(parameters).expect("valid parameters")
+        Self::at::<D>(parameters, REFERENCE_TEMPERATURE)
     }
 
     pub(crate) fn try_new<D: NativeDevice>(parameters: &str) -> Result<Self, ParameterError> {
+        Self::try_at::<D>(parameters, REFERENCE_TEMPERATURE)
+    }
+
+    /// A bench for a device of `D` with `parameters` at `temperature`, in kelvins.
+    pub(crate) fn at<D: NativeDevice>(parameters: &str, temperature: f64) -> Self {
+        Self::try_at::<D>(parameters, temperature).expect("valid parameters")
+    }
+
+    pub(crate) fn try_at<D: NativeDevice>(
+        parameters: &str,
+        temperature: f64,
+    ) -> Result<Self, ParameterError> {
         let parameters = serde_json::from_str(parameters).expect("a JSON object");
         let model = Native::<D>::new();
         let terminals = model.interface(&parameters)?.terminals.len();
@@ -47,7 +59,7 @@ impl Bench {
         let mut builder = PatternBuilder::new();
         let device = model.instantiate(
             &parameters,
-            &mut Binding::new("device", &nodes, &mut unknowns, &mut builder),
+            &mut Binding::new("device", &nodes, &mut unknowns, &mut builder, temperature),
         )?;
         let pattern = builder.finish(unknowns.len());
         Ok(Self {

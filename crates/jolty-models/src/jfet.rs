@@ -1,13 +1,13 @@
 use serde::Deserialize;
 
 use crate::junction::{
-    Depletion, THERMAL_VOLTAGE, critical_voltage, depletion_charge, junction_current, limit_gate,
+    Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
     limit_junction,
 };
 use crate::stamp::Stamp;
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Output, ParameterError,
-    Quantity,
+    Quantity, REFERENCE_TEMPERATURE,
 };
 
 /// The channel of a field-effect transistor.
@@ -42,10 +42,17 @@ impl Channel {
 /// `β' · vgst² · (b + (1 − b) · vgst / (pb − vto))` in saturation. The transistor is
 /// symmetric: with the drain below the source, the two swap. A drain or source resistance
 /// adds an internal node, labelled `drain` or `source`.
+///
+/// Away from its nominal temperature, its gate junctions' saturation current scales with
+/// the energy gap and their potential and capacitances with silicon's band gap; its
+/// threshold moves, and its transconductance parameter scales, by their own coefficients,
+/// as ngspice scales them.
 #[derive(Debug)]
 pub struct Jfet {
     stamp: Stamp<5>,
     sign: f64,
+    /// The thermal voltage at the transistor's temperature.
+    thermal_voltage: f64,
     drain_conductance: f64,
     source_conductance: f64,
     channel: DrainCurrent,
@@ -95,6 +102,20 @@ pub struct JfetParameters {
     pub depletion_coefficient: f64,
     /// The doping tail, `b`: 1 for the plain square law; default 1.
     pub doping_tail: f64,
+    /// How fast the threshold voltage rises with temperature, in volts per kelvin;
+    /// default 0.
+    pub threshold_temperature_coefficient: f64,
+    /// The exponent of the temperature ratio that scales the transconductance parameter;
+    /// default 0.
+    pub beta_temperature_exponent: f64,
+    /// The energy gap that scales the saturation current with temperature, in volts;
+    /// default 1.11, silicon's.
+    pub energy_gap: f64,
+    /// The exponent of the temperature ratio in the saturation current's scaling; default
+    /// 0, as ngspice scales a JFET's by it only when it is given.
+    pub saturation_current_temperature_exponent: f64,
+    /// The temperature the parameters were measured at, in kelvins; default 27 °C.
+    pub nominal_temperature: f64,
 }
 
 impl Default for JfetParameters {
@@ -112,6 +133,11 @@ impl Default for JfetParameters {
             saturation_current: 1e-14,
             depletion_coefficient: 0.5,
             doping_tail: 1.0,
+            threshold_temperature_coefficient: 0.0,
+            beta_temperature_exponent: 0.0,
+            energy_gap: 1.11,
+            saturation_current_temperature_exponent: 0.0,
+            nominal_temperature: REFERENCE_TEMPERATURE,
         }
     }
 }
@@ -209,6 +235,11 @@ impl NativeDevice for Jfet {
             saturation_current,
             depletion_coefficient,
             doping_tail,
+            threshold_temperature_coefficient,
+            beta_temperature_exponent,
+            energy_gap,
+            saturation_current_temperature_exponent,
+            nominal_temperature,
         } = parameters;
         ParameterError::non_negative("transconductance_parameter", transconductance_parameter)?;
         ParameterError::non_negative("drain_resistance", drain_resistance)?;
@@ -218,6 +249,7 @@ impl NativeDevice for Jfet {
         ParameterError::positive("junction_potential", junction_potential)?;
         ParameterError::positive("saturation_current", saturation_current)?;
         crate::junction::below_one("depletion_coefficient", depletion_coefficient)?;
+        ParameterError::non_negative("energy_gap", energy_gap)?;
         // The doping tail's factor, `(1 − b) / (pb − vto)`, which vanishes at `b = 1`.
         let (tail_excess, gap) = (1.0 - doping_tail, junction_potential - threshold_voltage);
         if gap == 0.0 && tail_excess != 0.0 {
@@ -251,17 +283,26 @@ impl NativeDevice for Jfet {
                 0.0
             }
         };
+        let temperatures = Temperatures::new(binding.temperature(), nominal_temperature)?;
+        let vt = temperatures.thermal_voltage();
+        let saturation_current = saturation_current
+            * temperatures.saturation(energy_gap, saturation_current_temperature_exponent, 1.0);
         let depletion = |capacitance| {
-            Depletion::new(capacitance, junction_potential, 0.5, depletion_coefficient)
+            let (potential, capacitance) =
+                temperatures.junction(junction_potential, capacitance, 0.5);
+            Depletion::new(capacitance, potential, 0.5, depletion_coefficient)
         };
         Ok(Self {
             stamp,
             sign: channel.sign(),
+            thermal_voltage: vt,
             drain_conductance: conductance(drain_resistance),
             source_conductance: conductance(source_resistance),
             channel: DrainCurrent {
-                beta: transconductance_parameter,
-                threshold: threshold_voltage,
+                beta: transconductance_parameter
+                    * temperatures.ratio().powf(beta_temperature_exponent),
+                threshold: threshold_voltage
+                    + threshold_temperature_coefficient * temperatures.difference(),
                 lambda: channel_length_modulation,
                 tail: doping_tail,
                 tail_factor: if tail_excess == 0.0 {
@@ -271,7 +312,7 @@ impl NativeDevice for Jfet {
                 },
             },
             saturation_current,
-            critical_voltage: critical_voltage(saturation_current, THERMAL_VOLTAGE),
+            critical_voltage: critical_voltage(saturation_current, vt),
             gate_source: depletion(gate_source_capacitance),
             gate_drain: depletion(gate_drain_capacitance),
             last: [0.0; 2],
@@ -301,7 +342,7 @@ impl Device for Jfet {
         ];
         let limits = [0, 1].map(|index| {
             let (new, old) = (applied[index], self.last[index]);
-            let junction = limit_junction(new, old, THERMAL_VOLTAGE, self.critical_voltage);
+            let junction = limit_junction(new, old, self.thermal_voltage, self.critical_voltage);
             let limited = limit_gate(junction.unwrap_or(new), old, self.channel.threshold);
             limited.or(junction).filter(|_| input.limiting)
         });
@@ -320,7 +361,7 @@ impl Device for Jfet {
             (INNER_DRAIN, vgd, beyond[1], self.gate_drain.as_ref()),
         ] {
             let (current, conductance) =
-                junction_current(voltage, self.saturation_current, THERMAL_VOLTAGE);
+                junction_current(voltage, self.saturation_current, self.thermal_voltage);
             let conductance = conductance + input.gmin;
             let current = current + input.gmin * voltage + conductance * delta;
             stamp.current(output, GATE, inner, sign * current);

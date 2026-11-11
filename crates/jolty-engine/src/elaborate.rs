@@ -184,8 +184,12 @@ impl fmt::Display for ElaborationError {
 
 impl std::error::Error for ElaborationError {}
 
-/// Flattens `circuit` and binds each device to its unknowns.
-pub(crate) fn elaborate(circuit: &Circuit, library: &Library) -> Result<System, ElaborationError> {
+/// Flattens `circuit` and binds each device to its unknowns, at `temperature` in kelvins.
+pub(crate) fn elaborate(
+    circuit: &Circuit,
+    library: &Library,
+    temperature: f64,
+) -> Result<System, ElaborationError> {
     circuit.validate().map_err(|problems| {
         ElaborationError(
             problems
@@ -248,6 +252,7 @@ pub(crate) fn elaborate(circuit: &Circuit, library: &Library) -> Result<System, 
             &pending.terminals,
             &mut unknowns,
             &mut builder,
+            temperature,
         );
         match pending.model.instantiate(pending.parameters, &mut binding) {
             Ok(device) => placed.push(Placed {
@@ -419,7 +424,11 @@ mod tests {
     fn elaborate_json(components: &str) -> Result<System, ElaborationError> {
         let header = r#""format": "jolty-circuit", "version": 1, "top": "top""#;
         let text = format!(r#"{{{header}, "components": {components}}}"#);
-        elaborate(&Circuit::from_json(&text).unwrap(), &Library::standard())
+        elaborate(
+            &Circuit::from_json(&text).unwrap(),
+            &Library::standard(),
+            jolty_models::REFERENCE_TEMPERATURE,
+        )
     }
 
     #[test]

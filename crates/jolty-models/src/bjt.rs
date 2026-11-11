@@ -1,13 +1,13 @@
 use serde::Deserialize;
 
 use crate::junction::{
-    Depletion, THERMAL_VOLTAGE, below_one, critical_voltage, depletion_charge, junction_current,
+    Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };
 use crate::stamp::Stamp;
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Output, ParameterError,
-    Quantity,
+    Quantity, REFERENCE_TEMPERATURE,
 };
 
 /// The doping order of a bipolar transistor.
@@ -59,6 +59,10 @@ pub enum Construction {
 /// to its internal collector if it is vertical or to its internal base if it is lateral.
 /// The junction conducts the minimum conductance, and its diode's current if it has a
 /// saturation current; its depletion capacitance grows linearly in forward bias.
+///
+/// Away from its nominal temperature, its saturation currents scale with the energy gap,
+/// its betas by their temperature exponent, and its junctions' potentials and
+/// capacitances with silicon's band gap, as ngspice scales them.
 #[derive(Debug)]
 pub struct BipolarTransistor {
     stamp: Stamp<6>,
@@ -69,6 +73,8 @@ pub struct BipolarTransistor {
     junctions: Junctions,
     charges: Option<Charges>,
     substrate: Option<Substrate>,
+    /// The thermal voltage at the transistor's temperature.
+    thermal_voltage: f64,
     critical_voltage: f64,
     /// The base-emitter and base-collector voltages of the last evaluation, from which the
     /// next steps are limited.
@@ -175,6 +181,16 @@ pub struct BipolarTransistorParameters {
     pub substrate_potential: Option<f64>,
     /// The substrate junction's grading coefficient, `MJS`, below 1; default 0.
     pub substrate_grading: Option<f64>,
+    /// The energy gap that scales the saturation currents with temperature, `EG`, in
+    /// volts; default 1.11, silicon's.
+    pub energy_gap: f64,
+    /// The exponent of the temperature ratio in the saturation currents' scaling, `XTI`;
+    /// default 3.
+    pub saturation_current_temperature_exponent: f64,
+    /// The exponent of the temperature ratio that scales the betas, `XTB`; default 0.
+    pub beta_temperature_exponent: f64,
+    /// The temperature the parameters were measured at, in kelvins; default 27 °C.
+    pub nominal_temperature: f64,
 }
 
 impl Default for BipolarTransistorParameters {
@@ -218,6 +234,10 @@ impl Default for BipolarTransistorParameters {
             substrate_capacitance: None,
             substrate_potential: None,
             substrate_grading: None,
+            energy_gap: 1.11,
+            saturation_current_temperature_exponent: 3.0,
+            beta_temperature_exponent: 0.0,
+            nominal_temperature: REFERENCE_TEMPERATURE,
         }
     }
 }
@@ -480,6 +500,8 @@ struct SubstrateJunction {
     sign: f64,
     /// The saturation current and exponential slope of the junction's diode, if it has one.
     diode: Option<(f64, f64)>,
+    /// The thermal voltage at the transistor's temperature.
+    thermal_voltage: f64,
     critical_voltage: f64,
     /// The depletion, whose capacitance grows linearly from zero bias.
     depletion: Option<Depletion>,
@@ -507,7 +529,7 @@ impl Substrate {
         let limited = limit_junction(
             applied,
             self.last,
-            THERMAL_VOLTAGE,
+            junction.thermal_voltage,
             junction.critical_voltage,
         )
         .filter(|_| input.limiting);
@@ -543,8 +565,8 @@ impl Substrate {
 }
 
 impl BipolarTransistorParameters {
-    /// The junctions' DC model, once each of its parameters is checked.
-    fn junctions(&self) -> Result<Junctions, ParameterError> {
+    /// The junctions' DC model at `temperatures`, once each of its parameters is checked.
+    fn junctions(&self, temperatures: Temperatures) -> Result<Junctions, ParameterError> {
         let positive = ParameterError::positive;
         let non_negative = ParameterError::non_negative;
         positive("saturation_current", self.saturation_current)?;
@@ -574,17 +596,32 @@ impl BipolarTransistorParameters {
             "base_collector_leakage_emission_coefficient",
             self.base_collector_leakage_emission_coefficient,
         )?;
+        non_negative("energy_gap", self.energy_gap)?;
+        let vt = temperatures.thermal_voltage();
+        let scaling = |emission| {
+            temperatures.saturation(
+                self.energy_gap,
+                self.saturation_current_temperature_exponent,
+                emission,
+            )
+        };
+        let beta_factor = temperatures.ratio().powf(self.beta_temperature_exponent);
+        let (emitter_emission, collector_emission) = (
+            self.base_emitter_leakage_emission_coefficient,
+            self.base_collector_leakage_emission_coefficient,
+        );
         Ok(Junctions {
-            saturation_current: self.saturation_current,
-            forward_beta: self.forward_beta,
-            reverse_beta: self.reverse_beta,
-            forward_slope: self.forward_emission_coefficient * THERMAL_VOLTAGE,
-            reverse_slope: self.reverse_emission_coefficient * THERMAL_VOLTAGE,
-            emitter_leakage: self.base_emitter_leakage_current,
-            emitter_leakage_slope: self.base_emitter_leakage_emission_coefficient * THERMAL_VOLTAGE,
-            collector_leakage: self.base_collector_leakage_current,
-            collector_leakage_slope: self.base_collector_leakage_emission_coefficient
-                * THERMAL_VOLTAGE,
+            saturation_current: self.saturation_current * scaling(1.0),
+            forward_beta: self.forward_beta * beta_factor,
+            reverse_beta: self.reverse_beta * beta_factor,
+            forward_slope: self.forward_emission_coefficient * vt,
+            reverse_slope: self.reverse_emission_coefficient * vt,
+            emitter_leakage: self.base_emitter_leakage_current * scaling(emitter_emission)
+                / beta_factor,
+            emitter_leakage_slope: emitter_emission * vt,
+            collector_leakage: self.base_collector_leakage_current * scaling(collector_emission)
+                / beta_factor,
+            collector_leakage_slope: collector_emission * vt,
             inverse_early: [
                 inverse("forward_early_voltage", self.forward_early_voltage)?,
                 inverse("reverse_early_voltage", self.reverse_early_voltage)?,
@@ -611,8 +648,9 @@ impl BipolarTransistorParameters {
         }))
     }
 
-    /// What the transistor stores, if anything, once each of its parameters is checked.
-    fn charges(&self) -> Result<Option<Charges>, ParameterError> {
+    /// What the transistor stores at `temperatures`, if anything, once each of its
+    /// parameters is checked.
+    fn charges(&self, temperatures: Temperatures) -> Result<Option<Charges>, ParameterError> {
         let non_negative = ParameterError::non_negative;
         non_negative("base_emitter_capacitance", self.base_emitter_capacitance)?;
         ParameterError::positive("base_emitter_potential", self.base_emitter_potential)?;
@@ -646,26 +684,34 @@ impl BipolarTransistorParameters {
         ]
         .iter()
         .any(|value| *value > 0.0);
-        let internal = self.base_collector_capacitance * self.internal_base_fraction;
+        let (emitter_potential, emitter_capacitance) = temperatures.junction(
+            self.base_emitter_potential,
+            self.base_emitter_capacitance,
+            self.base_emitter_grading,
+        );
+        let (collector_potential, collector_capacitance) = temperatures.junction(
+            self.base_collector_potential,
+            self.base_collector_capacitance,
+            self.base_collector_grading,
+        );
+        let internal = collector_capacitance * self.internal_base_fraction;
         let collector_depletion = |capacitance| {
             Depletion::new(
                 capacitance,
-                self.base_collector_potential,
+                collector_potential,
                 self.base_collector_grading,
                 self.depletion_coefficient,
             )
         };
         Ok(stores.then(|| Charges {
             base_emitter: Depletion::new(
-                self.base_emitter_capacitance,
-                self.base_emitter_potential,
+                emitter_capacitance,
+                emitter_potential,
                 self.base_emitter_grading,
                 self.depletion_coefficient,
             ),
             base_collector: collector_depletion(internal),
-            external_base_collector: collector_depletion(
-                self.base_collector_capacitance - internal,
-            ),
+            external_base_collector: collector_depletion(collector_capacitance - internal),
             forward_transit_time: self.forward_transit_time,
             reverse_transit_time: self.reverse_transit_time,
             bias_coefficient: self.transit_time_bias_coefficient,
@@ -676,9 +722,12 @@ impl BipolarTransistorParameters {
 }
 
 impl BipolarTransistorParameters {
-    /// The substrate junction, if the transistor has a substrate, once each of its
-    /// parameters is checked.
-    fn substrate_junction(&self) -> Result<Option<SubstrateJunction>, ParameterError> {
+    /// The substrate junction at `temperatures`, if the transistor has a substrate, once
+    /// each of its parameters is checked.
+    fn substrate_junction(
+        &self,
+        temperatures: Temperatures,
+    ) -> Result<Option<SubstrateJunction>, ParameterError> {
         let Some(construction) = self.substrate else {
             let given = [
                 (
@@ -709,13 +758,21 @@ impl BipolarTransistorParameters {
         let potential = self.substrate_potential.unwrap_or(0.75);
         ParameterError::positive("substrate_potential", potential)?;
         let grading = below_one("substrate_grading", self.substrate_grading.unwrap_or(0.0))?;
+        let vt = temperatures.thermal_voltage();
+        // ngspice scales the substrate's saturation current as the transport current's.
+        let scaling = temperatures.saturation(
+            self.energy_gap,
+            self.saturation_current_temperature_exponent,
+            1.0,
+        );
         let diode = self
             .substrate_saturation_current
             .map(|current| {
                 ParameterError::positive("substrate_saturation_current", current)
-                    .map(|current| (current, emission * THERMAL_VOLTAGE))
+                    .map(|current| (current * scaling, emission * vt))
             })
             .transpose()?;
+        let (potential, capacitance) = temperatures.junction(potential, capacitance, grading);
         let orientation = match construction {
             Construction::Vertical => 1.0,
             Construction::Lateral => -1.0,
@@ -724,8 +781,9 @@ impl BipolarTransistorParameters {
             construction,
             sign: self.polarity.sign() * orientation,
             diode,
+            thermal_voltage: vt,
             critical_voltage: diode.map_or(DIODELESS_CRITICAL_VOLTAGE, |(current, _)| {
-                critical_voltage(current, THERMAL_VOLTAGE)
+                critical_voltage(current, vt)
             }),
             depletion: Depletion::new(capacitance, potential, grading, 0.0),
         }))
@@ -765,10 +823,12 @@ impl NativeDevice for BipolarTransistor {
         parameters: BipolarTransistorParameters,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let junctions = parameters.junctions()?;
+        let temperatures =
+            Temperatures::new(binding.temperature(), parameters.nominal_temperature)?;
+        let junctions = parameters.junctions(temperatures)?;
         let base = parameters.base_resistance()?;
-        let charges = parameters.charges()?;
-        let substrate_junction = parameters.substrate_junction()?;
+        let charges = parameters.charges(temperatures)?;
+        let substrate_junction = parameters.substrate_junction(temperatures)?;
         let non_negative = ParameterError::non_negative;
         let collector_resistance =
             non_negative("collector_resistance", parameters.collector_resistance)?;
@@ -821,7 +881,11 @@ impl NativeDevice for BipolarTransistor {
             collector_conductance: conductance(collector_resistance),
             emitter_conductance: conductance(emitter_resistance),
             base,
-            critical_voltage: critical_voltage(junctions.saturation_current, THERMAL_VOLTAGE),
+            thermal_voltage: temperatures.thermal_voltage(),
+            critical_voltage: critical_voltage(
+                junctions.saturation_current,
+                temperatures.thermal_voltage(),
+            ),
             junctions,
             charges,
             substrate,
@@ -878,7 +942,7 @@ impl BipolarTransistor {
             limit_junction(
                 applied[index],
                 self.last[index],
-                THERMAL_VOLTAGE,
+                self.thermal_voltage,
                 self.critical_voltage,
             )
             .filter(|_| input.limiting)
@@ -987,6 +1051,9 @@ mod tests {
 
     use super::*;
     use crate::testing::{Bench, assert_jacobians_match};
+    use crate::thermal_voltage;
+
+    const THERMAL_VOLTAGE: f64 = thermal_voltage(REFERENCE_TEMPERATURE);
 
     /// A transistor with every effect switched on.
     const FULL: &str = r#"{"saturation_current": 1e-15, "forward_beta": 150,

@@ -37,6 +37,17 @@ A source is named by its path, such as `V1` or `bias/I1`.
 A transient's method is `"trapezoidal"`, `"gear2"` for stiff circuits that ring, or `"backward_euler"` for the most damping.
 Its longest step defaults to a fiftieth of `stop`.
 
+## Temperature
+
+A plan's `temperature` is the temperature every device is simulated at, 27 °C unless given:
+
+```python
+Plan({"op": OperatingPoint()}, temperature=celsius(85))
+```
+
+`celsius(degrees)` gives a temperature in kelvins, as every temperature is.
+Away from each device's nominal temperature, its parameters scale as [Devices](devices.md) says.
+
 ## Options
 
 `Options` sets the tolerances; each one left out takes SPICE's default.

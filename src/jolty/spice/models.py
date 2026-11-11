@@ -2,9 +2,10 @@
 """SPICE's model cards, and the parameters of the jolty devices they make.
 
 Each SPICE parameter maps to a jolty device's parameter, converted to SI base units
-where SPICE writes centimeters. Parameters that only matter away from the nominal
-temperature of 27 °C, or only to noise, change nothing jolty computes and are left out;
-any other parameter jolty does not model is an error, never silently dropped.
+where SPICE writes centimeters, and the nominal temperature ``TNOM`` from degrees
+Celsius to kelvins. Parameters that only matter to noise change nothing jolty computes
+and are left out; any other parameter jolty does not model is an error, never silently
+dropped.
 """
 
 import re
@@ -17,6 +18,7 @@ from pydantic import JsonValue
 from jolty.errors import SpiceError
 from jolty.spice.expressions import Expression, Number, evaluate, number, parse
 from jolty.spice.netlist import Statement, tokens
+from jolty.units import celsius
 
 type Table = Mapping[str, tuple[str, float]]
 """Each SPICE parameter's jolty name, and the factor to SI base units."""
@@ -37,6 +39,9 @@ DIODE: Final[Table] = {
     "bv": ("breakdown_voltage", 1.0),
     "ibv": ("breakdown_current", 1.0),
     "nbv": ("breakdown_emission_coefficient", 1.0),
+    "tcv": ("breakdown_temperature_coefficient", 1.0),
+    "eg": ("energy_gap", 1.0),
+    "xti": ("saturation_current_temperature_exponent", 1.0),
 }
 
 JFET: Final[Table] = {
@@ -51,6 +56,11 @@ JFET: Final[Table] = {
     "is": ("saturation_current", 1.0),
     "fc": ("depletion_coefficient", 1.0),
     "b": ("doping_tail", 1.0),
+    "vtotc": ("threshold_temperature_coefficient", 1.0),
+    "tcv": ("threshold_temperature_coefficient", -1.0),
+    "bex": ("beta_temperature_exponent", 1.0),
+    "eg": ("energy_gap", 1.0),
+    "xti": ("saturation_current_temperature_exponent", 1.0),
 }
 
 BIPOLAR: Final[Table] = {
@@ -101,6 +111,9 @@ BIPOLAR: Final[Table] = {
     "ps": ("substrate_potential", 1.0),
     "mjs": ("substrate_grading", 1.0),
     "ms": ("substrate_grading", 1.0),
+    "eg": ("energy_gap", 1.0),
+    "xti": ("saturation_current_temperature_exponent", 1.0),
+    "xtb": ("beta_temperature_exponent", 1.0),
 }
 
 MOSFET: Final[Table] = {
@@ -169,38 +182,13 @@ SWITCH: Final[Table] = {
     "voff": ("off_voltage", 1.0),
 }
 
-TEMPERATURE: Final = frozenset(
-    {
-        "tnom",
-        "t_measured",
-        "t_abs",
-        "t_rel_global",
-        "t_rel_local",
-        "eg",
-        "xti",
-        "xtb",
-        "tc",
-        "tc1",
-        "tc2",
-        "tce",
-        "trs",
-        "trs1",
-        "trs2",
-        "trb",
-        "tre",
-        "trc",
-        "tikf",
-        "tbv1",
-        "tbv2",
-        "vtotc",
-        "betatce",
-        "cta",
-        "ctp",
-        "pta",
-        "ptp",
-    }
-)
-"""Parameters that change nothing at jolty's temperature, the nominal 27 °C."""
+NOMINAL_TEMPERATURES: Final = frozenset({"tnom", "t_measured"})
+"""The parameters that give the temperature, in degrees Celsius, a card was measured at:
+the nominal temperature of the device it makes. ``T_MEASURED`` is PSpice's."""
+
+OWN_TEMPERATURES: Final = frozenset({"t_abs", "t_rel_global", "t_rel_local"})
+"""PSpice's parameters that set a device's own temperature apart from the circuit's,
+which jolty does not model: they change nothing for a device that does not drift."""
 
 NOISE: Final = frozenset({"kf", "af", "nlev", "gdsnoi"})
 """Parameters that only noise analyses read."""
@@ -374,10 +362,8 @@ def _mapped(
     for name, value in values.items():
         if name in skipped or name in NOISE:
             continue
-        if name in TEMPERATURE:
-            if name == "tnom" and value != 27:  # noqa: PLR2004 - the nominal temperature
-                message = f"`{card.name}` is measured at {value!r} °C, not 27 °C"
-                raise statement.fail(message)
+        if name in NOMINAL_TEMPERATURES:
+            parameters["nominal_temperature"] = celsius(value).value
             continue
         if name not in table:
             raise unmatched(card, name, statement)

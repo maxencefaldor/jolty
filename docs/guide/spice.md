@@ -47,7 +47,10 @@ A bipolar transistor has a substrate, as in SPICE: the ground unless its instanc
 
 An element that reads the current through a voltage source reads it through a port placed in series with the source, as the nets `V1.sense1`, `V1.sense2` and so on for a source `V1`.
 
-Parameters that change nothing at jolty's temperature, the nominal 27 °C, such as temperature coefficients, and those that only noise analyses read, are left out.
+Temperature parameters become the devices' own: a model's `TNOM`, or PSpice's `T_MEASURED`, is its nominal temperature, and a resistor's, capacitor's or inductor's `TC=tc1,tc2`, `TC1`, `TC2` and `TCE` drift its value.
+PSpice's `T_ABS`, `T_REL_GLOBAL` and `T_REL_LOCAL` set a device's own temperature, which jolty does not model: they change nothing for a resistor, capacitor or inductor that does not drift, and are an error otherwise.
+Expressions read `TEMP` and `VT` at 27 °C, whatever the temperature the circuit is simulated at.
+Parameters that only noise analyses read are left out.
 Any other parameter or element that jolty does not model is an error that names the file, the line and the statement; nothing is silently dropped.
 
 ## Agreement with ngspice
@@ -62,3 +65,4 @@ jolty's tests read vendors' macromodels from ngspice's own examples and compare 
 | OPA171 | Texas Instruments | operating point |
 
 ngspice runs PSpice's switches as XSPICE's, which stamp the negative of their conductance in an AC analysis, so the OPA171's frequency responses, which its ESD switches load, differ from jolty's by that error.
+Every part's operating point also agrees at -40 °C and at 125 °C, but the AD22057's at 125 °C: ngspice scales a transistor's base-collector saturation current by its area twice, and the leakage of the AD22057's large transistors at that temperature makes the error visible.

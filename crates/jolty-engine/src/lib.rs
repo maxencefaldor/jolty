@@ -10,7 +10,7 @@
 //! ```
 //! use jolty_engine::{Options, Simulator};
 //! use jolty_ir::Circuit;
-//! use jolty_models::Library;
+//! use jolty_models::{Library, REFERENCE_TEMPERATURE};
 //!
 //! let circuit = Circuit::from_json(r#"{
 //!     "format": "jolty-circuit", "version": 1, "top": "divider",
@@ -27,7 +27,7 @@
 //!         ]
 //!     }}
 //! }"#)?;
-//! let mut simulator = Simulator::new(&circuit, &Library::standard())?;
+//! let mut simulator = Simulator::new(&circuit, &Library::standard(), REFERENCE_TEMPERATURE)?;
 //! let solution = simulator.operating_point(&Options::default())?;
 //! let out = simulator.unknown("out").expect("a net named out");
 //! assert!((solution.values[out.index()] - 2.5).abs() < 1e-9);
@@ -68,14 +68,19 @@ pub struct Simulator {
 }
 
 impl Simulator {
-    /// Elaborates `circuit` with the models of `library`.
+    /// Elaborates `circuit` with the models of `library`, its devices at `temperature`, in
+    /// kelvins.
     ///
     /// # Errors
     ///
     /// Returns every [`ElaborationProblem`] found: an invalid structure, a missing reference
     /// node, an unknown model, wrongly connected terminals or invalid parameters.
-    pub fn new(circuit: &Circuit, library: &Library) -> Result<Self, ElaborationError> {
-        let system = elaborate::elaborate(circuit, library)?;
+    pub fn new(
+        circuit: &Circuit,
+        library: &Library,
+        temperature: f64,
+    ) -> Result<Self, ElaborationError> {
+        let system = elaborate::elaborate(circuit, library, temperature)?;
         let solver = SparseLu::new(system.pattern.clone())
             .map_err(|_| ElaborationError::from(ElaborationProblem::TooLarge))?;
         let workspace = Workspace::new(&system);
