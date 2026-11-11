@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_LOCKED: "1"
+  FORCE_COLOR: "1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust format, lints and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - name: Install Python, which PyO3 builds against
+        run: |
+          uv python install
+          echo "PYO3_PYTHON=$(uv python find)" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  python:
+    name: Python format, lints, types, Markdown and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: Swatinem/rust-cache@v2
+      - name: Install
+        run: uv sync
+      - name: Format
+        run: uv run ruff format --check
+      - name: Lint
+        run: uv run ruff check --output-format=github
+      - name: Types
+        run: uv run ty check
+      - name: Markdown
+        run: uv run rumdl check .
+      - name: Tests
+        run: uv run pytest
+      - name: Examples
+        run: |
+          for example in examples/*.py; do
+            uv run jolty simulate "$example"
+          done
