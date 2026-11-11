@@ -44,6 +44,7 @@ Each module imports only from the modules listed before it:
 1. `errors`, `settings`: the errors front ends show as a message, and configuration.
 1. `units`, `waveforms`, `ir`: dimensioned quantities, the levels of sources over time, and the circuit format.
 1. `devices`, `builder`: the devices a script places, and components written as Python functions.
+1. `spice`: SPICE libraries read into components, and model files downloaded and checked.
 1. `plan`, `checks`, `results`, `simulate`: analyses and their options, the rules and their diagnostics, results, and the engine's Python face.
 1. `files`, `report`, `plots`: circuit and results files, what each analysis found as data and as text, and plots of results.
 1. `layout`, `schematic`: where a schematic places each instance and runs each wire, and the schematic drawn.
@@ -79,5 +80,5 @@ Each module imports only from the modules listed before it:
   Plots never put two quantities on one axis, and take their colors in a fixed order checked for color-vision deficiencies.
 - **Scripts run in their own process** (`jolty.runner`), never in the command line or the MCP server: their output is captured, a timeout stops them, and a crash ends only the runner.
 - **Numbers in messages** are written in their shortest exact form, such as `-1e-9`; reports write them with SI prefixes, such as `-1 nV`.
-- **Tests:** the engine is checked against closed-form solutions, by property tests of the laws every circuit obeys, such as Kirchhoff's current law, and against ngspice on a corpus of circuits (`tests/test_ngspice.py`, skipped when ngspice is not installed).
+- **Tests:** the engine is checked against closed-form solutions, by property tests of the laws every circuit obeys, such as Kirchhoff's current law, and against ngspice on a corpus of circuits (`tests/test_ngspice.py`) and on vendors' macromodels (`tests/test_vendor.py`), both skipped when ngspice is not installed.
   The layout is checked by property tests over random circuits: nets never touch, and wires never cross a symbol.

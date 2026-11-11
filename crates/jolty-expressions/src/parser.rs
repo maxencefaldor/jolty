@@ -4,6 +4,7 @@ use crate::SyntaxError;
 use crate::Variable;
 use crate::lexer::{Kind, Symbol, Token, tokenize};
 use crate::operations::{Binary, Unary};
+use crate::tape::{Beyond, Points};
 
 /// An expression's tree. Every part without a variable is folded into a constant.
 #[derive(Debug, Clone, PartialEq)]
@@ -16,8 +17,9 @@ pub(crate) enum Node {
     Limit(Box<[Node; 3]>),
     /// `c ? a : b`.
     Conditional(Box<[Node; 3]>),
-    /// `table(x, x1, y1, …)`: the points' piecewise-linear interpolation at `x`.
-    Table(Box<Node>, Vec<(f64, f64)>),
+    /// `table(x, x1, y1, …)`, `pwl(x, x1, y1, …)` or `rounded_table(x, r, x1, y1, …)`:
+    /// the points' interpolation at `x`.
+    Table(Box<Node>, Points),
 }
 
 impl Node {
@@ -230,7 +232,11 @@ impl Parser {
         } else if name == "if" {
             Ok(conditional(take(arguments, name, column)?))
         } else if name == "table" {
-            table(arguments, column)
+            table(arguments, Beyond::Hold, false, column)
+        } else if name == "pwl" {
+            table(arguments, Beyond::Extend, false, column)
+        } else if name == "rounded_table" {
+            table(arguments, Beyond::Hold, true, column)
         } else {
             Err(SyntaxError::new(
                 format!("unknown function `{name}`"),
@@ -314,12 +320,31 @@ fn conditional(arguments: [Node; 3]) -> Node {
     }
 }
 
-/// `table(x, x1, y1, …)`, whose points are constants in pairs, ascending.
-fn table(arguments: Vec<Node>, column: usize) -> Result<Node, SyntaxError> {
+/// `table(x, x1, y1, …)`, `pwl(x, x1, y1, …)` or, if `rounded`,
+/// `rounded_table(x, r, x1, y1, …)`, whose points are constants in pairs, ascending, and
+/// whose rounding is a constant from 0 to ½.
+fn table(
+    arguments: Vec<Node>,
+    beyond: Beyond,
+    rounded: bool,
+    column: usize,
+) -> Result<Node, SyntaxError> {
+    let function = match (beyond, rounded) {
+        (_, true) => "rounded_table",
+        (Beyond::Hold, false) => "table",
+        (Beyond::Extend, false) => "pwl",
+    };
     let invalid = || {
+        let rounding = if rounded {
+            " a rounding from 0 to 0.5,"
+        } else {
+            ""
+        };
         SyntaxError::new(
-            "`table` takes an input then constant points, in pairs, with ascending abscissae"
-                .to_owned(),
+            format!(
+                "`{function}` takes an input,{rounding} then constant points, in pairs, \
+                 with ascending abscissae"
+            ),
             column,
         )
     };
@@ -328,6 +353,14 @@ fn table(arguments: Vec<Node>, column: usize) -> Result<Node, SyntaxError> {
     let numbers: Vec<f64> = arguments
         .map(|node| node.constant().ok_or_else(invalid))
         .collect::<Result<_, _>>()?;
+    let (rounding, numbers) = if rounded {
+        match numbers.split_first() {
+            Some((&rounding, rest)) if (0.0..=0.5).contains(&rounding) => (rounding, rest),
+            _ => return Err(invalid()),
+        }
+    } else {
+        (0.0, numbers.as_slice())
+    };
     let points: Vec<(f64, f64)> = numbers
         .chunks(2)
         .map(|pair| match *pair {
@@ -338,8 +371,9 @@ fn table(arguments: Vec<Node>, column: usize) -> Result<Node, SyntaxError> {
     if points.is_empty() || points.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
         return Err(invalid());
     }
+    let points = Points::new(&points, beyond, rounding);
     Ok(match x.constant() {
-        Some(x) => Node::Constant(crate::tape::interpolate(&points, x).0),
+        Some(x) => Node::Constant(points.interpolate(x).0),
         None => Node::Table(Box::new(x), points),
     })
 }

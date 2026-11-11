@@ -179,7 +179,7 @@ impl Simulator {
         }
         let shortest = longest * SMALLEST_STEP_FRACTION;
         let initial = self.operating_point(options)?;
-        self.evaluate(&initial.values, 0.0, 1.0, options.gmin);
+        self.evaluate(&initial.values, 0.0, (1.0, options.gmin), true);
         let unknowns = initial.values.len();
         let breakpoints = self.breakpoints(transient.stop, shortest);
         let first = RESTART_FRACTION * longest.min(breakpoints[0]);

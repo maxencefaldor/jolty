@@ -764,7 +764,7 @@ impl Mosfet {
         let applied = VARIABLES.map(|(plus, minus)| {
             self.sign * (stamp.voltage(input, plus) - stamp.voltage(input, minus))
         });
-        let limited = self.limit(applied);
+        let limited = self.limit(applied).filter(|_| input.limiting);
         if limited.is_some() {
             output.mark_limited();
         }

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use crate::junction::{
-    Depletion, THERMAL_VOLTAGE, critical_voltage, depletion_charge, junction_current,
+    Depletion, THERMAL_VOLTAGE, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };
 use crate::stamp::Stamp;
@@ -32,6 +32,16 @@ impl Polarity {
     }
 }
 
+/// How a bipolar transistor is built, which sets where its junction to the substrate lies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Construction {
+    /// Built vertically, with the junction to the substrate at the collector.
+    Vertical,
+    /// Built laterally, with the junction to the substrate at the base.
+    Lateral,
+}
+
 /// A bipolar junction transistor, in the Gummel-Poon model of SPICE, as ngspice implements
 /// it.
 ///
@@ -44,6 +54,11 @@ impl Polarity {
 /// the current and the base-collector voltage. Part of the base-collector depletion charge
 /// sits on the external base. A base, collector or emitter resistance adds an internal
 /// node, labelled `base`, `collector` or `emitter`.
+///
+/// A transistor with a substrate has a fourth terminal, `substrate`, joined by a junction
+/// to its internal collector if it is vertical or to its internal base if it is lateral.
+/// The junction conducts the minimum conductance, and its diode's current if it has a
+/// saturation current; its depletion capacitance grows linearly in forward bias.
 #[derive(Debug)]
 pub struct BipolarTransistor {
     stamp: Stamp<6>,
@@ -53,6 +68,7 @@ pub struct BipolarTransistor {
     base: Option<BaseResistance>,
     junctions: Junctions,
     charges: Option<Charges>,
+    substrate: Option<Substrate>,
     critical_voltage: f64,
     /// The base-emitter and base-collector voltages of the last evaluation, from which the
     /// next steps are limited.
@@ -143,6 +159,22 @@ pub struct BipolarTransistorParameters {
     /// The fraction of each junction's potential above which its depletion capacitance is
     /// extended linearly, `FC`, below 1; default 0.5.
     pub depletion_coefficient: f64,
+    /// How the transistor is built, if it has a substrate, as ngspice's `SUBS` of 1 and −1
+    /// builds it; without it, the transistor has none. The parameters below, of the
+    /// junction to the substrate, need one.
+    pub substrate: Option<Construction>,
+    /// The substrate junction's saturation current, `ISS`, in amperes; without it, the
+    /// junction carries the minimum conductance only.
+    pub substrate_saturation_current: Option<f64>,
+    /// The substrate junction's emission coefficient, `NS`; default 1.
+    pub substrate_emission_coefficient: Option<f64>,
+    /// The substrate junction's zero-bias depletion capacitance, `CJS`, in farads;
+    /// default 0.
+    pub substrate_capacitance: Option<f64>,
+    /// The substrate junction's built-in potential, `VJS`, in volts; default 0.75.
+    pub substrate_potential: Option<f64>,
+    /// The substrate junction's grading coefficient, `MJS`, below 1; default 0.
+    pub substrate_grading: Option<f64>,
 }
 
 impl Default for BipolarTransistorParameters {
@@ -180,6 +212,12 @@ impl Default for BipolarTransistorParameters {
             internal_base_fraction: 1.0,
             reverse_transit_time: 0.0,
             depletion_coefficient: 0.5,
+            substrate: None,
+            substrate_saturation_current: None,
+            substrate_emission_coefficient: None,
+            substrate_capacitance: None,
+            substrate_potential: None,
+            substrate_grading: None,
         }
     }
 }
@@ -432,6 +470,78 @@ impl Charges {
     }
 }
 
+/// The junction from the substrate to the internal collector of a vertical transistor or
+/// to the internal base of a lateral one.
+#[derive(Debug, Clone, Copy)]
+struct SubstrateJunction {
+    construction: Construction,
+    /// `±1`: orients the junction's voltage and current, from the substrate, as a vertical
+    /// NPN's.
+    sign: f64,
+    /// The saturation current and exponential slope of the junction's diode, if it has one.
+    diode: Option<(f64, f64)>,
+    critical_voltage: f64,
+    /// The depletion, whose capacitance grows linearly from zero bias.
+    depletion: Option<Depletion>,
+}
+
+/// A transistor's substrate junction, between the nodes it joins.
+#[derive(Debug)]
+struct Substrate {
+    /// The substrate, then the internal collector or base.
+    stamp: Stamp<2>,
+    junction: SubstrateJunction,
+    /// The junction voltage of the last evaluation, from which the next step is limited.
+    last: f64,
+}
+
+/// The critical voltage of a substrate junction without a diode, from which ngspice limits
+/// its steps all the same.
+const DIODELESS_CRITICAL_VOLTAGE: f64 = 50.0;
+
+impl Substrate {
+    /// Adds the junction's current and its charge.
+    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_>) {
+        let (stamp, junction) = (&self.stamp, &self.junction);
+        let applied = junction.sign * (stamp.voltage(input, 0) - stamp.voltage(input, 1));
+        let limited = limit_junction(
+            applied,
+            self.last,
+            THERMAL_VOLTAGE,
+            junction.critical_voltage,
+        )
+        .filter(|_| input.limiting);
+        if limited.is_some() {
+            output.mark_limited();
+        }
+        let voltage = limited.unwrap_or(applied);
+        self.last = voltage;
+        let beyond = applied - voltage;
+        let (current, conductance) = junction.diode.map_or((0.0, 0.0), |(saturation, slope)| {
+            junction_current(voltage, saturation, slope)
+        });
+        let (current, conductance) = (current + input.gmin * voltage, conductance + input.gmin);
+        let pair = (0, 1);
+        stamp.current(
+            output,
+            0,
+            1,
+            junction.sign * (current + conductance * beyond),
+        );
+        stamp.conductance(output, pair, pair, conductance);
+        if let Some(depletion) = &junction.depletion {
+            let (charge, capacitance) = depletion.evaluate(voltage);
+            stamp.charge(
+                output,
+                0,
+                1,
+                junction.sign * (charge + capacitance * beyond),
+            );
+            stamp.capacitance(output, pair, pair, capacitance);
+        }
+    }
+}
+
 impl BipolarTransistorParameters {
     /// The junctions' DC model, once each of its parameters is checked.
     fn junctions(&self) -> Result<Junctions, ParameterError> {
@@ -504,7 +614,6 @@ impl BipolarTransistorParameters {
     /// What the transistor stores, if anything, once each of its parameters is checked.
     fn charges(&self) -> Result<Option<Charges>, ParameterError> {
         let non_negative = ParameterError::non_negative;
-        let below_one = crate::junction::below_one;
         non_negative("base_emitter_capacitance", self.base_emitter_capacitance)?;
         ParameterError::positive("base_emitter_potential", self.base_emitter_potential)?;
         below_one("base_emitter_grading", self.base_emitter_grading)?;
@@ -566,6 +675,63 @@ impl BipolarTransistorParameters {
     }
 }
 
+impl BipolarTransistorParameters {
+    /// The substrate junction, if the transistor has a substrate, once each of its
+    /// parameters is checked.
+    fn substrate_junction(&self) -> Result<Option<SubstrateJunction>, ParameterError> {
+        let Some(construction) = self.substrate else {
+            let given = [
+                (
+                    "substrate_saturation_current",
+                    self.substrate_saturation_current,
+                ),
+                (
+                    "substrate_emission_coefficient",
+                    self.substrate_emission_coefficient,
+                ),
+                ("substrate_capacitance", self.substrate_capacitance),
+                ("substrate_potential", self.substrate_potential),
+                ("substrate_grading", self.substrate_grading),
+            ]
+            .into_iter()
+            .find(|(_, value)| value.is_some());
+            return match given {
+                Some((name, _)) => Err(ParameterError(format!(
+                    "{name} needs a substrate, vertical or lateral"
+                ))),
+                None => Ok(None),
+            };
+        };
+        let emission = self.substrate_emission_coefficient.unwrap_or(1.0);
+        ParameterError::positive("substrate_emission_coefficient", emission)?;
+        let capacitance = self.substrate_capacitance.unwrap_or(0.0);
+        ParameterError::non_negative("substrate_capacitance", capacitance)?;
+        let potential = self.substrate_potential.unwrap_or(0.75);
+        ParameterError::positive("substrate_potential", potential)?;
+        let grading = below_one("substrate_grading", self.substrate_grading.unwrap_or(0.0))?;
+        let diode = self
+            .substrate_saturation_current
+            .map(|current| {
+                ParameterError::positive("substrate_saturation_current", current)
+                    .map(|current| (current, emission * THERMAL_VOLTAGE))
+            })
+            .transpose()?;
+        let orientation = match construction {
+            Construction::Vertical => 1.0,
+            Construction::Lateral => -1.0,
+        };
+        Ok(Some(SubstrateJunction {
+            construction,
+            sign: self.polarity.sign() * orientation,
+            diode,
+            critical_voltage: diode.map_or(DIODELESS_CRITICAL_VOLTAGE, |(current, _)| {
+                critical_voltage(current, THERMAL_VOLTAGE)
+            }),
+            depletion: Depletion::new(capacitance, potential, grading, 0.0),
+        }))
+    }
+}
+
 /// The reciprocal of an optional positive parameter, zero when it is left out, infinite.
 fn inverse(name: &str, value: Option<f64>) -> Result<f64, ParameterError> {
     value.map_or(Ok(0.0), |value| {
@@ -577,15 +743,22 @@ impl NativeDevice for BipolarTransistor {
     const NAME: &'static str = "bipolar_transistor";
     type Parameters = BipolarTransistorParameters;
 
-    fn interface(_: &BipolarTransistorParameters) -> Interface {
-        Interface::new(
-            &["collector", "base", "emitter"],
-            &[
-                Branch::new(1, 2, BranchKind::Conductive),
-                Branch::new(1, 0, BranchKind::Conductive),
-                Branch::new(0, 2, BranchKind::Conductive),
-            ],
-        )
+    fn interface(parameters: &BipolarTransistorParameters) -> Interface {
+        let mut terminals = vec!["collector", "base", "emitter"];
+        let mut branches = vec![
+            Branch::new(1, 2, BranchKind::Conductive),
+            Branch::new(1, 0, BranchKind::Conductive),
+            Branch::new(0, 2, BranchKind::Conductive),
+        ];
+        if let Some(construction) = parameters.substrate {
+            let joined = match construction {
+                Construction::Vertical => COLLECTOR,
+                Construction::Lateral => BASE,
+            };
+            terminals.push("substrate");
+            branches.push(Branch::new(3, joined, BranchKind::Conductive));
+        }
+        Interface::new(&terminals, &branches)
     }
 
     fn new(
@@ -595,6 +768,7 @@ impl NativeDevice for BipolarTransistor {
         let junctions = parameters.junctions()?;
         let base = parameters.base_resistance()?;
         let charges = parameters.charges()?;
+        let substrate_junction = parameters.substrate_junction()?;
         let non_negative = ParameterError::non_negative;
         let collector_resistance =
             non_negative("collector_resistance", parameters.collector_resistance)?;
@@ -611,6 +785,18 @@ impl NativeDevice for BipolarTransistor {
         let inner_collector = inner(collector, collector_resistance, "collector");
         let inner_base = inner(base_terminal, parameters.base_resistance, "base");
         let inner_emitter = inner(emitter, emitter_resistance, "emitter");
+        let substrate = substrate_junction.map(|junction| {
+            let joined = match junction.construction {
+                Construction::Vertical => inner_collector,
+                Construction::Lateral => inner_base,
+            };
+            let nodes = [binding.terminal(3), joined];
+            Substrate {
+                stamp: Stamp::new(binding, nodes),
+                junction,
+                last: 0.0,
+            }
+        });
         let stamp = Stamp::new(
             binding,
             [
@@ -638,6 +824,7 @@ impl NativeDevice for BipolarTransistor {
             critical_voltage: critical_voltage(junctions.saturation_current, THERMAL_VOLTAGE),
             junctions,
             charges,
+            substrate,
             last: [0.0; 2],
         })
     }
@@ -694,6 +881,7 @@ impl BipolarTransistor {
                 THERMAL_VOLTAGE,
                 self.critical_voltage,
             )
+            .filter(|_| input.limiting)
         });
         if limits.iter().any(Option::is_some) {
             output.mark_limited();
@@ -787,6 +975,9 @@ impl Device for BipolarTransistor {
         if let Some(charges) = &self.charges {
             self.add_charges(charges, &bias, &state, input, output);
         }
+        if let Some(substrate) = &mut self.substrate {
+            substrate.evaluate(input, output);
+        }
     }
 }
 
@@ -873,6 +1064,70 @@ mod tests {
     }
 
     #[test]
+    fn a_substrate_is_a_fourth_terminal_joined_to_the_collector_or_the_base() {
+        let parameters = |construction| {
+            serde_json::from_str::<BipolarTransistorParameters>(&format!(
+                r#"{{"substrate": "{construction}"}}"#
+            ))
+            .unwrap()
+        };
+        let vertical = BipolarTransistor::interface(&parameters("vertical"));
+        assert_eq!(
+            vertical.terminals,
+            ["collector", "base", "emitter", "substrate"]
+        );
+        assert_eq!(
+            vertical.branches[3],
+            Branch::new(3, COLLECTOR, BranchKind::Conductive)
+        );
+        let lateral = BipolarTransistor::interface(&parameters("lateral"));
+        assert_eq!(
+            lateral.branches[3],
+            Branch::new(3, BASE, BranchKind::Conductive)
+        );
+    }
+
+    #[test]
+    fn a_substrate_junction_without_a_diode_conducts_the_minimum_conductance() {
+        let mut bench = Bench::new::<BipolarTransistor>(r#"{"substrate": "vertical"}"#);
+        let (gmin, x) = (1e-12, [2.0, 0.5, 0.0, -3.0]);
+        let evaluation = bench.evaluate_with(&Input::new(&x, 0.0, gmin));
+        assert!((evaluation.residual[3] - gmin * (x[3] - x[0])).abs() < 1e-24);
+        assert!((evaluation.conductance[3][3] - gmin).abs() < 1e-24);
+    }
+
+    #[test]
+    fn a_substrate_junction_conducts_from_its_p_side() {
+        // A lateral PNP's substrate is its junction's p side, a vertical one's its n side.
+        for (construction, joined, forward) in
+            [("lateral", BASE, 1.0), ("vertical", COLLECTOR, -1.0)]
+        {
+            let mut bench = Bench::new::<BipolarTransistor>(&format!(
+                r#"{{"polarity": "pnp", "substrate": "{construction}",
+                    "substrate_saturation_current": 1e-15}}"#
+            ));
+            let mut x = [-2.0, -0.5, 0.0, 0.0];
+            x[3] = x[joined] + forward * 0.6;
+            let current = bench.settle(&x).residual[3];
+            let expected = forward * 1e-15 * ((0.6 / THERMAL_VOLTAGE).exp() - 1.0);
+            assert!(
+                (current / expected - 1.0).abs() < 1e-12,
+                "{current} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn substrate_parameters_need_a_substrate() {
+        let error =
+            Bench::try_new::<BipolarTransistor>(r#"{"substrate_capacitance": 1e-12}"#).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "substrate_capacitance needs a substrate, vertical or lateral"
+        );
+    }
+
+    #[test]
     fn rejects_out_of_range_parameters() {
         let error =
             Bench::try_new::<BipolarTransistor>(r#"{"forward_early_voltage": 0}"#).unwrap_err();
@@ -914,6 +1169,24 @@ mod tests {
                     r#"{"base_resistance": 200, "minimum_base_resistance": 20,
                         "collector_resistance": 10, "emitter_resistance": 2, "#
                 },
+            );
+            let substrate = resistive.replace(
+                '{',
+                r#"{"substrate": "lateral", "substrate_saturation_current": 1e-16,
+                    "substrate_emission_coefficient": 1.2, "substrate_capacitance": 3e-12,
+                    "substrate_potential": 0.6, "substrate_grading": 0.4, "#,
+            );
+            assert_jacobians_match::<BipolarTransistor>(
+                &substrate,
+                &[
+                    sign * collector,
+                    sign * base,
+                    0.0,
+                    sign * (base - 0.4),
+                    sign * 0.98 * collector,
+                    sign * 0.97 * base,
+                    sign * 0.01,
+                ],
             );
             assert_jacobians_match::<BipolarTransistor>(
                 &resistive,

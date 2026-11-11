@@ -54,7 +54,7 @@ impl Simulator {
         }
         let index = self.source_index(&ac.source)?;
         let operating_point = self.operating_point(options)?;
-        self.evaluate(&operating_point.values, 0.0, 1.0, options.gmin);
+        self.evaluate(&operating_point.values, 0.0, (1.0, options.gmin), true);
 
         let unknowns = self.system.unknowns.len();
         let mut excitation = vec![0.0; unknowns];

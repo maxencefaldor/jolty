@@ -252,9 +252,15 @@ impl Formula {
                 Read::Time => input.time,
             };
         }
+        if !input.limiting {
+            self.workspace.forget();
+        }
         let value = self
             .expression
             .evaluate(&self.values, &mut self.workspace, &mut self.gradient);
+        if self.workspace.limited() {
+            output.mark_limited();
+        }
         for &(row, factor) in &self.rows {
             output.add_residual(row, factor * value);
         }

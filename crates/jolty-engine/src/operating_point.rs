@@ -5,8 +5,11 @@ use crate::{Options, SimulationError, Simulator};
 
 /// The largest conductance gmin stepping starts from, in siemens.
 const FIRST_SHUNT: f64 = 1e-2;
-/// The factor gmin stepping divides the shunt by at each stage.
+/// The largest factor gmin stepping divides the shunt by from one stage to the next.
 const SHUNT_DIVISOR: f64 = 10.0;
+/// The factor below which gmin stepping, having shrunk its divisor after each failure,
+/// gives up.
+const SMALLEST_SHUNT_DIVISOR: f64 = 1.00005;
 /// The first increment of the source scale in source stepping.
 const FIRST_SOURCE_INCREMENT: f64 = 0.1;
 /// The smallest increment of the source scale before source stepping gives up.
@@ -102,21 +105,42 @@ impl Simulator {
         }
     }
 
-    /// Solves with a conductance from every node to the reference, shrinking it a decade at
-    /// a time from each solution to the next, then solves without it.
+    /// Solves with a conductance from every node to the reference, shrinking it from each
+    /// solution to the next, then solves without it, as ngspice's dynamic gmin stepping
+    /// does: the divisor grows after a quick success, to at most a decade, and shrinks to
+    /// its fourth root after a failure, which retries from the last solution.
     fn gmin_stepping(&mut self, values: &mut [f64], options: &Options) -> Result<(), Failure> {
+        let mut divisor = SHUNT_DIVISOR;
         let mut shunt = FIRST_SHUNT;
-        while shunt > options.gmin {
-            self.newton(
-                values,
-                Mode::Dc {
-                    source_scale: 1.0,
-                    shunt,
-                },
-                options,
-                options.dc_iterations,
-            )?;
-            shunt /= SHUNT_DIVISOR;
+        let mut last: Option<(f64, Vec<f64>)> = None;
+        loop {
+            let mode = Mode::Dc {
+                source_scale: 1.0,
+                shunt,
+            };
+            match self.newton(values, mode, options, options.dc_iterations) {
+                Ok(_) if shunt <= options.gmin => break,
+                Ok(iterations) => {
+                    last = Some((shunt, values.to_vec()));
+                    if iterations < options.dc_iterations / 4 {
+                        divisor = (divisor * divisor.sqrt()).min(SHUNT_DIVISOR);
+                    } else if iterations > 3 * options.dc_iterations / 4 {
+                        divisor = divisor.sqrt();
+                    }
+                    shunt = (shunt / divisor).max(options.gmin);
+                }
+                Err(failure) => {
+                    divisor = divisor.sqrt().sqrt();
+                    let Some((solved, solution)) = &last else {
+                        return Err(failure);
+                    };
+                    if divisor < SMALLEST_SHUNT_DIVISOR {
+                        return Err(failure);
+                    }
+                    values.copy_from_slice(solution);
+                    shunt = solved / divisor;
+                }
+            }
         }
         let direct = Mode::Dc {
             source_scale: 1.0,

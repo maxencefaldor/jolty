@@ -14,10 +14,14 @@ pub struct Input<'a> {
     /// The conductance placed across every nonlinear junction, in siemens, so no node of the
     /// linearized circuit is ever left without a path to ground.
     pub gmin: f64,
+    /// Whether devices limit each voltage's step from their last evaluation's: false for
+    /// the first evaluation of a DC solution, which starts afresh from its guess.
+    pub limiting: bool,
 }
 
 impl<'a> Input<'a> {
-    /// The state `x` at `time`, with sources at full scale and `gmin` across junctions.
+    /// The state `x` at `time`, with sources at full scale, `gmin` across junctions, and
+    /// steps limited.
     #[must_use]
     pub fn new(x: &'a [f64], time: f64, gmin: f64) -> Self {
         Self {
@@ -25,6 +29,7 @@ impl<'a> Input<'a> {
             time,
             source_scale: 1.0,
             gmin,
+            limiting: true,
         }
     }
 

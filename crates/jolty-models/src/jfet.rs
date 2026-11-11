@@ -302,7 +302,8 @@ impl Device for Jfet {
         let limits = [0, 1].map(|index| {
             let (new, old) = (applied[index], self.last[index]);
             let junction = limit_junction(new, old, THERMAL_VOLTAGE, self.critical_voltage);
-            limit_gate(junction.unwrap_or(new), old, self.channel.threshold).or(junction)
+            let limited = limit_gate(junction.unwrap_or(new), old, self.channel.threshold);
+            limited.or(junction).filter(|_| input.limiting)
         });
         if limits.iter().any(Option::is_some) {
             output.mark_limited();

@@ -49,10 +49,12 @@ A comparison or a logical operator is 1 when true and 0 when false, and any nonz
 | `limit(x, a, b)` | `x` held between `a` and `b`, in either order |
 | `if(c, a, b)` | `c ? a : b` |
 | `table(x, x1, y1, x2, y2, …)` | the piecewise-linear interpolation of constant points with ascending abscissae, constant beyond the first and the last |
+| `pwl(x, x1, y1, x2, y2, …)` | the same, extended beyond the first and the last along the first and the last segments |
+| `rounded_table(x, r, x1, y1, x2, y2, …)` | `table`, each corner, the ends' included, rounded by a parabola over `r` times the shorter segment beside it, `r` from 0 to ½, as ngspice reads PSpice's `TABLE` sources |
 
 A function outside its domain, such as `sqrt(-1)`, is not a number, and the analysis fails.
 
 ## Derivatives
 
 The simulator takes every derivative exactly.
-Where an expression branches, through a conditional, `min`, `max`, `limit` or `table`, the derivative follows the branch taken.
+Where an expression branches, through a conditional, `min`, `max`, `limit` or a table, the derivative follows the branch taken.

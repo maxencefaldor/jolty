@@ -16,6 +16,14 @@ class BuildError(JoltyError, ValueError):
     """A script describes a circuit that cannot exist, such as two shorted ports."""
 
 
+class SpiceError(JoltyError, ValueError):
+    """A SPICE file holds what jolty cannot read, or reads what it does not define."""
+
+
+class DownloadError(JoltyError):
+    """A file cannot be downloaded, or what was downloaded is not the file expected."""
+
+
 class ScriptError(JoltyError):
     """A script lacks the function a command calls, or it returns the wrong type."""
 

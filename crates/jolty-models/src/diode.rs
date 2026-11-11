@@ -137,16 +137,21 @@ impl Device for Diode {
             pair.add_conductance(output, *conductance);
         }
         let applied = self.junction.voltage(input);
-        let voltage = limit_junction(
-            applied,
-            self.last_voltage,
-            self.slope,
-            self.critical_voltage,
-        )
-        .map_or(applied, |limited| {
-            output.mark_limited();
-            limited
-        });
+        let voltage = input
+            .limiting
+            .then(|| {
+                limit_junction(
+                    applied,
+                    self.last_voltage,
+                    self.slope,
+                    self.critical_voltage,
+                )
+            })
+            .flatten()
+            .map_or(applied, |limited| {
+                output.mark_limited();
+                limited
+            });
         self.last_voltage = voltage;
 
         // Evaluate at the limited voltage and extend linearly to the applied one, so the

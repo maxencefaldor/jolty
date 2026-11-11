@@ -6,7 +6,9 @@ environment variables, or the ``[tool.jolty]`` table of ``pyproject.toml`` in th
 working directory.
 """
 
+import os
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated, Final, Self, override
 
 from pydantic import Field, StringConstraints, ValidationError
@@ -68,6 +70,13 @@ class Settings(BaseSettings):
         default=20,
         ge=1,
         description="Diagnostics a check report lists; it counts the rest.",
+    )
+    cache: Path = Field(
+        default_factory=lambda: (
+            Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "jolty"
+        ),
+        description="Directory that keeps what jolty downloads, such as the model "
+        "files of parts; by default, jolty's own in the user's cache.",
     )
     rules: dict[RuleKey, Level] = Field(
         default_factory=dict,

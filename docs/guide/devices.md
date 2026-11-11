@@ -150,8 +150,15 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 | `internal_base_fraction` | `XCJC` | none | 1 |
 | `reverse_transit_time` | `TR` | s | 0 |
 | `depletion_coefficient` | `FC` | none | 0.5 |
+| `substrate` | `SUBS`, 1 or −1 | `"vertical"` or `"lateral"` | none: no substrate |
+| `substrate_saturation_current`, `substrate_emission_coefficient` | `ISS`, `NS` | A, none | none: no diode, 1 |
+| `substrate_capacitance`, `substrate_potential`, `substrate_grading` | `CJS`, `VJS`, `MJS` | F, V, none | 0, 0.75 V, 0 |
 
 A base, collector or emitter resistance adds an internal node to the unknowns, as `Q1:base`, `Q1:collector` or `Q1:emitter` for a transistor `Q1`.
+
+A transistor built `"vertical"` or `"lateral"` has a fourth terminal, `substrate`, joined by a junction to its internal collector if vertical or to its internal base if lateral.
+The junction conducts the minimum conductance, as ngspice's does, and a diode's current given a substrate saturation current; its depletion capacitance grows linearly in forward bias.
+The substrate parameters need a substrate.
 
 ngspice leaves out of its small-signal model and its Newton steps how a falling base resistance depends on the junction voltages; jolty keeps every derivative, so its frequency response is the exact slope of its DC model, and its Newton steps converge faster to the same operating point.
 

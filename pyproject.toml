@@ -83,13 +83,15 @@ convention = "google"
 # pytest checks with assert and imports tests by path; a test's name says what it
 # checks, and the values it expects are its content.
 "tests/**" = ["D100", "D103", "INP001", "PLR2004", "S101"]
-"tests/test_ngspice.py" = ["S603"]  # runs ngspice on the decks the tests write
+"tests/differential.py" = ["S603"]  # runs ngspice on the decks the tests write
 # Examples are circuits written as scripts: their numbers are the circuit, and
 # they run as scripts, outside any package.
 "examples/**" = ["INP001", "PLR2004"]
 # Scripts that write the docs' pages run outside any package, and say what they wrote.
 "docs/*.py" = ["INP001", "T201"]
 "src/jolty/cli.py" = ["T201"]  # a command line prints
+# A download's digest checks what any scheme returns.
+"src/jolty/spice/download.py" = ["S310"]
 "src/jolty/units.py" = ["N816"]  # unit names keep their SI case: kHz, mV, uF
 
 [tool.ruff.format]
@@ -102,8 +104,14 @@ all = "error"
 [tool.ty.src]
 include = ["src", "tests", "examples", "docs"]
 
+[tool.ty.environment]
+# The tests import their shared harness, `tests/differential.py`, as pytest does.
+extra-paths = ["tests"]
+
 [tool.pytest]
 testpaths = ["src", "tests"]
+# The tests share a harness module, `differential`, which they import from there.
+pythonpath = ["tests"]
 addopts = [
     "--import-mode=importlib",
     "--doctest-modules",

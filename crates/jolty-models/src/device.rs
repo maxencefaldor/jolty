@@ -29,6 +29,9 @@ pub trait Source {
     /// waveform with `None`.
     fn hold(&mut self, level: Option<f64>);
 
+    /// The source's own level at the operating point: its waveform's at time zero.
+    fn level(&self) -> f64;
+
     /// Adds the derivative of the residual with respect to the source's level, one value per
     /// unknown, to `derivative`. A small-signal analysis excites the source through it.
     fn level_derivative(&self, derivative: &mut [f64]);

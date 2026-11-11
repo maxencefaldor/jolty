@@ -83,12 +83,7 @@ impl Expression {
             self.tape.len(),
             "a workspace made for this expression"
         );
-        tape::evaluate(
-            &self.tape,
-            variables,
-            (&mut workspace.values, &mut workspace.adjoints),
-            gradient,
-        )
+        tape::evaluate(&self.tape, variables, workspace, gradient)
     }
 }
 
@@ -111,21 +106,45 @@ impl fmt::Display for Expression {
     }
 }
 
-/// The memory one expression's evaluation works in, kept between evaluations.
+/// The memory one expression's evaluation works in, kept between evaluations: the last
+/// inputs of its rounded tables, from which the next steps are limited.
 #[derive(Debug, Clone)]
 pub struct Workspace {
     values: Vec<f64>,
     adjoints: Vec<f64>,
+    /// Each limited table's last input.
+    inputs: Vec<Option<f64>>,
+    /// Each table's slope at the input it was evaluated at.
+    slopes: Vec<f64>,
+    limited: bool,
 }
 
 impl Workspace {
     /// A workspace for `expression`.
     #[must_use]
     pub fn new(expression: &Expression) -> Self {
+        let length = expression.tape.len();
         Self {
-            values: vec![0.0; expression.tape.len()],
-            adjoints: vec![0.0; expression.tape.len()],
+            values: vec![0.0; length],
+            adjoints: vec![0.0; length],
+            inputs: vec![None; length],
+            slopes: vec![0.0; length],
+            limited: false,
         }
+    }
+
+    /// Forgets the last inputs of the rounded tables, so the next evaluation limits no
+    /// step: as when an iteration starts afresh.
+    pub fn forget(&mut self) {
+        self.inputs.fill(None);
+    }
+
+    /// Whether the last evaluation limited a rounded table's input, so its value is not
+    /// yet the expression's at the variables given: the step of an iteration that has
+    /// not converged.
+    #[must_use]
+    pub fn limited(&self) -> bool {
+        self.limited
     }
 }
 
@@ -238,13 +257,18 @@ mod tests {
             ),
             (
                 "table(v(a), 1, 0, 0, 1)",
-                "`table` takes an input then constant points, in pairs, with ascending \
+                "`table` takes an input, then constant points, in pairs, with ascending \
                  abscissae at column 1",
             ),
             (
                 "table(v(a), v(b), 0)",
-                "`table` takes an input then constant points, in pairs, with ascending \
+                "`table` takes an input, then constant points, in pairs, with ascending \
                  abscissae at column 1",
+            ),
+            (
+                "rounded_table(v(a), 0.7, 0, 0)",
+                "`rounded_table` takes an input, a rounding from 0 to 0.5, then constant \
+                 points, in pairs, with ascending abscissae at column 1",
             ),
         ] {
             let error = text.parse::<Expression>().expect_err(text);
@@ -264,7 +288,8 @@ mod tests {
             let text = "v(x) * exp(v(y) / 4) - sin(v(z)) / v(y) + v(y) ^ v(x) \
                         + atan(v(x) * v(z)) + sqrt(v(y)) * tanh(v(z)) + ln(v(y)) * v(x) ^ 2 \
                         + max(v(x), v(z)) + limit(v(z), -0.5, 0.5) \
-                        + table(v(x), -1, 2, 0, -1, 1, 3)";
+                        + table(v(x), -1, 2, 0, -1, 1, 3) \
+                        + rounded_table(v(z), 0.1, -0.5, 1, 0, 0, 0.5, 2)";
             let values = [x, y, z];
             let (_, gradient) = evaluate(text, &values);
             for (index, derivative) in gradient.iter().enumerate() {

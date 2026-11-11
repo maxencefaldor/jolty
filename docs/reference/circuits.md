@@ -1,12 +1,16 @@
 # Circuits
 
-Scripts write circuits with the builder, from devices whose values carry units.
+Scripts write circuits with the builder, from devices whose values carry units and from parts read from SPICE files.
 
 ::: jolty.builder
     options:
       members: [component, circuit, Builder, Component, Placed, Terminal, Net, ComponentFunction]
 
 ::: jolty.devices
+
+::: jolty.spice
+    options:
+      members: [load, Library, fetch, GROUND]
 
 ::: jolty.waveforms
 

@@ -77,8 +77,15 @@ pub(crate) enum Failure {
 
 impl Simulator {
     /// Evaluates every device at `x`, filling the workspace's residuals, charges and their
-    /// derivatives. Returns whether a device limited its voltage.
-    pub(crate) fn evaluate(&mut self, x: &[f64], time: f64, source_scale: f64, gmin: f64) -> bool {
+    /// derivatives, with their steps limited if `limiting`. Returns whether a device limited
+    /// its voltage.
+    pub(crate) fn evaluate(
+        &mut self,
+        x: &[f64],
+        time: f64,
+        (source_scale, gmin): (f64, f64),
+        limiting: bool,
+    ) -> bool {
         let workspace = &mut self.workspace;
         for buffer in [
             &mut workspace.residual,
@@ -99,6 +106,7 @@ impl Simulator {
         );
         let mut input = Input::new(x, time, gmin);
         input.source_scale = source_scale;
+        input.limiting = limiting;
         for placed in &mut self.system.devices {
             placed.device.evaluate(&input, &mut output);
         }
@@ -122,9 +130,12 @@ impl Simulator {
             Mode::Dc { source_scale, .. } => (0.0, source_scale),
             Mode::Step { time, .. } => (time, 1.0),
         };
+        // A DC solution starts afresh from its guess; a time step goes on from the last.
+        let afresh = matches!(mode, Mode::Dc { .. });
         let mut stepped_within_tolerance = false;
         for iteration in 0..limit {
-            let limited = self.evaluate(x, time, source_scale, options.gmin);
+            let limiting = iteration > 0 || !afresh;
+            let limited = self.evaluate(x, time, (source_scale, options.gmin), limiting);
             self.combine(x, mode);
             if stepped_within_tolerance && !limited && self.residual_within_tolerance(options) {
                 return Ok(iteration);

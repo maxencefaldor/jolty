@@ -9,15 +9,17 @@ analyses of [`jolty.plan`][jolty.plan] on them with the Rust engine.
 
 from importlib.metadata import version
 
-from jolty import devices, files, plan, units, waveforms
+from jolty import devices, files, plan, spice, units, waveforms
 from jolty.builder import Builder, Component, Net, Placed, Terminal, circuit, component
 from jolty.errors import (
     BuildError,
     DimensionError,
+    DownloadError,
     ElaborationError,
     JoltyError,
     ScriptError,
     SimulationError,
+    SpiceError,
 )
 from jolty.ir import Role
 from jolty.plan import Ac, DcSweep, OperatingPoint, Options, Plan, Transient
@@ -32,6 +34,7 @@ __all__ = [
     "Component",
     "DcSweep",
     "DimensionError",
+    "DownloadError",
     "ElaborationError",
     "JoltyError",
     "Net",
@@ -43,6 +46,7 @@ __all__ = [
     "ScriptError",
     "Simulation",
     "SimulationError",
+    "SpiceError",
     "Terminal",
     "Transient",
     "__version__",
@@ -51,6 +55,7 @@ __all__ = [
     "devices",
     "files",
     "plan",
+    "spice",
     "units",
     "waveforms",
 ]

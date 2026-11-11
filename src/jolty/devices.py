@@ -47,13 +47,13 @@ class Device:
 
 def resistor(resistance: Quantity) -> Device:
     """A linear resistor between terminals ``a`` and ``b``."""
-    return _device("resistor", {"resistance": resistance.to(RESISTANCE, "resistance")})
+    return device("resistor", {"resistance": resistance.to(RESISTANCE, "resistance")})
 
 
 def capacitor(capacitance: Quantity) -> Device:
     """A linear capacitor between terminals ``a`` and ``b``."""
     value = capacitance.to(CAPACITANCE, "capacitance")
-    return _device("capacitor", {"capacitance": value})
+    return device("capacitor", {"capacitance": value})
 
 
 def inductor(inductance: Quantity) -> Device:
@@ -62,7 +62,7 @@ def inductor(inductance: Quantity) -> Device:
     Its current, from ``a`` through the inductor to ``b``, is the unknown ``current``.
     """
     value = inductance.to(INDUCTANCE, "inductance")
-    return _device("inductor", {"inductance": value})
+    return device("inductor", {"inductance": value})
 
 
 def voltage_source(waveform: Waveform | Quantity) -> Device:
@@ -74,7 +74,7 @@ def voltage_source(waveform: Waveform | Quantity) -> Device:
     """
     level = Dc(waveform) if isinstance(waveform, Quantity) else waveform
     parameters: dict[str, JsonValue] = {"waveform": level.to_json(VOLTAGE)}
-    return _device("voltage_source", parameters)
+    return device("voltage_source", parameters)
 
 
 def current_source(waveform: Waveform | Quantity) -> Device:
@@ -85,7 +85,7 @@ def current_source(waveform: Waveform | Quantity) -> Device:
     """
     level = Dc(waveform) if isinstance(waveform, Quantity) else waveform
     parameters: dict[str, JsonValue] = {"waveform": level.to_json(CURRENT)}
-    return _device("current_source", parameters)
+    return device("current_source", parameters)
 
 
 def voltage_controlled_voltage_source(gain: float) -> Device:
@@ -95,7 +95,7 @@ def voltage_controlled_voltage_source(gain: float) -> Device:
     control terminals draw no current.
     """
     parameters: dict[str, JsonValue] = {"gain": finite(gain, "gain")}
-    return _device("voltage_controlled_voltage_source", parameters)
+    return device("voltage_controlled_voltage_source", parameters)
 
 
 def voltage_controlled_current_source(transconductance: Quantity) -> Device:
@@ -106,7 +106,7 @@ def voltage_controlled_current_source(transconductance: Quantity) -> Device:
     """
     value = transconductance.to(CONDUCTANCE, "transconductance")
     parameters: dict[str, JsonValue] = {"transconductance": value}
-    return _device("voltage_controlled_current_source", parameters)
+    return device("voltage_controlled_current_source", parameters)
 
 
 def current_controlled_current_source(gain: float) -> Device:
@@ -118,7 +118,7 @@ def current_controlled_current_source(gain: float) -> Device:
     from ``positive`` through the source to ``negative``.
     """
     parameters: dict[str, JsonValue] = {"gain": finite(gain, "gain")}
-    return _device("current_controlled_current_source", parameters)
+    return device("current_controlled_current_source", parameters)
 
 
 def current_controlled_voltage_source(transresistance: Quantity) -> Device:
@@ -132,7 +132,7 @@ def current_controlled_voltage_source(transresistance: Quantity) -> Device:
     """
     value = transresistance.to(RESISTANCE, "transresistance")
     parameters: dict[str, JsonValue] = {"transresistance": value}
-    return _device("current_controlled_voltage_source", parameters)
+    return device("current_controlled_voltage_source", parameters)
 
 
 def behavioral_voltage_source(expression: str) -> Device:
@@ -155,7 +155,7 @@ def behavioral_voltage_source(expression: str) -> Device:
         >>> behavioral_voltage_source("1e5 * v(inp, inn)").terminals
         ('positive', 'negative', 'inp', 'inn')
     """
-    return _device("behavioral_voltage_source", {"expression": expression})
+    return device("behavioral_voltage_source", {"expression": expression})
 
 
 def behavioral_current_source(expression: str) -> Device:
@@ -170,7 +170,7 @@ def behavioral_current_source(expression: str) -> Device:
         >>> behavioral_current_source("limit(1e-3 * v(c), -1e-3, 1e-3)").terminals
         ('positive', 'negative', 'c')
     """
-    return _device("behavioral_current_source", {"expression": expression})
+    return device("behavioral_current_source", {"expression": expression})
 
 
 def voltage_controlled_switch(
@@ -197,7 +197,7 @@ def voltage_controlled_switch(
         },
         {},
     )
-    return _device("voltage_controlled_switch", parameters)
+    return device("voltage_controlled_switch", parameters)
 
 
 def diode(  # noqa: PLR0913 - the SPICE junction model has eight parameters
@@ -231,7 +231,7 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has eight parameters
             "depletion_coefficient": depletion_coefficient,
         },
     )
-    return _device("diode", parameters)
+    return device("diode", parameters)
 
 
 TRANSCONDUCTANCE_PARAMETER: Final = CURRENT / VOLTAGE**2
@@ -293,10 +293,10 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has twelve parameters
         },
         {"depletion_coefficient": depletion_coefficient, "doping_tail": doping_tail},
     )
-    return _device("jfet", parameters)
+    return device("jfet", parameters)
 
 
-def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 32 parameters
+def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 38 parameters
     *,
     polarity: Literal["npn", "pnp"] | None = None,
     saturation_current: Quantity | None = None,
@@ -330,6 +330,12 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 32 paramete
     internal_base_fraction: float | None = None,
     reverse_transit_time: Quantity | None = None,
     depletion_coefficient: float | None = None,
+    substrate: Literal["vertical", "lateral"] | None = None,
+    substrate_saturation_current: Quantity | None = None,
+    substrate_emission_coefficient: float | None = None,
+    substrate_capacitance: Quantity | None = None,
+    substrate_potential: Quantity | None = None,
+    substrate_grading: float | None = None,
 ) -> Device:
     """A bipolar junction transistor between ``collector``, ``base`` and ``emitter``.
 
@@ -341,6 +347,12 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 32 paramete
     resistance adds an internal node, the unknown ``base``, ``collector`` or
     ``emitter``.
 
+    A transistor built ``vertical`` or ``lateral`` has a fourth terminal, ``substrate``,
+    joined by a junction to its collector if vertical or to its base if lateral. The
+    junction conducts the minimum conductance, and a diode's current with a substrate
+    saturation current; its depletion capacitance grows linearly in forward bias. The
+    substrate parameters need a substrate.
+
     Examples:
         >>> from jolty.units import V, fA
         >>> transistor = bipolar_transistor(
@@ -351,9 +363,11 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 32 paramete
         >>> transistor.parameters["forward_early_voltage"]
         50.0
     """
-    parameters: dict[str, JsonValue] = (
-        {} if polarity is None else {"polarity": polarity}
-    )
+    parameters: dict[str, JsonValue] = {
+        name: value
+        for name, value in (("polarity", polarity), ("substrate", substrate))
+        if value is not None
+    }
     parameters |= _parameters(
         {
             "saturation_current": (saturation_current, CURRENT),
@@ -376,6 +390,9 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 32 paramete
             "base_collector_capacitance": (base_collector_capacitance, CAPACITANCE),
             "base_collector_potential": (base_collector_potential, VOLTAGE),
             "reverse_transit_time": (reverse_transit_time, TIME),
+            "substrate_saturation_current": (substrate_saturation_current, CURRENT),
+            "substrate_capacitance": (substrate_capacitance, CAPACITANCE),
+            "substrate_potential": (substrate_potential, VOLTAGE),
         },
         {
             "forward_beta": forward_beta,
@@ -393,9 +410,11 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 32 paramete
             "base_collector_grading": base_collector_grading,
             "internal_base_fraction": internal_base_fraction,
             "depletion_coefficient": depletion_coefficient,
+            "substrate_emission_coefficient": substrate_emission_coefficient,
+            "substrate_grading": substrate_grading,
         },
     )
-    return _device("bipolar_transistor", parameters)
+    return device("bipolar_transistor", parameters)
 
 
 def mosfet(  # noqa: PLR0913 - SPICE's level 1 MOSFET has 37 parameters
@@ -517,14 +536,19 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 MOSFET has 37 parameters
             "depletion_coefficient": depletion_coefficient,
         },
     )
-    return _device("mosfet", parameters)
+    return device("mosfet", parameters)
 
 
-def _device(model: str, parameters: dict[str, JsonValue]) -> Device:
-    """A device of `model` with `parameters`, with the terminals the engine gives it.
+def device(model: str, parameters: dict[str, JsonValue]) -> Device:
+    """A device of `model` with `parameters`, and the terminals the engine gives it.
+
+    The parameters are numbers in SI base units. The functions above check each
+    parameter's dimension; this one takes numbers as they are, for devices read from
+    elsewhere, such as a SPICE library.
 
     Raises:
-        ValueError: When the engine cannot read the parameters.
+        ValueError: When no model is named `model`, or the engine cannot read the
+            parameters.
     """
     terminals = _core.terminals(model, json.dumps(parameters))
     return Device(model, tuple(terminals), parameters)

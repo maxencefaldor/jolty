@@ -5,6 +5,7 @@ The guide explains jolty one concept per page.
 - [Components](components.md): how a script declares ports, places devices and other components, and connects them into nets.
 - [Units](units.md): quantities that carry their dimension, so a value in farads cannot go where ohms belong.
 - [Devices](devices.md): every device a script can place, its terminals and its parameters, and the waveforms of sources.
+- [SPICE models](spice.md): vendors' models, such as an op-amp's macromodel, read from their SPICE files as components.
 - [Checks](checks.md): the structural rules every build checks, their diagnostics and their levels.
 - [Schematics](schematics.md): how jolty draws a circuit from its connections alone, and the facts a schematic carries.
 - [Simulation](simulation.md): plans, the four analyses and the numerical options, and how the engine solves a circuit.

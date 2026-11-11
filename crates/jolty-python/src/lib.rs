@@ -219,6 +219,21 @@ fn terminals(model: &str, parameters: &str) -> PyResult<Vec<String>> {
     Ok(interface.terminals)
 }
 
+/// The value of `expression`, an expression in jolty's language that reads no variable.
+#[pyfunction]
+fn constant(expression: &str) -> PyResult<f64> {
+    let parsed: jolty_expressions::Expression = expression
+        .parse()
+        .map_err(|error| PyValueError::new_err(format!("`{expression}`: {error}")))?;
+    if !parsed.variables().is_empty() {
+        return Err(PyValueError::new_err(format!(
+            "`{expression}` reads a voltage, a current or time"
+        )));
+    }
+    let mut workspace = jolty_expressions::Workspace::new(&parsed);
+    Ok(parsed.evaluate(&[], &mut workspace, &mut []))
+}
+
 /// Every rule of the structural checks, in the order a check reports them: its name, its
 /// default level and its condition.
 #[pyfunction]
@@ -235,6 +250,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Simulator>()?;
     module.add_function(wrap_pyfunction!(rules, module)?)?;
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
+    module.add_function(wrap_pyfunction!(constant, module)?)?;
     module.add("EXPRESSIONS", jolty_expressions::LANGUAGE)?;
     module.add("ElaborationError", py.get_type::<ElaborationError>())?;
     module.add("SimulationError", py.get_type::<SimulationError>())?;

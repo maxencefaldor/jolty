@@ -106,6 +106,10 @@ impl Source for VoltageSource {
         self.held = level;
     }
 
+    fn level(&self) -> f64 {
+        self.waveform.value(0.0)
+    }
+
     fn level_derivative(&self, derivative: &mut [f64]) {
         derivative[self.current.index()] -= 1.0;
     }
@@ -166,6 +170,10 @@ impl Device for CurrentSource {
 impl Source for CurrentSource {
     fn hold(&mut self, level: Option<f64>) {
         self.held = level;
+    }
+
+    fn level(&self) -> f64 {
+        self.waveform.value(0.0)
     }
 
     fn level_derivative(&self, derivative: &mut [f64]) {
