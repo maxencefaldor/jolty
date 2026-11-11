@@ -31,6 +31,24 @@ pub enum Quantity {
     Voltage,
     /// A branch current, whose equation constrains the branch's voltage.
     Current,
+    /// A displacement current a device tracks within itself, whose equation sums currents:
+    /// the current through a capacitance no charge describes, such as a transistor's gate
+    /// oxide in Meyer's model, which the device's own currents follow.
+    Displacement,
+}
+
+impl Quantity {
+    /// Whether the unknown is a current rather than a voltage.
+    #[must_use]
+    pub const fn is_current(self) -> bool {
+        matches!(self, Self::Current | Self::Displacement)
+    }
+
+    /// Whether the unknown's equation sums currents, rather than constraining a voltage.
+    #[must_use]
+    pub const fn sums_currents(self) -> bool {
+        matches!(self, Self::Voltage | Self::Displacement)
+    }
 }
 
 /// The name and quantity of an unknown.

@@ -23,6 +23,7 @@ from jolty.units import (
     CURRENT,
     DIMENSIONLESS,
     INDUCTANCE,
+    LENGTH,
     RESISTANCE,
     TIME,
     VOLTAGE,
@@ -177,6 +178,9 @@ TRANSCONDUCTANCE_PARAMETER: Final = CURRENT / VOLTAGE**2
 PER_VOLT: Final = DIMENSIONLESS / VOLTAGE
 """The dimension of a channel-length modulation, V⁻¹."""
 
+MOBILITY: Final = LENGTH**2 / (VOLTAGE * TIME)
+"""The dimension of a carrier mobility, m²/(V·s)."""
+
 
 def jfet(  # noqa: PLR0913 - the SPICE JFET model has twelve parameters
     *,
@@ -330,6 +334,128 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 32 paramete
         },
     )
     return Device("bipolar_transistor", ("collector", "base", "emitter"), parameters)
+
+
+def mosfet(  # noqa: PLR0913 - SPICE's level 1 MOSFET has 37 parameters
+    *,
+    channel: Literal["n", "p"] | None = None,
+    width: Quantity | None = None,
+    length: Quantity | None = None,
+    multiplier: float | None = None,
+    threshold_voltage: Quantity | None = None,
+    transconductance_parameter: Quantity | None = None,
+    body_effect: float | None = None,
+    surface_potential: Quantity | None = None,
+    channel_length_modulation: Quantity | None = None,
+    lateral_diffusion: Quantity | None = None,
+    oxide_thickness: Quantity | None = None,
+    surface_mobility: Quantity | None = None,
+    substrate_doping: Quantity | None = None,
+    surface_state_density: Quantity | None = None,
+    gate_material: Literal["opposite_doping", "same_doping", "aluminum"] | None = None,
+    drain_resistance: Quantity | None = None,
+    source_resistance: Quantity | None = None,
+    sheet_resistance: Quantity | None = None,
+    drain_squares: float | None = None,
+    source_squares: float | None = None,
+    saturation_current: Quantity | None = None,
+    saturation_current_density: Quantity | None = None,
+    drain_area: Quantity | None = None,
+    source_area: Quantity | None = None,
+    drain_perimeter: Quantity | None = None,
+    source_perimeter: Quantity | None = None,
+    junction_potential: Quantity | None = None,
+    bulk_drain_capacitance: Quantity | None = None,
+    bulk_source_capacitance: Quantity | None = None,
+    bottom_capacitance: Quantity | None = None,
+    sidewall_capacitance: Quantity | None = None,
+    bottom_grading: float | None = None,
+    sidewall_grading: float | None = None,
+    depletion_coefficient: float | None = None,
+    gate_source_overlap: Quantity | None = None,
+    gate_drain_overlap: Quantity | None = None,
+    gate_bulk_overlap: Quantity | None = None,
+) -> Device:
+    """A MOSFET between ``drain``, ``gate``, ``source`` and ``bulk``.
+
+    It follows SPICE's level 1 model, Shichman and Hodges's square law with Meyer's gate
+    capacitances, as ngspice does. Above the threshold, the drain current is
+    ``kp · w / (l - 2 · ld) · (1 + lambda · vds)`` times ``(vgs - von)² / 2`` in
+    saturation and ``vds · (vgs - von - vds / 2)`` below it, where the threshold
+    ``von = vto + gamma · (√(phi - vbs) - √phi)`` rises with the body effect. Two
+    junctions join the bulk to the drain and the source. Parameters left out take
+    SPICE's defaults: an n-channel 100 µm wide and long, a threshold of 0 V, a
+    transconductance parameter of 20 µA/V², no body effect, a surface potential of
+    0.6 V, a saturation current of 10 fA, a junction potential of 0.8 V, grading and
+    depletion coefficients of 0.5, and no channel-length modulation, resistance or
+    capacitance. An oxide thickness gives the gate Meyer's capacitances; with a
+    substrate doping, it derives the threshold, the body effect and the surface
+    potential left out, as SPICE derives them. The body effect is a number of
+    square-root volts.
+
+    A drain or source resistance adds an internal node, the unknown ``drain`` or
+    ``source``. Meyer's capacitances add three currents of the transistor's own, the
+    displacement currents through the whole oxide towards the source, the drain and the
+    bulk: ``gate_source_displacement``, ``gate_drain_displacement`` and
+    ``gate_bulk_displacement``.
+
+    Examples:
+        >>> from jolty.units import nm, um
+        >>> mosfet(width=2 * um, length=1 * um, oxide_thickness=20 * nm).parameters
+        {'width': 2e-06, 'length': 1e-06, 'oxide_thickness': 2e-08}
+    """
+    parameters: dict[str, JsonValue] = {} if channel is None else {"channel": channel}
+    if gate_material is not None:
+        parameters["gate_material"] = gate_material
+    capacitance_per_length = CAPACITANCE / LENGTH
+    parameters |= _parameters(
+        {
+            "width": (width, LENGTH),
+            "length": (length, LENGTH),
+            "threshold_voltage": (threshold_voltage, VOLTAGE),
+            "transconductance_parameter": (
+                transconductance_parameter,
+                TRANSCONDUCTANCE_PARAMETER,
+            ),
+            "surface_potential": (surface_potential, VOLTAGE),
+            "channel_length_modulation": (channel_length_modulation, PER_VOLT),
+            "lateral_diffusion": (lateral_diffusion, LENGTH),
+            "oxide_thickness": (oxide_thickness, LENGTH),
+            "surface_mobility": (surface_mobility, MOBILITY),
+            "substrate_doping": (substrate_doping, DIMENSIONLESS / LENGTH**3),
+            "surface_state_density": (surface_state_density, DIMENSIONLESS / LENGTH**2),
+            "drain_resistance": (drain_resistance, RESISTANCE),
+            "source_resistance": (source_resistance, RESISTANCE),
+            "sheet_resistance": (sheet_resistance, RESISTANCE),
+            "saturation_current": (saturation_current, CURRENT),
+            "saturation_current_density": (
+                saturation_current_density,
+                CURRENT / LENGTH**2,
+            ),
+            "drain_area": (drain_area, LENGTH**2),
+            "source_area": (source_area, LENGTH**2),
+            "drain_perimeter": (drain_perimeter, LENGTH),
+            "source_perimeter": (source_perimeter, LENGTH),
+            "junction_potential": (junction_potential, VOLTAGE),
+            "bulk_drain_capacitance": (bulk_drain_capacitance, CAPACITANCE),
+            "bulk_source_capacitance": (bulk_source_capacitance, CAPACITANCE),
+            "bottom_capacitance": (bottom_capacitance, CAPACITANCE / LENGTH**2),
+            "sidewall_capacitance": (sidewall_capacitance, capacitance_per_length),
+            "gate_source_overlap": (gate_source_overlap, capacitance_per_length),
+            "gate_drain_overlap": (gate_drain_overlap, capacitance_per_length),
+            "gate_bulk_overlap": (gate_bulk_overlap, capacitance_per_length),
+        },
+        {
+            "multiplier": multiplier,
+            "body_effect": body_effect,
+            "drain_squares": drain_squares,
+            "source_squares": source_squares,
+            "bottom_grading": bottom_grading,
+            "sidewall_grading": sidewall_grading,
+            "depletion_coefficient": depletion_coefficient,
+        },
+    )
+    return Device("mosfet", ("drain", "gate", "source", "bulk"), parameters)
 
 
 def _parameters(

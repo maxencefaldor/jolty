@@ -137,22 +137,30 @@ pub(crate) fn assert_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64
             let pairs = [
                 (
                     "conductance",
-                    exact.conductance[row][column],
+                    &exact.conductance[row],
                     plus.residual[row],
                     minus.residual[row],
                 ),
                 (
                     "capacitance",
-                    exact.capacitance[row][column],
+                    &exact.capacitance[row],
                     plus.charge[row],
                     minus.charge[row],
                 ),
             ];
-            for (name, analytic, above, below) in pairs {
+            for (name, derivatives, above, below) in pairs {
+                let analytic = derivatives[column];
                 let numeric = (above - below) / (2.0 * step);
-                // Differencing loses the precision of the values differenced: a relative
-                // epsilon of their magnitude, divided by the step.
-                let rounding = 16.0 * f64::EPSILON * above.abs().max(below.abs()) / step;
+                // Differencing loses the precision of the values differenced, and of the
+                // voltages they are computed from: a relative epsilon of each, weighed by
+                // its derivative, divided by the step.
+                let resolution: f64 = derivatives
+                    .iter()
+                    .zip(x)
+                    .map(|(derivative, value)| (derivative * value).abs())
+                    .sum();
+                let magnitude = above.abs().max(below.abs()) + resolution;
+                let rounding = 16.0 * f64::EPSILON * magnitude / step;
                 let tolerance = 1e-5 * analytic.abs().max(numeric.abs()) + rounding + 1e-20;
                 assert!(
                     (analytic - numeric).abs() <= tolerance,

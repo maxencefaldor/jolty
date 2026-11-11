@@ -42,23 +42,30 @@ from jolty import (
 from jolty.plan import decade, linear
 from jolty.units import (
     A,
+    F,
     Hz,
     MHz,
     Quantity,
     V,
     fA,
+    fF,
     kHz,
     kohm,
+    m,
     mA,
     mH,
     ms,
     mV,
     nA,
     nF,
+    nm,
     ns,
     ohm,
     pF,
+    s,
+    uA,
     uF,
+    um,
     uS,
     us,
 )
@@ -68,10 +75,16 @@ NGSPICE = shutil.which("ngspice")
 
 pytestmark = pytest.mark.skipif(NGSPICE is None, reason="ngspice is not installed")
 
+VOLTAGE_TOLERANCE = 1e-9
+"""Both engines' absolute tolerance on voltages, in volts."""
+
+CURRENT_TOLERANCE = 1e-14
+"""Both engines' absolute tolerance on currents, in amperes."""
+
 TIGHT = Options(
     relative_tolerance=1e-6,
-    voltage_tolerance=1e-9,
-    current_tolerance=1e-14,
+    voltage_tolerance=VOLTAGE_TOLERANCE,
+    current_tolerance=CURRENT_TOLERANCE,
     charge_tolerance=1e-18,
 )
 """jolty's options, as tight as ngspice's below."""
@@ -90,7 +103,8 @@ scales with temperature, compares the devices rather than the physical constants
 """
 
 SPICE_OPTIONS = (
-    ".options reltol=1e-6 vntol=1e-9 abstol=1e-14 chgtol=1e-18"
+    ".options reltol=1e-6"
+    f" vntol={VOLTAGE_TOLERANCE!r} abstol={CURRENT_TOLERANCE!r} chgtol=1e-18"
     f" temp={_SPICE_TEMPERATURE!r} tnom={_SPICE_TEMPERATURE!r}"
 )
 
@@ -152,6 +166,58 @@ _BIPOLAR_PARAMETERS = {
     "reverse_transit_time": "tr",
     "depletion_coefficient": "fc",
 }
+
+_MOSFET_PARAMETERS = {
+    "threshold_voltage": "vto",
+    "transconductance_parameter": "kp",
+    "body_effect": "gamma",
+    "surface_potential": "phi",
+    "channel_length_modulation": "lambda",
+    "lateral_diffusion": "ld",
+    "oxide_thickness": "tox",
+    "surface_mobility": "uo",
+    "substrate_doping": "nsub",
+    "surface_state_density": "nss",
+    "gate_material": "tpg",
+    "drain_resistance": "rd",
+    "source_resistance": "rs",
+    "sheet_resistance": "rsh",
+    "saturation_current": "is",
+    "saturation_current_density": "js",
+    "junction_potential": "pb",
+    "bulk_drain_capacitance": "cbd",
+    "bulk_source_capacitance": "cbs",
+    "bottom_capacitance": "cj",
+    "sidewall_capacitance": "cjsw",
+    "bottom_grading": "mj",
+    "sidewall_grading": "mjsw",
+    "depletion_coefficient": "fc",
+    "gate_source_overlap": "cgso",
+    "gate_drain_overlap": "cgdo",
+    "gate_bulk_overlap": "cgbo",
+}
+
+_MOSFET_INSTANCE_PARAMETERS = {
+    "width": "w",
+    "length": "l",
+    "multiplier": "m",
+    "drain_squares": "nrd",
+    "source_squares": "nrs",
+    "drain_area": "ad",
+    "source_area": "as",
+    "drain_perimeter": "pd",
+    "source_perimeter": "ps",
+}
+
+_SPICE_UNITS = {
+    "surface_mobility": 1e4,
+    "substrate_doping": 1e-6,
+    "surface_state_density": 1e-4,
+}
+"""The factors from SI base units to the centimeter-based units of SPICE's MOSFETs."""
+
+_GATE_TYPES = {"opposite_doping": 1, "same_doping": -1, "aluminum": 0}
+"""SPICE's ``tpg`` for each gate material."""
 
 type Real = npt.NDArray[np.float64]
 type Values = float | Real | npt.NDArray[np.complex128]
@@ -478,6 +544,135 @@ def current_controlled(c: Builder) -> None:
     )
 
 
+_NMOS = devices.mosfet(
+    width=100 * um,
+    length=2 * um,
+    lateral_diffusion=0.2 * um,
+    threshold_voltage=0.7 * V,
+    transconductance_parameter=110 * uA / V**2,
+    body_effect=0.45,
+    surface_potential=0.7 * V,
+    channel_length_modulation=0.03 / V,
+    oxide_thickness=20 * nm,
+    drain_resistance=15 * ohm,
+    source_resistance=10 * ohm,
+    saturation_current=10 * fA,
+    drain_area=200 * um**2,
+    source_area=150 * um**2,
+    drain_perimeter=104 * um,
+    source_perimeter=103 * um,
+    bottom_capacitance=3e-4 * F / m**2,
+    sidewall_capacitance=5e-10 * F / m,
+    bottom_grading=0.45,
+    sidewall_grading=0.3,
+    gate_source_overlap=3e-10 * F / m,
+    gate_drain_overlap=3e-10 * F / m,
+    gate_bulk_overlap=2e-10 * F / m,
+)
+
+
+@component
+def nmos_stage(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(9 * V), id="V2")
+    signal = Sine(
+        offset=1.6 * V, amplitude=0.3 * V, frequency=2 * MHz, phase=math.pi / 2
+    )
+    source = c.place(devices.voltage_source(signal), id="V1")
+    gate = c.place(devices.resistor(100 * kohm), id="RG")
+    transistor = c.place(_NMOS, id="M1")
+    drain = c.place(devices.resistor(4.7 * kohm), id="RD")
+    degeneration = c.place(devices.resistor(1 * kohm), id="RS")
+    c.connect(source.positive, gate.a, name="in")
+    c.connect(gate.b, transistor.gate, name="gate")
+    c.connect(supply.positive, drain.a, name="supply")
+    c.connect(drain.b, transistor.drain, name="out")
+    c.connect(transistor.source, degeneration.a, name="tail")
+    c.connect(source.negative, supply.negative, degeneration.b, transistor.bulk, ground)
+
+
+@component
+def mosfet_curves(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    bias = c.place(devices.voltage_source(2 * V), id="V1")
+    drain = c.place(devices.voltage_source(0 * V), id="V2")
+    body = c.place(devices.voltage_source(-3 * V), id="V3")
+    transistor = c.place(_NMOS, id="M1")
+    c.connect(bias.positive, transistor.gate, name="gate")
+    c.connect(drain.positive, transistor.drain, name="drain")
+    c.connect(body.positive, transistor.bulk, name="body")
+    c.connect(bias.negative, drain.negative, body.negative, transistor.source, ground)
+
+
+@component
+def cmos_inverter(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(3.3 * V), id="V2")
+    pulse = Pulse(
+        initial=0 * V,
+        pulsed=3.3 * V,
+        delay=10 * ns,
+        rise=10 * ns,
+        fall=10 * ns,
+        width=60 * ns,
+        period=160 * ns,
+    )
+    source = c.place(devices.voltage_source(pulse), id="V1")
+    # A driver's resistance, so the gates' charging current flows without jumps.
+    driver = c.place(devices.resistor(10 * kohm), id="RIN")
+    lower = c.place(
+        devices.mosfet(
+            width=10 * um,
+            length=1 * um,
+            oxide_thickness=15 * nm,
+            substrate_doping=5e22 / m**3,
+            surface_mobility=0.045 * m**2 / (V * s),
+            surface_state_density=1e14 / m**2,
+            channel_length_modulation=0.05 / V,
+            saturation_current_density=1e-4 * A / m**2,
+            drain_area=30 * um**2,
+            source_area=30 * um**2,
+            drain_perimeter=26 * um,
+            source_perimeter=26 * um,
+            bottom_capacitance=4e-4 * F / m**2,
+            sidewall_capacitance=3e-10 * F / m,
+            gate_source_overlap=2e-10 * F / m,
+            gate_drain_overlap=2e-10 * F / m,
+        ),
+        id="M1",
+    )
+    upper = c.place(
+        devices.mosfet(
+            channel="p",
+            width=12 * um,
+            length=1 * um,
+            multiplier=2.0,
+            oxide_thickness=15 * nm,
+            substrate_doping=5e22 / m**3,
+            surface_mobility=0.015 * m**2 / (V * s),
+            gate_material="same_doping",
+            channel_length_modulation=0.08 / V,
+            sheet_resistance=40 * ohm,
+            drain_squares=0.5,
+            source_squares=0.25,
+            bulk_drain_capacitance=20 * fF,
+            bulk_source_capacitance=15 * fF,
+            gate_source_overlap=2e-10 * F / m,
+            gate_drain_overlap=2e-10 * F / m,
+            gate_bulk_overlap=1e-10 * F / m,
+        ),
+        id="M2",
+    )
+    load = c.place(devices.capacitor(200 * fF), id="CL")
+    c.connect(source.positive, driver.a, name="in")
+    c.connect(driver.b, lower.gate, upper.gate, name="gate")
+    c.connect(supply.positive, upper.source, upper.bulk, name="supply")
+    c.connect(lower.drain, upper.drain, load.a, name="out")
+    c.connect(
+        source.negative, supply.negative, lower.source, lower.bulk, load.b, ground
+    )
+
+
 # Netlists and raw files.
 
 
@@ -504,11 +699,13 @@ ELEMENTS = {
     "diode": Element("D", ("anode", "cathode")),
     "jfet": Element("J", ("drain", "gate", "source")),
     "bipolar_transistor": Element("Q", ("collector", "base", "emitter")),
+    "mosfet": Element("M", ("drain", "gate", "source", "bulk")),
 }
 
 
-def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str]:
-    """The SPICE type and parameters of a device's model card."""
+def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str]:
+    """The SPICE type and parameters of a device's model card, and its instance's."""
+    instance: dict[str, str] = {}
     match model:
         case "diode":
             kind, names = "D", _DIODE_PARAMETERS
@@ -519,14 +716,37 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str]:
                 str(values.get("polarity", "npn")).upper(),
                 _BIPOLAR_PARAMETERS,
             )
+        case "mosfet":
+            kind, names = f"{values.get('channel', 'n')}mos".upper(), _MOSFET_PARAMETERS
+            instance = _MOSFET_INSTANCE_PARAMETERS
         case _:
             pytest.fail(f"{model} has no model card")
-    spice = " ".join(
-        f"{names[key]}={number!r}"
-        for key, number in values.items()
+    given = {
+        key: value
+        for key, value in values.items()
         if key not in {"channel", "polarity"}
+    }
+    card = " ".join(
+        f"{names[key]}={_spice_value(key, value)}"
+        for key, value in given.items()
+        if key not in instance
     )
-    return kind, spice
+    element = " ".join(
+        f"{instance[key]}={_spice_value(key, value)}"
+        for key, value in given.items()
+        if key in instance
+    )
+    return kind, card, element
+
+
+def _spice_value(name: str, value: JsonValue) -> str:
+    """A parameter's value in SPICE's units."""
+    match value:
+        case str(material):
+            return str(_GATE_TYPES[material])
+        case int() | float():
+            return repr(float(value) * _SPICE_UNITS.get(name, 1.0))
+    pytest.fail(f"{name} has no SPICE value for {value}")
 
 
 def element(instance: ir.Instance) -> str:
@@ -561,10 +781,10 @@ def netlist(circuit: ir.Circuit, *, excited: str | None = None) -> list[str]:
                 nodes = " ".join(output)
                 (number,) = values.values()
                 value = f"{sense} {number!r}"
-            case "diode" | "jfet" | "bipolar_transistor":
-                value = f"M{instance.id}"
-                kind, spice = _model_card(model, values)
-                lines.append(f".model {value} {kind}({spice})")
+            case "diode" | "jfet" | "bipolar_transistor" | "mosfet":
+                kind, card, parameters = _model_card(model, values)
+                lines.append(f".model M{instance.id} {kind}({card})")
+                value = f"M{instance.id} {parameters}".rstrip()
             case _:
                 (number,) = values.values()
                 value = repr(number)
@@ -701,9 +921,21 @@ def _spice_name(name: str) -> str:
 # The tests.
 
 
-def compare(jolty: Values, spice: Values, *, scale: float, tolerance: float) -> None:
-    """Asserts both agree within `tolerance` times `scale`, the signal's size."""
-    np.testing.assert_allclose(jolty, spice, rtol=0, atol=tolerance * scale)
+def compare(
+    jolty: Values,
+    spice: Values,
+    unknown: results.Unknown,
+    *,
+    scale: float,
+    tolerance: float,
+) -> None:
+    """Asserts both agree within `tolerance` times `scale`, the signal's size.
+
+    Values within the engines' absolute tolerance for the unknown's quantity are noise,
+    and agree too.
+    """
+    noise = CURRENT_TOLERANCE if unknown.quantity == "current" else VOLTAGE_TOLERANCE
+    np.testing.assert_allclose(jolty, spice, rtol=0, atol=tolerance * scale + noise)
 
 
 def size(values: Values) -> float:
@@ -737,6 +969,9 @@ def compared(simulation: Simulation) -> list[tuple[int, results.Unknown]]:
         bjt_amplifier,
         pnp_mirror,
         current_controlled,
+        nmos_stage,
+        mosfet_curves,
+        cmos_inverter,
     ],
 )
 def test_operating_points_agree(top: Callable[[], Component], tmp_path: Path) -> None:
@@ -745,8 +980,7 @@ def test_operating_points_agree(top: Callable[[], Component], tmp_path: Path) ->
     raw = ngspice(netlist(simulation.circuit), "op", tmp_path)
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))[0]
-        scale = max(abs(spice), 1e-3)
-        compare(point.values[column], spice, scale=scale, tolerance=1e-6)
+        compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
 
 
 @pytest.mark.parametrize(
@@ -760,6 +994,10 @@ def test_operating_points_agree(top: Callable[[], Component], tmp_path: Path) ->
         (bjt_stage, "V1", linear(-1 * V, 3 * V, 81)),
         (pnp_mirror, "V1", linear(0 * V, 12 * V, 61)),
         (current_controlled, "V1", linear(-3 * V, 3 * V, 13)),
+        (nmos_stage, "V1", linear(-1 * V, 5 * V, 61)),
+        (mosfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
+        (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
+        (cmos_inverter, "V1", linear(0 * V, 3.3 * V, 67)),
     ],
 )
 def test_dc_sweeps_agree(
@@ -773,12 +1011,23 @@ def test_dc_sweeps_agree(
     raw = ngspice(netlist(simulation.circuit), command, tmp_path)
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))
-        compare(sweep.values[:, column], spice, scale=size(spice), tolerance=1e-6)
+        compare(
+            sweep.values[:, column], spice, unknown, scale=size(spice), tolerance=1e-6
+        )
 
 
 @pytest.mark.parametrize(
     "top",
-    [low_pass, resonator, amplifier, jfet_stage, bjt_amplifier, current_controlled],
+    [
+        low_pass,
+        resonator,
+        amplifier,
+        jfet_stage,
+        bjt_amplifier,
+        current_controlled,
+        nmos_stage,
+        cmos_inverter,
+    ],
 )
 def test_ac_responses_agree(top: Callable[[], Component], tmp_path: Path) -> None:
     simulation = Simulation(top())
@@ -788,7 +1037,13 @@ def test_ac_responses_agree(top: Callable[[], Component], tmp_path: Path) -> Non
     np.testing.assert_allclose(response.frequencies, raw.real("frequency"), rtol=1e-9)
     for column, unknown in compared(simulation):
         spice = raw.vectors[vector(simulation.circuit, unknown)]
-        compare(response.values[:, column], spice, scale=size(spice), tolerance=1e-6)
+        compare(
+            response.values[:, column],
+            spice,
+            unknown,
+            scale=size(spice),
+            tolerance=1e-6,
+        )
 
 
 @pytest.mark.parametrize(
@@ -800,6 +1055,8 @@ def test_ac_responses_agree(top: Callable[[], Component], tmp_path: Path) -> Non
         (driven_tank, 40 * us, 20 * ns),
         (jfet_stage, 15 * us, 10 * ns),
         (bjt_amplifier, 4 * us, 2 * ns),
+        (nmos_stage, 2 * us, 1 * ns),
+        (cmos_inverter, 160 * ns, 0.01 * ns),
     ],
 )
 def test_transients_agree(
@@ -813,4 +1070,4 @@ def test_transients_agree(
     for column, unknown in compared(simulation):
         jolty = np.interp(times, waveforms.times, waveforms.values[:, column])
         spice = raw.real(vector(simulation.circuit, unknown))
-        compare(jolty, spice, scale=size(spice), tolerance=1e-3)
+        compare(jolty, spice, unknown, scale=size(spice), tolerance=1e-3)

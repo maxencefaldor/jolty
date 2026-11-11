@@ -127,3 +127,47 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 A base, collector or emitter resistance adds an internal node to the unknowns, as `Q1:base`, `Q1:collector` or `Q1:emitter` for a transistor `Q1`.
 
 ngspice leaves out of its small-signal model and its Newton steps how a falling base resistance depends on the junction voltages; jolty keeps every derivative, so its frequency response is the exact slope of its DC model, and its Newton steps converge faster to the same operating point.
+
+## MOSFET
+
+`mosfet(...)` is a metal-oxide-semiconductor field-effect transistor between `drain`, `gate`, `source` and `bulk`, in SPICE's level 1 model, Shichman and Hodges's square law with Meyer's gate capacitances, as ngspice implements it.
+Above the threshold, the drain current follows the square law, which the body effect raises as the source rises above the bulk; the drain and the source swap when the drain falls below the source.
+Two junctions join the bulk to the drain and the source, and the gate holds overlap charges and, given an oxide thickness, Meyer's capacitances.
+With an oxide thickness and a substrate doping, the threshold, the body effect and the surface potential left out derive from the process, as in SPICE.
+Every parameter is optional:
+
+| Parameter | SPICE | Unit | Default |
+| --- | --- | --- | --- |
+| `channel` | `NMOS`, `PMOS` | `"n"` or `"p"` | `"n"` |
+| `width`, `length` | `W`, `L` | m | 100 µm, 100 µm |
+| `multiplier` | `M` | none | 1 |
+| `threshold_voltage` | `VTO` | V | 0, or derived |
+| `transconductance_parameter` | `KP` | A/V² | 20 µA/V², or the surface mobility times the oxide capacitance per area |
+| `body_effect` | `GAMMA` | √V, as a number | 0, or derived |
+| `surface_potential` | `PHI` | V | 0.6 V, or derived |
+| `channel_length_modulation` | `LAMBDA` | V⁻¹ | 0 |
+| `lateral_diffusion` | `LD` | m | 0 |
+| `oxide_thickness` | `TOX` | m | none: no Meyer's capacitances |
+| `surface_mobility` | `UO` | m²/(V·s) | 0.06 m²/(V·s), SPICE's 600 cm²/(V·s) |
+| `substrate_doping` | `NSUB` | m⁻³ | none |
+| `surface_state_density` | `NSS` | m⁻² | 0 |
+| `gate_material` | `TPG` | `"opposite_doping"`, `"same_doping"` or `"aluminum"` | `"opposite_doping"` |
+| `drain_resistance`, `source_resistance` | `RD`, `RS` | Ω | the sheet resistance's |
+| `sheet_resistance`, `drain_squares`, `source_squares` | `RSH`, `NRD`, `NRS` | Ω, none, none | 0, 1, 1 |
+| `saturation_current`, `saturation_current_density` | `IS`, `JS` | A, A/m² | 10 fA, 0 |
+| `drain_area`, `source_area` | `AD`, `AS` | m² | 0 |
+| `drain_perimeter`, `source_perimeter` | `PD`, `PS` | m | 0 |
+| `junction_potential` | `PB` | V | 0.8 V |
+| `bulk_drain_capacitance`, `bulk_source_capacitance` | `CBD`, `CBS` | F | the bottom capacitance's |
+| `bottom_capacitance`, `bottom_grading` | `CJ`, `MJ` | F/m², none | 0, 0.5 |
+| `sidewall_capacitance`, `sidewall_grading` | `CJSW`, `MJSW` | F/m, none | 0, 0.5 |
+| `depletion_coefficient` | `FC` | none | 0.5 |
+| `gate_source_overlap`, `gate_drain_overlap`, `gate_bulk_overlap` | `CGSO`, `CGDO`, `CGBO` | F/m | 0 |
+
+SPICE writes the surface mobility, the substrate doping and the surface state density in centimeters; jolty takes SI units, as everywhere.
+The saturation current density replaces the saturation current when it and both areas are nonzero.
+
+A drain or source resistance adds an internal node to the unknowns, as `M1:drain` or `M1:source` for a transistor `M1`.
+Meyer's capacitances depend on every terminal voltage, and no charge yields them, so each carries a current `C(v) · dv/dt` that follows a current of the transistor's own: the displacement current through the whole oxide towards the source, the drain or the bulk, the unknowns `M1:gate_source_displacement`, `M1:gate_drain_displacement` and `M1:gate_bulk_displacement`.
+The frequency response holds Meyer's capacitances exactly, as ngspice's does.
+With the bulk forward-biased, ngspice's small-signal model and Newton steps take the threshold's slope from the reverse-biased formula; jolty keeps every derivative exact.

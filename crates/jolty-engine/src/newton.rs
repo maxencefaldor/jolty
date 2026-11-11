@@ -1,6 +1,6 @@
 //! Newton iteration on the circuit's equations.
 
-use jolty_models::{Input, Output, Quantity};
+use jolty_models::{Input, Output};
 
 use crate::elaborate::System;
 use crate::{Options, Simulator};
@@ -195,9 +195,10 @@ impl Simulator {
     fn step_error(&self, x: &[f64], index: usize, options: &Options) -> f64 {
         let step = self.workspace.step[index];
         let magnitude = x[index].abs().max((x[index] - step).abs());
-        let absolute = match self.system.unknowns[index].quantity {
-            Quantity::Voltage => options.voltage_tolerance,
-            Quantity::Current => options.current_tolerance,
+        let absolute = if self.system.unknowns[index].quantity.is_current() {
+            options.current_tolerance
+        } else {
+            options.voltage_tolerance
         };
         step.abs() / (options.relative_tolerance * magnitude + absolute)
     }
@@ -212,9 +213,10 @@ impl Simulator {
             .iter()
             .enumerate()
             .all(|(index, unknown)| {
-                let absolute = match unknown.quantity {
-                    Quantity::Voltage => options.current_tolerance,
-                    Quantity::Current => options.voltage_tolerance,
+                let absolute = if unknown.quantity.sums_currents() {
+                    options.current_tolerance
+                } else {
+                    options.voltage_tolerance
                 };
                 let rounding = RESIDUAL_ROUNDINGS * f64::EPSILON * workspace.resolution[index];
                 workspace.residual[index].abs()

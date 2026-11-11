@@ -2,7 +2,6 @@
 
 use std::collections::VecDeque;
 
-use jolty_models::Quantity;
 use jolty_numerics::integration::{Formula, Method, divided_difference};
 use serde::Deserialize;
 
@@ -356,9 +355,10 @@ impl Simulator {
                 divided_difference(&times[..needed], &samples[..needed]),
             );
             let previous_charge = history.last.1[index];
-            let absolute_current = match unknown.quantity {
-                Quantity::Voltage => options.current_tolerance,
-                Quantity::Current => options.voltage_tolerance,
+            let absolute_current = if unknown.quantity.sums_currents() {
+                options.current_tolerance
+            } else {
+                options.voltage_tolerance
             };
             let charge_tolerance = options.relative_tolerance
                 * new.1[index].abs().max(previous_charge.abs())

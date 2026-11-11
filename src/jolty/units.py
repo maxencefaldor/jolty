@@ -100,6 +100,7 @@ CAPACITANCE: Final = CHARGE / VOLTAGE
 INDUCTANCE: Final = VOLTAGE * TIME / CURRENT
 
 _SYMBOLS: Final = {
+    LENGTH: "m",
     TIME: "s",
     CURRENT: "A",
     TEMPERATURE: "K",
@@ -258,6 +259,10 @@ def format_si(value: float, symbol: str) -> str:
 
 
 # Units to multiply numbers by. The micro prefix is written "u" in names.
+m: Final = Quantity(1.0, LENGTH)
+mm: Final = Quantity(1e-3, LENGTH)
+um: Final = Quantity(1e-6, LENGTH)
+nm: Final = Quantity(1e-9, LENGTH)
 s: Final = Quantity(1.0, TIME)
 ms: Final = Quantity(1e-3, TIME)
 us: Final = Quantity(1e-6, TIME)

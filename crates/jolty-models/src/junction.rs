@@ -112,6 +112,23 @@ pub(crate) fn limit_gate(new: f64, old: f64, threshold: f64) -> Option<f64> {
     }
 }
 
+/// SPICE's limiting of a field-effect transistor's drain voltage's step from `old` to
+/// `new`, both with the drain at or above the source. Returns the limited voltage, or
+/// `None` when `new` needs no limiting.
+pub(crate) fn limit_drain(new: f64, old: f64) -> Option<f64> {
+    if old >= 3.5 {
+        if new > old {
+            (new > 3.0 * old + 2.0).then_some(3.0 * old + 2.0)
+        } else {
+            (new < 2.0).then_some(2.0)
+        }
+    } else if new > old {
+        (new > 4.0).then_some(4.0)
+    } else {
+        (new < -0.5).then_some(-0.5)
+    }
+}
+
 /// The depletion charge of a junction: the classic power law below `threshold`, extended
 /// linearly in capacitance above it, where the power law would diverge.
 #[derive(Debug, Clone, Copy)]
@@ -220,8 +237,8 @@ mod tests {
             prop_assert!(current >= -1e-12 * (1.0 + 1e-9));
         }
 
-        /// A limited step is finite, and a forward junction step or any gate step stays
-        /// between the old voltage and the new one.
+        /// A limited step is finite, and a forward junction step, any gate step, and any
+        /// drain step at or above the source stay between the old voltage and the new one.
         #[test]
         fn limiting_never_overshoots(new in -20.0..20.0f64, old in -20.0..20.0f64) {
             let slope = THERMAL_VOLTAGE;
@@ -236,6 +253,11 @@ mod tests {
             }
             if let Some(limited) = limit_gate(new, old, -1.0) {
                 prop_assert!(between(limited));
+            }
+            let (forward, previous) = (new.abs(), old.abs());
+            if let Some(limited) = limit_drain(forward, previous) {
+                prop_assert!((limited - previous).abs() <= (forward - previous).abs() + 1e-12);
+                prop_assert!((limited - previous) * (forward - previous) >= 0.0);
             }
         }
     }

@@ -14,9 +14,11 @@ mod bjt;
 mod controlled;
 mod device;
 mod diode;
+mod dual;
 mod evaluation;
 mod jfet;
 mod junction;
+mod mosfet;
 mod passive;
 mod sources;
 mod stamp;
@@ -39,6 +41,7 @@ pub use device::{Device, Model, Native, NativeDevice, ParameterError, Source};
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Input, Output};
 pub use jfet::{Channel, Jfet, JfetParameters};
+pub use mosfet::{GateMaterial, Mosfet, MosfetParameters};
 pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
 };
@@ -68,6 +71,7 @@ impl Library {
         library.add(Native::<VoltageControlledCurrentSource>::new());
         library.add(Native::<Diode>::new());
         library.add(Native::<Jfet>::new());
+        library.add(Native::<Mosfet>::new());
         library
     }
 
@@ -112,6 +116,7 @@ mod tests {
                 "diode",
                 "inductor",
                 "jfet",
+                "mosfet",
                 "resistor",
                 "voltage_controlled_current_source",
                 "voltage_controlled_voltage_source",
