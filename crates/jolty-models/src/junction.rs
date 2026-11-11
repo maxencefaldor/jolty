@@ -5,7 +5,7 @@
 //! behaves the same in every model that has one: the diode, the JFET's gate and the
 //! bipolar transistor's base.
 
-use crate::ParameterError;
+use crate::{ParameterError, Real};
 
 /// The Boltzmann constant, in joules per kelvin.
 pub const BOLTZMANN: f64 = 1.380_649e-23;
@@ -33,24 +33,38 @@ pub(crate) fn band_gap(temperature: f64) -> f64 {
 /// with the energy gap, built-in potentials and depletion capacitances with silicon's band
 /// gap, and other parameters by their own coefficients.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Temperatures {
+pub(crate) struct Temperatures<R: Real = f64> {
     /// The temperature the device is evaluated at.
     pub(crate) actual: f64,
     /// The temperature its parameters were measured at.
-    pub(crate) nominal: f64,
+    pub(crate) nominal: R,
 }
 
-impl Temperatures {
+impl<R: Real> Temperatures<R> {
     /// The device's temperature, `actual`, and its parameters' `nominal` temperature.
     ///
     /// # Errors
     ///
     /// Returns an error when the nominal temperature is not positive.
-    pub(crate) fn new(actual: f64, nominal: f64) -> Result<Self, ParameterError> {
+    pub(crate) fn new(actual: f64, nominal: R) -> Result<Self, ParameterError> {
         ParameterError::positive("nominal_temperature", nominal)?;
         Ok(Self { actual, nominal })
     }
 
+    /// The device's temperature less the nominal temperature.
+    pub(crate) fn difference(self) -> R {
+        -(self.nominal - self.actual)
+    }
+
+    /// The factor `1 + tc1 · ΔT + tc2 · ΔT²` of a parameter with linear coefficient
+    /// `linear` and quadratic coefficient `quadratic`.
+    pub(crate) fn polynomial(self, linear: R, quadratic: R) -> R {
+        let difference = self.difference();
+        (linear + quadratic * difference) * difference + 1.0
+    }
+}
+
+impl Temperatures {
     /// The thermal voltage at the device's temperature.
     pub(crate) const fn thermal_voltage(self) -> f64 {
         thermal_voltage(self.actual)
@@ -59,18 +73,6 @@ impl Temperatures {
     /// The device's temperature over the nominal temperature.
     pub(crate) fn ratio(self) -> f64 {
         self.actual / self.nominal
-    }
-
-    /// The device's temperature less the nominal temperature.
-    pub(crate) fn difference(self) -> f64 {
-        self.actual - self.nominal
-    }
-
-    /// The factor `1 + tc1 · ΔT + tc2 · ΔT²` of a parameter with linear coefficient
-    /// `linear` and quadratic coefficient `quadratic`.
-    pub(crate) fn polynomial(self, linear: f64, quadratic: f64) -> f64 {
-        let difference = self.difference();
-        1.0 + (linear + quadratic * difference) * difference
     }
 
     /// The factor that scales a saturation current with `emission` coefficient, given the

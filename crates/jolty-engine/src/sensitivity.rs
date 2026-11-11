@@ -9,7 +9,7 @@
 //! evaluated at the operating point: a central difference over one device, not a solve.
 
 use jolty_ir::Parameters;
-use jolty_models::{Binding, Input, Output, UnknownInfo};
+use jolty_models::{Binding, Gradient, Input, Output, UnknownInfo};
 use jolty_numerics::PatternBuilder;
 use serde::Deserialize;
 use serde_json::Value;
@@ -124,9 +124,13 @@ impl Simulator {
         })
     }
 
-    /// `∂F/∂p` of the device at `index` for its parameter `name` at the solution `x`: the
+    /// `∂F/∂p` of the device at `index` for its parameter `name` at the solution `x`.
+    ///
+    /// A model whose devices compute with [`Gradient`] gives it exactly: the device made
+    /// again with the parameter differentiated against, evaluated at `x`. Another's is the
     /// central difference of its residual, made again with the parameter a little above
-    /// and below its value. `None` when its model cannot take either value.
+    /// and below its value. `None` when its model cannot take the parameter as a real
+    /// number, such as a model's level.
     fn residual_derivative(
         &self,
         index: usize,
@@ -137,16 +141,45 @@ impl Simulator {
         let placed = &self.system.devices[index];
         let made = placed.made.as_ref()?;
         let value = leaf(&made.parameters, name)?;
+        let dimension = self.system.unknowns.len();
+        let mut seeded = made.parameters.clone();
+        set_leaf(
+            &mut seeded,
+            name,
+            serde_json::json!({"value": value, "derivative": 1.0}),
+        )?;
+        let mut unknowns: Vec<UnknownInfo> = self.system.unknowns[..placed.first_internal].to_vec();
+        let mut builder = PatternBuilder::new();
+        let mut binding = Binding::new(
+            placed.path(),
+            placed.nodes(),
+            &mut unknowns,
+            &mut builder,
+            self.system.temperature,
+        );
+        if let Some(made_again) = made.model.instantiate_gradient(&seeded, &mut binding) {
+            let mut device = made_again.ok()?;
+            let pattern = builder.finish(dimension);
+            let mut buffers = [(); 3].map(|()| vec![Gradient::default(); dimension]);
+            let [residual, scale, charge] = &mut buffers;
+            let mut matrices = [(); 2].map(|()| vec![Gradient::default(); pattern.len()]);
+            let [conductance, capacitance] = &mut matrices;
+            let mut output =
+                Output::new(&pattern, residual, scale, charge, conductance, capacitance);
+            let mut input = Input::new(x, 0.0, options.gmin);
+            input.limiting = false;
+            device.evaluate(&input, &mut output);
+            return Some(residual.iter().map(|value| value.derivative).collect());
+        }
         let step = if value == 0.0 {
             STEP
         } else {
             STEP * value.abs()
         };
-        let dimension = self.system.unknowns.len();
         let mut residuals = [vec![0.0; dimension], vec![0.0; dimension]];
         for (residual, shifted) in residuals.iter_mut().zip([value + step, value - step]) {
             let mut parameters = made.parameters.clone();
-            set_leaf(&mut parameters, name, shifted)?;
+            set_leaf(&mut parameters, name, Value::from(shifted))?;
             let mut unknowns: Vec<UnknownInfo> =
                 self.system.unknowns[..placed.first_internal].to_vec();
             let mut builder = PatternBuilder::new();
@@ -248,15 +281,18 @@ fn leaf(parameters: &Parameters, name: &str) -> Option<f64> {
     value.as_f64()
 }
 
-/// Sets the number named `name` in `parameters` to `number`; `None` when there is none
-/// or `number` is not finite.
-fn set_leaf(parameters: &mut Parameters, name: &str, number: f64) -> Option<()> {
+/// Replaces the number named `name` in `parameters` by `replacement`; `None` when there
+/// is none, or the replacement is not finite.
+fn set_leaf(parameters: &mut Parameters, name: &str, replacement: Value) -> Option<()> {
     let mut keys = name.split('.');
     let mut value = parameters.get_mut(keys.next()?)?;
     for key in keys {
         value = inner_mut(value, key)?;
     }
-    *value = Value::Number(serde_json::Number::from_f64(number)?);
+    if !value.is_number() || replacement.is_null() {
+        return None;
+    }
+    *value = replacement;
     Some(())
 }
 
@@ -287,14 +323,28 @@ mod tests {
                 "waveform.pulse.pulsed"
             ]
         );
-        assert_eq!(set_leaf(&mut parameters, "points.0.1", 2.0), Some(()));
-        assert_eq!(leaf(&parameters, "points.0.1"), Some(2.0));
-        assert_eq!(set_leaf(&mut parameters, "points.1.0", 2.0), None);
         assert_eq!(
-            set_leaf(&mut parameters, "waveform.pulse.pulsed", 3.3),
+            set_leaf(&mut parameters, "points.0.1", Value::from(2.0)),
             Some(())
         );
-        assert_eq!(set_leaf(&mut parameters, "waveform.pulse.width", 1.0), None);
+        assert_eq!(leaf(&parameters, "points.0.1"), Some(2.0));
+        assert_eq!(
+            set_leaf(&mut parameters, "points.1.0", Value::from(2.0)),
+            None
+        );
+        assert_eq!(
+            set_leaf(&mut parameters, "waveform.pulse.pulsed", Value::from(3.3)),
+            Some(())
+        );
+        assert_eq!(
+            set_leaf(&mut parameters, "waveform.pulse.width", Value::from(1.0)),
+            None
+        );
+        assert_eq!(
+            set_leaf(&mut parameters, "channel", Value::from(1.0)),
+            None,
+            "only a number is replaced"
+        );
         assert_eq!(leaf(&parameters, "waveform.pulse.pulsed"), Some(3.3));
     }
 }

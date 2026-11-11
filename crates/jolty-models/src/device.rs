@@ -4,12 +4,13 @@ use std::marker::PhantomData;
 use jolty_ir::Parameters;
 use serde::de::DeserializeOwned;
 
-use crate::{Binding, Detect, Drive, Input, Interface, Output};
+use crate::{Binding, Detect, Drive, Gradient, Input, Interface, Output, Real};
 
-/// One placed device, bound to its unknowns.
-pub trait Device: fmt::Debug + Send {
+/// One placed device, bound to its unknowns, computing with plain numbers or with their
+/// exact derivatives with respect to a parameter.
+pub trait Device<R: Real = f64>: fmt::Debug + Send {
     /// Adds the device's contribution at `input` to `output`.
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_>);
+    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>);
 
     /// Appends the times in `[start, stop]` where the device's behavior is not smooth, so a
     /// transient analysis steps onto them exactly.
@@ -69,10 +70,23 @@ pub trait Model: Send + Sync {
         parameters: &Parameters,
         binding: &mut Binding<'_>,
     ) -> Result<Box<dyn Device>, ParameterError>;
+
+    /// Reads `parameters`, in which the number to differentiate against is written as
+    /// `{"value": v, "derivative": 1}`, and makes a device bound through `binding` whose
+    /// residuals and charges carry their exact derivatives with respect to it; `None`
+    /// when the model's devices compute with plain numbers only.
+    fn instantiate_gradient(
+        &self,
+        parameters: &Parameters,
+        binding: &mut Binding<'_>,
+    ) -> Option<Result<Box<dyn Device<Gradient>>, ParameterError>> {
+        let _ = (parameters, binding);
+        None
+    }
 }
 
 /// A device implemented in Rust, whose parameters deserialize into a typed struct.
-pub trait NativeDevice: Device + Sized + 'static {
+pub trait NativeDevice<R: Real = f64>: Device<R> + Sized + 'static {
     /// The model's name.
     const NAME: &'static str;
     /// The parameters, deserialized from the instance's parameter map.
@@ -90,36 +104,45 @@ pub trait NativeDevice: Device + Sized + 'static {
     -> Result<Self, ParameterError>;
 }
 
-/// The [`Model`] of a [`NativeDevice`].
-pub struct Native<D>(PhantomData<fn() -> D>);
+/// A model implemented in Rust, whose devices compute with any [`Real`].
+pub trait NativeModel: 'static {
+    /// The device, computing with `R`.
+    type Device<R: Real>: NativeDevice<R>;
+}
 
-impl<D: NativeDevice> Native<D> {
-    /// The model of `D`.
+/// The [`Model`] of a [`NativeModel`], whose devices give their exact derivatives with
+/// respect to any of their parameters.
+pub struct Native<M>(PhantomData<fn() -> M>);
+
+impl<M: NativeModel> Native<M> {
+    /// The model of `M`.
     #[must_use]
     pub fn new() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<D: NativeDevice> Default for Native<D> {
+impl<M: NativeModel> Default for Native<M> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<D> fmt::Debug for Native<D> {
+impl<M> fmt::Debug for Native<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Native")
     }
 }
 
-impl<D: NativeDevice> Model for Native<D> {
+impl<M: NativeModel> Model for Native<M> {
     fn name(&self) -> &'static str {
-        D::NAME
+        <M::Device<f64> as NativeDevice<f64>>::NAME
     }
 
     fn interface(&self, parameters: &Parameters) -> Result<Interface, ParameterError> {
-        Ok(D::interface(&read::<D>(parameters)?))
+        Ok(M::Device::<f64>::interface(&read::<f64, M::Device<f64>>(
+            parameters,
+        )?))
     }
 
     fn instantiate(
@@ -127,12 +150,70 @@ impl<D: NativeDevice> Model for Native<D> {
         parameters: &Parameters,
         binding: &mut Binding<'_>,
     ) -> Result<Box<dyn Device>, ParameterError> {
-        Ok(Box::new(D::new(read::<D>(parameters)?, binding)?))
+        let parameters = read::<f64, M::Device<f64>>(parameters)?;
+        Ok(Box::new(M::Device::<f64>::new(parameters, binding)?))
+    }
+
+    fn instantiate_gradient(
+        &self,
+        parameters: &Parameters,
+        binding: &mut Binding<'_>,
+    ) -> Option<Result<Box<dyn Device<Gradient>>, ParameterError>> {
+        Some(
+            read::<Gradient, M::Device<Gradient>>(parameters).and_then(|parameters| {
+                let device: Box<dyn Device<Gradient>> =
+                    Box::new(M::Device::<Gradient>::new(parameters, binding)?);
+                Ok(device)
+            }),
+        )
+    }
+}
+
+/// The [`Model`] of a [`NativeDevice`] that computes with plain numbers only.
+pub struct Plain<D>(PhantomData<fn() -> D>);
+
+impl<D: NativeDevice> Plain<D> {
+    /// The model of `D`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<D: NativeDevice> Default for Plain<D> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<D> fmt::Debug for Plain<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Plain")
+    }
+}
+
+impl<D: NativeDevice> Model for Plain<D> {
+    fn name(&self) -> &'static str {
+        D::NAME
+    }
+
+    fn interface(&self, parameters: &Parameters) -> Result<Interface, ParameterError> {
+        Ok(D::interface(&read::<f64, D>(parameters)?))
+    }
+
+    fn instantiate(
+        &self,
+        parameters: &Parameters,
+        binding: &mut Binding<'_>,
+    ) -> Result<Box<dyn Device>, ParameterError> {
+        Ok(Box::new(D::new(read::<f64, D>(parameters)?, binding)?))
     }
 }
 
 /// The typed parameters of `D` in `parameters`.
-fn read<D: NativeDevice>(parameters: &Parameters) -> Result<D::Parameters, ParameterError> {
+fn read<R: Real, D: NativeDevice<R>>(
+    parameters: &Parameters,
+) -> Result<D::Parameters, ParameterError> {
     serde_json::from_value(serde_json::Value::Object(parameters.clone()))
         .map_err(|error| ParameterError(error.to_string()))
 }
@@ -148,10 +229,11 @@ impl ParameterError {
     /// # Errors
     ///
     /// Returns an error naming `parameter` otherwise.
-    pub fn positive(parameter: &str, value: f64) -> Result<f64, Self> {
-        if value > 0.0 {
+    pub fn positive<R: Real>(parameter: &str, value: R) -> Result<R, Self> {
+        if value.value() > 0.0 {
             Ok(value)
         } else {
+            let value = value.value();
             Err(Self(format!("{parameter} must be positive, not {value:?}")))
         }
     }
@@ -161,10 +243,11 @@ impl ParameterError {
     /// # Errors
     ///
     /// Returns an error naming `parameter` otherwise.
-    pub fn non_negative(parameter: &str, value: f64) -> Result<f64, Self> {
-        if value >= 0.0 {
+    pub fn non_negative<R: Real>(parameter: &str, value: R) -> Result<R, Self> {
+        if value.value() >= 0.0 {
             Ok(value)
         } else {
+            let value = value.value();
             Err(Self(format!(
                 "{parameter} must be at least 0, not {value:?}"
             )))

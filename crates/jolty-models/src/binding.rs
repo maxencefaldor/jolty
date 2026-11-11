@@ -1,6 +1,6 @@
 use jolty_numerics::{Entry, PatternBuilder};
 
-use crate::{Input, Output};
+use crate::{Input, Output, Real};
 
 /// A node voltage or branch current the engine solves for, by its index in the solution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -157,19 +157,19 @@ impl TerminalPair {
     }
 
     /// Adds `current`, flowing through the element, to the two nodes' equations.
-    pub fn add_current(&self, output: &mut Output<'_>, current: f64) {
+    pub fn add_current<R: Real>(&self, output: &mut Output<'_, R>, current: R) {
         output.add_residual(self.positive, current);
         output.add_residual(self.negative, -current);
     }
 
     /// Adds `charge`, held on the positive node and its opposite on the negative node.
-    pub fn add_charge(&self, output: &mut Output<'_>, charge: f64) {
+    pub fn add_charge<R: Real>(&self, output: &mut Output<'_, R>, charge: R) {
         output.add_charge(self.positive, charge);
         output.add_charge(self.negative, -charge);
     }
 
     /// Adds `conductance`, the derivative of the current with respect to the voltage.
-    pub fn add_conductance(&self, output: &mut Output<'_>, conductance: f64) {
+    pub fn add_conductance<R: Real>(&self, output: &mut Output<'_, R>, conductance: R) {
         let [
             positive_positive,
             positive_negative,
@@ -183,7 +183,7 @@ impl TerminalPair {
     }
 
     /// Adds `capacitance`, the derivative of the charge with respect to the voltage.
-    pub fn add_capacitance(&self, output: &mut Output<'_>, capacitance: f64) {
+    pub fn add_capacitance<R: Real>(&self, output: &mut Output<'_, R>, capacitance: R) {
         let [
             positive_positive,
             positive_negative,

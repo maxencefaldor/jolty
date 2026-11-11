@@ -24,6 +24,7 @@ mod junction;
 mod logic;
 mod mosfet;
 mod passive;
+mod real;
 mod sources;
 mod stamp;
 mod switch;
@@ -46,7 +47,7 @@ pub use controlled::{
     VoltageControlledCurrentSource, VoltageControlledCurrentSourceParameters,
     VoltageControlledVoltageSource, VoltageControlledVoltageSourceParameters,
 };
-pub use device::{Device, Model, Native, NativeDevice, ParameterError, Source};
+pub use device::{Device, Model, Native, NativeDevice, NativeModel, ParameterError, Plain, Source};
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Input, Output};
 pub use jfet::{Channel, Jfet, JfetParameters};
@@ -61,6 +62,7 @@ pub use mosfet::{GateMaterial, Mosfet, MosfetParameters};
 pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
 };
+pub use real::{Gradient, Real};
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
 pub use switch::{VoltageControlledSwitch, VoltageControlledSwitchParameters};
 pub use topology::{Branch, BranchKind, Interface};
@@ -78,22 +80,22 @@ impl Library {
     #[must_use]
     pub fn standard() -> Self {
         let mut library = Self::default();
-        library.add(Native::<BehavioralCurrentSource>::new());
-        library.add(Native::<BehavioralVoltageSource>::new());
-        library.add(Native::<BipolarTransistor>::new());
+        library.add(Plain::<BehavioralCurrentSource>::new());
+        library.add(Plain::<BehavioralVoltageSource>::new());
+        library.add(Plain::<BipolarTransistor>::new());
         library.add(Native::<Resistor>::new());
         library.add(Native::<Capacitor>::new());
         library.add(Native::<Inductor>::new());
-        library.add(Native::<VoltageSource>::new());
-        library.add(Native::<CurrentSource>::new());
-        library.add(Native::<CurrentControlledCurrentSource>::new());
-        library.add(Native::<CurrentControlledVoltageSource>::new());
-        library.add(Native::<VoltageControlledVoltageSource>::new());
-        library.add(Native::<VoltageControlledCurrentSource>::new());
-        library.add(Native::<VoltageControlledSwitch>::new());
-        library.add(Native::<Diode>::new());
-        library.add(Native::<Jfet>::new());
-        library.add(Native::<Mosfet>::new());
+        library.add(Plain::<VoltageSource>::new());
+        library.add(Plain::<CurrentSource>::new());
+        library.add(Plain::<CurrentControlledCurrentSource>::new());
+        library.add(Plain::<CurrentControlledVoltageSource>::new());
+        library.add(Plain::<VoltageControlledVoltageSource>::new());
+        library.add(Plain::<VoltageControlledCurrentSource>::new());
+        library.add(Plain::<VoltageControlledSwitch>::new());
+        library.add(Plain::<Diode>::new());
+        library.add(Plain::<Jfet>::new());
+        library.add(Plain::<Mosfet>::new());
         library.add_logic(NativeLogicModel::<LogicCell>::new());
         library.add_logic(NativeLogicModel::<LogicSource>::new());
         library

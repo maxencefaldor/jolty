@@ -3,8 +3,8 @@
 use jolty_numerics::{Pattern, PatternBuilder};
 
 use crate::{
-    Binding, Device, Input, Model, Native, NativeDevice, Node, Output, ParameterError, Quantity,
-    REFERENCE_TEMPERATURE, Unknown, UnknownInfo,
+    Binding, Device, Gradient, Input, Model, Native, NativeDevice, NativeModel, Node, Output,
+    ParameterError, Plain, Quantity, REFERENCE_TEMPERATURE, Real, Unknown, UnknownInfo,
 };
 
 /// One device whose terminals each connect to an unknown of their own.
@@ -45,7 +45,7 @@ impl Bench {
         temperature: f64,
     ) -> Result<Self, ParameterError> {
         let parameters = serde_json::from_str(parameters).expect("a JSON object");
-        let model = Native::<D>::new();
+        let model = Plain::<D>::new();
         let terminals = model.interface(&parameters)?.terminals.len();
         let nodes: Vec<Node> = (0..terminals)
             .map(|index| Some(Unknown::new(index)))
@@ -178,6 +178,141 @@ pub(crate) fn assert_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64
                     (analytic - numeric).abs() <= tolerance,
                     "{} {name} at ({row}, {column}): analytic {analytic}, numeric {numeric}",
                     D::NAME
+                );
+            }
+        }
+    }
+}
+
+/// Evaluates `device`, bound to `pattern`, at `x`: its residuals and charges.
+fn residuals_and_charges<R: Real>(
+    device: &mut dyn Device<R>,
+    pattern: &Pattern,
+    x: &[f64],
+) -> (Vec<R>, Vec<R>) {
+    let mut buffers = [(); 3].map(|()| vec![R::default(); x.len()]);
+    let [residual, scale, charge] = &mut buffers;
+    let mut matrices = [(); 2].map(|()| vec![R::default(); pattern.len()]);
+    let [conductance, capacitance] = &mut matrices;
+    let mut output = Output::new(pattern, residual, scale, charge, conductance, capacitance);
+    let mut input = Input::new(x, 0.0, 1e-12);
+    input.limiting = false;
+    device.evaluate(&input, &mut output);
+    let [residual, _, charge] = buffers;
+    (residual, charge)
+}
+
+/// A device of `M` made from parameters, each of its terminals on an unknown of its own,
+/// at 30 kelvins above the reference temperature.
+struct Rig<M: NativeModel> {
+    model: Native<M>,
+    nodes: Vec<Node>,
+}
+
+impl<M: NativeModel> Rig<M> {
+    fn binding<'a>(
+        &'a self,
+        unknowns: &'a mut Vec<UnknownInfo>,
+        builder: &'a mut PatternBuilder,
+    ) -> Binding<'a> {
+        unknowns.extend(self.nodes.iter().map(|_| UnknownInfo {
+            name: String::new(),
+            quantity: Quantity::Voltage,
+        }));
+        Binding::new(
+            "device",
+            &self.nodes,
+            unknowns,
+            builder,
+            REFERENCE_TEMPERATURE + 30.0,
+        )
+    }
+
+    /// The residuals and charges at `x` of the device made with `parameters`.
+    fn plain(&self, parameters: &jolty_ir::Parameters, x: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
+        let mut binding = self.binding(&mut unknowns, &mut builder);
+        let mut device = self
+            .model
+            .instantiate(parameters, &mut binding)
+            .expect("valid");
+        residuals_and_charges(device.as_mut(), &builder.finish(x.len()), x)
+    }
+
+    /// The residuals and charges at `x`, with their gradients, of the device made with
+    /// `parameters`, one number of which is seeded.
+    fn exact(
+        &self,
+        parameters: &jolty_ir::Parameters,
+        x: &[f64],
+    ) -> (Vec<Gradient>, Vec<Gradient>) {
+        let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
+        let mut binding = self.binding(&mut unknowns, &mut builder);
+        let mut device = self
+            .model
+            .instantiate_gradient(parameters, &mut binding)
+            .expect("a model of any real")
+            .expect("valid parameters");
+        residuals_and_charges(device.as_mut(), &builder.finish(x.len()), x)
+    }
+}
+
+/// Checks that the exact derivatives of a device's residuals and charges at `x` with
+/// respect to each number of `parameters`, a JSON object, match central differences of
+/// the device made again with the number a little above and below, and that their values
+/// are the device's own.
+pub(crate) fn assert_parameter_gradients_match<M: NativeModel>(parameters: &str, x: &[f64]) {
+    let parameters: jolty_ir::Parameters = serde_json::from_str(parameters).expect("a JSON object");
+    let model = Native::<M>::new();
+    let terminals = model.interface(&parameters).expect("valid").terminals.len();
+    let rig = Rig {
+        model,
+        nodes: (0..terminals)
+            .map(|index| Some(Unknown::new(index)))
+            .collect(),
+    };
+    let (plain, plain_charge) = rig.plain(&parameters, x);
+    for (name, value) in &parameters {
+        let Some(value) = value.as_f64() else {
+            continue;
+        };
+        let mut changed = parameters.clone();
+        changed.insert(
+            name.clone(),
+            serde_json::json!({"value": value, "derivative": 1.0}),
+        );
+        let (exact, exact_charge) = rig.exact(&changed, x);
+        let step = 1e-6 * value.abs().max(1e-12);
+        changed.insert(name.clone(), serde_json::json!(value + step));
+        let (above, above_charge) = rig.plain(&changed, x);
+        changed.insert(name.clone(), serde_json::json!(value - step));
+        let (below, below_charge) = rig.plain(&changed, x);
+        let rows = [
+            ("residual", exact, plain.clone(), above, below),
+            (
+                "charge",
+                exact_charge,
+                plain_charge.clone(),
+                above_charge,
+                below_charge,
+            ),
+        ];
+        for (kind, exact, plain, above, below) in rows {
+            for (row, exact) in exact.iter().enumerate() {
+                let numeric = (above[row] - below[row]) / (2.0 * step);
+                let rounding = 16.0 * f64::EPSILON * above[row].abs().max(below[row].abs()) / step;
+                let tolerance = 1e-5 * exact.derivative.abs().max(numeric.abs()) + rounding;
+                assert!(
+                    (exact.derivative - numeric).abs() <= tolerance + 1e-30,
+                    "{} d{kind}[{row}]/d{name}: exact {}, numeric {numeric}",
+                    <M::Device<f64> as NativeDevice>::NAME,
+                    exact.derivative
+                );
+                assert!(
+                    (exact.value - plain[row]).abs() <= 1e-12 * plain[row].abs(),
+                    "{kind}[{row}]: {} with its gradient, {} without",
+                    exact.value,
+                    plain[row]
                 );
             }
         }

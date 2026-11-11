@@ -1,6 +1,6 @@
 use jolty_numerics::{Entry, Pattern};
 
-use crate::Node;
+use crate::{Node, Real};
 
 /// The state a device is evaluated at.
 #[derive(Debug, Clone, Copy)]
@@ -44,19 +44,21 @@ impl<'a> Input<'a> {
 ///
 /// Every slice starts zeroed. Residuals and charges are indexed by unknown; conductances and
 /// capacitances by the pattern's value slots. Alongside each residual, `scale` keeps the
-/// largest magnitude of a term added to it, against which convergence is judged.
+/// largest magnitude of a term added to it, against which convergence is judged. Its
+/// numbers are plain, or carry their derivative with respect to a parameter when a device
+/// computes with [`crate::Gradient`].
 #[derive(Debug)]
-pub struct Output<'a> {
+pub struct Output<'a, R: Real = f64> {
     pattern: &'a Pattern,
-    residual: &'a mut [f64],
-    scale: &'a mut [f64],
-    charge: &'a mut [f64],
-    conductance: &'a mut [f64],
-    capacitance: &'a mut [f64],
+    residual: &'a mut [R],
+    scale: &'a mut [R],
+    charge: &'a mut [R],
+    conductance: &'a mut [R],
+    capacitance: &'a mut [R],
     limited: bool,
 }
 
-impl<'a> Output<'a> {
+impl<'a, R: Real> Output<'a, R> {
     /// An output over zeroed buffers: `residual`, `scale` and `charge` hold one value per
     /// unknown, `conductance` and `capacitance` one per stored position of `pattern`.
     ///
@@ -65,11 +67,11 @@ impl<'a> Output<'a> {
     /// Panics if a buffer has the wrong length.
     pub fn new(
         pattern: &'a Pattern,
-        residual: &'a mut [f64],
-        scale: &'a mut [f64],
-        charge: &'a mut [f64],
-        conductance: &'a mut [f64],
-        capacitance: &'a mut [f64],
+        residual: &'a mut [R],
+        scale: &'a mut [R],
+        charge: &'a mut [R],
+        conductance: &'a mut [R],
+        capacitance: &'a mut [R],
     ) -> Self {
         let dimension = pattern.dimension();
         assert!(
@@ -92,7 +94,7 @@ impl<'a> Output<'a> {
     }
 
     /// Adds `value` to the residual of `row`'s equation.
-    pub fn add_residual(&mut self, row: Node, value: f64) {
+    pub fn add_residual(&mut self, row: Node, value: R) {
         if let Some(row) = row {
             self.residual[row.index()] += value;
             self.scale[row.index()] = self.scale[row.index()].max(value.abs());
@@ -100,21 +102,21 @@ impl<'a> Output<'a> {
     }
 
     /// Adds `value` to the charge of `row`'s equation.
-    pub fn add_charge(&mut self, row: Node, value: f64) {
+    pub fn add_charge(&mut self, row: Node, value: R) {
         if let Some(row) = row {
             self.charge[row.index()] += value;
         }
     }
 
     /// Adds `value` to the conductance at `entry`.
-    pub fn add_conductance(&mut self, entry: Option<Entry>, value: f64) {
+    pub fn add_conductance(&mut self, entry: Option<Entry>, value: R) {
         if let Some(entry) = entry {
             self.conductance[self.pattern.slot(entry)] += value;
         }
     }
 
     /// Adds `value` to the capacitance at `entry`.
-    pub fn add_capacitance(&mut self, entry: Option<Entry>, value: f64) {
+    pub fn add_capacitance(&mut self, entry: Option<Entry>, value: R) {
         if let Some(entry) = entry {
             self.capacitance[self.pattern.slot(entry)] += value;
         }
