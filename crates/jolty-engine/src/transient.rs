@@ -174,7 +174,7 @@ impl Simulator {
         let longest = transient.max_step.unwrap_or(transient.stop / 50.0);
         if transient.stop <= 0.0 || longest <= 0.0 {
             return Err(SimulationError::InvalidAnalysis(format!(
-                "the stop time and longest step must be positive, not {} and {longest}",
+                "the stop time and longest step must be positive, not {:?} and {longest:?}",
                 transient.stop
             )));
         }

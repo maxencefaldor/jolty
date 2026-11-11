@@ -130,7 +130,7 @@ impl ParameterError {
         if value > 0.0 {
             Ok(value)
         } else {
-            Err(Self(format!("{parameter} must be positive, not {value}")))
+            Err(Self(format!("{parameter} must be positive, not {value:?}")))
         }
     }
 
@@ -144,7 +144,7 @@ impl ParameterError {
             Ok(value)
         } else {
             Err(Self(format!(
-                "{parameter} must not be negative, not {value}"
+                "{parameter} must be at least 0, not {value:?}"
             )))
         }
     }

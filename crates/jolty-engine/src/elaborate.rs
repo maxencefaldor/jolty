@@ -156,17 +156,20 @@ pub(crate) fn elaborate(circuit: &Circuit, library: &Library) -> Result<System, 
         .filter(|port| port.role == Role::Ground)
         .map(|port| &port.name)
         .collect();
-    let reference = match grounds.as_slice() {
-        [reference] => *reference,
-        [] => return Err(ElaborationProblem::NoReference(circuit.top.clone()).into()),
-        _ => {
-            return Err(ElaborationProblem::SeveralReferences {
-                top: circuit.top.clone(),
-                count: grounds.len(),
-            }
-            .into());
+    // Without a single reference, the walk numbers every net and goes on to find the
+    // instances' problems, so the error lists them all.
+    let mut problems = Vec::new();
+    let mut reference: BTreeMap<&Name, Node> = BTreeMap::new();
+    match grounds.as_slice() {
+        [ground] => {
+            reference.insert(*ground, None);
         }
-    };
+        [] => problems.push(ElaborationProblem::NoReference(circuit.top.clone())),
+        _ => problems.push(ElaborationProblem::SeveralReferences {
+            top: circuit.top.clone(),
+            count: grounds.len(),
+        }),
+    }
 
     let mut walk = Walk {
         circuit,
@@ -174,9 +177,9 @@ pub(crate) fn elaborate(circuit: &Circuit, library: &Library) -> Result<System, 
         unknowns: Vec::new(),
         nets: HashMap::new(),
         devices: Vec::new(),
-        problems: Vec::new(),
+        problems,
     };
-    walk.component(top, "", &BTreeMap::from([(reference, None)]));
+    walk.component(top, "", &reference);
     let Walk {
         mut unknowns,
         devices,
@@ -404,7 +407,7 @@ mod tests {
             "instance `Q1` is of unknown model `transistor`\n\
              instance `C1` connects `c`, which a capacitor does not have\n\
              instance `C1` leaves terminal `b` of its capacitor unconnected\n\
-             instance `R1` (amp.py:9): resistance must be positive, not -1"
+             instance `R1` (amp.py:9): resistance must be positive, not -1.0"
         );
     }
 
@@ -414,6 +417,34 @@ mod tests {
         assert_eq!(
             error.problems(),
             [ElaborationProblem::NoReference(Name::new("top").unwrap())]
+        );
+        let error = elaborate_json(
+            r#"{"top": {"ports": [{"name": "a", "role": "ground"}, {"name": "b", "role": "ground"}],
+                "instances": []}}"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.problems(),
+            [ElaborationProblem::SeveralReferences {
+                top: Name::new("top").unwrap(),
+                count: 2
+            }]
+        );
+    }
+
+    #[test]
+    fn reports_the_instances_problems_without_a_reference() {
+        let error = elaborate_json(
+            r#"{"top": {"instances": [
+                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": -1},
+                 "terminals": {"a": "x", "b": "y"}}
+            ]}}"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the top component `top` has no ground port to be the reference node\n\
+             instance `R1`: resistance must be positive, not -1.0"
         );
     }
 }

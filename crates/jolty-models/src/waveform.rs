@@ -91,7 +91,7 @@ impl TryFrom<Spec> for Waveform {
                     && period < duration
                 {
                     return Err(ParameterError(format!(
-                        "pulse period {period} is shorter than one pulse, {duration}"
+                        "pulse period {period:?} is shorter than one pulse, {duration:?}"
                     )));
                 }
                 Shape::Pulse(pulse)
@@ -276,7 +276,7 @@ mod tests {
         let short_period = PULSE.replace(r#""width": 3"#, r#""width": 3, "period": 5"#);
         let error = read(&short_period).unwrap_err().to_string();
         assert!(
-            error.starts_with("pulse period 5 is shorter than one pulse, 6"),
+            error.starts_with("pulse period 5.0 is shorter than one pulse, 6.0"),
             "{error}"
         );
         assert!(read(r#"{"piecewise": {"points": [[1, 0], [1, 2]]}}"#).is_err());

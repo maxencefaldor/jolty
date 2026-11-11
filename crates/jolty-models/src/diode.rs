@@ -248,7 +248,7 @@ fn below_one(parameter: &str, value: f64) -> Result<f64, ParameterError> {
         Ok(value)
     } else {
         Err(ParameterError(format!(
-            "{parameter} must be at least 0 and below 1, not {value}"
+            "{parameter} must be at least 0 and below 1, not {value:?}"
         )))
     }
 }
@@ -296,7 +296,7 @@ mod tests {
         let error = Bench::try_new::<Diode>(r#"{"grading_coefficient": 1}"#, 2).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "grading_coefficient must be at least 0 and below 1, not 1"
+            "grading_coefficient must be at least 0 and below 1, not 1.0"
         );
     }
 

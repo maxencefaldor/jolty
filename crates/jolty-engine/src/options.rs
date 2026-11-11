@@ -58,12 +58,12 @@ impl Options {
         ];
         if let Some((name, value)) = tolerances.into_iter().find(|&(_, value)| value <= 0.0) {
             return Err(SimulationError::InvalidOptions(format!(
-                "{name} must be positive, not {value}"
+                "{name} must be positive, not {value:?}"
             )));
         }
         if self.gmin < 0.0 {
             return Err(SimulationError::InvalidOptions(format!(
-                "gmin must not be negative, not {}",
+                "gmin must be at least 0, not {:?}",
                 self.gmin
             )));
         }

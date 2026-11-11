@@ -47,7 +47,7 @@ impl Simulator {
         }
         if let Some(frequency) = ac.frequencies.iter().find(|&&frequency| frequency < 0.0) {
             return Err(SimulationError::InvalidAnalysis(format!(
-                "frequencies must not be negative, not {frequency}"
+                "frequencies must be at least 0, not {frequency:?}"
             )));
         }
         let index = self.source_index(&ac.source)?;

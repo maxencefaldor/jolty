@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn rejects_non_positive_values() {
         let error = Bench::try_new::<Resistor>(r#"{"resistance": 0}"#, 2).unwrap_err();
-        assert_eq!(error.to_string(), "resistance must be positive, not 0");
+        assert_eq!(error.to_string(), "resistance must be positive, not 0.0");
         let error = Bench::try_new::<Capacitor>(r#"{"capacity": 1}"#, 2).unwrap_err();
         assert!(
             error.to_string().starts_with("unknown field `capacity`"),
