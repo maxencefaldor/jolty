@@ -12,7 +12,7 @@
 //! derivatives of the resistive and reactive parts.
 
 /// An integration formula.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
     /// The first-order backward Euler formula: stable and damped, used to start and to restart

@@ -92,6 +92,12 @@ impl Simulator {
         &self.system.unknowns
     }
 
+    /// The number of devices, with every component instance unfolded.
+    #[must_use]
+    pub fn device_count(&self) -> usize {
+        self.system.devices.len()
+    }
+
     /// The unknown named `name`: a net's path such as `amplifier/mid`, or an instance's path
     /// and label such as `V1:current`.
     #[must_use]

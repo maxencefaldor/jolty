@@ -24,8 +24,7 @@ pub struct OperatingPoint {
 }
 
 /// How an operating point was found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
     /// Newton iteration from the initial guess.
     Direct,
@@ -33,6 +32,18 @@ pub enum Strategy {
     GminStepping,
     /// Newton iteration while every source ramps up from zero.
     SourceStepping,
+}
+
+impl Strategy {
+    /// The strategy's name in snake case, such as `gmin_stepping`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::GminStepping => "gmin_stepping",
+            Self::SourceStepping => "source_stepping",
+        }
+    }
 }
 
 impl Simulator {
