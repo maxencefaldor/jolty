@@ -7,6 +7,8 @@ Each build checks every device and connection, reports each problem with the scr
 
 jolty is at its first milestone: board-level circuits of passive devices, sources and diodes, simulated at the operating point, over DC sweeps, in frequency and in time.
 
+The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.
+
 ## 🚀 Quick start
 
 Building jolty needs [uv](https://docs.astral.sh/uv/), which installs Python 3.14, and a [Rust toolchain](https://rustup.rs/).

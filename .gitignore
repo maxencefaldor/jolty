@@ -12,3 +12,4 @@ dist/
 # What building and simulating the examples writes
 examples/*.jolty.json
 examples/*.results.npz
+site/

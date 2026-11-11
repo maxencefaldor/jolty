@@ -1,25 +1,27 @@
 # Copyright 2026 Maxence Faldor
 """Write circuits as Python: components, their ports, what they place and how it joins.
 
-A component is a function decorated with :func:`component`. It receives a
-:class:`Builder`, declares ports, places devices and other components, and connects
-their terminals. Calling the decorated function with its parameters returns a
-:class:`Component`, which another component places, or :func:`circuit` turns into the
-circuit format with it at the top.
+A component is a function decorated with [`component`][jolty.builder.component]. It
+receives a [`Builder`][jolty.builder.Builder], declares ports, places devices and other
+components, and connects their terminals. Calling the decorated function with its
+parameters returns a [`Component`][jolty.builder.Component], which another component
+places, or [`circuit`][jolty.builder.circuit] turns into the circuit format with it at
+the top.
 
->>> from jolty import devices
->>> from jolty.units import V, kohm
->>> @component
-... def divider(c: Builder) -> None:
-...     ground = c.port("ground", Role.GROUND)
-...     source = c.place(devices.voltage_source(5 * V), id="V1")
-...     upper = c.place(devices.resistor(1 * kohm), id="R1")
-...     lower = c.place(devices.resistor(1 * kohm), id="R2")
-...     c.connect(source.positive, upper.a)
-...     c.connect(upper.b, lower.a, name="out")
-...     c.connect(lower.b, source.negative, ground)
->>> sorted(circuit(divider()).components)
-['divider']
+Examples:
+    >>> from jolty import devices
+    >>> from jolty.units import V, kohm
+    >>> @component
+    ... def divider(c: Builder) -> None:
+    ...     ground = c.port("ground", Role.GROUND)
+    ...     source = c.place(devices.voltage_source(5 * V), id="V1")
+    ...     upper = c.place(devices.resistor(1 * kohm), id="R1")
+    ...     lower = c.place(devices.resistor(1 * kohm), id="R2")
+    ...     c.connect(source.positive, upper.a)
+    ...     c.connect(upper.b, lower.a, name="out")
+    ...     c.connect(lower.b, source.negative, ground)
+    >>> sorted(circuit(divider()).components)
+    ['divider']
 """
 
 import contextlib
@@ -75,11 +77,12 @@ type Point = Terminal | Net
 class Placed:
     """A placed device or component, whose terminals are its attributes.
 
-    >>> from jolty import devices
-    >>> from jolty.units import ohm
-    >>> resistor = Placed("R1", devices.resistor(1 * ohm).terminals)
-    >>> resistor.a
-    Terminal(instance='R1', name='a')
+    Examples:
+        >>> from jolty import devices
+        >>> from jolty.units import ohm
+        >>> resistor = Placed("R1", devices.resistor(1 * ohm).terminals)
+        >>> resistor.a
+        Terminal(instance='R1', name='a')
     """
 
     __slots__ = ("_id", "_terminals")

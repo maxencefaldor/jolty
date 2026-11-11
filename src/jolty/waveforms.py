@@ -5,8 +5,11 @@ Levels are voltages for a voltage source and currents for a current source; the 
 checks them as it reads the waveform. Every analysis but a transient one reads the level
 at time zero.
 
->>> from jolty.units import V, ns, us
->>> pulse = Pulse(initial=0 * V, pulsed=1 * V, rise=1 * ns, fall=1 * ns, width=5 * us)
+Examples:
+    >>> from jolty.units import V, ns, us
+    >>> pulse = Pulse(
+    ...     initial=0 * V, pulsed=1 * V, rise=1 * ns, fall=1 * ns, width=5 * us
+    ... )
 """
 
 from collections.abc import Sequence

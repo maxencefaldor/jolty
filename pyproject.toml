@@ -37,6 +37,10 @@ dev = [
     "rumdl",
     "ty",
 ]
+docs = [
+    "mkdocstrings-python>=2.0.10",
+    "zensical>=0.1.1",
+]
 
 [tool.uv]
 # uv rebuilds the extension when one of these changes, its Rust sources included.
@@ -81,6 +85,8 @@ convention = "google"
 # Examples are circuits written as scripts: their numbers are the circuit, and
 # they run as scripts, outside any package.
 "examples/**" = ["INP001", "PLR2004"]
+# Scripts that write the docs' pages run outside any package, and say what they wrote.
+"docs/*.py" = ["INP001", "T201"]
 "src/jolty/cli.py" = ["T201"]  # a command line prints
 "src/jolty/units.py" = ["N816"]  # unit names keep their SI case: kHz, mV, uF
 
@@ -92,7 +98,7 @@ docstring-code-format = true
 all = "error"
 
 [tool.ty.src]
-include = ["src", "tests", "examples"]
+include = ["src", "tests", "examples", "docs"]
 
 [tool.pytest]
 testpaths = ["src", "tests"]

@@ -1,9 +1,10 @@
 # Copyright 2026 Maxence Faldor
 """The canonical circuit format, as the engine reads it.
 
-A :class:`Circuit` is a set of named components and the name of the top one. Build
-scripts never write this format by hand: :mod:`jolty.builder` produces it, and the
-engine validates and elaborates it. Parameter values are numbers in SI base units.
+A [`Circuit`][jolty.ir.Circuit] is a set of named components and the name of the top
+one. Build scripts never write this format by hand: [`jolty.builder`][jolty.builder]
+produces it, and the engine validates and elaborates it. Parameter values are numbers in
+SI base units.
 """
 
 from enum import StrEnum

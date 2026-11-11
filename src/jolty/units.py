@@ -1,14 +1,15 @@
 # Copyright 2026 Maxence Faldor
 """Physical quantities, so a value in farads cannot go where ohms belong.
 
-Build scripts write values as numbers times units, such as ``10 * kohm`` or
-``4.7 * uF``. A :class:`Quantity` holds its value in SI base units and its
-:class:`Dimension`. Arithmetic combines dimensions, and every device checks the
-dimension of each parameter as it reads it.
+Build scripts write values as numbers times units, such as ``10 * kohm`` or ``4.7 *
+uF``. A [`Quantity`][jolty.units.Quantity] holds its value in SI base units and its
+[`Dimension`][jolty.units.Dimension]. Arithmetic combines dimensions, and every device
+checks the dimension of each parameter as it reads it.
 
->>> from jolty.units import V, kohm
->>> print(5 * V / (1 * kohm))
-5 mA
+Examples:
+    >>> from jolty.units import V, kohm
+    >>> print(5 * V / (1 * kohm))
+    5 mA
 """
 
 import math
@@ -185,12 +186,13 @@ def finite(value: float, name: str) -> float:
 def format_si(value: float, symbol: str) -> str:
     """`value` to four significant digits, with the SI prefix that puts it in [1, 1000).
 
-    >>> format_si(4700.0, "Ω")
-    '4.7 kΩ'
-    >>> format_si(-2.5e-9, "F")
-    '-2.5 nF'
-    >>> format_si(0.99999, "V")
-    '1 V'
+    Examples:
+        >>> format_si(4700.0, "Ω")
+        '4.7 kΩ'
+        >>> format_si(-2.5e-9, "F")
+        '-2.5 nF'
+        >>> format_si(0.99999, "V")
+        '1 V'
     """
     rounded = float(f"{value:.4g}")
     if rounded == 0 or not math.isfinite(rounded):

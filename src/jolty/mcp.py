@@ -1,9 +1,9 @@
 # Copyright 2026 Maxence Faldor
 """The MCP server: jolty's commands as tools, for any agent harness.
 
-Every tool derives from a request model of :mod:`jolty.service`, so its arguments,
-defaults and descriptions match the ``jolty`` command line exactly. Each tool answers
-with the text the command line prints and with the result as structured content.
+Every tool derives from a request model of [`jolty.service`][jolty.service], so its
+arguments, defaults and descriptions match the ``jolty`` command line exactly. Each tool
+answers with the text the command line prints and with the result as structured content.
 
 Scripts run in a process of their own, outside the server, so nothing a script prints
 can reach the protocol stream. Serve with ``jolty-mcp`` or ``python -m jolty.mcp``.

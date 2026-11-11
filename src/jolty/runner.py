@@ -2,11 +2,12 @@
 """Run scripts in a process of their own.
 
 The service starts ``python -P -m jolty.runner DIRECTORY`` for every command that runs
-scripts. The runner reads the :class:`Job` in ``DIRECTORY/job.json``. It calls the
-script's ``build()`` and elaborates the circuit it returns, then, when the job names a
-plan, calls the plan's ``plan()`` and runs each analysis. It writes the
-:data:`Outcome`, what was built or why it failed, to ``DIRECTORY/outcome.json``, and the
-results of the analyses to ``DIRECTORY/results.npz``.
+scripts. The runner reads the [`Job`][jolty.runner.Job] in ``DIRECTORY/job.json``. It
+calls the script's ``build()`` and elaborates the circuit it returns, then, when the job
+names a plan, calls the plan's ``plan()`` and runs each analysis. It writes the
+[`Outcome`][jolty.runner.Outcome], what was built or why it failed, to
+``DIRECTORY/outcome.json``, and the results of the analyses to
+``DIRECTORY/results.npz``.
 
 Scripts and analyses therefore run outside the command line and the MCP server, whose
 standard output may be a protocol channel: what a script prints is captured, a timeout
@@ -32,10 +33,10 @@ from jolty.results import Result
 from jolty.simulate import Simulation
 
 JOB: Final = "job.json"
-"""The file in the job's directory that holds the :class:`Job`."""
+"""The file in the job's directory that holds the job."""
 
 OUTCOME: Final = "outcome.json"
-"""The file in the job's directory where the runner writes its :data:`Outcome`."""
+"""The file in the job's directory where the runner writes what the job produced."""
 
 RESULTS: Final = "results.npz"
 """The file in the job's directory where the runner writes the analyses' results."""

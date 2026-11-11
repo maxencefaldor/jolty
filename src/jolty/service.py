@@ -5,8 +5,8 @@ Each command is a request model and an async function that takes it with the
 settings. The command line and the MCP server derive from them, so both front ends share
 one set of argument names, defaults and descriptions, and print the same text.
 
-Scripts run in a child process (see :mod:`jolty.runner`) within the configured time
-limit, and what they print is captured and returned.
+Scripts run in a child process (see [`jolty.runner`][jolty.runner]) within the
+configured time limit, and what they print is captured and returned.
 """
 
 import asyncio

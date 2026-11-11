@@ -1,22 +1,24 @@
 # Copyright 2026 Maxence Faldor
 """Run analyses on a circuit with the Rust engine.
 
-A :class:`Simulation` elaborates a circuit once and runs any number of analyses on it.
+A [`Simulation`][jolty.simulate.Simulation] elaborates a circuit once and runs any
+number of analyses on it.
 
->>> from jolty import Builder, Role, component, devices
->>> from jolty.plan import OperatingPoint
->>> from jolty.units import V, kohm
->>> @component
-... def divider(c: Builder) -> None:
-...     ground = c.port("ground", Role.GROUND)
-...     source = c.place(devices.voltage_source(5 * V), id="V1")
-...     upper = c.place(devices.resistor(1 * kohm), id="R1")
-...     lower = c.place(devices.resistor(1 * kohm), id="R2")
-...     c.connect(source.positive, upper.a)
-...     c.connect(upper.b, lower.a, name="out")
-...     c.connect(lower.b, source.negative, ground)
->>> Simulation(divider()).run(OperatingPoint()).voltage("out")
-2.5
+Examples:
+    >>> from jolty import Builder, Role, component, devices
+    >>> from jolty.plan import OperatingPoint
+    >>> from jolty.units import V, kohm
+    >>> @component
+    ... def divider(c: Builder) -> None:
+    ...     ground = c.port("ground", Role.GROUND)
+    ...     source = c.place(devices.voltage_source(5 * V), id="V1")
+    ...     upper = c.place(devices.resistor(1 * kohm), id="R1")
+    ...     lower = c.place(devices.resistor(1 * kohm), id="R2")
+    ...     c.connect(source.positive, upper.a)
+    ...     c.connect(upper.b, lower.a, name="out")
+    ...     c.connect(lower.b, source.negative, ground)
+    >>> Simulation(divider()).run(OperatingPoint()).voltage("out")
+    2.5
 """
 
 import json

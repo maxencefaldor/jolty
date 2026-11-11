@@ -1,9 +1,9 @@
 # Copyright 2026 Maxence Faldor
 """The ``jolty`` command line.
 
-Each subcommand extends a request model of :mod:`jolty.service` with an output format,
-so the command line takes exactly the arguments the MCP tools take and prints the text
-they return.
+Each subcommand extends a request model of [`jolty.service`][jolty.service] with an
+output format, so the command line takes exactly the arguments the MCP tools take and
+prints the text they return.
 """
 
 import json
@@ -86,7 +86,10 @@ class Jolty(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Reads the command line only; configuration lives in :class:`Settings`."""
+        """Reads the command line only.
+
+        Configuration lives in [`Settings`][jolty.settings.Settings].
+        """
         return (init_settings,)
 
     def cli_cmd(self) -> None:

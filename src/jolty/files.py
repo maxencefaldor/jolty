@@ -1,22 +1,23 @@
 # Copyright 2026 Maxence Faldor
 """Circuit and results files.
 
-A circuit file holds a :class:`jolty.ir.Circuit` as JSON. A results file holds the
+A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A results file holds the
 results of named analyses as a NumPy ``.npz`` archive: a JSON header that names the
 circuit's unknowns and says what each analysis is, then the arrays of each analysis
 under keys such as ``step.times`` and ``step.values``.
 
->>> import tempfile
->>> from pathlib import Path
->>> from jolty import results
->>> point = results.OperatingPoint(
-...     (results.Unknown("out", "voltage"),), np.array([2.5]), "direct"
-... )
->>> with tempfile.TemporaryDirectory() as directory:
-...     path = Path(directory) / "divider.results.npz"
-...     save_results(path, {"op": point})
-...     load_results(path)["op"].voltage("out")
-2.5
+Examples:
+    >>> import tempfile
+    >>> from pathlib import Path
+    >>> from jolty import results
+    >>> point = results.OperatingPoint(
+    ...     (results.Unknown("out", "voltage"),), np.array([2.5]), "direct"
+    ... )
+    >>> with tempfile.TemporaryDirectory() as directory:
+    ...     path = Path(directory) / "divider.results.npz"
+    ...     save_results(path, {"op": point})
+    ...     load_results(path)["op"].voltage("out")
+    2.5
 """
 
 from collections.abc import Mapping

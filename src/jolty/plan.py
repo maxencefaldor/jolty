@@ -4,8 +4,9 @@
 A plan is kept apart from the circuit: the circuit says what exists, the plan how to
 simulate it.
 
->>> from jolty.units import us
->>> plan = Plan({"step": Transient(stop=10 * us)})
+Examples:
+    >>> from jolty.units import us
+    >>> plan = Plan({"step": Transient(stop=10 * us)})
 """
 
 import math
@@ -138,9 +139,10 @@ class Plan:
 def decade(start: Quantity, stop: Quantity, per_decade: int) -> list[Quantity]:
     """Frequencies from `start` to `stop`, `per_decade` of them spaced evenly a decade.
 
-    >>> from jolty.units import Hz
-    >>> [str(f) for f in decade(1 * Hz, 100 * Hz, 2)]
-    ['1 Hz', '3.162 Hz', '10 Hz', '31.62 Hz', '100 Hz']
+    Examples:
+        >>> from jolty.units import Hz
+        >>> [str(f) for f in decade(1 * Hz, 100 * Hz, 2)]
+        ['1 Hz', '3.162 Hz', '10 Hz', '31.62 Hz', '100 Hz']
     """
     low, high = (
         start.to(FREQUENCY, "a sweep's start"),
@@ -160,9 +162,10 @@ def decade(start: Quantity, stop: Quantity, per_decade: int) -> list[Quantity]:
 def linear(start: Quantity, stop: Quantity, points: int) -> list[Quantity]:
     """`points` quantities evenly spaced from `start` to `stop`, both included.
 
-    >>> from jolty.units import V
-    >>> [str(level) for level in linear(0 * V, 1 * V, 3)]
-    ['0 V', '500 mV', '1 V']
+    Examples:
+        >>> from jolty.units import V
+        >>> [str(level) for level in linear(0 * V, 1 * V, 3)]
+        ['0 V', '500 mV', '1 V']
     """
     if points < 2:  # noqa: PLR2004 - a start and a stop
         message = f"a linear sweep has at least two points, not {points}"

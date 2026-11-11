@@ -12,6 +12,7 @@ uv run ruff format          # format Python
 uv run ruff check           # lint Python, with every rule enabled
 uv run ty check             # types
 uv run rumdl check .        # Markdown
+uv run python docs/reference.py  # regenerate the reference pages from the code
 cargo fmt --all             # format Rust
 cargo clippy --workspace --all-targets -- -D warnings  # lint Rust
 cargo test --workspace      # Rust tests

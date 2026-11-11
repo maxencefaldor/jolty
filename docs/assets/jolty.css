@@ -1,0 +1,58 @@
+/* jolty's docs: a deep blue like a solder mask, an amber like a live trace, one column of text. */
+
+:root {
+  --jolty-blue: #1f3a8a;
+  --jolty-blue-light: #3b5bcc;
+  --jolty-amber: #d97706;
+  --jolty-line: #d0d7de;
+}
+
+[data-md-color-primary="custom"] {
+  --md-primary-fg-color: var(--jolty-blue);
+  --md-primary-fg-color--light: var(--jolty-blue-light);
+  --md-primary-fg-color--dark: #172b66;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: rgb(255 255 255 / 70%);
+  --md-typeset-a-color: var(--jolty-blue-light);
+}
+
+[data-md-color-accent="custom"] {
+  --md-accent-fg-color: var(--jolty-amber);
+  --md-accent-fg-color--transparent: rgb(217 119 6 / 10%);
+  --md-accent-bg-color: #ffffff;
+  --md-accent-bg-color--light: rgb(255 255 255 / 70%);
+}
+
+/* The dark scheme lightens links and the accent, which would lack contrast on slate. */
+[data-md-color-scheme="slate"] {
+  --jolty-line: #3d444d;
+  --md-typeset-a-color: #8fb3ff;
+}
+
+[data-md-color-scheme="slate"][data-md-color-accent="custom"] {
+  --md-accent-fg-color: #fbbf24;
+  --md-accent-fg-color--transparent: rgb(251 191 36 / 12%);
+}
+
+/* The home page: a centered hero, then cards. */
+.jolty-hero {
+  margin: 1.5rem auto 2rem;
+  text-align: center;
+}
+
+.jolty-hero h1 {
+  margin-bottom: 0.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset .jolty-tagline {
+  margin-top: 0;
+  color: var(--md-default-fg-color--light);
+  font-size: 1.15rem;
+}
+
+.md-typeset .jolty-links.grid.cards > ul > li {
+  border-color: var(--jolty-line);
+  border-top: 3px solid var(--jolty-amber);
+}

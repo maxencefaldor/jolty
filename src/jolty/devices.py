@@ -5,9 +5,10 @@ Each function checks the dimension of every parameter it reads, so a capacitance
 passed where a resistance belongs fails on the line that passed it. Parameters left out
 take the engine's defaults.
 
->>> from jolty.units import kohm
->>> resistor(10 * kohm).parameters
-{'resistance': 10000.0}
+Examples:
+    >>> from jolty.units import kohm
+    >>> resistor(10 * kohm).parameters
+    {'resistance': 10000.0}
 """
 
 from dataclasses import dataclass
