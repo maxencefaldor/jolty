@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Copyright 2026 Maxence Faldor
+#
+# Runs every check CI runs on each commit about to be pushed, so CI never sees a change
+# that fails. Each commit is checked out on its own, apart from any uncommitted work, and
+# builds in the repository's Cargo target directory to reuse what is already compiled.
+# Enable the hook once per clone with `git config core.hooksPath .githooks`.
+
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}"
+
+while read -r _ local_commit _ _; do
+    # A deleted branch pushes no commit.
+    if [[ "$local_commit" =~ ^0+$ ]]; then
+        continue
+    fi
+    tree="$(mktemp -d)"
+    trap 'git -C "$root" worktree remove --force "$tree"' EXIT
+    git -C "$root" worktree add --quiet --detach "$tree" "$local_commit"
+    echo "checking $(git -C "$root" log -1 --format='%h %s' "$local_commit")" >&2
+    "$tree/scripts/check"
+    git -C "$root" worktree remove --force "$tree"
+    trap - EXIT
+done

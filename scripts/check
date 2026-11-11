@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Copyright 2026 Maxence Faldor
+#
+# Every check a change must pass, exactly as CI runs them.
+#
+#   scripts/check            every group, as the pre-push hook runs it
+#   scripts/check rust       Rust format, lints and tests
+#   scripts/check python     Python format, lints, types, Markdown, tests and examples
+#   scripts/check docs       the generated reference pages and the documentation site
+#
+# CI runs each group in a job of its own, after installing what the group needs, so a
+# change that passes here passes there. The Python group's differential tests run when
+# ngspice is installed.
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+check_rust() {
+    PYO3_PYTHON="${PYO3_PYTHON:-$(uv python find)}"
+    export PYO3_PYTHON
+    cargo fmt --all --check
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo test --workspace --locked
+}
+
+check_python() {
+    uv sync --locked
+    uv run --locked ruff format --check
+    uv run --locked ruff check
+    uv run --locked ty check
+    uv run --locked rumdl check .
+    uv run --locked pytest
+    for example in examples/*.py; do
+        uv run --locked jolty simulate "$example" > /dev/null
+    done
+}
+
+check_docs() {
+    uv sync --locked --group docs
+    uv run --locked python docs/reference.py > /dev/null
+    git diff --exit-code docs/reference/
+    uv run --locked zensical build --clean
+}
+
+case "${1:-all}" in
+    rust | python | docs) "check_$1" ;;
+    all) check_rust && check_python && check_docs ;;
+    *)
+        echo "usage: scripts/check [rust | python | docs]" >&2
+        exit 2
+        ;;
+esac

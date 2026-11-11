@@ -14,12 +14,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UV_LOCKED: "1"
+  FORCE_COLOR: "1"
 
 jobs:
   build:
     name: Build the site
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -27,25 +27,21 @@ jobs:
         with:
           enable-cache: true
       - uses: Swatinem/rust-cache@v2
-      - name: Install
-        run: uv sync --group docs
-      - name: Check the generated reference pages are current
-        run: |
-          uv run python docs/reference.py
-          git diff --exit-code docs/reference/
-      - name: Build
-        run: uv run zensical build --clean
+      - name: Check the reference pages and build the site
+        run: scripts/check docs
       - name: Keep the site for Pages
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.event.repository.has_pages
         uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
   publish:
     name: Publish to GitHub Pages
-    if: github.event_name != 'pull_request'
+    # A repository publishes once GitHub Pages is enabled for it, with GitHub Actions as
+    # its source; until then the site is built and checked, and not published.
+    if: github.event_name != 'pull_request' && github.event.repository.has_pages
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       pages: write

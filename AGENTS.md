@@ -6,6 +6,7 @@ The README says what jolty does; the rules below say how to change it.
 ## Commands
 
 ```sh
+scripts/check               # every check below, exactly as CI runs them
 uv sync                     # build the engine, install Python 3.14 and every tool from uv.lock
 uv run pytest               # Python tests and doctests; warnings are errors
 uv run ruff format          # format Python
@@ -19,7 +20,8 @@ cargo clippy --workspace --all-targets -- -D warnings  # lint Rust
 cargo test --workspace      # Rust tests
 ```
 
-A change is done when every check passes.
+A change is done when `scripts/check` passes; CI runs the same script, one group per job.
+Enable the pre-push hook once per clone, `git config core.hooksPath .githooks`, so no push reaches CI without passing it.
 `uv sync` rebuilds the engine whenever a Rust source changes.
 PyO3 builds against the interpreter that `PYO3_PYTHON` names, so set it to `.venv/bin/python` before running cargo.
 
