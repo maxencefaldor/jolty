@@ -9,8 +9,8 @@ use crate::junction::{
 };
 use crate::stamp::Stamp;
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, NativeDevice, Node, Output, ParameterError,
-    Quantity, Unknown,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
+    ParameterError, Quantity, Unknown,
 };
 
 /// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,
@@ -522,16 +522,21 @@ struct Bias {
 
 impl NativeDevice for Mosfet {
     const NAME: &'static str = "mosfet";
-    const TERMINALS: &'static [&'static str] = &["drain", "gate", "source", "bulk"];
-    const BRANCHES: &'static [Branch] = &[
-        Branch::new(0, 2, BranchKind::Conductive),
-        Branch::new(3, 0, BranchKind::Conductive),
-        Branch::new(3, 2, BranchKind::Conductive),
-        Branch::new(1, 2, BranchKind::Capacitive),
-        Branch::new(1, 0, BranchKind::Capacitive),
-        Branch::new(1, 3, BranchKind::Capacitive),
-    ];
     type Parameters = MosfetParameters;
+
+    fn interface(_: &MosfetParameters) -> Interface {
+        Interface::new(
+            &["drain", "gate", "source", "bulk"],
+            &[
+                Branch::new(0, 2, BranchKind::Conductive),
+                Branch::new(3, 0, BranchKind::Conductive),
+                Branch::new(3, 2, BranchKind::Conductive),
+                Branch::new(1, 2, BranchKind::Capacitive),
+                Branch::new(1, 0, BranchKind::Capacitive),
+                Branch::new(1, 3, BranchKind::Capacitive),
+            ],
+        )
+    }
 
     fn new(
         parameters: MosfetParameters,
@@ -929,7 +934,7 @@ mod tests {
     fn drain_current(vgs: f64, vds: f64) -> f64 {
         let parameters = r#"{"threshold_voltage": 1, "transconductance_parameter": 1e-4,
             "saturation_current": 1e-30}"#;
-        Bench::new::<Mosfet>(parameters, 4)
+        Bench::new::<Mosfet>(parameters)
             .settle(&[vds, vgs, 0.0, -5.0])
             .residual[0]
     }
@@ -951,7 +956,7 @@ mod tests {
     fn the_body_effect_raises_the_threshold() {
         let parameters = r#"{"threshold_voltage": 1, "body_effect": 0.5,
             "surface_potential": 0.7, "saturation_current": 1e-30}"#;
-        let mut bench = Bench::new::<Mosfet>(parameters, 4);
+        let mut bench = Bench::new::<Mosfet>(parameters);
         let current = bench.settle(&[5.0, 2.0, 0.0, -1.0]).residual[0];
         let threshold = 1.0 + 0.5 * (1.7_f64.sqrt() - 0.7_f64.sqrt());
         let expected = 2e-5 / 2.0 * (2.0 - threshold) * (2.0 - threshold);
@@ -960,8 +965,8 @@ mod tests {
 
     #[test]
     fn a_p_channel_mirrors_an_n_channel() {
-        let mut n = Bench::new::<Mosfet>(CHARGED, 4);
-        let mut p = Bench::new::<Mosfet>(&p_channel(CHARGED), 4);
+        let mut n = Bench::new::<Mosfet>(CHARGED);
+        let mut p = Bench::new::<Mosfet>(&p_channel(CHARGED));
         let x = [3.0, 2.0, 0.2, -0.5, 1e-4, -2e-4, 3e-4];
         let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
         let n_residuals = n.settle(&x).residual;
@@ -976,7 +981,7 @@ mod tests {
 
     #[test]
     fn meyers_capacitances_share_the_oxide() {
-        let mut bench = Bench::new::<Mosfet>(CHARGED, 4);
+        let mut bench = Bench::new::<Mosfet>(CHARGED);
         // The gate's derivatives with respect to the three displacement currents: Meyer's
         // capacitances as fractions of the oxide's.
         let mut shares = |gate: f64, drain: f64| {
@@ -995,7 +1000,7 @@ mod tests {
     fn unknowns_follow_the_resistances_and_the_oxide() {
         let parameters = r#"{"drain_resistance": 10, "sheet_resistance": 20,
             "source_squares": 0.5, "oxide_thickness": 1e-7}"#;
-        let bench = Bench::new::<Mosfet>(parameters, 4);
+        let bench = Bench::new::<Mosfet>(parameters);
         assert_eq!(
             bench.unknowns(),
             [
@@ -1010,12 +1015,12 @@ mod tests {
                 "device:gate_bulk_displacement"
             ]
         );
-        assert_eq!(Bench::new::<Mosfet>("{}", 4).unknowns().len(), 4);
+        assert_eq!(Bench::new::<Mosfet>("{}").unknowns().len(), 4);
     }
 
     #[test]
     fn rejects_inconsistent_parameters() {
-        let error = |parameters| Bench::try_new::<Mosfet>(parameters, 4).unwrap_err().0;
+        let error = |parameters| Bench::try_new::<Mosfet>(parameters).unwrap_err().0;
         assert_eq!(
             error(r#"{"substrate_doping": 1e22}"#),
             "substrate_doping needs an oxide_thickness"

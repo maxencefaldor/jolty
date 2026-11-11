@@ -1,12 +1,13 @@
 # Copyright 2026 Maxence Faldor
-"""Write the reference pages that come from the code: commands, rules and settings.
+"""Write the reference pages that come from the code.
 
 Run from the repository root: ``uv run python docs/reference.py``. Every option's flag,
 default and description come from the request models in `jolty.service`, the single
 definition the command line and the MCP server share; every rule's level and condition
-come from the engine, as ``jolty explain`` prints them; and every setting comes from
-`jolty.settings.Settings`. The pages therefore match the tools exactly, and CI fails
-when a page is stale.
+come from the engine, as ``jolty explain`` prints them; every setting comes from
+`jolty.settings.Settings`; and the expression language's description comes with the
+engine's parser. The pages therefore match the tools exactly, and CI fails when a page
+is stale.
 """
 
 import re
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
+from jolty import _core
 from jolty.checks import rules
 from jolty.cli import Jolty
 from jolty.settings import Settings
@@ -188,6 +190,7 @@ def main() -> None:
         REFERENCE / "cli.md": cli_page(),
         REFERENCE / "rules.md": rules_page(),
         REFERENCE / "configuration.md": settings_page(),
+        REFERENCE / "expressions.md": _core.EXPRESSIONS,
     }
     for page, text in pages.items():
         page.write_text(text, encoding="utf-8")

@@ -12,6 +12,7 @@ the devices, the waveforms and the numerics against the reference simulator.
 """
 
 import math
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -45,6 +46,7 @@ from jolty.units import (
     F,
     Hz,
     MHz,
+    Mohm,
     Quantity,
     V,
     fA,
@@ -673,6 +675,97 @@ def cmos_inverter(c: Builder) -> None:
     )
 
 
+@component
+def behavioral(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    signal = Sine(
+        offset=0.2 * V, amplitude=1 * V, frequency=10 * kHz, phase=math.pi / 2
+    )
+    source = c.place(devices.voltage_source(signal), id="V1")
+    upper = c.place(devices.resistor(1 * kohm), id="R1")
+    lower = c.place(devices.resistor(1 * kohm), id="R2")
+    shaper = c.place(
+        devices.behavioral_voltage_source(
+            "2 * tanh(v(x) / 0.5) + 0.1 * v(x) ^ 2 + 0.05 * sin(2 * pi * 1e4 * time)"
+        ),
+        id="B1",
+    )
+    series = c.place(devices.resistor(1 * kohm), id="R3")
+    load = c.place(
+        devices.behavioral_current_source("v(y) > 0 ? 2e-3 * v(y) : 1e-4 * v(y)"),
+        id="B2",
+    )
+    smoothing = c.place(devices.capacitor(100 * nF), id="C1")
+    sink = c.place(devices.resistor(2 * kohm), id="R4")
+    mirror = c.place(
+        devices.behavioral_current_source("0.5 * i(s) + v(y) * i(s)"), id="B3"
+    )
+    output = c.place(devices.resistor(1 * kohm), id="R5")
+    c.connect(source.positive, upper.a, name="in")
+    c.connect(upper.b, lower.a, shaper.x, name="x")
+    c.connect(shaper.positive, series.a, name="shaped")
+    c.connect(
+        series.b,
+        load.positive,
+        load.y,
+        smoothing.a,
+        mirror.s_positive,
+        mirror.y,
+        name="y",
+    )
+    c.connect(mirror.s_negative, sink.a, name="w")
+    c.connect(mirror.negative, output.a, name="z")
+    c.connect(
+        source.negative,
+        lower.b,
+        shaper.negative,
+        load.negative,
+        smoothing.b,
+        sink.b,
+        mirror.positive,
+        output.b,
+        ground,
+    )
+
+
+@component
+def switched(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    pulse = Pulse(
+        initial=0 * V,
+        pulsed=3 * V,
+        delay=10 * us,
+        rise=5 * us,
+        fall=5 * us,
+        width=30 * us,
+        period=100 * us,
+    )
+    control = c.place(devices.voltage_source(pulse), id="V1")
+    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    feed = c.place(devices.resistor(1 * kohm), id="R1")
+    switch = c.place(
+        devices.voltage_controlled_switch(
+            on_resistance=10 * ohm,
+            off_resistance=1 * Mohm,
+            on_voltage=2 * V,
+            off_voltage=1 * V,
+        ),
+        id="S1",
+    )
+    hold = c.place(devices.capacitor(10 * nF), id="C1")
+    c.connect(control.positive, switch.control_positive, name="control")
+    c.connect(supply.positive, feed.a, name="supply")
+    c.connect(feed.b, switch.positive, hold.a, name="out")
+    c.connect(
+        control.negative,
+        supply.negative,
+        switch.negative,
+        switch.control_negative,
+        hold.b,
+        ground,
+    )
+
+
 # Netlists and raw files.
 
 
@@ -700,6 +793,9 @@ ELEMENTS = {
     "jfet": Element("J", ("drain", "gate", "source")),
     "bipolar_transistor": Element("Q", ("collector", "base", "emitter")),
     "mosfet": Element("M", ("drain", "gate", "source", "bulk")),
+    "behavioral_voltage_source": Element("B", ("positive", "negative")),
+    "behavioral_current_source": Element("B", ("positive", "negative")),
+    "voltage_controlled_switch": Element("A", _CONTROLLED),
 }
 
 
@@ -785,11 +881,67 @@ def netlist(circuit: ir.Circuit, *, excited: str | None = None) -> list[str]:
                 kind, card, parameters = _model_card(model, values)
                 lines.append(f".model M{instance.id} {kind}({card})")
                 value = f"M{instance.id} {parameters}".rstrip()
+            case "behavioral_voltage_source" | "behavioral_current_source":
+                expression, senses = _behavior(instance, ground)
+                lines.extend(senses)
+                output = "V" if model == "behavioral_voltage_source" else "I"
+                value = f"{output}={{{expression}}}"
+            case "voltage_controlled_switch":
+                # ngspice runs PSpice's switch as the XSPICE model `pswitch`, whose
+                # control port draws current through `r_cntl_in`: made negligible here.
+                positive, negative, control_positive, control_negative = nodes.split()
+                control = f"%gd({control_positive} {control_negative})"
+                nodes = f"{control} %gd({positive} {negative})"
+                card = " ".join(
+                    f"{name}={values[key]!r}"
+                    for key, name in _SWITCH_PARAMETERS.items()
+                )
+                lines.append(
+                    f".model M{instance.id} pswitch({card} r_cntl_in=1e30 log=TRUE)"
+                )
+                value = f"M{instance.id}"
             case _:
                 (number,) = values.values()
                 value = repr(number)
         lines.append(f"{element(instance)} {nodes} {value}")
     return lines
+
+
+_SWITCH_PARAMETERS = {
+    "on_voltage": "cntl_on",
+    "off_voltage": "cntl_off",
+    "on_resistance": "r_on",
+    "off_resistance": "r_off",
+}
+
+
+def _behavior(instance: ir.Instance, ground: str) -> tuple[str, list[str]]:
+    """A behavioral source's expression for ngspice, and its senses.
+
+    ngspice reads a current through a zero-volt source, one per port in its place.
+    """
+    expression = instance.parameters["expression"]
+    assert isinstance(expression, str)
+
+    def net(terminal: str) -> str:
+        name = instance.terminals[terminal]
+        return "0" if name == ground else name
+
+    def voltage(match: re.Match[str]) -> str:
+        return f"v({','.join(net(name) for name in match.groups() if name)})"
+
+    senses: dict[str, str] = {}
+
+    def current(match: re.Match[str]) -> str:
+        port = match[1]
+        sense = f"V{element(instance)}{port}"
+        ends = (net(f"{port}_positive"), net(f"{port}_negative"))
+        senses[sense] = f"{sense} {ends[0]} {ends[1]} DC 0"
+        return f"i({sense})"
+
+    expression = re.sub(r"\bv\((\w+)(?:,\s*(\w+))?\)", voltage, expression)
+    expression = re.sub(r"\bi\((\w+)\)", current, expression)
+    return expression, list(senses.values())
 
 
 def _sense(instance: ir.Instance) -> str:
@@ -972,6 +1124,8 @@ def compared(simulation: Simulation) -> list[tuple[int, results.Unknown]]:
         nmos_stage,
         mosfet_curves,
         cmos_inverter,
+        behavioral,
+        switched,
     ],
 )
 def test_operating_points_agree(top: Callable[[], Component], tmp_path: Path) -> None:
@@ -998,6 +1152,8 @@ def test_operating_points_agree(top: Callable[[], Component], tmp_path: Path) ->
         (mosfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
         (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
         (cmos_inverter, "V1", linear(0 * V, 3.3 * V, 67)),
+        (behavioral, "V1", linear(-3 * V, 3 * V, 61)),
+        (switched, "V1", linear(0 * V, 3 * V, 61)),
     ],
 )
 def test_dc_sweeps_agree(
@@ -1027,6 +1183,8 @@ def test_dc_sweeps_agree(
         current_controlled,
         nmos_stage,
         cmos_inverter,
+        behavioral,
+        switched,
     ],
 )
 def test_ac_responses_agree(top: Callable[[], Component], tmp_path: Path) -> None:
@@ -1057,6 +1215,8 @@ def test_ac_responses_agree(top: Callable[[], Component], tmp_path: Path) -> Non
         (bjt_amplifier, 4 * us, 2 * ns),
         (nmos_stage, 2 * us, 1 * ns),
         (cmos_inverter, 160 * ns, 0.01 * ns),
+        (behavioral, 300 * us, 0.5 * us),
+        (switched, 200 * us, 0.2 * us),
     ],
 )
 def test_transients_agree(

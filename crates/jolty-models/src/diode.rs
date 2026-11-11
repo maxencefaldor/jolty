@@ -5,8 +5,8 @@ use crate::junction::{
     limit_junction,
 };
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, NativeDevice, Output, ParameterError, Quantity,
-    TerminalPair,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Output, ParameterError,
+    Quantity, TerminalPair,
 };
 
 /// A junction diode from terminal `anode` to terminal `cathode`, in the SPICE model.
@@ -71,9 +71,14 @@ impl Default for DiodeParameters {
 
 impl NativeDevice for Diode {
     const NAME: &'static str = "diode";
-    const TERMINALS: &'static [&'static str] = &["anode", "cathode"];
-    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::Conductive)];
     type Parameters = DiodeParameters;
+
+    fn interface(_: &DiodeParameters) -> Interface {
+        Interface::new(
+            &["anode", "cathode"],
+            &[Branch::new(0, 1, BranchKind::Conductive)],
+        )
+    }
 
     fn new(parameters: DiodeParameters, binding: &mut Binding<'_>) -> Result<Self, ParameterError> {
         let DiodeParameters {
@@ -177,7 +182,7 @@ mod tests {
 
     #[test]
     fn follows_the_shockley_equation() {
-        let mut bench = Bench::new::<Diode>("{}", 2);
+        let mut bench = Bench::new::<Diode>("{}");
         let current = bench.settle(&[0.6, 0.0]).residual[0];
         let expected = 1e-14 * ((0.6 / THERMAL_VOLTAGE).exp() - 1.0);
         assert!(
@@ -188,7 +193,7 @@ mod tests {
 
     #[test]
     fn limits_large_steps_until_they_settle() {
-        let mut bench = Bench::new::<Diode>("{}", 2);
+        let mut bench = Bench::new::<Diode>("{}");
         let evaluation = bench.evaluate(&[10.0, 0.0]);
         assert!(evaluation.limited);
         assert!(evaluation.residual[0].is_finite());
@@ -198,13 +203,13 @@ mod tests {
 
     #[test]
     fn a_series_resistance_adds_an_internal_node() {
-        let bench = Bench::new::<Diode>(r#"{"series_resistance": 10}"#, 2);
+        let bench = Bench::new::<Diode>(r#"{"series_resistance": 10}"#);
         assert_eq!(bench.unknowns(), ["n0", "n1", "device:junction"]);
     }
 
     #[test]
     fn rejects_out_of_range_parameters() {
-        let error = Bench::try_new::<Diode>(r#"{"grading_coefficient": 1}"#, 2).unwrap_err();
+        let error = Bench::try_new::<Diode>(r#"{"grading_coefficient": 1}"#).unwrap_err();
         assert_eq!(
             error.to_string(),
             "grading_coefficient must be at least 0 and below 1, not 1.0"

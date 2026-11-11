@@ -13,6 +13,7 @@ authors = ["Maxence Faldor"]
 [workspace.dependencies]
 jolty-checks = { path = "crates/jolty-checks" }
 jolty-engine = { path = "crates/jolty-engine" }
+jolty-expressions = { path = "crates/jolty-expressions" }
 jolty-ir = { path = "crates/jolty-ir" }
 jolty-models = { path = "crates/jolty-models" }
 jolty-numerics = { path = "crates/jolty-numerics" }

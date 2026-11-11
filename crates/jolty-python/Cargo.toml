@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 [dependencies]
 jolty-checks.workspace = true
 jolty-engine.workspace = true
+jolty-expressions.workspace = true
 jolty-ir.workspace = true
 jolty-models.workspace = true
 numpy.workspace = true

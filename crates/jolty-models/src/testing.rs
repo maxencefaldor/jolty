@@ -25,15 +25,16 @@ pub(crate) struct Evaluation {
 }
 
 impl Bench {
-    pub(crate) fn new<D: NativeDevice>(parameters: &str, terminals: usize) -> Self {
-        Self::try_new::<D>(parameters, terminals).expect("valid parameters")
+    /// A bench for a device of `D` with `parameters`, a JSON object, each of whose
+    /// terminals connects to an unknown of its own.
+    pub(crate) fn new<D: NativeDevice>(parameters: &str) -> Self {
+        Self::try_new::<D>(parameters).expect("valid parameters")
     }
 
-    pub(crate) fn try_new<D: NativeDevice>(
-        parameters: &str,
-        terminals: usize,
-    ) -> Result<Self, ParameterError> {
+    pub(crate) fn try_new<D: NativeDevice>(parameters: &str) -> Result<Self, ParameterError> {
         let parameters = serde_json::from_str(parameters).expect("a JSON object");
+        let model = Native::<D>::new();
+        let terminals = model.interface(&parameters)?.terminals.len();
         let nodes: Vec<Node> = (0..terminals)
             .map(|index| Some(Unknown::new(index)))
             .collect();
@@ -44,7 +45,7 @@ impl Bench {
             })
             .collect();
         let mut builder = PatternBuilder::new();
-        let device = Native::<D>::new().instantiate(
+        let device = model.instantiate(
             &parameters,
             &mut Binding::new("device", &nodes, &mut unknowns, &mut builder),
         )?;
@@ -121,8 +122,7 @@ impl Bench {
 /// Checks that a device's conductances and capacitances are the derivatives of its residuals
 /// and charges at `x`, by central differences.
 pub(crate) fn assert_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64]) {
-    let terminals = D::TERMINALS.len();
-    let mut bench = Bench::new::<D>(parameters, terminals);
+    let mut bench = Bench::new::<D>(parameters);
     assert_eq!(bench.unknowns.len(), x.len(), "one value per unknown");
     let exact = bench.settle(x);
     for column in 0..x.len() {

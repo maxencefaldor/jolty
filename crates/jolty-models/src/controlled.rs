@@ -2,8 +2,8 @@ use jolty_numerics::Entry;
 use serde::Deserialize;
 
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, NativeDevice, Node, Output, ParameterError,
-    Quantity, Unknown,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
+    ParameterError, Quantity, Unknown,
 };
 
 /// The terminals of a controlled source: an output pair and a control pair.
@@ -38,9 +38,14 @@ pub struct VoltageControlledVoltageSourceParameters {
 
 impl NativeDevice for VoltageControlledVoltageSource {
     const NAME: &'static str = "voltage_controlled_voltage_source";
-    const TERMINALS: &'static [&'static str] = CONTROLLED_TERMINALS;
-    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::VoltageSource)];
     type Parameters = VoltageControlledVoltageSourceParameters;
+
+    fn interface(_: &VoltageControlledVoltageSourceParameters) -> Interface {
+        Interface::new(
+            CONTROLLED_TERMINALS,
+            &[Branch::new(0, 1, BranchKind::VoltageSource)],
+        )
+    }
 
     fn new(
         parameters: VoltageControlledVoltageSourceParameters,
@@ -115,9 +120,14 @@ pub struct VoltageControlledCurrentSourceParameters {
 
 impl NativeDevice for VoltageControlledCurrentSource {
     const NAME: &'static str = "voltage_controlled_current_source";
-    const TERMINALS: &'static [&'static str] = CONTROLLED_TERMINALS;
-    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::CurrentSource)];
     type Parameters = VoltageControlledCurrentSourceParameters;
+
+    fn interface(_: &VoltageControlledCurrentSourceParameters) -> Interface {
+        Interface::new(
+            CONTROLLED_TERMINALS,
+            &[Branch::new(0, 1, BranchKind::CurrentSource)],
+        )
+    }
 
     fn new(
         parameters: VoltageControlledCurrentSourceParameters,
@@ -222,12 +232,17 @@ fn add_sense(
 
 impl NativeDevice for CurrentControlledCurrentSource {
     const NAME: &'static str = "current_controlled_current_source";
-    const TERMINALS: &'static [&'static str] = CONTROLLED_TERMINALS;
-    const BRANCHES: &'static [Branch] = &[
-        Branch::new(0, 1, BranchKind::CurrentSource),
-        Branch::new(2, 3, BranchKind::VoltageSource),
-    ];
     type Parameters = CurrentControlledCurrentSourceParameters;
+
+    fn interface(_: &CurrentControlledCurrentSourceParameters) -> Interface {
+        Interface::new(
+            CONTROLLED_TERMINALS,
+            &[
+                Branch::new(0, 1, BranchKind::CurrentSource),
+                Branch::new(2, 3, BranchKind::VoltageSource),
+            ],
+        )
+    }
 
     fn new(
         parameters: CurrentControlledCurrentSourceParameters,
@@ -294,12 +309,17 @@ pub struct CurrentControlledVoltageSourceParameters {
 
 impl NativeDevice for CurrentControlledVoltageSource {
     const NAME: &'static str = "current_controlled_voltage_source";
-    const TERMINALS: &'static [&'static str] = CONTROLLED_TERMINALS;
-    const BRANCHES: &'static [Branch] = &[
-        Branch::new(0, 1, BranchKind::VoltageSource),
-        Branch::new(2, 3, BranchKind::VoltageSource),
-    ];
     type Parameters = CurrentControlledVoltageSourceParameters;
+
+    fn interface(_: &CurrentControlledVoltageSourceParameters) -> Interface {
+        Interface::new(
+            CONTROLLED_TERMINALS,
+            &[
+                Branch::new(0, 1, BranchKind::VoltageSource),
+                Branch::new(2, 3, BranchKind::VoltageSource),
+            ],
+        )
+    }
 
     fn new(
         parameters: CurrentControlledVoltageSourceParameters,
@@ -388,7 +408,7 @@ mod tests {
     #[test]
     fn a_control_port_senses_its_current_and_holds_no_voltage() {
         let mut bench =
-            crate::testing::Bench::new::<CurrentControlledCurrentSource>(r#"{"gain": 50}"#, 4);
+            crate::testing::Bench::new::<CurrentControlledCurrentSource>(r#"{"gain": 50}"#);
         let evaluation = bench.evaluate(&[1.0, -0.5, 0.3, 0.3, 2e-3]);
         // 2 mA enters at control_positive and leaves at control_negative; 100 mA leaves
         // positive through the source; the port's equation holds its two voltages equal.

@@ -34,6 +34,7 @@ nav = [
     { "Command line" = "reference/cli.md" },
     { "Rules" = "reference/rules.md" },
     { "Configuration" = "reference/configuration.md" },
+    { "Expressions" = "reference/expressions.md" },
     { "Python API" = [
       { "Circuits" = "reference/circuits.md" },
       { "Simulation" = "reference/simulation.md" },

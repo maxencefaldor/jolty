@@ -105,8 +105,8 @@ pub(crate) fn shorted_sources(structure: &Structure<'_>, diagnostics: &mut Vec<D
             );
             if from == to && source {
                 let terminals = [
-                    device.terminals()[branch.from],
-                    device.terminals()[branch.to],
+                    device.terminals()[branch.from].clone(),
+                    device.terminals()[branch.to].clone(),
                 ];
                 diagnostics.push(joined(structure, &SHORTED_SOURCE, device, &terminals, from));
             }
@@ -142,7 +142,7 @@ fn joined(
     structure: &Structure<'_>,
     rule: &Rule,
     device: &Placed,
-    terminals: &[&str],
+    terminals: &[String],
     node: usize,
 ) -> Diagnostic {
     let named: Vec<String> = terminals.iter().map(|name| format!("`{name}`")).collect();

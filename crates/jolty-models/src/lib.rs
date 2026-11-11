@@ -9,6 +9,7 @@
 //! A [`Model`] is a kind of device: it names its terminals and turns parameters into a
 //! device bound to its unknowns. A [`Library`] holds the models a circuit can use.
 
+mod behavioral;
 mod binding;
 mod bjt;
 mod controlled;
@@ -22,6 +23,7 @@ mod mosfet;
 mod passive;
 mod sources;
 mod stamp;
+mod switch;
 #[cfg(test)]
 mod testing;
 mod topology;
@@ -29,6 +31,9 @@ pub mod waveform;
 
 use std::collections::BTreeMap;
 
+pub use behavioral::{
+    Behavior, BehavioralCurrentSource, BehavioralParameters, BehavioralVoltageSource,
+};
 pub use binding::{Binding, Node, Quantity, TerminalPair, Unknown, UnknownInfo};
 pub use bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
 pub use controlled::{
@@ -46,7 +51,8 @@ pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
 };
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
-pub use topology::{Branch, BranchKind};
+pub use switch::{VoltageControlledSwitch, VoltageControlledSwitchParameters};
+pub use topology::{Branch, BranchKind, Interface};
 
 /// The models a circuit can use, by name.
 #[derive(Default)]
@@ -59,6 +65,8 @@ impl Library {
     #[must_use]
     pub fn standard() -> Self {
         let mut library = Self::default();
+        library.add(Native::<BehavioralCurrentSource>::new());
+        library.add(Native::<BehavioralVoltageSource>::new());
         library.add(Native::<BipolarTransistor>::new());
         library.add(Native::<Resistor>::new());
         library.add(Native::<Capacitor>::new());
@@ -69,6 +77,7 @@ impl Library {
         library.add(Native::<CurrentControlledVoltageSource>::new());
         library.add(Native::<VoltageControlledVoltageSource>::new());
         library.add(Native::<VoltageControlledCurrentSource>::new());
+        library.add(Native::<VoltageControlledSwitch>::new());
         library.add(Native::<Diode>::new());
         library.add(Native::<Jfet>::new());
         library.add(Native::<Mosfet>::new());
@@ -108,6 +117,8 @@ mod tests {
         assert_eq!(
             names,
             [
+                "behavioral_current_source",
+                "behavioral_voltage_source",
                 "bipolar_transistor",
                 "capacitor",
                 "current_controlled_current_source",
@@ -119,6 +130,7 @@ mod tests {
                 "mosfet",
                 "resistor",
                 "voltage_controlled_current_source",
+                "voltage_controlled_switch",
                 "voltage_controlled_voltage_source",
                 "voltage_source"
             ]

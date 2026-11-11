@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+jolty-expressions.workspace = true
 jolty-ir.workspace = true
 jolty-numerics.workspace = true
 serde.workspace = true

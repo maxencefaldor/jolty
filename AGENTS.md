@@ -22,7 +22,7 @@ cargo test --workspace      # Rust tests
 
 A change is done when `scripts/check` passes; CI runs the same script, one group per job.
 Enable the pre-push hook once per clone, `git config core.hooksPath .githooks`, so no push reaches CI without passing it.
-`uv sync` rebuilds the engine whenever a Rust source changes.
+`uv sync` rebuilds the engine whenever a Rust source, or the Markdown a crate includes, changes.
 PyO3 builds against the interpreter that `PYO3_PYTHON` names, so set it to `.venv/bin/python` before running cargo.
 
 ## Architecture
@@ -32,6 +32,7 @@ Each crate depends only on the crates listed before it:
 
 1. `jolty-ir`: the circuit format, its names and its validation.
 1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, and integration formulas.
+1. `jolty-expressions`: the expression language of behavioral sources, compiled and evaluated with its exact gradient.
 1. `jolty-models`: the interface every device implements, and the standard library of devices.
 1. `jolty-engine`: elaboration of a hierarchy into devices bound to unknowns, Newton iteration with SPICE's convergence aids, and the analyses.
 1. `jolty-checks`: the structural rules, which read the elaborated circuit through the branches each device declares.

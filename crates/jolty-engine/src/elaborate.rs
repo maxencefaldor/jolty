@@ -5,7 +5,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use jolty_ir::{Circuit, Component, Instance, Name, Of, Parameters, Problem, Role, Source};
-use jolty_models::{Binding, Branch, Device, Library, Model, Node, Quantity, Unknown, UnknownInfo};
+use jolty_models::{
+    Binding, Branch, Device, Interface, Library, Model, Node, Quantity, Unknown, UnknownInfo,
+};
 use jolty_numerics::{Entry, Pattern, PatternBuilder};
 
 /// A circuit flattened into devices bound to unknowns, with the pattern of its matrix.
@@ -30,8 +32,7 @@ pub(crate) struct System {
 pub struct Placed {
     location: Location,
     model: &'static str,
-    terminals: &'static [&'static str],
-    branches: &'static [Branch],
+    interface: Interface,
     nodes: Vec<Node>,
     pub(crate) device: Box<dyn Device>,
 }
@@ -57,14 +58,14 @@ impl Placed {
 
     /// The names of the device's terminals, in the order of [`Placed::nodes`].
     #[must_use]
-    pub fn terminals(&self) -> &'static [&'static str] {
-        self.terminals
+    pub fn terminals(&self) -> &[String] {
+        &self.interface.terminals
     }
 
     /// The device's branches between its terminals.
     #[must_use]
-    pub fn branches(&self) -> &'static [Branch] {
-        self.branches
+    pub fn branches(&self) -> &[Branch] {
+        &self.interface.branches
     }
 
     /// The node each terminal joins: a node voltage's unknown, or `None` for the reference.
@@ -126,7 +127,7 @@ pub enum ElaborationProblem {
         /// The model's name.
         model: Name,
         /// The terminal.
-        terminal: &'static str,
+        terminal: String,
     },
     /// An instance connects a terminal its model does not have.
     #[error("instance {at} connects `{terminal}`, which a {model} does not have")]
@@ -252,8 +253,7 @@ pub(crate) fn elaborate(circuit: &Circuit, library: &Library) -> Result<System, 
             Ok(device) => placed.push(Placed {
                 location: pending.at,
                 model: pending.model.name(),
-                terminals: pending.model.terminals(),
-                branches: pending.model.branches(),
+                interface: pending.interface,
                 nodes: pending.terminals,
                 device,
             }),
@@ -282,6 +282,7 @@ struct Pending<'a> {
     at: Location,
     model: &'a dyn Model,
     parameters: &'a Parameters,
+    interface: Interface,
     terminals: Vec<Node>,
 }
 
@@ -345,10 +346,20 @@ impl<'a> Walk<'a> {
             });
             return;
         };
-        let expected = model.terminals();
+        let interface = match model.interface(&instance.parameters) {
+            Ok(interface) => interface,
+            Err(error) => {
+                self.problems.push(ElaborationProblem::Parameters {
+                    at,
+                    message: error.0,
+                });
+                return;
+            }
+        };
+        let expected = &interface.terminals;
         let mut complete = true;
         for terminal in instance.terminals.keys() {
-            if !expected.contains(&terminal.as_str()) {
+            if !expected.iter().any(|name| name == terminal.as_str()) {
                 complete = false;
                 self.problems.push(ElaborationProblem::UnknownTerminal {
                     at: at.clone(),
@@ -358,15 +369,15 @@ impl<'a> Walk<'a> {
             }
         }
         let mut terminals = Vec::with_capacity(expected.len());
-        for &terminal in expected {
-            if let Some(net) = instance.terminals.get(terminal) {
+        for terminal in expected {
+            if let Some(net) = instance.terminals.get(terminal.as_str()) {
                 terminals.push(self.node(prefix, ports, net));
             } else {
                 complete = false;
                 self.problems.push(ElaborationProblem::UnconnectedTerminal {
                     at: at.clone(),
                     model: model_name.clone(),
-                    terminal,
+                    terminal: terminal.clone(),
                 });
             }
         }
@@ -375,6 +386,7 @@ impl<'a> Walk<'a> {
                 at,
                 model,
                 parameters: &instance.parameters,
+                interface,
                 terminals,
             });
         }

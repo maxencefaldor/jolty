@@ -59,3 +59,25 @@ impl Branch {
         Self { from, to, kind }
     }
 }
+
+/// The terminals of one device and the branches between them, which may depend on its
+/// parameters, as a behavioral source's terminals depend on the voltages it reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interface {
+    /// The terminals' names, in the order [`Binding::terminal`](crate::Binding::terminal)
+    /// indexes them.
+    pub terminals: Vec<String>,
+    /// The branches between the terminals; a terminal on none only senses its node.
+    pub branches: Vec<Branch>,
+}
+
+impl Interface {
+    /// An interface of `terminals` and `branches`.
+    #[must_use]
+    pub fn new(terminals: &[&str], branches: &[Branch]) -> Self {
+        Self {
+            terminals: terminals.iter().map(|&name| name.to_owned()).collect(),
+            branches: branches.to_vec(),
+        }
+    }
+}

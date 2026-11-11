@@ -54,6 +54,33 @@ A current-controlled source's control port, as in Modelica, is a short circuit f
 A voltage-controlled or current-controlled voltage source holds its output at the gain or transresistance times its control, and adds its current to the unknowns as a voltage source does.
 A current source of either kind drives the transconductance or gain times its control from `positive` through itself to `negative`.
 
+## Behavioral sources
+
+`behavioral_voltage_source(expression)` holds `positive` minus `negative` at an expression, and `behavioral_current_source(expression)` drives an expression from `positive` through itself to `negative`.
+The expression reads `v(a)`, the voltage of terminal `a`, `v(a, b)`, that of `a` over `b`, `i(p)`, the current through a sensing port `p`, and `time`, in a [language](../reference/expressions.md) of arithmetic, comparisons, conditionals and functions:
+
+```python
+gain = devices.behavioral_voltage_source("limit(1e5 * v(inp, inn), -12, 12)")
+amplifier = c.place(gain)
+c.connect(amplifier.inp, signal)
+```
+
+A source's terminals are `positive` and `negative`, then each terminal its expression reads, then `p_positive` and `p_negative` for each port `p`.
+A port, as a current-controlled source's control port, is a short circuit whose current, from `p_positive` to `p_negative`, it adds to the unknowns as `B1:p` for a source `B1`.
+A behavioral voltage source adds its own current to the unknowns as a voltage source does.
+The engine takes every derivative of the expression exactly, so Newton's iterations and frequency responses see the expression's true slope.
+
+## Switch
+
+`voltage_controlled_switch(...)` is a resistance between `positive` and `negative` that the voltage of `control_positive` over `control_negative` moves, in PSpice's model, from `off_resistance` to `on_resistance`: logarithmically and smoothly, with zero slope at each end, as the control moves from `off_voltage` to `on_voltage`.
+Beyond either voltage, the resistance holds.
+The control terminals draw no current.
+
+| Parameter | PSpice | Unit | Default |
+| --- | --- | --- | --- |
+| `on_resistance`, `off_resistance` | `RON`, `ROFF` | Ω | 1 Ω, 1 MΩ |
+| `on_voltage`, `off_voltage` | `VON`, `VOFF` | V | 1 V, 0 V |
+
 ## Diode
 
 `diode(...)` is a junction diode from `anode` to `cathode`, in the SPICE model, at 27 °C.

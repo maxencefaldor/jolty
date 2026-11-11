@@ -1,8 +1,8 @@
 use serde::Deserialize;
 
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, NativeDevice, Node, Output, ParameterError,
-    Quantity, TerminalPair, Unknown,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
+    ParameterError, Quantity, TerminalPair, Unknown,
 };
 use jolty_numerics::Entry;
 
@@ -23,9 +23,11 @@ pub struct ResistorParameters {
 
 impl NativeDevice for Resistor {
     const NAME: &'static str = "resistor";
-    const TERMINALS: &'static [&'static str] = &["a", "b"];
-    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::Conductive)];
     type Parameters = ResistorParameters;
+
+    fn interface(_: &ResistorParameters) -> Interface {
+        Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Conductive)])
+    }
 
     fn new(
         parameters: ResistorParameters,
@@ -65,9 +67,11 @@ pub struct CapacitorParameters {
 
 impl NativeDevice for Capacitor {
     const NAME: &'static str = "capacitor";
-    const TERMINALS: &'static [&'static str] = &["a", "b"];
-    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::Capacitive)];
     type Parameters = CapacitorParameters;
+
+    fn interface(_: &CapacitorParameters) -> Interface {
+        Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Capacitive)])
+    }
 
     fn new(
         parameters: CapacitorParameters,
@@ -114,9 +118,11 @@ pub struct InductorParameters {
 
 impl NativeDevice for Inductor {
     const NAME: &'static str = "inductor";
-    const TERMINALS: &'static [&'static str] = &["a", "b"];
-    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::Inductive)];
     type Parameters = InductorParameters;
+
+    fn interface(_: &InductorParameters) -> Interface {
+        Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Inductive)])
+    }
 
     fn new(
         parameters: InductorParameters,
@@ -167,13 +173,13 @@ mod tests {
 
     #[test]
     fn a_resistor_conducts_by_ohms_law() {
-        let mut bench = Bench::new::<Resistor>(r#"{"resistance": 1000}"#, 2);
+        let mut bench = Bench::new::<Resistor>(r#"{"resistance": 1000}"#);
         assert_close(&bench.evaluate(&[3.0, 1.0]).residual, &[2e-3, -2e-3]);
     }
 
     #[test]
     fn a_capacitor_holds_charge() {
-        let mut bench = Bench::new::<Capacitor>(r#"{"capacitance": 1e-6}"#, 2);
+        let mut bench = Bench::new::<Capacitor>(r#"{"capacitance": 1e-6}"#);
         let output = bench.evaluate(&[2.0, 0.0]);
         assert_close(&output.charge, &[2e-6, -2e-6]);
         assert_close(&output.residual, &[0.0, 0.0]);
@@ -181,7 +187,7 @@ mod tests {
 
     #[test]
     fn an_inductor_adds_its_current_as_an_unknown() {
-        let bench = Bench::new::<Inductor>(r#"{"inductance": 1e-3}"#, 2);
+        let bench = Bench::new::<Inductor>(r#"{"inductance": 1e-3}"#);
         assert_eq!(bench.unknowns(), ["n0", "n1", "device:current"]);
     }
 
@@ -194,9 +200,9 @@ mod tests {
 
     #[test]
     fn rejects_non_positive_values() {
-        let error = Bench::try_new::<Resistor>(r#"{"resistance": 0}"#, 2).unwrap_err();
+        let error = Bench::try_new::<Resistor>(r#"{"resistance": 0}"#).unwrap_err();
         assert_eq!(error.to_string(), "resistance must be positive, not 0.0");
-        let error = Bench::try_new::<Capacitor>(r#"{"capacity": 1}"#, 2).unwrap_err();
+        let error = Bench::try_new::<Capacitor>(r#"{"capacity": 1}"#).unwrap_err();
         assert!(
             error.to_string().starts_with("unknown field `capacity`"),
             "{error}"

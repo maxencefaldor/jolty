@@ -3,8 +3,8 @@ use serde::Deserialize;
 
 use crate::waveform::Waveform;
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, NativeDevice, Node, Output, ParameterError,
-    Quantity, Source, Unknown,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
+    ParameterError, Quantity, Source, Unknown,
 };
 
 /// The parameters of an independent source.
@@ -34,9 +34,14 @@ pub struct VoltageSource {
 
 impl NativeDevice for VoltageSource {
     const NAME: &'static str = "voltage_source";
-    const TERMINALS: &'static [&'static str] = &["positive", "negative"];
-    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::VoltageSource)];
     type Parameters = SourceParameters;
+
+    fn interface(_: &SourceParameters) -> Interface {
+        Interface::new(
+            &["positive", "negative"],
+            &[Branch::new(0, 1, BranchKind::VoltageSource)],
+        )
+    }
 
     fn new(
         parameters: SourceParameters,
@@ -118,9 +123,14 @@ pub struct CurrentSource {
 
 impl NativeDevice for CurrentSource {
     const NAME: &'static str = "current_source";
-    const TERMINALS: &'static [&'static str] = &["positive", "negative"];
-    const BRANCHES: &'static [Branch] = &[Branch::new(0, 1, BranchKind::CurrentSource)];
     type Parameters = SourceParameters;
+
+    fn interface(_: &SourceParameters) -> Interface {
+        Interface::new(
+            &["positive", "negative"],
+            &[Branch::new(0, 1, BranchKind::CurrentSource)],
+        )
+    }
 
     fn new(
         parameters: SourceParameters,
@@ -182,7 +192,7 @@ mod tests {
 
     #[test]
     fn a_voltage_source_constrains_its_voltage() {
-        let mut bench = Bench::new::<VoltageSource>(FIVE_VOLTS, 2);
+        let mut bench = Bench::new::<VoltageSource>(FIVE_VOLTS);
         let output = bench.evaluate(&[7.0, 2.0, -1e-3]);
         assert_close(&output.residual, &[-1e-3, 1e-3, 0.0]);
         bench.device().as_source().unwrap().hold(Some(3.0));
@@ -191,7 +201,7 @@ mod tests {
 
     #[test]
     fn source_stepping_scales_the_level() {
-        let mut bench = Bench::new::<CurrentSource>(r#"{"waveform": {"dc": 2e-3}}"#, 2);
+        let mut bench = Bench::new::<CurrentSource>(r#"{"waveform": {"dc": 2e-3}}"#);
         let mut input = Input::new(&[0.0, 0.0], 0.0, 0.0);
         input.source_scale = 0.5;
         assert_close(&bench.evaluate_with(&input).residual, &[1e-3, -1e-3]);
@@ -199,7 +209,7 @@ mod tests {
 
     #[test]
     fn level_derivatives_excite_the_right_rows() {
-        let mut bench = Bench::new::<VoltageSource>(FIVE_VOLTS, 2);
+        let mut bench = Bench::new::<VoltageSource>(FIVE_VOLTS);
         let mut derivative = vec![0.0; 3];
         bench
             .device()

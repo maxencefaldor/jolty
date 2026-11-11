@@ -485,6 +485,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jolty-expressions"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "jolty-ir"
 version = "0.1.0"
 dependencies = [
@@ -497,6 +505,7 @@ dependencies = [
 name = "jolty-models"
 version = "0.1.0"
 dependencies = [
+ "jolty-expressions",
  "jolty-ir",
  "jolty-numerics",
  "proptest",
@@ -523,6 +532,7 @@ version = "0.1.0"
 dependencies = [
  "jolty-checks",
  "jolty-engine",
+ "jolty-expressions",
  "jolty-ir",
  "jolty-models",
  "numpy",

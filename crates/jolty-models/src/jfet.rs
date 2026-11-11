@@ -6,7 +6,8 @@ use crate::junction::{
 };
 use crate::stamp::Stamp;
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, NativeDevice, Output, ParameterError, Quantity,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Output, ParameterError,
+    Quantity,
 };
 
 /// The channel of a field-effect transistor.
@@ -181,13 +182,18 @@ impl DrainCurrent {
 
 impl NativeDevice for Jfet {
     const NAME: &'static str = "jfet";
-    const TERMINALS: &'static [&'static str] = &["drain", "gate", "source"];
-    const BRANCHES: &'static [Branch] = &[
-        Branch::new(0, 2, BranchKind::Conductive),
-        Branch::new(1, 0, BranchKind::Conductive),
-        Branch::new(1, 2, BranchKind::Conductive),
-    ];
     type Parameters = JfetParameters;
+
+    fn interface(_: &JfetParameters) -> Interface {
+        Interface::new(
+            &["drain", "gate", "source"],
+            &[
+                Branch::new(0, 2, BranchKind::Conductive),
+                Branch::new(1, 0, BranchKind::Conductive),
+                Branch::new(1, 2, BranchKind::Conductive),
+            ],
+        )
+    }
 
     fn new(parameters: JfetParameters, binding: &mut Binding<'_>) -> Result<Self, ParameterError> {
         let JfetParameters {
@@ -344,7 +350,7 @@ mod tests {
 
     #[test]
     fn follows_the_square_law_in_saturation() {
-        let mut bench = Bench::new::<Jfet>(r#"{"transconductance_parameter": 1e-3}"#, 3);
+        let mut bench = Bench::new::<Jfet>(r#"{"transconductance_parameter": 1e-3}"#);
         let evaluation = bench.settle(&[5.0, 0.0, 0.0]);
         // vgs = 0, vto = −2: β · vgst² = 1e-3 · 4.
         let drain_current = evaluation.residual[0];
@@ -353,8 +359,8 @@ mod tests {
 
     #[test]
     fn a_p_channel_mirrors_an_n_channel() {
-        let mut n = Bench::new::<Jfet>("{}", 3);
-        let mut p = Bench::new::<Jfet>(r#"{"channel": "p"}"#, 3);
+        let mut n = Bench::new::<Jfet>("{}");
+        let mut p = Bench::new::<Jfet>(r#"{"channel": "p"}"#);
         let n_currents = n.settle(&[3.0, -0.5, 0.0]).residual;
         let p_currents = p.settle(&[-3.0, 0.5, 0.0]).residual;
         for (n_current, p_current) in n_currents.iter().zip(&p_currents) {
@@ -364,7 +370,7 @@ mod tests {
 
     #[test]
     fn series_resistances_add_internal_nodes() {
-        let bench = Bench::new::<Jfet>(r#"{"drain_resistance": 10, "source_resistance": 5}"#, 3);
+        let bench = Bench::new::<Jfet>(r#"{"drain_resistance": 10, "source_resistance": 5}"#);
         assert_eq!(
             bench.unknowns(),
             ["n0", "n1", "n2", "device:drain", "device:source"]

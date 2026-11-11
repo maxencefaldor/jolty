@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use jolty_ir::Parameters;
 use serde::de::DeserializeOwned;
 
-use crate::{Binding, Branch, Input, Output};
+use crate::{Binding, Input, Interface, Output};
 
 /// One placed device, bound to its unknowns.
 pub trait Device: fmt::Debug + Send {
@@ -39,12 +39,12 @@ pub trait Model: Send + Sync {
     /// The name circuits refer to the model by, such as `resistor`.
     fn name(&self) -> &'static str;
 
-    /// The names of the device's terminals, in the order [`Binding::terminal`] indexes them.
-    fn terminals(&self) -> &'static [&'static str];
-
-    /// The device's branches between its terminals; a terminal on none only senses its
-    /// node.
-    fn branches(&self) -> &'static [Branch];
+    /// The terminals and branches of a device with `parameters`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when the parameters cannot be read.
+    fn interface(&self, parameters: &Parameters) -> Result<Interface, ParameterError>;
 
     /// Reads `parameters` and makes a device bound through `binding`.
     ///
@@ -62,12 +62,11 @@ pub trait Model: Send + Sync {
 pub trait NativeDevice: Device + Sized + 'static {
     /// The model's name.
     const NAME: &'static str;
-    /// The model's terminals.
-    const TERMINALS: &'static [&'static str];
-    /// The model's branches between its terminals.
-    const BRANCHES: &'static [Branch];
     /// The parameters, deserialized from the instance's parameter map.
     type Parameters: DeserializeOwned;
+
+    /// The terminals and branches of a device with `parameters`.
+    fn interface(parameters: &Self::Parameters) -> Interface;
 
     /// Checks `parameters` and makes the device bound through `binding`.
     ///
@@ -106,12 +105,8 @@ impl<D: NativeDevice> Model for Native<D> {
         D::NAME
     }
 
-    fn terminals(&self) -> &'static [&'static str] {
-        D::TERMINALS
-    }
-
-    fn branches(&self) -> &'static [Branch] {
-        D::BRANCHES
+    fn interface(&self, parameters: &Parameters) -> Result<Interface, ParameterError> {
+        Ok(D::interface(&read::<D>(parameters)?))
     }
 
     fn instantiate(
@@ -119,10 +114,14 @@ impl<D: NativeDevice> Model for Native<D> {
         parameters: &Parameters,
         binding: &mut Binding<'_>,
     ) -> Result<Box<dyn Device>, ParameterError> {
-        let parameters = serde_json::from_value(serde_json::Value::Object(parameters.clone()))
-            .map_err(|error| ParameterError(error.to_string()))?;
-        Ok(Box::new(D::new(parameters, binding)?))
+        Ok(Box::new(D::new(read::<D>(parameters)?, binding)?))
     }
+}
+
+/// The typed parameters of `D` in `parameters`.
+fn read<D: NativeDevice>(parameters: &Parameters) -> Result<D::Parameters, ParameterError> {
+    serde_json::from_value(serde_json::Value::Object(parameters.clone()))
+        .map_err(|error| ParameterError(error.to_string()))
 }
 
 /// Why a device's parameters are invalid.

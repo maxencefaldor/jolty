@@ -11,12 +11,14 @@ Examples:
     {'resistance': 10000.0}
 """
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final, Literal
 
 from pydantic import JsonValue
 
+from jolty import _core
 from jolty.units import (
     CAPACITANCE,
     CONDUCTANCE,
@@ -45,15 +47,13 @@ class Device:
 
 def resistor(resistance: Quantity) -> Device:
     """A linear resistor between terminals ``a`` and ``b``."""
-    return Device(
-        "resistor", ("a", "b"), {"resistance": resistance.to(RESISTANCE, "resistance")}
-    )
+    return _device("resistor", {"resistance": resistance.to(RESISTANCE, "resistance")})
 
 
 def capacitor(capacitance: Quantity) -> Device:
     """A linear capacitor between terminals ``a`` and ``b``."""
     value = capacitance.to(CAPACITANCE, "capacitance")
-    return Device("capacitor", ("a", "b"), {"capacitance": value})
+    return _device("capacitor", {"capacitance": value})
 
 
 def inductor(inductance: Quantity) -> Device:
@@ -62,7 +62,7 @@ def inductor(inductance: Quantity) -> Device:
     Its current, from ``a`` through the inductor to ``b``, is the unknown ``current``.
     """
     value = inductance.to(INDUCTANCE, "inductance")
-    return Device("inductor", ("a", "b"), {"inductance": value})
+    return _device("inductor", {"inductance": value})
 
 
 def voltage_source(waveform: Waveform | Quantity) -> Device:
@@ -74,7 +74,7 @@ def voltage_source(waveform: Waveform | Quantity) -> Device:
     """
     level = Dc(waveform) if isinstance(waveform, Quantity) else waveform
     parameters: dict[str, JsonValue] = {"waveform": level.to_json(VOLTAGE)}
-    return Device("voltage_source", ("positive", "negative"), parameters)
+    return _device("voltage_source", parameters)
 
 
 def current_source(waveform: Waveform | Quantity) -> Device:
@@ -85,10 +85,7 @@ def current_source(waveform: Waveform | Quantity) -> Device:
     """
     level = Dc(waveform) if isinstance(waveform, Quantity) else waveform
     parameters: dict[str, JsonValue] = {"waveform": level.to_json(CURRENT)}
-    return Device("current_source", ("positive", "negative"), parameters)
-
-
-_CONTROLLED = ("positive", "negative", "control_positive", "control_negative")
+    return _device("current_source", parameters)
 
 
 def voltage_controlled_voltage_source(gain: float) -> Device:
@@ -98,7 +95,7 @@ def voltage_controlled_voltage_source(gain: float) -> Device:
     control terminals draw no current.
     """
     parameters: dict[str, JsonValue] = {"gain": finite(gain, "gain")}
-    return Device("voltage_controlled_voltage_source", _CONTROLLED, parameters)
+    return _device("voltage_controlled_voltage_source", parameters)
 
 
 def voltage_controlled_current_source(transconductance: Quantity) -> Device:
@@ -109,7 +106,7 @@ def voltage_controlled_current_source(transconductance: Quantity) -> Device:
     """
     value = transconductance.to(CONDUCTANCE, "transconductance")
     parameters: dict[str, JsonValue] = {"transconductance": value}
-    return Device("voltage_controlled_current_source", _CONTROLLED, parameters)
+    return _device("voltage_controlled_current_source", parameters)
 
 
 def current_controlled_current_source(gain: float) -> Device:
@@ -121,7 +118,7 @@ def current_controlled_current_source(gain: float) -> Device:
     from ``positive`` through the source to ``negative``.
     """
     parameters: dict[str, JsonValue] = {"gain": finite(gain, "gain")}
-    return Device("current_controlled_current_source", _CONTROLLED, parameters)
+    return _device("current_controlled_current_source", parameters)
 
 
 def current_controlled_voltage_source(transresistance: Quantity) -> Device:
@@ -135,7 +132,72 @@ def current_controlled_voltage_source(transresistance: Quantity) -> Device:
     """
     value = transresistance.to(RESISTANCE, "transresistance")
     parameters: dict[str, JsonValue] = {"transresistance": value}
-    return Device("current_controlled_voltage_source", _CONTROLLED, parameters)
+    return _device("current_controlled_voltage_source", parameters)
+
+
+def behavioral_voltage_source(expression: str) -> Device:
+    """A source holding its output, ``positive`` minus ``negative``, at `expression`.
+
+    The expression reads voltages and currents in SI units: ``v(a)`` is the voltage
+    of terminal ``a``, ``v(a, b)`` that of ``a`` over ``b``, ``i(p)`` the current
+    through the sensing port ``p``, and ``time`` the time. Its terminals are
+    ``positive`` and ``negative``, then each terminal it reads, then ``p_positive`` and
+    ``p_negative`` for each port ``p``: a short circuit whose current, from
+    ``p_positive`` to ``p_negative``, is the unknown ``p``. The source's own current,
+    from ``positive`` through the source to ``negative``, is the unknown ``current``.
+    The reference's expressions page gives the language, its operators and its
+    functions.
+
+    Raises:
+        ValueError: When `expression` is not an expression.
+
+    Examples:
+        >>> behavioral_voltage_source("1e5 * v(inp, inn)").terminals
+        ('positive', 'negative', 'inp', 'inn')
+    """
+    return _device("behavioral_voltage_source", {"expression": expression})
+
+
+def behavioral_current_source(expression: str) -> Device:
+    """A source driving `expression` from ``positive`` through itself to ``negative``.
+
+    The expression and the terminals are a behavioral voltage source's.
+
+    Raises:
+        ValueError: When `expression` is not an expression.
+
+    Examples:
+        >>> behavioral_current_source("limit(1e-3 * v(c), -1e-3, 1e-3)").terminals
+        ('positive', 'negative', 'c')
+    """
+    return _device("behavioral_current_source", {"expression": expression})
+
+
+def voltage_controlled_switch(
+    *,
+    on_resistance: Quantity | None = None,
+    off_resistance: Quantity | None = None,
+    on_voltage: Quantity | None = None,
+    off_voltage: Quantity | None = None,
+) -> Device:
+    """A switch between ``positive`` and ``negative``, in PSpice's model.
+
+    The voltage of ``control_positive`` over ``control_negative`` moves its resistance
+    smoothly, logarithmically, from the off resistance at the off voltage to the on
+    resistance at the on voltage; beyond either, the resistance holds. The control
+    terminals draw no current. Parameters left out take PSpice's defaults: 1 Ω on, 1 MΩ
+    off, on at 1 V and off at 0 V.
+    """
+    parameters = _parameters(
+        {
+            "on_resistance": (on_resistance, RESISTANCE),
+            "off_resistance": (off_resistance, RESISTANCE),
+            "on_voltage": (on_voltage, VOLTAGE),
+            "off_voltage": (off_voltage, VOLTAGE),
+        },
+        {},
+    )
+    return _device("voltage_controlled_switch", parameters)
 
 
 def diode(  # noqa: PLR0913 - the SPICE junction model has eight parameters
@@ -169,7 +231,7 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has eight parameters
             "depletion_coefficient": depletion_coefficient,
         },
     )
-    return Device("diode", ("anode", "cathode"), parameters)
+    return _device("diode", parameters)
 
 
 TRANSCONDUCTANCE_PARAMETER: Final = CURRENT / VOLTAGE**2
@@ -231,7 +293,7 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has twelve parameters
         },
         {"depletion_coefficient": depletion_coefficient, "doping_tail": doping_tail},
     )
-    return Device("jfet", ("drain", "gate", "source"), parameters)
+    return _device("jfet", parameters)
 
 
 def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 32 parameters
@@ -333,7 +395,7 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 32 paramete
             "depletion_coefficient": depletion_coefficient,
         },
     )
-    return Device("bipolar_transistor", ("collector", "base", "emitter"), parameters)
+    return _device("bipolar_transistor", parameters)
 
 
 def mosfet(  # noqa: PLR0913 - SPICE's level 1 MOSFET has 37 parameters
@@ -455,7 +517,17 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 MOSFET has 37 parameters
             "depletion_coefficient": depletion_coefficient,
         },
     )
-    return Device("mosfet", ("drain", "gate", "source", "bulk"), parameters)
+    return _device("mosfet", parameters)
+
+
+def _device(model: str, parameters: dict[str, JsonValue]) -> Device:
+    """A device of `model` with `parameters`, with the terminals the engine gives it.
+
+    Raises:
+        ValueError: When the engine cannot read the parameters.
+    """
+    terminals = _core.terminals(model, json.dumps(parameters))
+    return Device(model, tuple(terminals), parameters)
 
 
 def _parameters(

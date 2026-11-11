@@ -204,6 +204,21 @@ fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Boun
 }
 
 /// The Rust core of jolty.
+/// The terminals of a device of `model` with `parameters`, a JSON object, in the order
+/// the model declares them.
+#[pyfunction]
+fn terminals(model: &str, parameters: &str) -> PyResult<Vec<String>> {
+    let library = Library::standard();
+    let model = library
+        .get(model)
+        .ok_or_else(|| PyValueError::new_err(format!("no model is named `{model}`")))?;
+    let parameters = serde_json::from_str(parameters).map_err(|error| unreadable(&error))?;
+    let interface = model
+        .interface(&parameters)
+        .map_err(|error| PyValueError::new_err(error.0))?;
+    Ok(interface.terminals)
+}
+
 /// Every rule of the structural checks, in the order a check reports them: its name, its
 /// default level and its condition.
 #[pyfunction]
@@ -219,6 +234,8 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     module.add_class::<Simulator>()?;
     module.add_function(wrap_pyfunction!(rules, module)?)?;
+    module.add_function(wrap_pyfunction!(terminals, module)?)?;
+    module.add("EXPRESSIONS", jolty_expressions::LANGUAGE)?;
     module.add("ElaborationError", py.get_type::<ElaborationError>())?;
     module.add("SimulationError", py.get_type::<SimulationError>())?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;

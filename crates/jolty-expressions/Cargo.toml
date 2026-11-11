@@ -1,0 +1,18 @@
+[package]
+name = "jolty-expressions"
+description = "The expression language of jolty's behavioral sources, evaluated with every derivative."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

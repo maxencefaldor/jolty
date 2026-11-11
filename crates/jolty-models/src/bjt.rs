@@ -6,7 +6,8 @@ use crate::junction::{
 };
 use crate::stamp::Stamp;
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, NativeDevice, Output, ParameterError, Quantity,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Output, ParameterError,
+    Quantity,
 };
 
 /// The doping order of a bipolar transistor.
@@ -574,13 +575,18 @@ fn inverse(name: &str, value: Option<f64>) -> Result<f64, ParameterError> {
 
 impl NativeDevice for BipolarTransistor {
     const NAME: &'static str = "bipolar_transistor";
-    const TERMINALS: &'static [&'static str] = &["collector", "base", "emitter"];
-    const BRANCHES: &'static [Branch] = &[
-        Branch::new(1, 2, BranchKind::Conductive),
-        Branch::new(1, 0, BranchKind::Conductive),
-        Branch::new(0, 2, BranchKind::Conductive),
-    ];
     type Parameters = BipolarTransistorParameters;
+
+    fn interface(_: &BipolarTransistorParameters) -> Interface {
+        Interface::new(
+            &["collector", "base", "emitter"],
+            &[
+                Branch::new(1, 2, BranchKind::Conductive),
+                Branch::new(1, 0, BranchKind::Conductive),
+                Branch::new(0, 2, BranchKind::Conductive),
+            ],
+        )
+    }
 
     fn new(
         parameters: BipolarTransistorParameters,
@@ -804,7 +810,7 @@ mod tests {
 
     #[test]
     fn its_collector_current_is_beta_times_its_base_current() {
-        let mut bench = Bench::new::<BipolarTransistor>(r#"{"saturation_current": 1e-15}"#, 3);
+        let mut bench = Bench::new::<BipolarTransistor>(r#"{"saturation_current": 1e-15}"#);
         let evaluation = bench.settle(&[5.0, 0.65, 0.0]);
         let (collector, base) = (evaluation.residual[0], evaluation.residual[1]);
         let expected = 1e-15 * ((0.65 / THERMAL_VOLTAGE).exp() - 1.0);
@@ -822,9 +828,9 @@ mod tests {
 
     #[test]
     fn a_pnp_mirrors_an_npn() {
-        let mut npn = Bench::new::<BipolarTransistor>(FULL, 3);
+        let mut npn = Bench::new::<BipolarTransistor>(FULL);
         let mut pnp =
-            Bench::new::<BipolarTransistor>(&FULL.replace('{', r#"{"polarity": "pnp", "#), 3);
+            Bench::new::<BipolarTransistor>(&FULL.replace('{', r#"{"polarity": "pnp", "#));
         let n = npn.settle(&[3.0, 0.7, 0.0]);
         let p = pnp.settle(&[-3.0, -0.7, 0.0]);
         for (n, p) in n.residual.iter().zip(&p.residual) {
@@ -839,7 +845,6 @@ mod tests {
     fn series_resistances_add_internal_nodes() {
         let bench = Bench::new::<BipolarTransistor>(
             r#"{"base_resistance": 100, "collector_resistance": 5, "emitter_resistance": 1}"#,
-            3,
         );
         assert_eq!(
             bench.unknowns(),
@@ -870,7 +875,7 @@ mod tests {
     #[test]
     fn rejects_out_of_range_parameters() {
         let error =
-            Bench::try_new::<BipolarTransistor>(r#"{"forward_early_voltage": 0}"#, 3).unwrap_err();
+            Bench::try_new::<BipolarTransistor>(r#"{"forward_early_voltage": 0}"#).unwrap_err();
         assert_eq!(
             error.to_string(),
             "forward_early_voltage must be positive, not 0.0"
