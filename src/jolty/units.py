@@ -14,6 +14,7 @@ Examples:
 
 import math
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Final, override
 
 from jolty.errors import DimensionError
@@ -62,10 +63,18 @@ class Dimension:
 
     @override
     def __str__(self) -> str:
-        """The unit's symbol, such as ``Ω``, or a product of base units, or ``1``."""
+        """The unit's symbol, such as ``Ω`` or ``V⁻¹``, else a product of base units.
+
+        Examples:
+            >>> str(VOLTAGE), str(DIMENSIONLESS / VOLTAGE), str(LENGTH * TIME)
+            ('V', 'V⁻¹', 'm·s')
+        """
         symbol = _SYMBOLS.get(self)
         if symbol is not None:
             return symbol
+        inverse = _SYMBOLS.get(DIMENSIONLESS / self)
+        if inverse is not None:
+            return f"{inverse}\N{SUPERSCRIPT MINUS}\N{SUPERSCRIPT ONE}"
         factors = [
             base if exponent == 1 else f"{base}^{exponent}"
             for base, exponent in zip(_BASES, self._exponents(), strict=True)
@@ -103,7 +112,9 @@ _SYMBOLS: Final = {
     CONDUCTANCE: "S",
     CAPACITANCE: "F",
     INDUCTANCE: "H",
+    CURRENT / VOLTAGE**2: "A/V\N{SUPERSCRIPT TWO}",
 }
+"""The symbol of each named unit, to which an SI prefix binds."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +157,38 @@ class Quantity:
         """The quotient of a number by the quantity, as a frequency from a period."""
         return Quantity(other / self.value, DIMENSIONLESS / self.dimension)
 
+    def compact(self) -> str:
+        """The quantity to 15 significant digits, with an SI prefix and no space.
+
+        Fifteen digits keep every digit a script writes and drop the noise of binary
+        arithmetic, so a name written from the quantity reads as the script does.
+
+        Examples:
+            >>> (1.00001 * kohm).compact(), (4.7 * nF).compact(), (0.02 / V).compact()
+            ('1.00001kΩ', '4.7nF', '0.02V⁻¹')
+        """
+        value = float(f"{self.value:.15g}")
+        symbol = _SYMBOLS.get(self.dimension)
+        if symbol is None:
+            unit = "" if self.dimension == DIMENSIONLESS else str(self.dimension)
+            return f"{value!r}{unit}"
+        if value == 0 or not math.isfinite(value):
+            return f"{value!r}{symbol}"
+        exponent = 3 * math.floor(math.log10(abs(value)) / 3)
+        exponent = min(max(exponent, min(_PREFIXES)), max(_PREFIXES))
+        # Shifting the shortest decimal form of the value keeps its digits exact.
+        mantissa = Decimal(repr(value)).scaleb(-exponent).normalize()
+        return f"{mantissa:f}{_PREFIXES[exponent]}{symbol}"
+
+    def __pow__(self, power: int) -> Quantity:
+        """The quantity raised to an integer `power`, as volts squared.
+
+        Examples:
+            >>> str(1 * mA / V**2)
+            '1 mA/V²'
+        """
+        return Quantity(self.value**power, self.dimension**power)
+
     def __add__(self, other: Quantity) -> Quantity:
         """The sum of two quantities of the same dimension."""
         return Quantity(self.value + self._same(other, "add"), self.dimension)
@@ -166,9 +209,20 @@ class Quantity:
 
     @override
     def __str__(self) -> str:
-        """The value with an SI prefix and the unit's symbol, such as ``4.7 kΩ``."""
-        symbol = "" if self.dimension == DIMENSIONLESS else str(self.dimension)
-        return format_si(self.value, symbol)
+        """The value with an SI prefix and the unit's symbol, such as ``4.7 kΩ``.
+
+        A unit without a symbol of its own takes no prefix, which would bind to its
+        first factor alone.
+
+        Examples:
+            >>> str(0.02 / V)
+            '0.02 V⁻¹'
+        """
+        if self.dimension == DIMENSIONLESS:
+            return format_si(self.value, "")
+        if self.dimension in _SYMBOLS:
+            return format_si(self.value, _SYMBOLS[self.dimension])
+        return f"{float(f'{self.value:.4g}'):g} {self.dimension}"
 
 
 def finite(value: float, name: str) -> float:
@@ -222,6 +276,7 @@ mA: Final = Quantity(1e-3, CURRENT)
 uA: Final = Quantity(1e-6, CURRENT)
 nA: Final = Quantity(1e-9, CURRENT)
 pA: Final = Quantity(1e-12, CURRENT)
+fA: Final = Quantity(1e-15, CURRENT)
 ohm: Final = Quantity(1.0, RESISTANCE)
 kohm: Final = Quantity(1e3, RESISTANCE)
 Mohm: Final = Quantity(1e6, RESISTANCE)

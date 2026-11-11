@@ -24,7 +24,7 @@ from jolty import (
     devices,
 )
 from jolty.plan import decade, linear
-from jolty.units import A, Quantity, V, kHz, kohm, mA, nF, ohm, us
+from jolty.units import A, Hz, Quantity, V, kHz, kohm, mA, nF, ohm, uA, us
 from jolty.waveforms import Piecewise
 
 
@@ -128,6 +128,52 @@ def test_the_step_response_of_a_low_pass_filter() -> None:
     np.testing.assert_allclose(waveforms.voltage("out")[late], exact, atol=2e-4)
     assert waveforms.times[-1] == pytest.approx(5e-6)
     assert waveforms.statistics.accepted == len(waveforms.times) - 1
+
+
+@component
+def common_emitter(c: Builder, transistor: devices.Device) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    source = c.place(devices.voltage_source(0.75 * V), id="V1")
+    base = c.place(devices.resistor(2 * kohm), id="RB")
+    amplifier = c.place(transistor, id="Q1")
+    load = c.place(devices.resistor(1 * kohm), id="RC")
+    c.connect(source.positive, base.a, name="in")
+    c.connect(base.b, amplifier.base, name="base")
+    c.connect(supply.positive, load.a, name="supply")
+    c.connect(load.b, amplifier.collector, name="out")
+    c.connect(source.negative, supply.negative, amplifier.emitter, ground)
+
+
+@pytest.mark.parametrize(
+    ("minimum", "halfway"),
+    [(None, None), (10 * ohm, None), (10 * ohm, 20 * uA)],
+    ids=["fixed", "charge", "current"],
+)
+def test_a_small_signal_response_is_the_slope_of_the_dc_transfer(
+    minimum: Quantity | None, halfway: Quantity | None
+) -> None:
+    # The base resistance, fixed or falling with the base charge or current, enters
+    # the small-signal model with every derivative.
+    transistor = devices.bipolar_transistor(
+        saturation_current=1e-15 * A,
+        forward_early_voltage=50 * V,
+        forward_knee_current=10 * mA,
+        base_resistance=300 * ohm,
+        minimum_base_resistance=minimum,
+        base_resistance_current=halfway,
+    )
+    simulation = Simulation(common_emitter(transistor))
+    tight = Options(relative_tolerance=1e-11, voltage_tolerance=1e-15)
+    # A central difference over 0.1 mV, small beside the thermal voltage, errs by about
+    # 1e-5; leaving out how the base resistance falls would err by a percent.
+    step = 1e-4
+    levels = [(0.75 - step) * V, (0.75 + step) * V]
+    sweep = simulation.run(DcSweep("V1", levels), tight)
+    slopes = (sweep.values[1] - sweep.values[0]) / (2 * step)
+    response = simulation.run(Ac("V1", [1 * Hz]), tight)
+    np.testing.assert_allclose(response.values[0].real, slopes, rtol=1e-4, atol=1e-12)
+    assert abs(response.voltage("out")[0]) > 10  # The stage amplifies.
 
 
 def test_a_plan_runs_its_analyses_by_name() -> None:

@@ -10,12 +10,16 @@
 //! device bound to its unknowns. A [`Library`] holds the models a circuit can use.
 
 mod binding;
+mod bjt;
 mod controlled;
 mod device;
 mod diode;
 mod evaluation;
+mod jfet;
+mod junction;
 mod passive;
 mod sources;
+mod stamp;
 #[cfg(test)]
 mod testing;
 mod topology;
@@ -24,6 +28,7 @@ pub mod waveform;
 use std::collections::BTreeMap;
 
 pub use binding::{Binding, Node, Quantity, TerminalPair, Unknown, UnknownInfo};
+pub use bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
 pub use controlled::{
     VoltageControlledCurrentSource, VoltageControlledCurrentSourceParameters,
     VoltageControlledVoltageSource, VoltageControlledVoltageSourceParameters,
@@ -31,6 +36,7 @@ pub use controlled::{
 pub use device::{Device, Model, Native, NativeDevice, ParameterError, Source};
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Input, Output};
+pub use jfet::{Channel, Jfet, JfetParameters};
 pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
 };
@@ -48,6 +54,7 @@ impl Library {
     #[must_use]
     pub fn standard() -> Self {
         let mut library = Self::default();
+        library.add(Native::<BipolarTransistor>::new());
         library.add(Native::<Resistor>::new());
         library.add(Native::<Capacitor>::new());
         library.add(Native::<Inductor>::new());
@@ -56,6 +63,7 @@ impl Library {
         library.add(Native::<VoltageControlledVoltageSource>::new());
         library.add(Native::<VoltageControlledCurrentSource>::new());
         library.add(Native::<Diode>::new());
+        library.add(Native::<Jfet>::new());
         library
     }
 
@@ -92,10 +100,12 @@ mod tests {
         assert_eq!(
             names,
             [
+                "bipolar_transistor",
                 "capacitor",
                 "current_source",
                 "diode",
                 "inductor",
+                "jfet",
                 "resistor",
                 "voltage_controlled_current_source",
                 "voltage_controlled_voltage_source",

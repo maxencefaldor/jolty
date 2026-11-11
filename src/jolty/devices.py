@@ -11,7 +11,9 @@ Examples:
     {'resistance': 10000.0}
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Final, Literal
 
 from pydantic import JsonValue
 
@@ -19,10 +21,12 @@ from jolty.units import (
     CAPACITANCE,
     CONDUCTANCE,
     CURRENT,
+    DIMENSIONLESS,
     INDUCTANCE,
     RESISTANCE,
     TIME,
     VOLTAGE,
+    Dimension,
     Quantity,
     finite,
 )
@@ -124,18 +128,196 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has eight parameters
     emission coefficient of 1, no series resistance, junction capacitance or transit
     time, a junction potential of 1 V, and grading and depletion coefficients of 0.5.
     """
-    quantities = {
-        "saturation_current": (saturation_current, CURRENT),
-        "series_resistance": (series_resistance, RESISTANCE),
-        "junction_capacitance": (junction_capacitance, CAPACITANCE),
-        "junction_potential": (junction_potential, VOLTAGE),
-        "transit_time": (transit_time, TIME),
-    }
-    numbers = {
-        "emission_coefficient": emission_coefficient,
-        "grading_coefficient": grading_coefficient,
-        "depletion_coefficient": depletion_coefficient,
-    }
+    parameters = _parameters(
+        {
+            "saturation_current": (saturation_current, CURRENT),
+            "series_resistance": (series_resistance, RESISTANCE),
+            "junction_capacitance": (junction_capacitance, CAPACITANCE),
+            "junction_potential": (junction_potential, VOLTAGE),
+            "transit_time": (transit_time, TIME),
+        },
+        {
+            "emission_coefficient": emission_coefficient,
+            "grading_coefficient": grading_coefficient,
+            "depletion_coefficient": depletion_coefficient,
+        },
+    )
+    return Device("diode", ("anode", "cathode"), parameters)
+
+
+TRANSCONDUCTANCE_PARAMETER: Final = CURRENT / VOLTAGE**2
+"""The dimension of a field-effect transistor's transconductance parameter, A/V²."""
+
+PER_VOLT: Final = DIMENSIONLESS / VOLTAGE
+"""The dimension of a channel-length modulation, V⁻¹."""
+
+
+def jfet(  # noqa: PLR0913 - the SPICE JFET model has twelve parameters
+    *,
+    channel: Literal["n", "p"] | None = None,
+    threshold_voltage: Quantity | None = None,
+    transconductance_parameter: Quantity | None = None,
+    channel_length_modulation: Quantity | None = None,
+    drain_resistance: Quantity | None = None,
+    source_resistance: Quantity | None = None,
+    gate_source_capacitance: Quantity | None = None,
+    gate_drain_capacitance: Quantity | None = None,
+    junction_potential: Quantity | None = None,
+    saturation_current: Quantity | None = None,
+    depletion_coefficient: float | None = None,
+    doping_tail: float | None = None,
+) -> Device:
+    """A junction field-effect transistor between ``drain``, ``gate`` and ``source``.
+
+    It follows the SPICE model with Sydney University's doping tail, as ngspice does:
+    two gate junctions, and a drain current that follows the square law above the
+    threshold voltage. Parameters left out take SPICE's defaults: an n-channel, a
+    threshold of -2 V, a transconductance parameter of 100 µA/V², no channel-length
+    modulation, resistance or capacitance, a junction potential of 1 V, a saturation
+    current of 10 fA, a depletion coefficient of 0.5, and a doping tail of 1, the plain
+    square law. A drain or source resistance adds an internal node, the unknown
+    ``drain`` or ``source``.
+
+    Examples:
+        >>> from jolty.units import V, mA
+        >>> jfet(channel="p", transconductance_parameter=1 * mA / V**2).parameters
+        {'channel': 'p', 'transconductance_parameter': 0.001}
+    """
+    parameters: dict[str, JsonValue] = {} if channel is None else {"channel": channel}
+    parameters |= _parameters(
+        {
+            "threshold_voltage": (threshold_voltage, VOLTAGE),
+            "transconductance_parameter": (
+                transconductance_parameter,
+                TRANSCONDUCTANCE_PARAMETER,
+            ),
+            "channel_length_modulation": (channel_length_modulation, PER_VOLT),
+            "drain_resistance": (drain_resistance, RESISTANCE),
+            "source_resistance": (source_resistance, RESISTANCE),
+            "gate_source_capacitance": (gate_source_capacitance, CAPACITANCE),
+            "gate_drain_capacitance": (gate_drain_capacitance, CAPACITANCE),
+            "junction_potential": (junction_potential, VOLTAGE),
+            "saturation_current": (saturation_current, CURRENT),
+        },
+        {"depletion_coefficient": depletion_coefficient, "doping_tail": doping_tail},
+    )
+    return Device("jfet", ("drain", "gate", "source"), parameters)
+
+
+def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 32 parameters
+    *,
+    polarity: Literal["npn", "pnp"] | None = None,
+    saturation_current: Quantity | None = None,
+    forward_beta: float | None = None,
+    reverse_beta: float | None = None,
+    forward_emission_coefficient: float | None = None,
+    reverse_emission_coefficient: float | None = None,
+    forward_early_voltage: Quantity | None = None,
+    reverse_early_voltage: Quantity | None = None,
+    forward_knee_current: Quantity | None = None,
+    reverse_knee_current: Quantity | None = None,
+    base_emitter_leakage_current: Quantity | None = None,
+    base_emitter_leakage_emission_coefficient: float | None = None,
+    base_collector_leakage_current: Quantity | None = None,
+    base_collector_leakage_emission_coefficient: float | None = None,
+    base_resistance: Quantity | None = None,
+    minimum_base_resistance: Quantity | None = None,
+    base_resistance_current: Quantity | None = None,
+    emitter_resistance: Quantity | None = None,
+    collector_resistance: Quantity | None = None,
+    base_emitter_capacitance: Quantity | None = None,
+    base_emitter_potential: Quantity | None = None,
+    base_emitter_grading: float | None = None,
+    forward_transit_time: Quantity | None = None,
+    transit_time_bias_coefficient: float | None = None,
+    transit_time_voltage: Quantity | None = None,
+    transit_time_current: Quantity | None = None,
+    base_collector_capacitance: Quantity | None = None,
+    base_collector_potential: Quantity | None = None,
+    base_collector_grading: float | None = None,
+    internal_base_fraction: float | None = None,
+    reverse_transit_time: Quantity | None = None,
+    depletion_coefficient: float | None = None,
+) -> Device:
+    """A bipolar junction transistor between ``collector``, ``base`` and ``emitter``.
+
+    It follows the Gummel-Poon model of SPICE, as ngspice does. Parameters left out take
+    SPICE's defaults: an NPN with a saturation current of 0.1 fA, a forward beta of 100
+    and a reverse beta of 1, emission coefficients of 1, infinite Early voltages and
+    knee currents, no leakage, resistance, capacitance or transit time, and junction
+    potentials of 0.75 V with grading coefficients of 0.33. A base, collector or emitter
+    resistance adds an internal node, the unknown ``base``, ``collector`` or
+    ``emitter``.
+
+    Examples:
+        >>> from jolty.units import V, fA
+        >>> transistor = bipolar_transistor(
+        ...     saturation_current=10 * fA,
+        ...     forward_beta=200,
+        ...     forward_early_voltage=50 * V,
+        ... )
+        >>> transistor.parameters["forward_early_voltage"]
+        50.0
+    """
+    parameters: dict[str, JsonValue] = (
+        {} if polarity is None else {"polarity": polarity}
+    )
+    parameters |= _parameters(
+        {
+            "saturation_current": (saturation_current, CURRENT),
+            "forward_early_voltage": (forward_early_voltage, VOLTAGE),
+            "reverse_early_voltage": (reverse_early_voltage, VOLTAGE),
+            "forward_knee_current": (forward_knee_current, CURRENT),
+            "reverse_knee_current": (reverse_knee_current, CURRENT),
+            "base_emitter_leakage_current": (base_emitter_leakage_current, CURRENT),
+            "base_collector_leakage_current": (base_collector_leakage_current, CURRENT),
+            "base_resistance": (base_resistance, RESISTANCE),
+            "minimum_base_resistance": (minimum_base_resistance, RESISTANCE),
+            "base_resistance_current": (base_resistance_current, CURRENT),
+            "emitter_resistance": (emitter_resistance, RESISTANCE),
+            "collector_resistance": (collector_resistance, RESISTANCE),
+            "base_emitter_capacitance": (base_emitter_capacitance, CAPACITANCE),
+            "base_emitter_potential": (base_emitter_potential, VOLTAGE),
+            "forward_transit_time": (forward_transit_time, TIME),
+            "transit_time_voltage": (transit_time_voltage, VOLTAGE),
+            "transit_time_current": (transit_time_current, CURRENT),
+            "base_collector_capacitance": (base_collector_capacitance, CAPACITANCE),
+            "base_collector_potential": (base_collector_potential, VOLTAGE),
+            "reverse_transit_time": (reverse_transit_time, TIME),
+        },
+        {
+            "forward_beta": forward_beta,
+            "reverse_beta": reverse_beta,
+            "forward_emission_coefficient": forward_emission_coefficient,
+            "reverse_emission_coefficient": reverse_emission_coefficient,
+            "base_emitter_leakage_emission_coefficient": (
+                base_emitter_leakage_emission_coefficient
+            ),
+            "base_collector_leakage_emission_coefficient": (
+                base_collector_leakage_emission_coefficient
+            ),
+            "base_emitter_grading": base_emitter_grading,
+            "transit_time_bias_coefficient": transit_time_bias_coefficient,
+            "base_collector_grading": base_collector_grading,
+            "internal_base_fraction": internal_base_fraction,
+            "depletion_coefficient": depletion_coefficient,
+        },
+    )
+    return Device("bipolar_transistor", ("collector", "base", "emitter"), parameters)
+
+
+def _parameters(
+    quantities: Mapping[str, tuple[Quantity | None, Dimension]],
+    numbers: Mapping[str, float | None],
+) -> dict[str, JsonValue]:
+    """The parameters given, by name, each checked and in SI base units.
+
+    A quantity's dimension is checked, and a number is checked finite.
+
+    Raises:
+        DimensionError: When a quantity has the wrong dimension.
+        ValueError: When a value is not finite.
+    """
     parameters: dict[str, JsonValue] = {
         name: value.to(dimension, name)
         for name, (value, dimension) in quantities.items()
@@ -146,4 +328,4 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has eight parameters
         for name, value in numbers.items()
         if value is not None
     }
-    return Device("diode", ("anode", "cathode"), parameters)
+    return parameters

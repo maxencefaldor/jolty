@@ -1,0 +1,252 @@
+//! What every semiconductor junction shares: its current, its depletion charge, and how
+//! Newton steps of its voltages are limited.
+//!
+//! The equations and the limiting follow SPICE, as ngspice implements them, so a junction
+//! behaves the same in every model that has one: the diode, the JFET's gate and the
+//! bipolar transistor's base.
+
+use crate::ParameterError;
+
+/// The Boltzmann constant, in joules per kelvin.
+pub(crate) const BOLTZMANN: f64 = 1.380_649e-23;
+/// The elementary charge, in coulombs.
+pub(crate) const ELEMENTARY_CHARGE: f64 = 1.602_176_634e-19;
+/// The temperature devices are evaluated at: 27 °C, in kelvins.
+pub(crate) const TEMPERATURE: f64 = 300.15;
+/// The thermal voltage at [`TEMPERATURE`], in volts.
+pub(crate) const THERMAL_VOLTAGE: f64 = BOLTZMANN * TEMPERATURE / ELEMENTARY_CHARGE;
+
+/// The current through a junction at `voltage`, and its derivative, with `saturation`
+/// current and exponential `slope` (the emission coefficient times the thermal voltage).
+///
+/// Forward and slightly reversed, the current is `Is · (e^{v / slope} − 1)`. Below three
+/// slopes of reverse bias it follows SPICE's form, `−Is · (1 + (3·slope / (e·v))³)`, which
+/// joins the exponential with its slope and settles on `−Is`.
+pub(crate) fn junction_current(voltage: f64, saturation: f64, slope: f64) -> (f64, f64) {
+    if voltage >= -3.0 * slope {
+        let exponential = (voltage / slope).exp();
+        (
+            saturation * (exponential - 1.0),
+            saturation * exponential / slope,
+        )
+    } else {
+        let ratio = 3.0 * slope / (voltage * std::f64::consts::E);
+        let cube = ratio * ratio * ratio;
+        (
+            -saturation * (1.0 + cube),
+            3.0 * saturation * cube / voltage,
+        )
+    }
+}
+
+/// The voltage above which a junction's steps are limited: where its current's curvature
+/// takes over, `slope · ln(slope / (√2 · Is))`.
+pub(crate) fn critical_voltage(saturation: f64, slope: f64) -> f64 {
+    slope * (slope / (std::f64::consts::SQRT_2 * saturation)).ln()
+}
+
+/// SPICE's limiting of a junction voltage's step from `old` to `new`, with exponential
+/// `slope` and `critical` voltage. Above the critical voltage, a step of more than two
+/// slopes forward becomes a logarithmic one the exponential follows safely, and one
+/// backward falls to the critical voltage, as in SPICE3. A step deep into reverse bias is
+/// bounded, as in ngspice. Returns the limited voltage, or `None` when `new` needs no
+/// limiting.
+pub(crate) fn limit_junction(new: f64, old: f64, slope: f64, critical: f64) -> Option<f64> {
+    if new > critical && (new - old).abs() > 2.0 * slope {
+        Some(if old > 0.0 {
+            let argument = 1.0 + (new - old) / slope;
+            if argument > 0.0 {
+                old + slope * argument.ln()
+            } else {
+                critical
+            }
+        } else {
+            slope * (new / slope).ln()
+        })
+    } else if new < 0.0 {
+        let floor = if old > 0.0 {
+            -old - 1.0
+        } else {
+            2.0 * old - 1.0
+        };
+        (new < floor).then_some(floor)
+    } else {
+        None
+    }
+}
+
+/// SPICE's limiting of a field-effect transistor's gate voltage's step from `old` to `new`,
+/// around its `threshold`: steps are bounded relative to the distance from the threshold,
+/// so the drain current's square law cannot overshoot. Returns the limited voltage, or
+/// `None` when `new` needs no limiting.
+pub(crate) fn limit_gate(new: f64, old: f64, threshold: f64) -> Option<f64> {
+    let high = (2.0 * (old - threshold)).abs() + 2.0;
+    let low = (old - threshold).abs() + 1.0;
+    let on = threshold + 3.5;
+    let step = new - old;
+    if old >= threshold {
+        if old >= on {
+            if step <= 0.0 {
+                if new >= on {
+                    (-step > low).then_some(old - low)
+                } else {
+                    (new < threshold + 2.0).then_some(threshold + 2.0)
+                }
+            } else {
+                (step > high).then_some(old + high)
+            }
+        } else if step <= 0.0 {
+            (new < threshold - 0.5).then_some(threshold - 0.5)
+        } else {
+            (new > threshold + 4.0).then_some(threshold + 4.0)
+        }
+    } else if step <= 0.0 {
+        (-step > high).then_some(old - high)
+    } else {
+        let ceiling = threshold + 0.5;
+        if new <= ceiling {
+            (step > low).then_some(old + low)
+        } else {
+            Some(ceiling)
+        }
+    }
+}
+
+/// The depletion charge of a junction: the classic power law below `threshold`, extended
+/// linearly in capacitance above it, where the power law would diverge.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Depletion {
+    capacitance: f64,
+    potential: f64,
+    grading: f64,
+    threshold: f64,
+    /// The charge at the threshold, divided by the zero-bias capacitance.
+    charge_at_threshold: f64,
+    /// `(1 − fc)^{1 + m}`.
+    divisor: f64,
+    /// `1 − fc · (1 + m)`.
+    offset: f64,
+}
+
+impl Depletion {
+    /// The depletion of a junction with zero-bias `capacitance`, built-in `potential`,
+    /// `grading` coefficient and depletion `coefficient`, the fraction of the potential
+    /// above which the capacitance is extended linearly; `None` without capacitance.
+    pub(crate) fn new(
+        capacitance: f64,
+        potential: f64,
+        grading: f64,
+        coefficient: f64,
+    ) -> Option<Self> {
+        (capacitance > 0.0).then(|| Self {
+            capacitance,
+            potential,
+            grading,
+            threshold: coefficient * potential,
+            charge_at_threshold: potential * (1.0 - (1.0 - coefficient).powf(1.0 - grading))
+                / (1.0 - grading),
+            divisor: (1.0 - coefficient).powf(1.0 + grading),
+            offset: 1.0 - coefficient * (1.0 + grading),
+        })
+    }
+
+    /// The charge and capacitance at junction voltage `voltage`.
+    pub(crate) fn evaluate(&self, voltage: f64) -> (f64, f64) {
+        let Self {
+            capacitance,
+            potential,
+            grading,
+            threshold,
+            ..
+        } = *self;
+        if voltage < threshold {
+            let remaining = 1.0 - voltage / potential;
+            let factor = remaining.powf(-grading);
+            let charge = capacitance * potential * (1.0 - remaining * factor) / (1.0 - grading);
+            (charge, capacitance * factor)
+        } else {
+            let above = voltage - threshold;
+            let square = voltage * voltage - threshold * threshold;
+            let charge = capacitance
+                * (self.charge_at_threshold
+                    + (self.offset * above + grading / (2.0 * potential) * square) / self.divisor);
+            (
+                charge,
+                capacitance / self.divisor * (self.offset + grading * voltage / potential),
+            )
+        }
+    }
+}
+
+/// Checks that a coefficient `value` is at least 0 and below 1.
+///
+/// # Errors
+///
+/// Returns an error naming `parameter` otherwise.
+pub(crate) fn below_one(parameter: &str, value: f64) -> Result<f64, ParameterError> {
+    if (0.0..1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(ParameterError(format!(
+            "{parameter} must be at least 0 and below 1, not {value:?}"
+        )))
+    }
+}
+
+/// The charge and capacitance of an optional depletion at `voltage`, zero without one.
+pub(crate) fn depletion_charge(depletion: Option<&Depletion>, voltage: f64) -> (f64, f64) {
+    depletion.map_or((0.0, 0.0), |depletion| depletion.evaluate(voltage))
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        /// The reverse-bias form joins the exponential with the same current and slope.
+        #[test]
+        fn the_junction_current_is_smooth_and_its_slope_is_its_derivative(
+            voltage in -10.0..0.8f64,
+        ) {
+            let slope = 1.5 * THERMAL_VOLTAGE;
+            let (current, conductance) = junction_current(voltage, 1e-12, slope);
+            let step = 1e-7;
+            let above = junction_current(voltage + step, 1e-12, slope).0;
+            let below = junction_current(voltage - step, 1e-12, slope).0;
+            let numeric = (above - below) / (2.0 * step);
+            prop_assert!((numeric - conductance).abs() <= 1e-6 * conductance.abs() + 1e-18);
+            prop_assert!(current >= -1e-12 * (1.0 + 1e-9));
+        }
+
+        /// A limited step is finite, and a forward junction step or any gate step stays
+        /// between the old voltage and the new one.
+        #[test]
+        fn limiting_never_overshoots(new in -20.0..20.0f64, old in -20.0..20.0f64) {
+            let slope = THERMAL_VOLTAGE;
+            let critical = critical_voltage(1e-14, slope);
+            let between = |limited: f64| {
+                limited.is_finite() && (limited - old).abs() <= (new - old).abs() + 1e-12
+                    && (limited - old) * (new - old) >= 0.0
+            };
+            if let Some(limited) = limit_junction(new, old, slope, critical) {
+                prop_assert!(limited.is_finite());
+                prop_assert!(new < old || between(limited));
+            }
+            if let Some(limited) = limit_gate(new, old, -1.0) {
+                prop_assert!(between(limited));
+            }
+        }
+    }
+
+    #[test]
+    fn the_reverse_form_meets_the_exponential_at_three_slopes() {
+        let slope = THERMAL_VOLTAGE;
+        let boundary = -3.0 * slope;
+        let (exponential, exponential_slope) = junction_current(boundary, 1e-14, slope);
+        let (cubic, cubic_slope) = junction_current(boundary - 1e-15, 1e-14, slope);
+        assert!((exponential - cubic).abs() < 1e-24);
+        assert!((exponential_slope / cubic_slope - 1.0).abs() < 1e-9);
+    }
+}

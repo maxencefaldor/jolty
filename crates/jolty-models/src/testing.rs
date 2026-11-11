@@ -67,6 +67,22 @@ impl Bench {
         self.evaluate_with(&Input::new(x, 0.0, 0.0))
     }
 
+    /// Evaluates at `x` until no voltage is limited any more, as Newton's iterations would
+    /// once converged, and returns the last evaluation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if limiting has not settled after a hundred evaluations.
+    pub(crate) fn settle(&mut self, x: &[f64]) -> Evaluation {
+        for _ in 0..100 {
+            let evaluation = self.evaluate(x);
+            if !evaluation.limited {
+                return evaluation;
+            }
+        }
+        panic!("limiting has not settled at {x:?}");
+    }
+
     pub(crate) fn evaluate_with(&mut self, input: &Input<'_>) -> Evaluation {
         let (n, stored) = (self.unknowns.len(), self.pattern.len());
         let (mut residual, mut scale, mut charge) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
@@ -108,9 +124,7 @@ pub(crate) fn assert_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64
     let terminals = D::TERMINALS.len();
     let mut bench = Bench::new::<D>(parameters, terminals);
     assert_eq!(bench.unknowns.len(), x.len(), "one value per unknown");
-    // Settle any limiting state at x before differencing around it.
-    bench.evaluate(x);
-    let exact = bench.evaluate(x);
+    let exact = bench.settle(x);
     for column in 0..x.len() {
         let step = 1e-6 * x[column].abs().max(1.0);
         let mut shifted = x.to_vec();

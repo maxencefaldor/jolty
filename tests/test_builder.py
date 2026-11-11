@@ -67,6 +67,24 @@ def test_the_same_arguments_build_the_same_component_once() -> None:
     assert low_pass(1 * kohm, 1 * nF) is not low_pass(2 * kohm, 1 * nF)
 
 
+@component
+def amplifier(c: Builder, transistor: devices.Device) -> None:
+    c.port("ground", Role.GROUND)
+    c.place(transistor, id="Q1")
+
+
+def test_arguments_name_components_exactly_and_without_whitespace() -> None:
+    near = low_pass(1.00001 * kohm, 4.7 * nF)
+    assert near.name == "low_pass[resistance=1.00001kΩ,capacitance=4.7nF]"
+    assert near is not low_pass(1 * kohm, 4.7 * nF)
+    npn = amplifier(devices.bipolar_transistor(polarity="npn"))
+    pnp = amplifier(devices.bipolar_transistor(polarity="pnp"))
+    assert npn.name.startswith("amplifier[transistor=bipolar_transistor~")
+    assert npn.name != pnp.name
+    assert not any(character.isspace() for character in npn.name)
+    assert circuit(npn).top == npn.name
+
+
 def test_a_circuit_holds_each_component_once() -> None:
     built = circuit(two_stages())
     assert built.top == "two_stages"

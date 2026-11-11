@@ -17,6 +17,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -40,15 +41,18 @@ from jolty import (
 )
 from jolty.plan import decade, linear
 from jolty.units import (
+    A,
     Hz,
     MHz,
     Quantity,
     V,
+    fA,
     kHz,
     kohm,
     mA,
     mH,
     ms,
+    mV,
     nA,
     nF,
     ns,
@@ -72,7 +76,23 @@ TIGHT = Options(
 )
 """jolty's options, as tight as ngspice's below."""
 
-SPICE_OPTIONS = ".options reltol=1e-6 vntol=1e-9 abstol=1e-14 chgtol=1e-18"
+_THERMAL_VOLTAGE = 1.380649e-23 * 300.15 / 1.602176634e-19
+"""jolty's thermal voltage at 27 °C, from the exact SI constants."""
+
+_SPICE_THERMAL_VOLTAGE_PER_KELVIN = 1.38064852e-23 / 1.6021766208e-19
+"""ngspice's Boltzmann constant over the elementary charge, from CODATA 2014."""
+
+_SPICE_TEMPERATURE = _THERMAL_VOLTAGE / _SPICE_THERMAL_VOLTAGE_PER_KELVIN - 273.15
+"""The temperature, in degrees Celsius, at which ngspice's thermal voltage is jolty's.
+
+Running ngspice there, with its models' nominal temperature there too so no parameter
+scales with temperature, compares the devices rather than the physical constants.
+"""
+
+SPICE_OPTIONS = (
+    ".options reltol=1e-6 vntol=1e-9 abstol=1e-14 chgtol=1e-18"
+    f" temp={_SPICE_TEMPERATURE!r} tnom={_SPICE_TEMPERATURE!r}"
+)
 
 _DIODE_PARAMETERS = {
     "saturation_current": "is",
@@ -83,6 +103,54 @@ _DIODE_PARAMETERS = {
     "grading_coefficient": "m",
     "depletion_coefficient": "fc",
     "transit_time": "tt",
+}
+
+_JFET_PARAMETERS = {
+    "threshold_voltage": "vto",
+    "transconductance_parameter": "beta",
+    "channel_length_modulation": "lambda",
+    "drain_resistance": "rd",
+    "source_resistance": "rs",
+    "gate_source_capacitance": "cgs",
+    "gate_drain_capacitance": "cgd",
+    "junction_potential": "pb",
+    "saturation_current": "is",
+    "depletion_coefficient": "fc",
+    "doping_tail": "b",
+}
+
+_BIPOLAR_PARAMETERS = {
+    "saturation_current": "is",
+    "forward_beta": "bf",
+    "reverse_beta": "br",
+    "forward_emission_coefficient": "nf",
+    "reverse_emission_coefficient": "nr",
+    "forward_early_voltage": "vaf",
+    "reverse_early_voltage": "var",
+    "forward_knee_current": "ikf",
+    "reverse_knee_current": "ikr",
+    "base_emitter_leakage_current": "ise",
+    "base_emitter_leakage_emission_coefficient": "ne",
+    "base_collector_leakage_current": "isc",
+    "base_collector_leakage_emission_coefficient": "nc",
+    "base_resistance": "rb",
+    "minimum_base_resistance": "rbm",
+    "base_resistance_current": "irb",
+    "emitter_resistance": "re",
+    "collector_resistance": "rc",
+    "base_emitter_capacitance": "cje",
+    "base_emitter_potential": "vje",
+    "base_emitter_grading": "mje",
+    "forward_transit_time": "tf",
+    "transit_time_bias_coefficient": "xtf",
+    "transit_time_voltage": "vtf",
+    "transit_time_current": "itf",
+    "base_collector_capacitance": "cjc",
+    "base_collector_potential": "vjc",
+    "base_collector_grading": "mjc",
+    "internal_base_fraction": "xcjc",
+    "reverse_transit_time": "tr",
+    "depletion_coefficient": "fc",
 }
 
 type Real = npt.NDArray[np.float64]
@@ -220,6 +288,171 @@ def driven_tank(c: Builder) -> None:
     c.connect(source.positive, inductor.b, damping.b, capacitor.b, ground)
 
 
+_JFET = devices.jfet(
+    threshold_voltage=-1.8 * V,
+    transconductance_parameter=1.3 * mA / V**2,
+    channel_length_modulation=0.02 / V,
+    drain_resistance=20 * ohm,
+    source_resistance=10 * ohm,
+    gate_source_capacitance=4 * pF,
+    gate_drain_capacitance=2 * pF,
+    junction_potential=0.8 * V,
+    saturation_current=1e-14 * A,
+    doping_tail=0.85,
+)
+
+
+@component
+def jfet_stage(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(12 * V), id="V2")
+    # Starting at its peak, the sine's slope is zero, so the operating point at zero
+    # time is also the transient's start, with no capacitive current to jump.
+    signal = Sine(
+        offset=-0.8 * V, amplitude=0.6 * V, frequency=200 * kHz, phase=math.pi / 2
+    )
+    source = c.place(devices.voltage_source(signal), id="V1")
+    gate = c.place(devices.resistor(1 * kohm), id="RG")
+    transistor = c.place(_JFET, id="J1")
+    drain = c.place(devices.resistor(2.2 * kohm), id="RD")
+    degeneration = c.place(devices.resistor(470 * ohm), id="RS")
+    c.connect(source.positive, gate.a, name="in")
+    c.connect(gate.b, transistor.gate, name="gate")
+    c.connect(supply.positive, drain.a, name="supply")
+    c.connect(drain.b, transistor.drain, name="out")
+    c.connect(transistor.source, degeneration.a, name="tail")
+    c.connect(source.negative, supply.negative, degeneration.b, ground)
+
+
+@component
+def jfet_curves(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    bias = c.place(devices.voltage_source(-0.5 * V), id="V1")
+    drain = c.place(devices.voltage_source(0 * V), id="V2")
+    transistor = c.place(_JFET, id="J1")
+    c.connect(bias.positive, transistor.gate, name="gate")
+    c.connect(drain.positive, transistor.drain, name="drain")
+    c.connect(bias.negative, drain.negative, transistor.source, ground)
+
+
+@component
+def p_jfet_follower(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(-9 * V), id="V2")
+    source = c.place(devices.voltage_source(-1 * V), id="V1")
+    transistor = c.place(
+        devices.jfet(
+            channel="p",
+            threshold_voltage=-2.2 * V,
+            transconductance_parameter=0.9 * mA / V**2,
+            channel_length_modulation=0.01 / V,
+            gate_source_capacitance=3 * pF,
+            gate_drain_capacitance=1 * pF,
+        ),
+        id="J1",
+    )
+    load = c.place(devices.resistor(3.3 * kohm), id="RL")
+    c.connect(source.positive, transistor.gate, name="in")
+    c.connect(supply.positive, transistor.drain, name="supply")
+    c.connect(transistor.source, load.a, name="out")
+    c.connect(source.negative, supply.negative, load.b, ground)
+
+
+def _bipolar(
+    polarity: Literal["npn", "pnp"],
+    base_resistance: Literal["current", "charge", "fixed"],
+) -> devices.Device:
+    """A small-signal transistor with every effect of the model switched on.
+
+    Its base resistance falls with the base current, with the base charge, or stays
+    fixed. ngspice leaves a falling base resistance out of its small-signal model,
+    where jolty keeps it, so a frequency response compares transistors with a fixed one.
+    """
+    return devices.bipolar_transistor(
+        polarity=polarity,
+        saturation_current=14 * fA,
+        forward_beta=150.0,
+        reverse_beta=2.0,
+        forward_emission_coefficient=1.01,
+        forward_early_voltage=80 * V,
+        reverse_early_voltage=15 * V,
+        forward_knee_current=40 * mA,
+        reverse_knee_current=5 * mA,
+        base_emitter_leakage_current=50 * fA,
+        base_emitter_leakage_emission_coefficient=1.6,
+        base_collector_leakage_current=100 * fA,
+        base_resistance=50 * ohm,
+        minimum_base_resistance=None if base_resistance == "fixed" else 10 * ohm,
+        base_resistance_current=1 * mA if base_resistance == "current" else None,
+        emitter_resistance=1 * ohm,
+        collector_resistance=5 * ohm,
+        base_emitter_capacitance=8 * pF,
+        base_emitter_potential=0.75 * V,
+        base_emitter_grading=0.33,
+        forward_transit_time=0.4 * ns,
+        transit_time_bias_coefficient=3.0,
+        transit_time_voltage=4 * V,
+        transit_time_current=0.6 * A,
+        base_collector_capacitance=3.5 * pF,
+        base_collector_potential=0.75 * V,
+        base_collector_grading=0.4,
+        internal_base_fraction=0.6,
+        reverse_transit_time=50 * ns,
+    )
+
+
+@component
+def bjt_stage(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    source = c.place(devices.voltage_source(0.7 * V), id="V1")
+    base = c.place(devices.resistor(10 * kohm), id="RB")
+    transistor = c.place(_bipolar("npn", "current"), id="Q1")
+    load = c.place(devices.resistor(1 * kohm), id="RC")
+    c.connect(source.positive, base.a, name="in")
+    c.connect(base.b, transistor.base, name="base")
+    c.connect(supply.positive, load.a, name="supply")
+    c.connect(load.b, transistor.collector, name="out")
+    c.connect(source.negative, supply.negative, transistor.emitter, ground)
+
+
+@component
+def bjt_amplifier(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(12 * V), id="V2")
+    signal = Sine(offset=0 * V, amplitude=20 * mV, frequency=1 * MHz, phase=math.pi / 2)
+    source = c.place(devices.voltage_source(signal), id="V1")
+    coupling = c.place(devices.capacitor(100 * nF), id="CIN")
+    upper = c.place(devices.resistor(47 * kohm), id="R1")
+    lower = c.place(devices.resistor(10 * kohm), id="R2")
+    transistor = c.place(_bipolar("npn", "fixed"), id="Q1")
+    load = c.place(devices.resistor(3.3 * kohm), id="RC")
+    degeneration = c.place(devices.resistor(1 * kohm), id="RE")
+    bypass = c.place(devices.capacitor(1 * nF), id="CE")
+    c.connect(source.positive, coupling.a, name="in")
+    c.connect(coupling.b, upper.b, lower.a, transistor.base, name="base")
+    c.connect(supply.positive, upper.a, load.a, name="supply")
+    c.connect(load.b, transistor.collector, name="out")
+    c.connect(transistor.emitter, degeneration.a, bypass.a, name="tail")
+    c.connect(
+        source.negative, supply.negative, lower.b, degeneration.b, bypass.b, ground
+    )
+
+
+@component
+def pnp_mirror(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(10 * V), id="V1")
+    reference = c.place(devices.resistor(10 * kohm), id="RR")
+    left = c.place(_bipolar("pnp", "charge"), id="Q1")
+    right = c.place(_bipolar("pnp", "charge"), id="Q2")
+    load = c.place(devices.resistor(4.7 * kohm), id="RL")
+    c.connect(supply.positive, left.emitter, right.emitter, name="supply")
+    c.connect(left.base, left.collector, right.base, reference.a, name="mirror")
+    c.connect(right.collector, load.a, name="out")
+    c.connect(supply.negative, reference.b, load.b, ground)
+
+
 # Netlists and raw files.
 
 
@@ -242,7 +475,31 @@ ELEMENTS = {
     "voltage_controlled_voltage_source": Element("E", _CONTROLLED),
     "voltage_controlled_current_source": Element("G", _CONTROLLED),
     "diode": Element("D", ("anode", "cathode")),
+    "jfet": Element("J", ("drain", "gate", "source")),
+    "bipolar_transistor": Element("Q", ("collector", "base", "emitter")),
 }
+
+
+def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str]:
+    """The SPICE type and parameters of a device's model card."""
+    match model:
+        case "diode":
+            kind, names = "D", _DIODE_PARAMETERS
+        case "jfet":
+            kind, names = f"{values.get('channel', 'n')}jf".upper(), _JFET_PARAMETERS
+        case "bipolar_transistor":
+            kind, names = (
+                str(values.get("polarity", "npn")).upper(),
+                _BIPOLAR_PARAMETERS,
+            )
+        case _:
+            pytest.fail(f"{model} has no model card")
+    spice = " ".join(
+        f"{names[key]}={number!r}"
+        for key, number in values.items()
+        if key not in {"channel", "polarity"}
+    )
+    return kind, spice
 
 
 def element(instance: ir.Instance) -> str:
@@ -265,13 +522,10 @@ def netlist(circuit: ir.Circuit, *, excited: str | None = None) -> list[str]:
             case "voltage_source" | "current_source":
                 ac = " AC 1" if instance.id == excited else ""
                 value = _waveform(values["waveform"]) + ac
-            case "diode":
+            case "diode" | "jfet" | "bipolar_transistor":
                 value = f"M{instance.id}"
-                spice = " ".join(
-                    f"{_DIODE_PARAMETERS[key]}={number!r}"
-                    for key, number in values.items()
-                )
-                lines.append(f".model {value} D({spice})")
+                kind, spice = _model_card(model, values)
+                lines.append(f".model {value} {kind}({spice})")
             case _:
                 (number,) = values.values()
                 value = repr(number)
@@ -415,16 +669,30 @@ def size(values: Values) -> float:
 def compared(simulation: Simulation) -> list[tuple[int, results.Unknown]]:
     """The unknowns both engines report, with their columns in jolty's results.
 
-    ngspice keeps a diode's internal node, behind its series resistance, to itself.
+    ngspice names a device's internal nodes, behind its series resistances, its own
+    way, so only nets and source currents are compared.
     """
     return [
         (column, unknown)
         for column, unknown in enumerate(simulation.unknowns)
-        if not unknown.name.endswith(":junction")
+        if ":" not in unknown.name or unknown.name.endswith(":current")
     ]
 
 
-@pytest.mark.parametrize("top", [divider, clipper, amplifier, rectifier])
+@pytest.mark.parametrize(
+    "top",
+    [
+        divider,
+        clipper,
+        amplifier,
+        rectifier,
+        jfet_stage,
+        p_jfet_follower,
+        bjt_stage,
+        bjt_amplifier,
+        pnp_mirror,
+    ],
+)
 def test_operating_points_agree(top: Callable[[], Component], tmp_path: Path) -> None:
     simulation = Simulation(top())
     point = simulation.run(OperatingPoint(), TIGHT)
@@ -436,27 +704,34 @@ def test_operating_points_agree(top: Callable[[], Component], tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
-    ("top", "levels"),
+    ("top", "source", "levels"),
     [
-        (divider, linear(-5 * V, 5 * V, 21)),
-        (clipper, linear(-2 * V, 2 * V, 81)),
+        (divider, "V1", linear(-5 * V, 5 * V, 21)),
+        (clipper, "V1", linear(-2 * V, 2 * V, 81)),
+        (jfet_stage, "V1", linear(-3 * V, 1 * V, 81)),
+        (jfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
+        (p_jfet_follower, "V1", linear(-4 * V, 2 * V, 61)),
+        (bjt_stage, "V1", linear(-1 * V, 3 * V, 81)),
+        (pnp_mirror, "V1", linear(0 * V, 12 * V, 61)),
     ],
 )
 def test_dc_sweeps_agree(
-    top: Callable[[], Component], levels: list[Quantity], tmp_path: Path
+    top: Callable[[], Component], source: str, levels: list[Quantity], tmp_path: Path
 ) -> None:
     simulation = Simulation(top())
-    sweep = simulation.run(DcSweep("V1", levels), TIGHT)
+    sweep = simulation.run(DcSweep(source, levels), TIGHT)
     first, last = float(sweep.levels[0]), float(sweep.levels[-1])
     step = (last - first) / (len(levels) - 1)
-    command = f"dc VV1 {first!r} {last!r} {step!r}"
+    command = f"dc V{source} {first!r} {last!r} {step!r}"
     raw = ngspice(netlist(simulation.circuit), command, tmp_path)
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))
         compare(sweep.values[:, column], spice, scale=size(spice), tolerance=1e-6)
 
 
-@pytest.mark.parametrize("top", [low_pass, resonator, amplifier])
+@pytest.mark.parametrize(
+    "top", [low_pass, resonator, amplifier, jfet_stage, bjt_amplifier]
+)
 def test_ac_responses_agree(top: Callable[[], Component], tmp_path: Path) -> None:
     simulation = Simulation(top())
     response = simulation.run(Ac("V1", decade(10 * Hz, 10 * MHz, 20)), TIGHT)
@@ -475,6 +750,8 @@ def test_ac_responses_agree(top: Callable[[], Component], tmp_path: Path) -> Non
         (resonator, 60 * us, 50 * ns),
         (rectifier, 3 * ms, 1 * us),
         (driven_tank, 40 * us, 20 * ns),
+        (jfet_stage, 15 * us, 10 * ns),
+        (bjt_amplifier, 4 * us, 2 * ns),
     ],
 )
 def test_transients_agree(

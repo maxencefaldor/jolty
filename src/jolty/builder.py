@@ -26,6 +26,7 @@ Examples:
 
 import contextlib
 import functools
+import hashlib
 import inspect
 import re
 from collections.abc import Callable
@@ -288,10 +289,10 @@ class ComponentFunction[**P](Protocol):
 def component[**P](function: ComponentFunction[P]) -> Callable[P, Component]:
     """Turns a function that builds into a factory of components.
 
-    The factory takes the function's parameters after the builder. Each distinct set of
+    The factory takes the function's parameters after the builder. Each set of
     arguments builds one component, named after the function and those arguments, such
-    as ``rc_filter[resistance=1kΩ]``; calling it again with the same arguments returns
-    the same component.
+    as ``rc_filter[resistance=1kΩ]``; calling it again with arguments of the same name
+    returns the same component.
     """
     signature = inspect.signature(function)
     built: dict[str, Component] = {}
@@ -301,14 +302,13 @@ def component[**P](function: ComponentFunction[P]) -> Callable[P, Component]:
         bound = signature.bind(None, *args, **kwargs)
         bound.apply_defaults()
         arguments = list(bound.arguments.items())[1:]
-        key = repr(arguments)
-        if key not in built:
-            listed = ",".join(f"{name}={_format(value)}" for name, value in arguments)
-            name = f"{function.__name__}[{listed}]" if arguments else function.__name__
+        listed = ",".join(f"{name}={_format(value)}" for name, value in arguments)
+        name = f"{function.__name__}[{listed}]" if arguments else function.__name__
+        if name not in built:
             builder = Builder(name)
             function(builder, *args, **kwargs)
-            built[key] = builder.finish()
-        return built[key]
+            built[name] = builder.finish()
+        return built[name]
 
     return factory
 
@@ -343,7 +343,36 @@ def _check_name(name: str, what: str) -> None:
 
 
 def _format(value: object) -> str:
-    return str(value).replace(" ", "") if isinstance(value, Quantity) else repr(value)
+    """An argument as a component's name writes it, without whitespace.
+
+    A quantity is written to 15 significant digits with its SI prefix, a number or a
+    short string as in Python, and anything else, such as a device, as its type and a
+    digest of its value, so distinct arguments name distinct components.
+
+    Examples:
+        >>> from jolty.units import kohm
+        >>> _format(1.00001 * kohm), _format(0.5), _format("fast")
+        ('1.00001kΩ', '0.5', "'fast'")
+        >>> from jolty.devices import resistor
+        >>> _format(resistor(1 * kohm))
+        'resistor~64d70e34'
+    """
+    match value:
+        case Quantity():
+            return value.compact()
+        case bool() | int() | float():
+            return repr(value)
+        case Device(model=model):
+            return f"{model}~{_digest(value)}"
+    written = repr(value)
+    if any(character.isspace() or character == "/" for character in written):
+        return f"{type(value).__name__}~{_digest(value)}"
+    return written
+
+
+def _digest(value: object) -> str:
+    """Eight hexadecimal digits of the SHA-256 of `value`'s representation."""
+    return hashlib.sha256(repr(value).encode()).hexdigest()[:8]
 
 
 def _caller() -> ir.Source | None:
