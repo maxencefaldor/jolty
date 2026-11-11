@@ -89,6 +89,8 @@ convention = "google"
 "examples/**" = ["INP001", "PLR2004"]
 # Scripts that write the docs' pages run outside any package, and say what they wrote.
 "docs/*.py" = ["INP001", "T201"]
+# Benchmarks run as scripts, outside any package, and print what they found.
+"benchmarks/**/*.py" = ["INP001", "T201"]
 "src/jolty/cli.py" = ["T201"]  # a command line prints
 # A download's digest checks what any scheme returns.
 "src/jolty/spice/download.py" = ["S310"]
@@ -102,11 +104,12 @@ docstring-code-format = true
 all = "error"
 
 [tool.ty.src]
-include = ["src", "tests", "examples", "docs"]
+include = ["src", "tests", "examples", "docs", "benchmarks"]
 
 [tool.ty.environment]
-# The tests import their shared harness, `tests/differential.py`, as pytest does.
-extra-paths = ["tests"]
+# The tests import their shared harness, `tests/differential.py`, as pytest does, and
+# the benchmarks' scripts, which import each other, as their runs do.
+extra-paths = ["tests", "benchmarks"]
 
 [tool.pytest]
 testpaths = ["src", "tests"]
