@@ -8,6 +8,7 @@ import numpy.typing as npt
 
 __version__: str
 EXPRESSIONS: str
+THERMAL_VOLTAGE: float
 
 class ElaborationError(Exception): ...
 class SimulationError(Exception): ...

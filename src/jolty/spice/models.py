@@ -34,6 +34,9 @@ DIODE: Final[Table] = {
     "mj": ("grading_coefficient", 1.0),
     "fc": ("depletion_coefficient", 1.0),
     "tt": ("transit_time", 1.0),
+    "bv": ("breakdown_voltage", 1.0),
+    "ibv": ("breakdown_current", 1.0),
+    "nbv": ("breakdown_emission_coefficient", 1.0),
 }
 
 JFET: Final[Table] = {
@@ -127,6 +130,18 @@ MOSFET: Final[Table] = {
     "cgso": ("gate_source_overlap", 1.0),
     "cgdo": ("gate_drain_overlap", 1.0),
     "cgbo": ("gate_bulk_overlap", 1.0),
+    "vmax": ("max_drift_velocity", 1.0),
+    "xj": ("junction_depth", 1.0),
+    "nfs": ("fast_surface_state_density", 1e4),
+    "eta": ("static_feedback", 1.0),
+    "delta": ("narrow_width_factor", 1.0),
+    "theta": ("mobility_modulation", 1.0),
+    "kappa": ("saturation_field_factor", 1.0),
+    "wd": ("width_narrowing", 1.0),
+    "xl": ("length_adjustment", 1.0),
+    "xw": ("width_adjustment", 1.0),
+    "delvto": ("threshold_adjustment", 1.0),
+    "delvt0": ("threshold_adjustment", 1.0),
 }
 
 MOSFET_INSTANCE: Final[Table] = {
@@ -293,6 +308,8 @@ def device(
         case "d":
             area = instance.get("area", 1.0) * instance.get("m", 1.0)
             values = _scaled(values, area, ("is", "cjo", "cj0", "cj"), ("rs",))
+            # ngspice multiplies the breakdown current by the multiplier, not the area.
+            values = _scaled(values, instance.get("m", 1.0), ("ibv",), ())
             return Made("diode", _mapped(card, values, DIODE, statement))
         case "npn" | "pnp":
             return Made(
@@ -410,19 +427,24 @@ def _mosfet(
     """A MOSFET's parameters, from its model card and its instance's.
 
     Raises:
-        SpiceError: When the model is not of level 1, or a parameter has no jolty
+        SpiceError: When the model is not of level 1 or 3, or a parameter has no jolty
             counterpart.
     """
     level = values.pop("level", 1.0)
-    if level != 1:
-        message = f"`{card.name}` is a MOSFET of level {level:g}; jolty models level 1"
+    if level not in {1, 3}:
+        message = f"`{card.name}` is a MOSFET of level {level:g}; jolty models 1 and 3"
         raise statement.fail(message)
+    if level == 3:  # noqa: PLR2004 - the level of the semi-empirical model
+        # Level 3 has no channel-length modulation: PSpice and ngspice ignore it there.
+        values.pop("lambda", None)
     gate = values.pop("tpg", None)
     # A model card's geometry is its instances' default.
     geometry = {name: values.pop(name) for name in ("l", "w") if name in values}
     parameters = _mapped(card, values, MOSFET, statement)
     parameters |= _mapped(card, geometry | dict(instance), MOSFET_INSTANCE, statement)
     parameters["channel"] = card.kind[0]
+    if level == 3:  # noqa: PLR2004 - the level of the semi-empirical model
+        parameters["level"] = 3
     if gate is not None:
         if gate not in GATE_TYPES:
             message = f"`TPG` is 1, -1 or 0, not {gate!r}"

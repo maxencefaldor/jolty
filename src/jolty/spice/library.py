@@ -30,6 +30,7 @@ from jolty.spice.expressions import (
     Number,
     Voltage,
     evaluate,
+    names,
     number,
     parse,
     translate,
@@ -142,10 +143,7 @@ class Library:
 
     def _scope(self) -> dict[str, float]:
         """The global parameters' values."""
-        scope: dict[str, float] = {}
-        for name, expression in self._parameters:
-            scope[name] = evaluate(expression, scope)
-        return scope
+        return _resolved(dict(self._parameters), {})
 
     def _component(
         self,
@@ -158,11 +156,12 @@ class Library:
         if unknown:
             message = f"`{subcircuit.name}` has no parameter `{unknown[0]}`"
             raise subcircuit.statement.fail(message)
-        local = dict(scope)
-        for parameter, default in subcircuit.defaults.items():
-            local[parameter] = (
-                given[parameter] if parameter in given else evaluate(default, local)
-            )
+        defaults = {
+            parameter: default
+            for parameter, default in subcircuit.defaults.items()
+            if parameter not in given
+        }
+        local = _resolved(defaults, {**scope, **given})
         values = {parameter: local[parameter] for parameter in subcircuit.defaults}
         listed = ",".join(f"{key}={value!r}" for key, value in values.items())
         name = f"{subcircuit.name}[{listed}]" if values else subcircuit.name
@@ -202,6 +201,34 @@ def load(*paths: Path | str) -> Library:
     return library
 
 
+def _resolved(
+    definitions: Mapping[str, Expression], scope: Mapping[str, float]
+) -> dict[str, float]:
+    """`scope` with each parameter `definitions` defines, evaluated.
+
+    Each parameter is evaluated once those it reads are, whatever the order of their
+    definitions, as ngspice sorts them.
+
+    Raises:
+        SpiceError: When parameters read one another in a cycle, or an expression is
+            wrong.
+    """
+    values = dict(scope)
+    pending = dict(definitions)
+    while pending:
+        ready = [
+            name
+            for name, expression in pending.items()
+            if not (names(expression) - {name}) & pending.keys()
+        ]
+        if not ready:
+            message = f"parameters read one another in a cycle: {', '.join(pending)}"
+            raise SpiceError(message)
+        for name in ready:
+            values[name] = evaluate(pending.pop(name), values)
+    return values
+
+
 def _assignments(statement: Statement) -> list[tuple[str, Expression]]:
     """The parameters a ``.param`` statement assigns, in order."""
     return list(models.assignments(statement, tokens(statement.text)[1:]).items())
@@ -234,9 +261,14 @@ def _pins_and_parameters(
 _IDENTIFIER: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
+_SENSED: Final = frozenset({"v", "e", "h", "b"})
+"""The letters of the elements whose current others may read: sources of a voltage, and
+B sources."""
+
+
 @dataclass(slots=True)
 class _Sense:
-    """A voltage source whose current elements read, through ports in series with it.
+    """A source whose current elements read, through ports in series with it.
 
     Each port placed moves the net its positive terminal joins along the chain.
     """
@@ -253,11 +285,12 @@ class _Translation:
         self,
         library: Library,
         subcircuit: Subcircuit,
-        scopes: tuple[Mapping[str, float], dict[str, float]],
+        scopes: tuple[Mapping[str, float], Mapping[str, float]],
     ) -> None:
         self.library = library
         self.subcircuit = subcircuit
         self.globals, self.scope = scopes
+        self.parameters: dict[str, Expression] = {}
         self.models: dict[str, ModelCard] = {}
         self.nets: dict[str, str] = {}
         self.instances: list[tuple[int, ir.Instance]] = []
@@ -278,15 +311,13 @@ class _Translation:
                 self._define(statement)
             else:
                 elements.append(statement)
-        sources = [statement for statement in elements if _letter(statement) == "v"]
-        for statement in sources:
-            self._source(statement)
-        # The sources last, once every element reading their current has moved them.
+        self.scope = _resolved(self.parameters, self.scope)
         for statement in elements:
-            if _letter(statement) != "v":
-                self._element(statement)
-        for statement in sources:
+            if _letter(statement) in _SENSED:
+                self._source(statement)
+        for statement in elements:
             self._element(statement)
+        self._join_sensed()
         ports = [
             ir.Port(name=self.nets[pin.casefold()], role=Role.SIGNAL)
             for pin in self.subcircuit.pins
@@ -354,7 +385,7 @@ class _Translation:
         """
         sense = self.senses.get(source.casefold())
         if sense is None:
-            message = f"`{source}` is no voltage source of `{self.subcircuit.name}`"
+            message = f"`{source}` is no source in `{self.subcircuit.name}`"
             raise statement.fail(message)
         sense.count += 1
         positive, sense.positive = sense.positive, f"{sense.name}.sense{sense.count}"
@@ -371,11 +402,35 @@ class _Translation:
             card = models.read(statement, self.models)
             self.models[card.name.casefold()] = card
         elif keyword == ".param":
-            for parameter, expression in _assignments(statement):
-                self.scope[parameter] = evaluate(expression, self.scope)
+            self.parameters.update(_assignments(statement))
         else:
             message = "a subcircuit holds elements, models and parameters only"
             raise statement.fail(message)
+
+    def _join_sensed(self) -> None:
+        """Joins each source whose current an element reads to its chain's last net.
+
+        Each port in series with a source moves its positive terminal one net along.
+        """
+        moved = {
+            sense.name: sense.positive for sense in self.senses.values() if sense.count
+        }
+        self.instances = [
+            (
+                line,
+                instance.model_copy(
+                    update={
+                        "terminals": {
+                            **instance.terminals,
+                            "positive": moved[instance.id],
+                        }
+                    }
+                )
+                if instance.id in moved
+                else instance,
+            )
+            for line, instance in self.instances
+        ]
 
     def _source(self, statement: Statement) -> None:
         words = tokens(statement.text)
@@ -504,7 +559,7 @@ def _independent(model: str) -> Callable[[_Translation, Statement], None]:
 
     def translated(translation: _Translation, statement: Statement) -> None:
         words = tokens(statement.text)
-        name, positive, negative, *rest = words
+        _, positive, negative, *rest = words
         if rest[:1] and rest[0].casefold() == "dc":
             rest = rest[1:]
         level = (
@@ -519,13 +574,14 @@ def _independent(model: str) -> Callable[[_Translation, Statement], None]:
         if after:
             message = f"jolty reads a source's DC level only, not `{' '.join(after)}`"
             raise statement.fail(message)
-        sense = translation.senses.get(name.casefold())
-        joined = sense.positive if sense is not None else translation.net(positive)
         translation.add(
             statement,
             model,
             {"waveform": {"dc": level}},
-            {"positive": joined, "negative": translation.net(negative)},
+            {
+                "positive": translation.net(positive),
+                "negative": translation.net(negative),
+            },
         )
 
     return translated

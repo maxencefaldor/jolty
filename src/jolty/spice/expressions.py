@@ -130,7 +130,7 @@ type Expression = (
 _TOKEN: Final = re.compile(
     r"\s*(?:(?P<number>(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?[a-z]*)"
     r"|(?P<name>[a-z_][a-z0-9_.$]*)"
-    r"|(?P<symbol>\*\*|==|!=|<>|<=|>=|&&|\|\||[-+*/^<>!~&|?:,()]))",
+    r"|(?P<symbol>\*\*|==|!=|<>|<=|>=|&&|\|\||[-+*/^<>!~&|?:,(){}]))",
     re.IGNORECASE,
 )
 
@@ -247,9 +247,10 @@ class _Parser:
                     expected = "a number"
                     raise self.fail(expected)
                 return Number(value)
-            case ("symbol", "("):
+            # A parameter in braces within an expression, as in PSpice: `{VTHRES} + 1`.
+            case ("symbol", "(" | "{" as opening):
                 inner = self.conditional()
-                self.expect(")")
+                self.expect(")" if opening == "(" else "}")
                 return inner
             case ("name", name) if self.peek() == ("symbol", "("):
                 return self.call(name.casefold())
@@ -285,8 +286,16 @@ class _Parser:
         return Call(function, tuple(arguments))
 
 
-_CONSTANTS: Final = {"pi": math.pi, "e": math.e, "temp": 27.0}
-"""The names every expression knows; ``TEMP`` is the temperature, in degrees Celsius."""
+_CONSTANTS: Final = {
+    "pi": math.pi,
+    "e": math.e,
+    "temp": 27.0,
+    "vt": (27.0 + 273.15) * 8.6173303e-5,
+    "gmin": 1e-12,
+}
+"""The names every expression knows, as ngspice defines PSpice's: ``TEMP``, the
+temperature in degrees Celsius, ``VT``, the thermal voltage there by ngspice's constant,
+and ``GMIN``, the minimum conductance."""
 
 _FUNCTIONS: Final[dict[str, tuple[int | None, str]]] = {
     **{
@@ -330,6 +339,25 @@ jolty writes a function by its name, or by a template of its arguments. PSpice's
 expression is ngspice's ``pwl``, extended beyond its ends; a ``TABLE`` source's, made by
 [`library`][jolty.spice.library], is a ``rounded_table``.
 """
+
+
+def names(expression: Expression) -> set[str]:
+    """The names `expression` reads, of parameters or constants."""
+    match expression:
+        case Name(name):
+            return {name}
+        case Unary(_, operand):
+            return names(operand)
+        case Binary(_, left, right):
+            return names(left) | names(right)
+        case Conditional(condition, then, otherwise):
+            return names(condition) | names(then) | names(otherwise)
+        case Call(_, arguments):
+            found: set[str] = set()
+            for argument in arguments:
+                found |= names(argument)
+            return found
+    return set()
 
 
 def evaluate(expression: Expression, parameters: Mapping[str, float]) -> float:

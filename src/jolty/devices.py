@@ -200,7 +200,7 @@ def voltage_controlled_switch(
     return device("voltage_controlled_switch", parameters)
 
 
-def diode(  # noqa: PLR0913 - the SPICE junction model has eight parameters
+def diode(  # noqa: PLR0913 - the SPICE junction model has eleven parameters
     *,
     saturation_current: Quantity | None = None,
     emission_coefficient: float | None = None,
@@ -210,12 +210,17 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has eight parameters
     grading_coefficient: float | None = None,
     depletion_coefficient: float | None = None,
     transit_time: Quantity | None = None,
+    breakdown_voltage: Quantity | None = None,
+    breakdown_current: Quantity | None = None,
+    breakdown_emission_coefficient: float | None = None,
 ) -> Device:
     """A junction diode from ``anode`` to ``cathode``, in the SPICE model.
 
     Parameters left out take SPICE's defaults: a saturation current of 10 fA, an
     emission coefficient of 1, no series resistance, junction capacitance or transit
     time, a junction potential of 1 V, and grading and depletion coefficients of 0.5.
+    Given a breakdown voltage, the reverse current grows exponentially beyond it, with
+    a breakdown current of 1 mA there and the emission coefficient unless given.
     """
     parameters = _parameters(
         {
@@ -224,11 +229,14 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has eight parameters
             "junction_capacitance": (junction_capacitance, CAPACITANCE),
             "junction_potential": (junction_potential, VOLTAGE),
             "transit_time": (transit_time, TIME),
+            "breakdown_voltage": (breakdown_voltage, VOLTAGE),
+            "breakdown_current": (breakdown_current, CURRENT),
         },
         {
             "emission_coefficient": emission_coefficient,
             "grading_coefficient": grading_coefficient,
             "depletion_coefficient": depletion_coefficient,
+            "breakdown_emission_coefficient": breakdown_emission_coefficient,
         },
     )
     return device("diode", parameters)
@@ -417,8 +425,9 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 38 paramete
     return device("bipolar_transistor", parameters)
 
 
-def mosfet(  # noqa: PLR0913 - SPICE's level 1 MOSFET has 37 parameters
+def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 49 parameters
     *,
+    level: Literal[1, 3] | None = None,
     channel: Literal["n", "p"] | None = None,
     width: Quantity | None = None,
     length: Quantity | None = None,
@@ -456,6 +465,17 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 MOSFET has 37 parameters
     gate_source_overlap: Quantity | None = None,
     gate_drain_overlap: Quantity | None = None,
     gate_bulk_overlap: Quantity | None = None,
+    max_drift_velocity: Quantity | None = None,
+    junction_depth: Quantity | None = None,
+    fast_surface_state_density: Quantity | None = None,
+    static_feedback: float | None = None,
+    narrow_width_factor: float | None = None,
+    mobility_modulation: Quantity | None = None,
+    saturation_field_factor: float | None = None,
+    width_narrowing: Quantity | None = None,
+    length_adjustment: Quantity | None = None,
+    width_adjustment: Quantity | None = None,
+    threshold_adjustment: Quantity | None = None,
 ) -> Device:
     """A MOSFET between ``drain``, ``gate``, ``source`` and ``bulk``.
 
@@ -474,6 +494,14 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 MOSFET has 37 parameters
     potential left out, as SPICE derives them. The body effect is a number of
     square-root volts.
 
+    At ``level=3``, the channel follows SPICE's semi-empirical law of short channels
+    instead, and the parameters from ``max_drift_velocity`` on, level 3's alone, model
+    velocity saturation, short and narrow channels' thresholds, the drain's static
+    feedback, the gate field's degradation of the mobility, the channel's shortening in
+    saturation, weak inversion, and the mask's adjustments to the channel. A level 3
+    transistor has no channel-length modulation, an oxide 0.1 µm thick unless given, and
+    a sidewall grading coefficient of 0.33.
+
     A drain or source resistance adds an internal node, the unknown ``drain`` or
     ``source``. Meyer's capacitances add three currents of the transistor's own, the
     displacement currents through the whole oxide towards the source, the drain and the
@@ -485,9 +513,15 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 MOSFET has 37 parameters
         >>> mosfet(width=2 * um, length=1 * um, oxide_thickness=20 * nm).parameters
         {'width': 2e-06, 'length': 1e-06, 'oxide_thickness': 2e-08}
     """
-    parameters: dict[str, JsonValue] = {} if channel is None else {"channel": channel}
-    if gate_material is not None:
-        parameters["gate_material"] = gate_material
+    parameters: dict[str, JsonValue] = {
+        name: value
+        for name, value in (
+            ("level", level),
+            ("channel", channel),
+            ("gate_material", gate_material),
+        )
+        if value is not None
+    }
     capacitance_per_length = CAPACITANCE / LENGTH
     parameters |= _parameters(
         {
@@ -525,9 +559,23 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 MOSFET has 37 parameters
             "gate_source_overlap": (gate_source_overlap, capacitance_per_length),
             "gate_drain_overlap": (gate_drain_overlap, capacitance_per_length),
             "gate_bulk_overlap": (gate_bulk_overlap, capacitance_per_length),
+            "max_drift_velocity": (max_drift_velocity, LENGTH / TIME),
+            "junction_depth": (junction_depth, LENGTH),
+            "fast_surface_state_density": (
+                fast_surface_state_density,
+                DIMENSIONLESS / LENGTH**2,
+            ),
+            "mobility_modulation": (mobility_modulation, PER_VOLT),
+            "width_narrowing": (width_narrowing, LENGTH),
+            "length_adjustment": (length_adjustment, LENGTH),
+            "width_adjustment": (width_adjustment, LENGTH),
+            "threshold_adjustment": (threshold_adjustment, VOLTAGE),
         },
         {
             "multiplier": multiplier,
+            "static_feedback": static_feedback,
+            "narrow_width_factor": narrow_width_factor,
+            "saturation_field_factor": saturation_field_factor,
             "body_effect": body_effect,
             "drain_squares": drain_squares,
             "source_squares": source_squares,

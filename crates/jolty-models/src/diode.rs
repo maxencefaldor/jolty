@@ -14,8 +14,10 @@ use crate::{
 /// The junction carries the [junction current](crate::junction) with exponential slope
 /// `n·Vt`, plus `gmin · v`, and holds a depletion charge and a diffusion charge. With a
 /// series resistance, the junction sits between an internal node, labelled `junction`, and
-/// the cathode. Steps of the junction voltage are limited the way SPICE limits them, so
-/// Newton iterations cannot overflow the exponential.
+/// the cathode. Given a breakdown voltage, the reverse current grows exponentially beyond
+/// it, matched to the breakdown current there as ngspice matches it. Steps of the junction
+/// voltage are limited the way SPICE limits them, so Newton iterations cannot overflow the
+/// exponential.
 #[derive(Debug)]
 pub struct Diode {
     series: Option<(TerminalPair, f64)>,
@@ -27,8 +29,47 @@ pub struct Diode {
     critical_voltage: f64,
     depletion: Option<Depletion>,
     transit_time: f64,
+    breakdown: Option<Breakdown>,
     /// The junction voltage of the last evaluation, from which the next step is limited.
     last_voltage: f64,
+}
+
+/// A diode's reverse breakdown.
+#[derive(Debug, Clone, Copy)]
+struct Breakdown {
+    /// The voltage below which the junction breaks down, matched to the breakdown current.
+    voltage: f64,
+    /// The breakdown emission coefficient times the thermal voltage.
+    slope: f64,
+}
+
+impl Breakdown {
+    /// The breakdown of a junction with `saturation` current, broken down at `voltage`
+    /// with `current`, and exponential `slope`.
+    ///
+    /// ngspice moves the breakdown voltage so the current there is the breakdown current,
+    /// by a fixed-point iteration, and leaves it where a breakdown current too small for
+    /// the saturation current cannot be met.
+    fn new(voltage: f64, current: f64, saturation: f64, slope: f64) -> Self {
+        /// How closely the current at the matched voltage meets the breakdown current.
+        const MATCH: f64 = 1e-12;
+        let vt = THERMAL_VOLTAGE;
+        if current < saturation * voltage / vt {
+            return Self { voltage, slope };
+        }
+        let mut matched = voltage - slope * (1.0 + current / saturation).ln();
+        for _ in 0..25 {
+            matched = voltage - slope * (current / saturation + 1.0 - matched / vt).ln();
+            let reached = saturation * (((voltage - matched) / slope).exp() - 1.0 + matched / vt);
+            if (reached - current).abs() <= MATCH * current {
+                break;
+            }
+        }
+        Self {
+            voltage: matched,
+            slope,
+        }
+    }
 }
 
 /// The parameters of a [`Diode`], with SPICE's defaults.
@@ -52,6 +93,13 @@ pub struct DiodeParameters {
     pub depletion_coefficient: f64,
     /// The transit time, in seconds; default 0.
     pub transit_time: f64,
+    /// The reverse breakdown voltage, in volts, positive; without it, the junction never
+    /// breaks down.
+    pub breakdown_voltage: Option<f64>,
+    /// The current at the breakdown voltage, in amperes; default 1e-3.
+    pub breakdown_current: f64,
+    /// The breakdown emission coefficient; the emission coefficient by default.
+    pub breakdown_emission_coefficient: Option<f64>,
 }
 
 impl Default for DiodeParameters {
@@ -65,6 +113,9 @@ impl Default for DiodeParameters {
             grading_coefficient: 0.5,
             depletion_coefficient: 0.5,
             transit_time: 0.0,
+            breakdown_voltage: None,
+            breakdown_current: 1e-3,
+            breakdown_emission_coefficient: None,
         }
     }
 }
@@ -90,6 +141,9 @@ impl NativeDevice for Diode {
             grading_coefficient,
             depletion_coefficient,
             transit_time,
+            breakdown_voltage,
+            breakdown_current,
+            breakdown_emission_coefficient,
         } = parameters;
         ParameterError::positive("saturation_current", saturation_current)?;
         ParameterError::positive("emission_coefficient", emission_coefficient)?;
@@ -99,6 +153,21 @@ impl NativeDevice for Diode {
         below_one("grading_coefficient", grading_coefficient)?;
         below_one("depletion_coefficient", depletion_coefficient)?;
         ParameterError::non_negative("transit_time", transit_time)?;
+        ParameterError::positive("breakdown_current", breakdown_current)?;
+        let breakdown_emission = breakdown_emission_coefficient.unwrap_or(emission_coefficient);
+        ParameterError::positive("breakdown_emission_coefficient", breakdown_emission)?;
+        let breakdown = breakdown_voltage
+            .map(|voltage| {
+                ParameterError::positive("breakdown_voltage", voltage).map(|voltage| {
+                    Breakdown::new(
+                        voltage,
+                        breakdown_current,
+                        saturation_current,
+                        breakdown_emission * THERMAL_VOLTAGE,
+                    )
+                })
+            })
+            .transpose()?;
 
         let (anode, cathode) = (binding.terminal(0), binding.terminal(1));
         let (series, junction) = if series_resistance > 0.0 {
@@ -125,8 +194,47 @@ impl NativeDevice for Diode {
                 depletion_coefficient,
             ),
             transit_time,
+            breakdown,
             last_voltage: 0.0,
         })
+    }
+}
+
+impl Diode {
+    /// The junction's step to `applied` limited from the last evaluation's, as ngspice
+    /// limits it: about the breakdown voltage when the junction nears it.
+    fn limit(&self, applied: f64) -> Option<f64> {
+        match self.breakdown {
+            Some(breakdown) if applied < (10.0 * breakdown.slope - breakdown.voltage).min(0.0) => {
+                limit_junction(
+                    -(applied + breakdown.voltage),
+                    -(self.last_voltage + breakdown.voltage),
+                    breakdown.slope,
+                    self.critical_voltage,
+                )
+                .map(|limited| -(limited + breakdown.voltage))
+            }
+            _ => limit_junction(
+                applied,
+                self.last_voltage,
+                self.slope,
+                self.critical_voltage,
+            ),
+        }
+    }
+
+    /// The junction's current at `voltage`, and its derivative.
+    fn current(&self, voltage: f64) -> (f64, f64) {
+        match self.breakdown {
+            Some(breakdown) if voltage < -3.0 * self.slope && voltage < -breakdown.voltage => {
+                let exponential = (-(breakdown.voltage + voltage) / breakdown.slope).exp();
+                (
+                    -self.saturation_current * exponential,
+                    self.saturation_current * exponential / breakdown.slope,
+                )
+            }
+            _ => junction_current(voltage, self.saturation_current, self.slope),
+        }
     }
 }
 
@@ -139,14 +247,7 @@ impl Device for Diode {
         let applied = self.junction.voltage(input);
         let voltage = input
             .limiting
-            .then(|| {
-                limit_junction(
-                    applied,
-                    self.last_voltage,
-                    self.slope,
-                    self.critical_voltage,
-                )
-            })
+            .then(|| self.limit(applied))
             .flatten()
             .map_or(applied, |limited| {
                 output.mark_limited();
@@ -156,7 +257,7 @@ impl Device for Diode {
 
         // Evaluate at the limited voltage and extend linearly to the applied one, so the
         // Newton step that follows solves the circuit linearized at the limited voltage.
-        let (current, conductance) = junction_current(voltage, self.saturation_current, self.slope);
+        let (current, conductance) = self.current(voltage);
         let total_conductance = conductance + input.gmin;
         let total_current = current + input.gmin * voltage;
         self.junction.add_current(
@@ -213,6 +314,21 @@ mod tests {
     }
 
     #[test]
+    fn breaks_down_at_its_breakdown_current() {
+        let mut bench = Bench::new::<Diode>(
+            r#"{"breakdown_voltage": 5.1, "breakdown_current": 1e-3, "emission_coefficient": 1.2}"#,
+        );
+        let current = bench.settle(&[-5.1, 0.0]).residual[0];
+        assert!((current / -1e-3 - 1.0).abs() < 1e-3, "{current}");
+        let deeper = bench.settle(&[-5.3, 0.0]).residual[0];
+        let expected = current * (0.2 / (1.2 * THERMAL_VOLTAGE)).exp();
+        assert!(
+            (deeper / expected - 1.0).abs() < 1e-9,
+            "{deeper} vs {expected}"
+        );
+    }
+
+    #[test]
     fn rejects_out_of_range_parameters() {
         let error = Bench::try_new::<Diode>(r#"{"grading_coefficient": 1}"#).unwrap_err();
         assert_eq!(
@@ -227,6 +343,8 @@ mod tests {
         #[test]
         fn jacobians_match_finite_differences(voltage in -5.0..0.7f64) {
             assert_jacobians_match::<Diode>(CHARGED, &[voltage, 0.0]);
+            let breaking = CHARGED.replace('{', r#"{"breakdown_voltage": 3, "#);
+            assert_jacobians_match::<Diode>(&breaking, &[voltage, 0.0]);
             let with_resistance = CHARGED.replace('{', r#"{"series_resistance": 5, "#);
             assert_jacobians_match::<Diode>(&with_resistance, &[voltage + 0.01, 0.0, voltage]);
         }

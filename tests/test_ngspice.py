@@ -138,6 +138,28 @@ def clipper(c: Builder) -> None:
 
 
 @component
+def zener_clamp(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(0 * V), id="V1")
+    resistor = c.place(devices.resistor(1 * kohm), id="R1")
+    zener = c.place(
+        devices.diode(
+            saturation_current=2 * nA,
+            emission_coefficient=1.5,
+            series_resistance=2 * ohm,
+            junction_capacitance=20 * pF,
+            breakdown_voltage=5.1 * V,
+            breakdown_current=5 * mA,
+            breakdown_emission_coefficient=1.2,
+        ),
+        id="D1",
+    )
+    c.connect(source.positive, resistor.a, name="in")
+    c.connect(resistor.b, zener.anode, name="out")
+    c.connect(zener.cathode, source.negative, ground)
+
+
+@component
 def rectifier(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     mains = Sine(offset=0 * V, amplitude=5 * V, frequency=1 * kHz, phase=0.3)
@@ -461,6 +483,78 @@ _NMOS = devices.mosfet(
 )
 
 
+def _level_three(max_drift_velocity: Quantity | None) -> devices.Device:
+    """A level 3 n-channel with every effect of its law, and velocity saturation."""
+    return devices.mosfet(
+        level=3,
+        width=50 * um,
+        length=2 * um,
+        lateral_diffusion=0.2 * um,
+        width_narrowing=0.1 * um,
+        length_adjustment=0.05 * um,
+        width_adjustment=-0.05 * um,
+        threshold_voltage=0.7 * V,
+        threshold_adjustment=0.02 * V,
+        transconductance_parameter=100 * uA / V**2,
+        body_effect=0.5,
+        surface_potential=0.7 * V,
+        oxide_thickness=20 * nm,
+        surface_mobility=0.05 * m**2 / (V * s),
+        substrate_doping=1e22 / m**3,
+        junction_depth=0.3 * um,
+        static_feedback=0.3,
+        narrow_width_factor=0.5,
+        mobility_modulation=0.08 / V,
+        saturation_field_factor=0.4,
+        max_drift_velocity=max_drift_velocity,
+        fast_surface_state_density=5e15 / m**2,
+        drain_resistance=15 * ohm,
+        source_resistance=10 * ohm,
+        drain_area=100 * um**2,
+        source_area=80 * um**2,
+        drain_perimeter=54 * um,
+        source_perimeter=53 * um,
+        bottom_capacitance=3e-4 * F / m**2,
+        sidewall_capacitance=5e-10 * F / m,
+        gate_source_overlap=3e-10 * F / m,
+        gate_drain_overlap=3e-10 * F / m,
+        gate_bulk_overlap=2e-10 * F / m,
+    )
+
+
+@component
+def level_three_stage(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    signal = Sine(
+        offset=1.4 * V, amplitude=0.4 * V, frequency=2 * MHz, phase=math.pi / 2
+    )
+    source = c.place(devices.voltage_source(signal), id="V1")
+    gate = c.place(devices.resistor(100 * kohm), id="RG")
+    transistor = c.place(_level_three(1.5e5 * m / s), id="M1")
+    drain = c.place(devices.resistor(4.7 * kohm), id="RD")
+    c.connect(source.positive, gate.a, name="in")
+    c.connect(gate.b, transistor.gate, name="gate")
+    c.connect(supply.positive, drain.a, name="supply")
+    c.connect(drain.b, transistor.drain, name="out")
+    c.connect(
+        source.negative, supply.negative, transistor.source, transistor.bulk, ground
+    )
+
+
+@component
+def level_three_curves(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    bias = c.place(devices.voltage_source(1.5 * V), id="V1")
+    drain = c.place(devices.voltage_source(0 * V), id="V2")
+    body = c.place(devices.voltage_source(-1 * V), id="V3")
+    transistor = c.place(_level_three(None), id="M1")
+    c.connect(bias.positive, transistor.gate, name="gate")
+    c.connect(drain.positive, transistor.drain, name="drain")
+    c.connect(body.positive, transistor.bulk, name="body")
+    c.connect(bias.negative, drain.negative, body.negative, transistor.source, ground)
+
+
 @component
 def nmos_stage(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
@@ -659,6 +753,7 @@ def switched(c: Builder) -> None:
     [
         divider,
         clipper,
+        zener_clamp,
         amplifier,
         rectifier,
         jfet_stage,
@@ -670,6 +765,8 @@ def switched(c: Builder) -> None:
         current_controlled,
         nmos_stage,
         mosfet_curves,
+        level_three_stage,
+        level_three_curves,
         cmos_inverter,
         behavioral,
         switched,
@@ -689,6 +786,7 @@ def test_operating_points_agree(top: Callable[[], Component]) -> None:
     [
         (divider, "V1", linear(-5 * V, 5 * V, 21)),
         (clipper, "V1", linear(-2 * V, 2 * V, 81)),
+        (zener_clamp, "V1", linear(-12 * V, 2 * V, 141)),
         (jfet_stage, "V1", linear(-3 * V, 1 * V, 81)),
         (jfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
         (p_jfet_follower, "V1", linear(-4 * V, 2 * V, 61)),
@@ -699,6 +797,9 @@ def test_operating_points_agree(top: Callable[[], Component]) -> None:
         (nmos_stage, "V1", linear(-1 * V, 5 * V, 61)),
         (mosfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
         (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
+        (level_three_stage, "V1", linear(0 * V, 3 * V, 61)),
+        (level_three_curves, "V2", linear(-3 * V, 5 * V, 81)),
+        (level_three_curves, "V1", linear(-0.5 * V, 3 * V, 71)),
         (cmos_inverter, "V1", linear(0 * V, 3.3 * V, 67)),
         (behavioral, "V1", linear(-3 * V, 3 * V, 61)),
         (switched, "V1", linear(0 * V, 3 * V, 61)),
@@ -731,6 +832,7 @@ def test_dc_sweeps_agree(
         integrated_stage,
         current_controlled,
         nmos_stage,
+        level_three_stage,
         cmos_inverter,
         behavioral,
         switched,
@@ -764,6 +866,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
         (bjt_amplifier, 4 * us, 2 * ns),
         (integrated_stage, 4 * us, 2 * ns),
         (nmos_stage, 2 * us, 1 * ns),
+        (level_three_stage, 2 * us, 1 * ns),
         (cmos_inverter, 160 * ns, 0.01 * ns),
         (behavioral, 300 * us, 0.5 * us),
         (switched, 200 * us, 0.2 * us),

@@ -252,6 +252,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
     module.add_function(wrap_pyfunction!(constant, module)?)?;
     module.add("EXPRESSIONS", jolty_expressions::LANGUAGE)?;
+    module.add("THERMAL_VOLTAGE", jolty_models::THERMAL_VOLTAGE)?;
     module.add("ElaborationError", py.get_type::<ElaborationError>())?;
     module.add("SimulationError", py.get_type::<SimulationError>())?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;

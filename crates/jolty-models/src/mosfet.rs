@@ -1,6 +1,9 @@
+mod semiempirical;
+
 use jolty_numerics::Entry;
 use serde::Deserialize;
 
+use self::semiempirical::Semiempirical;
 use crate::dual::Dual;
 use crate::jfet::Channel;
 use crate::junction::{
@@ -22,8 +25,34 @@ const OXIDE_PERMITTIVITY: f64 = 3.9 * VACUUM_PERMITTIVITY;
 const SILICON_PERMITTIVITY: f64 = 11.7 * VACUUM_PERMITTIVITY;
 /// Silicon's intrinsic carrier concentration, per cubic meter.
 const INTRINSIC_CONCENTRATION: f64 = 1.45e16;
+/// The oxide thickness of a level 3 transistor that gives none, in meters.
+const LEVEL_THREE_OXIDE_THICKNESS: f64 = 1e-7;
 /// The least saturation voltage Meyer's capacitances take, in volts.
 const MEYER_SATURATION: f64 = 0.025;
+
+/// Which of SPICE's MOSFET models a transistor follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "u8")]
+pub enum Level {
+    /// Level 1, Shichman and Hodges's square law.
+    One,
+    /// Level 3, a semi-empirical law of short channels.
+    Three,
+}
+
+impl TryFrom<u8> for Level {
+    type Error = String;
+
+    fn try_from(level: u8) -> Result<Self, String> {
+        match level {
+            1 => Ok(Self::One),
+            3 => Ok(Self::Three),
+            _ => Err(format!(
+                "jolty models MOSFETs of level 1 and 3, not {level}"
+            )),
+        }
+    }
+}
 
 /// The material of a MOSFET's gate, which sets its work function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -39,13 +68,17 @@ pub enum GateMaterial {
 }
 
 /// A metal-oxide-semiconductor field-effect transistor, in SPICE's level 1
-/// (Shichman-Hodges) model with Meyer's gate capacitances, as ngspice implements it.
+/// (Shichman-Hodges) or level 3 model with Meyer's gate capacitances, as ngspice
+/// implements them.
 ///
-/// The drain current follows the square law: with `vgst = vgs − von` and
+/// At level 1, the drain current follows the square law: with `vgst = vgs − von` and
 /// `β' = β · (1 + λ · vds)`, it is `β' · vgst² / 2` in saturation, where `vds ≥ vgst`, and
 /// `β' · vds · (vgst − vds / 2)` below it, with `β = kp · w / (l − 2 · ld)`. The threshold
-/// `von = vto + γ · (√(φ − vbs) − √φ)` rises as the source rises above the bulk. The
-/// transistor is symmetric: with the drain below the source, the two swap.
+/// `von = vto + γ · (√(φ − vbs) − √φ)` rises as the source rises above the bulk. Level 3
+/// adds short and narrow channels' effects on the threshold, the drain's static feedback,
+/// the gate field's degradation of the mobility, carriers' velocity saturation, the
+/// channel's shortening in saturation, and weak inversion. The transistor is symmetric:
+/// with the drain below the source, the two swap.
 ///
 /// Two junctions join the bulk to the drain and the source, each carrying a
 /// [junction current](crate::junction) and holding a depletion charge, bottom and
@@ -62,7 +95,7 @@ pub struct Mosfet {
     sign: f64,
     drain_conductance: f64,
     source_conductance: f64,
-    channel: SquareLaw,
+    channel: Law,
     /// The bulk-drain and bulk-source junctions.
     junctions: [BulkJunction; 2],
     /// The gate-source, gate-drain and gate-bulk overlap capacitances.
@@ -91,10 +124,13 @@ const VARIABLES: [(usize, usize); 3] = [
     (BULK, INNER_SOURCE),
 ];
 
-/// The parameters of a [`Mosfet`], with SPICE's defaults.
+/// The parameters of a [`Mosfet`], with SPICE's defaults. The parameters from `vmax` on
+/// are level 3's alone.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MosfetParameters {
+    /// The model's level, 1 or 3; default 1.
+    pub level: Level,
     /// The channel; default `n`.
     pub channel: Channel,
     /// The channel's width, `w`, in meters; default 100 µm.
@@ -115,13 +151,13 @@ pub struct MosfetParameters {
     /// The surface potential, `φ`, in volts; default 0.6, or derived from the substrate
     /// doping.
     pub surface_potential: Option<f64>,
-    /// The channel-length modulation, `λ`, per volt; default 0.
-    pub channel_length_modulation: f64,
+    /// The channel-length modulation, `λ`, per volt, level 1's alone; default 0.
+    pub channel_length_modulation: Option<f64>,
     /// The lateral diffusion, `ld`, by which the channel falls short of its drawn length at
     /// each end, in meters; default 0.
     pub lateral_diffusion: f64,
-    /// The gate oxide's thickness, `tox`, in meters; default none, which leaves the gate
-    /// without Meyer's capacitances.
+    /// The gate oxide's thickness, `tox`, in meters; default none at level 1, which leaves
+    /// the gate without Meyer's capacitances, and 0.1 µm at level 3.
     pub oxide_thickness: Option<f64>,
     /// The surface mobility, `uo`, in square meters per volt-second, from which `kp`
     /// derives; default 0.06.
@@ -173,8 +209,9 @@ pub struct MosfetParameters {
     pub sidewall_capacitance: f64,
     /// The bottom capacitance's grading coefficient, `mj`, below 1; default 0.5.
     pub bottom_grading: f64,
-    /// The sidewall capacitance's grading coefficient, `mjsw`, below 1; default 0.5.
-    pub sidewall_grading: f64,
+    /// The sidewall capacitance's grading coefficient, `mjsw`, below 1; default 0.5 at
+    /// level 1 and 0.33 at level 3.
+    pub sidewall_grading: Option<f64>,
     /// The fraction of the junction potential above which the depletion capacitances are
     /// extended linearly, below 1; default 0.5.
     pub depletion_coefficient: f64,
@@ -184,11 +221,38 @@ pub struct MosfetParameters {
     pub gate_drain_overlap: f64,
     /// The gate-bulk overlap capacitance per length, in farads per meter; default 0.
     pub gate_bulk_overlap: f64,
+    /// Level 3: the carriers' maximum drift velocity, `vmax`, in meters per second;
+    /// default none, for no velocity saturation.
+    pub max_drift_velocity: Option<f64>,
+    /// Level 3: the junction depth, `xj`, in meters, which a substrate doping turns into
+    /// short channels' body effect; default 0.
+    pub junction_depth: Option<f64>,
+    /// Level 3: the fast surface state density, `nfs`, per square meter, which turns on
+    /// weak inversion; default 0.
+    pub fast_surface_state_density: Option<f64>,
+    /// Level 3: the drain's static feedback on the threshold, `eta`; default 0.
+    pub static_feedback: Option<f64>,
+    /// Level 3: the width's effect on the threshold, `delta`; default 0.
+    pub narrow_width_factor: Option<f64>,
+    /// Level 3: the gate field's degradation of the mobility, `theta`, per volt;
+    /// default 0.
+    pub mobility_modulation: Option<f64>,
+    /// Level 3: the saturation field factor, `kappa`; default 0.2.
+    pub saturation_field_factor: Option<f64>,
+    /// Level 3: the width lost to diffusion at each side, `wd`, in meters; default 0.
+    pub width_narrowing: Option<f64>,
+    /// Level 3: the length the mask adds, `xl`, in meters; default 0.
+    pub length_adjustment: Option<f64>,
+    /// Level 3: the width the mask adds, `xw`, in meters; default 0.
+    pub width_adjustment: Option<f64>,
+    /// Level 3: a shift of the threshold, `delvto`, in volts; default 0.
+    pub threshold_adjustment: Option<f64>,
 }
 
 impl Default for MosfetParameters {
     fn default() -> Self {
         Self {
+            level: Level::One,
             channel: Channel::N,
             width: 100e-6,
             length: 100e-6,
@@ -197,7 +261,7 @@ impl Default for MosfetParameters {
             transconductance_parameter: None,
             body_effect: None,
             surface_potential: None,
-            channel_length_modulation: 0.0,
+            channel_length_modulation: None,
             lateral_diffusion: 0.0,
             oxide_thickness: None,
             surface_mobility: 0.06,
@@ -221,11 +285,22 @@ impl Default for MosfetParameters {
             bottom_capacitance: 0.0,
             sidewall_capacitance: 0.0,
             bottom_grading: 0.5,
-            sidewall_grading: 0.5,
+            sidewall_grading: None,
             depletion_coefficient: 0.5,
             gate_source_overlap: 0.0,
             gate_drain_overlap: 0.0,
             gate_bulk_overlap: 0.0,
+            max_drift_velocity: None,
+            junction_depth: None,
+            fast_surface_state_density: None,
+            static_feedback: None,
+            narrow_width_factor: None,
+            mobility_modulation: None,
+            saturation_field_factor: None,
+            width_narrowing: None,
+            length_adjustment: None,
+            width_adjustment: None,
+            threshold_adjustment: None,
         }
     }
 }
@@ -245,8 +320,11 @@ impl MosfetParameters {
     /// The process parameters, derived from the oxide thickness and the substrate doping
     /// where not given, as SPICE derives them.
     fn process(&self) -> Result<Process, ParameterError> {
-        let oxide = self
-            .oxide_thickness
+        let thickness = match self.level {
+            Level::One => self.oxide_thickness,
+            Level::Three => Some(self.oxide_thickness.unwrap_or(LEVEL_THREE_OXIDE_THICKNESS)),
+        };
+        let oxide = thickness
             .map(|thickness| ParameterError::positive("oxide_thickness", thickness))
             .transpose()?
             .map(|thickness| OXIDE_PERMITTIVITY / thickness);
@@ -368,6 +446,23 @@ impl SquareLaw {
             threshold,
             saturation: vgst.max(0.0),
             forward,
+        }
+    }
+}
+
+/// The channel's law, of the transistor's level.
+#[derive(Debug, Clone, Copy)]
+enum Law {
+    SquareLaw(SquareLaw),
+    Semiempirical(Semiempirical),
+}
+
+impl Law {
+    /// The drain current at the gate-source, drain-source and bulk-source voltages.
+    fn evaluate(&self, voltages: [Dual<3>; 3]) -> Conduction {
+        match self {
+            Self::SquareLaw(law) => law.evaluate(voltages),
+            Self::Semiempirical(law) => law.evaluate(voltages),
         }
     }
 }
@@ -546,7 +641,7 @@ impl NativeDevice for Mosfet {
         let geometry = Geometry::new(&parameters)?;
         let junctions = parameters.junctions(&geometry)?;
         let [drain_resistance, source_resistance] = parameters.series_resistances()?;
-        let lambda = parameters.channel_length_modulation;
+        let channel = parameters.law(&process, &geometry)?;
         let mut overlaps = [0.0; 3];
         for (overlap, (name, per_length, extent)) in overlaps.iter_mut().zip([
             (
@@ -602,20 +697,12 @@ impl NativeDevice for Mosfet {
             }
         };
         let sign = parameters.channel.sign();
-        let root_potential = process.surface_potential.sqrt();
         Ok(Self {
             stamp,
             sign,
             drain_conductance: conductance(drain_resistance),
             source_conductance: conductance(source_resistance),
-            channel: SquareLaw {
-                beta: process.transconductance * geometry.width / geometry.length,
-                lambda,
-                body_effect: process.body_effect,
-                surface_potential: process.surface_potential,
-                root_potential,
-                built_in: sign * process.threshold - process.body_effect * root_potential,
-            },
+            channel,
             junctions,
             overlaps,
             oxide,
@@ -631,6 +718,8 @@ impl NativeDevice for Mosfet {
 struct Geometry {
     multiplier: f64,
     length: f64,
+    /// The effective width of one copy.
+    single_width: f64,
     width: f64,
     lengths: f64,
     area: f64,
@@ -643,19 +732,31 @@ impl Geometry {
         let length = ParameterError::positive("length", parameters.length)?;
         let diffusion =
             ParameterError::non_negative("lateral_diffusion", parameters.lateral_diffusion)?;
-        let effective = length - 2.0 * diffusion;
+        let narrowing = ParameterError::non_negative(
+            "width_narrowing",
+            parameters.width_narrowing.unwrap_or(0.0),
+        )?;
+        let effective = length - 2.0 * diffusion + parameters.length_adjustment.unwrap_or(0.0);
         if effective <= 0.0 {
             return Err(ParameterError(format!(
-                "the effective length, length − 2 · lateral_diffusion, must be positive, \
-                 not {effective:?}"
+                "the effective length, length − 2 · lateral_diffusion + length_adjustment, \
+                 must be positive, not {effective:?}"
+            )));
+        }
+        let effective_width = width - 2.0 * narrowing + parameters.width_adjustment.unwrap_or(0.0);
+        if effective_width <= 0.0 {
+            return Err(ParameterError(format!(
+                "the effective width, width − 2 · width_narrowing + width_adjustment, must \
+                 be positive, not {effective_width:?}"
             )));
         }
         Ok(Self {
             multiplier,
             length: effective,
-            width: multiplier * width,
+            single_width: effective_width,
+            width: multiplier * effective_width,
             lengths: multiplier * effective,
-            area: effective * multiplier * width,
+            area: effective * multiplier * effective_width,
         })
     }
 }
@@ -671,7 +772,14 @@ impl MosfetParameters {
         )?;
         let potential = ParameterError::positive("junction_potential", self.junction_potential)?;
         let bottom_grading = below_one("bottom_grading", self.bottom_grading)?;
-        let sidewall_grading = below_one("sidewall_grading", self.sidewall_grading)?;
+        let default_sidewall = match self.level {
+            Level::One => 0.5,
+            Level::Three => 0.33,
+        };
+        let sidewall_grading = below_one(
+            "sidewall_grading",
+            self.sidewall_grading.unwrap_or(default_sidewall),
+        )?;
         let coefficient = below_one("depletion_coefficient", self.depletion_coefficient)?;
         let bottom_capacitance =
             ParameterError::non_negative("bottom_capacitance", self.bottom_capacitance)?;
@@ -719,6 +827,86 @@ impl MosfetParameters {
                 self.source_perimeter,
             )?,
         ])
+    }
+
+    /// The channel's law, of the transistor's level, once each of its parameters is
+    /// checked.
+    fn law(&self, process: &Process, geometry: &Geometry) -> Result<Law, ParameterError> {
+        let sign = self.channel.sign();
+        let root_potential = process.surface_potential.sqrt();
+        let built_in =
+            |shift: f64| sign * (process.threshold + shift) - process.body_effect * root_potential;
+        let beta = process.transconductance * geometry.width / geometry.length;
+        let level_three = [
+            ("max_drift_velocity", self.max_drift_velocity),
+            ("junction_depth", self.junction_depth),
+            (
+                "fast_surface_state_density",
+                self.fast_surface_state_density,
+            ),
+            ("static_feedback", self.static_feedback),
+            ("narrow_width_factor", self.narrow_width_factor),
+            ("mobility_modulation", self.mobility_modulation),
+            ("saturation_field_factor", self.saturation_field_factor),
+            ("width_narrowing", self.width_narrowing),
+            ("length_adjustment", self.length_adjustment),
+            ("width_adjustment", self.width_adjustment),
+            ("threshold_adjustment", self.threshold_adjustment),
+        ];
+        let Level::Three = self.level else {
+            if let Some((name, _)) = level_three.iter().find(|(_, value)| value.is_some()) {
+                return Err(ParameterError(format!("{name} is level 3's")));
+            }
+            return Ok(Law::SquareLaw(SquareLaw {
+                beta,
+                lambda: self.channel_length_modulation.unwrap_or(0.0),
+                body_effect: process.body_effect,
+                surface_potential: process.surface_potential,
+                root_potential,
+                built_in: built_in(0.0),
+            }));
+        };
+        if self.channel_length_modulation.is_some() {
+            return Err(ParameterError(
+                "channel_length_modulation is level 1's".to_owned(),
+            ));
+        }
+        let non_negative =
+            |name, value: Option<f64>| ParameterError::non_negative(name, value.unwrap_or(0.0));
+        let oxide =
+            OXIDE_PERMITTIVITY / self.oxide_thickness.unwrap_or(LEVEL_THREE_OXIDE_THICKNESS);
+        let length = geometry.length;
+        Ok(Law::Semiempirical(Semiempirical {
+            beta,
+            length,
+            surface_potential: process.surface_potential,
+            body_effect: process.body_effect,
+            built_in: built_in(self.threshold_adjustment.unwrap_or(0.0)),
+            static_feedback: self.static_feedback.unwrap_or(0.0) * 8.15e-22
+                / (oxide * length * length * length),
+            narrow: self.narrow_width_factor.unwrap_or(0.0)
+                * 0.5
+                * std::f64::consts::PI
+                * SILICON_PERMITTIVITY
+                / (oxide * geometry.single_width),
+            mobility_modulation: non_negative("mobility_modulation", self.mobility_modulation)?,
+            saturation_field_factor: ParameterError::positive(
+                "saturation_field_factor",
+                self.saturation_field_factor.unwrap_or(0.2),
+            )?,
+            alpha: self.substrate_doping.map_or(0.0, |doping| {
+                2.0 * SILICON_PERMITTIVITY / (ELEMENTARY_CHARGE * doping)
+            }),
+            junction_depth: non_negative("junction_depth", self.junction_depth)?,
+            lateral_diffusion: self.lateral_diffusion,
+            max_drift_velocity: non_negative("max_drift_velocity", self.max_drift_velocity)?,
+            mobility: self.surface_mobility,
+            surface_states: non_negative(
+                "fast_surface_state_density",
+                self.fast_surface_state_density,
+            )? * ELEMENTARY_CHARGE
+                / oxide,
+        }))
     }
 
     /// The drain and source resistances, given or from the sheet resistance, of all the
@@ -1027,7 +1215,16 @@ mod tests {
         );
         assert_eq!(
             error(r#"{"length": 1e-6, "lateral_diffusion": 5e-7}"#),
-            "the effective length, length − 2 · lateral_diffusion, must be positive, not 0.0"
+            "the effective length, length − 2 · lateral_diffusion + length_adjustment, must \
+             be positive, not 0.0"
+        );
+        assert_eq!(
+            error(r#"{"mobility_modulation": 0.1}"#),
+            "mobility_modulation is level 3's"
+        );
+        assert_eq!(
+            error(r#"{"level": 3, "channel_length_modulation": 0.01}"#),
+            "channel_length_modulation is level 1's"
         );
         assert_eq!(
             error(r#"{"bottom_grading": 1}"#),
@@ -1063,6 +1260,35 @@ mod tests {
             assert_jacobians_match::<Mosfet>(
                 &resistive,
                 &[sign * drain, sign * gate, 0.0, sign * bulk, inner[0], inner[1], gs, gd, gb],
+            );
+        }
+
+        /// Level 3's derivatives hold in strong and weak inversion, below and beyond
+        /// saturation, with and without velocity saturation.
+        #[test]
+        fn level_three_jacobians_match_finite_differences(
+            drain in -4.0..4.0f64,
+            gate in -3.0..4.0f64,
+            reverse in 0.0..2.0f64,
+            drift in proptest::bool::ANY,
+            p in proptest::bool::ANY,
+        ) {
+            let parameters = format!(
+                r#"{{"level": 3, "threshold_voltage": 0.7, "body_effect": 0.4,
+                    "width": 20e-6, "length": 2e-6, "lateral_diffusion": 1e-7,
+                    "oxide_thickness": 3e-8, "substrate_doping": 1e22, "junction_depth": 3e-7,
+                    "static_feedback": 0.5, "narrow_width_factor": 0.8,
+                    "mobility_modulation": 0.1, "saturation_field_factor": 0.3,
+                    "fast_surface_state_density": 1e15, "threshold_adjustment": 0.05,
+                    "max_drift_velocity": {}}}"#,
+                if drift { 1.5e5 } else { 0.0 }
+            );
+            let parameters = if p { p_channel(&parameters) } else { parameters };
+            let sign = if p { -1.0 } else { 1.0 };
+            let bulk = drain.min(0.0) - reverse;
+            assert_jacobians_match::<Mosfet>(
+                &parameters,
+                &[sign * drain, sign * gate, 0.0, sign * bulk, 1e-4, 2e-4, -1e-4],
             );
         }
 

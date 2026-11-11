@@ -34,12 +34,13 @@ jolty reads a file as PSpice and ngspice read it:
 
 - resistors, capacitors and inductors, with their model cards' scales;
 - independent sources at their DC level;
-- diodes, JFETs, bipolar transistors and level 1 MOSFETs, with their model cards, areas and multipliers, and models that inherit from one another through `AKO:`;
+- diodes, JFETs, bipolar transistors and level 1 and 3 MOSFETs, with their model cards, areas and multipliers, and models that inherit from one another through `AKO:`;
 - linear controlled sources, and `POLY`, `VALUE` and `TABLE` ones;
-- `B` sources, `V=` or `I=` an expression;
+- `B` sources, `V=` or `I=` an expression, which may read the current of any source of a voltage, their own included;
 - switches of PSpice's `VSWITCH` model;
 - subcircuit instances, with their parameters, and `.param` statements.
 
+Parameters may read one another in any order, and expressions know PSpice's `TEMP`, `VT` and `GMIN`.
 Expressions are read with PSpice's functions and ngspice's meanings, written in [jolty's expression language](../reference/expressions.md): `PWR(x, y)` is `|x|^y`, a `TABLE` within an expression extends beyond its ends, and a `TABLE` source holds beyond its ends with its corners rounded, as ngspice's XSPICE `pwl` model rounds them.
 A switch follows ngspice's log-cubic law between its on and off voltages.
 A bipolar transistor has a substrate, as in SPICE: the ground unless its instance names a fourth node, at its collector for an NPN and at its base for a PNP unless `SUBS` builds it otherwise.

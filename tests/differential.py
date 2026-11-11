@@ -19,7 +19,7 @@ import numpy.typing as npt
 import pytest
 from pydantic import JsonValue
 
-from jolty import Options, Role, Simulation, ir, results
+from jolty import Options, Role, Simulation, _core, ir, results
 from jolty.spice import models
 
 NGSPICE = shutil.which("ngspice")
@@ -44,13 +44,10 @@ TIGHT = Options(
 )
 """jolty's options, as tight as ngspice's below."""
 
-_THERMAL_VOLTAGE = 1.380649e-23 * 300.15 / 1.602176634e-19
-"""jolty's thermal voltage at 27 °C, from the exact SI constants."""
-
 _SPICE_THERMAL_VOLTAGE_PER_KELVIN = 1.38064852e-23 / 1.6021766208e-19
 """ngspice's Boltzmann constant over the elementary charge, from CODATA 2014."""
 
-_SPICE_TEMPERATURE = _THERMAL_VOLTAGE / _SPICE_THERMAL_VOLTAGE_PER_KELVIN - 273.15
+_SPICE_TEMPERATURE = _core.THERMAL_VOLTAGE / _SPICE_THERMAL_VOLTAGE_PER_KELVIN - 273.15
 """The temperature, in degrees Celsius, at which ngspice's thermal voltage is jolty's.
 
 Running ngspice there, with its models' nominal temperature there too so no parameter
@@ -128,7 +125,10 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
             names = _spice(models.BIPOLAR) | {"substrate": ("subs", 1.0)}
         case "mosfet":
             kind = f"{values.get('channel', 'n')}mos".upper()
-            names = _spice(models.MOSFET) | {"gate_material": ("tpg", 1.0)}
+            names = _spice(models.MOSFET) | {
+                "gate_material": ("tpg", 1.0),
+                "level": ("level", 1.0),
+            }
             instance = _spice(models.MOSFET_INSTANCE)
         case _:
             pytest.fail(f"{model} has no model card")
@@ -155,7 +155,9 @@ def _spice_value(key: str, value: JsonValue, factor: float) -> str:
     match value:
         case str(name):
             return repr(_NUMBERED[key][name])
-        case int() | float():
+        case int(number):
+            return repr(number)
+        case float():
             return repr(float(value) * factor)
     pytest.fail(f"no SPICE value for {value}")
 
@@ -235,7 +237,8 @@ def netlist(circuit: ir.Circuit, *, excited: str | None = None) -> list[str]:
 def _subcircuit(circuit: ir.Circuit, instance: ir.Instance, ground: str) -> str:
     """The instance of a subcircuit read from a SPICE library, its pins in order.
 
-    Its ground port is SPICE's global ground.
+    Its ground port is SPICE's global ground, and the parameters its component's name
+    lists, as in ``divider[top=1000.0]``, are its own.
     """
     assert isinstance(instance.of, ir.ComponentOf)
     name = instance.of.component
@@ -246,7 +249,9 @@ def _subcircuit(circuit: ir.Circuit, instance: ir.Instance, ground: str) -> str:
     ]
     nets = (instance.terminals[pin] for pin in pins)
     nodes = " ".join("0" if net == ground else net for net in nets)
-    return f"X{instance.id} {nodes} {name}"
+    subcircuit, _, listed = name.removesuffix("]").partition("[")
+    parameters = f" params: {listed.replace(',', ' ')}" if listed else ""
+    return f"X{instance.id} {nodes} {subcircuit}{parameters}"
 
 
 _SWITCH_PARAMETERS = {

@@ -220,10 +220,10 @@ def test_bipolar_transistors_have_spice_s_substrate() -> None:
         (".subckt a x\nZ1 x 0 1\n.ends", "no element of letter `Z`"),
         (".subckt a x\nD1 x 0 DX\n.ends", "no model is named `DX`"),
         (".subckt a 0\nR1 0 0 1\n.ends", "a pin named `0`"),
-        (".model D1 D(BV=5)\n.subckt a x\nD1 x 0 D1\n.ends", "counterpart to `BV`"),
-        (".model M1 NMOS(LEVEL=3)\n.subckt a x\nM1 x x 0 0 M1\n.ends", "level 3"),
+        (".model D1 D(IKF=5)\n.subckt a x\nD1 x 0 D1\n.ends", "counterpart to `IKF`"),
+        (".model M1 NMOS(LEVEL=2)\n.subckt a x\nM1 x x 0 0 M1\n.ends", "level 2"),
         (".model D1 D(TNOM=50)\n.subckt a x\nD1 x 0 D1\n.ends", "measured at 50.0 °C"),
-        (".subckt a x\nF1 x 0 Vmissing 2\n.ends", "`Vmissing` is no voltage source"),
+        (".subckt a x\nF1 x 0 Vmissing 2\n.ends", "`Vmissing` is no source in `a`"),
         (".subckt a x\nE1 x 0 POLY(2) x 0 1\n.ends", r"POLY\(2\) reads 2 controls"),
     ],
 )

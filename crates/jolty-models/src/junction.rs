@@ -14,7 +14,7 @@ pub(crate) const ELEMENTARY_CHARGE: f64 = 1.602_176_634e-19;
 /// The temperature devices are evaluated at: 27 °C, in kelvins.
 pub(crate) const TEMPERATURE: f64 = 300.15;
 /// The thermal voltage at [`TEMPERATURE`], in volts.
-pub(crate) const THERMAL_VOLTAGE: f64 = BOLTZMANN * TEMPERATURE / ELEMENTARY_CHARGE;
+pub const THERMAL_VOLTAGE: f64 = BOLTZMANN * TEMPERATURE / ELEMENTARY_CHARGE;
 
 /// The current through a junction at `voltage`, and its derivative, with `saturation`
 /// current and exponential `slope` (the emission coefficient times the thermal voltage).

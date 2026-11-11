@@ -38,6 +38,17 @@ impl<const N: usize> Dual<N> {
         }
     }
 
+    /// `e` raised to the value.
+    pub(crate) fn exp(self) -> Self {
+        let exponential = self.value.exp();
+        self.chain((exponential, exponential))
+    }
+
+    /// The reciprocal.
+    pub(crate) fn recip(self) -> Self {
+        self.chain((self.value.recip(), -(self.value * self.value).recip()))
+    }
+
     /// The square root.
     pub(crate) fn sqrt(self) -> Self {
         let root = self.value.sqrt();

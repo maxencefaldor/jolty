@@ -96,10 +96,14 @@ Every parameter is optional:
 | `grading_coefficient` | none | 0.5 |
 | `depletion_coefficient` | none | 0.5 |
 | `transit_time` | s | 0 |
+| `breakdown_voltage` | V | none: no breakdown |
+| `breakdown_current` | A | 1 mA |
+| `breakdown_emission_coefficient` | none | the emission coefficient |
 
 A diode with a series resistance adds the voltage of its junction to the unknowns, as `D1:junction` for a diode `D1`.
 
 The junction follows SPICE as ngspice implements it, its reverse current settling on the saturation current below three thermal voltages of reverse bias.
+Given a breakdown voltage, the reverse current grows exponentially beyond it; ngspice moves the voltage slightly so the current there is the breakdown current, and jolty does the same.
 
 ## JFET
 
@@ -164,7 +168,7 @@ ngspice leaves out of its small-signal model and its Newton steps how a falling 
 
 ## MOSFET
 
-`mosfet(...)` is a metal-oxide-semiconductor field-effect transistor between `drain`, `gate`, `source` and `bulk`, in SPICE's level 1 model, Shichman and Hodges's square law with Meyer's gate capacitances, as ngspice implements it.
+`mosfet(...)` is a metal-oxide-semiconductor field-effect transistor between `drain`, `gate`, `source` and `bulk`, in SPICE's level 1 model, Shichman and Hodges's square law with Meyer's gate capacitances, or with `level=3` in SPICE's semi-empirical level 3 model, as ngspice implements them.
 Above the threshold, the drain current follows the square law, which the body effect raises as the source rises above the bulk; the drain and the source swap when the drain falls below the source.
 Two junctions join the bulk to the drain and the source, and the gate holds overlap charges and, given an oxide thickness, Meyer's capacitances.
 With an oxide thickness and a substrate doping, the threshold, the body effect and the surface potential left out derive from the process, as in SPICE.
@@ -179,7 +183,7 @@ Every parameter is optional:
 | `transconductance_parameter` | `KP` | A/V² | 20 µA/V², or the surface mobility times the oxide capacitance per area |
 | `body_effect` | `GAMMA` | √V, as a number | 0, or derived |
 | `surface_potential` | `PHI` | V | 0.6 V, or derived |
-| `channel_length_modulation` | `LAMBDA` | V⁻¹ | 0 |
+| `channel_length_modulation` | `LAMBDA` | V⁻¹ | 0, at level 1 only |
 | `lateral_diffusion` | `LD` | m | 0 |
 | `oxide_thickness` | `TOX` | m | none: no Meyer's capacitances |
 | `surface_mobility` | `UO` | m²/(V·s) | 0.06 m²/(V·s), SPICE's 600 cm²/(V·s) |
@@ -194,9 +198,27 @@ Every parameter is optional:
 | `junction_potential` | `PB` | V | 0.8 V |
 | `bulk_drain_capacitance`, `bulk_source_capacitance` | `CBD`, `CBS` | F | the bottom capacitance's |
 | `bottom_capacitance`, `bottom_grading` | `CJ`, `MJ` | F/m², none | 0, 0.5 |
-| `sidewall_capacitance`, `sidewall_grading` | `CJSW`, `MJSW` | F/m, none | 0, 0.5 |
+| `sidewall_capacitance`, `sidewall_grading` | `CJSW`, `MJSW` | F/m, none | 0, 0.5 at level 1 |
 | `depletion_coefficient` | `FC` | none | 0.5 |
 | `gate_source_overlap`, `gate_drain_overlap`, `gate_bulk_overlap` | `CGSO`, `CGDO`, `CGBO` | F/m | 0 |
+| `level` | `LEVEL` | 1 or 3 | 1 |
+
+Level 3 replaces the square law with a law of short channels, takes no channel-length modulation, gives the oxide a thickness of 0.1 µm and the sidewall a grading coefficient of 0.33 unless given, and adds parameters of its own:
+
+| Parameter | SPICE | Unit | Default |
+| --- | --- | --- | --- |
+| `max_drift_velocity` | `VMAX` | m/s | none: no velocity saturation |
+| `junction_depth` | `XJ` | m | 0: no short-channel body effect |
+| `fast_surface_state_density` | `NFS` | m⁻² | 0: no weak inversion |
+| `static_feedback` | `ETA` | none | 0 |
+| `narrow_width_factor` | `DELTA` | none | 0 |
+| `mobility_modulation` | `THETA` | V⁻¹ | 0 |
+| `saturation_field_factor` | `KAPPA` | none | 0.2 |
+| `width_narrowing` | `WD` | m | 0 |
+| `length_adjustment`, `width_adjustment` | `XL`, `XW` | m | 0 |
+| `threshold_adjustment` | `DELVTO` | V | 0 |
+
+The channel shortens beyond saturation only given a substrate doping.
 
 SPICE writes the surface mobility, the substrate doping and the surface state density in centimeters; jolty takes SI units, as everywhere.
 The saturation current density replaces the saturation current when it and both areas are nonzero.
