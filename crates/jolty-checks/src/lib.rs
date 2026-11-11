@@ -95,7 +95,8 @@ pub struct Diagnostic {
 }
 
 /// Every diagnostic of every rule in the circuit `simulator` elaborated, rule by rule in
-/// the order of [`RULES`], and within a rule in the order the instances were placed.
+/// the order of [`RULES`], and within a rule in the order the instances were placed, analog
+/// devices before logic ones.
 #[must_use]
 pub fn check(simulator: &Simulator) -> Vec<Diagnostic> {
     let structure = structure::Structure::new(simulator);
@@ -106,5 +107,7 @@ pub fn check(simulator: &Simulator) -> Vec<Diagnostic> {
     rules::voltage_loops(&structure, &mut diagnostics);
     rules::no_dc_paths(&structure, &mut diagnostics);
     rules::current_cutsets(&structure, &mut diagnostics);
+    rules::driver_conflicts(simulator, &mut diagnostics);
+    rules::floating_inputs(simulator, &mut diagnostics);
     diagnostics
 }

@@ -2,9 +2,11 @@
 
 use std::collections::VecDeque;
 
+use jolty_models::Level;
 use jolty_numerics::integration::{Formula, Method, divided_difference};
 use serde::Deserialize;
 
+use crate::logic::{Command, Crossing, crossing};
 use crate::newton::Mode;
 use crate::{Options, SimulationError, Simulator, Strategy};
 
@@ -43,6 +45,9 @@ pub struct Waveforms {
     pub times: Vec<f64>,
     /// The value of every unknown at each time.
     pub values: Vec<Vec<f64>>,
+    /// Each logic net's changes: its level at time zero, then each time it changes, in
+    /// seconds, and its new level.
+    pub logic: Vec<Vec<(f64, Level)>>,
     /// How the analysis went.
     pub statistics: Statistics,
 }
@@ -112,6 +117,60 @@ impl History {
     }
 }
 
+/// The times a transient analysis steps onto exactly, after the current time.
+struct Breakpoints {
+    /// The breakpoints, sorted, the last the stop time.
+    times: Vec<f64>,
+    /// How close two breakpoints may be before one is dropped.
+    minimum: f64,
+}
+
+impl Breakpoints {
+    /// Adds `time`, unless it lies past the stop or within the minimum of another.
+    fn insert(&mut self, time: f64) {
+        let stop = self.times.last().copied().unwrap_or(f64::INFINITY);
+        if time >= stop {
+            return;
+        }
+        let index = self.times.partition_point(|&other| other < time);
+        let near =
+            |other: Option<&f64>| other.is_some_and(|&other| (other - time).abs() < self.minimum);
+        if !near(self.times.get(index))
+            && !near(
+                index
+                    .checked_sub(1)
+                    .and_then(|before| self.times.get(before)),
+            )
+        {
+            self.times.insert(index, time);
+        }
+    }
+
+    /// The first breakpoint after `time`, and the gap from it to the one after.
+    fn after(&mut self, time: f64) -> (f64, f64) {
+        let passed = self.times.partition_point(|&other| other <= time);
+        let kept = passed.min(self.times.len() - 1);
+        self.times.drain(..kept);
+        let next = self.times[0];
+        let gap = self
+            .times
+            .get(1)
+            .map_or(f64::INFINITY, |after| after - next);
+        (next, gap)
+    }
+}
+
+/// What came of trying a step.
+enum Step {
+    /// The step was accepted, and logic drivers began ramps that settle at these times.
+    Accepted(Vec<f64>),
+    /// The step was rejected, to be tried again shorter.
+    Rejected,
+    /// The step was rejected because a detector crosses or a logic driver changes within
+    /// it, at this time, which the step must land on.
+    Land(f64),
+}
+
 /// The state of a transient analysis between steps.
 struct Stepper {
     /// The method between breakpoints.
@@ -138,7 +197,7 @@ struct Stepper {
 
 impl Stepper {
     /// Records a rejected step and shortens the next one to `next`.
-    fn reject(&mut self, next: f64) -> Result<bool, SimulationError> {
+    fn reject(&mut self, next: f64) -> Result<Step, SimulationError> {
         self.statistics.rejected += 1;
         self.next = next;
         if next < self.shortest {
@@ -147,7 +206,7 @@ impl Stepper {
                 minimum: self.shortest,
             });
         }
-        Ok(false)
+        Ok(Step::Rejected)
     }
 }
 
@@ -170,7 +229,12 @@ impl Simulator {
         options: &Options,
     ) -> Result<Waveforms, SimulationError> {
         options.check()?;
-        let longest = transient.max_step.unwrap_or(transient.stop / 50.0);
+        // Without unknowns, nothing analog needs steps, and the logic moves on at once.
+        let longest = if self.system.unknowns.is_empty() {
+            transient.stop
+        } else {
+            transient.max_step.unwrap_or(transient.stop / 50.0)
+        };
         if transient.stop <= 0.0 || longest <= 0.0 {
             return Err(SimulationError::InvalidAnalysis(format!(
                 "the stop time and longest step must be positive, not {:?} and {longest:?}",
@@ -180,9 +244,13 @@ impl Simulator {
         let shortest = longest * SMALLEST_STEP_FRACTION;
         let initial = self.operating_point(options)?;
         self.evaluate(&initial.values, 0.0, (1.0, options.gmin), true);
+        self.events.start(&self.system.logic, transient.stop);
         let unknowns = initial.values.len();
-        let breakpoints = self.breakpoints(transient.stop, shortest);
-        let first = RESTART_FRACTION * longest.min(breakpoints[0]);
+        let mut breakpoints = Breakpoints {
+            times: self.breakpoints(transient.stop, shortest),
+            minimum: shortest,
+        };
+        let first = RESTART_FRACTION * longest.min(breakpoints.times[0]);
         let mut stepper = Stepper {
             method: transient.method,
             longest,
@@ -206,39 +274,55 @@ impl Simulator {
             x: initial.values,
         };
         let (mut times, mut values) = (vec![0.0], vec![stepper.x.clone()]);
-        for (index, &breakpoint) in breakpoints.iter().enumerate() {
-            let gap = breakpoints
-                .get(index + 1)
-                .map_or(f64::INFINITY, |next| next - breakpoint);
-            while stepper.time < breakpoint {
-                if self.step_toward(&mut stepper, breakpoint, gap, options)? {
+        while stepper.time < transient.stop {
+            if let Some(change) = self.events.next_analog_change(&self.system.logic) {
+                breakpoints.insert(change);
+            }
+            let (breakpoint, gap) = breakpoints.after(stepper.time);
+            match self.step_toward(&mut stepper, breakpoint, gap, options)? {
+                Step::Accepted(settles) => {
                     times.push(stepper.time);
                     values.push(stepper.x.clone());
+                    for time in settles {
+                        breakpoints.insert(time);
+                    }
                 }
+                Step::Rejected => {}
+                Step::Land(time) => breakpoints.insert(time),
             }
         }
         Ok(Waveforms {
             times,
             values,
+            logic: self.events.traces().to_vec(),
             statistics: stepper.statistics,
         })
     }
 
     /// Tries one step toward `breakpoint`, landing on it when it is within reach; `gap` is the
-    /// time from it to the breakpoint after. Returns whether the step was accepted.
+    /// time from it to the breakpoint after.
+    ///
+    /// An accepted step moves the logic on to its end, with the detectors' crossings within
+    /// it. A step in which a detector crosses, or a logic driver changes, before its end is
+    /// rejected to land on the crossing or the change.
     fn step_toward(
         &mut self,
         stepper: &mut Stepper,
         breakpoint: f64,
         gap: f64,
         options: &Options,
-    ) -> Result<bool, SimulationError> {
+    ) -> Result<Step, SimulationError> {
         let remaining = breakpoint - stepper.time;
         let landing = stepper.next >= remaining - stepper.shortest;
         let length = if landing {
             remaining
         } else {
             stepper.next.min(stepper.longest)
+        };
+        let end = if landing {
+            breakpoint
+        } else {
+            stepper.time + length
         };
         let method = if stepper.restart {
             Method::BackwardEuler
@@ -256,7 +340,7 @@ impl Simulator {
 
         let mut candidate = stepper.x.clone();
         let mode = Mode::Step {
-            time: stepper.time + length,
+            time: end,
             alpha: formula.alpha,
             history: &stepper.terms,
         };
@@ -274,7 +358,7 @@ impl Simulator {
         let ratio = if stepper.restart {
             None
         } else {
-            let new = (stepper.time + length, charge.as_slice());
+            let new = (end, charge.as_slice());
             self.error_ratio(method, length, &stepper.history, new, &derivative, options)
         };
         let factor = ratio.map_or(FACTOR_BOUNDS.1, |ratio| {
@@ -283,14 +367,24 @@ impl Simulator {
         if ratio.is_some_and(|ratio| ratio > 1.0) {
             return stepper.reject(length * factor);
         }
+        let commands = match self.advance_logic(stepper, (end, &candidate), options) {
+            Ok(commands) => commands,
+            Err(early) => {
+                stepper.reject(early - stepper.time)?;
+                return Ok(Step::Land(early));
+            }
+        };
 
         stepper.statistics.accepted += 1;
         stepper.statistics.iterations += iterations;
         stepper.x = candidate;
         stepper.previous = length;
-        if landing {
-            stepper.time = breakpoint;
-            stepper.history.restart(breakpoint, charge, derivative);
+        let settles = self.follow(&commands);
+        if landing || !commands.is_empty() {
+            // A breakpoint, or a driver's ramp starting, is a corner in the waveforms.
+            let gap = if landing { gap } else { breakpoint - end };
+            stepper.time = end;
+            stepper.history.restart(end, charge, derivative);
             stepper.restart = true;
             stepper.next = RESTART_FRACTION * length.min(gap);
         } else {
@@ -299,7 +393,85 @@ impl Simulator {
             stepper.restart = false;
             stepper.next = length * factor;
         }
-        Ok(true)
+        Ok(Step::Accepted(settles))
+    }
+
+    /// Moves the logic from the stepper's last point to `end`, where the solution is
+    /// `after`, and returns the changes the logic drivers must follow.
+    ///
+    /// A detector's crossing, located between the two points by linear interpolation, is
+    /// accurate only within a short step. So a crossing earlier than the end by more than the
+    /// relative tolerance of the step returns its time instead, for the step to land on it.
+    /// So does a change of a logic driver that early, leaving the logic where it was.
+    fn advance_logic(
+        &mut self,
+        stepper: &Stepper,
+        (end, after): (f64, &[f64]),
+        options: &Options,
+    ) -> Result<Vec<Command>, f64> {
+        let Self { system, events, .. } = self;
+        let logic = &system.logic;
+        let tolerance = stepper
+            .shortest
+            .max(options.relative_tolerance * (end - stepper.time));
+        let early = |time: f64| time < end - tolerance && time - stepper.time >= stepper.shortest;
+        let held = events.detector_levels(logic);
+        let crossings: Vec<Crossing> = logic
+            .detectors
+            .iter()
+            .enumerate()
+            .filter_map(|(detector, &(element, _))| {
+                crossing(
+                    &system.devices[element],
+                    detector,
+                    held[detector],
+                    (stepper.time, &stepper.x),
+                    (end, after),
+                )
+            })
+            .collect();
+        let first = crossings
+            .iter()
+            .map(|crossing| crossing.time)
+            .filter(|&time| early(time))
+            .min_by(f64::total_cmp);
+        if let Some(first) = first {
+            return Err(first);
+        }
+        if crossings.is_empty() && !events.due(end) {
+            return Ok(Vec::new());
+        }
+        // Without drivers, no change reaches back into the analog circuit, so the logic can
+        // move on in place.
+        let mut tentative = (!logic.drivers.is_empty()).then(|| events.clone());
+        let state = tentative.as_mut().unwrap_or(events);
+        state.inject(logic, &crossings);
+        let commands = state.advance(logic, end);
+        let first = commands
+            .iter()
+            .map(|command| command.time)
+            .filter(|&time| early(time))
+            .min_by(f64::total_cmp);
+        if let Some(first) = first {
+            return Err(first);
+        }
+        if let Some(tentative) = tentative {
+            *events = tentative;
+        }
+        Ok(commands)
+    }
+
+    /// Starts each logic driver of `commands` on its ramp, and returns when each ramp ends.
+    fn follow(&mut self, commands: &[Command]) -> Vec<f64> {
+        let mut settles = Vec::with_capacity(commands.len());
+        for command in commands {
+            let element = self.system.logic.drivers[command.driver].0;
+            if let Some(driver) = self.system.devices[element].device.as_driver() {
+                driver.drive(command.time, command.level, command.transition);
+                settles.push(driver.settles_at());
+            }
+        }
+        settles
     }
 
     /// The breakpoints of every device in `(0, stop]`, sorted, merged when closer than

@@ -12,10 +12,12 @@ The default levels below hold until settings or options set others (see [Checks]
 | [`voltage-loop`](#voltage-loop) | `error` |
 | [`no-dc-path`](#no-dc-path) | `error` |
 | [`current-cutset`](#current-cutset) | `error` |
+| [`driver-conflict`](#driver-conflict) | `error` |
+| [`floating-input`](#floating-input) | `error` |
 
 ## unconnected-terminal
 
-A device's terminal joins a node that no other terminal joins and that is not the ground: nothing connects to it.
+A device's terminal or logic pin joins a net that no other terminal or pin joins and that is not the ground: nothing connects to it.
 
 ## shorted-source
 
@@ -42,3 +44,13 @@ A group whose every node joins a single terminal is left to unconnected-terminal
 
 Current sources, independent or controlled, drive a group of nodes that has no DC path to the ground, as no-dc-path defines it: at DC their current has nowhere to go.
 A group whose every node joins a single terminal is left to unconnected-terminal.
+
+## driver-conflict
+
+Two or more logic outputs drive one logic net.
+Wherever they drive different levels, the net's level is unknown.
+
+## floating-input
+
+Logic inputs read a logic net that no output drives, so its level is always unknown.
+A net that a single input joins is left to unconnected-terminal.

@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use jolty_engine::Placed;
+use jolty_engine::{Endpoint, Location, LogicNet, Placed, Simulator};
 use jolty_models::BranchKind;
 
 use crate::structure::{Partition, REFERENCE, Structure, ends, index, list};
@@ -14,8 +14,8 @@ const NAMED: usize = 5;
 const UNCONNECTED_TERMINAL: Rule = Rule {
     name: "unconnected-terminal",
     level: Level::Error,
-    condition: "A device's terminal joins a node that no other terminal joins and that is \
-                not the ground: nothing connects to it.",
+    condition: "A device's terminal or logic pin joins a net that no other terminal or pin \
+                joins and that is not the ground: nothing connects to it.",
 };
 
 const SHORTED_SOURCE: Rule = Rule {
@@ -64,6 +64,20 @@ const CURRENT_CUTSET: Rule = Rule {
                 unconnected-terminal.",
 };
 
+const DRIVER_CONFLICT: Rule = Rule {
+    name: "driver-conflict",
+    level: Level::Error,
+    condition: "Two or more logic outputs drive one logic net. Wherever they drive different \
+                levels, the net's level is unknown.",
+};
+
+const FLOATING_INPUT: Rule = Rule {
+    name: "floating-input",
+    level: Level::Error,
+    condition: "Logic inputs read a logic net that no output drives, so its level is always \
+                unknown. A net that a single input joins is left to unconnected-terminal.",
+};
+
 /// Every rule, in the order a check reports them.
 pub const RULES: &[Rule] = &[
     UNCONNECTED_TERMINAL,
@@ -72,24 +86,112 @@ pub const RULES: &[Rule] = &[
     VOLTAGE_LOOP,
     NO_DC_PATH,
     CURRENT_CUTSET,
+    DRIVER_CONFLICT,
+    FLOATING_INPUT,
 ];
 
-/// Each terminal alone on a node other than the reference.
+/// Each terminal or logic pin alone on a net other than the reference.
 pub(crate) fn unconnected_terminals(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
-    for device in structure.devices() {
+    let alone = |node| {
+        let node = index(node);
+        (node != REFERENCE && structure.degree(node) == 1).then(|| structure.name(node))
+    };
+    let simulator = structure.simulator();
+    let mut found: Vec<(String, &Location, &str)> = Vec::new();
+    for (number, device) in structure.devices().iter().enumerate() {
+        if structure.is_element(number) {
+            continue;
+        }
         for (terminal, &node) in device.terminals().iter().zip(device.nodes()) {
-            let node = index(node);
-            if node != REFERENCE && structure.degree(node) == 1 {
-                diagnostics.push(Diagnostic {
-                    rule: UNCONNECTED_TERMINAL.name,
-                    message: format!(
-                        "terminal `{terminal}` of `{}` connects to nothing",
-                        device.path()
-                    ),
-                    instances: vec![device.location().clone()],
-                    nets: vec![structure.name(node).to_owned()],
-                });
+            if let Some(net) = alone(node) {
+                found.push((terminal.clone(), device.location(), net));
             }
+        }
+    }
+    for device in simulator.logic_devices() {
+        let names = device.pins().names();
+        let pins = device.inputs().iter().chain(device.outputs());
+        for (name, &net) in names.iter().zip(pins) {
+            let joined = &simulator.logic_nets()[net];
+            if joined.sources.len() + joined.loads.len() == 1 {
+                found.push((name.clone(), device.location(), &joined.name));
+            }
+        }
+        let terminals = &names[names.len() - device.nodes().len()..];
+        for (terminal, &node) in terminals.iter().zip(device.nodes()) {
+            if let Some(net) = alone(node) {
+                found.push((terminal.clone(), device.location(), net));
+            }
+        }
+    }
+    diagnostics.extend(found.into_iter().map(|(terminal, at, net)| Diagnostic {
+        rule: UNCONNECTED_TERMINAL.name,
+        message: format!("terminal `{terminal}` of `{}` connects to nothing", at.path),
+        instances: vec![at.clone()],
+        nets: vec![net.to_owned()],
+    }));
+}
+
+/// Where the logic device or connect element at `end` is.
+fn location(simulator: &Simulator, end: Endpoint) -> &Location {
+    match end {
+        Endpoint::Pin { device, .. } => simulator.logic_devices()[device].location(),
+        Endpoint::Element { device } => simulator.devices()[device].location(),
+    }
+}
+
+/// The diagnostic of `rule` for `net`, naming `ends` in `message`'s `{}`.
+fn logic(
+    simulator: &Simulator,
+    rule: &Rule,
+    net: &LogicNet,
+    ends: &[Endpoint],
+    message: impl Fn(&str) -> String,
+) -> Diagnostic {
+    let instances: Vec<Location> = ends
+        .iter()
+        .map(|&end| location(simulator, end).clone())
+        .collect();
+    let paths = instances.iter().map(|at| at.path.as_str());
+    Diagnostic {
+        rule: rule.name,
+        message: message(&list(paths, NAMED)),
+        instances,
+        nets: vec![net.name.clone()],
+    }
+}
+
+/// Each logic net that several outputs drive.
+pub(crate) fn driver_conflicts(simulator: &Simulator, diagnostics: &mut Vec<Diagnostic>) {
+    for net in simulator.logic_nets() {
+        if net.sources.len() > 1 {
+            diagnostics.push(logic(
+                simulator,
+                &DRIVER_CONFLICT,
+                net,
+                &net.sources,
+                |sources| format!("{sources} drive the logic net `{}`", net.name),
+            ));
+        }
+    }
+}
+
+/// Each logic net that inputs read and nothing drives, but for a single input alone.
+pub(crate) fn floating_inputs(simulator: &Simulator, diagnostics: &mut Vec<Diagnostic>) {
+    for net in simulator.logic_nets() {
+        if net.sources.is_empty() && net.loads.len() > 1 {
+            diagnostics.push(logic(
+                simulator,
+                &FLOATING_INPUT,
+                net,
+                &net.loads,
+                |loads| {
+                    format!(
+                        "nothing drives the logic net `{}`, which {loads} read",
+                        net.name
+                    )
+                },
+            ));
         }
     }
 }
@@ -315,7 +417,7 @@ impl Group {
             .collect()
     }
 
-    fn locations(&self, structure: &Structure<'_>) -> Vec<jolty_engine::Location> {
+    fn locations(&self, structure: &Structure<'_>) -> Vec<Location> {
         let devices = structure.devices();
         self.devices
             .iter()
@@ -662,6 +764,111 @@ mod tests {
         assert_eq!(rules(&series), ["current-cutset"]);
         let loaded = diagnostics(&[current("I1", "0", "top"), resistor("R1", "top", "0")]);
         assert_eq!(loaded, []);
+    }
+
+    fn gate(id: &'static str, terminals: Vec<(&'static str, &'static str)>) -> Device {
+        let inputs: Vec<&str> = terminals
+            .iter()
+            .map(|&(terminal, _)| terminal)
+            .filter(|&terminal| !["y", "supply", "ground"].contains(&terminal))
+            .collect();
+        let table = if inputs.len() == 1 { "10" } else { "1110" };
+        let mut parameters = json!({
+            "inputs": inputs,
+            "outputs": [{"name": "y", "table": table}],
+            "timing": {"fixed": {"rise": 1e-9, "fall": 1e-9, "transition": 1e-10}},
+        });
+        if terminals.iter().any(|&(terminal, _)| terminal == "supply") {
+            parameters["electrical"] = json!({"input_capacitances": vec![0.0; inputs.len()]});
+        }
+        Device {
+            id,
+            model: "logic_cell",
+            parameters,
+            terminals,
+        }
+    }
+
+    fn logic_source(id: &'static str, output: &'static str) -> Device {
+        Device {
+            id,
+            model: "logic_source",
+            parameters: json!({"initial": "0", "transition": 1e-10}),
+            terminals: vec![("output", output)],
+        }
+    }
+
+    /// A NAND of `a` and the inverse of its own output: every net one output drives and an
+    /// input reads.
+    fn latch() -> Vec<Device> {
+        vec![
+            logic_source("A", "a"),
+            gate("U1", vec![("a", "a"), ("b", "c"), ("y", "b")]),
+            gate("U2", vec![("a", "b"), ("y", "c")]),
+        ]
+    }
+
+    #[test]
+    fn a_sound_logic_circuit_raises_nothing() {
+        assert_eq!(diagnostics(&latch()), []);
+    }
+
+    #[test]
+    fn driver_conflict() {
+        let mut devices = latch();
+        devices.push(logic_source("B", "a"));
+        let found = diagnostics(&devices);
+        assert_eq!(rules(&found), ["driver-conflict"]);
+        assert_eq!(found[0].message, "`A` and `B` drive the logic net `a`");
+        assert_eq!(found[0].nets, ["a"]);
+    }
+
+    #[test]
+    fn floating_input() {
+        let mut devices = latch();
+        devices.remove(0);
+        devices.push(gate("U3", vec![("a", "a"), ("b", "e"), ("y", "d")]));
+        devices.push(gate("U4", vec![("a", "d"), ("y", "e")]));
+        let found = diagnostics(&devices);
+        assert_eq!(rules(&found), ["floating-input"]);
+        assert_eq!(
+            found[0].message,
+            "nothing drives the logic net `a`, which `U1` and `U3` read"
+        );
+    }
+
+    #[test]
+    fn a_logic_pin_or_supply_alone_connects_to_nothing() {
+        let found = diagnostics(&[
+            logic_source("A", "a"),
+            gate(
+                "U1",
+                vec![("a", "a"), ("y", "y"), ("supply", "vdd"), ("ground", "0")],
+            ),
+        ]);
+        let messages: Vec<&str> = found.iter().map(|found| found.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [
+                "terminal `y` of `U1` connects to nothing",
+                "terminal `supply` of `U1` connects to nothing",
+            ]
+        );
+        // Its connect elements' supply and ground are its own, which a source joins.
+        let joined = diagnostics(&[
+            voltage("V1", "vdd", "0"),
+            voltage("V2", "in", "0"),
+            gate(
+                "U1",
+                vec![("a", "in"), ("y", "y"), ("supply", "vdd"), ("ground", "0")],
+            ),
+            gate(
+                "U2",
+                vec![("a", "y"), ("y", "out"), ("supply", "vdd"), ("ground", "0")],
+            ),
+            resistor("R1", "out", "0"),
+        ]);
+        assert_eq!(joined, []);
     }
 
     #[test]

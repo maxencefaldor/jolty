@@ -1,10 +1,11 @@
 //! The DC sweep: operating points while one source steps through levels.
 
-use jolty_models::{BranchKind, Quantity};
+use jolty_models::{BranchKind, Level, Quantity};
 use serde::Deserialize;
 
 use crate::newton::Mode;
-use crate::{Options, SimulationError, Simulator};
+use crate::operating_point::Solved;
+use crate::{OperatingPoint, Options, SimulationError, Simulator, Strategy};
 
 /// The fraction of the way from one level of a sweep to the next below which continuation
 /// gives up, as a divisor.
@@ -31,6 +32,8 @@ pub struct Sweep {
     pub levels: Vec<f64>,
     /// The value of every unknown at each level.
     pub values: Vec<Vec<f64>>,
+    /// The level of every logic net at each level.
+    pub logic: Vec<Vec<Level>>,
 }
 
 impl Simulator {
@@ -55,43 +58,59 @@ impl Simulator {
         let index = self.source_index(&sweep.source)?;
         let result = self.sweep_source(index, &sweep.levels, options);
         self.hold_source(index, None);
+        let (values, logic) = result?
+            .into_iter()
+            .map(|point| (point.values, point.logic))
+            .unzip();
         Ok(Sweep {
             source: sweep.source.clone(),
             quantity: self.source_quantity(index),
             levels: sweep.levels.clone(),
-            values: result?,
+            values,
+            logic,
         })
     }
 
+    /// The operating point at each of `levels` of the source at `index`. The logic settles at
+    /// each from where it settled at the one before.
     fn sweep_source(
         &mut self,
         index: usize,
         levels: &[f64],
         options: &Options,
-    ) -> Result<Vec<Vec<f64>>, SimulationError> {
+    ) -> Result<Vec<OperatingPoint>, SimulationError> {
+        self.reset_logic();
         let mut values = vec![0.0; self.system.unknowns.len()];
-        let mut solutions = Vec::with_capacity(levels.len());
+        let mut points = Vec::with_capacity(levels.len());
         let mut previous: Option<f64> = None;
         for &level in levels {
             let continued = previous.is_some_and(|from| {
                 self.continue_level(index, (from, level), &mut values, options)
             });
-            if !continued {
+            let solved = if continued {
+                Solved {
+                    values: std::mem::take(&mut values),
+                    strategy: Strategy::Direct,
+                }
+            } else {
                 self.hold_source(index, Some(level));
-                values = match self.solve_dc(values.clone(), options) {
-                    Ok(point) => point.values,
+                match self.solve_dc(values.clone(), options) {
+                    Ok(solved) => solved,
                     // The first level may lie where no strategy finds the solution from
                     // scratch: there, continue to it from the circuit's own operating point.
-                    Err(error) if previous.is_none() => {
-                        self.reach_first_level(index, level, options).ok_or(error)?
-                    }
+                    Err(error) if previous.is_none() => Solved {
+                        values: self.reach_first_level(index, level, options).ok_or(error)?,
+                        strategy: Strategy::Direct,
+                    },
                     Err(error) => return Err(error),
-                };
-            }
+                }
+            };
+            let point = self.settle(solved, options)?;
             previous = Some(level);
-            solutions.push(values.clone());
+            values.clone_from(&point.values);
+            points.push(point);
         }
-        Ok(solutions)
+        Ok(points)
     }
 
     /// The solution with the source at `index` at `level`, continued from the operating

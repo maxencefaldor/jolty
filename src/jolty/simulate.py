@@ -54,6 +54,9 @@ class Simulation:
     unknowns: tuple[results.Unknown, ...]
     """The node voltages and branch currents the engine solves for, in its order."""
 
+    nets: tuple[str, ...]
+    """The logic nets the event scheduler simulates, in its order."""
+
     devices: int
     """The number of devices, with every component instance unfolded."""
 
@@ -94,6 +97,7 @@ class Simulation:
         self.unknowns = tuple(
             results.Unknown(name, quantity) for name, quantity in self._core.unknowns
         )
+        self.nets = tuple(self._core.nets)
         self.devices = self._core.devices
 
     def check(self) -> tuple[checks.Diagnostic, ...]:
@@ -166,11 +170,15 @@ class Simulation:
         return sweep.levels[0].dimension
 
     def _result(self, outcome: _core.Outcome) -> results.Result:
-        unknowns = self.unknowns
+        unknowns, nets = self.unknowns, self.nets
         match outcome["kind"]:
             case "operating_point":
                 return results.OperatingPoint(
-                    unknowns, outcome["values"], outcome["strategy"]
+                    unknowns,
+                    outcome["values"],
+                    outcome["strategy"],
+                    nets,
+                    outcome["logic"],
                 )
             case "dc_sweep":
                 return results.Sweep(
@@ -179,11 +187,17 @@ class Simulation:
                     outcome["quantity"],
                     outcome["levels"],
                     outcome["values"],
+                    nets,
+                    outcome["logic"],
                 )
             case "ac":
                 solved = outcome["operating_point"]
                 point = results.OperatingPoint(
-                    unknowns, solved["values"], solved["strategy"]
+                    unknowns,
+                    solved["values"],
+                    solved["strategy"],
+                    nets,
+                    solved["logic"],
                 )
                 return results.Response(
                     unknowns,
@@ -194,6 +208,14 @@ class Simulation:
                 )
             case "transient":
                 statistics = results.Statistics(**outcome["statistics"])
+                traces = tuple(
+                    results.Trace(times, levels) for times, levels in outcome["logic"]
+                )
                 return results.Waveforms(
-                    unknowns, outcome["times"], outcome["values"], statistics
+                    unknowns,
+                    outcome["times"],
+                    outcome["values"],
+                    statistics,
+                    nets,
+                    traces,
                 )

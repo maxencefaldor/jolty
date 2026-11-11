@@ -3,11 +3,13 @@
 
 Every result holds the circuit's unknowns: node voltages, named by net path such as
 ``out`` or ``amplifier/mid``, and branch currents, named by instance path and label such
-as ``V1:current``. ``voltage`` and ``current`` read them by name.
+as ``V1:current``. ``voltage`` and ``current`` read them by name. It holds the levels of
+the circuit's logic nets too, which ``level`` reads by name: 0, 1, or NaN for an unknown
+level.
 """
 
 import difflib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
@@ -15,6 +17,14 @@ import numpy.typing as npt
 
 type Real = npt.NDArray[np.float64]
 type Complex = npt.NDArray[np.complex128]
+
+
+def _none() -> Real:
+    return np.empty(0)
+
+
+def _no_rows() -> Real:
+    return np.empty((0, 0))
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,14 +41,44 @@ def column(unknowns: tuple[Unknown, ...], name: str) -> int:
     Raises:
         KeyError: When no unknown has that name; the message suggests the closest names.
     """
-    for index, unknown in enumerate(unknowns):
-        if unknown.name == name:
-            return index
-    names = [unknown.name for unknown in unknowns]
+    return _find([unknown.name for unknown in unknowns], name, "unknown")
+
+
+def net_column(nets: tuple[str, ...], name: str) -> int:
+    """The column of the logic net `name` in the levels of a result over `nets`.
+
+    Raises:
+        KeyError: When no logic net has that name; the message suggests the closest.
+    """
+    return _find(list(nets), name, "logic net")
+
+
+def _find(names: list[str], name: str, kind: str) -> int:
+    if name in names:
+        return names.index(name)
     close = difflib.get_close_matches(name, names, n=3)
     hint = f"; close names: {', '.join(close)}" if close else ""
-    message = f"the circuit has no unknown named {name!r}{hint}"
+    message = f"the circuit has no {kind} named {name!r}{hint}"
     raise KeyError(message)
+
+
+@dataclass(frozen=True, slots=True)
+class Trace:
+    """A logic net's level over time: its level at time zero, then at each change.
+
+    Examples:
+        >>> trace = Trace(np.array([0.0, 2e-9]), np.array([0.0, 1.0]))
+        >>> trace.at(np.array([1e-9, 2e-9, 3e-9])).tolist()
+        [0.0, 1.0, 1.0]
+    """
+
+    times: Real
+    levels: Real
+
+    def at(self, times: Real) -> Real:
+        """The level at each of `times`: that of the last change at or before it."""
+        indices = np.searchsorted(self.times, times, side="right") - 1
+        return self.levels[np.maximum(indices, 0)]
 
 
 def _current(instance: str) -> str:
@@ -52,6 +92,14 @@ class OperatingPoint:
     unknowns: tuple[Unknown, ...]
     values: Real
     strategy: str
+    nets: tuple[str, ...] = ()
+    """The logic nets, in the order of `logic`."""
+    logic: Real = field(default_factory=_none)
+    """Each logic net's level."""
+
+    def level(self, net: str) -> float:
+        """The level of the logic net `net`: 0, 1, or NaN when unknown."""
+        return float(self.logic[net_column(self.nets, net)])
 
     def voltage(self, net: str, reference: str | None = None) -> float:
         """The voltage of `net`, relative to `reference` or to ground."""
@@ -74,6 +122,14 @@ class Sweep:
     """Whether the levels are voltages or currents."""
     levels: Real
     values: Real
+    nets: tuple[str, ...] = ()
+    """The logic nets, in the order of `logic`'s columns."""
+    logic: Real = field(default_factory=_no_rows)
+    """Each logic net's level at each level of the source, one row per level."""
+
+    def level(self, net: str) -> Real:
+        """The level of the logic net `net` at each level: 0, 1, or NaN when unknown."""
+        return self.logic[:, net_column(self.nets, net)]
 
     def voltage(self, net: str, reference: str | None = None) -> Real:
         """The voltage of `net` at each level, relative to `reference` or to ground."""
@@ -124,6 +180,14 @@ class Waveforms:
     times: Real
     values: Real
     statistics: Statistics
+    nets: tuple[str, ...] = ()
+    """The logic nets, in the order of `logic`."""
+    logic: tuple[Trace, ...] = ()
+    """Each logic net's level over time."""
+
+    def level(self, net: str) -> Trace:
+        """The level of the logic net `net` over time."""
+        return self.logic[net_column(self.nets, net)]
 
     def voltage(self, net: str, reference: str | None = None) -> Real:
         """The voltage of `net` over time, relative to `reference` or to ground."""

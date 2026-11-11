@@ -3,8 +3,8 @@
 
 A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A results file holds the
 results of named analyses as a NumPy ``.npz`` archive: a JSON header that names the
-circuit's unknowns and says what each analysis is, then the arrays of each analysis
-under keys such as ``step.times`` and ``step.values``.
+circuit's unknowns and logic nets and says what each analysis is, then the arrays of
+each analysis under keys such as ``step.times`` and ``step.values``.
 
 Examples:
     >>> import tempfile
@@ -74,6 +74,7 @@ class _Header(_Model):
     format: Literal["jolty-results"] = "jolty-results"
     version: Literal[1] = 1
     unknowns: tuple[results.Unknown, ...]
+    nets: tuple[str, ...] = ()
     analyses: dict[str, _Entry]
 
 
@@ -132,8 +133,8 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
     Raises:
         ValueError: When the analyses solve different unknowns, or none is given.
     """
-    unknowns = {result.unknowns for result in analyses.values()}
-    if len(unknowns) != 1:
+    circuits = {(result.unknowns, _nets(result)) for result in analyses.values()}
+    if len(circuits) != 1:
         message = "a results file holds analyses of one circuit, one or more"
         raise ValueError(message)
     entries: dict[str, _Entry] = {}
@@ -143,10 +144,12 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
             case results.OperatingPoint():
                 entries[name] = _Point(strategy=result.strategy)
                 arrays[f"{name}.values"] = result.values
+                arrays[f"{name}.logic"] = result.logic
             case results.Sweep():
                 entries[name] = _Sweep(source=result.source, quantity=result.quantity)
                 arrays[f"{name}.levels"] = result.levels
                 arrays[f"{name}.values"] = result.values
+                arrays[f"{name}.logic"] = result.logic
             case results.Response():
                 entries[name] = _Response(
                     source=result.source, strategy=result.operating_point.strategy
@@ -154,11 +157,23 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
                 arrays[f"{name}.frequencies"] = result.frequencies
                 arrays[f"{name}.values"] = result.values
                 arrays[f"{name}.operating_point"] = result.operating_point.values
+                arrays[f"{name}.operating_point.logic"] = result.operating_point.logic
             case results.Waveforms():
                 entries[name] = _Waveforms(statistics=result.statistics)
                 arrays[f"{name}.times"] = result.times
                 arrays[f"{name}.values"] = result.values
-    header = _Header(unknowns=unknowns.pop(), analyses=entries)
+                traces = result.logic
+                arrays[f"{name}.logic.counts"] = np.array(
+                    [len(trace.times) for trace in traces], dtype=np.int64
+                )
+                arrays[f"{name}.logic.times"] = np.concatenate(
+                    [np.empty(0), *(trace.times for trace in traces)]
+                )
+                arrays[f"{name}.logic.levels"] = np.concatenate(
+                    [np.empty(0), *(trace.levels for trace in traces)]
+                )
+    unknowns, nets = circuits.pop()
+    header = _Header(unknowns=unknowns, nets=nets, analyses=entries)
     arrays[_HEADER] = np.array(header.model_dump_json())
     with path.open("wb") as file:
         np.savez_compressed(file, allow_pickle=False, **arrays)
@@ -176,21 +191,33 @@ def load_results(path: Path) -> dict[str, results.Result]:
         except KeyError, ValidationError:
             message = f"{path} is not a jolty results file"
             raise JoltyError(message) from None
-        unknowns = header.unknowns
+        unknowns, nets = header.unknowns, header.nets
         loaded: dict[str, results.Result] = {}
         for name, entry in header.analyses.items():
             values = data[f"{name}.values"]
             match entry:
                 case _Point(strategy=strategy):
-                    loaded[name] = results.OperatingPoint(unknowns, values, strategy)
+                    loaded[name] = results.OperatingPoint(
+                        unknowns, values, strategy, nets, data[f"{name}.logic"]
+                    )
                 case _Sweep(source=source, quantity=quantity):
                     levels = data[f"{name}.levels"]
                     loaded[name] = results.Sweep(
-                        unknowns, source, quantity, levels, values
+                        unknowns,
+                        source,
+                        quantity,
+                        levels,
+                        values,
+                        nets,
+                        data[f"{name}.logic"],
                     )
                 case _Response(source=source, strategy=strategy):
                     point = results.OperatingPoint(
-                        unknowns, data[f"{name}.operating_point"], strategy
+                        unknowns,
+                        data[f"{name}.operating_point"],
+                        strategy,
+                        nets,
+                        data[f"{name}.operating_point.logic"],
                     )
                     frequencies = data[f"{name}.frequencies"]
                     loaded[name] = results.Response(
@@ -199,6 +226,24 @@ def load_results(path: Path) -> dict[str, results.Result]:
                 case _Waveforms(statistics=statistics):
                     times = data[f"{name}.times"]
                     loaded[name] = results.Waveforms(
-                        unknowns, times, values, statistics
+                        unknowns, times, values, statistics, nets, _traces(data, name)
                     )
     return loaded
+
+
+def _nets(result: results.Result) -> tuple[str, ...]:
+    """The logic nets of `result`."""
+    if isinstance(result, results.Response):
+        return result.operating_point.nets
+    return result.nets
+
+
+def _traces(data: Mapping[str, np.ndarray], name: str) -> tuple[results.Trace, ...]:
+    """The logic traces of the transient `name`, stored end to end in `data`."""
+    counts = data[f"{name}.logic.counts"]
+    ends = np.cumsum(counts)
+    times = np.split(data[f"{name}.logic.times"], ends[:-1])
+    levels = np.split(data[f"{name}.logic.levels"], ends[:-1])
+    return tuple(
+        results.Trace(times[index], levels[index]) for index in range(len(counts))
+    )

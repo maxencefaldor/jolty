@@ -3,7 +3,9 @@
 
 A report states facts: the value of every unknown at an operating point, and the first,
 lowest, highest and last value of every unknown over a sweep, a frequency response or a
-transient. It lists the first unknowns, up to a limit; the results file holds them all.
+transient; and the level of every logic net at an operating point, and its first and
+last level and how often it changed over a sweep or a transient. It lists the first
+unknowns and logic nets, up to a limit; the results file holds them all.
 A corner's report states whether the circuit elaborates there and which analyses fail,
 and a Monte Carlo analysis's what each requirement read over its samples and the yield.
 """
@@ -51,6 +53,26 @@ class Extent(_Model):
     last: float
 
 
+type LogicLevel = Literal[0, 1] | None
+"""A logic level: 0, 1, or null when unknown."""
+
+
+class Level(_Model):
+    """The level of one logic net."""
+
+    net: str
+    level: LogicLevel
+
+
+class Activity(_Model):
+    """The levels one logic net takes over an analysis."""
+
+    net: str
+    first: LogicLevel
+    changes: int = Field(description="How many times its level changed.")
+    last: LogicLevel
+
+
 class PointReport(_Model):
     """An operating point."""
 
@@ -60,7 +82,8 @@ class PointReport(_Model):
         description="How the engine found it: direct, gmin_stepping or source_stepping."
     )
     values: tuple[Value, ...]
-    unlisted: int = Field(description="Unknowns left out of the list.")
+    levels: tuple[Level, ...] = ()
+    unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
 
     def describe(self) -> str:
         """The report as text."""
@@ -69,6 +92,7 @@ class PointReport(_Model):
             [value.unknown, format_si(value.value, _SYMBOLS[value.quantity])]
             for value in self.values
         ]
+        rows.extend([level.net, _written(level.level)] for level in self.levels)
         head = f"{self.name}: operating point, found by {strategy}"
         return _join(head, _table(rows), self.unlisted)
 
@@ -86,7 +110,8 @@ class SweepReport(_Model):
     last: float = Field(description="The last level, in volts or amperes.")
     levels: int = Field(description="Levels the sweep solved.")
     extents: tuple[Extent, ...]
-    unlisted: int = Field(description="Unknowns left out of the list.")
+    activities: tuple[Activity, ...] = ()
+    unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
 
     def describe(self) -> str:
         """The report as text."""
@@ -96,7 +121,8 @@ class SweepReport(_Model):
             f"{format_si(self.first, unit)} to {format_si(self.last, unit)} "
             f"in {self.levels} levels"
         )
-        return _join(head, _extents(self.extents), self.unlisted)
+        lines = _extents(self.extents) + _activities(self.activities)
+        return _join(head, lines, self.unlisted)
 
 
 class ResponseReport(_Model):
@@ -132,9 +158,13 @@ class TransientReport(_Model):
     name: str
     stop: float = Field(description="Time the analysis ended, in seconds.")
     accepted: int = Field(description="Time steps accepted.")
-    rejected: int = Field(description="Time steps rejected for their error or Newton.")
+    rejected: int = Field(
+        description="Time steps rejected for their error or Newton, or to land on a "
+        "logic event."
+    )
     extents: tuple[Extent, ...]
-    unlisted: int = Field(description="Unknowns left out of the list.")
+    activities: tuple[Activity, ...] = ()
+    unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
 
     def describe(self) -> str:
         """The report as text."""
@@ -142,7 +172,8 @@ class TransientReport(_Model):
             f"{self.name}: transient to {format_si(self.stop, 's')} "
             f"in {self.accepted} steps, {self.rejected} rejected"
         )
-        return _join(head, _extents(self.extents), self.unlisted)
+        lines = _extents(self.extents) + _activities(self.activities)
+        return _join(head, lines, self.unlisted)
 
 
 class FailureReport(_Model):
@@ -228,9 +259,14 @@ type AnalysisReport = Annotated[
 
 
 def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
-    """The report of the analysis `name`, listing its first `listed` unknowns."""
+    """The report of the analysis `name`.
+
+    It lists its first `listed` unknowns, then its first logic nets, up to `listed` in
+    all.
+    """
     unknowns = result.unknowns[:listed]
-    unlisted = len(result.unknowns) - len(unknowns)
+    nets = _nets(result)[: listed - len(unknowns)]
+    unlisted = len(result.unknowns) + len(_nets(result)) - len(unknowns) - len(nets)
     match result:
         case results.OperatingPoint():
             values = tuple(
@@ -239,8 +275,16 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 )
                 for unknown, value in zip(unknowns, result.values[:listed], strict=True)
             )
+            levels = tuple(
+                Level(net=net, level=_level(float(level)))
+                for net, level in zip(nets, result.logic, strict=False)
+            )
             return PointReport(
-                name=name, strategy=result.strategy, values=values, unlisted=unlisted
+                name=name,
+                strategy=result.strategy,
+                values=values,
+                levels=levels,
+                unlisted=unlisted,
             )
         case results.Sweep():
             return SweepReport(
@@ -251,6 +295,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 last=float(result.levels[-1]),
                 levels=len(result.levels),
                 extents=_extents_of(unknowns, result.values[:, :listed]),
+                activities=tuple(_activity(net, result.level(net)) for net in nets),
                 unlisted=unlisted,
             )
         case results.Response():
@@ -270,8 +315,54 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 accepted=result.statistics.accepted,
                 rejected=result.statistics.rejected,
                 extents=_extents_of(unknowns, result.values[:, :listed]),
+                activities=tuple(
+                    _activity(net, result.level(net).levels) for net in nets
+                ),
                 unlisted=unlisted,
             )
+
+
+def _nets(result: results.Result) -> tuple[str, ...]:
+    """The logic nets of `result`; a frequency response has none of its own."""
+    return () if isinstance(result, results.Response) else result.nets
+
+
+def _level(level: float) -> LogicLevel:
+    """A logic level from its number: 0, 1, or None for NaN."""
+    if np.isnan(level):
+        return None
+    return 1 if level else 0
+
+
+def _written(level: LogicLevel) -> str:
+    return "x" if level is None else str(level)
+
+
+def _activity(net: str, levels: results.Real) -> Activity:
+    """What the logic net `net` did over `levels`, its successive levels."""
+    known = np.nan_to_num(levels, nan=-1.0)
+    return Activity(
+        net=net,
+        first=_level(float(levels[0])),
+        changes=int(np.count_nonzero(known[1:] != known[:-1])),
+        last=_level(float(levels[-1])),
+    )
+
+
+def _activities(activities: tuple[Activity, ...]) -> list[str]:
+    if not activities:
+        return []
+    header = ["", "first", "changes", "last"]
+    rows = [
+        [
+            activity.net,
+            _written(activity.first),
+            str(activity.changes),
+            _written(activity.last),
+        ]
+        for activity in activities
+    ]
+    return _table([header, *rows])
 
 
 def _extents_of(
@@ -292,6 +383,9 @@ def _extents_of(
 
 
 def _extents(extents: tuple[Extent, ...]) -> list[str]:
+    if not extents:
+        return []
+
     def si(value: float, extent: Extent) -> str:
         return format_si(value, _SYMBOLS[extent.quantity])
 

@@ -20,7 +20,7 @@ from jolty.cli import main
 from jolty.files import save_circuit
 from jolty.ir import Source
 from jolty.settings import Level
-from jolty.units import V, kohm, mA, mH, nF
+from jolty.units import V, kohm, mA, mH, nF, ns, ps
 
 
 def raised(top: Component) -> list[str]:
@@ -108,6 +108,29 @@ def charged(c: Builder, *, load: bool) -> None:
         c.connect(resistor.b, ground)
 
 
+@component
+def latch(c: Builder, *, sources: int) -> None:
+    """A NAND of the net ``a`` and the inverse of its own output.
+
+    `sources` logic sources drive ``a``; with none, a second such NAND reads it too.
+    """
+    c.port("ground", Role.GROUND)
+    a = c.net("a")
+    for index in range(sources):
+        source = c.place(devices.logic_source(0, transition=100 * ps), id=f"A{index}")
+        c.connect(source.output, a)
+    for index in range(1 if sources else 2):
+        nand = c.place(
+            devices.logic_gate("nand", rise=1 * ns, transition=100 * ps), id=f"U{index}"
+        )
+        inverter = c.place(
+            devices.logic_gate("not", rise=1 * ns, transition=100 * ps), id=f"I{index}"
+        )
+        c.connect(a, nand.a)
+        c.connect(nand.y, inverter.a)
+        c.connect(inverter.y, nand.b)
+
+
 def test_a_sound_circuit_raises_nothing() -> None:
     assert raised(divider()) == []
 
@@ -146,6 +169,17 @@ def test_current_cutset() -> None:
     assert raised(charged(load=True)) == []
 
 
+def test_driver_conflict_and_floating_input() -> None:
+    assert raised(latch(sources=1)) == []
+    assert raised(latch(sources=2)) == ["driver-conflict"]
+    (diagnostic,) = Simulation(latch(sources=0)).check()
+    assert diagnostic.rule == "floating-input"
+    assert (
+        diagnostic.message
+        == "nothing drives the logic net `a`, which `U0` and `U1` read"
+    )
+
+
 def test_every_rule_has_a_case_that_raises_it() -> None:
     cases = [
         divider(floating=True),
@@ -154,6 +188,8 @@ def test_every_rule_has_a_case_that_raises_it() -> None:
         parallel_sources(inductor=False),
         coupled(grounded=False),
         charged(load=False),
+        latch(sources=2),
+        latch(sources=0),
     ]
     found = {rule for case in cases for rule in raised(case)}
     assert found == set(rules())

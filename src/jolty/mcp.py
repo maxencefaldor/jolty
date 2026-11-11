@@ -61,7 +61,12 @@ voltage_source and current_source (positive, negative; a level or a waveform of
 jolty.waveforms: Dc, Pulse, Sine, Piecewise), voltage_controlled_voltage_source and
 voltage_controlled_current_source (positive, negative, control_positive,
 control_negative), and diode (anode, cathode; SPICE parameters). Values carry units:
-10 * kohm, 4.7 * uF, from jolty.units.
+10 * kohm, 4.7 * uF, from jolty.units. Logic devices join logic nets, which an event
+scheduler simulates: logic_gate(gate, inputs, rise=, transition=) with inputs a, b and
+output y, logic_cell(inputs, outputs, rise=, transition=), and logic_source(initial,
+changes, transition=) with output output; electrical=True gives a cell supply and ground
+terminals, so its pins may join electrical nets. Results read a logic net's level with
+level(net): 0, 1, or NaN for unknown.
 
 Analyses, in jolty.plan: OperatingPoint(), DcSweep(source, levels),
 Ac(source, frequencies) with decade(start, stop, per_decade), and Transient(stop,

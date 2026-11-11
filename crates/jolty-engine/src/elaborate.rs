@@ -7,20 +7,26 @@ use std::sync::Arc;
 
 use jolty_ir::{Circuit, Component, Instance, Name, Of, Parameters, Problem, Role, Source};
 use jolty_models::{
-    Binding, Branch, Device, Interface, Library, Model, Node, Quantity, Unknown, UnknownInfo,
+    Binding, Branch, Device, Interface, Library, LogicDriver, LogicDriverParameters, LogicModel,
+    Model, NativeDevice, Node, Pins, Quantity, ThresholdDetector, ThresholdDetectorParameters,
+    Unknown, UnknownInfo,
 };
 use jolty_numerics::{Entry, Pattern, PatternBuilder};
 
 use crate::Conditions;
+use crate::logic::{Endpoint, LogicNet, LogicSystem, PlacedLogic};
 
-/// A circuit flattened into devices bound to unknowns, with the pattern of its matrix.
+/// A circuit flattened into devices bound to unknowns, with the pattern of its matrix, and
+/// logic devices joined by logic nets.
 ///
 /// The node voltages come first among the unknowns, in the order their nets are first met,
-/// then the devices' internal unknowns.
+/// then the devices' internal unknowns. A net that only logic pins join is a logic net; where
+/// a logic pin joins an electrical net, a connect element joins it to a logic net of its own.
 #[derive(Debug)]
 pub(crate) struct System {
     pub(crate) unknowns: Vec<UnknownInfo>,
     pub(crate) devices: Vec<Placed>,
+    pub(crate) logic: LogicSystem,
     /// The name of the reference node: the top component's ground port.
     pub(crate) reference: Name,
     pub(crate) pattern: Arc<Pattern>,
@@ -150,6 +156,21 @@ pub enum ElaborationProblem {
         /// What is wrong with the parameters.
         message: String,
     },
+    /// A logic pin joins an electrical net, and its model cannot cross to one.
+    #[error(
+        "instance {at} joins its logic pin `{pin}` to the electrical net `{net}`, and a {model} \
+         has no supply and ground to cross to it"
+    )]
+    LogicPinOnElectricalNet {
+        /// The instance.
+        at: Location,
+        /// The model's name.
+        model: Name,
+        /// The pin.
+        pin: String,
+        /// The net's path.
+        net: String,
+    },
     /// Parameters replace those of an instance the circuit does not have.
     #[error("the circuit has no device at `{0}`, whose parameters are replaced")]
     UnknownOverride(String),
@@ -206,77 +227,54 @@ pub(crate) fn elaborate(
         )
     })?;
     let top = &circuit.components[&circuit.top];
-    let grounds: Vec<&Name> = top
-        .ports
-        .iter()
-        .filter(|port| port.role == Role::Ground)
-        .map(|port| &port.name)
-        .collect();
     // Without a single reference, the walk numbers every net and goes on to find the
     // instances' problems, so the error lists them all.
-    let mut problems = Vec::new();
-    let ground = match grounds.as_slice() {
-        [ground] => Some(*ground),
-        [] => {
-            problems.push(ElaborationProblem::NoReference(circuit.top.clone()));
-            None
-        }
-        _ => {
-            problems.push(ElaborationProblem::SeveralReferences {
-                top: circuit.top.clone(),
-                count: grounds.len(),
-            });
-            None
-        }
-    };
-    let reference: BTreeMap<&Name, Node> = ground.iter().map(|&name| (name, None)).collect();
-
+    let (ground, problems) = reference(circuit);
+    let reference: BTreeMap<&Name, NetRef> = ground.iter().map(|&name| (name, None)).collect();
     let mut walk = Walk {
         circuit,
         library,
         overrides: &conditions.overrides,
         overridden: BTreeSet::new(),
-        unknowns: Vec::new(),
-        nets: HashMap::new(),
+        nets: Vec::new(),
+        named: HashMap::new(),
         devices: Vec::new(),
+        logic: Vec::new(),
         problems,
     };
     walk.component(top, "", &reference);
     let Walk {
-        mut unknowns,
+        nets,
         devices,
+        logic,
         mut problems,
         overridden,
         ..
     } = walk;
 
+    let (mut unknowns, classes, mut partition) = classify(&nets, ground_name(circuit));
     let mut builder = PatternBuilder::new();
     let node_diagonals: Vec<(Unknown, Entry)> = (0..unknowns.len())
         .map(|index| (Unknown::new(index), builder.entry(index, index)))
         .collect();
     let mut placed = Vec::with_capacity(devices.len());
+    let mut elements = Elements {
+        unknowns: &mut unknowns,
+        builder: &mut builder,
+        placed: &mut placed,
+        temperature: conditions.temperature,
+        detected: Vec::new(),
+        partition: &mut partition,
+        problems: &mut problems,
+    };
     for pending in devices {
-        let mut binding = Binding::new(
-            &pending.at.path,
-            &pending.terminals,
-            &mut unknowns,
-            &mut builder,
-            conditions.temperature,
-        );
-        match pending.model.instantiate(&pending.parameters, &mut binding) {
-            Ok(device) => placed.push(Placed {
-                location: pending.at,
-                model: pending.model.name(),
-                interface: pending.interface,
-                nodes: pending.terminals,
-                device,
-            }),
-            Err(error) => problems.push(ElaborationProblem::Parameters {
-                at: pending.at,
-                message: error.0,
-            }),
-        }
+        elements.analog(pending, &classes);
     }
+    for pending in logic {
+        elements.logic(pending, &classes);
+    }
+    let detected = std::mem::take(&mut elements.detected);
+    partition.index(&detected, &placed);
     problems.extend(
         conditions
             .overrides
@@ -292,20 +290,329 @@ pub(crate) fn elaborate(
     Ok(System {
         unknowns,
         devices: placed,
+        logic: partition,
         reference: ground.clone(),
         pattern,
         node_diagonals,
     })
 }
 
-/// A device instance found by the walk, waiting for every node to be numbered.
+/// The top component's ground port, the reference, or the problem that it has none or
+/// several.
+fn reference(circuit: &Circuit) -> (Option<&Name>, Vec<ElaborationProblem>) {
+    let grounds: Vec<&Name> = circuit.components[&circuit.top]
+        .ports
+        .iter()
+        .filter(|port| port.role == Role::Ground)
+        .map(|port| &port.name)
+        .collect();
+    match grounds.as_slice() {
+        [ground] => (Some(*ground), Vec::new()),
+        [] => (
+            None,
+            vec![ElaborationProblem::NoReference(circuit.top.clone())],
+        ),
+        _ => (
+            None,
+            vec![ElaborationProblem::SeveralReferences {
+                top: circuit.top.clone(),
+                count: grounds.len(),
+            }],
+        ),
+    }
+}
+
+/// Classifies the walk's `nets`: those an electrical terminal joins become node voltages, in
+/// the order they were first met, and the others logic nets. Returns the node voltages, the
+/// classes, and the logic partition with its nets.
+fn classify(nets: &[NetRecord], ground: String) -> (Vec<UnknownInfo>, Classes<'_>, LogicSystem) {
+    let mut unknowns = Vec::new();
+    let mut nodes: Vec<Node> = vec![None; nets.len()];
+    let mut logic: Vec<Option<usize>> = vec![None; nets.len()];
+    let mut partition = LogicSystem::default();
+    for (index, net) in nets.iter().enumerate() {
+        if net.electrical {
+            nodes[index] = Some(Unknown::new(unknowns.len()));
+            unknowns.push(UnknownInfo {
+                name: net.name.clone(),
+                quantity: Quantity::Voltage,
+            });
+        } else {
+            logic[index] = Some(partition.nets.len());
+            partition.nets.push(LogicNet {
+                name: net.name.clone(),
+                sources: Vec::new(),
+                loads: Vec::new(),
+                load: 0.0,
+            });
+        }
+    }
+    let classes = Classes {
+        nets,
+        nodes,
+        logic,
+        ground,
+    };
+    (unknowns, classes, partition)
+}
+
+/// The name of the reference net, the top component's ground port's.
+fn ground_name(circuit: &Circuit) -> String {
+    circuit.components[&circuit.top]
+        .ports
+        .iter()
+        .find(|port| port.role == Role::Ground)
+        .map_or_else(String::new, |port| port.name.to_string())
+}
+
+/// How the walk's nets were classified.
+struct Classes<'a> {
+    nets: &'a [NetRecord],
+    /// The node of each electrical net.
+    nodes: Vec<Node>,
+    /// The logic net of each net only logic pins join.
+    logic: Vec<Option<usize>>,
+    /// The reference net's name.
+    ground: String,
+}
+
+impl Classes<'_> {
+    fn node(&self, net: NetRef) -> Node {
+        net.and_then(|index| self.nodes[index])
+    }
+}
+
+/// What logic devices and their connect elements are placed into.
+struct Elements<'a> {
+    unknowns: &'a mut Vec<UnknownInfo>,
+    builder: &'a mut PatternBuilder,
+    placed: &'a mut Vec<Placed>,
+    temperature: f64,
+    /// Each detector's input node and capacitance.
+    detected: Vec<(Node, f64)>,
+    partition: &'a mut LogicSystem,
+    problems: &'a mut Vec<ElaborationProblem>,
+}
+
+impl Elements<'_> {
+    /// Binds the analog device `pending` to the nodes of its terminals.
+    fn analog(&mut self, pending: Pending<'_>, classes: &Classes<'_>) {
+        let terminals: Vec<Node> = pending
+            .terminals
+            .iter()
+            .map(|&net| classes.node(net))
+            .collect();
+        let mut binding = Binding::new(
+            &pending.at.path,
+            &terminals,
+            self.unknowns,
+            self.builder,
+            self.temperature,
+        );
+        match pending.model.instantiate(&pending.parameters, &mut binding) {
+            Ok(device) => self.placed.push(Placed {
+                location: pending.at,
+                model: pending.model.name(),
+                interface: pending.interface,
+                nodes: terminals,
+                device,
+            }),
+            Err(error) => self.problems.push(ElaborationProblem::Parameters {
+                at: pending.at,
+                message: error.0,
+            }),
+        }
+    }
+
+    /// Places the logic device `pending`: each pin on a net only logic pins join joins its
+    /// logic net, and each pin on an electrical net joins a logic net of its own, which a
+    /// connect element joins to the electrical net.
+    fn logic(&mut self, pending: PendingLogic<'_>, classes: &Classes<'_>) {
+        let device = match pending.model.instantiate(&pending.parameters) {
+            Ok(device) => device,
+            Err(error) => {
+                self.problems.push(ElaborationProblem::Parameters {
+                    at: pending.at,
+                    message: error.0,
+                });
+                return;
+            }
+        };
+        let index = self.partition.devices.len();
+        let Pins {
+            inputs, outputs, ..
+        } = &pending.pins;
+        let rails = pending.pins.electrical.map(|electrical| {
+            let rails = &pending.nets[inputs.len() + outputs.len()..];
+            (
+                electrical.threshold,
+                classes.node(rails[0]),
+                classes.node(rails[1]),
+            )
+        });
+        let mut ends = [Vec::new(), Vec::new()];
+        for (side, pins) in [inputs, outputs].into_iter().enumerate() {
+            let input = side == 0;
+            let offset = if input { 0 } else { inputs.len() };
+            for (pin, name) in pins.iter().enumerate() {
+                let net = pending.nets[offset + pin];
+                let end = Endpoint::Pin {
+                    device: index,
+                    index: pin,
+                };
+                let capacitance = if input {
+                    device.input_capacitance(pin)
+                } else {
+                    0.0
+                };
+                if let Some(logic_net) = net.and_then(|net| classes.logic[net]) {
+                    let joined = &mut self.partition.nets[logic_net];
+                    if input {
+                        joined.loads.push(end);
+                        joined.load += capacitance;
+                    } else {
+                        joined.sources.push(end);
+                    }
+                    ends[side].push(logic_net);
+                    continue;
+                }
+                let Some((threshold, supply, ground)) = rails else {
+                    self.problems
+                        .push(ElaborationProblem::LogicPinOnElectricalNet {
+                            at: pending.at.clone(),
+                            model: pending.name.clone(),
+                            pin: name.clone(),
+                            net: net.map_or_else(
+                                || classes.ground.clone(),
+                                |net| classes.nets[net].name.clone(),
+                            ),
+                        });
+                    continue;
+                };
+                let at = Location {
+                    path: format!("{}:{name}", pending.at.path),
+                    source: pending.at.source.clone(),
+                };
+                let own = self.partition.nets.len();
+                let terminals = [classes.node(net), supply, ground];
+                let element = if input {
+                    self.detector(at.clone(), terminals, threshold, capacitance)
+                } else {
+                    self.driver(at.clone(), terminals)
+                };
+                let element_end = Endpoint::Element { device: element };
+                let (sources, loads) = if input {
+                    self.partition.detectors.push((element, own));
+                    (vec![element_end], vec![end])
+                } else {
+                    self.partition.drivers.push((element, own));
+                    (vec![end], vec![element_end])
+                };
+                self.partition.nets.push(LogicNet {
+                    name: at.path,
+                    sources,
+                    loads,
+                    load: capacitance,
+                });
+                ends[side].push(own);
+            }
+        }
+        let [inputs, outputs] = ends;
+        let nodes = rails.map_or_else(Vec::new, |(_, supply, ground)| vec![supply, ground]);
+        self.partition.devices.push(PlacedLogic {
+            location: pending.at,
+            model: pending.model.name(),
+            pins: pending.pins,
+            inputs,
+            outputs,
+            nodes,
+            device,
+        });
+    }
+
+    /// Places a threshold detector at `at` on `terminals`: its input, supply and ground.
+    fn detector(
+        &mut self,
+        at: Location,
+        terminals: [Node; 3],
+        threshold: f64,
+        capacitance: f64,
+    ) -> usize {
+        let parameters = ThresholdDetectorParameters {
+            threshold,
+            capacitance,
+        };
+        self.detected.push((terminals[0], capacitance));
+        let interface = ThresholdDetector::interface(&parameters);
+        self.place::<ThresholdDetector>(at, terminals, interface, parameters)
+    }
+
+    /// Places a logic driver at `at` on `terminals`: its output, supply and ground.
+    fn driver(&mut self, at: Location, terminals: [Node; 3]) -> usize {
+        let parameters = LogicDriverParameters {};
+        let interface = LogicDriver::interface(&parameters);
+        self.place::<LogicDriver>(at, terminals, interface, parameters)
+    }
+
+    fn place<D: NativeDevice + Device>(
+        &mut self,
+        at: Location,
+        terminals: [Node; 3],
+        interface: Interface,
+        parameters: D::Parameters,
+    ) -> usize {
+        let mut binding = Binding::new(
+            &at.path,
+            &terminals,
+            self.unknowns,
+            self.builder,
+            self.temperature,
+        );
+        let device: Box<dyn Device> = match D::new(parameters, &mut binding) {
+            Ok(device) => Box::new(device),
+            Err(error) => unreachable!("a connect element's parameters are checked: {error}"),
+        };
+        self.placed.push(Placed {
+            location: at,
+            model: D::NAME,
+            interface,
+            nodes: terminals.to_vec(),
+            device,
+        });
+        self.placed.len() - 1
+    }
+}
+
+/// A net as the walk finds it, by its index in the walk's nets, or `None` for the reference.
+type NetRef = Option<usize>;
+
+/// A net found by the walk.
+struct NetRecord {
+    /// The net's path.
+    name: String,
+    /// Whether an electrical terminal joins it.
+    electrical: bool,
+}
+
+/// A device instance found by the walk, waiting for every net to be classified.
 struct Pending<'a> {
     at: Location,
     model: &'a dyn Model,
     /// The instance's parameters, with those the conditions replace.
     parameters: Cow<'a, Parameters>,
     interface: Interface,
-    terminals: Vec<Node>,
+    terminals: Vec<NetRef>,
+}
+
+/// A logic device instance found by the walk.
+struct PendingLogic<'a> {
+    at: Location,
+    name: Name,
+    model: &'a dyn LogicModel,
+    parameters: Cow<'a, Parameters>,
+    pins: Pins,
+    /// The net of each pin and terminal, in the order of [`Pins::names`].
+    nets: Vec<NetRef>,
 }
 
 /// The state of a walk down the hierarchy.
@@ -315,21 +622,22 @@ struct Walk<'a> {
     overrides: &'a BTreeMap<String, Parameters>,
     /// The paths of the devices whose parameters the overrides replace.
     overridden: BTreeSet<String>,
-    unknowns: Vec<UnknownInfo>,
-    nets: HashMap<String, Unknown>,
+    nets: Vec<NetRecord>,
+    named: HashMap<String, usize>,
     devices: Vec<Pending<'a>>,
+    logic: Vec<PendingLogic<'a>>,
     problems: Vec<ElaborationProblem>,
 }
 
 impl<'a> Walk<'a> {
     /// Walks `component`, whose instances' paths start with `prefix` and whose ports connect
-    /// to the nodes in `ports`. The circuit has been validated, so every referenced component
+    /// to the nets in `ports`. The circuit has been validated, so every referenced component
     /// exists and every port of a component instance is connected.
     fn component(
         &mut self,
         component: &'a Component,
         prefix: &str,
-        ports: &BTreeMap<&'a Name, Node>,
+        ports: &BTreeMap<&'a Name, NetRef>,
     ) {
         for instance in &component.instances {
             let at = Location {
@@ -340,13 +648,13 @@ impl<'a> Walk<'a> {
                 Of::Device(model) => self.device(instance, at, model, prefix, ports),
                 Of::Component(target) => {
                     let definition = &self.circuit.components[target];
-                    let inner: BTreeMap<&Name, Node> = definition
+                    let inner: BTreeMap<&Name, NetRef> = definition
                         .ports
                         .iter()
                         .map(|port| {
                             (
                                 &port.name,
-                                self.node(prefix, ports, &instance.terminals[&port.name]),
+                                self.net(prefix, ports, &instance.terminals[&port.name]),
                             )
                         })
                         .collect();
@@ -362,15 +670,8 @@ impl<'a> Walk<'a> {
         at: Location,
         model_name: &Name,
         prefix: &str,
-        ports: &BTreeMap<&'a Name, Node>,
+        ports: &BTreeMap<&'a Name, NetRef>,
     ) {
-        let Some(model) = self.library.get(model_name.as_str()) else {
-            self.problems.push(ElaborationProblem::UnknownModel {
-                at,
-                model: model_name.clone(),
-            });
-            return;
-        };
         let parameters = match self.overrides.get(&at.path) {
             Some(replaced) => {
                 self.overridden.insert(at.path.clone());
@@ -380,42 +681,30 @@ impl<'a> Walk<'a> {
             }
             None => Cow::Borrowed(&instance.parameters),
         };
-        let interface = match model.interface(&parameters) {
-            Ok(interface) => interface,
-            Err(error) => {
-                self.problems.push(ElaborationProblem::Parameters {
-                    at,
-                    message: error.0,
-                });
+        if let Some(model) = self.library.get(model_name.as_str()) {
+            let interface = match model.interface(&parameters) {
+                Ok(interface) => interface,
+                Err(error) => {
+                    self.problems.push(ElaborationProblem::Parameters {
+                        at,
+                        message: error.0,
+                    });
+                    return;
+                }
+            };
+            let Some(terminals) = self.terminals(
+                instance,
+                &at,
+                model_name,
+                &interface.terminals,
+                prefix,
+                ports,
+            ) else {
                 return;
+            };
+            for &net in terminals.iter().flatten() {
+                self.nets[net].electrical = true;
             }
-        };
-        let expected = &interface.terminals;
-        let mut complete = true;
-        for terminal in instance.terminals.keys() {
-            if !expected.iter().any(|name| name == terminal.as_str()) {
-                complete = false;
-                self.problems.push(ElaborationProblem::UnknownTerminal {
-                    at: at.clone(),
-                    model: model_name.clone(),
-                    terminal: terminal.clone(),
-                });
-            }
-        }
-        let mut terminals = Vec::with_capacity(expected.len());
-        for terminal in expected {
-            if let Some(net) = instance.terminals.get(terminal.as_str()) {
-                terminals.push(self.node(prefix, ports, net));
-            } else {
-                complete = false;
-                self.problems.push(ElaborationProblem::UnconnectedTerminal {
-                    at: at.clone(),
-                    model: model_name.clone(),
-                    terminal: terminal.clone(),
-                });
-            }
-        }
-        if complete {
             self.devices.push(Pending {
                 at,
                 model,
@@ -423,26 +712,97 @@ impl<'a> Walk<'a> {
                 interface,
                 terminals,
             });
+        } else if let Some(model) = self.library.logic(model_name.as_str()) {
+            let pins = match model.pins(&parameters) {
+                Ok(pins) => pins,
+                Err(error) => {
+                    self.problems.push(ElaborationProblem::Parameters {
+                        at,
+                        message: error.0,
+                    });
+                    return;
+                }
+            };
+            let Some(nets) =
+                self.terminals(instance, &at, model_name, &pins.names(), prefix, ports)
+            else {
+                return;
+            };
+            let pin_count = pins.inputs.len() + pins.outputs.len();
+            for &net in nets[pin_count..].iter().flatten() {
+                self.nets[net].electrical = true;
+            }
+            self.logic.push(PendingLogic {
+                at,
+                name: model_name.clone(),
+                model,
+                parameters,
+                pins,
+                nets,
+            });
+        } else {
+            self.problems.push(ElaborationProblem::UnknownModel {
+                at,
+                model: model_name.clone(),
+            });
         }
     }
 
-    /// The node of `net` in the component at `prefix`: a port's node from the parent, or the
-    /// component's own net, numbered when first met.
-    fn node(&mut self, prefix: &str, ports: &BTreeMap<&'a Name, Node>, net: &Name) -> Node {
-        if let Some(&node) = ports.get(net) {
-            return node;
+    /// The net of each of `expected`, the terminals a model declares, as `instance` connects
+    /// them, or `None` after reporting a terminal it leaves unconnected or does not have.
+    fn terminals(
+        &mut self,
+        instance: &Instance,
+        at: &Location,
+        model: &Name,
+        expected: &[String],
+        prefix: &str,
+        ports: &BTreeMap<&'a Name, NetRef>,
+    ) -> Option<Vec<NetRef>> {
+        let mut complete = true;
+        for terminal in instance.terminals.keys() {
+            if !expected.iter().any(|name| name == terminal.as_str()) {
+                complete = false;
+                self.problems.push(ElaborationProblem::UnknownTerminal {
+                    at: at.clone(),
+                    model: model.clone(),
+                    terminal: terminal.clone(),
+                });
+            }
+        }
+        let mut terminals = Vec::with_capacity(expected.len());
+        for terminal in expected {
+            if let Some(net) = instance.terminals.get(terminal.as_str()) {
+                terminals.push(self.net(prefix, ports, net));
+            } else {
+                complete = false;
+                self.problems.push(ElaborationProblem::UnconnectedTerminal {
+                    at: at.clone(),
+                    model: model.clone(),
+                    terminal: terminal.clone(),
+                });
+            }
+        }
+        complete.then_some(terminals)
+    }
+
+    /// The net `net` of the component at `prefix`: a port's net from the parent, or the
+    /// component's own net, recorded when first met.
+    fn net(&mut self, prefix: &str, ports: &BTreeMap<&'a Name, NetRef>, net: &Name) -> NetRef {
+        if let Some(&found) = ports.get(net) {
+            return found;
         }
         let name = format!("{prefix}{net}");
-        if let Some(&unknown) = self.nets.get(&name) {
-            return Some(unknown);
+        if let Some(&index) = self.named.get(&name) {
+            return Some(index);
         }
-        let unknown = Unknown::new(self.unknowns.len());
-        self.unknowns.push(UnknownInfo {
+        let index = self.nets.len();
+        self.nets.push(NetRecord {
             name: name.clone(),
-            quantity: Quantity::Voltage,
+            electrical: false,
         });
-        self.nets.insert(name, unknown);
-        Some(unknown)
+        self.named.insert(name, index);
+        Some(index)
     }
 }
 

@@ -6,12 +6,12 @@
 
 A report states facts, one section per analysis in the plan's order:
 
-- an operating point lists every unknown's value, and the strategy that found it;
-- a sweep, a frequency response or a transient lists each unknown's first, lowest, highest and last value;
+- an operating point lists every unknown's value and every logic net's level, and the strategy that found it;
+- a sweep, a frequency response or a transient lists each unknown's first, lowest, highest and last value, and each logic net's first and last level and how often it changed;
 - a failed analysis says why it failed.
 
 A frequency response lists magnitudes per unit excitation: volts per volt, for a voltage source.
-A report lists the first unknowns, up to the setting `listed_unknowns`; the results file holds them all.
+A report lists the first unknowns, then the first logic nets, up to the setting `listed_unknowns`; the results file holds them all.
 With `--output-format json`, the command prints the same report as data.
 
 ## Plots
@@ -28,7 +28,9 @@ A legend names the series, and up to four are also labeled at their end:
 
 ![The half-wave rectifier over three periods: the output holds near the peak of the input, and the source delivers a pulse of current at each peak](../images/rectifier.ripple.plot.png)
 
-By default a plot draws the nets the top component names, up to eight.
+Logic nets share a panel of their own, one lane each, with unknown levels hatched (see [Logic](logic.md#levels-in-results)).
+
+By default a plot draws the nets the top component names, voltages then logic nets, up to eight.
 The option `--probes` chooses other unknowns, such as `X1/mid` or `V1:current`, and `jolty plot` draws a saved results file again, with other probes, without simulating:
 
 ```sh
@@ -67,8 +69,8 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 | `Response` | `frequencies`, `values`, and the `operating_point` | a complex phasor, one per frequency |
 | `Waveforms` | `times`, `values`, and the step `statistics` | one per accepted time point |
 
-`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, and `current(instance)` reads the current through an instance.
-A name that is not an unknown raises a `KeyError` that suggests the closest names.
+`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `current(instance)` reads the current through an instance, and `level(net)` reads a logic net's level.
+A name that is not an unknown or a logic net raises a `KeyError` that suggests the closest names.
 
-The file is a NumPy archive: a JSON header names the unknowns and says what each analysis is, then each analysis's arrays follow under keys such as `step.times`.
+The file is a NumPy archive: a JSON header names the unknowns and the logic nets and says what each analysis is, then each analysis's arrays follow under keys such as `step.times`.
 Any program that reads NumPy files reads it.

@@ -1,5 +1,8 @@
 //! The DC operating point, with gmin and source stepping when Newton alone fails.
 
+use jolty_models::Level;
+
+use crate::logic::{Events, detected};
 use crate::newton::{Failure, Mode};
 use crate::{Options, SimulationError, Simulator};
 
@@ -16,14 +19,26 @@ const FIRST_SOURCE_INCREMENT: f64 = 0.1;
 const SMALLEST_SOURCE_INCREMENT: f64 = 1e-4;
 /// How many unknowns a failure names.
 const NAMED_UNKNOWNS: usize = 3;
+/// How many times the logic and the analog circuit settle each other at DC before the
+/// detectors still changing are taken to read unknown levels, as in a loop that oscillates.
+const SETTLE_ROUNDS: usize = 4;
 
-/// A DC solution: every unknown's value, and how it was found.
+/// A DC solution: every unknown's value, every logic net's level, and how it was found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OperatingPoint {
     /// The value of every unknown, in the simulator's order.
     pub values: Vec<f64>,
+    /// The level of every logic net, in the simulator's order.
+    pub logic: Vec<Level>,
     /// The strategy that found the solution.
     pub strategy: Strategy,
+}
+
+/// A DC solution of the analog circuit, with its logic drivers held.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Solved {
+    pub(crate) values: Vec<f64>,
+    pub(crate) strategy: Strategy,
 }
 
 /// How an operating point was found.
@@ -52,6 +67,9 @@ impl Strategy {
 impl Simulator {
     /// Finds the DC operating point, with every source at its level at time zero.
     ///
+    /// The logic settles with the levels its threshold detectors read, its drivers hold the
+    /// levels it settles at, and the two settle each other until they agree.
+    ///
     /// # Errors
     ///
     /// Returns [`SimulationError::NoOperatingPoint`] or [`SimulationError::Singular`] when no
@@ -61,7 +79,72 @@ impl Simulator {
         options: &Options,
     ) -> Result<OperatingPoint, SimulationError> {
         options.check()?;
-        self.solve_dc(vec![0.0; self.system.unknowns.len()], options)
+        self.reset_logic();
+        let solved = self.solve_dc(vec![0.0; self.system.unknowns.len()], options)?;
+        self.settle(solved, options)
+    }
+
+    /// Forgets the logic's state: every net unknown, every driver at once at its unknown
+    /// level.
+    pub(crate) fn reset_logic(&mut self) {
+        self.events = Events::new(&self.system.logic);
+        for &(element, _) in &self.system.logic.drivers {
+            if let Some(driver) = self.system.devices[element].device.as_driver() {
+                driver.drive(0.0, Level::Unknown, 0.0);
+            }
+        }
+    }
+
+    /// Settles the logic with the analog solution `solved`, holding each driver at its net's
+    /// level and solving again until the detectors read what the logic settled with.
+    pub(crate) fn settle(
+        &mut self,
+        mut solved: Solved,
+        options: &Options,
+    ) -> Result<OperatingPoint, SimulationError> {
+        let detectors = self.system.logic.detectors.len();
+        let mut previous = vec![Level::Unknown; detectors];
+        let mut unsettled = vec![false; detectors];
+        for round in 0.. {
+            let mut levels: Vec<Level> = self
+                .system
+                .logic
+                .detectors
+                .iter()
+                .map(|&(element, _)| {
+                    let sense = self.system.devices[element].device.as_detector();
+                    let input = jolty_models::Input::new(&solved.values, 0.0, 0.0);
+                    sense.map_or(Level::Unknown, |sense| {
+                        detected(sense.margin(&input), Level::Unknown)
+                    })
+                })
+                .collect();
+            for ((level, before), unsettled) in levels.iter_mut().zip(&previous).zip(&mut unsettled)
+            {
+                *unsettled |= round >= SETTLE_ROUNDS && level != before;
+                if *unsettled {
+                    *level = Level::Unknown;
+                }
+            }
+            self.events.settle(&self.system.logic, &levels);
+            previous = levels;
+            let changed = self.events.retarget(&self.system.logic);
+            if changed.is_empty() {
+                break;
+            }
+            for (driver, level) in changed {
+                let element = self.system.logic.drivers[driver].0;
+                if let Some(driver) = self.system.devices[element].device.as_driver() {
+                    driver.drive(0.0, level, 0.0);
+                }
+            }
+            solved = self.solve_dc(solved.values, options)?;
+        }
+        Ok(OperatingPoint {
+            values: solved.values,
+            logic: self.events.levels().to_vec(),
+            strategy: solved.strategy,
+        })
     }
 
     /// Finds a DC solution starting from `guess`, trying Newton iteration, then gmin stepping,
@@ -70,7 +153,7 @@ impl Simulator {
         &mut self,
         guess: Vec<f64>,
         options: &Options,
-    ) -> Result<OperatingPoint, SimulationError> {
+    ) -> Result<Solved, SimulationError> {
         let mut values = guess.clone();
         let direct = Mode::Dc {
             source_scale: 1.0,
@@ -80,21 +163,21 @@ impl Simulator {
             .newton(&mut values, direct, options, options.dc_iterations)
             .is_ok()
         {
-            return Ok(OperatingPoint {
+            return Ok(Solved {
                 values,
                 strategy: Strategy::Direct,
             });
         }
         let mut values = guess;
         if self.gmin_stepping(&mut values, options).is_ok() {
-            return Ok(OperatingPoint {
+            return Ok(Solved {
                 values,
                 strategy: Strategy::GminStepping,
             });
         }
         let mut values = vec![0.0; values.len()];
         match self.source_stepping(&mut values, options) {
-            Ok(()) => Ok(OperatingPoint {
+            Ok(()) => Ok(Solved {
                 values,
                 strategy: Strategy::SourceStepping,
             }),

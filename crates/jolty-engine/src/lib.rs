@@ -6,6 +6,8 @@
 //! a [small-signal frequency response](Simulator::ac) and a [transient](Simulator::transient).
 //! Every analysis solves the charge-oriented equations `f(x) + d/dt q(x) = 0` by Newton
 //! iteration with one sparse LU solver, whose symbolic analysis is shared by all of them.
+//! Logic devices join logic nets, which an event scheduler simulates beside the analog
+//! circuit, joined to it by connect elements where a logic pin meets an electrical net.
 //!
 //! ```
 //! use jolty_engine::{Conditions, Options, Simulator};
@@ -37,6 +39,7 @@
 mod ac;
 mod analysis;
 mod elaborate;
+mod logic;
 mod newton;
 mod operating_point;
 mod options;
@@ -53,12 +56,14 @@ pub use ac::{Ac, Response};
 pub use analysis::{Analysis, Outcome};
 pub use elaborate::{ElaborationError, ElaborationProblem, Location, Placed};
 pub use jolty_numerics::integration::Method;
+pub use logic::{Endpoint, LogicNet, PlacedLogic};
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;
 pub use sweep::{DcSweep, Sweep};
 pub use transient::{Statistics, Transient, Waveforms};
 
 use elaborate::System;
+use logic::Events;
 use newton::Workspace;
 
 /// What a circuit is simulated in, apart from its analyses: its devices' temperature,
@@ -96,6 +101,8 @@ pub struct Simulator {
     system: System,
     solver: SparseLu<f64>,
     workspace: Workspace,
+    /// The state of the logic nets, as the last analysis left it.
+    events: Events,
 }
 
 impl Simulator {
@@ -115,10 +122,12 @@ impl Simulator {
         let solver = SparseLu::new(system.pattern.clone())
             .map_err(|_| ElaborationError::from(ElaborationProblem::TooLarge))?;
         let workspace = Workspace::new(&system);
+        let events = Events::new(&system.logic);
         Ok(Self {
             system,
             solver,
             workspace,
+            events,
         })
     }
 
@@ -128,10 +137,33 @@ impl Simulator {
         &self.system.unknowns
     }
 
-    /// The devices, with every component instance unfolded, in the order they were placed.
+    /// The analog devices, with every component instance unfolded, in the order they were
+    /// placed, then the connect elements of the logic devices' pins that join electrical
+    /// nets.
     #[must_use]
     pub fn devices(&self) -> &[Placed] {
         &self.system.devices
+    }
+
+    /// The number of connect elements among [`Simulator::devices`], all at its end.
+    #[must_use]
+    pub fn elements(&self) -> usize {
+        self.system.logic.detectors.len() + self.system.logic.drivers.len()
+    }
+
+    /// The logic devices, with every component instance unfolded, in the order they were
+    /// placed.
+    #[must_use]
+    pub fn logic_devices(&self) -> &[PlacedLogic] {
+        &self.system.logic.devices
+    }
+
+    /// The logic nets, in the order of every result's levels: the nets only logic pins join,
+    /// in the order they were first met, then the nets between logic pins and their connect
+    /// elements.
+    #[must_use]
+    pub fn logic_nets(&self) -> &[LogicNet] {
+        &self.system.logic.nets
     }
 
     /// The name of the reference node, the net of the top component's ground port.

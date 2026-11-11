@@ -12,7 +12,7 @@ Examples:
 """
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Final, Literal
 
@@ -769,6 +769,182 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
         },
     )
     return device("mosfet", parameters)
+
+
+type LogicLevel = Literal[0, 1] | None
+"""A logic level: 0, 1, or None for an unknown level."""
+
+type Gate = Literal["and", "or", "nand", "nor", "xor", "xnor", "not", "buffer"]
+"""The function of a logic gate."""
+
+_GATES: Final[dict[str, Callable[[Sequence[bool]], bool]]] = {
+    "and": all,
+    "or": any,
+    "nand": lambda inputs: not all(inputs),
+    "nor": lambda inputs: not any(inputs),
+    "xor": lambda inputs: sum(inputs) % 2 == 1,
+    "xnor": lambda inputs: sum(inputs) % 2 == 0,
+    "not": lambda inputs: not inputs[0],
+    "buffer": lambda inputs: inputs[0],
+}
+
+
+def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical pins
+    inputs: Sequence[str],
+    outputs: Mapping[str, str | Callable[..., bool]],
+    *,
+    rise: Quantity,
+    fall: Quantity | None = None,
+    transition: Quantity,
+    electrical: bool = False,
+    input_capacitance: Quantity | None = None,
+    threshold: float = 0.5,
+) -> Device:
+    """A combinational logic cell: each output a function of the inputs.
+
+    Each output is its truth table, a ``0`` or a ``1`` for each row of the inputs, the
+    first input the most significant bit, so a NAND of ``a`` and ``b`` is ``"1110"``;
+    or a function of the inputs' levels as booleans, such as ``lambda a, b: not (a and
+    b)``. An output fed unknown inputs is known only when every level they could take
+    gives it the same level.
+
+    An output reaches a new level `rise` after an input changes when it rises, and
+    `fall` when it falls, `rise` unless given, and its edges take `transition` to swing
+    from ground to supply. Its delay is inertial: a pulse at the inputs shorter than
+    the delay never reaches it.
+
+    The cell's pins join logic nets, which an event scheduler simulates. An
+    `electrical` cell has the terminals ``supply`` and ``ground`` too, and its pins may
+    join electrical nets: each input then reads its net against `threshold` of the
+    supply, from ground, and loads it with `input_capacitance`, zero unless given, and
+    each output drives its net between ground and supply in a ramp, crossing half the
+    supply when its level changes.
+
+    Examples:
+        >>> from jolty.units import ps
+        >>> nand = logic_cell(
+        ...     ["a", "b"],
+        ...     {"y": lambda a, b: not (a and b)},
+        ...     rise=20 * ps,
+        ...     transition=10 * ps,
+        ... )
+        >>> nand.terminals, nand.parameters["outputs"]
+        (('a', 'b', 'y'), [{'name': 'y', 'table': '1110'}])
+
+    Raises:
+        DimensionError: When a delay, the transition or the capacitance is not one.
+        ValueError: When a capacitance or a threshold is given to a cell that is not
+            electrical, or the engine cannot read the cell.
+    """
+    tables: list[JsonValue] = [
+        {"name": name, "table": _table(function, len(inputs))}
+        for name, function in outputs.items()
+    ]
+    timing: dict[str, JsonValue] = {
+        "rise": rise.to(TIME, "a rise delay"),
+        "fall": (rise if fall is None else fall).to(TIME, "a fall delay"),
+        "transition": transition.to(TIME, "a transition"),
+    }
+    parameters: dict[str, JsonValue] = {
+        "inputs": list(inputs),
+        "outputs": tables,
+        "timing": {"fixed": timing},
+    }
+    if electrical:
+        capacitance = (
+            0.0
+            if input_capacitance is None
+            else input_capacitance.to(CAPACITANCE, "an input capacitance")
+        )
+        parameters["electrical"] = {
+            "threshold": finite(threshold, "threshold"),
+            "input_capacitances": [capacitance] * len(inputs),
+        }
+    elif input_capacitance is not None or threshold != 0.5:  # noqa: PLR2004 - the default
+        message = "only an electrical cell has an input capacitance and a threshold"
+        raise ValueError(message)
+    return device("logic_cell", parameters)
+
+
+def _table(function: str | Callable[..., bool], inputs: int) -> str:
+    """The truth table of `function`: a table, or a function of `inputs` levels."""
+    if isinstance(function, str):
+        return function
+    rows = (
+        [bool(row >> (inputs - 1 - bit) & 1) for bit in range(inputs)]
+        for row in range(1 << inputs)
+    )
+    return "".join("1" if function(*row) else "0" for row in rows)
+
+
+def logic_gate(  # noqa: PLR0913 - a logic cell's parameters
+    gate: Gate,
+    inputs: int = 2,
+    *,
+    rise: Quantity,
+    fall: Quantity | None = None,
+    transition: Quantity,
+    electrical: bool = False,
+    input_capacitance: Quantity | None = None,
+    threshold: float = 0.5,
+) -> Device:
+    """A logic gate of `gate`'s function, a [`logic_cell`][jolty.devices.logic_cell].
+
+    Its inputs are ``a``, ``b`` and on, `inputs` of them, or one for ``not`` and
+    ``buffer``, and its output is ``y``. The other parameters are a logic cell's.
+
+    Examples:
+        >>> from jolty.units import ps
+        >>> logic_gate("xor", rise=20 * ps, transition=10 * ps).parameters["outputs"]
+        [{'name': 'y', 'table': '0110'}]
+    """
+    count = 1 if gate in {"not", "buffer"} else inputs
+    names = [chr(ord("a") + index) for index in range(count)]
+    function = _GATES[gate]
+    return logic_cell(
+        names,
+        {"y": lambda *levels: function(levels)},
+        rise=rise,
+        fall=fall,
+        transition=transition,
+        electrical=electrical,
+        input_capacitance=input_capacitance,
+        threshold=threshold,
+    )
+
+
+def logic_source(
+    initial: LogicLevel,
+    changes: Sequence[tuple[Quantity, LogicLevel]] = (),
+    *,
+    transition: Quantity,
+) -> Device:
+    """A logic source: one output, ``output``, at `initial`, then at each of `changes`.
+
+    Each change is a time and the level from then on, in time order; each edge takes
+    `transition` to swing from ground to supply, and crosses half the supply at its
+    time.
+
+    Examples:
+        >>> from jolty.units import ns, ps
+        >>> clock = logic_source(0, [(1 * ns, 1), (2 * ns, 0)], transition=50 * ps)
+        >>> clock.parameters["changes"]
+        [[1e-09, '1'], [2e-09, '0']]
+    """
+    parameters: dict[str, JsonValue] = {
+        "initial": _written(initial),
+        "changes": [
+            [time.to(TIME, "a change's time"), _written(level)]
+            for time, level in changes
+        ],
+        "transition": transition.to(TIME, "a transition"),
+    }
+    return device("logic_source", parameters)
+
+
+def _written(level: LogicLevel) -> str:
+    """A logic level as the engine writes it: ``0``, ``1`` or ``x``."""
+    return "x" if level is None else str(level)
 
 
 def device(model: str, parameters: dict[str, JsonValue]) -> Device:

@@ -9,8 +9,8 @@ use std::sync::Mutex;
 
 use jolty_engine::{Analysis, OperatingPoint, Options, Outcome, Statistics};
 use jolty_ir::Circuit;
-use jolty_models::{Library, Quantity};
-use numpy::{PyArray1, PyArray2};
+use jolty_models::{Level, Library, Quantity};
+use numpy::{PyArray1, PyArray2, PyArrayMethods};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
@@ -29,6 +29,7 @@ create_exception!(_core, SimulationError, PyException, "An analysis failed.");
 struct Simulator {
     inner: Mutex<jolty_engine::Simulator>,
     unknowns: Vec<(String, &'static str)>,
+    nets: Vec<String>,
     devices: usize,
 }
 
@@ -55,10 +56,16 @@ impl Simulator {
             .iter()
             .map(|unknown| (unknown.name.clone(), quantity_name(unknown.quantity)))
             .collect();
-        let devices = inner.devices().len();
+        let nets = inner
+            .logic_nets()
+            .iter()
+            .map(|net| net.name.clone())
+            .collect();
+        let devices = inner.devices().len() - inner.elements() + inner.logic_devices().len();
         Ok(Self {
             inner: Mutex::new(inner),
             unknowns,
+            nets,
             devices,
         })
     }
@@ -70,7 +77,13 @@ impl Simulator {
         self.unknowns.clone()
     }
 
-    /// The number of devices, with every component instance unfolded.
+    /// Each logic net's name, in the order of every result's levels.
+    #[getter]
+    fn nets(&self) -> Vec<String> {
+        self.nets.clone()
+    }
+
+    /// The number of devices, analog and logic, with every component instance unfolded.
     #[getter]
     fn devices(&self) -> usize {
         self.devices
@@ -166,6 +179,8 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
             result.set_item("quantity", quantity_name(sweep.quantity))?;
             result.set_item("levels", PyArray1::from_vec(py, sweep.levels))?;
             result.set_item("values", PyArray2::from_vec2(py, &sweep.values)?)?;
+            let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();
+            result.set_item("logic", matrix(py, &logic)?)?;
         }
         Outcome::Ac(response) => {
             result.set_item("kind", "ac")?;
@@ -180,6 +195,15 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
             result.set_item("kind", "transient")?;
             result.set_item("times", PyArray1::from_vec(py, waveforms.times))?;
             result.set_item("values", PyArray2::from_vec2(py, &waveforms.values)?)?;
+            let traces = PyList::empty(py);
+            for trace in waveforms.logic {
+                let (times, levels): (Vec<f64>, Vec<Level>) = trace.into_iter().unzip();
+                traces.append((
+                    PyArray1::from_vec(py, times),
+                    PyArray1::from_vec(py, numbers(&levels)),
+                ))?;
+            }
+            result.set_item("logic", traces)?;
             result.set_item(
                 "statistics",
                 statistics_to_python(py, waveforms.statistics)?,
@@ -197,7 +221,30 @@ fn add_operating_point(
         "values",
         PyArray1::from_vec(result.py(), operating_point.values),
     )?;
+    result.set_item(
+        "logic",
+        PyArray1::from_vec(result.py(), numbers(&operating_point.logic)),
+    )?;
     result.set_item("strategy", operating_point.strategy.name())
+}
+
+/// Logic levels as numbers: 0, 1, and NaN for an unknown level.
+fn numbers(levels: &[Level]) -> Vec<f64> {
+    levels
+        .iter()
+        .map(|level| match level {
+            Level::Low => 0.0,
+            Level::High => 1.0,
+            Level::Unknown => f64::NAN,
+        })
+        .collect()
+}
+
+/// `rows` as a two-dimensional array, with as many rows even when they are empty.
+fn matrix<'py>(py: Python<'py>, rows: &[Vec<f64>]) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let columns = rows.first().map_or(0, Vec::len);
+    let flat: Vec<f64> = rows.iter().flatten().copied().collect();
+    PyArray1::from_vec(py, flat).reshape([rows.len(), columns])
 }
 
 fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Bound<'_, PyDict>> {
@@ -215,10 +262,16 @@ fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Boun
 #[pyfunction]
 fn terminals(model: &str, parameters: &str) -> PyResult<Vec<String>> {
     let library = Library::standard();
+    let parameters = serde_json::from_str(parameters).map_err(|error| unreadable(&error))?;
+    if let Some(logic) = library.logic(model) {
+        let pins = logic
+            .pins(&parameters)
+            .map_err(|error| PyValueError::new_err(error.0))?;
+        return Ok(pins.names());
+    }
     let model = library
         .get(model)
         .ok_or_else(|| PyValueError::new_err(format!("no model is named `{model}`")))?;
-    let parameters = serde_json::from_str(parameters).map_err(|error| unreadable(&error))?;
     let interface = model
         .interface(&parameters)
         .map_err(|error| PyValueError::new_err(error.0))?;

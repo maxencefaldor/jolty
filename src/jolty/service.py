@@ -508,7 +508,8 @@ def _plot(
                 message = f"{name} is an operating point, which has nothing to plot"
                 raise JoltyError(message)
             continue
-        chosen = probes or plots.default_probes(result.unknowns)
+        nets = () if isinstance(result, results.Response) else result.nets
+        chosen = probes or plots.default_probes(result.unknowns, nets)
         target = files.plot_path(path, name)
         plots.save(plots.plot(name, result, chosen), target)
         drawn.append(Plot(analysis=name, path=target))

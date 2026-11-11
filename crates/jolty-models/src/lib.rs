@@ -7,7 +7,9 @@
 //! form, so native and foundry models plug in alike.
 //!
 //! A [`Model`] is a kind of device: it names its terminals and turns parameters into a
-//! device bound to its unknowns. A [`Library`] holds the models a circuit can use.
+//! device bound to its unknowns. A [`LogicModel`] is a kind of [`Logic`] device, whose pins
+//! join logic nets that an event scheduler simulates. A [`Library`] holds the models a
+//! circuit can use.
 
 mod behavioral;
 mod binding;
@@ -19,6 +21,7 @@ mod dual;
 mod evaluation;
 mod jfet;
 mod junction;
+mod logic;
 mod mosfet;
 mod passive;
 mod sources;
@@ -47,6 +50,12 @@ pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Input, Output};
 pub use jfet::{Channel, Jfet, JfetParameters};
 pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
+pub use logic::{
+    Change, Detect, Drive, Electrical, ElectricalParameters, FixedTiming, Level, Logic, LogicCell,
+    LogicCellParameters, LogicDriver, LogicDriverParameters, LogicModel, LogicSource,
+    LogicSourceParameters, MAX_INPUTS, NativeLogic, NativeLogicModel, OutputParameters, Pins,
+    Stimulus, ThresholdDetector, ThresholdDetectorParameters, Timing, TimingParameters,
+};
 pub use mosfet::{GateMaterial, Mosfet, MosfetParameters};
 pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
@@ -55,10 +64,12 @@ pub use sources::{CurrentSource, SourceParameters, VoltageSource};
 pub use switch::{VoltageControlledSwitch, VoltageControlledSwitchParameters};
 pub use topology::{Branch, BranchKind, Interface};
 
-/// The models a circuit can use, by name.
+/// The models a circuit can use, by name: analog models and logic models, no two of the
+/// same name.
 #[derive(Default)]
 pub struct Library {
     models: BTreeMap<&'static str, Box<dyn Model>>,
+    logic: BTreeMap<&'static str, Box<dyn LogicModel>>,
 }
 
 impl Library {
@@ -82,23 +93,45 @@ impl Library {
         library.add(Native::<Diode>::new());
         library.add(Native::<Jfet>::new());
         library.add(Native::<Mosfet>::new());
+        library.add_logic(NativeLogicModel::<LogicCell>::new());
+        library.add_logic(NativeLogicModel::<LogicSource>::new());
         library
     }
 
     /// Adds `model`, replacing any model of the same name.
     pub fn add(&mut self, model: impl Model + 'static) {
+        self.logic.remove(model.name());
         self.models.insert(model.name(), Box::new(model));
     }
 
-    /// The model named `name`.
+    /// Adds the logic model `model`, replacing any model of the same name.
+    pub fn add_logic(&mut self, model: impl LogicModel + 'static) {
+        self.models.remove(model.name());
+        self.logic.insert(model.name(), Box::new(model));
+    }
+
+    /// The analog model named `name`.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&dyn Model> {
         self.models.get(name).map(Box::as_ref)
     }
 
-    /// The names of every model, in alphabetical order.
+    /// The logic model named `name`.
+    #[must_use]
+    pub fn logic(&self, name: &str) -> Option<&dyn LogicModel> {
+        self.logic.get(name).map(Box::as_ref)
+    }
+
+    /// The names of every model, analog and logic, in alphabetical order.
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.models.keys().copied()
+        let mut names: Vec<&'static str> = self
+            .models
+            .keys()
+            .chain(self.logic.keys())
+            .copied()
+            .collect();
+        names.sort_unstable();
+        names.into_iter()
     }
 }
 
@@ -128,6 +161,8 @@ mod tests {
                 "diode",
                 "inductor",
                 "jfet",
+                "logic_cell",
+                "logic_source",
                 "mosfet",
                 "resistor",
                 "voltage_controlled_current_source",

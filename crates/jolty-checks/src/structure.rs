@@ -1,6 +1,6 @@
 //! The flattened circuit as a graph: nodes joined by the branches of its devices.
 
-use jolty_engine::{Placed, Simulator};
+use jolty_engine::{Endpoint, Placed, Simulator};
 use jolty_models::{Branch, Node};
 
 /// The index of the reference node among a structure's nodes.
@@ -10,21 +10,54 @@ pub(crate) const REFERENCE: usize = 0;
 ///
 /// Nodes are numbered from the reference, at [`REFERENCE`], then one per unknown in the
 /// engine's order; only the unknowns that are node voltages are ever joined.
+///
+/// A logic device's supply and ground join nodes too. Its connect elements' supply and
+/// ground are its own, so only their first terminal, the pin's, counts as theirs.
 pub(crate) struct Structure<'a> {
     simulator: &'a Simulator,
     /// How many terminals join each node.
     degrees: Vec<usize>,
+    /// Whether each device is a connect element.
+    elements: Vec<bool>,
 }
 
 impl<'a> Structure<'a> {
     pub(crate) fn new(simulator: &'a Simulator) -> Self {
+        let mut elements = vec![false; simulator.devices().len()];
+        for net in simulator.logic_nets() {
+            for end in net.sources.iter().chain(&net.loads) {
+                if let Endpoint::Element { device } = *end {
+                    elements[device] = true;
+                }
+            }
+        }
         let mut degrees = vec![0; simulator.unknowns().len() + 1];
-        for device in simulator.devices() {
+        for (device, &element) in simulator.devices().iter().zip(&elements) {
+            let counted = if element { 1 } else { device.nodes().len() };
+            for &node in &device.nodes()[..counted] {
+                degrees[index(node)] += 1;
+            }
+        }
+        for device in simulator.logic_devices() {
             for &node in device.nodes() {
                 degrees[index(node)] += 1;
             }
         }
-        Self { simulator, degrees }
+        Self {
+            simulator,
+            degrees,
+            elements,
+        }
+    }
+
+    /// The simulator the structure reads.
+    pub(crate) fn simulator(&self) -> &'a Simulator {
+        self.simulator
+    }
+
+    /// Whether the device at `device` is a connect element.
+    pub(crate) fn is_element(&self, device: usize) -> bool {
+        self.elements[device]
     }
 
     /// The number of nodes, the reference included.

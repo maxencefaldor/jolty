@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use jolty_ir::Parameters;
 use serde::de::DeserializeOwned;
 
-use crate::{Binding, Input, Interface, Output};
+use crate::{Binding, Detect, Drive, Input, Interface, Output};
 
 /// One placed device, bound to its unknowns.
 pub trait Device: fmt::Debug + Send {
@@ -19,6 +19,16 @@ pub trait Device: fmt::Debug + Send {
 
     /// The device as an independent source, if it is one.
     fn as_source(&mut self) -> Option<&mut dyn Source> {
+        None
+    }
+
+    /// The device as the analog side of a logic output, if it is one.
+    fn as_driver(&mut self) -> Option<&mut dyn Drive> {
+        None
+    }
+
+    /// The device as the analog side of a logic input, if it is one.
+    fn as_detector(&self) -> Option<&dyn Detect> {
         None
     }
 }
