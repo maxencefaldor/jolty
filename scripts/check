@@ -44,7 +44,13 @@ check_docs() {
 
 case "${1:-all}" in
     rust | python | docs) "check_$1" ;;
-    all) check_rust && check_python && check_docs ;;
+    all)
+        # One after another, never joined by `&&`: bash ignores `set -e` inside a
+        # function called on the left of `&&`, so a failing check would pass unseen.
+        check_rust
+        check_python
+        check_docs
+        ;;
     *)
         echo "usage: scripts/check [rust | python | docs]" >&2
         exit 2
