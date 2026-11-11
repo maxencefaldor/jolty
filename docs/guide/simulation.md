@@ -21,6 +21,7 @@ def plan() -> Plan:
 ```
 
 Each name is a Python identifier and names the analysis's results.
+A plan's `fidelity` may choose characterized logic cells for some component instances (see [Fidelity](fidelity.md)).
 `jolty simulate` takes the plan from the build script, or from another script given with `--plan`.
 
 ## Analyses

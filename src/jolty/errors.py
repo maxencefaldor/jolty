@@ -39,3 +39,7 @@ class ElaborationError(JoltyError):
 
 class SimulationError(JoltyError):
     """An analysis failed, such as an operating point that no strategy finds."""
+
+
+class CharacterizationError(JoltyError):
+    """A component cannot be characterized as a logic cell, as it stands."""

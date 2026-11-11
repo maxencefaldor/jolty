@@ -18,9 +18,11 @@ class _Model(BaseModel):
 
 
 class Role(StrEnum):
-    """What a port carries."""
+    """What a port carries: a signal, in both directions or one, a supply or ground."""
 
     SIGNAL = "signal"
+    INPUT = "input"
+    OUTPUT = "output"
     SUPPLY = "supply"
     GROUND = "ground"
 

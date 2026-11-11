@@ -6,8 +6,10 @@ scripts. The runner reads the [`Job`][jolty.runner.Job] in ``DIRECTORY/job.json`
 calls the script's ``build()`` and elaborates the circuit it returns, then, when the job
 names a plan, calls the plan's ``plan()`` and runs each analysis, at the plan's own
 conditions then at each of its corners, building the circuit again with a corner's
-arguments. It evaluates the requirements its ``specs()`` returns, when it defines one,
-on every run, then on each sample of the plan's Monte Carlo analysis. It writes the
+arguments. Every run takes the models the plan's fidelity chooses, characterized once
+each, and spot checks run again with sampled instances at their circuit's fidelity. It
+evaluates the requirements its ``specs()`` returns, when it defines one, on every run,
+then on each sample of the plan's Monte Carlo analysis. It writes the
 [`Outcome`][jolty.runner.Outcome], what was built or why it failed, to
 ``DIRECTORY/outcome.json``, and the results of the analyses at the plan's
 own conditions to ``DIRECTORY/results.npz``.
@@ -29,9 +31,10 @@ from typing import Annotated, Final, Literal, override
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from jolty import checks, files, ir, report, variation
+from jolty import checks, fidelity, files, ir, report, variation
 from jolty.builder import Component, circuit
 from jolty.errors import ElaborationError, JoltyError, ScriptError
+from jolty.fidelity import FidelityReport
 from jolty.plan import Corner, MonteCarlo, Plan
 from jolty.results import Result
 from jolty.simulate import Simulation, kelvins
@@ -110,6 +113,11 @@ class Built(BaseModel):
         description="The verdict on each requirement of the plan's specs, in order; "
         "empty when the plan defines no specs().",
     )
+    fidelity: FidelityReport | None = Field(
+        default=None,
+        description="The models the plan's fidelity chose, and its spot checks; null "
+        "when it chooses none.",
+    )
 
 
 class Failure(BaseModel):
@@ -177,9 +185,11 @@ def _run(job: Job, directory: Path) -> Built:
     if not isinstance(plan, Plan):
         message = f"plan() returned {type(plan).__name__}, not a Plan"
         raise ScriptError(message)
-    if plan.temperature is not None:
+    cache: fidelity.Cache = {}
+    chosen = fidelity.resolve(built, plan, plan.temperature, cache)
+    if plan.temperature is not None or chosen.matched:
         try:
-            simulation = Simulation(built, plan.temperature)
+            simulation = chosen.simulation()
         except ElaborationError as error:
             return Built(circuit=built, problems=error.problems)
     solved, reports = _analyses(simulation, plan, job.listed)
@@ -193,7 +203,7 @@ def _run(job: Job, directory: Path) -> Built:
             if corner.arguments
             else built
         )
-        found, at_corners[name] = _corner(name, corner, rebuilt, plan)
+        found, at_corners[name] = _corner(name, corner, rebuilt, plan, cache)
         corners.append(found)
     specs = _specs(job.plan, namespaces)
     verdicts = (
@@ -202,7 +212,7 @@ def _run(job: Job, directory: Path) -> Built:
     monte_carlo = (
         None
         if plan.monte_carlo is None
-        else _monte_carlo(built, plan, plan.monte_carlo, specs)
+        else _monte_carlo(chosen, plan, plan.monte_carlo, specs)
     )
     return elaborated.model_copy(
         update={
@@ -210,20 +220,46 @@ def _run(job: Job, directory: Path) -> Built:
             "corners": tuple(corners),
             "monte_carlo": monte_carlo,
             "specs": verdicts,
+            "fidelity": _fidelity(chosen, plan, solved),
         }
     )
 
 
+def _fidelity(
+    chosen: fidelity.Fidelity, plan: Plan, solved: Mapping[str, Result]
+) -> FidelityReport | None:
+    """The models `chosen` holds, and the spot checks of `plan`'s results `solved`.
+
+    It is None when no model stands in for an instance.
+    """
+    if not chosen.matched:
+        return None
+    contracts = []
+    for path in fidelity.sampled(chosen, plan):
+        try:
+            opened, _ = _analyses(chosen.simulation(opened=path), plan, 1)
+        except ElaborationError:
+            opened = {}
+        contracts.append(fidelity.contract(chosen, plan, path, solved, opened))
+    return FidelityReport(models=fidelity.models(chosen), contracts=tuple(contracts))
+
+
 def _corner(
-    name: str, corner: Corner, built: ir.Circuit, plan: Plan
+    name: str,
+    corner: Corner,
+    built: ir.Circuit,
+    plan: Plan,
+    cache: fidelity.Cache,
 ) -> tuple[report.CornerReport, dict[str, Result]]:
     """What `plan`'s analyses find on the circuit `built` at `corner`.
 
-    Returns the corner's report, and the results of the analyses that end, by name.
+    The circuit takes the models the plan's fidelity chooses there, characterized
+    unless `cache` holds them. Returns the corner's report, and the results of the
+    analyses that end, by name.
     """
     temperature = plan.temperature_at(corner)
     try:
-        simulation = Simulation(built, temperature)
+        simulation = fidelity.resolve(built, plan, temperature, cache).simulation()
     except ElaborationError as error:
         found = report.CornerReport(
             name=name, temperature=kelvins(temperature), problems=error.problems
@@ -260,20 +296,24 @@ def _built(
 
 
 def _monte_carlo(
-    built: ir.Circuit, plan: Plan, monte_carlo: MonteCarlo, specs: Specs | None
+    chosen: fidelity.Fidelity,
+    plan: Plan,
+    monte_carlo: MonteCarlo,
+    specs: Specs | None,
 ) -> report.MonteCarloReport:
     """What `plan`'s analyses find on each sample of `monte_carlo`, against `specs`.
 
-    Each sample draws `built`'s tolerances, at the plan's own temperature.
+    Each sample draws the circuit's tolerances, at the plan's own temperature, with the
+    models `chosen` holds, which stand for their circuits' nominal parts.
     """
-    toleranced = variation.toleranced(built)
+    toleranced = variation.toleranced(chosen.built)
     generator = np.random.default_rng(monte_carlo.seed)
     sampled: list[tuple[Verdict, ...]] = []
     failed = 0
     for _ in range(monte_carlo.samples):
         overrides = variation.sample(toleranced, generator)
         try:
-            simulation = Simulation(built, plan.temperature, overrides)
+            simulation = chosen.simulation(overrides)
         except ElaborationError:
             solved, ended = {}, False
         else:

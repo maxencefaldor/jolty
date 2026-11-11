@@ -9,7 +9,7 @@
 //! [`LogicDriver`] turns an output's level into a voltage between the device's supply and
 //! ground.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -143,11 +143,15 @@ pub trait Logic: fmt::Debug + Send {
 }
 
 /// How a logic device's pins may join electrical nets: through connect elements between the
-/// device's `supply` and `ground` terminals.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// device's supply and ground terminals.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Electrical {
     /// The fraction of the supply, from ground, at which an input switches.
     pub threshold: f64,
+    /// The name of the supply terminal.
+    pub supply: String,
+    /// The name of the ground terminal.
+    pub ground: String,
 }
 
 /// The pins of a logic device: its inputs and outputs, which join logic nets, and whether it
@@ -158,24 +162,24 @@ pub struct Pins {
     pub inputs: Vec<String>,
     /// The outputs' names, in the order [`Logic::levels`] writes them.
     pub outputs: Vec<String>,
-    /// With them, the device's terminals `supply` and `ground` too.
+    /// With them, the device's supply and ground terminals too.
     pub electrical: Option<Electrical>,
 }
 
 impl Pins {
-    /// The names of the electrical terminals of a device with electrical pins.
-    pub const TERMINALS: [&'static str; 2] = ["supply", "ground"];
-
-    /// The names of every pin and terminal, inputs first, then outputs, then `supply` and
-    /// `ground` if the device has them.
+    /// The names of every pin and terminal, inputs first, then outputs, then the supply
+    /// and the ground if the device has them.
     #[must_use]
     pub fn names(&self) -> Vec<String> {
-        let terminals = self.electrical.map_or(&[][..], |_| &Self::TERMINALS[..]);
+        let terminals = self
+            .electrical
+            .iter()
+            .flat_map(|electrical| [&electrical.supply, &electrical.ground]);
         self.inputs
             .iter()
             .chain(&self.outputs)
+            .chain(terminals)
             .cloned()
-            .chain(terminals.iter().map(|&name| name.to_owned()))
             .collect()
     }
 }
@@ -286,12 +290,46 @@ pub struct FixedTiming {
     pub transition: f64,
 }
 
+/// One timing arc of a characterized cell: how an output follows one input's change from
+/// one combination of the inputs.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArcParameters {
+    /// The input that changes.
+    pub input: String,
+    /// Every input's level before the change, a `0` or a `1` each, in the order of the
+    /// inputs.
+    pub before: String,
+    /// The output that follows.
+    pub output: String,
+    /// The delay, in seconds, for each input transition, then for each load: one row per
+    /// transition.
+    pub delay: Vec<Vec<f64>>,
+    /// The output's transition, in seconds, laid out as the delay.
+    pub transition: Vec<Vec<f64>>,
+}
+
+/// The timing of a cell characterized from its circuit: tables of delays and transitions
+/// over input transitions and output loads, as a standard cell library's.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CharacterizedTiming {
+    /// The input transitions the tables were measured at, in seconds, rising.
+    pub slews: Vec<f64>,
+    /// The output loads the tables were measured at, in farads, rising.
+    pub loads: Vec<f64>,
+    /// Every arc: each change of an input that changes an output.
+    pub arcs: Vec<ArcParameters>,
+}
+
 /// How a logic cell's outputs follow its inputs in time.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum TimingParameters {
     /// The same delays after any input changes, whatever the load.
     Fixed(FixedTiming),
+    /// Delays and transitions that depend on the arc, the input transition and the load.
+    Characterized(CharacterizedTiming),
 }
 
 /// How a logic cell's pins cross to electrical nets.
@@ -304,10 +342,24 @@ pub struct ElectricalParameters {
     pub threshold: f64,
     /// The capacitance of each input, in farads, in the order of the inputs.
     pub input_capacitances: Vec<f64>,
+    /// The name of the supply terminal; `supply` unless given.
+    #[serde(default = "supply")]
+    pub supply: String,
+    /// The name of the ground terminal; `ground` unless given.
+    #[serde(default = "ground")]
+    pub ground: String,
 }
 
 const fn half() -> f64 {
     0.5
+}
+
+fn supply() -> String {
+    "supply".to_owned()
+}
+
+fn ground() -> String {
+    "ground".to_owned()
 }
 
 /// The parameters of a logic cell.
@@ -336,8 +388,181 @@ pub struct LogicCell {
     pins: Pins,
     /// Each output's level for each row of the inputs.
     tables: Vec<Vec<bool>>,
-    timing: FixedTiming,
+    timing: CellTiming,
     input_capacitances: Vec<f64>,
+}
+
+/// A logic cell's timing, read and checked.
+#[derive(Debug)]
+enum CellTiming {
+    Fixed(FixedTiming),
+    Characterized(Tables),
+}
+
+/// A characterized cell's tables, with each arc found by its input, its row before the
+/// change and its output.
+#[derive(Debug)]
+struct Tables {
+    slews: Vec<f64>,
+    loads: Vec<f64>,
+    arcs: BTreeMap<(usize, usize, usize), Arc>,
+}
+
+/// One arc's tables, and the level its output reaches.
+#[derive(Debug)]
+struct Arc {
+    level: Level,
+    delay: Vec<Vec<f64>>,
+    transition: Vec<Vec<f64>>,
+}
+
+impl Tables {
+    /// Reads `timing` for a cell of `pins` and `tables`.
+    fn new(
+        timing: CharacterizedTiming,
+        pins: &Pins,
+        tables: &[Vec<bool>],
+    ) -> Result<Self, ParameterError> {
+        for (name, grid) in [("transitions", &timing.slews), ("loads", &timing.loads)] {
+            let rising = grid.windows(2).all(|pair| pair[0] < pair[1]);
+            if grid.is_empty()
+                || !rising
+                || grid
+                    .iter()
+                    .any(|value| !(*value >= 0.0 && value.is_finite()))
+            {
+                return Err(ParameterError(format!(
+                    "the {name} of a characterized cell rise from zero or more, not {grid:?}"
+                )));
+            }
+        }
+        let shape = (timing.slews.len(), timing.loads.len());
+        let mut arcs = BTreeMap::new();
+        for arc in timing.arcs {
+            let position = |names: &[String], name: &str, kind: &str| {
+                names.iter().position(|other| other == name).ok_or_else(|| {
+                    ParameterError(format!(
+                        "an arc names the {kind} {name}, which the cell does not have"
+                    ))
+                })
+            };
+            let input = position(&pins.inputs, &arc.input, "input")?;
+            let output = position(&pins.outputs, &arc.output, "output")?;
+            let count = pins.inputs.len();
+            let row = (arc.before.len() == count && arc.before.chars().all(|bit| matches!(bit, '0' | '1')))
+                .then(|| usize::from_str_radix(&arc.before, 2).ok())
+                .flatten()
+                .or_else(|| (count == 0 && arc.before.is_empty()).then_some(0))
+                .ok_or_else(|| ParameterError(format!(
+                    "an arc's levels before its change are a 0 or a 1 for each of the {count} inputs, not {:?}",
+                    arc.before
+                )))?;
+            let after = row ^ (1 << (count - 1 - input));
+            let table = &tables[output];
+            if table[row] == table[after] {
+                return Err(ParameterError(format!(
+                    "the arc from {} to {} with the inputs at {} changes nothing",
+                    arc.input, arc.output, arc.before
+                )));
+            }
+            for (name, values) in [("delays", &arc.delay), ("transitions", &arc.transition)] {
+                let fits = values.len() == shape.0 && values.iter().all(|row| row.len() == shape.1);
+                if !fits || values.iter().flatten().any(|value| !value.is_finite()) {
+                    return Err(ParameterError(format!(
+                        "the {name} of the arc from {} to {} with the inputs at {} are {} rows \
+                         of {} numbers",
+                        arc.input, arc.output, arc.before, shape.0, shape.1
+                    )));
+                }
+            }
+            if arc.transition.iter().flatten().any(|&value| value <= 0.0) {
+                return Err(ParameterError(format!(
+                    "the transitions of the arc from {} to {} with the inputs at {} are positive",
+                    arc.input, arc.output, arc.before
+                )));
+            }
+            let arc_tables = Arc {
+                level: Level::from_bool(table[after]),
+                delay: arc.delay,
+                transition: arc.transition,
+            };
+            arcs.insert((input, row, output), arc_tables);
+        }
+        Ok(Self {
+            slews: timing.slews,
+            loads: timing.loads,
+            arcs,
+        })
+    }
+
+    /// The timing of `arc` at `slew` and `load`, interpolated between the tables' points
+    /// and held at their edges.
+    fn at(&self, arc: &Arc, slew: f64, load: f64) -> Timing {
+        Timing {
+            delay: interpolate(&self.slews, &self.loads, &arc.delay, slew, load),
+            transition: interpolate(&self.slews, &self.loads, &arc.transition, slew, load),
+        }
+    }
+
+    /// The timing of `output` reaching `level` after `change`. A change from inputs some of
+    /// which are unknown has no arc of its own, and takes the earliest of the output's arcs
+    /// that reach the level, or of all its arcs for an unknown level.
+    fn timing(&self, change: &Change<'_>, output: usize, level: Level, load: f64) -> Timing {
+        let count = change.before.len();
+        let row = change
+            .before
+            .iter()
+            .enumerate()
+            .try_fold(0, |row, (index, level)| match level {
+                Level::High => Some(row | 1 << (count - 1 - index)),
+                Level::Low => Some(row),
+                Level::Unknown => None,
+            });
+        if let Some(arc) = row.and_then(|row| self.arcs.get(&(change.input, row, output))) {
+            return self.at(arc, change.slew, load);
+        }
+        self.arcs
+            .iter()
+            .filter(|((_, _, arc_output), arc)| {
+                *arc_output == output && (level == Level::Unknown || arc.level == level)
+            })
+            .map(|(_, arc)| self.at(arc, change.slew, load))
+            .min_by(|a, b| a.delay.total_cmp(&b.delay))
+            .unwrap_or(Timing {
+                delay: 0.0,
+                transition: self.slews[0].max(f64::MIN_POSITIVE),
+            })
+    }
+}
+
+/// The value of `table`, one row per `rows` point and one column per `columns` point, at
+/// `(row, column)`: linear between the points, and held beyond the first and the last.
+fn interpolate(rows: &[f64], columns: &[f64], table: &[Vec<f64>], row: f64, column: f64) -> f64 {
+    let (r, rf) = bracket(rows, row);
+    let (c, cf) = bracket(columns, column);
+    let at = |r: usize, c: usize| table[r][c];
+    let next_r = (r + 1).min(rows.len() - 1);
+    let next_c = (c + 1).min(columns.len() - 1);
+    let low = at(r, c) + (at(r, next_c) - at(r, c)) * cf;
+    let high = at(next_r, c) + (at(next_r, next_c) - at(next_r, c)) * cf;
+    low + (high - low) * rf
+}
+
+/// The point of `points` at or below `value`, and the fraction of the way to the next, held
+/// to the points' span.
+fn bracket(points: &[f64], value: f64) -> (usize, f64) {
+    let last = points.len() - 1;
+    if last == 0 || value <= points[0] {
+        return (0, 0.0);
+    }
+    if value >= points[last] {
+        return (last, 0.0);
+    }
+    let index = points.partition_point(|&point| point <= value) - 1;
+    (
+        index,
+        (value - points[index]) / (points[index + 1] - points[index]),
+    )
 }
 
 impl LogicCell {
@@ -380,7 +605,7 @@ impl NativeLogic for LogicCell {
         let LogicCellParameters {
             inputs,
             outputs,
-            timing: TimingParameters::Fixed(timing),
+            timing,
             electrical,
         } = parameters;
         if inputs.len() > MAX_INPUTS {
@@ -419,14 +644,12 @@ impl NativeLogic for LogicCell {
                 }
             }
         }
-        for (name, value) in [("rise", timing.rise), ("fall", timing.fall)] {
-            ParameterError::non_negative(&format!("the {name} delay"), value)?;
-        }
-        ParameterError::positive("the transition", timing.transition)?;
         let (electrical, input_capacitances) = match electrical {
             Some(ElectricalParameters {
                 threshold,
                 input_capacitances,
+                supply,
+                ground,
             }) => {
                 if !(threshold > 0.0 && threshold < 1.0) {
                     return Err(ParameterError(format!(
@@ -444,7 +667,12 @@ impl NativeLogic for LogicCell {
                 for &capacitance in &input_capacitances {
                     ParameterError::non_negative("an input capacitance", capacitance)?;
                 }
-                (Some(Electrical { threshold }), input_capacitances)
+                let electrical = Electrical {
+                    threshold,
+                    supply,
+                    ground,
+                };
+                (Some(electrical), input_capacitances)
             }
             None => (None, vec![0.0; inputs.len()]),
         };
@@ -454,6 +682,18 @@ impl NativeLogic for LogicCell {
             electrical,
         };
         check_names(&pins)?;
+        let timing = match timing {
+            TimingParameters::Fixed(timing) => {
+                for (name, value) in [("rise", timing.rise), ("fall", timing.fall)] {
+                    ParameterError::non_negative(&format!("the {name} delay"), value)?;
+                }
+                ParameterError::positive("the transition", timing.transition)?;
+                CellTiming::Fixed(timing)
+            }
+            TimingParameters::Characterized(timing) => {
+                CellTiming::Characterized(Tables::new(timing, &pins, &tables)?)
+            }
+        };
         Ok(Self {
             pins,
             tables,
@@ -474,15 +714,17 @@ impl Logic for LogicCell {
         }
     }
 
-    fn timing(&self, _: &Change<'_>, _: usize, level: Level, _: f64) -> Timing {
-        let delay = match level {
-            Level::High => self.timing.rise,
-            Level::Low => self.timing.fall,
-            Level::Unknown => self.timing.rise.min(self.timing.fall),
-        };
-        Timing {
-            delay,
-            transition: self.timing.transition,
+    fn timing(&self, change: &Change<'_>, output: usize, level: Level, load: f64) -> Timing {
+        match &self.timing {
+            CellTiming::Fixed(timing) => Timing {
+                delay: match level {
+                    Level::High => timing.rise,
+                    Level::Low => timing.fall,
+                    Level::Unknown => timing.rise.min(timing.fall),
+                },
+                transition: timing.transition,
+            },
+            CellTiming::Characterized(tables) => tables.timing(change, output, level, load),
         }
     }
 
@@ -592,6 +834,9 @@ pub trait Drive {
 
     /// The time the last movement ends.
     fn settles_at(&self) -> f64;
+
+    /// The unknown current through the driver, whose equation holds its voltage.
+    fn current(&self) -> Unknown;
 }
 
 /// The analog side of a logic input: it reads a voltage against a threshold.
@@ -719,6 +964,10 @@ impl Drive for LogicDriver {
 
     fn settles_at(&self) -> f64 {
         self.ramp.2
+    }
+
+    fn current(&self) -> Unknown {
+        self.current
     }
 }
 
@@ -903,6 +1152,93 @@ mod tests {
         .unwrap();
         assert_eq!(cell.pins().names(), ["a", "y", "supply", "ground"]);
         assert_close(&[cell.input_capacitance(0)], &[2e-15]);
+    }
+
+    /// An inverter characterized at two transitions and two loads: each delay grows by a
+    /// picosecond per femtofarad and by a tenth of the input's transition.
+    fn characterized() -> LogicCell {
+        cell(
+            r#"{"inputs": ["a"], "outputs": [{"name": "y", "table": "10"}],
+                "timing": {"characterized": {
+                    "slews": [1e-11, 3e-11], "loads": [0, 2e-15],
+                    "arcs": [
+                        {"input": "a", "before": "0", "output": "y",
+                         "delay": [[1e-11, 1.2e-11], [1.2e-11, 1.4e-11]],
+                         "transition": [[2e-11, 3e-11], [2e-11, 3e-11]]},
+                        {"input": "a", "before": "1", "output": "y",
+                         "delay": [[2e-11, 2.2e-11], [2.2e-11, 2.4e-11]],
+                         "transition": [[4e-11, 5e-11], [4e-11, 5e-11]]}
+                    ]}},
+                "electrical": {"input_capacitances": [1e-15], "supply": "vdd", "ground": "vss"}}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_characterized_cell_interpolates_its_arc_s_tables() {
+        let cell = characterized();
+        assert_eq!(cell.pins().names(), ["a", "y", "vdd", "vss"]);
+        let falling = Change {
+            before: &[Level::Low],
+            input: 0,
+            slew: 2e-11,
+        };
+        let timing = cell.timing(&falling, 0, Level::Low, 1e-15);
+        assert_close(&[timing.delay, timing.transition], &[1.2e-11, 2.5e-11]);
+        // Beyond the tables, the timing holds their edge.
+        let timing = cell.timing(&falling, 0, Level::Low, 5e-15);
+        assert_close(&[timing.delay], &[1.3e-11]);
+        let rising = Change {
+            before: &[Level::High],
+            ..falling
+        };
+        let timing = cell.timing(&rising, 0, Level::High, 0.0);
+        assert_close(&[timing.delay], &[2.1e-11]);
+        // From an unknown input, the earliest arc to the level, or to any level.
+        let unknown = Change {
+            before: &[Level::Unknown],
+            ..falling
+        };
+        assert_close(
+            &[cell.timing(&unknown, 0, Level::High, 0.0).delay],
+            &[2.1e-11],
+        );
+        assert_close(
+            &[cell.timing(&unknown, 0, Level::Unknown, 0.0).delay],
+            &[1.1e-11],
+        );
+    }
+
+    #[test]
+    fn rejects_tables_it_cannot_read() {
+        let arc = |before: &str, delay: &str| {
+            format!(
+                r#"{{"inputs": ["a"], "outputs": [{{"name": "y", "table": "10"}}],
+                    "timing": {{"characterized": {{"slews": [1e-11], "loads": [0],
+                        "arcs": [{{"input": "a", "before": "{before}", "output": "y",
+                                  "delay": {delay}, "transition": [[1e-11]]}}]}}}}}}"#
+            )
+        };
+        for (parameters, message) in [
+            (
+                arc("2", "[[1e-11]]"),
+                "an arc's levels before its change are a 0 or a 1 for each of the 1 inputs, not \"2\"",
+            ),
+            (
+                arc("0", "[[1e-11, 2e-11]]"),
+                "the delays of the arc from a to y with the inputs at 0 are 1 rows of 1 numbers",
+            ),
+        ] {
+            assert_eq!(cell(&parameters).unwrap_err().0, message);
+        }
+        let constant = r#"{"inputs": ["a"], "outputs": [{"name": "y", "table": "11"}],
+            "timing": {"characterized": {"slews": [1e-11], "loads": [0],
+                "arcs": [{"input": "a", "before": "0", "output": "y",
+                          "delay": [[1e-11]], "transition": [[1e-11]]}]}}}"#;
+        assert_eq!(
+            cell(constant).unwrap_err().0,
+            "the arc from a to y with the inputs at 0 changes nothing"
+        );
     }
 
     #[test]

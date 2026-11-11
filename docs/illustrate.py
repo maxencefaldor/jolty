@@ -34,6 +34,10 @@ class Example(NamedTuple):
 EXAMPLES: Final = {
     "rc_filter": Example(probes=[], inside=["X1"]),
     "rectifier": Example(probes=["in", "out", "V1:current"], inside=["X1"]),
+    "full_adder": Example(
+        probes=["a", "b", "carry_in", "sum", "carry_out", "adder/half"],
+        inside=["adder", "adder/U1"],
+    ),
 }
 
 

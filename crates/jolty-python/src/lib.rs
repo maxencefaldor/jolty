@@ -37,13 +37,15 @@ struct Simulator {
 impl Simulator {
     /// Elaborates the circuit whose JSON text is `circuit`, its devices at `temperature`,
     /// in kelvins, with the parameters of the JSON object `overrides`, by instance path,
-    /// replacing the circuit's own.
+    /// replacing the circuit's own, and the models of the JSON object `substitutes`, each a
+    /// `model` and its `parameters` by component instance path, standing in for them.
     #[new]
-    fn new(circuit: &str, temperature: f64, overrides: &str) -> PyResult<Self> {
+    fn new(circuit: &str, temperature: f64, overrides: &str, substitutes: &str) -> PyResult<Self> {
         let circuit = Circuit::from_json(circuit).map_err(|error| unreadable(&error))?;
         let conditions = jolty_engine::Conditions {
             temperature,
             overrides: serde_json::from_str(overrides).map_err(|error| unreadable(&error))?,
+            substitutes: serde_json::from_str(substitutes).map_err(|error| unreadable(&error))?,
         };
         let inner = jolty_engine::Simulator::new(&circuit, &Library::standard(), &conditions)
             .map_err(|error| {

@@ -66,7 +66,10 @@ scheduler simulates: logic_gate(gate, inputs, rise=, transition=) with inputs a,
 output y, logic_cell(inputs, outputs, rise=, transition=), and logic_source(initial,
 changes, transition=) with output output; electrical=True gives a cell supply and ground
 terminals, so its pins may join electrical nets. Results read a logic net's level with
-level(net): 0, 1, or NaN for unknown.
+level(net): 0, 1, or NaN for unknown. A plan's fidelity, such as
+fidelity={"adder/*": Characterized(3.3 * V)}, simulates the component instances a scope
+matches as logic cells characterized from their circuits, whose ports are Role.INPUT,
+Role.OUTPUT, one supply and one ground, and spot checks hold each cell to its circuit.
 
 Analyses, in jolty.plan: OperatingPoint(), DcSweep(source, levels),
 Ac(source, frequencies) with decade(start, stop, per_decade), and Transient(stop,

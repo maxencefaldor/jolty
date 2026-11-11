@@ -24,6 +24,7 @@ from pydantic_settings import CliPositionalArg
 
 from jolty import checks, files, ir, plots, results, runner, schematic, specs
 from jolty.errors import ElaborationError, JoltyError
+from jolty.fidelity import FidelityReport
 from jolty.report import AnalysisReport, CornerReport, FailureReport, MonteCarloReport
 from jolty.settings import Level, Settings
 from jolty.simulate import Simulation
@@ -271,6 +272,10 @@ class SimulateResult(CommandResult):
         description="The verdict on each requirement of the plan's specs, in order; "
         "empty when the plan defines no specs()."
     )
+    fidelity: FidelityReport | None = Field(
+        description="The models the plan's fidelity chose, and its spot checks; null "
+        "when it chooses none."
+    )
     schematic: Path | None = Field(
         description="The top component's schematic; null when drawing is off."
     )
@@ -293,8 +298,9 @@ class SimulateResult(CommandResult):
         """Whether the circuit elaborates, checks clean, and meets its plan.
 
         It meets its plan when every analysis ends, at the plan's own conditions and
-        at every corner, every requirement passes, if only marginally, and the Monte
-        Carlo analysis's yield reaches the specs' target.
+        at every corner, every requirement passes, if only marginally, the Monte Carlo
+        analysis's yield reaches the specs' target, and every model its fidelity chose
+        agrees with its circuit where a spot check looked.
         """
         checked = self.report is None or self.report.ok
         return (
@@ -310,6 +316,7 @@ class SimulateResult(CommandResult):
                 or self.monte_carlo.passing.met
             )
             and all(verdict.status in {"passed", "marginal"} for verdict in self.specs)
+            and (self.fidelity is None or self.fidelity.ok)
         )
 
     @override
@@ -328,6 +335,8 @@ class SimulateResult(CommandResult):
             blocks.append(self.monte_carlo.describe())
         if self.specs:
             blocks.append(specs.describe(self.specs))
+        if self.fidelity is not None:
+            blocks.append(self.fidelity.describe())
         if self.schematic:
             blocks.append(f"drew {self.schematic}")
         if self.plots:
@@ -414,6 +423,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         corners=built.corners,
         monte_carlo=built.monte_carlo,
         specs=built.specs,
+        fidelity=built.fidelity,
         schematic=drawn,
         plots=plotted,
         output=output,

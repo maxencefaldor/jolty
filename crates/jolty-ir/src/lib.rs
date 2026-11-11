@@ -92,8 +92,12 @@ pub struct Port {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    /// A signal, the default.
+    /// A signal, the default, in either direction.
     Signal,
+    /// A signal into the component, which its circuit reads.
+    Input,
+    /// A signal out of the component, which its circuit drives.
+    Output,
     /// A supply rail.
     Supply,
     /// The ground. At the top of a circuit, the ground port's net is the reference node.

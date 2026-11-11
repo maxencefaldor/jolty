@@ -131,13 +131,19 @@ _CHARACTER: Final = 0.2
 def _box(ports: list[tuple[str, ir.Role]], name: str, id: str) -> Shape:
     """A box with signal ports on its sides, supplies on top and grounds below.
 
-    The box is wide enough to write the component's function, and its arguments below
-    it, between the names of its side ports, and to write the instance's id between its
-    upper-left corner and its first supply.
+    Inputs go on the left and outputs on the right, and other signals fill the sides in
+    turn, the left first, to balance them. The box is wide enough to write the
+    component's function, and its arguments below it, between the names of its side
+    ports, and to write the instance's id between its upper-left corner and its first
+    supply.
     """
+    inputs = [port for port, role in ports if role is ir.Role.INPUT]
+    outputs = [port for port, role in ports if role is ir.Role.OUTPUT]
     signals = [port for port, role in ports if role is ir.Role.SIGNAL]
-    middle = (len(signals) + 1) // 2
-    left, right = signals[:middle], signals[middle:]
+    middle = min(
+        max((len(signals) + len(outputs) - len(inputs) + 1) // 2, 0), len(signals)
+    )
+    left, right = inputs + signals[:middle], outputs + signals[middle:]
     supplies = [port for port, role in ports if role is ir.Role.SUPPLY]
     grounds = [port for port, role in ports if role is ir.Role.GROUND]
     title, arguments = split_name(name)
@@ -288,9 +294,9 @@ def layout(circuit: ir.Circuit, name: str) -> Layout:
 def _roles(circuit: ir.Circuit, component: ir.Component) -> dict[str, ir.Role]:
     """The role each net of `component` plays, by name, which sets how it is drawn.
 
-    A port of the component sets its net's role. Any other net is a ground when a port
-    of a component placed in it is a ground on that net, else a supply when one is a
-    supply there, and else a signal.
+    A port of the component sets its net's role, an input or an output a signal. Any
+    other net is a ground when a port of a component placed in it is a ground on that
+    net, else a supply when one is a supply there, and else a signal.
     """
     found: dict[str, set[ir.Role]] = {}
     for instance in component.instances:
@@ -303,12 +309,15 @@ def _roles(circuit: ir.Circuit, component: ir.Component) -> dict[str, ir.Role]:
         for terminal, net in instance.terminals.items():
             found.setdefault(net, set()).add(ports.get(terminal, ir.Role.SIGNAL))
     roles = {net: _rail(played) for net, played in found.items()}
-    roles.update({port.name: port.role for port in component.ports})
+    roles.update({port.name: _rail({port.role}) for port in component.ports})
     return roles
 
 
 def _rail(roles: set[ir.Role]) -> ir.Role:
-    """The role a net plays for the ports on it: a ground before a supply."""
+    """The role a net plays for the ports on it: ground, then supply, then signal.
+
+    A signal's direction plays no part.
+    """
     for role in (ir.Role.GROUND, ir.Role.SUPPLY):
         if role in roles:
             return role
@@ -323,8 +332,9 @@ def _columns(component: ir.Component, roles: Mapping[str, ir.Role]) -> dict[str,
     """Each instance's column: its distance, in shared signal nets, from the start.
 
     Signal starts at the independent sources; in a component without them, at the
-    instances on its first signal port, its input by convention; failing those, at its
-    first instance. The search starts again from the first instance it has not reached.
+    instances on its input ports, or else on its first signal port, its input by
+    convention; failing those, at its first instance. The search starts again from the
+    first instance it has not reached.
     """
     instances = component.instances
     on_net: dict[str, list[str]] = {}
@@ -340,7 +350,15 @@ def _columns(component: ir.Component, roles: Mapping[str, ir.Role]) -> dict[str,
     signals = [
         port.name for port in component.ports if roles[port.name] is ir.Role.SIGNAL
     ]
-    inputs = on_net.get(signals[0], []) if signals else []
+    declared = [
+        instance
+        for port in component.ports
+        if port.role is ir.Role.INPUT
+        for instance in on_net.get(port.name, [])
+    ]
+    inputs = list(dict.fromkeys(declared)) or (
+        on_net.get(signals[0], []) if signals else []
+    )
     columns: dict[str, int] = {}
     starts = sources or inputs or [instance.id for instance in instances[:1]]
     while starts:
@@ -564,9 +582,9 @@ def _flags(
 ) -> tuple[Flag, ...]:
     """A flag for each signal port: on the left for an input, on the right otherwise.
 
-    A port is an input when its net reaches no further than the first half of the
-    columns. Its flag stands level with its net's outermost pin on its side, below any
-    flag already there.
+    A port declared an input or an output is one; any other signal port is an input
+    when its net reaches no further than the first half of the columns. Its flag stands
+    level with its net's outermost pin on its side, below any flag already there.
     """
     pins: dict[str, list[tuple[Point, int]]] = {}
     for item in placed:
@@ -587,7 +605,13 @@ def _flags(
             continue
         entries = pins.get(port.name, [])
         reach = max((column for _, column in entries), default=0)
-        side = 1 if last > 0 and 2 * reach > last else -1
+        match port.role:
+            case ir.Role.INPUT:
+                side = -1
+            case ir.Role.OUTPUT:
+                side = 1
+            case _:
+                side = 1 if last > 0 and 2 * reach > last else -1
         outermost = max(
             entries, key=lambda entry: entry[0][0] * side, default=((0, 0), 0)
         )

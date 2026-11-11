@@ -43,8 +43,10 @@ pub struct LogicNet {
     pub sources: Vec<Endpoint>,
     /// The inputs and logic drivers that read the net.
     pub loads: Vec<Endpoint>,
-    /// The capacitance the net's outputs drive, in farads: its inputs', or those of the
-    /// threshold detectors on the electrical net its logic driver drives.
+    /// The capacitance the net's outputs drive, in farads: its inputs', or, for a net a
+    /// logic driver follows, those of the threshold detectors on the electrical net it
+    /// drives. An operating point measures the latter again, as the whole capacitance of
+    /// that net.
     pub load: f64,
 }
 
@@ -217,6 +219,27 @@ struct DriveState {
     level: Level,
     /// The time, level and sequence number of the pending change.
     pending: Option<(f64, Level, u64)>,
+    /// The time of the last change and its transition, since the logic last settled.
+    changed: Option<(f64, f64)>,
+}
+
+impl DriveState {
+    /// Where the source's edge stands at `time`, as a fraction of the supply from ground:
+    /// on a ramp that crossed half the supply at its last change, and at its rail once
+    /// the ramp ends or when it has not changed.
+    fn fraction(&self, time: f64) -> f64 {
+        match self.changed {
+            Some((at, transition)) if transition > 0.0 => {
+                let swung = (0.5 + (time - at) / transition).clamp(0.0, 1.0);
+                if self.level == Level::High {
+                    swung
+                } else {
+                    1.0 - swung
+                }
+            }
+            _ => self.level.fraction(),
+        }
+    }
 }
 
 /// A change a logic driver must follow: from `time`, to `level`, over `transition`.
@@ -258,6 +281,8 @@ pub(crate) struct Events {
     commands: Vec<Command>,
     /// The level each logic driver was last told to follow.
     driven: Vec<Level>,
+    /// The capacitance each net's outputs drive, in farads.
+    loads: Vec<f64>,
 }
 
 impl Events {
@@ -270,6 +295,7 @@ impl Events {
                 DriveState {
                     level: Level::Unknown,
                     pending: None,
+                    changed: None,
                 };
                 logic.drives.len()
             ],
@@ -278,7 +304,13 @@ impl Events {
             traces: vec![Vec::new(); logic.nets.len()],
             commands: Vec::new(),
             driven: vec![Level::Unknown; logic.drivers.len()],
+            loads: logic.nets.iter().map(|net| net.load).collect(),
         }
+    }
+
+    /// Takes `load` as the capacitance the outputs on `net` drive.
+    pub(crate) fn load(&mut self, net: usize, load: f64) {
+        self.loads[net] = load;
     }
 
     /// Each logic net's level.
@@ -301,6 +333,7 @@ impl Events {
         self.queue.clear();
         for drive in &mut self.drives {
             drive.pending = None;
+            drive.changed = None;
         }
         let mut pending: Vec<usize> = (0..logic.devices.len()).collect();
         for (detector, &level) in detectors.iter().enumerate() {
@@ -451,6 +484,7 @@ impl Events {
                 state.pending = None;
             }
             state.level = next.level;
+            state.changed = Some((next.time, next.transition));
             let net = logic.drives[next.drive];
             let level = logic.resolve(net, &self.drives);
             if level == self.levels[net] {
@@ -515,14 +549,24 @@ impl Events {
             let net = placed.outputs[output];
             let timing = placed
                 .device
-                .timing(&change, output, level, logic.nets[net].load);
-            let mut at = time + timing.delay;
+                .timing(&change, output, level, self.loads[net]);
+            // The delay is measured from a rail: the edge leaves it half a transition
+            // before it crosses half the supply. An output still on its way from its last
+            // change has less to swing, and crosses sooner.
+            let leaves = time + timing.delay - timing.transition / 2.0;
+            let swing = match (level, state.level) {
+                (Level::Low | Level::High, Level::Low | Level::High) => {
+                    (state.fraction(leaves) - 0.5).abs().min(0.5) * timing.transition
+                }
+                _ => timing.transition / 2.0,
+            };
+            let mut at = leaves + swing;
             if logic.drives_analog(net) {
-                // A logic driver ramps over the transition, so it starts half of it early
-                // to cross half the supply when the output changes.
-                at = (at - timing.transition / 2.0).max(time);
+                // A logic driver ramps over the transition, so it starts early by the
+                // swing it has left to cross half the supply when the output changes.
+                at = leaves.max(time);
             }
-            self.push(at, drive, level, timing.transition, false);
+            self.push(at.max(time), drive, level, timing.transition, false);
         }
     }
 

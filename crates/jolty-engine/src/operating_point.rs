@@ -1,6 +1,9 @@
 //! The DC operating point, with gmin and source stepping when Newton alone fails.
 
+use std::f64::consts::TAU;
+
 use jolty_models::Level;
+use jolty_numerics::{Complex64, SparseLu};
 
 use crate::logic::{Events, detected};
 use crate::newton::{Failure, Mode};
@@ -19,6 +22,9 @@ const FIRST_SOURCE_INCREMENT: f64 = 0.1;
 const SMALLEST_SOURCE_INCREMENT: f64 = 1e-4;
 /// How many unknowns a failure names.
 const NAMED_UNKNOWNS: usize = 3;
+/// The frequency, in hertz, at which a logic driver's load is read: low enough that every
+/// capacitance it drives charges fully.
+const LOAD_FREQUENCY: f64 = 1.0;
 /// How many times the logic and the analog circuit settle each other at DC before the
 /// detectors still changing are taken to read unknown levels, as in a loop that oscillates.
 const SETTLE_ROUNDS: usize = 4;
@@ -95,6 +101,47 @@ impl Simulator {
         }
     }
 
+    /// Takes, as the load of each logic driver's output, the whole capacitance it drives
+    /// at the solution `values`: the detectors' and the analog circuit's alike, the
+    /// transistors' gates included, read from the driver's small-signal current at
+    /// [`LOAD_FREQUENCY`], as a characterization reads an input's capacitance.
+    fn measure_loads(&mut self, values: &[f64], options: &Options) {
+        if self.system.logic.drivers.is_empty() {
+            return;
+        }
+        self.evaluate(values, 0.0, (1.0, options.gmin), true);
+        let omega = TAU * LOAD_FREQUENCY;
+        let matrix: Vec<Complex64> = self
+            .workspace
+            .conductance
+            .iter()
+            .zip(&self.workspace.capacitance)
+            .map(|(&conductance, &capacitance)| Complex64::new(conductance, omega * capacitance))
+            .collect();
+        let Ok(mut solver) = SparseLu::<Complex64>::new(self.system.pattern.clone()) else {
+            return;
+        };
+        let Ok(mut factors) = solver.factor(&matrix) else {
+            return;
+        };
+        for &(element, net) in &self.system.logic.drivers {
+            let Some(current) = self.system.devices[element]
+                .device
+                .as_driver()
+                .map(|driver| driver.current())
+            else {
+                continue;
+            };
+            // Raising the driver's voltage by a volt adds -1 to its equation's residual.
+            let mut phasors = vec![Complex64::default(); values.len()];
+            phasors[current.index()] = Complex64::new(1.0, 0.0);
+            if factors.solve(&mut phasors).is_ok() {
+                self.events
+                    .load(net, phasors[current.index()].im.abs() / omega);
+            }
+        }
+    }
+
     /// Settles the logic with the analog solution `solved`, holding each driver at its net's
     /// level and solving again until the detectors read what the logic settled with.
     pub(crate) fn settle(
@@ -140,6 +187,7 @@ impl Simulator {
             }
             solved = self.solve_dc(solved.values, options)?;
         }
+        self.measure_loads(&solved.values, options);
         Ok(OperatingPoint {
             values: solved.values,
             logic: self.events.levels().to_vec(),

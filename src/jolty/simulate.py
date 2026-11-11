@@ -29,6 +29,7 @@ from pydantic import JsonValue
 
 from jolty import _core, checks, ir, results
 from jolty.builder import Component, circuit
+from jolty.devices import Device
 from jolty.errors import ElaborationError, SimulationError
 from jolty.plan import Ac, Analysis, DcSweep, OperatingPoint, Options, Plan, Transient
 from jolty.units import CURRENT, TEMPERATURE, VOLTAGE, Dimension, Quantity
@@ -68,12 +69,15 @@ class Simulation:
         circuit_or_top: ir.Circuit | Component,
         temperature: Quantity | None = None,
         overrides: Mapping[str, Mapping[str, float]] | None = None,
+        substitutes: Mapping[str, Device] | None = None,
     ) -> None:
         """Elaborates a circuit, or the circuit with a component at its top.
 
         Its devices are simulated at `temperature`, 27 °C unless given. `overrides`
         replaces parameters of devices, by path then by parameter name, in SI base
-        units, as a Monte Carlo sample does.
+        units, as a Monte Carlo sample does. In `substitutes`, a device stands in for
+        each component instance, by path, its terminals the component's ports, as a
+        plan's fidelity chooses.
 
         Raises:
             ElaborationError: With every problem the engine finds, each naming the
@@ -87,10 +91,15 @@ class Simulation:
         )
         self.temperature = kelvins(temperature)
         try:
+            stand_ins = {
+                path: {"model": device.model, "parameters": device.parameters}
+                for path, device in (substitutes or {}).items()
+            }
             self._core = _core.Simulator(
                 self.circuit.model_dump_json(),
                 self.temperature,
                 json.dumps(overrides or {}, allow_nan=False),
+                json.dumps(stand_ins, allow_nan=False),
             )
         except _core.ElaborationError as error:
             raise ElaborationError(error.args[0]) from None

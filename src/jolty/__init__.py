@@ -14,6 +14,7 @@ from jolty import devices, files, plan, specs, spice, units, waveforms
 from jolty.builder import Builder, Component, Net, Placed, Terminal, circuit, component
 from jolty.errors import (
     BuildError,
+    CharacterizationError,
     DimensionError,
     DownloadError,
     ElaborationError,
@@ -25,6 +26,7 @@ from jolty.errors import (
 from jolty.ir import Role
 from jolty.plan import (
     Ac,
+    Characterized,
     Corner,
     DcSweep,
     MonteCarlo,
@@ -42,6 +44,8 @@ __all__ = [
     "Ac",
     "BuildError",
     "Builder",
+    "CharacterizationError",
+    "Characterized",
     "Component",
     "Corner",
     "DcSweep",

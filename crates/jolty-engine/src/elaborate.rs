@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 
-use jolty_ir::{Circuit, Component, Instance, Name, Of, Parameters, Problem, Role, Source};
+use jolty_ir::{Circuit, Component, Name, Of, Parameters, Problem, Role, Source};
 use jolty_models::{
     Binding, Branch, Device, Interface, Library, LogicDriver, LogicDriverParameters, LogicModel,
     Model, NativeDevice, Node, Pins, Quantity, ThresholdDetector, ThresholdDetectorParameters,
@@ -13,8 +13,8 @@ use jolty_models::{
 };
 use jolty_numerics::{Entry, Pattern, PatternBuilder};
 
-use crate::Conditions;
 use crate::logic::{Endpoint, LogicNet, LogicSystem, PlacedLogic};
+use crate::{Conditions, Substitute};
 
 /// A circuit flattened into devices bound to unknowns, with the pattern of its matrix, and
 /// logic devices joined by logic nets.
@@ -171,6 +171,9 @@ pub enum ElaborationProblem {
         /// The net's path.
         net: String,
     },
+    /// A model stands in for a component instance the circuit does not have.
+    #[error("the circuit has no component instance at `{0}`, for which a model stands in")]
+    UnknownSubstitute(String),
     /// Parameters replace those of an instance the circuit does not have.
     #[error("the circuit has no device at `{0}`, whose parameters are replaced")]
     UnknownOverride(String),
@@ -236,6 +239,8 @@ pub(crate) fn elaborate(
         library,
         overrides: &conditions.overrides,
         overridden: BTreeSet::new(),
+        substitutes: &conditions.substitutes,
+        substituted: BTreeSet::new(),
         nets: Vec::new(),
         named: HashMap::new(),
         devices: Vec::new(),
@@ -249,6 +254,7 @@ pub(crate) fn elaborate(
         logic,
         mut problems,
         overridden,
+        substituted,
         ..
     } = walk;
 
@@ -275,6 +281,13 @@ pub(crate) fn elaborate(
     }
     let detected = std::mem::take(&mut elements.detected);
     partition.index(&detected, &placed);
+    problems.extend(
+        conditions
+            .substitutes
+            .keys()
+            .filter(|path| !substituted.contains(path.as_str()))
+            .map(|path| ElaborationProblem::UnknownSubstitute(path.clone())),
+    );
     problems.extend(
         conditions
             .overrides
@@ -442,7 +455,7 @@ impl Elements<'_> {
         let Pins {
             inputs, outputs, ..
         } = &pending.pins;
-        let rails = pending.pins.electrical.map(|electrical| {
+        let rails = pending.pins.electrical.as_ref().map(|electrical| {
             let rails = &pending.nets[inputs.len() + outputs.len()..];
             (
                 electrical.threshold,
@@ -615,6 +628,15 @@ struct PendingLogic<'a> {
     nets: Vec<NetRef>,
 }
 
+/// A device the walk places: the nets its terminals join in their component, its
+/// parameters, where it is, and its model's name.
+struct Placement<'a, 'm> {
+    terminals: &'a BTreeMap<Name, Name>,
+    parameters: Cow<'a, Parameters>,
+    at: Location,
+    model: &'m Name,
+}
+
 /// The state of a walk down the hierarchy.
 struct Walk<'a> {
     circuit: &'a Circuit,
@@ -622,6 +644,9 @@ struct Walk<'a> {
     overrides: &'a BTreeMap<String, Parameters>,
     /// The paths of the devices whose parameters the overrides replace.
     overridden: BTreeSet<String>,
+    substitutes: &'a BTreeMap<String, Substitute>,
+    /// The paths of the component instances a model stands in for.
+    substituted: BTreeSet<String>,
     nets: Vec<NetRecord>,
     named: HashMap<String, usize>,
     devices: Vec<Pending<'a>>,
@@ -645,7 +670,35 @@ impl<'a> Walk<'a> {
                 source: instance.source.clone(),
             };
             match &instance.of {
-                Of::Device(model) => self.device(instance, at, model, prefix, ports),
+                Of::Device(model) => {
+                    let parameters = match self.overrides.get(&at.path) {
+                        Some(replaced) => {
+                            self.overridden.insert(at.path.clone());
+                            let mut merged = instance.parameters.clone();
+                            merged.extend(replaced.clone());
+                            Cow::Owned(merged)
+                        }
+                        None => Cow::Borrowed(&instance.parameters),
+                    };
+                    let placement = Placement {
+                        terminals: &instance.terminals,
+                        parameters,
+                        at,
+                        model,
+                    };
+                    self.device(placement, prefix, ports);
+                }
+                Of::Component(_) if self.substitutes.contains_key(&at.path) => {
+                    let substitute = &self.substitutes[&at.path];
+                    self.substituted.insert(at.path.clone());
+                    let placement = Placement {
+                        terminals: &instance.terminals,
+                        parameters: Cow::Borrowed(&substitute.parameters),
+                        at,
+                        model: &substitute.model,
+                    };
+                    self.device(placement, prefix, ports);
+                }
                 Of::Component(target) => {
                     let definition = &self.circuit.components[target];
                     let inner: BTreeMap<&Name, NetRef> = definition
@@ -664,23 +717,19 @@ impl<'a> Walk<'a> {
         }
     }
 
+    /// Places the device of `placement`, analog or logic, in the component at `prefix`.
     fn device(
         &mut self,
-        instance: &'a Instance,
-        at: Location,
-        model_name: &Name,
+        placement: Placement<'a, '_>,
         prefix: &str,
         ports: &BTreeMap<&'a Name, NetRef>,
     ) {
-        let parameters = match self.overrides.get(&at.path) {
-            Some(replaced) => {
-                self.overridden.insert(at.path.clone());
-                let mut merged = instance.parameters.clone();
-                merged.extend(replaced.clone());
-                Cow::Owned(merged)
-            }
-            None => Cow::Borrowed(&instance.parameters),
-        };
+        let Placement {
+            terminals: connected,
+            parameters,
+            at,
+            model: model_name,
+        } = placement;
         if let Some(model) = self.library.get(model_name.as_str()) {
             let interface = match model.interface(&parameters) {
                 Ok(interface) => interface,
@@ -693,7 +742,7 @@ impl<'a> Walk<'a> {
                 }
             };
             let Some(terminals) = self.terminals(
-                instance,
+                connected,
                 &at,
                 model_name,
                 &interface.terminals,
@@ -724,7 +773,7 @@ impl<'a> Walk<'a> {
                 }
             };
             let Some(nets) =
-                self.terminals(instance, &at, model_name, &pins.names(), prefix, ports)
+                self.terminals(connected, &at, model_name, &pins.names(), prefix, ports)
             else {
                 return;
             };
@@ -748,11 +797,11 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// The net of each of `expected`, the terminals a model declares, as `instance` connects
-    /// them, or `None` after reporting a terminal it leaves unconnected or does not have.
+    /// The net of each of `expected`, the terminals a model declares, as `connected` joins
+    /// them, or `None` after reporting a terminal left unconnected or that it does not have.
     fn terminals(
         &mut self,
-        instance: &Instance,
+        connected: &BTreeMap<Name, Name>,
         at: &Location,
         model: &Name,
         expected: &[String],
@@ -760,7 +809,7 @@ impl<'a> Walk<'a> {
         ports: &BTreeMap<&'a Name, NetRef>,
     ) -> Option<Vec<NetRef>> {
         let mut complete = true;
-        for terminal in instance.terminals.keys() {
+        for terminal in connected.keys() {
             if !expected.iter().any(|name| name == terminal.as_str()) {
                 complete = false;
                 self.problems.push(ElaborationProblem::UnknownTerminal {
@@ -772,7 +821,7 @@ impl<'a> Walk<'a> {
         }
         let mut terminals = Vec::with_capacity(expected.len());
         for terminal in expected {
-            if let Some(net) = instance.terminals.get(terminal.as_str()) {
+            if let Some(net) = connected.get(terminal.as_str()) {
                 terminals.push(self.net(prefix, ports, net));
             } else {
                 complete = false;

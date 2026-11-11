@@ -12,6 +12,7 @@ The guide explains jolty one concept per page.
 - [Simulation](simulation.md): plans, the four analyses and the numerical options, and how the engine solves a circuit.
 - [Results](results.md): the report, the plots, the results file, and how to read a result by net and by instance.
 - [Specs](specs.md): requirements on measurements of the results, and the verdict on each.
+- [Fidelity](fidelity.md): logic cells characterized from components' circuits that stand in for them, and the spot checks that hold them to their contracts.
 
 A circuit and its simulation stay apart.
 The circuit says what exists: components, devices, values and connections.

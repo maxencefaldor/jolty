@@ -416,3 +416,151 @@ fn logic_nets_name_what_drives_and_reads_them() {
     assert_eq!(point.logic[net(&simulator, "a")], Level::Unknown);
     assert_eq!(point.logic[net(&simulator, "y")], Level::Unknown);
 }
+
+/// A circuit whose top places `X1`, an instance of `cell`: a resistor from its supply to
+/// its output, standing for a circuit with ports `a`, `y`, `vdd` and `gnd`.
+fn hierarchy() -> Circuit {
+    let document = json!({
+        "format": "jolty-circuit", "version": 1, "top": "test",
+        "components": {
+            "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
+                {"id": "VDD", "of": {"device": "voltage_source"},
+                 "parameters": {"waveform": {"dc": 1.0}},
+                 "terminals": {"positive": "vdd", "negative": "0"}},
+                {"id": "A", "of": {"device": "logic_source"},
+                 "parameters": {"initial": "1", "transition": 1e-12},
+                 "terminals": {"output": "a"}},
+                {"id": "X1", "of": {"component": "cell"},
+                 "terminals": {"a": "a", "y": "y", "vdd": "vdd", "gnd": "0"}},
+                {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-15},
+                 "terminals": {"a": "y", "b": "0"}}
+            ]},
+            "cell": {"ports": [{"name": "a", "role": "input"}, {"name": "y", "role": "output"},
+                               {"name": "vdd", "role": "supply"}, {"name": "gnd", "role": "ground"}],
+                     "instances": [
+                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+                 "terminals": {"a": "vdd", "b": "y"}},
+                {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+                 "terminals": {"a": "a", "b": "gnd"}}
+            ]}
+        }
+    });
+    Circuit::from_json(&document.to_string()).expect("a valid circuit file")
+}
+
+#[test]
+fn a_model_stands_in_for_a_component_instance() {
+    let mut inverter = cell(&["a"], "10", (1e-9, 1e-9), true);
+    inverter["electrical"]["supply"] = json!("vdd");
+    inverter["electrical"]["ground"] = json!("gnd");
+    let mut conditions = Conditions::default();
+    conditions.substitutes.insert(
+        "X1".to_owned(),
+        serde_json::from_value(json!({"model": "logic_cell", "parameters": inverter})).unwrap(),
+    );
+    let mut simulator = Simulator::new(&hierarchy(), &Library::standard(), &conditions).unwrap();
+    let paths: Vec<&str> = simulator
+        .logic_devices()
+        .iter()
+        .map(jolty_engine::PlacedLogic::path)
+        .collect();
+    assert_eq!(paths, ["A", "X1"]);
+    let point = simulator.operating_point(&Options::default()).unwrap();
+    let y = simulator.unknown("y").unwrap().index();
+    assert!(point.values[y].abs() < 1e-12, "{}", point.values[y]);
+
+    conditions.substitutes.insert(
+        "X1/R1".to_owned(),
+        serde_json::from_value(json!({"model": "resistor", "parameters": {"resistance": 1.0}}))
+            .unwrap(),
+    );
+    let error = Simulator::new(&hierarchy(), &Library::standard(), &conditions).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "the circuit has no component instance at `X1/R1`, for which a model stands in"
+    );
+}
+
+/// An output that turns back before its edge reaches the rail has less to swing, and
+/// crosses half the supply sooner: falling at 2 ns with a 2 ns transition, it is three
+/// quarters of the way down when the edge back would leave the rail, so it crosses half a
+/// nanosecond sooner than from the rail.
+#[test]
+fn an_output_turning_back_before_its_rail_crosses_sooner() {
+    let mut buffer = cell(&["a"], "01", (1e-9, 1e-9), false);
+    buffer["timing"]["fixed"]["transition"] = json!(2e-9);
+    let circuit = circuit(&[
+        (
+            "A",
+            "logic_source",
+            source("1", &[(1e-9, "0"), (2.5e-9, "1")]),
+            &[("output", "a")],
+        ),
+        ("U1", "logic_cell", buffer, &[("a", "a"), ("y", "y")]),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let waveforms = simulator
+        .transient(&transient(10e-9), &Options::default())
+        .unwrap();
+    let changes = &waveforms.logic[net(&simulator, "y")];
+    assert_eq!(changes.len(), 3);
+    assert!((changes[1].0 - 2e-9).abs() < 1e-18, "{changes:?}");
+    assert!((changes[2].0 - 3e-9).abs() < 1e-18, "{changes:?}");
+}
+
+/// A logic driver's delay reads the whole capacitance on the net it drives: an analog
+/// capacitor's as much as a detector's.
+#[test]
+fn a_driver_s_load_counts_the_analog_capacitance_it_drives() {
+    let inverter = json!({
+        "inputs": ["a"], "outputs": [{"name": "y", "table": "10"}],
+        "timing": {"characterized": {
+            "slews": [1e-12], "loads": [0, 1e-12],
+            "arcs": [
+                {"input": "a", "before": "0", "output": "y",
+                 "delay": [[1e-9, 3e-9]], "transition": [[1e-12, 1e-12]]},
+                {"input": "a", "before": "1", "output": "y",
+                 "delay": [[1e-9, 3e-9]], "transition": [[1e-12, 1e-12]]}
+            ]}},
+        "electrical": {"input_capacitances": [0]},
+    });
+    let crossing = |load: f64| {
+        let circuit = circuit(&[
+            (
+                "VDD",
+                "voltage_source",
+                json!({"waveform": {"dc": 1.0}}),
+                &[("positive", "vdd"), ("negative", "0")],
+            ),
+            (
+                "A",
+                "logic_source",
+                source("0", &[(1e-9, "1")]),
+                &[("output", "a")],
+            ),
+            (
+                "U1",
+                "logic_cell",
+                inverter.clone(),
+                &[("a", "a"), ("y", "y"), ("supply", "vdd"), ("ground", "0")],
+            ),
+            (
+                "C1",
+                "capacitor",
+                json!({"capacitance": load}),
+                &[("a", "y"), ("b", "0")],
+            ),
+        ]);
+        let mut simulator = simulator(&circuit);
+        let waveforms = simulator
+            .transient(&transient(10e-9), &Options::default())
+            .unwrap();
+        waveforms.logic[net(&simulator, "U1:y")][1].0 + 0.5e-12
+    };
+    assert!((crossing(0.0) - 2e-9).abs() < 1e-15);
+    assert!(
+        (crossing(0.5e-12) - 3e-9).abs() < 1e-15,
+        "{}",
+        crossing(0.5e-12)
+    );
+}

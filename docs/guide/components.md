@@ -28,7 +28,8 @@ def divider(c: Builder, upper: Quantity, lower: Quantity) -> None:
 The builder offers three methods:
 
 - `c.port(name, role)` declares a port: the net of that name inside the component, seen from outside.
-  Its role is `Role.SIGNAL` by default, `Role.SUPPLY` for a supply rail, or `Role.GROUND` for the ground.
+  Its role is `Role.SIGNAL` by default, `Role.INPUT` or `Role.OUTPUT` for a signal in one direction, `Role.SUPPLY` for a supply rail, or `Role.GROUND` for the ground.
+  A schematic draws inputs on a box's left and outputs on its right, and a component of inputs, outputs, one supply and one ground can be [characterized](fidelity.md) as a logic cell.
 - `c.place(item, id=...)` places a device or another component as an instance, and returns it.
   The instance's terminals are its attributes, such as `first.a`, or items, such as `first["a"]`.
 - `c.connect(*points, name=None)` joins terminals, ports and nets into one net.

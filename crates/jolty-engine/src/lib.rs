@@ -48,9 +48,10 @@ mod transient;
 
 use std::collections::BTreeMap;
 
-use jolty_ir::{Circuit, Parameters};
+use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{Library, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
 use jolty_numerics::{LinearError, SparseLu};
+use serde::Deserialize;
 
 pub use ac::{Ac, Response};
 pub use analysis::{Analysis, Outcome};
@@ -67,29 +68,46 @@ use logic::Events;
 use newton::Workspace;
 
 /// What a circuit is simulated in, apart from its analyses: its devices' temperature,
-/// and parameters that replace the circuit's own for some device instances, as a Monte
-/// Carlo sample's do.
+/// parameters that replace the circuit's own for some device instances, as a Monte Carlo
+/// sample's do, and models that stand in for some component instances, as a plan's
+/// fidelity chooses.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Conditions {
     /// The devices' temperature, in kelvins.
     pub temperature: f64,
     /// Parameters that replace an instance's own, by the instance's path, such as `X1/R1`.
     pub overrides: BTreeMap<String, Parameters>,
+    /// Models that stand in for component instances, by the instance's path, such as
+    /// `adder/U1`.
+    pub substitutes: BTreeMap<String, Substitute>,
+}
+
+/// A model that stands in for a component instance: a device whose terminals are the
+/// component's ports, joined to the same nets.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Substitute {
+    /// The model's name, such as `logic_cell`.
+    pub model: Name,
+    /// The device's parameters.
+    pub parameters: Parameters,
 }
 
 impl Conditions {
-    /// The conditions at `temperature`, in kelvins, with no parameter replaced.
+    /// The conditions at `temperature`, in kelvins, with no parameter replaced and no
+    /// model standing in.
     #[must_use]
     pub const fn at(temperature: f64) -> Self {
         Self {
             temperature,
             overrides: BTreeMap::new(),
+            substitutes: BTreeMap::new(),
         }
     }
 }
 
 impl Default for Conditions {
-    /// The conditions at 27 °C, with no parameter replaced.
+    /// The conditions at 27 °C, with no parameter replaced and no model standing in.
     fn default() -> Self {
         Self::at(REFERENCE_TEMPERATURE)
     }

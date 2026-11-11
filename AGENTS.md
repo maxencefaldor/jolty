@@ -45,7 +45,7 @@ Each module imports only from the modules listed before it:
 1. `units`, `waveforms`, `ir`: dimensioned quantities, the levels of sources over time, and the circuit format.
 1. `devices`, `builder`: the devices a script places, and components written as Python functions.
 1. `spice`: SPICE libraries read into components, and model files downloaded and checked.
-1. `plan`, `checks`, `results`, `specs`, `simulate`, `variation`: analyses and their options, the rules and their diagnostics, results, requirements measured on results, the engine's Python face, and Monte Carlo samples of tolerances.
+1. `plan`, `checks`, `results`, `specs`, `simulate`, `variation`, `fidelity`: analyses and their options, the rules and their diagnostics, results, requirements measured on results, the engine's Python face, Monte Carlo samples of tolerances, and logic models characterized from components' circuits.
 1. `files`, `report`, `plots`: circuit and results files, what each analysis found as data and as text, and plots of results.
 1. `layout`, `schematic`: where a schematic places each instance and runs each wire, and the schematic drawn.
 1. `runner`, `service`: scripts in child processes, and every command defined once.

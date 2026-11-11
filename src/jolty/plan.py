@@ -4,13 +4,15 @@
 A plan is kept apart from the circuit: the circuit says what exists, the plan how to
 simulate it. A plan runs its analyses at its temperature, then again at each of its
 corners: another temperature, or other arguments to the build script's ``build()``, and
-on Monte Carlo samples of the circuit's tolerances.
+on Monte Carlo samples of the circuit's tolerances. Its fidelity chooses, for the
+component instances its scopes match, logic models characterized from their circuits.
 
 Examples:
     >>> from jolty.units import us
     >>> plan = Plan({"step": Transient(stop=10 * us)})
 """
 
+import itertools
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
@@ -18,7 +20,7 @@ from typing import Literal
 
 from pydantic import JsonValue
 
-from jolty.units import FREQUENCY, TEMPERATURE, TIME, Dimension, Quantity
+from jolty.units import FREQUENCY, TEMPERATURE, TIME, VOLTAGE, Dimension, Quantity
 
 type Method = Literal["trapezoidal", "gear2", "backward_euler"]
 """An integration method: trapezoidal by default, Gear2 for stiff circuits that ring,
@@ -169,6 +171,60 @@ class MonteCarlo:
 
 
 @dataclass(frozen=True, slots=True)
+class Characterized:
+    """A logic model characterized from a component's own circuit, at `supply`.
+
+    The component's ports are its inputs, its outputs, one supply and one ground. Its
+    timing is measured over a grid of input transitions, `slews` times the cell's own
+    output transition, and of output loads, `fanouts` times its mean input capacitance.
+    Each run, `spot_checks` of the instances the scope matches, drawn with `seed`, are
+    simulated again at their circuit's fidelity, and each of their outputs' changes must
+    lie within the model's measured error, plus `tolerance` times its mean delay, of the
+    model's.
+
+    Examples:
+        >>> from jolty.units import V
+        >>> Characterized(1.8 * V).fanouts
+        (0.0, 1.0, 2.0, 4.0)
+    """
+
+    supply: Quantity
+    slews: Sequence[float] = (0.5, 1.0, 2.0, 4.0)
+    fanouts: Sequence[float] = (0.0, 1.0, 2.0, 4.0)
+    spot_checks: int = 1
+    tolerance: float = 0.1
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        """Checks the settings, and keeps the grids as tuples.
+
+        Raises:
+            DimensionError: When the supply is not a voltage.
+            ValueError: When a grid does not rise, from above zero for the transitions
+                and from zero or more for the fanouts, or the spot checks or the
+                tolerance are negative.
+        """
+        if self.supply.to(VOLTAGE, "a characterization's supply") <= 0:
+            message = f"a characterization's supply is positive, not {self.supply}"
+            raise ValueError(message)
+        for name, grid, above in (
+            ("slews", self.slews, "above zero"),
+            ("fanouts", self.fanouts, "from zero or more"),
+        ):
+            values = tuple(float(value) for value in grid)
+            rising = all(a < b for a, b in itertools.pairwise(values))
+            first = values[0] if values else math.nan
+            starts = first > 0 if name == "slews" else first >= 0
+            if not rising or not starts:
+                message = f"the {name} rise {above}, not {values}"
+                raise ValueError(message)
+            object.__setattr__(self, name, values)
+        if self.spot_checks < 0 or self.tolerance < 0:
+            message = "the spot checks and the tolerance are zero or more"
+            raise ValueError(message)
+
+
+@dataclass(frozen=True, slots=True)
 class Plan:
     """Named analyses to run on a circuit, the options they share, and its conditions.
 
@@ -176,6 +232,11 @@ class Plan:
     names its results too. The circuit's devices are simulated at `temperature`, 27 °C
     unless given, then at each of the `corners`, each named by an identifier too, and on
     the samples of a `monte_carlo` analysis.
+
+    Its `fidelity` maps scopes, patterns of instance paths such as ``adder/*``, where
+    ``*`` matches within a level of the hierarchy and ``**`` across levels, to the
+    logic models characterized for the component instances they match; an instance
+    within another that a scope matches takes the outer one's model.
     """
 
     analyses: Mapping[str, Analysis]
@@ -183,6 +244,7 @@ class Plan:
     temperature: Quantity | None = None
     corners: Mapping[str, Corner] = field(default_factory=dict)
     monte_carlo: MonteCarlo | None = None
+    fidelity: Mapping[str, Characterized] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Checks that the plan runs an analysis or more, all named by identifiers.
@@ -207,6 +269,12 @@ class Plan:
         for name, corner in self.corners.items():
             if not isinstance(corner, Corner):
                 message = f"the corner {name} is {corner!r}, not a Corner"
+                raise TypeError(message)
+        for scope, model in self.fidelity.items():
+            if not isinstance(model, Characterized):
+                message = (
+                    f"the scope {scope} takes {model!r}, not a Characterized model"
+                )
                 raise TypeError(message)
 
     def temperature_at(self, corner: Corner | None = None) -> Quantity | None:
