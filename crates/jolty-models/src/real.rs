@@ -93,6 +93,13 @@ pub trait Real:
         self.chain(self.value().sin(), self.value().cos())
     }
 
+    /// The tangent, of an angle in radians.
+    #[must_use]
+    fn tan(self) -> Self {
+        let tangent = self.value().tan();
+        self.chain(tangent, tangent.mul_add(tangent, 1.0))
+    }
+
     /// The least non-negative remainder of division by `divisor`: the number less
     /// `divisor` times the floor of their quotient.
     #[must_use]
@@ -165,6 +172,10 @@ impl Real for f64 {
 
     fn sin(self) -> Self {
         f64::sin(self)
+    }
+
+    fn tan(self) -> Self {
+        f64::tan(self)
     }
 
     fn rem_euclid(self, divisor: Self) -> Self {
@@ -382,6 +393,7 @@ mod tests {
             |v| v.min(2.0) / 4.0 - 1.0,
         );
         check(|g| (g * 3.0).sin(), |v| (3.0 * v).sin());
+        check(|g| (g * 0.5).tan(), |v| (0.5 * v).tan());
         check(
             |g| (g * 10.0).rem_euclid(g + 1.0),
             |v| (10.0 * v).rem_euclid(v + 1.0),

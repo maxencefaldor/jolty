@@ -82,7 +82,7 @@ impl Library {
         let mut library = Self::default();
         library.add(Native::<BehavioralCurrentSource>::new());
         library.add(Native::<BehavioralVoltageSource>::new());
-        library.add(Plain::<BipolarTransistor>::new());
+        library.add(Native::<BipolarTransistor>::new());
         library.add(Native::<Resistor>::new());
         library.add(Native::<Capacitor>::new());
         library.add(Native::<Inductor>::new());

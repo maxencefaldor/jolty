@@ -329,7 +329,11 @@ pub(crate) fn assert_parameter_gradients_match_at<M: NativeModel>(
         // Central differences at a step and at half of it, extrapolated to a zero step:
         // the step large enough that a model's own iterations, such as a diode's matching
         // of its breakdown, settle alike above and below.
-        let step = 1e-4 * value.abs().max(1e-12);
+        let step = if value == 0.0 {
+            1e-6
+        } else {
+            1e-4 * value.abs()
+        };
         let mut central = |step: f64| {
             *at(&mut changed, &path) = serde_json::json!(value + step);
             let above = rig.plain(&object(&changed), (x, time));
