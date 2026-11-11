@@ -1,0 +1,22 @@
+[package]
+name = "jolty-numerics"
+description = "The numerical kernels of jolty: sparsity patterns, sparse LU factorization and integration formulas."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+dyn-stack.workspace = true
+faer.workspace = true
+num-complex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
