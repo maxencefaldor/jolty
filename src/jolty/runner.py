@@ -4,7 +4,8 @@
 The service starts ``python -P -m jolty.runner DIRECTORY`` for every command that runs
 scripts. The runner reads the [`Job`][jolty.runner.Job] in ``DIRECTORY/job.json``. It
 calls the script's ``build()`` and elaborates the circuit it returns, then, when the job
-names a plan, calls the plan's ``plan()`` and runs each analysis. It writes the
+names a plan, calls the plan's ``plan()`` and runs each analysis, then evaluates the
+requirements its ``specs()`` returns, when it defines one. It writes the
 [`Outcome`][jolty.runner.Outcome], what was built or why it failed, to
 ``DIRECTORY/outcome.json``, and the results of the analyses to
 ``DIRECTORY/results.npz``.
@@ -31,6 +32,7 @@ from jolty.errors import ElaborationError, JoltyError, ScriptError
 from jolty.plan import Plan
 from jolty.results import Result
 from jolty.simulate import Simulation
+from jolty.specs import Specs, Verdict, evaluate
 
 JOB: Final = "job.json"
 """The file in the job's directory that holds the job."""
@@ -92,6 +94,11 @@ class Built(BaseModel):
     )
     analyses: tuple[report.AnalysisReport, ...] = Field(
         default=(), description="A report per analysis of the plan, in its order."
+    )
+    specs: tuple[Verdict, ...] = Field(
+        default=(),
+        description="The verdict on each requirement of the plan's specs, in order; "
+        "empty when the plan defines no specs().",
     )
 
 
@@ -170,6 +177,24 @@ def _run(job: Job, directory: Path) -> Built:
     if not isinstance(plan, Plan):
         message = f"plan() returned {type(plan).__name__}, not a Plan"
         raise ScriptError(message)
+    solved, reports = _analyses(simulation, plan, job.listed)
+    if solved:
+        files.save_results(directory / RESULTS, solved)
+    match _call(job.plan, "specs", namespaces, required=False):
+        case None:
+            verdicts: tuple[Verdict, ...] = ()
+        case Specs() as specs:
+            verdicts = evaluate(specs, solved, plan.analyses)
+        case other:
+            message = f"specs() returned {type(other).__name__}, not Specs"
+            raise ScriptError(message)
+    return elaborated.model_copy(update={"analyses": reports, "specs": verdicts})
+
+
+def _analyses(
+    simulation: Simulation, plan: Plan, listed: int
+) -> tuple[dict[str, Result], tuple[report.AnalysisReport, ...]]:
+    """The results of the analyses of `plan` that end, by name, and a report on each."""
     solved: dict[str, Result] = {}
     reports: list[report.AnalysisReport] = []
     for name, analysis in plan.analyses.items():
@@ -179,25 +204,33 @@ def _run(job: Job, directory: Path) -> Built:
             reports.append(report.FailureReport(name=name, error=str(error)))
         else:
             solved[name] = result
-            reports.append(report.report(name, result, job.listed))
-    if solved:
-        files.save_results(directory / RESULTS, solved)
-    return elaborated.model_copy(update={"analyses": tuple(reports)})
+            reports.append(report.report(name, result, listed))
+    return solved, tuple(reports)
 
 
-def _call(script: Path, name: str, namespaces: dict[Path, dict[str, object]]) -> object:
+def _call(
+    script: Path,
+    name: str,
+    namespaces: dict[Path, dict[str, object]],
+    *,
+    required: bool = True,
+) -> object:
     """Calls the function `name` of `script`, which runs once however often it is used.
 
+    A script that defines no function `name` returns None when it is not `required`.
+
     Raises:
-        ScriptError: When the script defines no function `name`.
+        ScriptError: When the script defines no function `name` and it is required.
     """
     if script not in namespaces:
         namespaces[script] = runpy.run_path(str(script), run_name="__jolty__")
     function = namespaces[script].get(name)
-    if not callable(function):
-        message = f"{_relative(str(script))} defines no {name}() function"
-        raise ScriptError(message)
-    return function()
+    if callable(function):
+        return function()
+    if not required:
+        return None
+    message = f"{_relative(str(script))} defines no {name}() function"
+    raise ScriptError(message)
 
 
 @contextmanager

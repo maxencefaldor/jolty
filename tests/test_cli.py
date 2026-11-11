@@ -122,6 +122,27 @@ def test_a_failed_analysis_exits_with_1(
     assert "step: failed: invalid analysis" in capsys.readouterr().out
 
 
+def test_a_failed_requirement_exits_with_1(
+    script: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    specs = """
+
+def specs():
+    from jolty import Specs
+    from jolty.specs import value
+
+    return Specs([value("step", "out", at=5 * us) >= LEVEL])
+"""
+    script.write_text(FILTER + specs.replace("LEVEL", "0.9 * V"), encoding="utf-8")
+    assert run("simulate", "low_pass.py", "--no-plot", "--no-schematic") == 0
+    assert "specs: 1 passed" in capsys.readouterr().out
+    script.write_text(FILTER + specs.replace("LEVEL", "1.1 * V"), encoding="utf-8")
+    assert run("simulate", "low_pass.py", "--no-plot", "--no-schematic") == 1
+    out = capsys.readouterr().out
+    assert "failed: out at 5 µs in step ≥ 1.1 V: read 1 V, slack -100 mV" in out
+    assert "  = low_pass.py:30 in specs()" in out
+
+
 def test_failing_scripts_exit_with_2_and_say_why(
     script: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

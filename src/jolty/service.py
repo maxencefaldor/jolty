@@ -22,11 +22,12 @@ from typing import override
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import CliPositionalArg
 
-from jolty import checks, files, ir, plots, results, runner, schematic
+from jolty import checks, files, ir, plots, results, runner, schematic, specs
 from jolty.errors import ElaborationError, JoltyError
 from jolty.report import AnalysisReport, FailureReport
 from jolty.settings import Level, Settings
 from jolty.simulate import Simulation
+from jolty.specs import Verdict
 
 _SCRIPT_DESCRIPTION = (
     "Python file defining build(), which returns the top Component of the circuit."
@@ -204,12 +205,14 @@ class BuildResult(CommandResult):
 
 
 class SimulateRequest(_Model):
-    """Build a script's circuit, then run every analysis of a plan on it.
+    """Build a script's circuit, run every analysis of a plan on it, check its specs.
 
     A plan is a Python file defining plan(), which returns a jolty Plan: named analyses
-    and the numerical options they share. It can be the build script itself. The scripts
-    run as ordinary Python with the user's permissions, in their own process with a time
-    limit; that process is not a sandbox.
+    and the numerical options they share. It may define specs(), which returns jolty
+    Specs: requirements on measurements of the analyses' results, each of which
+    passes, is marginal, fails or goes unmeasured. It can be the build script itself.
+    The scripts run as ordinary Python with the user's permissions, in their own process
+    with a time limit; that process is not a sandbox.
     """
 
     script: CliPositionalArg[Path] = Field(description=_SCRIPT_DESCRIPTION)
@@ -255,6 +258,10 @@ class SimulateResult(CommandResult):
     analyses: tuple[AnalysisReport, ...] = Field(
         description="A report per analysis, in the plan's order."
     )
+    specs: tuple[Verdict, ...] = Field(
+        description="The verdict on each requirement of the plan's specs, in order; "
+        "empty when the plan defines no specs()."
+    )
     schematic: Path | None = Field(
         description="The top component's schematic; null when drawing is off."
     )
@@ -274,7 +281,11 @@ class SimulateResult(CommandResult):
     @property
     @override
     def ok(self) -> bool:
-        """Whether the circuit elaborates, checks clean, and every analysis ends."""
+        """Whether the circuit elaborates, checks clean, and meets its plan.
+
+        It meets its plan when every analysis ends and every requirement passes, if
+        only marginally.
+        """
         checked = self.report is None or self.report.ok
         return (
             not self.circuit.problems
@@ -282,6 +293,7 @@ class SimulateResult(CommandResult):
             and not any(
                 isinstance(analysis, FailureReport) for analysis in self.analyses
             )
+            and all(verdict.status in {"passed", "marginal"} for verdict in self.specs)
         )
 
     @override
@@ -295,6 +307,8 @@ class SimulateResult(CommandResult):
         if self.results is not None:
             blocks.append(f"saved {self.results}")
         blocks.extend(analysis.describe() for analysis in self.analyses)
+        if self.specs:
+            blocks.append(specs.describe(self.specs))
         if self.schematic:
             blocks.append(f"drew {self.schematic}")
         if self.plots:
@@ -378,6 +392,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         report=report,
         results=target if saved else None,
         analyses=built.analyses,
+        specs=built.specs,
         schematic=drawn,
         plots=plotted,
         output=output,

@@ -4,12 +4,13 @@
 Circuits are written as Python components with [`component`][jolty.builder.component]
 and a [`Builder`][jolty.builder.Builder], with values in the units of
 [`jolty.units`][jolty.units]. A [`Simulation`][jolty.simulate.Simulation] runs the
-analyses of [`jolty.plan`][jolty.plan] on them with the Rust engine.
+analyses of [`jolty.plan`][jolty.plan] on them with the Rust engine, and
+[`jolty.specs`][jolty.specs] states what their results must show.
 """
 
 from importlib.metadata import version
 
-from jolty import devices, files, plan, spice, units, waveforms
+from jolty import devices, files, plan, specs, spice, units, waveforms
 from jolty.builder import Builder, Component, Net, Placed, Terminal, circuit, component
 from jolty.errors import (
     BuildError,
@@ -24,6 +25,7 @@ from jolty.errors import (
 from jolty.ir import Role
 from jolty.plan import Ac, DcSweep, OperatingPoint, Options, Plan, Transient
 from jolty.simulate import Simulation
+from jolty.specs import Specs
 
 __version__ = version("jolty")
 
@@ -46,6 +48,7 @@ __all__ = [
     "ScriptError",
     "Simulation",
     "SimulationError",
+    "Specs",
     "SpiceError",
     "Terminal",
     "Transient",
@@ -55,6 +58,7 @@ __all__ = [
     "devices",
     "files",
     "plan",
+    "specs",
     "spice",
     "units",
     "waveforms",

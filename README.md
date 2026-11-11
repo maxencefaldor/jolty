@@ -8,6 +8,7 @@ Each build checks every device and connection, reports each problem with the scr
 jolty is on its third milestone, real parts: board-level circuits of passive devices, sources, diodes and transistors, simulated at the operating point, over DC sweeps, in frequency and in time.
 Vendors' SPICE macromodels, such as an op-amp's, read as components and agree with ngspice.
 Every build checks the circuit's structure and draws its schematic, and every simulation plots its analyses, so an agent sees what it built.
+Specs state what a circuit must do, and every simulation measures its results against them.
 
 The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.
 
@@ -74,6 +75,18 @@ def plan() -> Plan:
     )
 ```
 
+Specs say what the results must show, and the simulation states the verdict on each requirement, with the value it read:
+
+```python
+def specs() -> Specs:
+    return Specs(
+        [
+            gain("bode", "out", at=1 * kHz).within(0, 0.1),
+            (rise_time("step", "out") <= 2.5 * us).with_margin(100 * ns),
+        ]
+    )
+```
+
 The engine solves the charge-oriented equations `f(x) + d/dt q(x) = 0` of modified nodal analysis by Newton iteration, with SPICE's convergence aids, one sparse LU factorization shared by every analysis, and adaptive time steps controlled by the local truncation error.
 
 ## 🏗️ Architecture
@@ -86,7 +99,7 @@ The Rust workspace in `crates/` holds the engine, each crate built on the ones b
 1. `jolty-engine`: elaboration of a hierarchy into devices bound to unknowns, Newton iteration, and the analyses.
 1. `jolty-python`: the Python extension module `jolty._core`.
 
-The Python package in `src/jolty` holds everything an agent reads and writes: units, the builder, plans, results, reports, the command line and the MCP server.
+The Python package in `src/jolty` holds everything an agent reads and writes: units, the builder, plans, results, specs, reports, the command line and the MCP server.
 
 ## 📄 License
 

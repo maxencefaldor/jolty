@@ -2,11 +2,12 @@
 """A first-order RC low-pass filter: its step response and its frequency response.
 
 The filter's time constant is 1 µs and its cutoff frequency 159 kHz. Simulate it with
-``jolty simulate examples/rc_filter.py``.
+``jolty simulate examples/rc_filter.py``, which checks its specs too.
 """
 
-from jolty import Builder, Component, Plan, Role, component, devices
+from jolty import Builder, Component, Plan, Role, Specs, component, devices
 from jolty.plan import Ac, OperatingPoint, Transient, decade
+from jolty.specs import bandwidth, gain, overshoot, rise_time
 from jolty.units import MHz, Quantity, V, kHz, kohm, nF, ns, us
 from jolty.waveforms import Piecewise
 
@@ -49,4 +50,16 @@ def plan() -> Plan:
             "step": Transient(stop=10 * us),
             "bode": Ac("V1", decade(1 * kHz, 100 * MHz, 10)),
         }
+    )
+
+
+def specs() -> Specs:
+    """A flat passband to 150 kHz, and a step that rises within 2.5 µs, cleanly."""
+    return Specs(
+        [
+            gain("bode", "out", at=1 * kHz).within(0, 0.1),
+            bandwidth("bode", "out").between(150 * kHz, 170 * kHz),
+            (rise_time("step", "out") <= 2.5 * us).with_margin(100 * ns),
+            overshoot("step", "out") <= 1,
+        ]
     )

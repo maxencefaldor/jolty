@@ -1,12 +1,14 @@
 # Simulation
 
-A simulation runs a plan's analyses on a circuit, and its results read by net and by instance.
+A simulation runs a plan's analyses on a circuit, its results read by net and by instance, and its specs measure them.
 
 ::: jolty.simulate
 
 ::: jolty.plan
 
 ::: jolty.results
+
+::: jolty.specs
 
 ::: jolty.files
     options:

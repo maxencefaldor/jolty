@@ -10,6 +10,7 @@ The guide explains jolty one concept per page.
 - [Schematics](schematics.md): how jolty draws a circuit from its connections alone, and the facts a schematic carries.
 - [Simulation](simulation.md): plans, the four analyses and the numerical options, and how the engine solves a circuit.
 - [Results](results.md): the report, the plots, the results file, and how to read a result by net and by instance.
+- [Specs](specs.md): requirements on measurements of the results, and the verdict on each.
 
 A circuit and its simulation stay apart.
 The circuit says what exists: components, devices, values and connections.

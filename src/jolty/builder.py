@@ -185,14 +185,14 @@ class Builder:
                 ir.ComponentOf(component=item.name),
                 {},
                 tuple(port.name for port in item.definition.ports),
-                _caller(),
+                caller(),
             )
         else:
             placement = _Placement(
                 ir.DeviceOf(device=item.model),
                 item.parameters,
                 item.terminals,
-                _caller(),
+                caller(),
             )
         self._placements[id] = placement
         return Placed(id, placement.terminals)
@@ -375,15 +375,18 @@ def _digest(value: object) -> str:
     return hashlib.sha256(repr(value).encode()).hexdigest()[:8]
 
 
-def _caller() -> ir.Source | None:
-    """The line of the build script that called the builder's method calling this."""
+def caller() -> ir.Source | None:
+    """The script line that called the function calling this, such as a method.
+
+    Its file is relative to the working directory when it lies within it.
+    """
     frame = inspect.currentframe()
-    caller = frame.f_back.f_back if frame and frame.f_back else None
-    if caller is None:
+    line = frame.f_back.f_back if frame and frame.f_back else None
+    if line is None:
         return None
-    path = Path(caller.f_code.co_filename)
+    path = Path(line.f_code.co_filename)
     with contextlib.suppress(ValueError):
         path = path.resolve().relative_to(Path.cwd())
     return ir.Source(
-        file=path.as_posix(), line=caller.f_lineno, function=caller.f_code.co_name
+        file=path.as_posix(), line=line.f_lineno, function=line.f_code.co_name
     )

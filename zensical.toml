@@ -24,6 +24,7 @@ nav = [
     { "Schematics" = "guide/schematics.md" },
     { "Simulation" = "guide/simulation.md" },
     { "Results" = "guide/results.md" },
+    { "Specs" = "guide/specs.md" },
   ] },
   { "Agents" = [
     "agents/index.md",
