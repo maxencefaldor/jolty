@@ -8,9 +8,9 @@
 //! iteration with one sparse LU solver, whose symbolic analysis is shared by all of them.
 //!
 //! ```
-//! use jolty_engine::{Options, Simulator};
+//! use jolty_engine::{Conditions, Options, Simulator};
 //! use jolty_ir::Circuit;
-//! use jolty_models::{Library, REFERENCE_TEMPERATURE};
+//! use jolty_models::Library;
 //!
 //! let circuit = Circuit::from_json(r#"{
 //!     "format": "jolty-circuit", "version": 1, "top": "divider",
@@ -27,7 +27,7 @@
 //!         ]
 //!     }}
 //! }"#)?;
-//! let mut simulator = Simulator::new(&circuit, &Library::standard(), REFERENCE_TEMPERATURE)?;
+//! let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())?;
 //! let solution = simulator.operating_point(&Options::default())?;
 //! let out = simulator.unknown("out").expect("a net named out");
 //! assert!((solution.values[out.index()] - 2.5).abs() < 1e-9);
@@ -43,8 +43,10 @@ mod options;
 mod sweep;
 mod transient;
 
-use jolty_ir::Circuit;
-use jolty_models::{Library, Unknown, UnknownInfo};
+use std::collections::BTreeMap;
+
+use jolty_ir::{Circuit, Parameters};
+use jolty_models::{Library, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
 use jolty_numerics::{LinearError, SparseLu};
 
 pub use ac::{Ac, Response};
@@ -59,6 +61,35 @@ pub use transient::{Statistics, Transient, Waveforms};
 use elaborate::System;
 use newton::Workspace;
 
+/// What a circuit is simulated in, apart from its analyses: its devices' temperature,
+/// and parameters that replace the circuit's own for some device instances, as a Monte
+/// Carlo sample's do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Conditions {
+    /// The devices' temperature, in kelvins.
+    pub temperature: f64,
+    /// Parameters that replace an instance's own, by the instance's path, such as `X1/R1`.
+    pub overrides: BTreeMap<String, Parameters>,
+}
+
+impl Conditions {
+    /// The conditions at `temperature`, in kelvins, with no parameter replaced.
+    #[must_use]
+    pub const fn at(temperature: f64) -> Self {
+        Self {
+            temperature,
+            overrides: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for Conditions {
+    /// The conditions at 27 °C, with no parameter replaced.
+    fn default() -> Self {
+        Self::at(REFERENCE_TEMPERATURE)
+    }
+}
+
 /// A circuit elaborated for simulation, ready to run analyses.
 #[derive(Debug)]
 pub struct Simulator {
@@ -68,19 +99,19 @@ pub struct Simulator {
 }
 
 impl Simulator {
-    /// Elaborates `circuit` with the models of `library`, its devices at `temperature`, in
-    /// kelvins.
+    /// Elaborates `circuit` with the models of `library`, in `conditions`.
     ///
     /// # Errors
     ///
     /// Returns every [`ElaborationProblem`] found: an invalid structure, a missing reference
-    /// node, an unknown model, wrongly connected terminals or invalid parameters.
+    /// node, an unknown model, wrongly connected terminals, invalid parameters, or
+    /// parameters replaced for a device the circuit does not have.
     pub fn new(
         circuit: &Circuit,
         library: &Library,
-        temperature: f64,
+        conditions: &Conditions,
     ) -> Result<Self, ElaborationError> {
-        let system = elaborate::elaborate(circuit, library, temperature)?;
+        let system = elaborate::elaborate(circuit, library, conditions)?;
         let solver = SparseLu::new(system.pattern.clone())
             .map_err(|_| ElaborationError::from(ElaborationProblem::TooLarge))?;
         let workspace = Workspace::new(&system);

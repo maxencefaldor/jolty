@@ -1,6 +1,7 @@
 //! Elaboration: flattening a circuit's hierarchy into devices bound to unknowns.
 
-use std::collections::{BTreeMap, HashMap};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 
@@ -9,6 +10,8 @@ use jolty_models::{
     Binding, Branch, Device, Interface, Library, Model, Node, Quantity, Unknown, UnknownInfo,
 };
 use jolty_numerics::{Entry, Pattern, PatternBuilder};
+
+use crate::Conditions;
 
 /// A circuit flattened into devices bound to unknowns, with the pattern of its matrix.
 ///
@@ -147,6 +150,9 @@ pub enum ElaborationProblem {
         /// What is wrong with the parameters.
         message: String,
     },
+    /// Parameters replace those of an instance the circuit does not have.
+    #[error("the circuit has no device at `{0}`, whose parameters are replaced")]
+    UnknownOverride(String),
     /// The circuit's system is too large to factor.
     #[error("the circuit's system is too large to factor")]
     TooLarge,
@@ -184,11 +190,11 @@ impl fmt::Display for ElaborationError {
 
 impl std::error::Error for ElaborationError {}
 
-/// Flattens `circuit` and binds each device to its unknowns, at `temperature` in kelvins.
+/// Flattens `circuit` and binds each device to its unknowns in `conditions`.
 pub(crate) fn elaborate(
     circuit: &Circuit,
     library: &Library,
-    temperature: f64,
+    conditions: &Conditions,
 ) -> Result<System, ElaborationError> {
     circuit.validate().map_err(|problems| {
         ElaborationError(
@@ -228,6 +234,8 @@ pub(crate) fn elaborate(
     let mut walk = Walk {
         circuit,
         library,
+        overrides: &conditions.overrides,
+        overridden: BTreeSet::new(),
         unknowns: Vec::new(),
         nets: HashMap::new(),
         devices: Vec::new(),
@@ -238,6 +246,7 @@ pub(crate) fn elaborate(
         mut unknowns,
         devices,
         mut problems,
+        overridden,
         ..
     } = walk;
 
@@ -252,9 +261,9 @@ pub(crate) fn elaborate(
             &pending.terminals,
             &mut unknowns,
             &mut builder,
-            temperature,
+            conditions.temperature,
         );
-        match pending.model.instantiate(pending.parameters, &mut binding) {
+        match pending.model.instantiate(&pending.parameters, &mut binding) {
             Ok(device) => placed.push(Placed {
                 location: pending.at,
                 model: pending.model.name(),
@@ -268,6 +277,13 @@ pub(crate) fn elaborate(
             }),
         }
     }
+    problems.extend(
+        conditions
+            .overrides
+            .keys()
+            .filter(|path| !overridden.contains(path.as_str()))
+            .map(|path| ElaborationProblem::UnknownOverride(path.clone())),
+    );
     // Without a single ground, a problem says so.
     let (Some(ground), true) = (ground, problems.is_empty()) else {
         return Err(ElaborationError(problems));
@@ -286,7 +302,8 @@ pub(crate) fn elaborate(
 struct Pending<'a> {
     at: Location,
     model: &'a dyn Model,
-    parameters: &'a Parameters,
+    /// The instance's parameters, with those the conditions replace.
+    parameters: Cow<'a, Parameters>,
     interface: Interface,
     terminals: Vec<Node>,
 }
@@ -295,6 +312,9 @@ struct Pending<'a> {
 struct Walk<'a> {
     circuit: &'a Circuit,
     library: &'a Library,
+    overrides: &'a BTreeMap<String, Parameters>,
+    /// The paths of the devices whose parameters the overrides replace.
+    overridden: BTreeSet<String>,
     unknowns: Vec<UnknownInfo>,
     nets: HashMap<String, Unknown>,
     devices: Vec<Pending<'a>>,
@@ -351,7 +371,16 @@ impl<'a> Walk<'a> {
             });
             return;
         };
-        let interface = match model.interface(&instance.parameters) {
+        let parameters = match self.overrides.get(&at.path) {
+            Some(replaced) => {
+                self.overridden.insert(at.path.clone());
+                let mut merged = instance.parameters.clone();
+                merged.extend(replaced.clone());
+                Cow::Owned(merged)
+            }
+            None => Cow::Borrowed(&instance.parameters),
+        };
+        let interface = match model.interface(&parameters) {
             Ok(interface) => interface,
             Err(error) => {
                 self.problems.push(ElaborationProblem::Parameters {
@@ -390,7 +419,7 @@ impl<'a> Walk<'a> {
             self.devices.push(Pending {
                 at,
                 model,
-                parameters: &instance.parameters,
+                parameters,
                 interface,
                 terminals,
             });
@@ -427,7 +456,7 @@ mod tests {
         elaborate(
             &Circuit::from_json(&text).unwrap(),
             &Library::standard(),
-            jolty_models::REFERENCE_TEMPERATURE,
+            &Conditions::default(),
         )
     }
 
@@ -460,6 +489,38 @@ mod tests {
         assert_eq!(names, ["in", "X1/mid", "V1:current"]);
         let paths: Vec<&str> = system.devices.iter().map(Placed::path).collect();
         assert_eq!(paths, ["V1", "X1/R1", "X1/R2"]);
+    }
+
+    #[test]
+    fn overrides_replace_parameters_by_path() {
+        let text = r#"{"format": "jolty-circuit", "version": 1, "top": "top", "components": {
+            "top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
+                {"id": "X1", "of": {"component": "cell"}, "terminals": {"a": "gnd"}},
+                {"id": "X2", "of": {"component": "cell"}, "terminals": {"a": "gnd"}}
+            ]},
+            "cell": {"ports": [{"name": "a", "role": "signal"}], "instances": [
+                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                 "terminals": {"a": "x", "b": "a"}}
+            ]}
+        }}"#;
+        let circuit = Circuit::from_json(text).unwrap();
+        let mut conditions = Conditions::default();
+        conditions.overrides.insert(
+            "X2/R1".to_owned(),
+            serde_json::json!({"resistance": -1})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        );
+        conditions
+            .overrides
+            .insert("X3/R1".to_owned(), Parameters::new());
+        let error = elaborate(&circuit, &Library::standard(), &conditions).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "instance `X2/R1`: resistance must be positive, not -1.0\n\
+             the circuit has no device at `X3/R1`, whose parameters are replaced"
+        );
     }
 
     #[test]

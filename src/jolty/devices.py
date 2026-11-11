@@ -13,12 +13,12 @@ Examples:
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Final, Literal
 
 from pydantic import JsonValue
 
-from jolty import _core
+from jolty import _core, ir
 from jolty.units import (
     CAPACITANCE,
     CONDUCTANCE,
@@ -39,11 +39,40 @@ from jolty.waveforms import Dc, Waveform
 
 @dataclass(frozen=True, slots=True)
 class Device:
-    """A device ready to place: its model's name, its terminals and its parameters."""
+    """A device ready to place: its model's name, its terminals and its parameters.
+
+    Some parameters may have a tolerance, which Monte Carlo analyses sample.
+    """
 
     model: str
     terminals: tuple[str, ...]
     parameters: dict[str, JsonValue]
+    tolerances: dict[str, ir.Tolerance] = field(default_factory=dict)
+
+    def toleranced(
+        self,
+        parameter: str,
+        relative: float,
+        distribution: Literal["uniform", "normal"] = "uniform",
+    ) -> Device:
+        """The device, `parameter` given a `relative` tolerance, such as 0.01 for 1 %.
+
+        Values spread evenly within a ``uniform`` tolerance, and normally within a
+        ``normal`` one, with the tolerance three standard deviations. Monte Carlo
+        analyses sample them.
+
+        Raises:
+            ValueError: When the device gives the parameter no number, or the
+                tolerance is not at least 0 and below 1.
+        """
+        match self.parameters.get(parameter):
+            case float() | int():
+                pass
+            case _:
+                message = f"a {self.model} gives {parameter} no number to tolerate"
+                raise ValueError(message)
+        tolerance = ir.Tolerance(relative=relative, distribution=distribution)
+        return replace(self, tolerances={**self.tolerances, parameter: tolerance})
 
 
 PER_KELVIN: Final = DIMENSIONLESS / TEMPERATURE
@@ -53,9 +82,10 @@ PER_KELVIN_SQUARED: Final = DIMENSIONLESS / TEMPERATURE**2
 """The dimension of a quadratic temperature coefficient, K⁻²."""
 
 
-def resistor(
+def resistor(  # noqa: PLR0913 - the value, its tolerance and its drift
     resistance: Quantity,
     *,
+    tolerance: float | None = None,
     temperature_coefficient: Quantity | None = None,
     quadratic_temperature_coefficient: Quantity | None = None,
     exponential_temperature_coefficient: float | None = None,
@@ -63,10 +93,12 @@ def resistor(
 ) -> Device:
     """A linear resistor between terminals ``a`` and ``b``.
 
-    Its resistance drifts with temperature, by ``1 + tc1 · ΔT + tc2 · ΔT²`` from its
-    value at the nominal temperature, 27 °C unless given, with the linear and quadratic
-    temperature coefficients, none unless given. An exponential temperature coefficient,
-    in percent per kelvin as SPICE's ``TCE``, drifts it by ``1.01^(tce · ΔT)`` instead.
+    A tolerance, such as 0.01 for 1 %, spreads its resistance evenly within it, as Monte
+    Carlo analyses sample it. Its resistance drifts with temperature, by
+    ``1 + tc1 · ΔT + tc2 · ΔT²`` from its value at the nominal temperature, 27 °C unless
+    given, with the linear and quadratic temperature coefficients, none unless given.
+    An exponential temperature coefficient, in percent per kelvin as SPICE's ``TCE``,
+    drifts it by ``1.01^(tce · ΔT)`` instead.
 
     Examples:
         >>> from jolty.units import K, kohm
@@ -82,19 +114,22 @@ def resistor(
     parameters |= _parameters(
         {}, {"exponential_temperature_coefficient": exponential_temperature_coefficient}
     )
-    return device("resistor", parameters)
+    made = device("resistor", parameters)
+    return made if tolerance is None else made.toleranced("resistance", tolerance)
 
 
 def capacitor(
     capacitance: Quantity,
     *,
+    tolerance: float | None = None,
     temperature_coefficient: Quantity | None = None,
     quadratic_temperature_coefficient: Quantity | None = None,
     nominal_temperature: Quantity | None = None,
 ) -> Device:
     """A linear capacitor between terminals ``a`` and ``b``.
 
-    Its capacitance drifts with temperature as a resistor's resistance does.
+    Its capacitance drifts with temperature, and spreads within its tolerance, as a
+    resistor's resistance does.
     """
     parameters: dict[str, JsonValue] = {
         "capacitance": capacitance.to(CAPACITANCE, "capacitance")
@@ -102,12 +137,14 @@ def capacitor(
     parameters |= _drift(
         temperature_coefficient, quadratic_temperature_coefficient, nominal_temperature
     )
-    return device("capacitor", parameters)
+    made = device("capacitor", parameters)
+    return made if tolerance is None else made.toleranced("capacitance", tolerance)
 
 
 def inductor(
     inductance: Quantity,
     *,
+    tolerance: float | None = None,
     temperature_coefficient: Quantity | None = None,
     quadratic_temperature_coefficient: Quantity | None = None,
     nominal_temperature: Quantity | None = None,
@@ -115,7 +152,8 @@ def inductor(
     """A linear inductor between terminals ``a`` and ``b``.
 
     Its current, from ``a`` through the inductor to ``b``, is the unknown ``current``.
-    Its inductance drifts with temperature as a resistor's resistance does.
+    Its inductance drifts with temperature, and spreads within its tolerance, as a
+    resistor's resistance does.
     """
     parameters: dict[str, JsonValue] = {
         "inductance": inductance.to(INDUCTANCE, "inductance")
@@ -123,7 +161,8 @@ def inductor(
     parameters |= _drift(
         temperature_coefficient, quadratic_temperature_coefficient, nominal_temperature
     )
-    return device("inductor", parameters)
+    made = device("inductor", parameters)
+    return made if tolerance is None else made.toleranced("inductance", tolerance)
 
 
 def _drift(

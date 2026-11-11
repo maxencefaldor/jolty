@@ -70,6 +70,22 @@ pub enum Problem {
         /// The instance.
         id: Name,
     },
+    /// An instance gives a tolerance to a parameter it gives no number to, or a tolerance
+    /// that is not at least 0 and below 1.
+    #[error(
+        "instance `{component}/{id}` gives `{parameter}` a tolerance of {relative}, which \
+         needs a number for it and a tolerance at least 0 and below 1"
+    )]
+    InvalidTolerance {
+        /// The component that places the instance.
+        component: Name,
+        /// The instance.
+        id: Name,
+        /// The parameter given the tolerance.
+        parameter: String,
+        /// The tolerance, in its shortest exact form.
+        relative: String,
+    },
     /// A component instances itself, directly or through others.
     #[error("component `{}` contains itself: {}", .cycle[0], join(.cycle, " -> "))]
     Recursive {
@@ -169,6 +185,20 @@ fn check_component(
                 component: name.clone(),
                 id: instance.id.clone(),
             });
+        }
+        for (parameter, tolerance) in &instance.tolerances {
+            let numeric = instance
+                .parameters
+                .get(parameter)
+                .is_some_and(serde_json::Value::is_number);
+            if !numeric || !(0.0..1.0).contains(&tolerance.relative) {
+                problems.push(Problem::InvalidTolerance {
+                    component: name.clone(),
+                    id: instance.id.clone(),
+                    parameter: parameter.clone(),
+                    relative: format!("{:?}", tolerance.relative),
+                });
+            }
         }
         let Of::Component(target) = &instance.of else {
             continue;
@@ -285,6 +315,7 @@ mod tests {
             of: Of::Component(name(target)),
             parameters: crate::Parameters::new(),
             terminals: terminals.iter().map(|&(t, n)| (name(t), name(n))).collect(),
+            tolerances: BTreeMap::new(),
             source: None,
         }
     }
@@ -359,6 +390,47 @@ mod tests {
                 "instance `top/X1` is of undefined component `missing`",
             ]
         );
+    }
+
+    #[test]
+    fn checks_tolerances() {
+        let tolerance = |relative| crate::Tolerance {
+            relative,
+            distribution: crate::Distribution::Uniform,
+        };
+        let resistor = Instance {
+            id: name("R1"),
+            of: Of::Device(name("resistor")),
+            parameters: serde_json::json!({"resistance": 1e3, "label": "a"})
+                .as_object()
+                .cloned()
+                .unwrap(),
+            terminals: BTreeMap::new(),
+            tolerances: [
+                ("resistance".to_owned(), tolerance(1.0)),
+                ("label".to_owned(), tolerance(0.1)),
+                ("missing".to_owned(), tolerance(0.1)),
+            ]
+            .into(),
+            source: None,
+        };
+        let mut component = instance_of("X1", "cell", &[("a", "n"), ("b", "n")]);
+        component.tolerances = [("resistance".to_owned(), tolerance(0.01))].into();
+        let top = Component {
+            instances: vec![resistor, component],
+            ..Component::default()
+        };
+        let problems = circuit(vec![("top", top), ("cell", cell())])
+            .validate()
+            .unwrap_err();
+        let parameters: Vec<&str> = problems
+            .iter()
+            .map(|problem| match problem {
+                Problem::InvalidTolerance { parameter, .. } => parameter.as_str(),
+                other => panic!("{other}"),
+            })
+            .collect();
+        assert_eq!(parameters, ["label", "missing", "resistance", "resistance"]);
     }
 
     #[test]

@@ -16,7 +16,7 @@ Scripts write circuits with the builder, from devices whose values carry units a
 
 ::: jolty.units
     options:
-      members: [Quantity, Dimension, format_si, finite]
+      members: [Quantity, Dimension, celsius, format_si, finite]
 
 ::: jolty.ir
 

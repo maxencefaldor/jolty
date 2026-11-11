@@ -4,7 +4,8 @@
 A report states facts: the value of every unknown at an operating point, and the first,
 lowest, highest and last value of every unknown over a sweep, a frequency response or a
 transient. It lists the first unknowns, up to a limit; the results file holds them all.
-A corner's report states whether the circuit elaborates there and which analyses fail.
+A corner's report states whether the circuit elaborates there and which analyses fail,
+and a Monte Carlo analysis's what each requirement read over its samples and the yield.
 """
 
 from typing import Annotated, Literal
@@ -13,6 +14,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from jolty import results
+from jolty.specs import Spread, Yield
 from jolty.units import format_si
 
 type Quantity = Literal["voltage", "current"]
@@ -185,6 +187,37 @@ class CornerReport(_Model):
             listed = "".join(f"\n  {failure.describe()}" for failure in self.failures)
             return f"{head}:{listed}"
         return f"{head}: every analysis ended"
+
+
+class MonteCarloReport(_Model):
+    """What a Monte Carlo analysis found over its samples."""
+
+    samples: int
+    seed: int
+    toleranced: int = Field(description="The toleranced parameters each sample draws.")
+    failed: int = Field(
+        description="Samples on which the circuit did not elaborate or an analysis "
+        "failed."
+    )
+    spreads: tuple[Spread, ...] = Field(
+        default=(), description="What each requirement of the specs read."
+    )
+    passing: Yield | None = Field(
+        default=None,
+        description="How many samples meet every requirement; null without specs.",
+    )
+
+    def describe(self) -> str:
+        """The report as text."""
+        head = (
+            f"monte carlo: {self.samples} samples of {self.toleranced} toleranced "
+            f"parameters, seed {self.seed}; {self.failed} failed"
+        )
+        lines = [head]
+        lines.extend(f"  {spread.describe(self.samples)}" for spread in self.spreads)
+        if self.passing is not None:
+            lines.append(f"  {self.passing.describe()}")
+        return "\n".join(lines)
 
 
 type AnalysisReport = Annotated[

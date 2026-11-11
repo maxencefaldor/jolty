@@ -71,6 +71,19 @@ Each corner is named by a Python identifier, and runs at the plan's temperature 
 The report, the results file and the plots hold the plan's own run; a corner's report says whether the circuit elaborates there and which analyses failed.
 [Specs](specs.md) hold at every corner.
 
+## Monte Carlo
+
+A device may give its parameters tolerances: a resistor's, capacitor's or inductor's `tolerance=0.01` spreads its value evenly within 1 %, and `device.toleranced(parameter, relative, distribution)` gives any number parameter a `"uniform"` or a `"normal"` tolerance, the tolerance three standard deviations.
+A plan's `monte_carlo=MonteCarlo(samples, seed=0)` runs its analyses again on each sample, at the plan's own temperature:
+
+```python
+def plan() -> Plan:
+    return Plan({"op": OperatingPoint()}, monte_carlo=MonteCarlo(1000, seed=1))
+```
+
+Each sample draws every toleranced parameter of every device instance independently, so two placements of one component vary apart, and a seed draws the same samples from the same circuit.
+The report counts the samples on which the circuit did not elaborate or an analysis failed; with [specs](specs.md), it states what each requirement read over the samples and the yield.
+
 ## Options
 
 `Options` sets the tolerances; each one left out takes SPICE's default.

@@ -381,9 +381,9 @@ fn drives(device: &Placed, inside: &impl Fn(usize) -> bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use jolty_engine::Simulator;
+    use jolty_engine::{Conditions, Simulator};
     use jolty_ir::Circuit;
-    use jolty_models::{Library, REFERENCE_TEMPERATURE};
+    use jolty_models::Library;
     use serde_json::{Value, json};
 
     use super::*;
@@ -418,7 +418,7 @@ mod tests {
                                     "instances": instances}}
         });
         let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-        let simulator = Simulator::new(&circuit, &Library::standard(), REFERENCE_TEMPERATURE)
+        let simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
             .expect("an elaborated circuit");
         check(&simulator)
     }

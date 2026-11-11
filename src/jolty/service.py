@@ -24,7 +24,7 @@ from pydantic_settings import CliPositionalArg
 
 from jolty import checks, files, ir, plots, results, runner, schematic, specs
 from jolty.errors import ElaborationError, JoltyError
-from jolty.report import AnalysisReport, CornerReport, FailureReport
+from jolty.report import AnalysisReport, CornerReport, FailureReport, MonteCarloReport
 from jolty.settings import Level, Settings
 from jolty.simulate import Simulation
 from jolty.specs import Verdict
@@ -208,11 +208,12 @@ class SimulateRequest(_Model):
     """Build a script's circuit, run every analysis of a plan on it, check its specs.
 
     A plan is a Python file defining plan(), which returns a jolty Plan: named analyses,
-    the numerical options they share, a temperature, and corners, other temperatures
-    or arguments to build() at which the analyses run again. It may define specs(),
-    which returns jolty Specs: requirements on measurements of the analyses' results,
-    each of which passes, is marginal, fails or goes unmeasured, at its worst corner.
-    It can be the build script itself.
+    the numerical options they share, a temperature, corners, other temperatures or
+    arguments to build() at which the analyses run again, and a Monte Carlo analysis
+    that runs them on samples of the circuit's tolerances. It may define specs(), which
+    returns jolty Specs: requirements on measurements of the analyses' results, each of
+    which passes, is marginal, fails or goes unmeasured, at its worst corner, and a
+    yield target for the Monte Carlo samples. It can be the build script itself.
     The scripts run as ordinary Python with the user's permissions, in their own process
     with a time limit; that process is not a sandbox.
     """
@@ -263,6 +264,9 @@ class SimulateResult(CommandResult):
     corners: tuple[CornerReport, ...] = Field(
         description="A report per corner of the plan, in its order."
     )
+    monte_carlo: MonteCarloReport | None = Field(
+        description="What the plan's Monte Carlo analysis found; null without one."
+    )
     specs: tuple[Verdict, ...] = Field(
         description="The verdict on each requirement of the plan's specs, in order; "
         "empty when the plan defines no specs()."
@@ -289,7 +293,8 @@ class SimulateResult(CommandResult):
         """Whether the circuit elaborates, checks clean, and meets its plan.
 
         It meets its plan when every analysis ends, at the plan's own conditions and
-        at every corner, and every requirement passes, if only marginally.
+        at every corner, every requirement passes, if only marginally, and the Monte
+        Carlo analysis's yield reaches the specs' target.
         """
         checked = self.report is None or self.report.ok
         return (
@@ -299,6 +304,11 @@ class SimulateResult(CommandResult):
                 isinstance(analysis, FailureReport) for analysis in self.analyses
             )
             and all(corner.ok for corner in self.corners)
+            and (
+                self.monte_carlo is None
+                or self.monte_carlo.passing is None
+                or self.monte_carlo.passing.met
+            )
             and all(verdict.status in {"passed", "marginal"} for verdict in self.specs)
         )
 
@@ -314,6 +324,8 @@ class SimulateResult(CommandResult):
             blocks.append(f"saved {self.results}")
         blocks.extend(analysis.describe() for analysis in self.analyses)
         blocks.extend(corner.describe() for corner in self.corners)
+        if self.monte_carlo is not None:
+            blocks.append(self.monte_carlo.describe())
         if self.specs:
             blocks.append(specs.describe(self.specs))
         if self.schematic:
@@ -400,6 +412,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         results=target if saved else None,
         analyses=built.analyses,
         corners=built.corners,
+        monte_carlo=built.monte_carlo,
         specs=built.specs,
         schematic=drawn,
         plots=plotted,

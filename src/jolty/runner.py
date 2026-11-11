@@ -6,8 +6,8 @@ scripts. The runner reads the [`Job`][jolty.runner.Job] in ``DIRECTORY/job.json`
 calls the script's ``build()`` and elaborates the circuit it returns, then, when the job
 names a plan, calls the plan's ``plan()`` and runs each analysis, at the plan's own
 conditions then at each of its corners, building the circuit again with a corner's
-arguments. It then evaluates the requirements its ``specs()`` returns, when it defines
-one, on every run. It writes the
+arguments. It evaluates the requirements its ``specs()`` returns, when it defines one,
+on every run, then on each sample of the plan's Monte Carlo analysis. It writes the
 [`Outcome`][jolty.runner.Outcome], what was built or why it failed, to
 ``DIRECTORY/outcome.json``, and the results of the analyses at the plan's
 own conditions to ``DIRECTORY/results.npz``.
@@ -26,15 +26,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Final, Literal, override
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from jolty import checks, files, ir, report
+from jolty import checks, files, ir, report, variation
 from jolty.builder import Component, circuit
 from jolty.errors import ElaborationError, JoltyError, ScriptError
-from jolty.plan import Corner, Plan
+from jolty.plan import Corner, MonteCarlo, Plan
 from jolty.results import Result
 from jolty.simulate import Simulation, kelvins
-from jolty.specs import Specs, Verdict, evaluate
+from jolty.specs import Specs, Verdict, evaluate, spread
 
 JOB: Final = "job.json"
 """The file in the job's directory that holds the job."""
@@ -99,6 +100,10 @@ class Built(BaseModel):
     )
     corners: tuple[report.CornerReport, ...] = Field(
         default=(), description="A report per corner of the plan, in its order."
+    )
+    monte_carlo: report.MonteCarloReport | None = Field(
+        default=None,
+        description="What the plan's Monte Carlo analysis found; null without one.",
     )
     specs: tuple[Verdict, ...] = Field(
         default=(),
@@ -190,9 +195,22 @@ def _run(job: Job, directory: Path) -> Built:
         )
         found, at_corners[name] = _corner(name, corner, rebuilt, plan)
         corners.append(found)
-    verdicts = _verdicts(job.plan, namespaces, plan, solved, at_corners)
+    specs = _specs(job.plan, namespaces)
+    verdicts = (
+        () if specs is None else evaluate(specs, plan.analyses, solved, at_corners)
+    )
+    monte_carlo = (
+        None
+        if plan.monte_carlo is None
+        else _monte_carlo(built, plan, plan.monte_carlo, specs)
+    )
     return elaborated.model_copy(
-        update={"analyses": reports, "corners": tuple(corners), "specs": verdicts}
+        update={
+            "analyses": reports,
+            "corners": tuple(corners),
+            "monte_carlo": monte_carlo,
+            "specs": verdicts,
+        }
     )
 
 
@@ -241,25 +259,49 @@ def _built(
             raise ScriptError(message)
 
 
-def _verdicts(
-    script: Path,
-    namespaces: dict[Path, dict[str, object]],
-    plan: Plan,
-    solved: dict[str, Result],
-    corners: dict[str, dict[str, Result]],
-) -> tuple[Verdict, ...]:
-    """The verdict on each requirement of `script`'s specs, on the `solved` results.
+def _monte_carlo(
+    built: ir.Circuit, plan: Plan, monte_carlo: MonteCarlo, specs: Specs | None
+) -> report.MonteCarloReport:
+    """What `plan`'s analyses find on each sample of `monte_carlo`, against `specs`.
 
-    A script that defines no ``specs()`` has none.
+    Each sample draws `built`'s tolerances, at the plan's own temperature.
+    """
+    toleranced = variation.toleranced(built)
+    generator = np.random.default_rng(monte_carlo.seed)
+    sampled: list[tuple[Verdict, ...]] = []
+    failed = 0
+    for _ in range(monte_carlo.samples):
+        overrides = variation.sample(toleranced, generator)
+        try:
+            simulation = Simulation(built, plan.temperature, overrides)
+        except ElaborationError:
+            solved, ended = {}, False
+        else:
+            solved, reports = _analyses(simulation, plan, 1)
+            ended = not any(isinstance(r, report.FailureReport) for r in reports)
+        failed += not ended
+        if specs is not None:
+            sampled.append(evaluate(specs, plan.analyses, solved))
+    spreads, passing = ((), None) if specs is None else spread(specs, sampled)
+    return report.MonteCarloReport(
+        samples=monte_carlo.samples,
+        seed=monte_carlo.seed,
+        toleranced=len(toleranced),
+        failed=failed,
+        spreads=spreads,
+        passing=passing,
+    )
+
+
+def _specs(script: Path, namespaces: dict[Path, dict[str, object]]) -> Specs | None:
+    """The specs `script`'s ``specs()`` returns; None when it defines none.
 
     Raises:
         ScriptError: When ``specs()`` returns no specs.
     """
     match _call(script, "specs", namespaces, required=False):
-        case None:
-            return ()
-        case Specs() as specs:
-            return evaluate(specs, plan.analyses, solved, corners)
+        case None | Specs() as specs:
+            return specs
         case other:
             message = f"specs() returned {type(other).__name__}, not Specs"
             raise ScriptError(message)

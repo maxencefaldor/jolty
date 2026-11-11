@@ -23,7 +23,16 @@ from jolty.errors import (
     SpiceError,
 )
 from jolty.ir import Role
-from jolty.plan import Ac, Corner, DcSweep, OperatingPoint, Options, Plan, Transient
+from jolty.plan import (
+    Ac,
+    Corner,
+    DcSweep,
+    MonteCarlo,
+    OperatingPoint,
+    Options,
+    Plan,
+    Transient,
+)
 from jolty.simulate import Simulation
 from jolty.specs import Specs
 
@@ -40,6 +49,7 @@ __all__ = [
     "DownloadError",
     "ElaborationError",
     "JoltyError",
+    "MonteCarlo",
     "Net",
     "OperatingPoint",
     "Options",

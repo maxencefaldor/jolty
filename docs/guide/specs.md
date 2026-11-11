@@ -67,4 +67,19 @@ failed: rise time of out in step ≤ 2 µs: read 2.192 µs at the corner hot, sl
 ```
 
 `jolty simulate` exits with 1 when a requirement fails or is unmeasured, as when an analysis fails at the plan's own conditions or at a corner.
+
+## Yield
+
+Over a plan's [Monte Carlo](simulation.md#monte-carlo) samples, each requirement's spread states on how many samples it passed, and the lowest, highest and mean values read with their standard deviation.
+The yield is the fraction of samples on which every requirement passes, if marginally, with its 95 % Wilson interval:
+
+For a divider of a 1 % uniform resistor over a 1 % normal one, with `value("op", "out").within(2.5 * V, 15e-3 * V)` and a target of 90 %:
+
+```text
+monte carlo: 1000 samples of 2 toleranced parameters, seed 1; 0 failed
+  out in op ≥ 2.485 V and ≤ 2.515 V: 947 of 1000 pass; read 2.477 V to 2.521 V, mean 2.5 V, deviation 8.277 mV
+  yield: 947 of 1000, 94.7 % (95 % interval 93.13 to 95.93 %), which reaches the target 90 %
+```
+
+`Specs(requirements, yield_target=0.9)` sets the yield the samples must reach; `jolty simulate` exits with 1 when the estimate falls below it.
 With `--output-format json`, the verdicts come as data, values and slacks in SI base units.

@@ -22,6 +22,7 @@ Examples:
 """
 
 import json
+from collections.abc import Mapping
 from typing import overload
 
 from pydantic import JsonValue
@@ -63,10 +64,13 @@ class Simulation:
         self,
         circuit_or_top: ir.Circuit | Component,
         temperature: Quantity | None = None,
+        overrides: Mapping[str, Mapping[str, float]] | None = None,
     ) -> None:
         """Elaborates a circuit, or the circuit with a component at its top.
 
-        Its devices are simulated at `temperature`, 27 °C unless given.
+        Its devices are simulated at `temperature`, 27 °C unless given. `overrides`
+        replaces parameters of devices, by path then by parameter name, in SI base
+        units, as a Monte Carlo sample does.
 
         Raises:
             ElaborationError: With every problem the engine finds, each naming the
@@ -81,7 +85,9 @@ class Simulation:
         self.temperature = kelvins(temperature)
         try:
             self._core = _core.Simulator(
-                self.circuit.model_dump_json(), self.temperature
+                self.circuit.model_dump_json(),
+                self.temperature,
+                json.dumps(overrides or {}, allow_nan=False),
             )
         except _core.ElaborationError as error:
             raise ElaborationError(error.args[0]) from None

@@ -8,7 +8,7 @@ Each build checks every device and connection, reports each problem with the scr
 jolty is on its third milestone, real parts: board-level circuits of passive devices, sources, diodes and transistors, simulated at the operating point, over DC sweeps, in frequency and in time.
 Vendors' SPICE macromodels, such as an op-amp's, read as components and agree with ngspice.
 Every build checks the circuit's structure and draws its schematic, and every simulation plots its analyses, so an agent sees what it built.
-Specs state what a circuit must do, and every simulation measures its results against them, at every temperature and corner its plan names.
+Specs state what a circuit must do, and every simulation measures its results against them, at every temperature and corner its plan names, and over Monte Carlo samples of its parts' tolerances.
 
 The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.
 

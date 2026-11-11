@@ -9,7 +9,10 @@ passes, fails, or goes unmeasured when its analysis did not end or its measureme
 cannot be read; one that passes by less than its margin is marginal. A requirement
 holds at the plan's own conditions and at each of its corners, and its
 [`Verdict`][jolty.specs.Verdict] is the worst of them: it states the value read there
-and the slack, how far the value lies inside its bounds, negative outside them.
+and the slack, how far the value lies inside its bounds, negative outside them. Over a
+Monte Carlo analysis's samples, each requirement's [`Spread`][jolty.specs.Spread] states
+the values read, and the [`Yield`][jolty.specs.Yield] how many samples meet every
+requirement, against the specs' yield target.
 
 A measurement reads a signal, an unknown of the circuit such as the voltage ``out`` or
 the current ``V1:current``, or a voltage relative to the voltage of a ``reference``.
@@ -221,17 +224,28 @@ class Requirement:
 
 @dataclass(frozen=True, slots=True)
 class Specs:
-    """The requirements a circuit must meet, in the order a report lists them."""
+    """The requirements a circuit must meet, in the order a report lists them.
+
+    The `yield_target` is the fraction of a Monte Carlo analysis's samples that must
+    meet every requirement, such as 0.99.
+    """
 
     requirements: Sequence[Requirement]
+    yield_target: float | None = None
 
     def __post_init__(self) -> None:
-        """Checks that there are requirements, and only requirements.
+        """Checks that there are requirements, only requirements, and a fair target.
 
         Raises:
-            ValueError: When there is none.
+            ValueError: When there is no requirement, or the yield target is not above
+                0 and at most 1.
             TypeError: When one is not a requirement.
         """
+        if self.yield_target is not None and not 0 < self.yield_target <= 1:
+            message = (
+                f"a yield target lies above 0 and at most 1, not {self.yield_target}"
+            )
+            raise ValueError(message)
         if not self.requirements:
             message = "specs state at least one requirement"
             raise ValueError(message)
@@ -280,6 +294,146 @@ class Verdict(BaseModel):
             slack = _format(self.slack, self.unit)
             head = f"{self.status}: {self.requirement}: read {read}{at}, slack {slack}"
         return head if self.source is None else f"{head}\n  = {self.source}"
+
+
+class Values(BaseModel):
+    """The values a requirement read over samples, in SI base units."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    unit: str = Field(description="The values' unit, such as 'V' or 'dB'.")
+    minimum: float
+    maximum: float
+    mean: float
+    deviation: float = Field(description="The values' standard deviation.")
+
+
+class Spread(BaseModel):
+    """What one requirement read over a Monte Carlo analysis's samples."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    requirement: str = Field(description="The requirement, in words.")
+    measured: int = Field(description="Samples on which it was measured.")
+    passing: int = Field(description="Samples on which it passed, if marginally.")
+    values: Values | None = Field(
+        default=None, description="The values read; null when none was."
+    )
+
+    def describe(self, samples: int) -> str:
+        """The spread as one line, over `samples` samples."""
+        head = f"{self.requirement}: {self.passing} of {samples} pass"
+        if self.values is None:
+            return f"{head}, none measured"
+        unmeasured = samples - self.measured
+        missing = f", {unmeasured} unmeasured" if unmeasured else ""
+        unit = self.values.unit
+        low, high = (
+            _format(self.values.minimum, unit),
+            _format(self.values.maximum, unit),
+        )
+        mean = _format(self.values.mean, unit)
+        deviation = _format(self.values.deviation, unit)
+        return (
+            f"{head}{missing}; read {low} to {high}, mean {mean}, deviation {deviation}"
+        )
+
+
+class Yield(BaseModel):
+    """How many of a Monte Carlo analysis's samples meet every requirement."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    samples: int
+    passing: int = Field(description="Samples on which every requirement passed.")
+    estimate: float = Field(description="The fraction of samples that pass.")
+    low: float = Field(description="The 95 % Wilson interval's lower end.")
+    high: float = Field(description="The 95 % Wilson interval's upper end.")
+    target: float | None = Field(
+        default=None, description="The specs' yield target; null for none."
+    )
+
+    @property
+    def met(self) -> bool:
+        """Whether the estimate reaches the target, or there is no target."""
+        return self.target is None or self.estimate >= self.target
+
+    def describe(self) -> str:
+        """The yield as one line."""
+        head = (
+            f"yield: {self.passing} of {self.samples}, {100 * self.estimate:.4g} % "
+            f"(95 % interval {100 * self.low:.4g} to {100 * self.high:.4g} %)"
+        )
+        if self.target is None:
+            return head
+        reached = "reaches" if self.met else "is below"
+        return f"{head}, which {reached} the target {100 * self.target:.4g} %"
+
+
+def spread(
+    specs: Specs, sampled: Sequence[Sequence[Verdict]]
+) -> tuple[tuple[Spread, ...], Yield]:
+    """Each requirement's spread, and the yield, over the verdicts on each sample.
+
+    `sampled` holds, for each sample, the verdict on each requirement in order. A sample
+    passes when every requirement passes, if marginally.
+    """
+    spreads = tuple(
+        _spread(requirement, [verdicts[index] for verdicts in sampled])
+        for index, requirement in enumerate(specs.requirements)
+    )
+    passing = sum(all(_passes(verdict) for verdict in verdicts) for verdicts in sampled)
+    low, high = _wilson(passing, len(sampled))
+    return spreads, Yield(
+        samples=len(sampled),
+        passing=passing,
+        estimate=passing / len(sampled),
+        low=low,
+        high=high,
+        target=specs.yield_target,
+    )
+
+
+def _spread(requirement: Requirement, verdicts: Sequence[Verdict]) -> Spread:
+    read = [
+        (verdict.value, verdict.unit)
+        for verdict in verdicts
+        if verdict.value is not None and verdict.unit is not None
+    ]
+    passing = sum(_passes(verdict) for verdict in verdicts)
+    stated = Spread(requirement=str(requirement), measured=len(read), passing=passing)
+    if not read:
+        return stated
+    numbers = np.array([value for value, _ in read])
+    values = Values(
+        unit=read[0][1],
+        minimum=float(numbers.min()),
+        maximum=float(numbers.max()),
+        mean=float(numbers.mean()),
+        deviation=float(numbers.std()),
+    )
+    return stated.model_copy(update={"values": values})
+
+
+def _passes(verdict: Verdict) -> bool:
+    return verdict.status in {"passed", "marginal"}
+
+
+_Z: Final = 1.959963984540054
+"""The normal distribution's 97.5th percentile: a 95 % interval spans ±_Z deviations."""
+
+
+def _wilson(passing: int, samples: int) -> tuple[float, float]:
+    """The 95 % Wilson score interval of a proportion of `passing` out of `samples`."""
+    estimate = passing / samples
+    weight = _Z * _Z / samples
+    centre = (estimate + weight / 2) / (1 + weight)
+    half = (
+        _Z
+        * math.sqrt(estimate * (1 - estimate) / samples + weight / (4 * samples))
+        / (1 + weight)
+    )
+    return max(0.0, centre - half), min(1.0, centre + half)
 
 
 def describe(verdicts: Sequence[Verdict]) -> str:

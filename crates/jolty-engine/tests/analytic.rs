@@ -3,11 +3,11 @@
 use std::f64::consts::{PI, TAU};
 
 use jolty_engine::{
-    Ac, Analysis, DcSweep, Method, Options, Outcome, SimulationError, Simulator, Strategy,
-    Transient,
+    Ac, Analysis, Conditions, DcSweep, Method, Options, Outcome, SimulationError, Simulator,
+    Strategy, Transient,
 };
 use jolty_ir::Circuit;
-use jolty_models::{Library, REFERENCE_TEMPERATURE};
+use jolty_models::Library;
 use jolty_numerics::Complex64;
 use serde_json::{Value, json};
 
@@ -42,7 +42,7 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
 }
 
 fn simulator(circuit: &Circuit) -> Simulator {
-    Simulator::new(circuit, &Library::standard(), REFERENCE_TEMPERATURE)
+    Simulator::new(circuit, &Library::standard(), &Conditions::default())
         .expect("an elaborated circuit")
 }
 

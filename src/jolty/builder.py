@@ -30,7 +30,7 @@ import hashlib
 import inspect
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol, override
 
@@ -130,6 +130,7 @@ class _Placement:
     parameters: dict[str, JsonValue]
     terminals: tuple[str, ...]
     source: ir.Source | None
+    tolerances: dict[str, ir.Tolerance] = field(default_factory=dict)
 
 
 class Builder:
@@ -193,6 +194,7 @@ class Builder:
                 item.parameters,
                 item.terminals,
                 caller(),
+                item.tolerances,
             )
         self._placements[id] = placement
         return Placed(id, placement.terminals)
@@ -228,6 +230,7 @@ class Builder:
                     of=placement.of,
                     parameters=placement.parameters,
                     terminals=terminals,
+                    tolerances=placement.tolerances,
                     source=placement.source,
                 )
             )
@@ -355,7 +358,7 @@ def _format(value: object) -> str:
         ('1.00001kΩ', '0.5', "'fast'")
         >>> from jolty.devices import resistor
         >>> _format(resistor(1 * kohm))
-        'resistor~64d70e34'
+        'resistor~c7007fa6'
     """
     match value:
         case Quantity():

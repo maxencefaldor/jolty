@@ -3,7 +3,8 @@
 
 A plan is kept apart from the circuit: the circuit says what exists, the plan how to
 simulate it. A plan runs its analyses at its temperature, then again at each of its
-corners: another temperature, or other arguments to the build script's ``build()``.
+corners: another temperature, or other arguments to the build script's ``build()``, and
+on Monte Carlo samples of the circuit's tolerances.
 
 Examples:
     >>> from jolty.units import us
@@ -144,18 +145,44 @@ class Corner:
 
 
 @dataclass(frozen=True, slots=True)
+class MonteCarlo:
+    """Samples of the circuit's tolerances, each a run of the plan's analyses.
+
+    Each sample runs at the plan's own temperature, and a `seed` draws the same samples
+    from the same circuit.
+    """
+
+    samples: int
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        """Checks that there is a sample or more.
+
+        Raises:
+            ValueError: When there is none.
+        """
+        if self.samples < 1:
+            message = (
+                f"a Monte Carlo analysis draws a sample or more, not {self.samples}"
+            )
+            raise ValueError(message)
+
+
+@dataclass(frozen=True, slots=True)
 class Plan:
     """Named analyses to run on a circuit, the options they share, and its conditions.
 
     Each analysis is named by a Python identifier, such as ``step`` or ``bode``, which
     names its results too. The circuit's devices are simulated at `temperature`, 27 °C
-    unless given, then at each of the `corners`, each named by an identifier too.
+    unless given, then at each of the `corners`, each named by an identifier too, and on
+    the samples of a `monte_carlo` analysis.
     """
 
     analyses: Mapping[str, Analysis]
     options: Options = field(default_factory=Options)
     temperature: Quantity | None = None
     corners: Mapping[str, Corner] = field(default_factory=dict)
+    monte_carlo: MonteCarlo | None = None
 
     def __post_init__(self) -> None:
         """Checks that the plan runs an analysis or more, all named by identifiers.

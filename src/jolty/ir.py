@@ -4,7 +4,7 @@
 A [`Circuit`][jolty.ir.Circuit] is a set of named components and the name of the top
 one. Build scripts never write this format by hand: [`jolty.builder`][jolty.builder]
 produces it, and the engine validates and elaborates it. Parameter values are numbers in
-SI base units.
+SI base units, and a device may give some of them a [`Tolerance`][jolty.ir.Tolerance].
 """
 
 from enum import StrEnum
@@ -62,6 +62,17 @@ class Source(_Model):
         return f"{self.file}:{self.line} {within}"
 
 
+class Tolerance(_Model):
+    """How far a parameter's value may lie from its nominal one, relative to it.
+
+    Values spread evenly within a ``uniform`` tolerance, and normally within a
+    ``normal`` one, with the tolerance three standard deviations.
+    """
+
+    relative: float = Field(ge=0, lt=1)
+    distribution: Literal["uniform", "normal"] = "uniform"
+
+
 class Instance(_Model):
     """One placed device or component, and the net each of its terminals joins."""
 
@@ -69,6 +80,9 @@ class Instance(_Model):
     of: DeviceOf | ComponentOf
     parameters: dict[str, JsonValue] = Field(default_factory=dict)
     terminals: dict[str, str]
+    tolerances: dict[str, Tolerance] = Field(
+        default_factory=dict, exclude_if=lambda tolerances: not tolerances
+    )
     source: Source | None = None
 
 

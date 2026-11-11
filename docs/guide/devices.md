@@ -27,6 +27,8 @@ Each value drifts with temperature by `1 + tc1 · ΔT + tc2 · ΔT²`, where `Δ
 
 Only a resistor has an exponential coefficient, and a resistance the coefficients scale to zero is a problem.
 
+A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and `device.toleranced(parameter, relative, distribution)` gives any device's number parameter a `"uniform"` or `"normal"` tolerance; [Monte Carlo analyses](simulation.md#monte-carlo) sample them.
+
 ## Independent sources
 
 | Function | Terminals | Parameter |

@@ -1,8 +1,8 @@
 //! Physical invariants on random circuits.
 
-use jolty_engine::{Options, Simulator};
+use jolty_engine::{Conditions, Options, Simulator};
 use jolty_ir::Circuit;
-use jolty_models::{Library, REFERENCE_TEMPERATURE};
+use jolty_models::Library;
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
@@ -104,7 +104,7 @@ impl Network {
     /// Every node's voltage at the operating point, by node number, the ground being zero.
     fn voltages(&self, reversed: bool) -> Vec<f64> {
         let circuit = circuit(self, reversed);
-        let mut simulator = Simulator::new(&circuit, &Library::standard(), REFERENCE_TEMPERATURE)
+        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
             .expect("an elaborated circuit");
         let solution = simulator
             .operating_point(&tight())

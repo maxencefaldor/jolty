@@ -3,7 +3,9 @@
 //! A [`Circuit`] is a set of named [`Component`]s and the name of the top one. A component
 //! declares its [`Port`]s and places [`Instance`]s, each of a device model or of another
 //! component. Every terminal of an instance joins a net by name, and a port is the net of the
-//! same name seen from outside. Parameter values are numbers in SI base units.
+//! same name seen from outside. Parameter values are numbers in SI base units. A device
+//! instance may give some of its parameters a [`Tolerance`]: how far a part's value may lie
+//! from its nominal one, which Monte Carlo analyses sample.
 //!
 //! The format is JSON, tagged with [`FORMAT`] and [`VERSION`]:
 //!
@@ -111,9 +113,34 @@ pub struct Instance {
     pub parameters: Parameters,
     /// The net each terminal joins, by terminal name.
     pub terminals: BTreeMap<Name, Name>,
+    /// The tolerances of some of a device's parameters, by parameter name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tolerances: BTreeMap<String, Tolerance>,
     /// The line of source code that placed the instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
+}
+
+/// How far a parameter's value may lie from its nominal one, relative to it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tolerance {
+    /// The tolerance, at least 0 and below 1, such as `0.01` for 1 %.
+    pub relative: f64,
+    /// How values spread within it.
+    #[serde(default)]
+    pub distribution: Distribution,
+}
+
+/// How a parameter's values spread within its tolerance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Distribution {
+    /// Evenly within the tolerance, the default.
+    #[default]
+    Uniform,
+    /// Normally, with the tolerance three standard deviations.
+    Normal,
 }
 
 /// What an instance is: a device of a model, or another component.
