@@ -1,0 +1,22 @@
+[package]
+name = "jolty-models"
+description = "Device models for jolty: what each kind of device contributes to a circuit's equations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jolty-ir.workspace = true
+jolty-numerics.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
