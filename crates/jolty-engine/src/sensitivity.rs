@@ -14,6 +14,7 @@ use jolty_numerics::PatternBuilder;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::elaborate::Origin;
 use crate::{OperatingPoint, Options, SimulationError, Simulator};
 
 /// A sensitivity analysis: how the unknowns `outputs` move with every device parameter at
@@ -90,7 +91,7 @@ impl Simulator {
         let mut parameters = Vec::new();
         let mut derivatives = vec![Vec::new(); outputs.len()];
         for index in 0..self.system.devices.len() {
-            let Some(made) = &self.system.devices[index].made else {
+            let Origin::Model(made) = &self.system.devices[index].origin else {
                 continue;
             };
             for (name, value) in leaves(&made.parameters) {
@@ -132,7 +133,9 @@ impl Simulator {
         options: &Options,
     ) -> Option<Vec<f64>> {
         let placed = &self.system.devices[index];
-        let made = placed.made.as_ref()?;
+        let Origin::Model(made) = &placed.origin else {
+            return None;
+        };
         let value = leaf(&made.parameters, name)?;
         let mut seeded = made.parameters.clone();
         set_leaf(

@@ -89,6 +89,18 @@ class Simulation:
     """Every terminal of every device, such as ``X1/R1.a``, in the order of every
     result's currents and charges."""
 
+    composites: results.Composites
+    """Each terminal of a component instance or a logic device, such as ``X1.vdd``, with
+    the indices of the device terminals whose currents and charges sum to its own."""
+
+    derivatives: tuple[tuple[str, str], ...]
+    """For each device, every pair of its terminals and internal unknowns, its equation
+    then its unknown, in the order of every result's conductances and capacitances."""
+
+    variables: tuple[tuple[str, str], ...]
+    """Every variable of every device, its path and its name, in the order of every
+    result's readings."""
+
     devices: int
     """The number of devices, with every component instance unfolded."""
 
@@ -142,6 +154,15 @@ class Simulation:
         )
         self.nets = tuple(self._core.nets)
         self.terminals = tuple(self._core.terminals)
+        self.composites = tuple(
+            (name, tuple(members)) for name, members in self._core.composites
+        )
+        self.derivatives = tuple(
+            (equation, unknown) for equation, unknown in self._core.derivatives
+        )
+        self.variables = tuple(
+            (instance, name) for instance, name in self._core.variables
+        )
         self.devices = self._core.devices
         self.excursions = ()
 
@@ -223,7 +244,7 @@ class Simulation:
         return sweep.levels[0].dimension
 
     def _result(self, outcome: _core.Outcome) -> results.Result:
-        unknowns, nets, terminals = self.unknowns, self.nets, self.terminals
+        unknowns, nets = self.unknowns, self.nets
         match outcome["kind"]:
             case "operating_point":
                 return self._point(outcome)
@@ -236,9 +257,7 @@ class Simulation:
                     outcome["values"],
                     nets,
                     outcome["logic"],
-                    terminals,
-                    outcome["currents"],
-                    outcome["charges"],
+                    **self._observed(outcome),
                 )
             case "ac":
                 return results.Response(
@@ -247,8 +266,9 @@ class Simulation:
                     outcome["frequencies"],
                     outcome["values"],
                     self._point(outcome["operating_point"]),
-                    terminals,
-                    outcome["currents"],
+                    terminals=self.terminals,
+                    currents=outcome["currents"],
+                    composites=self.composites,
                 )
             case "transient":
                 statistics = results.Statistics(**outcome["statistics"])
@@ -262,9 +282,7 @@ class Simulation:
                     statistics,
                     nets,
                     traces,
-                    terminals,
-                    outcome["currents"],
-                    outcome["charges"],
+                    **self._observed(outcome),
                 )
             case "sensitivity":
                 parameters = tuple(
@@ -288,7 +306,19 @@ class Simulation:
             solved["strategy"],
             self.nets,
             solved["logic"],
-            self.terminals,
-            solved["currents"],
-            solved["charges"],
+            **self._observed(solved),
         )
+
+    def _observed(self, outcome: _core.Observed) -> results.Observed:
+        """What every device did in `outcome`, as a result's fields."""
+        return {
+            "terminals": self.terminals,
+            "currents": outcome["currents"],
+            "charges": outcome["charges"],
+            "composites": self.composites,
+            "derivatives": self.derivatives,
+            "conductances": outcome["conductances"],
+            "capacitances": outcome["capacitances"],
+            "variables": self.variables,
+            "readings": outcome["variables"],
+        }

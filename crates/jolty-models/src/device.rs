@@ -32,6 +32,19 @@ pub trait Device<R: Real = f64>: fmt::Debug + Send {
     fn as_detector(&self) -> Option<&dyn Detect> {
         None
     }
+
+    /// The names of the quantities the device computes on its way to its currents that
+    /// neither its terminals, nor its unknowns, nor their derivatives show, such as a
+    /// transistor's threshold voltage, in the order of [`Device::variables`].
+    fn variable_names(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Writes the value of each of [`Device::variable_names`] at the device's last
+    /// evaluation, in SI base units, to `values`.
+    fn variables(&self, values: &mut [f64]) {
+        let _ = values;
+    }
 }
 
 /// An independent source, whose level analyses can hold or excite.

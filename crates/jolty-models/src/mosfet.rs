@@ -105,7 +105,19 @@ pub struct Mosfet<R: Real = f64> {
     /// which the next steps are limited, and its threshold.
     last: [f64; 3],
     threshold: f64,
+    /// The values of [`VARIABLE_NAMES`] at the last evaluation.
+    variables: [f64; 5],
 }
+
+/// The variables a transistor reports: its threshold and saturation voltages, in its own
+/// polarity, and Meyer's capacitances from the gate to the source, the drain and the bulk.
+const VARIABLE_NAMES: [&str; 5] = [
+    "threshold_voltage",
+    "saturation_voltage",
+    "gate_source_capacitance",
+    "gate_drain_capacitance",
+    "gate_bulk_capacitance",
+];
 
 /// Local node indices: the terminals, then the internal drain and source, which are the
 /// terminals themselves without series resistance.
@@ -782,6 +794,7 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
             oxide,
             last: [0.0; 3],
             threshold: sign * process.threshold.value(),
+            variables: [0.0; 5],
         })
     }
 }
@@ -1162,6 +1175,13 @@ impl<R: Real> Device<R> for Mosfet<R> {
         let [vgs, vds, vbs] = Dual::variables(bias.voltages);
         let conduction = self.channel.evaluate([vgs, vds, vbs]);
         self.threshold = conduction.threshold.value.value();
+        self.variables = [
+            self.sign * self.threshold,
+            self.sign * conduction.saturation.value.value(),
+            0.0,
+            0.0,
+            0.0,
+        ];
         self.add_current(
             (INNER_DRAIN, INNER_SOURCE),
             conduction.current,
@@ -1194,6 +1214,9 @@ impl<R: Real> Device<R> for Mosfet<R> {
                 let [drain, source, bulk] = oxide.meyer(vgd, vgs, &conduction);
                 [source, drain, bulk]
             };
+            for (variable, capacitance) in self.variables[2..].iter_mut().zip(&capacitances) {
+                *variable = capacitance.value.value();
+            }
             let whole = oxide.capacitance;
             for (displacement, capacitance) in oxide.displacements.iter().zip(capacitances) {
                 let current =
@@ -1202,6 +1225,14 @@ impl<R: Real> Device<R> for Mosfet<R> {
                 self.add_current((GATE, displacement.node), meyer, &bias, output);
             }
         }
+    }
+
+    fn variable_names(&self) -> &'static [&'static str] {
+        &VARIABLE_NAMES
+    }
+
+    fn variables(&self, values: &mut [f64]) {
+        values.copy_from_slice(&self.variables);
     }
 }
 
@@ -1263,6 +1294,40 @@ mod tests {
         let threshold = 1.0 + 0.5 * (1.7_f64.sqrt() - 0.7_f64.sqrt());
         let expected = 2e-5 / 2.0 * (2.0 - threshold) * (2.0 - threshold);
         assert!((current - expected).abs() < 1e-17, "{current} {expected}");
+    }
+
+    #[test]
+    fn reports_its_threshold_saturation_and_meyer_capacitances() {
+        let parameters = r#"{"threshold_voltage": 1, "body_effect": 0.5,
+            "surface_potential": 0.7, "saturation_current": 1e-30}"#;
+        let mut bench = Bench::new::<Mosfet>(parameters);
+        bench.settle(&[5.0, 2.0, 0.0, -1.0]);
+        let names = bench.device().variable_names();
+        let mut values = vec![0.0; names.len()];
+        bench.device().variables(&mut values);
+        let threshold = 1.0 + 0.5 * (1.7_f64.sqrt() - 0.7_f64.sqrt());
+        assert_eq!(names[..2], ["threshold_voltage", "saturation_voltage"]);
+        assert!((values[0] - threshold).abs() < 1e-15);
+        assert!((values[1] - (2.0 - threshold)).abs() < 1e-15);
+        assert_eq!(values[2..], [0.0; 3], "no oxide, no Meyer capacitance");
+
+        let mut n = Bench::new::<Mosfet>(CHARGED);
+        let mut p = Bench::new::<Mosfet>(&p_channel(CHARGED));
+        let x = [3.0, 2.0, 0.2, -0.5, 1e-4, -2e-4, 3e-4];
+        let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
+        n.settle(&x);
+        p.settle(&mirrored);
+        let (mut n_values, mut p_values) = ([0.0; 5], [0.0; 5]);
+        n.device().variables(&mut n_values);
+        p.device().variables(&mut p_values);
+        assert!(n_values[0] > 0.0 && n_values[2] > 0.0, "{n_values:?}");
+        for (index, (n_value, p_value)) in n_values.iter().zip(&p_values).enumerate() {
+            let mirrored = if index < 2 { -p_value } else { *p_value };
+            assert!(
+                (n_value - mirrored).abs() <= 1e-15 * n_value.abs(),
+                "{index}"
+            );
+        }
     }
 
     #[test]

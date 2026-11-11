@@ -7,7 +7,7 @@ use jolty_numerics::{Complex64, SparseLu};
 
 use crate::logic::{Bound, Events, detected};
 use crate::newton::{Failure, Mode};
-use crate::{Options, SimulationError, Simulator, Terminals};
+use crate::{Observation, Options, SimulationError, Simulator};
 
 /// The largest conductance gmin stepping starts from, in siemens.
 const FIRST_SHUNT: f64 = 1e-2;
@@ -34,9 +34,9 @@ const SETTLE_ROUNDS: usize = 4;
 pub struct OperatingPoint {
     /// The value of every unknown, in the simulator's order.
     pub values: Vec<f64>,
-    /// The current into every terminal of every device, and the charge it holds, in the
-    /// order of [`Simulator::terminals`].
-    pub terminals: Terminals,
+    /// What every device did: the current into each terminal and the charge it holds, its
+    /// derivatives and its variables.
+    pub observation: Observation,
     /// The level of every logic net, in the simulator's order.
     pub logic: Vec<Level>,
     /// The strategy that found the solution.
@@ -97,10 +97,9 @@ impl Simulator {
     /// level.
     pub(crate) fn reset_logic(&mut self) {
         self.events = Events::new(&self.system.logic);
-        for &(element, _) in &self.system.logic.drivers {
-            if let Some(driver) = self.system.devices[element].device.as_driver() {
-                driver.drive(0.0, Level::Unknown, 0.0);
-            }
+        for index in 0..self.system.logic.drivers.len() {
+            let element = self.system.logic.drivers[index].0;
+            self.drive(element, (0.0, Level::Unknown, 0.0));
         }
     }
 
@@ -203,16 +202,14 @@ impl Simulator {
             }
             for (driver, level) in changed {
                 let element = self.system.logic.drivers[driver].0;
-                if let Some(driver) = self.system.devices[element].device.as_driver() {
-                    driver.drive(0.0, level, 0.0);
-                }
+                self.drive(element, (0.0, level, 0.0));
             }
             solved = self.solve_dc(solved.values, options)?;
         }
         self.measure_loads(&solved.values, options);
         self.watch_supplies(&solved.values, 0.0, options);
         Ok(OperatingPoint {
-            terminals: self.observer.dc(&solved.values, options.gmin),
+            observation: self.observer.dc(&solved.values, options.gmin),
             values: solved.values,
             logic: self.events.levels().to_vec(),
             strategy: solved.strategy,

@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::logic::{Command, Crossing, crossing};
 use crate::newton::Mode;
-use crate::{Options, SimulationError, Simulator, Strategy, Terminals};
+use crate::{Observation, Options, SimulationError, Simulator, Strategy};
 
 /// The first step after the start or a breakpoint, as a fraction of the shorter of the step
 /// before and the gap to the next breakpoint, so a short waveform segment takes several steps.
@@ -49,9 +49,10 @@ pub struct Waveforms {
     pub times: Vec<f64>,
     /// The value of every unknown at each time.
     pub values: Vec<Vec<f64>>,
-    /// The current into every terminal of every device, and the charge it holds, at each
-    /// time. A current includes its charge's derivative, by the step's integration formula.
-    pub terminals: Vec<Terminals>,
+    /// What every device did at each time: the current into each terminal and the charge it
+    /// holds, its derivatives and its variables. A current includes its charge's
+    /// derivative, by the step's integration formula.
+    pub observations: Vec<Observation>,
     /// Each logic net's changes: its level at time zero, then each time it changes, in
     /// seconds, and its new level.
     pub logic: Vec<Vec<(f64, Level)>>,
@@ -169,9 +170,9 @@ impl Breakpoints {
 
 /// What came of trying a step.
 enum Step {
-    /// The step was accepted, with the device's terminals at its end, and logic drivers
+    /// The step was accepted, with what every device did at its end, and logic drivers
     /// began ramps that settle at these times.
-    Accepted(Terminals, Vec<f64>),
+    Accepted(Observation, Vec<f64>),
     /// The step was rejected, to be tried again shorter.
     Rejected,
     /// The step was rejected because a detector crosses or a logic driver changes within
@@ -293,7 +294,7 @@ impl Simulator {
             x: initial.values,
         };
         let (mut times, mut values) = (vec![0.0], vec![stepper.x.clone()]);
-        let mut terminals = vec![self.observer.start(&stepper.x, options.gmin)];
+        let mut observed = vec![self.observer.start(&stepper.x, options.gmin)];
         while stepper.time < transient.stop {
             if let Some(change) = self.events.next_analog_change(&self.system.logic) {
                 breakpoints.insert(change);
@@ -306,7 +307,7 @@ impl Simulator {
                     self.watch_supplies(&stepper.x, stepper.time, options);
                     times.push(stepper.time);
                     values.push(stepper.x.clone());
-                    terminals.push(found);
+                    observed.push(found);
                     for time in settles {
                         breakpoints.insert(time);
                     }
@@ -318,7 +319,7 @@ impl Simulator {
         Ok(Waveforms {
             times,
             values,
-            terminals,
+            observations: observed,
             logic: self.events.traces().to_vec(),
             statistics: stepper.statistics,
         })
@@ -500,10 +501,8 @@ impl Simulator {
         let mut settles = Vec::with_capacity(commands.len());
         for command in commands {
             let element = self.system.logic.drivers[command.driver].0;
-            if let Some(driver) = self.system.devices[element].device.as_driver() {
-                driver.drive(command.time, command.level, command.transition);
-                settles.push(driver.settles_at());
-            }
+            let ramp = (command.time, command.level, command.transition);
+            settles.extend(self.drive(element, ramp));
         }
         settles
     }

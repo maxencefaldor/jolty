@@ -51,7 +51,7 @@ mod transient;
 use std::collections::BTreeMap;
 
 use jolty_ir::{Circuit, Name, Parameters};
-use jolty_models::{Library, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
+use jolty_models::{Level, Library, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
 use jolty_numerics::{LinearError, SparseLu};
 use serde::Deserialize;
 
@@ -60,7 +60,7 @@ pub use analysis::{Analysis, Outcome};
 pub use elaborate::{ElaborationError, ElaborationProblem, Location, Placed};
 pub use jolty_numerics::integration::Method;
 pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
-pub use observe::Terminals;
+pub use observe::Observation;
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;
 pub use sensitivity::{Parameter, Sensitivities, Sensitivity};
@@ -158,12 +158,50 @@ impl Simulator {
         })
     }
 
-    /// Every terminal of every device a model made, by its device's path and its own
-    /// name, such as `X1/R1.a`, in the order of every solution's terminal currents and
-    /// charges. Connect elements have none.
+    /// Every terminal of every device, by its device's path and its own name, such as
+    /// `X1/R1.a`, in the order of every [`Observation`]'s currents and charges.
     #[must_use]
     pub fn terminals(&self) -> &[String] {
         self.observer.names()
+    }
+
+    /// The equation and the unknown of every derivative of every device, in the order of
+    /// every [`Observation`]'s conductances and capacitances: for each device, every pair
+    /// of its terminals and internal unknowns, row by row. Each is named as a terminal, for
+    /// the current into it and the voltage at it, or as one of the device's internal
+    /// unknowns, such as `X1/Q1:base`, for its equation and its value.
+    #[must_use]
+    pub fn derivatives(&self) -> &[(String, String)] {
+        self.observer.derivatives()
+    }
+
+    /// Every variable of every device, by its device's path and its own name, such as
+    /// `threshold_voltage`, in the order of every [`Observation`]'s variables.
+    #[must_use]
+    pub fn variables(&self) -> &[(String, &'static str)] {
+        self.observer.variables()
+    }
+
+    /// Every terminal of every component instance and logic device on an electrical net,
+    /// such as `X1.vdd`, with the indices among [`Simulator::terminals`] of the device
+    /// terminals whose currents and charges sum to its own.
+    #[must_use]
+    pub fn composites(&self) -> &[(String, Vec<usize>)] {
+        self.observer.composites()
+    }
+
+    /// Starts the logic driver at `element` among the devices on a `(time, level,
+    /// transition)` ramp, and its copy that the observer reads; returns when the ramp
+    /// ends.
+    fn drive(
+        &mut self,
+        element: usize,
+        (time, level, transition): (f64, Level, f64),
+    ) -> Option<f64> {
+        self.observer.drive(element, time, level, transition);
+        let driver = self.system.devices[element].device.as_driver()?;
+        driver.drive(time, level, transition);
+        Some(driver.settles_at())
     }
 
     /// The unknowns, in the order of every solution's values.

@@ -35,6 +35,21 @@ pub(crate) struct System {
     pub(crate) node_diagonals: Vec<(Unknown, Entry)>,
     /// The devices' temperature, in kelvins.
     pub(crate) temperature: f64,
+    /// The terminals of component instances and logic devices, each the sum of device
+    /// terminals.
+    pub(crate) composites: Vec<Composite>,
+}
+
+/// A terminal of a component instance or a logic device, whose current and charge are those
+/// of device terminals summed: a port's are those of every device terminal inside its
+/// instance that joins the port's net there, and a logic pin's those of its connect
+/// element's terminal on the pin's electrical net.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Composite {
+    /// Its instance's path and its own name, such as `X1.vdd`.
+    pub(crate) name: String,
+    /// Each device terminal summed, by the device's index and the terminal's.
+    pub(crate) members: Vec<(usize, usize)>,
 }
 
 /// A device placed in the flattened circuit: where its instance is, what model it is, and
@@ -45,11 +60,22 @@ pub struct Placed {
     model: &'static str,
     interface: Interface,
     nodes: Vec<Node>,
-    /// What the device was made from, to make it again; none for a connect element.
-    pub(crate) made: Option<Made>,
+    /// What the device was made from, to make it again.
+    pub(crate) origin: Origin,
     /// How many unknowns there were before the device added its own.
     pub(crate) first_internal: usize,
     pub(crate) device: Box<dyn Device>,
+}
+
+/// What a device was made from.
+#[derive(Debug)]
+pub(crate) enum Origin {
+    /// A model, from the instance's parameters.
+    Model(Made),
+    /// A threshold detector, the connect element of a logic input.
+    Detector(ThresholdDetectorParameters),
+    /// A logic driver, the connect element of a logic output.
+    Driver,
 }
 
 /// The model and the parameters a device was made from.
@@ -259,7 +285,16 @@ pub(crate) fn elaborate(
     // Without a single reference, the walk numbers every net and goes on to find the
     // instances' problems, so the error lists them all.
     let (ground, problems) = reference(circuit);
-    let reference: BTreeMap<&Name, NetRef> = ground.iter().map(|&name| (name, None)).collect();
+    let reference: BTreeMap<&Name, Joined> = ground
+        .iter()
+        .map(|&name| {
+            let joined = Joined {
+                net: None,
+                port: None,
+            };
+            (name, joined)
+        })
+        .collect();
     let mut walk = Walk {
         circuit,
         library,
@@ -269,6 +304,7 @@ pub(crate) fn elaborate(
         substituted: BTreeSet::new(),
         nets: Vec::new(),
         named: HashMap::new(),
+        ports: Vec::new(),
         devices: Vec::new(),
         logic: Vec::new(),
         problems,
@@ -276,6 +312,7 @@ pub(crate) fn elaborate(
     walk.component(top, "", &reference);
     let Walk {
         nets,
+        ports,
         devices,
         logic,
         mut problems,
@@ -296,6 +333,7 @@ pub(crate) fn elaborate(
         placed: &mut placed,
         temperature: conditions.temperature,
         detected: Vec::new(),
+        pins: Vec::new(),
         partition: &mut partition,
         problems: &mut problems,
     };
@@ -306,6 +344,7 @@ pub(crate) fn elaborate(
         elements.logic(pending, &classes);
     }
     let detected = std::mem::take(&mut elements.detected);
+    let pins = std::mem::take(&mut elements.pins);
     partition.index(&detected, &placed);
     problems.extend(
         conditions
@@ -326,6 +365,7 @@ pub(crate) fn elaborate(
         return Err(ElaborationError(problems));
     };
     let pattern = Arc::new(builder.finish(unknowns.len()));
+    let composites = composites(&ports, &pins, &nets);
     Ok(System {
         unknowns,
         devices: placed,
@@ -334,7 +374,76 @@ pub(crate) fn elaborate(
         pattern,
         node_diagonals,
         temperature: conditions.temperature,
+        composites,
     })
+}
+
+/// The terminals of every component instance and logic device on an electrical net, each
+/// with the device terminals it sums: the ports, in the order the walk met them, then the
+/// logic devices' pins and terminals. The analog devices were placed in the order the walk
+/// found them, so the walk's index of each is its index among the devices.
+fn composites(ports: &[PortRecord], pins: &[LogicPins], nets: &[NetRecord]) -> Vec<Composite> {
+    let electrical = |net: NetRef| net.is_none_or(|net| nets[net].electrical);
+    let ports = ports
+        .iter()
+        .filter(|port| electrical(port.net))
+        .map(|port| {
+            let members = port
+                .members
+                .iter()
+                .flat_map(|&member| match member {
+                    Member::Analog { device, terminal } => vec![(device, terminal)],
+                    Member::Logic { device, pin } => pins[device].members(pin),
+                })
+                .collect();
+            Composite {
+                name: port.name.clone(),
+                members,
+            }
+        });
+    let logic = pins.iter().flat_map(|device| {
+        (0..device.names.len()).filter_map(|pin| {
+            let on_electrical = pin >= device.elements.len() || device.elements[pin].is_some();
+            on_electrical.then(|| Composite {
+                name: format!("{}.{}", device.path, device.names[pin]),
+                members: device.members(pin),
+            })
+        })
+    });
+    ports.chain(logic).collect()
+}
+
+/// The pins and terminals of a logic device, and the connect element of each pin that
+/// joins an electrical net.
+struct LogicPins {
+    /// The device's path.
+    path: String,
+    /// Its pins' and terminals' names, in the order of [`Pins::names`].
+    names: Vec<String>,
+    /// The connect element of each pin, inputs then outputs, on an electrical net.
+    elements: Vec<Option<usize>>,
+}
+
+impl LogicPins {
+    /// The device terminals whose currents sum to that into pin or terminal `pin`: its
+    /// connect element's on the electrical net, or for the supply or the ground, that
+    /// terminal of every connect element of the device.
+    fn members(&self, pin: usize) -> Vec<(usize, usize)> {
+        let signals = self.elements.len();
+        if pin < signals {
+            self.elements[pin]
+                .map(|element| (element, 0))
+                .into_iter()
+                .collect()
+        } else {
+            let terminal = 1 + pin - signals;
+            self.elements
+                .iter()
+                .flatten()
+                .map(|&element| (element, terminal))
+                .collect()
+        }
+    }
 }
 
 /// The top component's ground port, the reference, or the problem that it has none or
@@ -430,6 +539,8 @@ struct Elements<'a> {
     temperature: f64,
     /// Each detector's input node and capacitance.
     detected: Vec<(Node, f64)>,
+    /// Each logic device's pins, in the order the walk found the devices.
+    pins: Vec<LogicPins>,
     partition: &'a mut LogicSystem,
     problems: &'a mut Vec<ElaborationProblem>,
 }
@@ -456,7 +567,7 @@ impl Elements<'_> {
                 model: pending.model.name(),
                 interface: pending.interface,
                 nodes: terminals,
-                made: Some(Made {
+                origin: Origin::Model(Made {
                     model: pending.model,
                     parameters: pending.parameters.into_owned(),
                 }),
@@ -474,6 +585,12 @@ impl Elements<'_> {
     /// logic net, and each pin on an electrical net joins a logic net of its own, which a
     /// connect element joins to the electrical net.
     fn logic(&mut self, pending: PendingLogic<'_>, classes: &Classes<'_>) {
+        let signals = pending.pins.inputs.len() + pending.pins.outputs.len();
+        self.pins.push(LogicPins {
+            path: pending.at.path.clone(),
+            names: pending.pins.names(),
+            elements: vec![None; signals],
+        });
         let device = match pending.model.instantiate(&pending.parameters) {
             Ok(device) => device,
             Err(error) => {
@@ -539,27 +656,12 @@ impl Elements<'_> {
                     path: format!("{}:{name}", pending.at.path),
                     source: pending.at.source.clone(),
                 };
-                let own = self.partition.nets.len();
                 let terminals = [classes.node(net), supply, ground];
-                let element = if input {
-                    self.detector(at.clone(), terminals, threshold, capacitance)
-                } else {
-                    self.driver(at.clone(), terminals)
-                };
-                let element_end = Endpoint::Element { device: element };
-                let (sources, loads) = if input {
-                    self.partition.detectors.push((element, own));
-                    (vec![element_end], vec![end])
-                } else {
-                    self.partition.drivers.push((element, own));
-                    (vec![end], vec![element_end])
-                };
-                self.partition.nets.push(LogicNet {
-                    name: at.path,
-                    sources,
-                    loads,
-                    load: capacitance,
-                });
+                let (element, own) =
+                    self.cross(at, (input, end), terminals, (threshold, capacitance));
+                if let Some(pins) = self.pins.last_mut() {
+                    pins.elements[offset + pin] = Some(element);
+                }
                 ends[side].push(own);
             }
         }
@@ -576,6 +678,40 @@ impl Elements<'_> {
         });
     }
 
+    /// Joins the pin `end` of a logic device, an input when `input`, to the electrical net
+    /// of `terminals`' first, through a connect element at `at` that reads it against
+    /// `threshold` and loads it with `capacitance`, or drives it, on a logic net of their
+    /// own. Returns the element's index among the devices and the logic net's.
+    fn cross(
+        &mut self,
+        at: Location,
+        (input, end): (bool, Endpoint),
+        terminals: [Node; 3],
+        (threshold, capacitance): (f64, f64),
+    ) -> (usize, usize) {
+        let own = self.partition.nets.len();
+        let element = if input {
+            self.detector(at.clone(), terminals, threshold, capacitance)
+        } else {
+            self.driver(at.clone(), terminals)
+        };
+        let element_end = Endpoint::Element { device: element };
+        let (sources, loads) = if input {
+            self.partition.detectors.push((element, own));
+            (vec![element_end], vec![end])
+        } else {
+            self.partition.drivers.push((element, own));
+            (vec![end], vec![element_end])
+        };
+        self.partition.nets.push(LogicNet {
+            name: at.path,
+            sources,
+            loads,
+            load: capacitance,
+        });
+        (element, own)
+    }
+
     /// Places a threshold detector at `at` on `terminals`: its input, supply and ground.
     fn detector(
         &mut self,
@@ -590,21 +726,22 @@ impl Elements<'_> {
         };
         self.detected.push((terminals[0], capacitance));
         let interface = ThresholdDetector::interface(&parameters);
-        self.place::<ThresholdDetector>(at, terminals, interface, parameters)
+        let origin = Origin::Detector(parameters);
+        self.place::<ThresholdDetector>(at, terminals, (interface, origin), parameters)
     }
 
     /// Places a logic driver at `at` on `terminals`: its output, supply and ground.
     fn driver(&mut self, at: Location, terminals: [Node; 3]) -> usize {
         let parameters = LogicDriverParameters {};
         let interface = LogicDriver::interface(&parameters);
-        self.place::<LogicDriver>(at, terminals, interface, parameters)
+        self.place::<LogicDriver>(at, terminals, (interface, Origin::Driver), parameters)
     }
 
     fn place<D: NativeDevice + Device>(
         &mut self,
         at: Location,
         terminals: [Node; 3],
-        interface: Interface,
+        (interface, origin): (Interface, Origin),
         parameters: D::Parameters,
     ) -> usize {
         let first_internal = self.unknowns.len();
@@ -624,7 +761,7 @@ impl Elements<'_> {
             model: D::NAME,
             interface,
             nodes: terminals.to_vec(),
-            made: None,
+            origin,
             first_internal,
             device,
         });
@@ -685,9 +822,41 @@ struct Walk<'a> {
     substituted: BTreeSet<String>,
     nets: Vec<NetRecord>,
     named: HashMap<String, usize>,
+    /// Every port of every component instance, in the order they were met.
+    ports: Vec<PortRecord>,
     devices: Vec<Pending<'a>>,
     logic: Vec<PendingLogic<'a>>,
     problems: Vec<ElaborationProblem>,
+}
+
+/// A net as a component sees it: the net, and the port of the component's instance it is,
+/// if it is one.
+#[derive(Debug, Clone, Copy)]
+struct Joined {
+    net: NetRef,
+    port: Option<usize>,
+}
+
+/// A port of a component instance, as the walk finds it.
+struct PortRecord {
+    /// Its instance's path and its own name, such as `X1.vdd`.
+    name: String,
+    /// The net it joins.
+    net: NetRef,
+    /// The port of the enclosing instance that its net is outside, if it is one.
+    parent: Option<usize>,
+    /// Each device terminal and logic pin inside the instance that joins it.
+    members: Vec<Member>,
+}
+
+/// A device terminal or a logic pin that joins a port inside its instance.
+#[derive(Debug, Clone, Copy)]
+enum Member {
+    /// Terminal `terminal` of the analog device found `device`-th.
+    Analog { device: usize, terminal: usize },
+    /// Pin or terminal `pin`, in the order of [`Pins::names`], of the logic device found
+    /// `device`-th.
+    Logic { device: usize, pin: usize },
 }
 
 impl<'a> Walk<'a> {
@@ -698,7 +867,7 @@ impl<'a> Walk<'a> {
         &mut self,
         component: &'a Component,
         prefix: &str,
-        ports: &BTreeMap<&'a Name, NetRef>,
+        ports: &BTreeMap<&'a Name, Joined>,
     ) {
         for instance in &component.instances {
             let at = Location {
@@ -737,14 +906,23 @@ impl<'a> Walk<'a> {
                 }
                 Of::Component(target) => {
                     let definition = &self.circuit.components[target];
-                    let inner: BTreeMap<&Name, NetRef> = definition
+                    let inner: BTreeMap<&Name, Joined> = definition
                         .ports
                         .iter()
                         .map(|port| {
-                            (
-                                &port.name,
-                                self.net(prefix, ports, &instance.terminals[&port.name]),
-                            )
+                            let outside = self.net(prefix, ports, &instance.terminals[&port.name]);
+                            self.ports.push(PortRecord {
+                                name: format!("{}.{}", at.path, port.name),
+                                net: outside.net,
+                                parent: outside.port,
+                                members: Vec::new(),
+                            });
+                            let record = Some(self.ports.len() - 1);
+                            let joined = Joined {
+                                net: outside.net,
+                                port: record,
+                            };
+                            (&port.name, joined)
                         })
                         .collect();
                     self.component(definition, &format!("{}/", at.path), &inner);
@@ -758,7 +936,7 @@ impl<'a> Walk<'a> {
         &mut self,
         placement: Placement<'a, '_>,
         prefix: &str,
-        ports: &BTreeMap<&'a Name, NetRef>,
+        ports: &BTreeMap<&'a Name, Joined>,
     ) {
         let Placement {
             terminals: connected,
@@ -777,7 +955,7 @@ impl<'a> Walk<'a> {
                     return;
                 }
             };
-            let Some(terminals) = self.terminals(
+            let Some(joined) = self.terminals(
                 connected,
                 &at,
                 model_name,
@@ -787,6 +965,11 @@ impl<'a> Walk<'a> {
             ) else {
                 return;
             };
+            let device = self.devices.len();
+            for (terminal, joined) in joined.iter().enumerate() {
+                self.attach(joined.port, Member::Analog { device, terminal });
+            }
+            let terminals: Vec<NetRef> = joined.iter().map(|joined| joined.net).collect();
             for &net in terminals.iter().flatten() {
                 self.nets[net].electrical = true;
             }
@@ -808,11 +991,16 @@ impl<'a> Walk<'a> {
                     return;
                 }
             };
-            let Some(nets) =
+            let Some(joined) =
                 self.terminals(connected, &at, model_name, &pins.names(), prefix, ports)
             else {
                 return;
             };
+            let device = self.logic.len();
+            for (pin, joined) in joined.iter().enumerate() {
+                self.attach(joined.port, Member::Logic { device, pin });
+            }
+            let nets: Vec<NetRef> = joined.iter().map(|joined| joined.net).collect();
             let pin_count = pins.inputs.len() + pins.outputs.len();
             for &net in nets[pin_count..].iter().flatten() {
                 self.nets[net].electrical = true;
@@ -835,6 +1023,7 @@ impl<'a> Walk<'a> {
 
     /// The net of each of `expected`, the terminals a model declares, as `connected` joins
     /// them, or `None` after reporting a terminal left unconnected or that it does not have.
+    /// Each net comes with the port of the enclosing instance it is, if it is one.
     fn terminals(
         &mut self,
         connected: &BTreeMap<Name, Name>,
@@ -842,8 +1031,8 @@ impl<'a> Walk<'a> {
         model: &Name,
         expected: &[String],
         prefix: &str,
-        ports: &BTreeMap<&'a Name, NetRef>,
-    ) -> Option<Vec<NetRef>> {
+        ports: &BTreeMap<&'a Name, Joined>,
+    ) -> Option<Vec<Joined>> {
         let mut complete = true;
         for terminal in connected.keys() {
             if !expected.iter().any(|name| name == terminal.as_str()) {
@@ -871,15 +1060,18 @@ impl<'a> Walk<'a> {
         complete.then_some(terminals)
     }
 
-    /// The net `net` of the component at `prefix`: a port's net from the parent, or the
-    /// component's own net, recorded when first met.
-    fn net(&mut self, prefix: &str, ports: &BTreeMap<&'a Name, NetRef>, net: &Name) -> NetRef {
+    /// The net `net` of the component at `prefix`: a port's net from the parent, with the
+    /// port, or the component's own net, recorded when first met.
+    fn net(&mut self, prefix: &str, ports: &BTreeMap<&'a Name, Joined>, net: &Name) -> Joined {
         if let Some(&found) = ports.get(net) {
             return found;
         }
         let name = format!("{prefix}{net}");
         if let Some(&index) = self.named.get(&name) {
-            return Some(index);
+            return Joined {
+                net: Some(index),
+                port: None,
+            };
         }
         let index = self.nets.len();
         self.nets.push(NetRecord {
@@ -887,7 +1079,18 @@ impl<'a> Walk<'a> {
             electrical: false,
         });
         self.named.insert(name, index);
-        Some(index)
+        Joined {
+            net: Some(index),
+            port: None,
+        }
+    }
+
+    /// Adds `member` to `port` and to every port of an enclosing instance outside it.
+    fn attach(&mut self, mut port: Option<usize>, member: Member) {
+        while let Some(index) = port {
+            self.ports[index].members.push(member);
+            port = self.ports[index].parent;
+        }
     }
 }
 

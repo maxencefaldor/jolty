@@ -15,29 +15,27 @@ REFERENCE_TEMPERATURE: float
 class ElaborationError(Exception): ...
 class SimulationError(Exception): ...
 
-class SolvedPoint(TypedDict):
-    values: npt.NDArray[np.float64]
+class Observed(TypedDict):
     currents: npt.NDArray[np.float64]
     charges: npt.NDArray[np.float64]
+    conductances: npt.NDArray[np.float64]
+    capacitances: npt.NDArray[np.float64]
+    variables: npt.NDArray[np.float64]
+
+class SolvedPoint(Observed):
+    values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
     strategy: str
 
-class OperatingPointOutcome(TypedDict):
+class OperatingPointOutcome(SolvedPoint):
     kind: Literal["operating_point"]
-    values: npt.NDArray[np.float64]
-    currents: npt.NDArray[np.float64]
-    charges: npt.NDArray[np.float64]
-    logic: npt.NDArray[np.float64]
-    strategy: str
 
-class SweepOutcome(TypedDict):
+class SweepOutcome(Observed):
     kind: Literal["dc_sweep"]
     source: str
     quantity: Literal["voltage", "current"]
     levels: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
-    currents: npt.NDArray[np.float64]
-    charges: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
 
 class ResponseOutcome(TypedDict):
@@ -54,12 +52,10 @@ class StatisticsOutcome(TypedDict):
     rejected: int
     iterations: int
 
-class WaveformsOutcome(TypedDict):
+class WaveformsOutcome(Observed):
     kind: Literal["transient"]
     times: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
-    currents: npt.NDArray[np.float64]
-    charges: npt.NDArray[np.float64]
     logic: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
     statistics: StatisticsOutcome
 
@@ -117,6 +113,12 @@ class Simulator:
     def nets(self) -> list[str]: ...
     @property
     def terminals(self) -> list[str]: ...
+    @property
+    def derivatives(self) -> list[tuple[str, str]]: ...
+    @property
+    def variables(self) -> list[tuple[str, str]]: ...
+    @property
+    def composites(self) -> list[tuple[str, list[int]]]: ...
     @property
     def devices(self) -> int: ...
     def check(self) -> list[DiagnosticOutcome]: ...

@@ -1,6 +1,7 @@
 # Copyright 2026 Maxence Faldor
 
 from pathlib import Path
+from typing import TypedDict
 
 import numpy as np
 import pytest
@@ -22,14 +23,34 @@ PARAMETER = results.Parameter("X1/R1", "resistance", 1e3)
 TERMINALS = ("C1.a", "C1.b")
 
 
+class Names(TypedDict):
+    """The names of a result's device columns."""
+
+    terminals: tuple[str, ...]
+    composites: results.Composites
+    derivatives: tuple[tuple[str, str], ...]
+    variables: tuple[tuple[str, str], ...]
+
+
+NAMES = Names(
+    terminals=TERMINALS,
+    composites=(("X1.p", (0, 1)),),
+    derivatives=(("C1.a", "C1.a"), ("C1.a", "C1.b")),
+    variables=(("M1", "threshold_voltage"),),
+)
+
+
 def every_kind() -> dict[str, results.Result]:
     point = results.OperatingPoint(
         UNKNOWNS,
         np.array([1.0, -1e-3]),
         "gmin_stepping",
-        terminals=TERMINALS,
         currents=np.array([1e-3, -1e-3]),
         charges=np.array([1e-12, -1e-12]),
+        conductances=np.array([0.0, 0.0]),
+        capacitances=np.array([1e-12, -1e-12]),
+        readings=np.array([0.7]),
+        **NAMES,
     )
     return {
         "op": point,
@@ -39,9 +60,12 @@ def every_kind() -> dict[str, results.Result]:
             "voltage",
             np.array([0.0, 1.0]),
             np.eye(2),
-            terminals=TERMINALS,
             currents=np.eye(2),
             charges=np.zeros((2, 2)),
+            conductances=np.zeros((2, 2)),
+            capacitances=np.zeros((2, 2)),
+            readings=np.zeros((2, 1)),
+            **NAMES,
         ),
         "bode": results.Response(
             UNKNOWNS,
@@ -57,9 +81,12 @@ def every_kind() -> dict[str, results.Result]:
             np.array([0.0, 1e-6]),
             np.ones((2, 2)),
             STATISTICS,
-            terminals=TERMINALS,
             currents=np.ones((2, 2)),
             charges=np.ones((2, 2)),
+            conductances=np.zeros((2, 2)),
+            capacitances=np.ones((2, 2)),
+            readings=np.ones((2, 1)),
+            **NAMES,
         ),
         "sensitivity": results.Sensitivities(
             UNKNOWNS,
@@ -94,6 +121,9 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     assert isinstance(op, results.OperatingPoint)
     assert op.current("C1", "a") == 1e-3
     assert op.charge("C1", "b") == -1e-12
+    assert op.current("X1", "p") == 0
+    assert op.capacitance("C1.a", "C1.b") == -1e-12
+    assert op.variable("M1", "threshold_voltage") == 0.7
     bode = read["bode"]
     assert isinstance(bode, results.Response)
     np.testing.assert_array_equal(bode.current("C1", "b"), [-1j])
@@ -103,6 +133,8 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     step = read["step"]
     assert isinstance(step, results.Waveforms)
     assert step.statistics == STATISTICS
+    np.testing.assert_array_equal(step.current("X1", "p"), [2, 2])
+    np.testing.assert_array_equal(step.variable("M1", "threshold_voltage"), [1, 1])
     sensitivity = read["sensitivity"]
     assert isinstance(sensitivity, results.Sensitivities)
     assert sensitivity.outputs == ("out",)

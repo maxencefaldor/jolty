@@ -1,6 +1,7 @@
-//! The current into every terminal of every device, and the charge it holds.
+//! What every device does: the current into every terminal and the charge it holds, the
+//! derivatives of its equations, and its variables.
 
-use jolty_engine::{Ac, Conditions, DcSweep, Method, Options, Simulator, Terminals, Transient};
+use jolty_engine::{Ac, Conditions, DcSweep, Method, Observation, Options, Simulator, Transient};
 use jolty_ir::Circuit;
 use jolty_models::Library;
 use jolty_numerics::Complex64;
@@ -46,6 +47,14 @@ fn tight() -> Options {
         current_tolerance: 1e-18,
         ..Options::default()
     }
+}
+
+/// Checks that `found` is `expected` exactly.
+fn assert_exact(found: f64, expected: f64) {
+    assert!(
+        found.to_bits() == expected.to_bits() || found.abs() + expected.abs() <= 0.0,
+        "{found} is not {expected}"
+    );
 }
 
 /// The index of `name` among the simulator's terminals.
@@ -116,7 +125,9 @@ fn currents_at_an_operating_point_obey_ohm_and_kirchhoff() {
          "terminals": {"a": "out", "b": "0"}}
     ]));
     let point = simulator.operating_point(&Options::default()).unwrap();
-    let Terminals { currents, charges } = &point.terminals;
+    let Observation {
+        currents, charges, ..
+    } = &point.observation;
     let current = |name: &str| currents[terminal(&simulator, name)];
     assert!((current("R1.a") - 1e-3).abs() < 1e-12);
     assert!((current("R1.b") + 1e-3).abs() < 1e-12);
@@ -133,7 +144,7 @@ fn currents_at_an_operating_point_obey_ohm_and_kirchhoff() {
 fn terminals_that_share_a_net_or_join_the_reference_keep_their_own_currents() {
     let mut simulator = simulator(&bench());
     let point = simulator.operating_point(&Options::default()).unwrap();
-    let currents = &point.terminals.currents;
+    let currents = &point.observation.currents;
     let current = |name: &str| currents[terminal(&simulator, name)];
     // At DC, no current flows into the gate, though it shares its net with the drain.
     assert!(current("M1.gate").abs() < 1e-15);
@@ -151,7 +162,7 @@ fn terminals_that_share_a_net_or_join_the_reference_keep_their_own_currents() {
             &tight(),
         )
         .unwrap();
-    let currents = &sweep.terminals[0].currents;
+    let currents = &sweep.observations[0].currents;
     let drain = currents[terminal(&swept, "M1.drain")];
     let source = currents[terminal(&swept, "M1.source")];
     assert!(drain > 1e-5, "{drain}");
@@ -178,7 +189,7 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
             .unwrap();
         let (capacitor, resistor) = (terminal(&simulator, "C1.a"), terminal(&simulator, "R1.b"));
         let mut charging = 0.0_f64;
-        for (values, found) in waveforms.values.iter().zip(&waveforms.terminals) {
+        for (values, found) in waveforms.values.iter().zip(&waveforms.observations) {
             let off = imbalance(&simulator, &found.currents);
             assert!(off < 1e-8, "{method:?}: {off}");
             assert!((found.charges[capacitor] - 1e-10 * values[out]).abs() < 1e-22);
@@ -223,4 +234,208 @@ fn small_signal_currents_are_the_admittances_times_the_phasors() {
         assert!((currents[capacitor] - expected).norm() <= 1e-12 * expected.norm());
         assert!(imbalance(&simulator, currents) < 1e-9);
     }
+}
+
+/// The index of the derivative of `equation` with respect to `unknown`.
+fn derivative(simulator: &Simulator, equation: &str, unknown: &str) -> usize {
+    simulator
+        .derivatives()
+        .iter()
+        .position(|(row, column)| row == equation && column == unknown)
+        .unwrap_or_else(|| panic!("no derivative of {equation} by {unknown}"))
+}
+
+#[test]
+fn each_device_reports_its_own_small_signal_model_and_variables() {
+    let mut simulator = simulator(&json!([
+        {"id": "VG", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
+         "terminals": {"positive": "g", "negative": "0"}},
+        {"id": "VD", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 2.0}},
+         "terminals": {"positive": "d", "negative": "0"}},
+        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 4e3},
+         "terminals": {"a": "d", "b": "0"}},
+        {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 3e-12},
+         "terminals": {"a": "g", "b": "d"}},
+        {"id": "M1", "of": {"device": "mosfet"},
+         "parameters": {"width": 2e-6, "length": 1e-6, "threshold_voltage": 0.3,
+                        "transconductance_parameter": 1e-4},
+         "terminals": {"drain": "d", "gate": "g", "source": "0", "bulk": "0"}}
+    ]));
+    let point = simulator.operating_point(&tight()).unwrap();
+    let Observation {
+        conductances,
+        capacitances,
+        variables,
+        ..
+    } = &point.observation;
+    let conductance = |row: &str, column: &str| conductances[derivative(&simulator, row, column)];
+    let capacitance = |row: &str, column: &str| capacitances[derivative(&simulator, row, column)];
+    assert_exact(conductance("R1.a", "R1.a"), 2.5e-4);
+    assert_exact(conductance("R1.a", "R1.b"), -2.5e-4);
+    assert_exact(capacitance("C1.b", "C1.a"), -3e-12);
+    // A source's branch equation holds its voltage: v(positive) − v(negative) = level.
+    assert_exact(conductance("VG:current", "VG.positive"), 1.0);
+    assert_exact(conductance("VG.positive", "VG:current"), 1.0);
+    // In saturation, gm = β (vgs − vto), with β = kp W / L.
+    let gm = conductance("M1.drain", "M1.gate");
+    assert!((gm - 2e-4 * 0.7).abs() < 1e-18, "{gm}");
+    assert_exact(conductance("M1.gate", "M1.drain"), 0.0);
+    let names: Vec<(&str, &str)> = simulator
+        .variables()
+        .iter()
+        .map(|(device, name)| (device.as_str(), *name))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("M1", "threshold_voltage"),
+            ("M1", "saturation_voltage"),
+            ("M1", "gate_source_capacitance"),
+            ("M1", "gate_drain_capacitance"),
+            ("M1", "gate_bulk_capacitance"),
+        ]
+    );
+    assert!((variables[0] - 0.3).abs() < 1e-15);
+    assert!((variables[1] - 0.7).abs() < 1e-15);
+}
+
+/// The circuit of a cell, `R1` from `a` to `mid` and `R2` from `mid` to `b`, nested in a
+/// pair whose ports `p` and `q` are the cell's, with `in` driven by `V1`.
+fn nested(outside: (&str, &str)) -> Simulator {
+    let resistor = |id: &str, a: &str, b: &str| {
+        json!({"id": id, "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+               "terminals": {"a": a, "b": b}})
+    };
+    let signal = |name: &str| json!({"name": name, "role": "signal"});
+    let document = json!({
+        "format": "jolty-circuit", "version": 1, "top": "test",
+        "components": {
+            "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
+                {"id": "V1", "of": {"device": "voltage_source"},
+                 "parameters": {"waveform": {"dc": 3.0}},
+                 "terminals": {"positive": "in", "negative": "0"}},
+                {"id": "X1", "of": {"component": "pair"},
+                 "terminals": {"p": outside.0, "q": outside.1}},
+                resistor("R3", "in", "0")
+            ]},
+            "pair": {"ports": [signal("p"), signal("q")], "instances": [
+                {"id": "X2", "of": {"component": "cell"}, "terminals": {"a": "p", "b": "q"}},
+                resistor("R4", "p", "q")
+            ]},
+            "cell": {"ports": [signal("a"), signal("b")], "instances": [
+                resistor("R1", "a", "mid"), resistor("R2", "mid", "b")
+            ]}
+        }
+    });
+    let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
+    Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+        .expect("an elaborated circuit")
+}
+
+#[test]
+fn a_component_instance_s_terminals_sum_the_device_terminals_inside_it() {
+    let mut simulator = nested(("in", "0"));
+    let named: Vec<(&str, Vec<&str>)> = simulator
+        .composites()
+        .iter()
+        .map(|(name, members)| {
+            let members = members
+                .iter()
+                .map(|&index| simulator.terminals()[index].as_str())
+                .collect();
+            (name.as_str(), members)
+        })
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("X1.p", vec!["X1/X2/R1.a", "X1/R4.a"]),
+            ("X1.q", vec!["X1/X2/R2.b", "X1/R4.b"]),
+            ("X1/X2.a", vec!["X1/X2/R1.a"]),
+            ("X1/X2.b", vec!["X1/X2/R2.b"]),
+        ]
+    );
+    let point = simulator.operating_point(&tight()).unwrap();
+    let current = |index: usize| -> f64 {
+        simulator.composites()[index]
+            .1
+            .iter()
+            .map(|&terminal| point.observation.currents[terminal])
+            .sum()
+    };
+    // Into X1: 3 V across 2 kΩ in parallel with 1 kΩ.
+    assert!((current(0) - 4.5e-3).abs() < 1e-12, "{}", current(0));
+    assert!((current(1) + 4.5e-3).abs() < 1e-12);
+    assert!((current(2) - 1.5e-3).abs() < 1e-12);
+
+    // Ports tied together outside keep their own currents: here both join `in`.
+    let mut tied = nested(("in", "in"));
+    let point = tied.operating_point(&tight()).unwrap();
+    let currents: Vec<f64> = tied
+        .composites()
+        .iter()
+        .map(|(_, members)| members.iter().map(|&t| point.observation.currents[t]).sum())
+        .collect();
+    assert!(currents.iter().all(|current| current.abs() < 1e-15));
+}
+
+#[test]
+fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
+    let cell = json!({
+        "inputs": ["a"], "outputs": [{"name": "y", "table": "10"}],
+        "timing": {"fixed": {"rise": 1e-9, "fall": 1e-9, "transition": 1e-10}},
+        "electrical": {"input_capacitances": [2e-15]},
+    });
+    let mut simulator = simulator(&json!([
+        {"id": "VDD", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
+         "terminals": {"positive": "vdd", "negative": "0"}},
+        {"id": "VA", "of": {"device": "voltage_source"},
+         "parameters": {"waveform": {"pulse": {"initial": 0, "pulsed": 1, "delay": 2e-9,
+                                               "rise": 1e-10, "fall": 1e-10, "width": 1e-8}}},
+         "terminals": {"positive": "a", "negative": "0"}},
+        {"id": "U1", "of": {"device": "logic_cell"}, "parameters": cell,
+         "terminals": {"a": "a", "y": "y", "supply": "vdd", "ground": "0"}},
+        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+         "terminals": {"a": "y", "b": "0"}}
+    ]));
+    let named: Vec<&str> = simulator
+        .composites()
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(named, ["U1.a", "U1.y", "U1.supply", "U1.ground"]);
+    let transient = Transient {
+        stop: 1e-8,
+        max_step: Some(1e-10),
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+    };
+    let waveforms = simulator.transient(&transient, &tight()).unwrap();
+    let pin = |index: usize, found: &Observation| -> f64 {
+        simulator.composites()[index]
+            .1
+            .iter()
+            .map(|&terminal| found.currents[terminal])
+            .sum()
+    };
+    let fraction = derivative(&simulator, "U1:y:current", "U1:y.supply");
+    let resistor = terminal(&simulator, "R1.a");
+    let (mut high, mut low) = (false, false);
+    for (time, found) in waveforms.times.iter().zip(&waveforms.observations) {
+        // The driver takes the resistor's current from its output to the ground.
+        assert!((pin(1, found) + found.currents[resistor]).abs() < 1e-12);
+        let sum: f64 = (0..4).map(|index| pin(index, found)).sum();
+        assert!(sum.abs() < 1e-15, "the cell's currents sum to zero: {sum}");
+        // An ideal driver draws nothing from its supply.
+        assert_exact(pin(2, found), 0.0);
+        // Its equation holds the output at the fraction of the supply it ramps to.
+        let held = -found.conductances[fraction];
+        if *time < 2e-9 {
+            high |= held.to_bits() == 1.0_f64.to_bits();
+        } else if *time > 4e-9 {
+            low |= held.abs() <= 0.0;
+        }
+        assert!((0.0..=1.0).contains(&held), "{held}");
+    }
+    assert!(high && low, "the inverter falls after its input rises");
 }

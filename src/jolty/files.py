@@ -3,9 +3,9 @@
 
 A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A results file holds the
 results of named analyses as a NumPy ``.npz`` archive: a JSON header that names the
-circuit's unknowns, logic nets and device terminals and says what each analysis is, then
-the arrays of each analysis under keys such as ``step.times``, ``step.values`` and
-``step.currents``.
+circuit's unknowns, logic nets, device terminals, derivatives and variables, and says
+what each analysis is, then the arrays of each analysis under keys such as
+``step.times``, ``step.values``, ``step.currents`` and ``step.conductances``.
 
 Examples:
     >>> import tempfile
@@ -79,12 +79,20 @@ type _Entry = Annotated[
 ]
 
 
-class _Header(_Model):
-    format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[1] = 1
+class _Names(_Model):
+    """The names of a circuit's columns, which every analysis of a file shares."""
+
     unknowns: tuple[results.Unknown, ...]
     nets: tuple[str, ...] = ()
     terminals: tuple[str, ...] = ()
+    composites: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    derivatives: tuple[tuple[str, str], ...] = ()
+    variables: tuple[tuple[str, str], ...] = ()
+
+
+class _Header(_Names):
+    format: Literal["jolty-results"] = "jolty-results"
+    version: Literal[1] = 1
     analyses: dict[str, _Entry]
 
 
@@ -141,12 +149,9 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
     """Writes the results of `analyses`, by name, to `path`.
 
     Raises:
-        ValueError: When the analyses solve different unknowns, or none is given.
+        ValueError: When the analyses are of different circuits, or none is given.
     """
-    circuits = {
-        (result.unknowns, _nets(result), _terminals(result))
-        for result in analyses.values()
-    }
+    circuits = {_names(result) for result in analyses.values()}
     if len(circuits) != 1:
         message = "a results file holds analyses of one circuit, one or more"
         raise ValueError(message)
@@ -156,17 +161,13 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
         match result:
             case results.OperatingPoint():
                 entries[name] = _Point(strategy=result.strategy)
-                arrays[f"{name}.values"] = result.values
-                arrays[f"{name}.logic"] = result.logic
-                arrays[f"{name}.currents"] = result.currents
-                arrays[f"{name}.charges"] = result.charges
+                arrays.update(_point_arrays(name, result))
             case results.Sweep():
                 entries[name] = _Sweep(source=result.source, quantity=result.quantity)
                 arrays[f"{name}.levels"] = result.levels
                 arrays[f"{name}.values"] = result.values
                 arrays[f"{name}.logic"] = result.logic
-                arrays[f"{name}.currents"] = result.currents
-                arrays[f"{name}.charges"] = result.charges
+                arrays.update(_observed_arrays(name, result))
             case results.Response():
                 entries[name] = _Response(
                     source=result.source, strategy=result.operating_point.strategy
@@ -174,13 +175,14 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
                 arrays[f"{name}.frequencies"] = result.frequencies
                 arrays[f"{name}.values"] = result.values
                 arrays[f"{name}.currents"] = result.currents
-                arrays.update(_point_arrays(name, result.operating_point))
+                arrays.update(
+                    _point_arrays(f"{name}.operating_point", result.operating_point)
+                )
             case results.Waveforms():
                 entries[name] = _Waveforms(statistics=result.statistics)
                 arrays[f"{name}.times"] = result.times
                 arrays[f"{name}.values"] = result.values
-                arrays[f"{name}.currents"] = result.currents
-                arrays[f"{name}.charges"] = result.charges
+                arrays.update(_observed_arrays(name, result))
                 traces = result.logic
                 arrays[f"{name}.logic.counts"] = np.array(
                     [len(trace.times) for trace in traces], dtype=np.int64
@@ -203,12 +205,12 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
                 arrays[f"{name}.parameters"] = np.array(
                     [parameter.value for parameter in result.parameters], dtype=float
                 )
-                arrays[f"{name}.values"] = result.derivatives
-                arrays.update(_point_arrays(name, result.operating_point))
-    unknowns, nets, terminals = circuits.pop()
-    header = _Header(
-        unknowns=unknowns, nets=nets, terminals=terminals, analyses=entries
-    )
+                arrays[f"{name}.derivatives"] = result.derivatives
+                arrays.update(
+                    _point_arrays(f"{name}.operating_point", result.operating_point)
+                )
+    names = circuits.pop()
+    header = _Header(**names.model_dump(), analyses=entries)
     arrays[_HEADER] = np.array(header.model_dump_json())
     with path.open("wb") as file:
         np.savez_compressed(file, allow_pickle=False, **arrays)
@@ -226,59 +228,44 @@ def load_results(path: Path) -> dict[str, results.Result]:
         except KeyError, ValidationError:
             message = f"{path} is not a jolty results file"
             raise JoltyError(message) from None
-        unknowns, nets, terminals = header.unknowns, header.nets, header.terminals
+        unknowns, nets = header.unknowns, header.nets
         loaded: dict[str, results.Result] = {}
         for name, entry in header.analyses.items():
-            values = data[f"{name}.values"]
             match entry:
                 case _Point(strategy=strategy):
-                    loaded[name] = results.OperatingPoint(
-                        unknowns,
-                        values,
-                        strategy,
-                        nets,
-                        data[f"{name}.logic"],
-                        terminals,
-                        data[f"{name}.currents"],
-                        data[f"{name}.charges"],
-                    )
+                    loaded[name] = _point(data, name, strategy, header)
                 case _Sweep(source=source, quantity=quantity):
-                    levels = data[f"{name}.levels"]
                     loaded[name] = results.Sweep(
                         unknowns,
                         source,
                         quantity,
-                        levels,
-                        values,
+                        data[f"{name}.levels"],
+                        data[f"{name}.values"],
                         nets,
                         data[f"{name}.logic"],
-                        terminals,
-                        data[f"{name}.currents"],
-                        data[f"{name}.charges"],
+                        **_observed(data, name, header),
                     )
                 case _Response(source=source, strategy=strategy):
-                    frequencies = data[f"{name}.frequencies"]
+                    point = _point(data, f"{name}.operating_point", strategy, header)
                     loaded[name] = results.Response(
                         unknowns,
                         source,
-                        frequencies,
-                        values,
-                        _point(data, name, strategy, header),
-                        terminals,
-                        data[f"{name}.currents"],
+                        data[f"{name}.frequencies"],
+                        data[f"{name}.values"],
+                        point,
+                        terminals=header.terminals,
+                        currents=data[f"{name}.currents"],
+                        composites=header.composites,
                     )
                 case _Waveforms(statistics=statistics):
-                    times = data[f"{name}.times"]
                     loaded[name] = results.Waveforms(
                         unknowns,
-                        times,
-                        values,
+                        data[f"{name}.times"],
+                        data[f"{name}.values"],
                         statistics,
                         nets,
                         _traces(data, name),
-                        terminals,
-                        data[f"{name}.currents"],
-                        data[f"{name}.charges"],
+                        **_observed(data, name, header),
                     )
                 case _Sensitivities(
                     outputs=outputs, parameters=named, strategy=strategy
@@ -289,50 +276,79 @@ def load_results(path: Path) -> dict[str, results.Result]:
                             named, data[f"{name}.parameters"], strict=True
                         )
                     )
-                    point = _point(data, name, strategy, header)
+                    point = _point(data, f"{name}.operating_point", strategy, header)
                     loaded[name] = results.Sensitivities(
-                        unknowns, outputs, parameters, values, point
+                        unknowns,
+                        outputs,
+                        parameters,
+                        data[f"{name}.derivatives"],
+                        point,
                     )
     return loaded
 
 
-def _nets(result: results.Result) -> tuple[str, ...]:
-    """The logic nets of `result`."""
+def _names(result: results.Result) -> _Names:
+    """The names of the columns of `result`'s circuit."""
     if isinstance(result, results.Response | results.Sensitivities):
-        return result.operating_point.nets
-    return result.nets
+        return _names(result.operating_point)
+    return _Names(
+        unknowns=result.unknowns,
+        nets=result.nets,
+        terminals=result.terminals,
+        composites=result.composites,
+        derivatives=result.derivatives,
+        variables=result.variables,
+    )
 
 
-def _terminals(result: results.Result) -> tuple[str, ...]:
-    """The device terminals of `result`."""
-    if isinstance(result, results.Sensitivities):
-        return result.operating_point.terminals
-    return result.terminals
+_OBSERVED: Final = ("currents", "charges", "conductances", "capacitances", "readings")
+"""The arrays of what every device did, by the names of their fields."""
+
+
+def _observed_arrays(
+    name: str, result: results.OperatingPoint | results.Sweep | results.Waveforms
+) -> dict[str, np.ndarray]:
+    """The arrays of what every device did in the analysis `name`."""
+    return {f"{name}.{field}": getattr(result, field) for field in _OBSERVED}
 
 
 def _point_arrays(name: str, point: results.OperatingPoint) -> dict[str, np.ndarray]:
-    """The arrays of the operating point that the analysis `name` holds."""
+    """The arrays of the operating point stored under `name`."""
     return {
-        f"{name}.operating_point": point.values,
-        f"{name}.operating_point.logic": point.logic,
-        f"{name}.operating_point.currents": point.currents,
-        f"{name}.operating_point.charges": point.charges,
+        f"{name}.values": point.values,
+        f"{name}.logic": point.logic,
+        **_observed_arrays(name, point),
+    }
+
+
+def _observed(
+    data: Mapping[str, np.ndarray], name: str, header: _Header
+) -> results.Observed:
+    """What every device did in the analysis stored under `name`, as fields."""
+    return {
+        "terminals": header.terminals,
+        "currents": data[f"{name}.currents"],
+        "charges": data[f"{name}.charges"],
+        "composites": header.composites,
+        "derivatives": header.derivatives,
+        "conductances": data[f"{name}.conductances"],
+        "capacitances": data[f"{name}.capacitances"],
+        "variables": header.variables,
+        "readings": data[f"{name}.readings"],
     }
 
 
 def _point(
     data: Mapping[str, np.ndarray], name: str, strategy: str, header: _Header
 ) -> results.OperatingPoint:
-    """The operating point that the analysis `name` holds in `data`."""
+    """The operating point stored under `name` in `data`."""
     return results.OperatingPoint(
         header.unknowns,
-        data[f"{name}.operating_point"],
+        data[f"{name}.values"],
         strategy,
         header.nets,
-        data[f"{name}.operating_point.logic"],
-        header.terminals,
-        data[f"{name}.operating_point.currents"],
-        data[f"{name}.operating_point.charges"],
+        data[f"{name}.logic"],
+        **_observed(data, name, header),
     )
 
 

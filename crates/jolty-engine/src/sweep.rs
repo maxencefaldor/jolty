@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::newton::Mode;
 use crate::operating_point::Solved;
-use crate::{OperatingPoint, Options, SimulationError, Simulator, Strategy, Terminals};
+use crate::{Observation, OperatingPoint, Options, SimulationError, Simulator, Strategy};
 
 /// The fraction of the way from one level of a sweep to the next below which continuation
 /// gives up, as a divisor.
@@ -32,9 +32,9 @@ pub struct Sweep {
     pub levels: Vec<f64>,
     /// The value of every unknown at each level.
     pub values: Vec<Vec<f64>>,
-    /// The current into every terminal of every device, and the charge it holds, at each
-    /// level.
-    pub terminals: Vec<Terminals>,
+    /// What every device did at each level: the current into each terminal and the charge
+    /// it holds, its derivatives and its variables.
+    pub observations: Vec<Observation>,
     /// The level of every logic net at each level.
     pub logic: Vec<Vec<Level>>,
 }
@@ -63,11 +63,11 @@ impl Simulator {
         self.hold_source(index, None);
         let points = result?;
         let mut values = Vec::with_capacity(points.len());
-        let mut terminals = Vec::with_capacity(points.len());
+        let mut observations = Vec::with_capacity(points.len());
         let mut logic = Vec::with_capacity(points.len());
         for point in points {
             values.push(point.values);
-            terminals.push(point.terminals);
+            observations.push(point.observation);
             logic.push(point.logic);
         }
         Ok(Sweep {
@@ -75,7 +75,7 @@ impl Simulator {
             quantity: self.source_quantity(index),
             levels: sweep.levels.clone(),
             values,
-            terminals,
+            observations,
             logic,
         })
     }

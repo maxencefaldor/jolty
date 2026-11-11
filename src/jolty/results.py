@@ -2,17 +2,23 @@
 """The results of analyses, read by net and by instance.
 
 Every result holds the circuit's unknowns: node voltages, named by net path such as
-``out`` or ``amplifier/mid``, and branch currents, named by instance path and label such
-as ``V1:current``. ``voltage`` and ``current`` read them by name. It holds the current
-into every terminal of every device, and the charge the terminal holds, which
-``current`` and ``charge`` read by instance and terminal, such as ``X1/R1`` and ``a``.
-It holds the levels of the circuit's logic nets too, which ``level`` reads by name: 0,
-1, or NaN for an unknown level.
+``out`` or ``amplifier/mid``, and branch currents and other internal unknowns, named by
+instance path and label such as ``V1:current``. ``voltage`` and ``current`` read them by
+name. It holds the current into every terminal of every device, and the charge the
+terminal holds, which ``current`` and ``charge`` read by instance and terminal, such as
+``X1/R1`` and ``a``; a component instance's or a logic device's terminal, such as
+``X1`` and ``vdd``, sums those of the device terminals behind it.
+
+It holds each device's own small-signal model too: the derivative of each of its
+equations with respect to each of its unknowns, which ``conductance`` and
+``capacitance`` read, and the variables it computes on its way, such as a transistor's
+threshold voltage, which ``variable`` reads. And it holds the levels of the circuit's
+logic nets, which ``level`` reads by name: 0, 1, or NaN for an unknown level.
 """
 
 import difflib
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, TypedDict
 
 import numpy as np
 import numpy.typing as npt
@@ -51,14 +57,80 @@ def column(unknowns: tuple[Unknown, ...], name: str) -> int:
     return _find(names, name, "the circuit has no unknown")
 
 
-def terminal_column(terminals: tuple[str, ...], instance: str, terminal: str) -> int:
-    """The column of the terminal `terminal` of `instance` in a result's currents.
+type Composites = tuple[tuple[str, tuple[int, ...]], ...]
+"""Each terminal of a component instance or a logic device, such as ``X1.vdd``, with the
+indices of the device terminals whose currents and charges sum to its own."""
+
+
+class Observed(TypedDict):
+    """What every device did, as fields of an operating point, sweep or transient."""
+
+    terminals: tuple[str, ...]
+    currents: Real
+    charges: Real
+    composites: Composites
+    derivatives: tuple[tuple[str, str], ...]
+    conductances: Real
+    capacitances: Real
+    variables: tuple[tuple[str, str], ...]
+    readings: Real
+
+
+def terminal_columns(
+    terminals: tuple[str, ...], composites: Composites, instance: str, terminal: str
+) -> list[int]:
+    """The columns of a result's currents that sum to the current into a terminal.
+
+    The terminal `terminal` of `instance` has its own column for a device, and those of
+    the device terminals behind it for a component instance or a logic device.
 
     Raises:
-        KeyError: When no device has that terminal; the message suggests the closest.
+        KeyError: When no instance has that terminal; the message suggests the closest.
+
+    Examples:
+        >>> terminal_columns(("R1.a", "R1.b"), (("X1.p", (0, 1)),), "X1", "p")
+        [0, 1]
     """
-    missing = "the circuit has no device terminal"
-    return _find(list(terminals), f"{instance}.{terminal}", missing)
+    name = f"{instance}.{terminal}"
+    if name in terminals:
+        return [terminals.index(name)]
+    for composite, members in composites:
+        if composite == name:
+            return list(members)
+    names = [*terminals, *(composite for composite, _ in composites)]
+    return [_find(names, name, "the circuit has no terminal")]
+
+
+def derivative_column(
+    derivatives: tuple[tuple[str, str], ...], equation: str, unknown: str
+) -> int:
+    """The column of a result's conductances and capacitances for one derivative.
+
+    It holds the derivative of `equation` with respect to `unknown`, two of one device's
+    terminals or internal unknowns. Each is named as a terminal, such as ``M1.drain``,
+    for the current into it and the voltage at it, or as an internal unknown, such as
+    ``M1:drain``, for its equation and
+    its value.
+
+    Raises:
+        KeyError: When the two are not of one device; the message suggests the closest.
+    """
+    labels = [f"{row} by {column}" for row, column in derivatives]
+    missing = "no device has the derivative"
+    return _find(labels, f"{equation} by {unknown}", missing)
+
+
+def variable_column(
+    variables: tuple[tuple[str, str], ...], instance: str, name: str
+) -> int:
+    """The column of a result's variables that holds `name` of `instance`.
+
+    Raises:
+        KeyError: When the device has no such variable; the message suggests the
+            closest.
+    """
+    labels = [f"{device} {variable}" for device, variable in variables]
+    return _find(labels, f"{instance} {name}", "the circuit has no device variable")
 
 
 def net_column(nets: tuple[str, ...], name: str) -> int:
@@ -108,6 +180,13 @@ def _current(instance: str) -> str:
     return f"{instance}:current"
 
 
+def _summed[T: (np.float64, np.complex128)](
+    array: npt.NDArray[T], columns: list[int]
+) -> npt.NDArray[T]:
+    """The sum of `columns` of `array`, at each row of a two-dimensional one."""
+    return array[..., columns].sum(axis=-1)
+
+
 @dataclass(frozen=True, slots=True)
 class OperatingPoint:
     """A DC solution, and the strategy that found it."""
@@ -125,6 +204,20 @@ class OperatingPoint:
     """The current into each terminal, in amperes."""
     charges: Real = field(default_factory=_none)
     """The charge each terminal holds, in coulombs."""
+    composites: Composites = ()
+    """Each terminal of a component instance or a logic device, such as ``X1.vdd``, with
+    the indices of the device terminals whose currents and charges sum to its own."""
+    derivatives: tuple[tuple[str, str], ...] = ()
+    """For each device, every pair of its terminals and internal unknowns, its equation
+    then its unknown, in `conductances`' order."""
+    conductances: Real = field(default_factory=_none)
+    """The derivative of each equation's residual with respect to each unknown."""
+    capacitances: Real = field(default_factory=_none)
+    """The derivative of each equation's charge with respect to each unknown."""
+    variables: tuple[tuple[str, str], ...] = ()
+    """Every variable of every device, its path and its name, in `readings`' order."""
+    readings: Real = field(default_factory=_none)
+    """Each variable's value, in SI base units."""
 
     def level(self, net: str) -> float:
         """The level of the logic net `net`: 0, 1, or NaN when unknown."""
@@ -138,18 +231,45 @@ class OperatingPoint:
     def current(self, instance: str, terminal: str | None = None) -> float:
         """The current into `terminal` of `instance`.
 
-        Without a terminal, the current through `instance`, a source or an inductor, in
-        its direction.
+        The instance is a device, a component instance or a logic device. Without a
+        terminal, the current through `instance`, a source or an inductor, in its
+        direction.
         """
         if terminal is not None:
-            return float(
-                self.currents[terminal_column(self.terminals, instance, terminal)]
+            columns = terminal_columns(
+                self.terminals, self.composites, instance, terminal
             )
+            return float(_summed(self.currents, columns))
         return float(self.values[column(self.unknowns, _current(instance))])
 
     def charge(self, instance: str, terminal: str) -> float:
         """The charge `terminal` of `instance` holds."""
-        return float(self.charges[terminal_column(self.terminals, instance, terminal)])
+        columns = terminal_columns(self.terminals, self.composites, instance, terminal)
+        return float(_summed(self.charges, columns))
+
+    def conductance(self, equation: str, unknown: str) -> float:
+        """The derivative of a device's `equation`'s residual with respect to `unknown`.
+
+        For two terminals, such as ``M1.drain`` and ``M1.gate``, it is the change of the
+        current into the first with the voltage at the second.
+        """
+        return float(
+            self.conductances[derivative_column(self.derivatives, equation, unknown)]
+        )
+
+    def capacitance(self, equation: str, unknown: str) -> float:
+        """The derivative of a device's `equation`'s charge with respect to `unknown`.
+
+        For two terminals, it is the change of the first's charge with the voltage at
+        the second.
+        """
+        return float(
+            self.capacitances[derivative_column(self.derivatives, equation, unknown)]
+        )
+
+    def variable(self, instance: str, name: str) -> float:
+        """The variable `name` of the device `instance`, such as a threshold voltage."""
+        return float(self.readings[variable_column(self.variables, instance, name)])
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +293,20 @@ class Sweep:
     """The current into each terminal at each level, one row per level."""
     charges: Real = field(default_factory=_no_rows)
     """The charge each terminal holds at each level, one row per level."""
+    composites: Composites = ()
+    """Each terminal of a component instance or a logic device, with the indices of the
+    device terminals whose currents and charges sum to its own."""
+    derivatives: tuple[tuple[str, str], ...] = ()
+    """For each device, every pair of its terminals and internal unknowns, in the order
+    of `conductances`' columns."""
+    conductances: Real = field(default_factory=_no_rows)
+    """Each derivative of a residual at each level, one row per level."""
+    capacitances: Real = field(default_factory=_no_rows)
+    """Each derivative of a charge at each level, one row per level."""
+    variables: tuple[tuple[str, str], ...] = ()
+    """Every variable of every device, in the order of `readings`' columns."""
+    readings: Real = field(default_factory=_no_rows)
+    """Each variable's value at each level, one row per level."""
 
     def level(self, net: str) -> Real:
         """The level of the logic net `net` at each level: 0, 1, or NaN when unknown."""
@@ -189,12 +323,30 @@ class Sweep:
         Without a terminal, the current through `instance`, a source or an inductor.
         """
         if terminal is not None:
-            return self.currents[:, terminal_column(self.terminals, instance, terminal)]
+            columns = terminal_columns(
+                self.terminals, self.composites, instance, terminal
+            )
+            return _summed(self.currents, columns)
         return self.values[:, column(self.unknowns, _current(instance))]
 
     def charge(self, instance: str, terminal: str) -> Real:
         """The charge `terminal` of `instance` holds at each level."""
-        return self.charges[:, terminal_column(self.terminals, instance, terminal)]
+        columns = terminal_columns(self.terminals, self.composites, instance, terminal)
+        return _summed(self.charges, columns)
+
+    def conductance(self, equation: str, unknown: str) -> Real:
+        """The derivative of `equation`'s residual by `unknown` at each level."""
+        index = derivative_column(self.derivatives, equation, unknown)
+        return self.conductances[:, index]
+
+    def capacitance(self, equation: str, unknown: str) -> Real:
+        """The derivative of `equation`'s charge by `unknown` at each level."""
+        index = derivative_column(self.derivatives, equation, unknown)
+        return self.capacitances[:, index]
+
+    def variable(self, instance: str, name: str) -> Real:
+        """The variable `name` of the device `instance` at each level."""
+        return self.readings[:, variable_column(self.variables, instance, name)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +363,9 @@ class Response:
     """Every terminal of every device, in the order of `currents`' columns."""
     currents: Complex = field(default_factory=_no_phasors)
     """The phasor of the current into each terminal, one row per frequency."""
+    composites: Composites = ()
+    """Each terminal of a component instance or a logic device, with the indices of the
+    device terminals whose currents sum to its own."""
 
     def voltage(self, net: str, reference: str | None = None) -> Complex:
         """The phasor of `net` at each frequency, relative to `reference` or ground."""
@@ -223,7 +378,10 @@ class Response:
         Without a terminal, the phasor of the current through `instance`.
         """
         if terminal is not None:
-            return self.currents[:, terminal_column(self.terminals, instance, terminal)]
+            columns = terminal_columns(
+                self.terminals, self.composites, instance, terminal
+            )
+            return _summed(self.currents, columns)
         return self.values[:, column(self.unknowns, _current(instance))]
 
 
@@ -256,6 +414,20 @@ class Waveforms:
     charge's derivative, by the step's integration formula."""
     charges: Real = field(default_factory=_no_rows)
     """The charge each terminal holds at each time, one row per time."""
+    composites: Composites = ()
+    """Each terminal of a component instance or a logic device, with the indices of the
+    device terminals whose currents and charges sum to its own."""
+    derivatives: tuple[tuple[str, str], ...] = ()
+    """For each device, every pair of its terminals and internal unknowns, in the order
+    of `conductances`' columns."""
+    conductances: Real = field(default_factory=_no_rows)
+    """Each derivative of a residual at each time, one row per time."""
+    capacitances: Real = field(default_factory=_no_rows)
+    """Each derivative of a charge at each time, one row per time."""
+    variables: tuple[tuple[str, str], ...] = ()
+    """Every variable of every device, in the order of `readings`' columns."""
+    readings: Real = field(default_factory=_no_rows)
+    """Each variable's value at each time, one row per time."""
 
     def level(self, net: str) -> Trace:
         """The level of the logic net `net` over time."""
@@ -272,12 +444,30 @@ class Waveforms:
         Without a terminal, the current through `instance`, a source or an inductor.
         """
         if terminal is not None:
-            return self.currents[:, terminal_column(self.terminals, instance, terminal)]
+            columns = terminal_columns(
+                self.terminals, self.composites, instance, terminal
+            )
+            return _summed(self.currents, columns)
         return self.values[:, column(self.unknowns, _current(instance))]
 
     def charge(self, instance: str, terminal: str) -> Real:
         """The charge `terminal` of `instance` holds over time."""
-        return self.charges[:, terminal_column(self.terminals, instance, terminal)]
+        columns = terminal_columns(self.terminals, self.composites, instance, terminal)
+        return _summed(self.charges, columns)
+
+    def conductance(self, equation: str, unknown: str) -> Real:
+        """The derivative of `equation`'s residual by `unknown` over time."""
+        index = derivative_column(self.derivatives, equation, unknown)
+        return self.conductances[:, index]
+
+    def capacitance(self, equation: str, unknown: str) -> Real:
+        """The derivative of `equation`'s charge by `unknown` over time."""
+        index = derivative_column(self.derivatives, equation, unknown)
+        return self.capacitances[:, index]
+
+    def variable(self, instance: str, name: str) -> Real:
+        """The variable `name` of the device `instance` over time."""
+        return self.readings[:, variable_column(self.variables, instance, name)]
 
 
 @dataclass(frozen=True, slots=True)

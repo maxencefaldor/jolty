@@ -39,6 +39,7 @@ from jolty.units import (
     nF,
     ohm,
     uA,
+    um,
     us,
 )
 from jolty.waveforms import Piecewise
@@ -157,6 +158,87 @@ def test_results_read_the_current_into_every_terminal() -> None:
         point.current("R1", "aa")
     sweep = simulation.run(DcSweep("V1", linear(0 * V, 5 * V, 3)))
     np.testing.assert_allclose(sweep.current("R2", "a"), [0, 5e-4, 1e-3], atol=1e-15)
+
+
+@component
+def common_source(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(3 * V), id="VDD")
+    gate = c.place(devices.voltage_source(1 * V), id="VG")
+    load = c.place(devices.resistor(10 * kohm), id="RD")
+    transistor = c.place(
+        devices.mosfet(
+            threshold_voltage=0.4 * V,
+            transconductance_parameter=2e-4 * A / V**2,
+            width=4 * um,
+            length=2 * um,
+        ),
+        id="M1",
+    )
+    c.connect(supply.positive, load.a, name="vdd")
+    c.connect(load.b, transistor.drain, name="out")
+    c.connect(gate.positive, transistor.gate, name="in")
+    c.connect(
+        transistor.source, transistor.bulk, supply.negative, gate.negative, ground
+    )
+
+
+def test_results_read_each_device_s_small_signal_model_and_variables() -> None:
+    simulation = Simulation(common_source())
+    point = simulation.run(OperatingPoint())
+    beta = 2e-4 * 4 / 2
+    assert point.conductance("M1.drain", "M1.gate") == pytest.approx(beta * 0.6)
+    assert point.conductance("RD.a", "RD.b") == pytest.approx(-1e-4)
+    assert point.conductance("M1.gate", "M1.drain") == 0
+    assert point.variable("M1", "threshold_voltage") == pytest.approx(0.4)
+    assert point.variable("M1", "saturation_voltage") == pytest.approx(0.6)
+    with pytest.raises(KeyError, match="no device has the derivative"):
+        point.conductance("M1.drain", "RD.a")
+    with pytest.raises(KeyError, match="close names: M1 threshold_voltage"):
+        point.variable("M1", "threshold")
+    sweep = simulation.run(DcSweep("VG", linear(0 * V, 1 * V, 3)))
+    np.testing.assert_allclose(
+        sweep.variable("M1", "saturation_voltage"), [0, 0.1, 0.6], atol=1e-12
+    )
+    np.testing.assert_allclose(
+        sweep.conductance("M1.drain", "M1.gate"), [0, beta * 0.1, beta * 0.6]
+    )
+
+
+@component
+def two_dividers(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(4 * V), id="V1")
+    first = c.place(divider_cell(), id="X1")
+    second = c.place(divider_cell(), id="X2")
+    c.connect(source.positive, first.top, second.top, name="in")
+    c.connect(source.negative, first.bottom, second.bottom, ground)
+
+
+@component
+def divider_cell(c: Builder) -> None:
+    top = c.port("top")
+    bottom = c.port("bottom")
+    upper = c.place(devices.resistor(1 * kohm), id="R1")
+    lower = c.place(devices.resistor(1 * kohm), id="R2")
+    c.connect(top, upper.a)
+    c.connect(upper.b, lower.a, name="mid")
+    c.connect(lower.b, bottom)
+
+
+def test_a_component_instance_s_terminals_sum_the_currents_inside_it() -> None:
+    simulation = Simulation(two_dividers())
+    assert [name for name, _ in simulation.composites] == [
+        "X1.top",
+        "X1.bottom",
+        "X2.top",
+        "X2.bottom",
+    ]
+    point = simulation.run(OperatingPoint())
+    assert point.current("X1", "top") == pytest.approx(2e-3)
+    assert point.current("X2", "bottom") == pytest.approx(-2e-3)
+    with pytest.raises(KeyError, match=r"close names: X1\.top"):
+        point.current("X1", "tops")
 
 
 def test_a_transient_steps_onto_the_times_it_is_given() -> None:

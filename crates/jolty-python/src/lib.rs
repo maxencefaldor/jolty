@@ -7,7 +7,7 @@
 
 use std::sync::Mutex;
 
-use jolty_engine::{Analysis, OperatingPoint, Options, Outcome, Statistics, Terminals};
+use jolty_engine::{Analysis, Observation, OperatingPoint, Options, Outcome, Statistics};
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library, Quantity};
 use numpy::{Element, PyArray1, PyArray2, PyArrayMethods};
@@ -31,6 +31,9 @@ struct Simulator {
     unknowns: Vec<(String, &'static str)>,
     nets: Vec<String>,
     terminals: Vec<String>,
+    derivatives: Vec<(String, String)>,
+    variables: Vec<(String, &'static str)>,
+    composites: Vec<(String, Vec<usize>)>,
     devices: usize,
 }
 
@@ -66,11 +69,17 @@ impl Simulator {
             .collect();
         let devices = inner.devices().len() - inner.elements() + inner.logic_devices().len();
         let terminals = inner.terminals().to_vec();
+        let derivatives = inner.derivatives().to_vec();
+        let variables = inner.variables().to_vec();
+        let composites = inner.composites().to_vec();
         Ok(Self {
             inner: Mutex::new(inner),
             unknowns,
             nets,
             terminals,
+            derivatives,
+            variables,
+            composites,
             devices,
         })
     }
@@ -93,6 +102,29 @@ impl Simulator {
     #[getter]
     fn terminals(&self) -> Vec<String> {
         self.terminals.clone()
+    }
+
+    /// The equation and the unknown of every derivative of every device, each a terminal
+    /// such as `M1.drain` or an internal unknown such as `M1:drain`, in the order of every
+    /// result's conductances and capacitances.
+    #[getter]
+    fn derivatives(&self) -> Vec<(String, String)> {
+        self.derivatives.clone()
+    }
+
+    /// Every variable of every device, its path and its name, in the order of every
+    /// result's variables.
+    #[getter]
+    fn variables(&self) -> Vec<(String, &'static str)> {
+        self.variables.clone()
+    }
+
+    /// Every terminal of every component instance and logic device on an electrical net,
+    /// such as `X1.vdd`, with the indices among the terminals of those whose currents and
+    /// charges sum to its own.
+    #[getter]
+    fn composites(&self) -> Vec<(String, Vec<usize>)> {
+        self.composites.clone()
     }
 
     /// The number of devices, analog and logic, with every component instance unfolded.
@@ -215,7 +247,7 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
             result.set_item("quantity", quantity_name(sweep.quantity))?;
             result.set_item("levels", PyArray1::from_vec(py, sweep.levels))?;
             result.set_item("values", PyArray2::from_vec2(py, &sweep.values)?)?;
-            add_terminals(&result, &sweep.terminals)?;
+            add_observations(&result, &sweep.observations)?;
             let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();
             result.set_item("logic", matrix(py, &logic)?)?;
         }
@@ -233,7 +265,7 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
             result.set_item("kind", "transient")?;
             result.set_item("times", PyArray1::from_vec(py, waveforms.times))?;
             result.set_item("values", PyArray2::from_vec2(py, &waveforms.values)?)?;
-            add_terminals(&result, &waveforms.terminals)?;
+            add_observations(&result, &waveforms.observations)?;
             let traces = PyList::empty(py);
             for trace in waveforms.logic {
                 let (times, levels): (Vec<f64>, Vec<Level>) = trace.into_iter().unzip();
@@ -279,19 +311,41 @@ fn add_operating_point(
         "logic",
         PyArray1::from_vec(result.py(), numbers(&operating_point.logic)),
     )?;
-    let Terminals { currents, charges } = operating_point.terminals;
-    result.set_item("currents", PyArray1::from_vec(result.py(), currents))?;
-    result.set_item("charges", PyArray1::from_vec(result.py(), charges))?;
+    let Observation {
+        currents,
+        charges,
+        conductances,
+        capacitances,
+        variables,
+    } = operating_point.observation;
+    let py = result.py();
+    result.set_item("currents", PyArray1::from_vec(py, currents))?;
+    result.set_item("charges", PyArray1::from_vec(py, charges))?;
+    result.set_item("conductances", PyArray1::from_vec(py, conductances))?;
+    result.set_item("capacitances", PyArray1::from_vec(py, capacitances))?;
+    result.set_item("variables", PyArray1::from_vec(py, variables))?;
     result.set_item("strategy", operating_point.strategy.name())
 }
 
-/// Adds the terminals' `currents` and `charges` at each point to `result`, one row per
-/// point.
-fn add_terminals(result: &Bound<'_, PyDict>, points: &[Terminals]) -> PyResult<()> {
-    let currents: Vec<Vec<f64>> = points.iter().map(|point| point.currents.clone()).collect();
-    let charges: Vec<Vec<f64>> = points.iter().map(|point| point.charges.clone()).collect();
-    result.set_item("currents", matrix(result.py(), &currents)?)?;
-    result.set_item("charges", matrix(result.py(), &charges)?)
+/// Adds what every device did at each point to `result`: the terminals' `currents` and
+/// `charges`, the derivatives' `conductances` and `capacitances`, and the `variables`, one
+/// row per point.
+fn add_observations(result: &Bound<'_, PyDict>, points: &[Observation]) -> PyResult<()> {
+    let py = result.py();
+    let rows = |field: fn(&Observation) -> &Vec<f64>| -> Vec<Vec<f64>> {
+        points.iter().map(|point| field(point).clone()).collect()
+    };
+    result.set_item("currents", matrix(py, &rows(|point| &point.currents))?)?;
+    result.set_item("charges", matrix(py, &rows(|point| &point.charges))?)?;
+    result.set_item(
+        "conductances",
+        matrix(py, &rows(|point| &point.conductances))?,
+    )?;
+    result.set_item(
+        "capacitances",
+        matrix(py, &rows(|point| &point.capacitances))?,
+    )?;
+    result.set_item("variables", matrix(py, &rows(|point| &point.variables))?)
 }
 
 /// Logic levels as numbers: 0, 1, and NaN for an unknown level.

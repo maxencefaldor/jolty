@@ -54,7 +54,33 @@ Every result also holds, at every point it solved, the current into every termin
 A current is exact: the engine evaluates each device alone at the solution, each terminal on a node of its own, so terminals that share a net, or join the ground, keep their own currents.
 In a transient, a current includes its charge's derivative, taken by the very integration formula the step was solved with, so the currents into a net sum to its equation's residual, which Newton iteration drives within tolerance.
 A frequency response holds each terminal current's phasor.
-Logic devices' pins have no terminals of their own.
+
+A component instance's terminals, its ports such as `X1.vdd`, sum the device terminals inside it that join each port's net there, at any depth.
+Ports tied together outside keep their own currents.
+A logic device's pins on electrical nets, and its supply and ground, carry the currents of its connect elements: the threshold detector that loads an input with its capacitance, and the driver that holds an output at its level's fraction of the supply.
+`composites` lists each of these terminals with the device terminals it sums.
+
+## Devices' own models
+
+At every point it solved, a result holds each device's small-signal model exactly: the derivative of each of the device's equations with respect to each of its unknowns, taken at the solution as Newton iteration takes them.
+A device's unknowns are its terminals, each on a node of its own, and its internal unknowns, such as a transistor's internal drain behind its series resistance, `M1:drain`, or a source's branch current, `V1:current`.
+`conductance(equation, unknown)` reads the derivative of an equation's residual, and `capacitance(equation, unknown)` that of its charge.
+Between two terminals, the first is the current into the first terminal, the second the voltage at the second: a transistor's transconductance is `conductance("M1.drain", "M1.gate")`, its output conductance `conductance("M1.drain", "M1.drain")`, and its gate-drain capacitance, where a charge describes it, `-capacitance("M1.gate", "M1.drain")`.
+An internal unknown's equation is its own: Kirchhoff's current law at an internal node, or the branch equation that holds a source's voltage.
+`derivatives` lists every pair of every device's terminals and internal unknowns, row by row, so a device's block reshapes into its square matrices.
+
+A device's variables are the quantities it computes on its way to its currents that neither its terminals, nor its unknowns, nor their derivatives show.
+`variable(instance, name)` reads one, and `variables` lists them all by device and name.
+
+| Model | Variables |
+| --- | --- |
+| `mosfet` | `threshold_voltage` and `saturation_voltage`, in the transistor's own polarity; Meyer's `gate_source_capacitance`, `gate_drain_capacitance` and `gate_bulk_capacitance` |
+
+```python
+point.conductance("M1.drain", "M1.gate")  # gm, in siemens
+point.variable("M1", "threshold_voltage")  # von, with the body effect, in volts
+results["step"].variable("M1", "saturation_voltage")  # one per time point
+```
 
 ## The results file
 
@@ -75,14 +101,14 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 
 | Result | Arrays | Each value is |
 | --- | --- | --- |
-| `OperatingPoint` | `values`, `currents`, `charges` | a float |
-| `Sweep` | `levels`, `values`, `currents`, `charges` | one per level |
+| `OperatingPoint` | `values`, `currents`, `charges`, `conductances`, `capacitances`, `readings` | a float |
+| `Sweep` | `levels`, and the operating point's arrays | one per level |
 | `Response` | `frequencies`, `values`, `currents`, and the `operating_point` | a complex phasor, one per frequency |
-| `Waveforms` | `times`, `values`, `currents`, `charges`, and the step `statistics` | one per accepted time point |
+| `Waveforms` | `times`, the operating point's arrays, and the step `statistics` | one per accepted time point |
 
-`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a terminal's, and `level(net)` reads a logic net's level.
-`terminals` names the columns of `currents` and `charges`.
-A name that is not an unknown, a terminal or a logic net raises a `KeyError` that suggests the closest names.
+`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a terminal's, `conductance`, `capacitance` and `variable` read a device's own model, and `level(net)` reads a logic net's level.
+`terminals` names the columns of `currents` and `charges`, `derivatives` those of `conductances` and `capacitances`, and `variables` those of `readings`.
+A name that is not an unknown, a terminal, a derivative, a variable or a logic net raises a `KeyError` that suggests the closest names.
 
-The file is a NumPy archive: a JSON header names the unknowns and the logic nets and says what each analysis is, then each analysis's arrays follow under keys such as `step.times`.
+The file is a NumPy archive: a JSON header names the unknowns, the logic nets, the terminals, the derivatives and the variables, and says what each analysis is, then each analysis's arrays follow under keys such as `step.times`.
 Any program that reads NumPy files reads it.
