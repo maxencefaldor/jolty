@@ -79,7 +79,10 @@ Ac(source, frequencies) with decade(start, stop, per_decade), Transient(stop,
 max_step, method), and Sensitivity(outputs): the derivative of each output unknown with
 respect to every number of every device's parameters at the operating point. Unknowns
 are named by path: a net such as out or stage/mid, and the current through a source or
-inductor such as V1:current.
+inductor such as V1:current. Every result holds the current into every terminal of every
+device and the charge it holds, read with current(instance, terminal) and
+charge(instance, terminal), such as current("X1/R1", "a"); Transient(stop, times=[...])
+steps onto the given times exactly.
 """
 
 READS_FILES: Final = ToolAnnotations(read_only_hint=True, open_world_hint=False)

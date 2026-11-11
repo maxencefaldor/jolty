@@ -208,6 +208,11 @@ pub enum ElaborationProblem {
 pub struct ElaborationError(Vec<ElaborationProblem>);
 
 impl ElaborationError {
+    /// The error of `problems`, in the order they were found.
+    pub(crate) fn new(problems: Vec<ElaborationProblem>) -> Self {
+        Self(problems)
+    }
+
     /// The problems, in the order they were found.
     #[must_use]
     pub fn problems(&self) -> &[ElaborationProblem] {

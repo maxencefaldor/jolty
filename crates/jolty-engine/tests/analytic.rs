@@ -413,6 +413,7 @@ fn rc_step_error(method: Method, options: &Options) -> (f64, usize) {
         stop: 6e-6,
         max_step: None,
         method,
+        times: Vec::new(),
     };
     let waveforms = simulator
         .transient(&transient, options)
@@ -496,6 +497,7 @@ fn an_lc_tank_rings_at_its_resonant_frequency() {
         stop: 5.0 * period,
         max_step: Some(period / 200.0),
         method: Method::Trapezoidal,
+        times: Vec::new(),
     };
     let waveforms = simulator
         .transient(&transient, &Options::default())
@@ -547,6 +549,7 @@ fn a_sine_through_an_rc_settles_to_the_ac_amplitude() {
         stop: 20e-3,
         max_step: Some(1e-5),
         method: Method::Trapezoidal,
+        times: Vec::new(),
     };
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())

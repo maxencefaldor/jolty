@@ -48,6 +48,14 @@ Every result holds the circuit's unknowns, named by path:
 - the current through a voltage source, inductor or voltage-controlled voltage source, such as `V1:current`;
 - the junction voltage of a diode with a series resistance, such as `D1:junction`.
 
+## Terminals
+
+Every result also holds, at every point it solved, the current into every terminal of every device and the charge that terminal holds, such as `X1/R1.a`, the terminal `a` of the resistor `X1/R1`.
+A current is exact: the engine evaluates each device alone at the solution, each terminal on a node of its own, so terminals that share a net, or join the ground, keep their own currents.
+In a transient, a current includes its charge's derivative, taken by the very integration formula the step was solved with, so the currents into a net sum to its equation's residual, which Newton iteration drives within tolerance.
+A frequency response holds each terminal current's phasor.
+Logic devices' pins have no terminals of their own.
+
 ## The results file
 
 `jolty simulate` saves the results beside the script as `<script>.results.npz`, or where `--results` says.
@@ -60,18 +68,21 @@ results = load_results(Path("filter.results.npz"))
 point = results["op"]
 point.voltage("out")  # a float, in volts
 point.current("V1")  # a float, in amperes
+point.current("R1", "a")  # the current into the terminal a of R1
+point.charge("C1", "a")  # the charge on the terminal a of C1, in coulombs
 results["step"].voltage("out", reference="in")  # an array, one value per time
 ```
 
 | Result | Arrays | Each value is |
 | --- | --- | --- |
-| `OperatingPoint` | `values` | a float |
-| `Sweep` | `levels`, `values` | one per level |
-| `Response` | `frequencies`, `values`, and the `operating_point` | a complex phasor, one per frequency |
-| `Waveforms` | `times`, `values`, and the step `statistics` | one per accepted time point |
+| `OperatingPoint` | `values`, `currents`, `charges` | a float |
+| `Sweep` | `levels`, `values`, `currents`, `charges` | one per level |
+| `Response` | `frequencies`, `values`, `currents`, and the `operating_point` | a complex phasor, one per frequency |
+| `Waveforms` | `times`, `values`, `currents`, `charges`, and the step `statistics` | one per accepted time point |
 
-`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `current(instance)` reads the current through an instance, and `level(net)` reads a logic net's level.
-A name that is not an unknown or a logic net raises a `KeyError` that suggests the closest names.
+`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a terminal's, and `level(net)` reads a logic net's level.
+`terminals` names the columns of `currents` and `charges`.
+A name that is not an unknown, a terminal or a logic net raises a `KeyError` that suggests the closest names.
 
 The file is a NumPy archive: a JSON header names the unknowns and the logic nets and says what each analysis is, then each analysis's arrays follow under keys such as `step.times`.
 Any program that reads NumPy files reads it.

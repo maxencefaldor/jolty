@@ -71,11 +71,15 @@ class Ac:
 
 @dataclass(frozen=True, slots=True)
 class Transient:
-    """The response over time, from the operating point at zero until `stop`."""
+    """The response over time, from the operating point at zero until `stop`.
+
+    The analysis steps onto each of `times` exactly, besides the times it chooses.
+    """
 
     stop: Quantity
     max_step: Quantity | None = None
     method: Method = "trapezoidal"
+    times: Sequence[Quantity] = ()
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
@@ -83,6 +87,10 @@ class Transient:
             "stop": self.stop.to(TIME, "a transient's stop time"),
             "method": self.method,
         }
+        if self.times:
+            transient["times"] = [
+                time.to(TIME, "a time to step onto") for time in self.times
+            ]
         if self.max_step is not None:
             transient["max_step"] = self.max_step.to(TIME, "a transient's longest step")
         return {"transient": transient}

@@ -17,12 +17,16 @@ class SimulationError(Exception): ...
 
 class SolvedPoint(TypedDict):
     values: npt.NDArray[np.float64]
+    currents: npt.NDArray[np.float64]
+    charges: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
     strategy: str
 
 class OperatingPointOutcome(TypedDict):
     kind: Literal["operating_point"]
     values: npt.NDArray[np.float64]
+    currents: npt.NDArray[np.float64]
+    charges: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
     strategy: str
 
@@ -32,6 +36,8 @@ class SweepOutcome(TypedDict):
     quantity: Literal["voltage", "current"]
     levels: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
+    currents: npt.NDArray[np.float64]
+    charges: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
 
 class ResponseOutcome(TypedDict):
@@ -39,6 +45,7 @@ class ResponseOutcome(TypedDict):
     source: str
     frequencies: npt.NDArray[np.float64]
     values: npt.NDArray[np.complex128]
+    currents: npt.NDArray[np.complex128]
     operating_point: SolvedPoint
 
 class StatisticsOutcome(TypedDict):
@@ -51,6 +58,8 @@ class WaveformsOutcome(TypedDict):
     kind: Literal["transient"]
     times: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
+    currents: npt.NDArray[np.float64]
+    charges: npt.NDArray[np.float64]
     logic: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
     statistics: StatisticsOutcome
 
@@ -106,6 +115,8 @@ class Simulator:
     def unknowns(self) -> list[tuple[str, Literal["voltage", "current"]]]: ...
     @property
     def nets(self) -> list[str]: ...
+    @property
+    def terminals(self) -> list[str]: ...
     @property
     def devices(self) -> int: ...
     def check(self) -> list[DiagnosticOutcome]: ...

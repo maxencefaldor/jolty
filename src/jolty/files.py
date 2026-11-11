@@ -3,8 +3,9 @@
 
 A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A results file holds the
 results of named analyses as a NumPy ``.npz`` archive: a JSON header that names the
-circuit's unknowns and logic nets and says what each analysis is, then the arrays of
-each analysis under keys such as ``step.times`` and ``step.values``.
+circuit's unknowns, logic nets and device terminals and says what each analysis is, then
+the arrays of each analysis under keys such as ``step.times``, ``step.values`` and
+``step.currents``.
 
 Examples:
     >>> import tempfile
@@ -83,6 +84,7 @@ class _Header(_Model):
     version: Literal[1] = 1
     unknowns: tuple[results.Unknown, ...]
     nets: tuple[str, ...] = ()
+    terminals: tuple[str, ...] = ()
     analyses: dict[str, _Entry]
 
 
@@ -141,7 +143,10 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
     Raises:
         ValueError: When the analyses solve different unknowns, or none is given.
     """
-    circuits = {(result.unknowns, _nets(result)) for result in analyses.values()}
+    circuits = {
+        (result.unknowns, _nets(result), _terminals(result))
+        for result in analyses.values()
+    }
     if len(circuits) != 1:
         message = "a results file holds analyses of one circuit, one or more"
         raise ValueError(message)
@@ -153,22 +158,29 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
                 entries[name] = _Point(strategy=result.strategy)
                 arrays[f"{name}.values"] = result.values
                 arrays[f"{name}.logic"] = result.logic
+                arrays[f"{name}.currents"] = result.currents
+                arrays[f"{name}.charges"] = result.charges
             case results.Sweep():
                 entries[name] = _Sweep(source=result.source, quantity=result.quantity)
                 arrays[f"{name}.levels"] = result.levels
                 arrays[f"{name}.values"] = result.values
                 arrays[f"{name}.logic"] = result.logic
+                arrays[f"{name}.currents"] = result.currents
+                arrays[f"{name}.charges"] = result.charges
             case results.Response():
                 entries[name] = _Response(
                     source=result.source, strategy=result.operating_point.strategy
                 )
                 arrays[f"{name}.frequencies"] = result.frequencies
                 arrays[f"{name}.values"] = result.values
+                arrays[f"{name}.currents"] = result.currents
                 arrays.update(_point_arrays(name, result.operating_point))
             case results.Waveforms():
                 entries[name] = _Waveforms(statistics=result.statistics)
                 arrays[f"{name}.times"] = result.times
                 arrays[f"{name}.values"] = result.values
+                arrays[f"{name}.currents"] = result.currents
+                arrays[f"{name}.charges"] = result.charges
                 traces = result.logic
                 arrays[f"{name}.logic.counts"] = np.array(
                     [len(trace.times) for trace in traces], dtype=np.int64
@@ -193,8 +205,10 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
                 )
                 arrays[f"{name}.values"] = result.derivatives
                 arrays.update(_point_arrays(name, result.operating_point))
-    unknowns, nets = circuits.pop()
-    header = _Header(unknowns=unknowns, nets=nets, analyses=entries)
+    unknowns, nets, terminals = circuits.pop()
+    header = _Header(
+        unknowns=unknowns, nets=nets, terminals=terminals, analyses=entries
+    )
     arrays[_HEADER] = np.array(header.model_dump_json())
     with path.open("wb") as file:
         np.savez_compressed(file, allow_pickle=False, **arrays)
@@ -212,14 +226,21 @@ def load_results(path: Path) -> dict[str, results.Result]:
         except KeyError, ValidationError:
             message = f"{path} is not a jolty results file"
             raise JoltyError(message) from None
-        unknowns, nets = header.unknowns, header.nets
+        unknowns, nets, terminals = header.unknowns, header.nets, header.terminals
         loaded: dict[str, results.Result] = {}
         for name, entry in header.analyses.items():
             values = data[f"{name}.values"]
             match entry:
                 case _Point(strategy=strategy):
                     loaded[name] = results.OperatingPoint(
-                        unknowns, values, strategy, nets, data[f"{name}.logic"]
+                        unknowns,
+                        values,
+                        strategy,
+                        nets,
+                        data[f"{name}.logic"],
+                        terminals,
+                        data[f"{name}.currents"],
+                        data[f"{name}.charges"],
                     )
                 case _Sweep(source=source, quantity=quantity):
                     levels = data[f"{name}.levels"]
@@ -231,17 +252,33 @@ def load_results(path: Path) -> dict[str, results.Result]:
                         values,
                         nets,
                         data[f"{name}.logic"],
+                        terminals,
+                        data[f"{name}.currents"],
+                        data[f"{name}.charges"],
                     )
                 case _Response(source=source, strategy=strategy):
-                    point = _point(data, name, strategy, unknowns, nets)
                     frequencies = data[f"{name}.frequencies"]
                     loaded[name] = results.Response(
-                        unknowns, source, frequencies, values, point
+                        unknowns,
+                        source,
+                        frequencies,
+                        values,
+                        _point(data, name, strategy, header),
+                        terminals,
+                        data[f"{name}.currents"],
                     )
                 case _Waveforms(statistics=statistics):
                     times = data[f"{name}.times"]
                     loaded[name] = results.Waveforms(
-                        unknowns, times, values, statistics, nets, _traces(data, name)
+                        unknowns,
+                        times,
+                        values,
+                        statistics,
+                        nets,
+                        _traces(data, name),
+                        terminals,
+                        data[f"{name}.currents"],
+                        data[f"{name}.charges"],
                     )
                 case _Sensitivities(
                     outputs=outputs, parameters=named, strategy=strategy
@@ -252,7 +289,7 @@ def load_results(path: Path) -> dict[str, results.Result]:
                             named, data[f"{name}.parameters"], strict=True
                         )
                     )
-                    point = _point(data, name, strategy, unknowns, nets)
+                    point = _point(data, name, strategy, header)
                     loaded[name] = results.Sensitivities(
                         unknowns, outputs, parameters, values, point
                     )
@@ -266,28 +303,36 @@ def _nets(result: results.Result) -> tuple[str, ...]:
     return result.nets
 
 
+def _terminals(result: results.Result) -> tuple[str, ...]:
+    """The device terminals of `result`."""
+    if isinstance(result, results.Sensitivities):
+        return result.operating_point.terminals
+    return result.terminals
+
+
 def _point_arrays(name: str, point: results.OperatingPoint) -> dict[str, np.ndarray]:
     """The arrays of the operating point that the analysis `name` holds."""
     return {
         f"{name}.operating_point": point.values,
         f"{name}.operating_point.logic": point.logic,
+        f"{name}.operating_point.currents": point.currents,
+        f"{name}.operating_point.charges": point.charges,
     }
 
 
 def _point(
-    data: Mapping[str, np.ndarray],
-    name: str,
-    strategy: str,
-    unknowns: tuple[results.Unknown, ...],
-    nets: tuple[str, ...],
+    data: Mapping[str, np.ndarray], name: str, strategy: str, header: _Header
 ) -> results.OperatingPoint:
     """The operating point that the analysis `name` holds in `data`."""
     return results.OperatingPoint(
-        unknowns,
+        header.unknowns,
         data[f"{name}.operating_point"],
         strategy,
-        nets,
+        header.nets,
         data[f"{name}.operating_point.logic"],
+        header.terminals,
+        data[f"{name}.operating_point.currents"],
+        data[f"{name}.operating_point.charges"],
     )
 
 

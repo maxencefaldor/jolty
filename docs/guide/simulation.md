@@ -31,13 +31,14 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `OperatingPoint()` | the DC solution, every source at its level at time zero |
 | `DcSweep(source, levels)` | the DC solution at each level of one independent source |
 | `Ac(source, frequencies)` | the small-signal response to a unit excitation of one source, around the operating point |
-| `Transient(stop, max_step=None, method="trapezoidal")` | the response over time, from the operating point until `stop` |
+| `Transient(stop, max_step=None, method="trapezoidal", times=())` | the response over time, from the operating point until `stop` |
 | `Sensitivity(outputs)` | the derivative of each output with respect to every number of every device's parameters, at the operating point |
 
 A source is named by its path, such as `V1` or `bias/I1`.
 `linear(start, stop, points)` spaces levels evenly, and `decade(start, stop, per_decade)` spaces frequencies evenly on a log scale.
 A transient's method is `"trapezoidal"`, `"gear2"` for stiff circuits that ring, or `"backward_euler"` for the most damping.
 Its longest step defaults to a fiftieth of `stop`.
+It steps onto each of `times` exactly, besides the times it chooses, without restarting its integration there, so every unknown and terminal current has its solved value at those times.
 
 ## Sensitivities
 

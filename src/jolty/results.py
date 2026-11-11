@@ -3,9 +3,11 @@
 
 Every result holds the circuit's unknowns: node voltages, named by net path such as
 ``out`` or ``amplifier/mid``, and branch currents, named by instance path and label such
-as ``V1:current``. ``voltage`` and ``current`` read them by name. It holds the levels of
-the circuit's logic nets too, which ``level`` reads by name: 0, 1, or NaN for an unknown
-level.
+as ``V1:current``. ``voltage`` and ``current`` read them by name. It holds the current
+into every terminal of every device, and the charge the terminal holds, which
+``current`` and ``charge`` read by instance and terminal, such as ``X1/R1`` and ``a``.
+It holds the levels of the circuit's logic nets too, which ``level`` reads by name: 0,
+1, or NaN for an unknown level.
 """
 
 import difflib
@@ -27,6 +29,10 @@ def _no_rows() -> Real:
     return np.empty((0, 0))
 
 
+def _no_phasors() -> Complex:
+    return np.empty((0, 0), dtype=np.complex128)
+
+
 @dataclass(frozen=True, slots=True)
 class Unknown:
     """A node voltage or branch current the engine solves for."""
@@ -43,6 +49,16 @@ def column(unknowns: tuple[Unknown, ...], name: str) -> int:
     """
     names = [unknown.name for unknown in unknowns]
     return _find(names, name, "the circuit has no unknown")
+
+
+def terminal_column(terminals: tuple[str, ...], instance: str, terminal: str) -> int:
+    """The column of the terminal `terminal` of `instance` in a result's currents.
+
+    Raises:
+        KeyError: When no device has that terminal; the message suggests the closest.
+    """
+    missing = "the circuit has no device terminal"
+    return _find(list(terminals), f"{instance}.{terminal}", missing)
 
 
 def net_column(nets: tuple[str, ...], name: str) -> int:
@@ -103,6 +119,12 @@ class OperatingPoint:
     """The logic nets, in the order of `logic`."""
     logic: Real = field(default_factory=_none)
     """Each logic net's level."""
+    terminals: tuple[str, ...] = ()
+    """Every terminal of every device, such as ``X1/R1.a``, in `currents`' order."""
+    currents: Real = field(default_factory=_none)
+    """The current into each terminal, in amperes."""
+    charges: Real = field(default_factory=_none)
+    """The charge each terminal holds, in coulombs."""
 
     def level(self, net: str) -> float:
         """The level of the logic net `net`: 0, 1, or NaN when unknown."""
@@ -113,9 +135,21 @@ class OperatingPoint:
         offset = 0.0 if reference is None else self.voltage(reference)
         return float(self.values[column(self.unknowns, net)]) - offset
 
-    def current(self, instance: str) -> float:
-        """The current through `instance`, a source or an inductor, in its direction."""
+    def current(self, instance: str, terminal: str | None = None) -> float:
+        """The current into `terminal` of `instance`.
+
+        Without a terminal, the current through `instance`, a source or an inductor, in
+        its direction.
+        """
+        if terminal is not None:
+            return float(
+                self.currents[terminal_column(self.terminals, instance, terminal)]
+            )
         return float(self.values[column(self.unknowns, _current(instance))])
+
+    def charge(self, instance: str, terminal: str) -> float:
+        """The charge `terminal` of `instance` holds."""
+        return float(self.charges[terminal_column(self.terminals, instance, terminal)])
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +167,12 @@ class Sweep:
     """The logic nets, in the order of `logic`'s columns."""
     logic: Real = field(default_factory=_no_rows)
     """Each logic net's level at each level of the source, one row per level."""
+    terminals: tuple[str, ...] = ()
+    """Every terminal of every device, in the order of `currents`' columns."""
+    currents: Real = field(default_factory=_no_rows)
+    """The current into each terminal at each level, one row per level."""
+    charges: Real = field(default_factory=_no_rows)
+    """The charge each terminal holds at each level, one row per level."""
 
     def level(self, net: str) -> Real:
         """The level of the logic net `net` at each level: 0, 1, or NaN when unknown."""
@@ -143,9 +183,18 @@ class Sweep:
         values = self.values[:, column(self.unknowns, net)]
         return values if reference is None else values - self.voltage(reference)
 
-    def current(self, instance: str) -> Real:
-        """The current through `instance` at each level."""
+    def current(self, instance: str, terminal: str | None = None) -> Real:
+        """The current into `terminal` of `instance` at each level.
+
+        Without a terminal, the current through `instance`, a source or an inductor.
+        """
+        if terminal is not None:
+            return self.currents[:, terminal_column(self.terminals, instance, terminal)]
         return self.values[:, column(self.unknowns, _current(instance))]
+
+    def charge(self, instance: str, terminal: str) -> Real:
+        """The charge `terminal` of `instance` holds at each level."""
+        return self.charges[:, terminal_column(self.terminals, instance, terminal)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,14 +207,23 @@ class Response:
     frequencies: Real
     values: Complex
     operating_point: OperatingPoint
+    terminals: tuple[str, ...] = ()
+    """Every terminal of every device, in the order of `currents`' columns."""
+    currents: Complex = field(default_factory=_no_phasors)
+    """The phasor of the current into each terminal, one row per frequency."""
 
     def voltage(self, net: str, reference: str | None = None) -> Complex:
         """The phasor of `net` at each frequency, relative to `reference` or ground."""
         values = self.values[:, column(self.unknowns, net)]
         return values if reference is None else values - self.voltage(reference)
 
-    def current(self, instance: str) -> Complex:
-        """The phasor of the current through `instance` at each frequency."""
+    def current(self, instance: str, terminal: str | None = None) -> Complex:
+        """The phasor of the current into `terminal` of `instance` at each frequency.
+
+        Without a terminal, the phasor of the current through `instance`.
+        """
+        if terminal is not None:
+            return self.currents[:, terminal_column(self.terminals, instance, terminal)]
         return self.values[:, column(self.unknowns, _current(instance))]
 
 
@@ -191,6 +249,13 @@ class Waveforms:
     """The logic nets, in the order of `logic`."""
     logic: tuple[Trace, ...] = ()
     """Each logic net's level over time."""
+    terminals: tuple[str, ...] = ()
+    """Every terminal of every device, in the order of `currents`' columns."""
+    currents: Real = field(default_factory=_no_rows)
+    """The current into each terminal at each time, one row per time; it includes its
+    charge's derivative, by the step's integration formula."""
+    charges: Real = field(default_factory=_no_rows)
+    """The charge each terminal holds at each time, one row per time."""
 
     def level(self, net: str) -> Trace:
         """The level of the logic net `net` over time."""
@@ -201,9 +266,18 @@ class Waveforms:
         values = self.values[:, column(self.unknowns, net)]
         return values if reference is None else values - self.voltage(reference)
 
-    def current(self, instance: str) -> Real:
-        """The current through `instance` over time."""
+    def current(self, instance: str, terminal: str | None = None) -> Real:
+        """The current into `terminal` of `instance` over time.
+
+        Without a terminal, the current through `instance`, a source or an inductor.
+        """
+        if terminal is not None:
+            return self.currents[:, terminal_column(self.terminals, instance, terminal)]
         return self.values[:, column(self.unknowns, _current(instance))]
+
+    def charge(self, instance: str, terminal: str) -> Real:
+        """The charge `terminal` of `instance` holds over time."""
+        return self.charges[:, terminal_column(self.terminals, instance, terminal)]
 
 
 @dataclass(frozen=True, slots=True)

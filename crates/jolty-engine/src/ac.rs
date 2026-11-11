@@ -28,6 +28,9 @@ pub struct Response {
     pub frequencies: Vec<f64>,
     /// The phasor of every unknown at each frequency, per volt or ampere of excitation.
     pub values: Vec<Vec<Complex64>>,
+    /// The phasor of the current into every terminal of every device at each frequency,
+    /// per volt or ampere of excitation, in the order of [`Simulator::terminals`].
+    pub currents: Vec<Vec<Complex64>>,
 }
 
 impl Simulator {
@@ -64,6 +67,9 @@ impl Simulator {
         let mut solver = SparseLu::<Complex64>::new(self.system.pattern.clone())?;
         let mut matrix = vec![Complex64::default(); self.system.pattern.len()];
         let mut values = Vec::with_capacity(ac.frequencies.len());
+        let mut currents = Vec::with_capacity(ac.frequencies.len());
+        self.observer
+            .linearize(&operating_point.values, options.gmin);
         for &frequency in &ac.frequencies {
             let omega = TAU * frequency;
             for ((value, &conductance), &capacitance) in matrix
@@ -80,6 +86,7 @@ impl Simulator {
             solver
                 .factor(&matrix)
                 .and_then(|mut factors| factors.solve(&mut phasors))?;
+            currents.push(self.observer.phasors(&phasors, omega, index));
             values.push(phasors);
         }
         Ok(Response {
@@ -87,6 +94,7 @@ impl Simulator {
             operating_point,
             frequencies: ac.frequencies.clone(),
             values,
+            currents,
         })
     }
 }

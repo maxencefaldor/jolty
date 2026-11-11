@@ -138,6 +138,43 @@ def test_sensitivities_are_the_derivatives_of_a_divider() -> None:
         simulation.run(Sensitivity(["nowhere"]))
 
 
+def test_results_read_the_current_into_every_terminal() -> None:
+    simulation = Simulation(divider(5 * V, 1 * kohm, 4 * kohm))
+    assert simulation.terminals == (
+        "V1.positive",
+        "V1.negative",
+        "R1.a",
+        "R1.b",
+        "R2.a",
+        "R2.b",
+    )
+    point = simulation.run(OperatingPoint())
+    assert point.current("R1", "a") == pytest.approx(1e-3)
+    assert point.current("R2", "b") == pytest.approx(-1e-3)
+    assert point.current("V1", "positive") == pytest.approx(-1e-3)
+    assert point.charge("R1", "a") == 0
+    with pytest.raises(KeyError, match=r"close names: R1\.a"):
+        point.current("R1", "aa")
+    sweep = simulation.run(DcSweep("V1", linear(0 * V, 5 * V, 3)))
+    np.testing.assert_allclose(sweep.current("R2", "a"), [0, 5e-4, 1e-3], atol=1e-15)
+
+
+def test_a_transient_steps_onto_the_times_it_is_given() -> None:
+    simulation = Simulation(low_pass())
+    times = [1.2345 * us, 3 * us]
+    waveforms = simulation.run(Transient(stop=5 * us, times=times))
+    for time in times:
+        assert time.value in waveforms.times
+    capacitor = waveforms.current("C1", "a")
+    resistor = waveforms.current("R1", "b")
+    np.testing.assert_allclose(capacitor + resistor, 0, atol=1e-9)
+    np.testing.assert_allclose(
+        waveforms.charge("C1", "a"), 1e-9 * waveforms.voltage("out")
+    )
+    with pytest.raises(SimulationError, match="after 0 and at most the stop time"):
+        simulation.run(Transient(stop=5 * us, times=[6 * us]))
+
+
 def test_a_dc_sweep_solves_each_level() -> None:
     simulation = Simulation(divider(0 * V, 1 * kohm, 1 * kohm))
     sweep = simulation.run(DcSweep("V1", linear(-1 * V, 1 * V, 5)))

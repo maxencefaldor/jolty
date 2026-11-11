@@ -19,20 +19,47 @@ from jolty.units import V, kohm
 UNKNOWNS = (results.Unknown("out", "voltage"), results.Unknown("V1:current", "current"))
 STATISTICS = results.Statistics(initial="direct", accepted=2, rejected=1, iterations=7)
 PARAMETER = results.Parameter("X1/R1", "resistance", 1e3)
+TERMINALS = ("C1.a", "C1.b")
 
 
 def every_kind() -> dict[str, results.Result]:
-    point = results.OperatingPoint(UNKNOWNS, np.array([1.0, -1e-3]), "gmin_stepping")
+    point = results.OperatingPoint(
+        UNKNOWNS,
+        np.array([1.0, -1e-3]),
+        "gmin_stepping",
+        terminals=TERMINALS,
+        currents=np.array([1e-3, -1e-3]),
+        charges=np.array([1e-12, -1e-12]),
+    )
     return {
         "op": point,
         "sweep": results.Sweep(
-            UNKNOWNS, "V1", "voltage", np.array([0.0, 1.0]), np.eye(2)
+            UNKNOWNS,
+            "V1",
+            "voltage",
+            np.array([0.0, 1.0]),
+            np.eye(2),
+            terminals=TERMINALS,
+            currents=np.eye(2),
+            charges=np.zeros((2, 2)),
         ),
         "bode": results.Response(
-            UNKNOWNS, "V1", np.array([1e3]), np.array([[0.5 - 0.5j, 1j]]), point
+            UNKNOWNS,
+            "V1",
+            np.array([1e3]),
+            np.array([[0.5 - 0.5j, 1j]]),
+            point,
+            TERMINALS,
+            np.array([[1j, -1j]]),
         ),
         "step": results.Waveforms(
-            UNKNOWNS, np.array([0.0, 1e-6]), np.ones((2, 2)), STATISTICS
+            UNKNOWNS,
+            np.array([0.0, 1e-6]),
+            np.ones((2, 2)),
+            STATISTICS,
+            terminals=TERMINALS,
+            currents=np.ones((2, 2)),
+            charges=np.ones((2, 2)),
         ),
         "sensitivity": results.Sensitivities(
             UNKNOWNS,
@@ -63,8 +90,14 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     sweep = read["sweep"]
     assert isinstance(sweep, results.Sweep)
     assert (sweep.source, sweep.quantity) == ("V1", "voltage")
+    op = read["op"]
+    assert isinstance(op, results.OperatingPoint)
+    assert op.current("C1", "a") == 1e-3
+    assert op.charge("C1", "b") == -1e-12
     bode = read["bode"]
     assert isinstance(bode, results.Response)
+    np.testing.assert_array_equal(bode.current("C1", "b"), [-1j])
+    assert bode.operating_point.current("C1", "a") == 1e-3
     assert bode.source == "V1"
     assert bode.operating_point.strategy == "gmin_stepping"
     step = read["step"]

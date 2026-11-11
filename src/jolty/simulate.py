@@ -85,6 +85,10 @@ class Simulation:
     nets: tuple[str, ...]
     """The logic nets the event scheduler simulates, in its order."""
 
+    terminals: tuple[str, ...]
+    """Every terminal of every device, such as ``X1/R1.a``, in the order of every
+    result's currents and charges."""
+
     devices: int
     """The number of devices, with every component instance unfolded."""
 
@@ -137,6 +141,7 @@ class Simulation:
             results.Unknown(name, quantity) for name, quantity in self._core.unknowns
         )
         self.nets = tuple(self._core.nets)
+        self.terminals = tuple(self._core.terminals)
         self.devices = self._core.devices
         self.excursions = ()
 
@@ -218,7 +223,7 @@ class Simulation:
         return sweep.levels[0].dimension
 
     def _result(self, outcome: _core.Outcome) -> results.Result:
-        unknowns, nets = self.unknowns, self.nets
+        unknowns, nets, terminals = self.unknowns, self.nets, self.terminals
         match outcome["kind"]:
             case "operating_point":
                 return self._point(outcome)
@@ -231,6 +236,9 @@ class Simulation:
                     outcome["values"],
                     nets,
                     outcome["logic"],
+                    terminals,
+                    outcome["currents"],
+                    outcome["charges"],
                 )
             case "ac":
                 return results.Response(
@@ -239,6 +247,8 @@ class Simulation:
                     outcome["frequencies"],
                     outcome["values"],
                     self._point(outcome["operating_point"]),
+                    terminals,
+                    outcome["currents"],
                 )
             case "transient":
                 statistics = results.Statistics(**outcome["statistics"])
@@ -252,6 +262,9 @@ class Simulation:
                     statistics,
                     nets,
                     traces,
+                    terminals,
+                    outcome["currents"],
+                    outcome["charges"],
                 )
             case "sensitivity":
                 parameters = tuple(
@@ -275,4 +288,7 @@ class Simulation:
             solved["strategy"],
             self.nets,
             solved["logic"],
+            self.terminals,
+            solved["currents"],
+            solved["charges"],
         )

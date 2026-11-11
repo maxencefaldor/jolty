@@ -41,6 +41,7 @@ mod analysis;
 mod elaborate;
 mod logic;
 mod newton;
+mod observe;
 mod operating_point;
 mod options;
 mod sensitivity;
@@ -59,6 +60,7 @@ pub use analysis::{Analysis, Outcome};
 pub use elaborate::{ElaborationError, ElaborationProblem, Location, Placed};
 pub use jolty_numerics::integration::Method;
 pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
+pub use observe::Terminals;
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;
 pub use sensitivity::{Parameter, Sensitivities, Sensitivity};
@@ -68,6 +70,7 @@ pub use transient::{Statistics, Transient, Waveforms};
 use elaborate::System;
 use logic::Events;
 use newton::Workspace;
+use observe::Observer;
 
 /// What a circuit is simulated in, apart from its analyses: its devices' temperature,
 /// parameters that replace the circuit's own for some device instances, as a Monte Carlo
@@ -123,6 +126,8 @@ pub struct Simulator {
     workspace: Workspace,
     /// The state of the logic nets, as the last analysis left it.
     events: Events,
+    /// The devices made again, to read their terminals.
+    observer: Observer,
 }
 
 impl Simulator {
@@ -143,12 +148,22 @@ impl Simulator {
             .map_err(|_| ElaborationError::from(ElaborationProblem::TooLarge))?;
         let workspace = Workspace::new(&system);
         let events = Events::new(&system.logic);
+        let observer = Observer::new(&system)?;
         Ok(Self {
             system,
             solver,
             workspace,
             events,
+            observer,
         })
+    }
+
+    /// Every terminal of every device a model made, by its device's path and its own
+    /// name, such as `X1/R1.a`, in the order of every solution's terminal currents and
+    /// charges. Connect elements have none.
+    #[must_use]
+    pub fn terminals(&self) -> &[String] {
+        self.observer.names()
     }
 
     /// The unknowns, in the order of every solution's values.

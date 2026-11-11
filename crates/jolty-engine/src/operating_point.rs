@@ -7,7 +7,7 @@ use jolty_numerics::{Complex64, SparseLu};
 
 use crate::logic::{Bound, Events, detected};
 use crate::newton::{Failure, Mode};
-use crate::{Options, SimulationError, Simulator};
+use crate::{Options, SimulationError, Simulator, Terminals};
 
 /// The largest conductance gmin stepping starts from, in siemens.
 const FIRST_SHUNT: f64 = 1e-2;
@@ -34,6 +34,9 @@ const SETTLE_ROUNDS: usize = 4;
 pub struct OperatingPoint {
     /// The value of every unknown, in the simulator's order.
     pub values: Vec<f64>,
+    /// The current into every terminal of every device, and the charge it holds, in the
+    /// order of [`Simulator::terminals`].
+    pub terminals: Terminals,
     /// The level of every logic net, in the simulator's order.
     pub logic: Vec<Level>,
     /// The strategy that found the solution.
@@ -209,6 +212,7 @@ impl Simulator {
         self.measure_loads(&solved.values, options);
         self.watch_supplies(&solved.values, 0.0, options);
         Ok(OperatingPoint {
+            terminals: self.observer.dc(&solved.values, options.gmin),
             values: solved.values,
             logic: self.events.levels().to_vec(),
             strategy: solved.strategy,
