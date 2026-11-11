@@ -4,9 +4,9 @@
 //! At the operating point `F(x, p) = 0`, an output `y = x_k` moves with a parameter `p` by
 //! `dy/dp = −λᵀ ∂F/∂p`, where `Jᵀ λ = e_k` and `J = ∂F/∂x` is the Jacobian Newton iteration
 //! converged with. One factorization of `J` and one transposed solve per output serve every
-//! parameter, so the cost does not grow with their number. Each device's `∂F/∂p` comes from
-//! the device alone, made again with the parameter a little above and below its value and
-//! evaluated at the operating point: a central difference over one device, not a solve.
+//! parameter, so the cost does not grow with their number. Each device's `∂F/∂p` is exact:
+//! the device made again computing with [`Gradient`], the parameter differentiated against,
+//! and evaluated at the operating point.
 
 use jolty_ir::Parameters;
 use jolty_models::{Binding, Gradient, Input, Output, UnknownInfo};
@@ -15,10 +15,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{OperatingPoint, Options, SimulationError, Simulator};
-
-/// The relative step of a parameter in its central difference, or its absolute step, in
-/// SI base units, when it is zero.
-const STEP: f64 = 1e-6;
 
 /// A sensitivity analysis: how the unknowns `outputs` move with every device parameter at
 /// the operating point.
@@ -59,8 +55,8 @@ impl Simulator {
     /// The derivative of each unknown of `sensitivity` with respect to every number of every
     /// device's parameters, at the operating point.
     ///
-    /// A number the device's model cannot take a little away from its value, such as a
-    /// model's level, has no derivative and is left out.
+    /// The derivatives are exact. A number the device's model reads as a choice, such as a
+    /// MOSFET's level, is no real parameter and has none.
     ///
     /// # Errors
     ///
@@ -124,13 +120,10 @@ impl Simulator {
         })
     }
 
-    /// `∂F/∂p` of the device at `index` for its parameter `name` at the solution `x`.
-    ///
-    /// A model whose devices compute with [`Gradient`] gives it exactly: the device made
-    /// again with the parameter differentiated against, evaluated at `x`. Another's is the
-    /// central difference of its residual, made again with the parameter a little above
-    /// and below its value. `None` when its model cannot take the parameter as a real
-    /// number, such as a model's level.
+    /// `∂F/∂p` of the device at `index` for its parameter `name` at the solution `x`,
+    /// exactly: the device made again computing with [`Gradient`], the parameter
+    /// differentiated against, and evaluated at `x`. `None` when its model reads the
+    /// number as a choice, such as a level, rather than a real number.
     fn residual_derivative(
         &self,
         index: usize,
@@ -141,7 +134,6 @@ impl Simulator {
         let placed = &self.system.devices[index];
         let made = placed.made.as_ref()?;
         let value = leaf(&made.parameters, name)?;
-        let dimension = self.system.unknowns.len();
         let mut seeded = made.parameters.clone();
         set_leaf(
             &mut seeded,
@@ -157,64 +149,21 @@ impl Simulator {
             &mut builder,
             self.system.temperature,
         );
-        if let Some(made_again) = made.model.instantiate_gradient(&seeded, &mut binding) {
-            let mut device = made_again.ok()?;
-            let pattern = builder.finish(dimension);
-            let mut buffers = [(); 3].map(|()| vec![Gradient::default(); dimension]);
-            let [residual, scale, charge] = &mut buffers;
-            let mut matrices = [(); 2].map(|()| vec![Gradient::default(); pattern.len()]);
-            let [conductance, capacitance] = &mut matrices;
-            let mut output =
-                Output::new(&pattern, residual, scale, charge, conductance, capacitance);
-            let mut input = Input::new(x, 0.0, options.gmin);
-            input.limiting = false;
-            device.evaluate(&input, &mut output);
-            return Some(residual.iter().map(|value| value.derivative).collect());
-        }
-        let step = if value == 0.0 {
-            STEP
-        } else {
-            STEP * value.abs()
-        };
-        let mut residuals = [vec![0.0; dimension], vec![0.0; dimension]];
-        for (residual, shifted) in residuals.iter_mut().zip([value + step, value - step]) {
-            let mut parameters = made.parameters.clone();
-            set_leaf(&mut parameters, name, Value::from(shifted))?;
-            let mut unknowns: Vec<UnknownInfo> =
-                self.system.unknowns[..placed.first_internal].to_vec();
-            let mut builder = PatternBuilder::new();
-            let mut binding = Binding::new(
-                placed.path(),
-                placed.nodes(),
-                &mut unknowns,
-                &mut builder,
-                self.system.temperature,
-            );
-            let mut device = made.model.instantiate(&parameters, &mut binding).ok()?;
-            let pattern = builder.finish(dimension);
-            let (mut scale, mut charge) = (vec![0.0; dimension], vec![0.0; dimension]);
-            let mut conductance = vec![0.0; pattern.len()];
-            let mut capacitance = vec![0.0; pattern.len()];
-            let mut output = Output::new(
-                &pattern,
-                residual,
-                &mut scale,
-                &mut charge,
-                &mut conductance,
-                &mut capacitance,
-            );
-            let mut input = Input::new(x, 0.0, options.gmin);
-            input.limiting = false;
-            device.evaluate(&input, &mut output);
-        }
-        let [above, below] = residuals;
-        Some(
-            above
-                .iter()
-                .zip(&below)
-                .map(|(above, below)| (above - below) / (2.0 * step))
-                .collect(),
-        )
+        let mut device = made
+            .model
+            .instantiate_gradient(&seeded, &mut binding)
+            .ok()?;
+        let dimension = self.system.unknowns.len();
+        let pattern = builder.finish(dimension);
+        let mut buffers = [(); 3].map(|()| vec![Gradient::default(); dimension]);
+        let [residual, scale, charge] = &mut buffers;
+        let mut matrices = [(); 2].map(|()| vec![Gradient::default(); pattern.len()]);
+        let [conductance, capacitance] = &mut matrices;
+        let mut output = Output::new(&pattern, residual, scale, charge, conductance, capacitance);
+        let mut input = Input::new(x, 0.0, options.gmin);
+        input.limiting = false;
+        device.evaluate(&input, &mut output);
+        Some(residual.iter().map(|value| value.derivative).collect())
     }
 }
 

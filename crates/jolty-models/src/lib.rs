@@ -47,7 +47,7 @@ pub use controlled::{
     VoltageControlledCurrentSource, VoltageControlledCurrentSourceParameters,
     VoltageControlledVoltageSource, VoltageControlledVoltageSourceParameters,
 };
-pub use device::{Device, Model, Native, NativeDevice, NativeModel, ParameterError, Plain, Source};
+pub use device::{Device, Model, Native, NativeDevice, NativeModel, ParameterError, Source};
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Input, Output};
 pub use jfet::{Channel, Jfet, JfetParameters};

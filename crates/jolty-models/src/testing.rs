@@ -4,7 +4,7 @@ use jolty_numerics::{Pattern, PatternBuilder};
 
 use crate::{
     Binding, Device, Gradient, Input, Model, Native, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Plain, Quantity, REFERENCE_TEMPERATURE, Real, Unknown, UnknownInfo,
+    ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown, UnknownInfo,
 };
 
 /// One device whose terminals each connect to an unknown of their own.
@@ -45,8 +45,8 @@ impl Bench {
         temperature: f64,
     ) -> Result<Self, ParameterError> {
         let parameters = serde_json::from_str(parameters).expect("a JSON object");
-        let model = Plain::<D>::new();
-        let terminals = model.interface(&parameters)?.terminals.len();
+        let typed = crate::device::read::<f64, D>(&parameters)?;
+        let terminals = D::interface(&typed).terminals.len();
         let nodes: Vec<Node> = (0..terminals)
             .map(|index| Some(Unknown::new(index)))
             .collect();
@@ -57,10 +57,10 @@ impl Bench {
             })
             .collect();
         let mut builder = PatternBuilder::new();
-        let device = model.instantiate(
-            &parameters,
+        let device: Box<dyn Device> = Box::new(D::new(
+            typed,
             &mut Binding::new("device", &nodes, &mut unknowns, &mut builder, temperature),
-        )?;
+        )?);
         let pattern = builder.finish(unknowns.len());
         Ok(Self {
             device,
@@ -251,7 +251,6 @@ impl<M: NativeModel> Rig<M> {
         let mut device = self
             .model
             .instantiate_gradient(parameters, &mut binding)
-            .expect("a model of any real")
             .ok()?;
         Some(residuals_and_charges(
             device.as_mut(),

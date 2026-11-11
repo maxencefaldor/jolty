@@ -73,16 +73,17 @@ pub trait Model: Send + Sync {
 
     /// Reads `parameters`, in which the number to differentiate against is written as
     /// `{"value": v, "derivative": 1}`, and makes a device bound through `binding` whose
-    /// residuals and charges carry their exact derivatives with respect to it; `None`
-    /// when the model's devices compute with plain numbers only.
+    /// residuals and charges carry their exact derivatives with respect to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when the parameters cannot be read, as when the model
+    /// reads the number differentiated against as a choice, such as a level.
     fn instantiate_gradient(
         &self,
         parameters: &Parameters,
         binding: &mut Binding<'_>,
-    ) -> Option<Result<Box<dyn Device<Gradient>>, ParameterError>> {
-        let _ = (parameters, binding);
-        None
-    }
+    ) -> Result<Box<dyn Device<Gradient>>, ParameterError>;
 }
 
 /// A device implemented in Rust, whose parameters deserialize into a typed struct.
@@ -158,60 +159,14 @@ impl<M: NativeModel> Model for Native<M> {
         &self,
         parameters: &Parameters,
         binding: &mut Binding<'_>,
-    ) -> Option<Result<Box<dyn Device<Gradient>>, ParameterError>> {
-        Some(
-            read::<Gradient, M::Device<Gradient>>(parameters).and_then(|parameters| {
-                let device: Box<dyn Device<Gradient>> =
-                    Box::new(M::Device::<Gradient>::new(parameters, binding)?);
-                Ok(device)
-            }),
-        )
-    }
-}
-
-/// The [`Model`] of a [`NativeDevice`] that computes with plain numbers only.
-pub struct Plain<D>(PhantomData<fn() -> D>);
-
-impl<D: NativeDevice> Plain<D> {
-    /// The model of `D`.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<D: NativeDevice> Default for Plain<D> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<D> fmt::Debug for Plain<D> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Plain")
-    }
-}
-
-impl<D: NativeDevice> Model for Plain<D> {
-    fn name(&self) -> &'static str {
-        D::NAME
-    }
-
-    fn interface(&self, parameters: &Parameters) -> Result<Interface, ParameterError> {
-        Ok(D::interface(&read::<f64, D>(parameters)?))
-    }
-
-    fn instantiate(
-        &self,
-        parameters: &Parameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device>, ParameterError> {
-        Ok(Box::new(D::new(read::<f64, D>(parameters)?, binding)?))
+    ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
+        let parameters = read::<Gradient, M::Device<Gradient>>(parameters)?;
+        Ok(Box::new(M::Device::<Gradient>::new(parameters, binding)?))
     }
 }
 
 /// The typed parameters of `D` in `parameters`.
-fn read<R: Real, D: NativeDevice<R>>(
+pub(crate) fn read<R: Real, D: NativeDevice<R>>(
     parameters: &Parameters,
 ) -> Result<D::Parameters, ParameterError> {
     serde_json::from_value(serde_json::Value::Object(parameters.clone()))
