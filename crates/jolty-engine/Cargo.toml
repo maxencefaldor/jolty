@@ -1,0 +1,23 @@
+[package]
+name = "jolty-engine"
+description = "The simulation engine of jolty: elaboration, Newton iteration and the analyses."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jolty-ir.workspace = true
+jolty-models.workspace = true
+jolty-numerics.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

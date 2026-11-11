@@ -1,0 +1,622 @@
+//! Every analysis against circuits whose answers are known in closed form.
+
+use std::f64::consts::{PI, TAU};
+
+use jolty_engine::{
+    Ac, Analysis, DcSweep, Method, Options, Outcome, SimulationError, Simulator, Strategy,
+    Transient,
+};
+use jolty_ir::Circuit;
+use jolty_models::Library;
+use jolty_numerics::Complex64;
+use serde_json::{Value, json};
+
+/// The thermal voltage at 27 °C.
+const THERMAL_VOLTAGE: f64 = 1.380_649e-23 * 300.15 / 1.602_176_634e-19;
+
+/// A device instance: its id, model, parameters, and the net of each terminal.
+type Device<'a> = (&'a str, &'a str, Value, &'a [(&'a str, &'a str)]);
+
+/// A circuit whose top component has a ground port `0` and places `devices`.
+fn circuit(devices: &[Device<'_>]) -> Circuit {
+    let instances: Vec<Value> = devices
+        .iter()
+        .map(|(id, model, parameters, terminals)| {
+            let terminals: serde_json::Map<String, Value> = terminals
+                .iter()
+                .map(|(terminal, net)| ((*terminal).to_owned(), json!(net)))
+                .collect();
+            json!({
+                "id": id,
+                "of": {"device": model},
+                "parameters": parameters,
+                "terminals": terminals,
+            })
+        })
+        .collect();
+    let document = json!({
+        "format": "jolty-circuit", "version": 1, "top": "test",
+        "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
+    });
+    Circuit::from_json(&document.to_string()).expect("a valid circuit file")
+}
+
+fn simulator(circuit: &Circuit) -> Simulator {
+    Simulator::new(circuit, &Library::standard()).expect("an elaborated circuit")
+}
+
+fn index(simulator: &Simulator, name: &str) -> usize {
+    simulator
+        .unknown(name)
+        .unwrap_or_else(|| panic!("no unknown {name}"))
+        .index()
+}
+
+fn assert_close(actual: f64, expected: f64, tolerance: f64) {
+    assert!(
+        (actual - expected).abs() <= tolerance * expected.abs().max(1e-12),
+        "{actual} differs from {expected} by more than {tolerance} relative"
+    );
+}
+
+fn dc(level: f64) -> Value {
+    json!({"waveform": {"dc": level}})
+}
+
+#[test]
+fn a_divider_halves_its_input_and_its_source_delivers_current() {
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(5.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "in"), ("b", "out")],
+        ),
+        (
+            "R2",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let solution = simulator.operating_point(&Options::default()).unwrap();
+    assert_eq!(solution.strategy, Strategy::Direct);
+    assert_close(solution.values[index(&simulator, "out")], 2.5, 1e-12);
+    assert_close(
+        solution.values[index(&simulator, "V1:current")],
+        -2.5e-3,
+        1e-12,
+    );
+}
+
+#[test]
+fn a_current_source_pushes_current_into_its_negative_terminal() {
+    let circuit = circuit(&[
+        (
+            "I1",
+            "current_source",
+            dc(1e-3),
+            &[("positive", "0"), ("negative", "out")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 2e3}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let solution = simulator.operating_point(&Options::default()).unwrap();
+    assert_close(solution.values[index(&simulator, "out")], 2.0, 1e-12);
+}
+
+#[test]
+fn controlled_sources_amplify_their_control_voltage() {
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(0.1),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "E1",
+            "voltage_controlled_voltage_source",
+            json!({"gain": 10}),
+            &[
+                ("positive", "amplified"),
+                ("negative", "0"),
+                ("control_positive", "in"),
+                ("control_negative", "0"),
+            ],
+        ),
+        (
+            "G1",
+            "voltage_controlled_current_source",
+            json!({"transconductance": 1e-3}),
+            &[
+                ("positive", "0"),
+                ("negative", "driven"),
+                ("control_positive", "in"),
+                ("control_negative", "0"),
+            ],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e4}),
+            &[("a", "driven"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let solution = simulator.operating_point(&Options::default()).unwrap();
+    assert_close(solution.values[index(&simulator, "amplified")], 1.0, 1e-12);
+    assert_close(solution.values[index(&simulator, "driven")], 1.0, 1e-12);
+}
+
+/// The diode current that a source through a resistor drives, by bisection on the closed form.
+fn diode_current(source: f64, resistance: f64, saturation: f64) -> f64 {
+    let (mut low, mut high) = (0.0, source / resistance);
+    for _ in 0..200 {
+        let current = 0.5 * (low + high);
+        let voltage = THERMAL_VOLTAGE * (current / saturation + 1.0).ln();
+        if voltage + current * resistance > source {
+            high = current;
+        } else {
+            low = current;
+        }
+    }
+    0.5 * (low + high)
+}
+
+#[test]
+fn a_diode_settles_where_its_curve_meets_the_load_line() {
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(5.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "in"), ("b", "anode")],
+        ),
+        (
+            "D1",
+            "diode",
+            json!({}),
+            &[("anode", "anode"), ("cathode", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let options = Options {
+        relative_tolerance: 1e-9,
+        ..Options::default()
+    };
+    let solution = simulator.operating_point(&options).unwrap();
+    let current = -solution.values[index(&simulator, "V1:current")];
+    assert_close(current, diode_current(5.0, 1e3, 1e-14), 1e-6);
+}
+
+#[test]
+fn a_dc_sweep_traces_the_diode_curve() {
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(0.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 100}),
+            &[("a", "in"), ("b", "anode")],
+        ),
+        (
+            "D1",
+            "diode",
+            json!({}),
+            &[("anode", "anode"), ("cathode", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let levels: Vec<f64> = (0..=20).map(|step| f64::from(step) * 0.25).collect();
+    let sweep = DcSweep {
+        source: "V1".to_owned(),
+        levels: levels.clone(),
+    };
+    let options = Options {
+        relative_tolerance: 1e-9,
+        ..Options::default()
+    };
+    let result = simulator.dc_sweep(&sweep, &options).unwrap();
+    let current = index(&simulator, "V1:current");
+    for (level, values) in levels.iter().zip(&result.values).skip(4) {
+        assert_close(-values[current], diode_current(*level, 100.0, 1e-14), 1e-6);
+    }
+    // The sweep releases the source: an operating point afterwards sees its own level again.
+    let after = simulator.operating_point(&Options::default()).unwrap();
+    assert!(after.values[current].abs() < 1e-12);
+}
+
+#[test]
+fn an_rc_low_pass_rolls_off_at_its_corner() {
+    let (resistance, capacitance) = (1e3, 1e-6);
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(0.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": resistance}),
+            &[("a", "in"), ("b", "out")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let frequencies = vec![1.0, 10.0, 159.154_943_091_895_33, 1e3, 1e5];
+    let ac = Ac {
+        source: "V1".to_owned(),
+        frequencies: frequencies.clone(),
+    };
+    let response = simulator.ac(&ac, &Options::default()).unwrap();
+    let out = index(&simulator, "out");
+    for (frequency, values) in frequencies.iter().zip(&response.values) {
+        let expected = Complex64::new(1.0, 0.0)
+            / Complex64::new(1.0, TAU * frequency * resistance * capacitance);
+        assert!(
+            (values[out] - expected).norm() < 1e-12,
+            "at {frequency} Hz: {} vs {expected}",
+            values[out]
+        );
+    }
+    let corner = response.values[2][out];
+    assert_close(corner.norm(), 0.5f64.sqrt(), 1e-9);
+    assert_close(corner.arg(), -PI / 4.0, 1e-9);
+}
+
+#[test]
+fn a_series_rlc_passes_everything_at_resonance() {
+    let (inductance, capacitance) = (1e-3, 1e-9);
+    let resonance = 1.0 / (TAU * f64::sqrt(inductance * capacitance));
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(0.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "L1",
+            "inductor",
+            json!({"inductance": inductance}),
+            &[("a", "in"), ("b", "mid")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "mid"), ("b", "out")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 50}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let ac = Ac {
+        source: "V1".to_owned(),
+        frequencies: vec![resonance],
+    };
+    let response = simulator.ac(&ac, &Options::default()).unwrap();
+    let gain = response.values[0][index(&simulator, "out")];
+    assert!((gain - Complex64::new(1.0, 0.0)).norm() < 1e-9, "{gain}");
+}
+
+/// The response of an RC low-pass to a ramp from 0 to 1 that starts at `delay` and lasts
+/// `rise`, after the ramp ends.
+fn rc_ramp_response(time: f64, delay: f64, rise: f64, tau: f64) -> f64 {
+    1.0 - tau / rise * ((rise / tau).exp() - 1.0) * (-(time - delay) / tau).exp()
+}
+
+/// The largest error of an RC low-pass's response to a fast ramp, simulated with `method` and
+/// `options`, and the number of steps it took.
+fn rc_step_error(method: Method, options: &Options) -> (f64, usize) {
+    let (resistance, capacitance) = (1e3, 1e-9);
+    let tau = resistance * capacitance;
+    let (delay, rise) = (1e-6, 1e-9);
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"pulse": {
+                "initial": 0, "pulsed": 1, "delay": delay, "rise": rise, "fall": rise, "width": 1,
+            }}}),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": resistance}),
+            &[("a", "in"), ("b", "out")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let transient = Transient {
+        stop: 6e-6,
+        max_step: None,
+        method,
+    };
+    let waveforms = simulator
+        .transient(&transient, options)
+        .expect("a transient analysis");
+    let out = index(&simulator, "out");
+    assert!(
+        waveforms.times.windows(2).all(|pair| pair[1] > pair[0]),
+        "times increase"
+    );
+    assert!(waveforms.times.contains(&delay) && waveforms.times.contains(&(delay + rise)));
+    assert_eq!(waveforms.times.last(), Some(&6e-6));
+    let mut error: f64 = 0.0;
+    for (&time, values) in waveforms.times.iter().zip(&waveforms.values) {
+        if time <= delay {
+            assert!(values[out].abs() < 1e-12, "no response before the ramp");
+        } else if time >= delay + rise {
+            error = error.max((values[out] - rc_ramp_response(time, delay, rise, tau)).abs());
+        }
+    }
+    (error, waveforms.statistics.accepted)
+}
+
+/// At SPICE's default tolerances, each method stays within its order's accuracy, and every
+/// method converges: tightening the tolerances shrinks the error severalfold.
+#[test]
+fn an_rc_charges_exponentially_with_every_method() {
+    let tight = Options {
+        relative_tolerance: 1e-6,
+        charge_tolerance: 1e-18,
+        ..Options::default()
+    };
+    for (method, bound) in [
+        (Method::BackwardEuler, 2e-2),
+        (Method::Trapezoidal, 2e-3),
+        (Method::Gear2, 2e-3),
+    ] {
+        let (loose_error, _) = rc_step_error(method, &Options::default());
+        let (tight_error, steps) = rc_step_error(method, &tight);
+        assert!(
+            loose_error < bound,
+            "{method:?}: error {loose_error:e} at default tolerances"
+        );
+        assert!(
+            tight_error < loose_error / 5.0,
+            "{method:?}: {tight_error:e} vs {loose_error:e}"
+        );
+        assert!(steps < 2000, "{method:?}: {steps} steps");
+    }
+}
+
+#[test]
+fn an_lc_tank_rings_at_its_resonant_frequency() {
+    let (inductance, capacitance) = (1e-3, 1e-6);
+    let period = TAU * f64::sqrt(inductance * capacitance);
+    // A current source charges the capacitor, then steps off at t = 1 µs; the tank then rings
+    // around zero with the energy it holds.
+    let circuit = circuit(&[
+        (
+            "I1",
+            "current_source",
+            json!({"waveform": {"piecewise": {
+                "points": [[0, 1e-3], [1e-6, 1e-3], [1.001e-6, 0]],
+            }}}),
+            &[("positive", "0"), ("negative", "top")],
+        ),
+        (
+            "L1",
+            "inductor",
+            json!({"inductance": inductance}),
+            &[("a", "top"), ("b", "0")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "top"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let transient = Transient {
+        stop: 5.0 * period,
+        max_step: Some(period / 200.0),
+        method: Method::Trapezoidal,
+    };
+    let waveforms = simulator
+        .transient(&transient, &Options::default())
+        .unwrap();
+    let current = index(&simulator, "L1:current");
+    // Before the step the inductor carries the source's 1 mA; after, the current oscillates
+    // with that amplitude, and the trapezoidal formula conserves its energy.
+    let late: Vec<f64> = waveforms
+        .times
+        .iter()
+        .zip(&waveforms.values)
+        .filter(|(time, _)| **time > 3.0 * period)
+        .map(|(_, values)| values[current])
+        .collect();
+    let peak = late.iter().copied().fold(0.0, f64::max);
+    assert_close(peak, 1e-3, 1e-2);
+    let crossings = late
+        .windows(2)
+        .filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0)
+        .count();
+    assert_eq!(crossings, 2, "two periods after three");
+}
+
+#[test]
+fn a_sine_through_an_rc_settles_to_the_ac_amplitude() {
+    let (resistance, capacitance, frequency) = (1e3, 1e-6, 500.0);
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"sine": {"offset": 0, "amplitude": 1, "frequency": frequency}}}),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": resistance}),
+            &[("a", "in"), ("b", "out")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let transient = Transient {
+        stop: 20e-3,
+        max_step: Some(1e-5),
+        method: Method::Trapezoidal,
+    };
+    let outcome = simulator
+        .run(&Analysis::Transient(transient), &Options::default())
+        .unwrap();
+    let Outcome::Transient(waveforms) = outcome else {
+        panic!("a transient outcome")
+    };
+    let out = index(&simulator, "out");
+    let peak = waveforms
+        .times
+        .iter()
+        .zip(&waveforms.values)
+        .filter(|(time, _)| **time > 15e-3)
+        .map(|(_, values)| values[out].abs())
+        .fold(0.0, f64::max);
+    let expected = 1.0 / (1.0 + (TAU * frequency * resistance * capacitance).powi(2)).sqrt();
+    assert_close(peak, expected, 1e-2);
+}
+
+#[test]
+fn hierarchy_gives_the_flat_answer() {
+    let document = json!({
+        "format": "jolty-circuit", "version": 1, "top": "top",
+        "components": {
+            "top": {"ports": [{"name": "0", "role": "ground"}], "instances": [
+                {"id": "V1", "of": {"device": "voltage_source"}, "parameters": dc(3.0),
+                 "terminals": {"positive": "in", "negative": "0"}},
+                {"id": "X1", "of": {"component": "half"},
+                 "terminals": {"input": "in", "output": "mid", "ground": "0"}},
+                {"id": "X2", "of": {"component": "half"},
+                 "terminals": {"input": "mid", "output": "out", "ground": "0"}}
+            ]},
+            "half": {"ports": [
+                {"name": "input", "role": "signal"},
+                {"name": "output", "role": "signal"},
+                {"name": "ground", "role": "ground"}
+            ], "instances": [
+                {"id": "E1", "of": {"device": "voltage_controlled_voltage_source"},
+                 "parameters": {"gain": 0.5},
+                 "terminals": {"positive": "buffered", "negative": "ground",
+                               "control_positive": "input", "control_negative": "ground"}},
+                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+                 "terminals": {"a": "buffered", "b": "output"}}
+            ]}
+        }
+    });
+    let circuit = Circuit::from_json(&document.to_string()).unwrap();
+    let mut simulator = simulator(&circuit);
+    let solution = simulator.operating_point(&Options::default()).unwrap();
+    assert_close(solution.values[index(&simulator, "out")], 0.75, 1e-12);
+    assert!(
+        simulator.unknown("X1/buffered").is_some() && simulator.unknown("X2/E1:current").is_some()
+    );
+}
+
+#[test]
+fn a_node_with_no_dc_path_is_singular() {
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(1.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": 1e-9}),
+            &[("a", "in"), ("b", "floating")],
+        ),
+    ]);
+    let error = simulator(&circuit)
+        .operating_point(&Options::default())
+        .unwrap_err();
+    assert_eq!(error, SimulationError::Singular);
+}
+
+#[test]
+fn analyses_name_what_they_cannot_find() {
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(1.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1.0}),
+            &[("a", "in"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let options = Options::default();
+    let missing = DcSweep {
+        source: "V9".to_owned(),
+        levels: vec![1.0],
+    };
+    assert_eq!(
+        simulator.dc_sweep(&missing, &options),
+        Err(SimulationError::UnknownSource("V9".to_owned()))
+    );
+    let resistor = Ac {
+        source: "R1".to_owned(),
+        frequencies: vec![1.0],
+    };
+    assert_eq!(
+        simulator.ac(&resistor, &options).unwrap_err(),
+        SimulationError::NotASource("R1".to_owned())
+    );
+}
