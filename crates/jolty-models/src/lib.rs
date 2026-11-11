@@ -95,7 +95,7 @@ impl Library {
         library.add(Native::<VoltageControlledSwitch>::new());
         library.add(Native::<Diode>::new());
         library.add(Native::<Jfet>::new());
-        library.add(Plain::<Mosfet>::new());
+        library.add(Native::<Mosfet>::new());
         library.add_logic(NativeLogicModel::<LogicCell>::new());
         library.add_logic(NativeLogicModel::<LogicSource>::new());
         library

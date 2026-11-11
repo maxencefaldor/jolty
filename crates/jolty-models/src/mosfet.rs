@@ -8,12 +8,12 @@ use crate::dual::Dual;
 use crate::jfet::Channel;
 use crate::junction::{
     BOLTZMANN, Depletion, ELEMENTARY_CHARGE, Temperatures, band_gap, below_one, critical_voltage,
-    depletion_charge, junction_current, limit_drain, limit_gate, limit_junction, thermal_voltage,
+    depletion_charge, junction_current, limit_drain, limit_gate, limit_junction,
 };
 use crate::stamp::Stamp;
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
-    ParameterError, Quantity, REFERENCE_TEMPERATURE, Unknown,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
+    ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown,
 };
 
 /// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,
@@ -90,17 +90,17 @@ pub enum GateMaterial {
 /// `gate_drain_displacement` or `gate_bulk_displacement`. A drain or source resistance adds
 /// an internal node, labelled `drain` or `source`.
 #[derive(Debug)]
-pub struct Mosfet {
+pub struct Mosfet<R: Real = f64> {
     stamp: Stamp<6>,
     sign: f64,
-    drain_conductance: f64,
-    source_conductance: f64,
-    channel: Law,
+    drain_conductance: R,
+    source_conductance: R,
+    channel: Law<R>,
     /// The bulk-drain and bulk-source junctions.
-    junctions: [BulkJunction; 2],
+    junctions: [BulkJunction<R>; 2],
     /// The gate-source, gate-drain and gate-bulk overlap capacitances.
-    overlaps: [f64; 3],
-    oxide: Option<Oxide>,
+    overlaps: [R; 3],
+    oxide: Option<Oxide<R>>,
     /// The gate-source, drain-source and bulk-source voltages of the last evaluation, from
     /// which the next steps are limited, and its threshold.
     last: [f64; 3],
@@ -127,172 +127,172 @@ const VARIABLES: [(usize, usize); 3] = [
 /// The parameters of a [`Mosfet`], with SPICE's defaults. The parameters from `vmax` on
 /// are level 3's alone.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct MosfetParameters {
+#[serde(default, deny_unknown_fields, bound = "")]
+pub struct MosfetParameters<R: Real = f64> {
     /// The model's level, 1 or 3; default 1.
     pub level: Level,
     /// The channel; default `n`.
     pub channel: Channel,
     /// The channel's width, `w`, in meters; default 100 µm.
-    pub width: f64,
+    pub width: R,
     /// The channel's drawn length, `l`, in meters; default 100 µm.
-    pub length: f64,
+    pub length: R,
     /// The number of identical transistors in parallel, `m`; default 1.
-    pub multiplier: f64,
+    pub multiplier: R,
     /// The zero-bias threshold voltage, `vto`, in volts; default 0, or derived from the
     /// substrate doping.
-    pub threshold_voltage: Option<f64>,
+    pub threshold_voltage: Option<R>,
     /// The transconductance parameter, `kp`, in amperes per square volt; default 2e-5, or
     /// the surface mobility times the oxide capacitance per area, given an oxide thickness.
-    pub transconductance_parameter: Option<f64>,
+    pub transconductance_parameter: Option<R>,
     /// The body-effect coefficient, `γ`, in square-root volts; default 0, or derived from
     /// the substrate doping.
-    pub body_effect: Option<f64>,
+    pub body_effect: Option<R>,
     /// The surface potential, `φ`, in volts; default 0.6, or derived from the substrate
     /// doping.
-    pub surface_potential: Option<f64>,
+    pub surface_potential: Option<R>,
     /// The channel-length modulation, `λ`, per volt, level 1's alone; default 0.
-    pub channel_length_modulation: Option<f64>,
+    pub channel_length_modulation: Option<R>,
     /// The lateral diffusion, `ld`, by which the channel falls short of its drawn length at
     /// each end, in meters; default 0.
-    pub lateral_diffusion: f64,
+    pub lateral_diffusion: R,
     /// The gate oxide's thickness, `tox`, in meters; default none at level 1, which leaves
     /// the gate without Meyer's capacitances, and 0.1 µm at level 3.
-    pub oxide_thickness: Option<f64>,
+    pub oxide_thickness: Option<R>,
     /// The surface mobility, `uo`, in square meters per volt-second, from which `kp`
     /// derives; default 0.06.
-    pub surface_mobility: f64,
+    pub surface_mobility: R,
     /// The substrate doping, `nsub`, per cubic meter, from which `vto`, `γ` and `φ` derive
     /// unless given; default none. It needs an oxide thickness.
-    pub substrate_doping: Option<f64>,
+    pub substrate_doping: Option<R>,
     /// The surface state density, `nss`, per square meter, which shifts a derived `vto`;
     /// default 0.
-    pub surface_state_density: f64,
+    pub surface_state_density: R,
     /// The gate's material, which sets a derived `vto`; default `opposite_doping`.
     pub gate_material: GateMaterial,
     /// The drain resistance, in ohms; default none, for the sheet resistance's.
-    pub drain_resistance: Option<f64>,
+    pub drain_resistance: Option<R>,
     /// The source resistance, in ohms; default none, for the sheet resistance's.
-    pub source_resistance: Option<f64>,
+    pub source_resistance: Option<R>,
     /// The drain and source diffusions' sheet resistance, in ohms per square; default 0.
-    pub sheet_resistance: f64,
+    pub sheet_resistance: R,
     /// The drain diffusion's length in squares, `nrd`; default 1.
-    pub drain_squares: f64,
+    pub drain_squares: R,
     /// The source diffusion's length in squares, `nrs`; default 1.
-    pub source_squares: f64,
+    pub source_squares: R,
     /// The bulk junctions' saturation current, in amperes; default 1e-14.
-    pub saturation_current: f64,
+    pub saturation_current: R,
     /// The bulk junctions' saturation current per area, in amperes per square meter, which
     /// replaces the saturation current when it and both areas are nonzero; default 0.
-    pub saturation_current_density: f64,
+    pub saturation_current_density: R,
     /// The drain diffusion's area, in square meters; default 0.
-    pub drain_area: f64,
+    pub drain_area: R,
     /// The source diffusion's area, in square meters; default 0.
-    pub source_area: f64,
+    pub source_area: R,
     /// The drain diffusion's perimeter, in meters; default 0.
-    pub drain_perimeter: f64,
+    pub drain_perimeter: R,
     /// The source diffusion's perimeter, in meters; default 0.
-    pub source_perimeter: f64,
+    pub source_perimeter: R,
     /// The bulk junctions' potential, `pb`, in volts; default 0.8.
-    pub junction_potential: f64,
+    pub junction_potential: R,
     /// The zero-bias bulk-drain capacitance, in farads; default none, for the bottom
     /// capacitance's.
-    pub bulk_drain_capacitance: Option<f64>,
+    pub bulk_drain_capacitance: Option<R>,
     /// The zero-bias bulk-source capacitance, in farads; default none, for the bottom
     /// capacitance's.
-    pub bulk_source_capacitance: Option<f64>,
+    pub bulk_source_capacitance: Option<R>,
     /// The bulk junctions' zero-bias bottom capacitance per area, `cj`, in farads per
     /// square meter; default 0.
-    pub bottom_capacitance: f64,
+    pub bottom_capacitance: R,
     /// The bulk junctions' zero-bias sidewall capacitance per length of perimeter, `cjsw`,
     /// in farads per meter; default 0.
-    pub sidewall_capacitance: f64,
+    pub sidewall_capacitance: R,
     /// The bottom capacitance's grading coefficient, `mj`, below 1; default 0.5.
-    pub bottom_grading: f64,
+    pub bottom_grading: R,
     /// The sidewall capacitance's grading coefficient, `mjsw`, below 1; default 0.5 at
     /// level 1 and 0.33 at level 3.
-    pub sidewall_grading: Option<f64>,
+    pub sidewall_grading: Option<R>,
     /// The fraction of the junction potential above which the depletion capacitances are
     /// extended linearly, below 1; default 0.5.
-    pub depletion_coefficient: f64,
+    pub depletion_coefficient: R,
     /// The gate-source overlap capacitance per width, in farads per meter; default 0.
-    pub gate_source_overlap: f64,
+    pub gate_source_overlap: R,
     /// The gate-drain overlap capacitance per width, in farads per meter; default 0.
-    pub gate_drain_overlap: f64,
+    pub gate_drain_overlap: R,
     /// The gate-bulk overlap capacitance per length, in farads per meter; default 0.
-    pub gate_bulk_overlap: f64,
+    pub gate_bulk_overlap: R,
     /// The temperature the parameters were measured at, in kelvins; default 27 °C.
-    pub nominal_temperature: f64,
+    pub nominal_temperature: R,
     /// Level 3: the carriers' maximum drift velocity, `vmax`, in meters per second;
     /// default none, for no velocity saturation.
-    pub max_drift_velocity: Option<f64>,
+    pub max_drift_velocity: Option<R>,
     /// Level 3: the junction depth, `xj`, in meters, which a substrate doping turns into
     /// short channels' body effect; default 0.
-    pub junction_depth: Option<f64>,
+    pub junction_depth: Option<R>,
     /// Level 3: the fast surface state density, `nfs`, per square meter, which turns on
     /// weak inversion; default 0.
-    pub fast_surface_state_density: Option<f64>,
+    pub fast_surface_state_density: Option<R>,
     /// Level 3: the drain's static feedback on the threshold, `eta`; default 0.
-    pub static_feedback: Option<f64>,
+    pub static_feedback: Option<R>,
     /// Level 3: the width's effect on the threshold, `delta`; default 0.
-    pub narrow_width_factor: Option<f64>,
+    pub narrow_width_factor: Option<R>,
     /// Level 3: the gate field's degradation of the mobility, `theta`, per volt;
     /// default 0.
-    pub mobility_modulation: Option<f64>,
+    pub mobility_modulation: Option<R>,
     /// Level 3: the saturation field factor, `kappa`; default 0.2.
-    pub saturation_field_factor: Option<f64>,
+    pub saturation_field_factor: Option<R>,
     /// Level 3: the width lost to diffusion at each side, `wd`, in meters; default 0.
-    pub width_narrowing: Option<f64>,
+    pub width_narrowing: Option<R>,
     /// Level 3: the length the mask adds, `xl`, in meters; default 0.
-    pub length_adjustment: Option<f64>,
+    pub length_adjustment: Option<R>,
     /// Level 3: the width the mask adds, `xw`, in meters; default 0.
-    pub width_adjustment: Option<f64>,
+    pub width_adjustment: Option<R>,
     /// Level 3: a shift of the threshold, `delvto`, in volts; default 0.
-    pub threshold_adjustment: Option<f64>,
+    pub threshold_adjustment: Option<R>,
 }
 
-impl Default for MosfetParameters {
+impl<R: Real> Default for MosfetParameters<R> {
     fn default() -> Self {
         Self {
             level: Level::One,
             channel: Channel::N,
-            width: 100e-6,
-            length: 100e-6,
-            multiplier: 1.0,
+            width: R::constant(100e-6),
+            length: R::constant(100e-6),
+            multiplier: R::constant(1.0),
             threshold_voltage: None,
             transconductance_parameter: None,
             body_effect: None,
             surface_potential: None,
             channel_length_modulation: None,
-            lateral_diffusion: 0.0,
+            lateral_diffusion: R::constant(0.0),
             oxide_thickness: None,
-            surface_mobility: 0.06,
+            surface_mobility: R::constant(0.06),
             substrate_doping: None,
-            surface_state_density: 0.0,
+            surface_state_density: R::constant(0.0),
             gate_material: GateMaterial::OppositeDoping,
             drain_resistance: None,
             source_resistance: None,
-            sheet_resistance: 0.0,
-            drain_squares: 1.0,
-            source_squares: 1.0,
-            saturation_current: 1e-14,
-            saturation_current_density: 0.0,
-            drain_area: 0.0,
-            source_area: 0.0,
-            drain_perimeter: 0.0,
-            source_perimeter: 0.0,
-            junction_potential: 0.8,
+            sheet_resistance: R::constant(0.0),
+            drain_squares: R::constant(1.0),
+            source_squares: R::constant(1.0),
+            saturation_current: R::constant(1e-14),
+            saturation_current_density: R::constant(0.0),
+            drain_area: R::constant(0.0),
+            source_area: R::constant(0.0),
+            drain_perimeter: R::constant(0.0),
+            source_perimeter: R::constant(0.0),
+            junction_potential: R::constant(0.8),
             bulk_drain_capacitance: None,
             bulk_source_capacitance: None,
-            bottom_capacitance: 0.0,
-            sidewall_capacitance: 0.0,
-            bottom_grading: 0.5,
+            bottom_capacitance: R::constant(0.0),
+            sidewall_capacitance: R::constant(0.0),
+            bottom_grading: R::constant(0.5),
             sidewall_grading: None,
-            depletion_coefficient: 0.5,
-            gate_source_overlap: 0.0,
-            gate_drain_overlap: 0.0,
-            gate_bulk_overlap: 0.0,
-            nominal_temperature: REFERENCE_TEMPERATURE,
+            depletion_coefficient: R::constant(0.5),
+            gate_source_overlap: R::constant(0.0),
+            gate_drain_overlap: R::constant(0.0),
+            gate_bulk_overlap: R::constant(0.0),
+            nominal_temperature: R::constant(REFERENCE_TEMPERATURE),
             max_drift_velocity: None,
             junction_depth: None,
             fast_surface_state_density: None,
@@ -311,15 +311,15 @@ impl Default for MosfetParameters {
 /// The process parameters, given or derived: `vto`, `kp`, `γ`, `φ`, and the oxide
 /// capacitance per area, if any.
 #[derive(Debug, Clone, Copy)]
-struct Process {
-    threshold: f64,
-    transconductance: f64,
-    body_effect: f64,
-    surface_potential: f64,
-    oxide: Option<f64>,
+struct Process<R: Real> {
+    threshold: R,
+    transconductance: R,
+    body_effect: R,
+    surface_potential: R,
+    oxide: Option<R>,
 }
 
-impl Process {
+impl<R: Real> Process<R> {
     /// The process parameters of a transistor of channel `sign` at `temperatures`, scaled
     /// from the nominal temperature's as ngspice scales them: `kp` falls as `T^−1.5`, `φ`
     /// follows silicon's band gap and intrinsic concentration, and `vto` moves with the
@@ -328,22 +328,24 @@ impl Process {
     /// # Errors
     ///
     /// Returns an error when the surface potential falls to zero or below.
-    fn at(self, temperatures: Temperatures, sign: f64) -> Result<Self, ParameterError> {
+    fn at(self, temperatures: Temperatures<R>, sign: f64) -> Result<Self, ParameterError> {
         let nominal = self.surface_potential;
-        let (potential, _) = temperatures.junction(nominal, 0.0, 0.0);
-        if potential <= 0.0 {
+        let zero = R::constant(0.0);
+        let (potential, _) = temperatures.junction(nominal, zero, zero);
+        if potential.value() <= 0.0 {
+            let potential = potential.value();
             return Err(ParameterError(format!(
                 "the surface potential falls to {potential:?} at {:?} K",
                 temperatures.actual
             )));
         }
-        let gap_shift = 0.5 * (band_gap(temperatures.nominal) - band_gap(temperatures.actual));
+        let gap_shift = (band_gap(temperatures.nominal) - band_gap(temperatures.actual)) * 0.5;
         Ok(Self {
             threshold: self.threshold
                 + gap_shift
-                + sign
-                    * (0.5 * (potential - nominal)
-                        + self.body_effect * (potential.sqrt() - nominal.sqrt())),
+                + ((potential - nominal) * 0.5
+                    + self.body_effect * (potential.sqrt() - nominal.sqrt()))
+                    * sign,
             transconductance: self.transconductance / temperatures.ratio().powf(1.5),
             surface_potential: potential,
             ..self
@@ -351,28 +353,31 @@ impl Process {
     }
 }
 
-impl MosfetParameters {
+impl<R: Real> MosfetParameters<R> {
     /// The process parameters, derived from the oxide thickness and the substrate doping
     /// where not given, as SPICE derives them.
-    fn process(&self) -> Result<Process, ParameterError> {
+    fn process(&self) -> Result<Process<R>, ParameterError> {
         let thickness = match self.level {
             Level::One => self.oxide_thickness,
-            Level::Three => Some(self.oxide_thickness.unwrap_or(LEVEL_THREE_OXIDE_THICKNESS)),
+            Level::Three => Some(
+                self.oxide_thickness
+                    .unwrap_or(R::constant(LEVEL_THREE_OXIDE_THICKNESS)),
+            ),
         };
         let oxide = thickness
             .map(|thickness| ParameterError::positive("oxide_thickness", thickness))
             .transpose()?
-            .map(|thickness| OXIDE_PERMITTIVITY / thickness);
+            .map(|thickness| R::constant(OXIDE_PERMITTIVITY) / thickness);
         let mobility = ParameterError::positive("surface_mobility", self.surface_mobility)?;
         let transconductance = self
             .transconductance_parameter
             .or(oxide.map(|oxide| mobility * oxide))
-            .unwrap_or(2e-5);
+            .unwrap_or(R::constant(2e-5));
         let mut process = Process {
-            threshold: self.threshold_voltage.unwrap_or(0.0),
+            threshold: self.threshold_voltage.unwrap_or(R::constant(0.0)),
             transconductance,
-            body_effect: self.body_effect.unwrap_or(0.0),
-            surface_potential: self.surface_potential.unwrap_or(0.6),
+            body_effect: self.body_effect.unwrap_or(R::constant(0.0)),
+            surface_potential: self.surface_potential.unwrap_or(R::constant(0.6)),
             oxide,
         };
         if let Some(doping) = self.substrate_doping {
@@ -389,24 +394,25 @@ impl MosfetParameters {
 
     /// Derives what was not given of `φ`, `γ` and `vto` from the substrate `doping` and the
     /// `oxide` capacitance per area, at the nominal temperature.
-    fn derive(&self, process: &mut Process, doping: f64, oxide: f64) -> Result<(), ParameterError> {
+    fn derive(&self, process: &mut Process<R>, doping: R, oxide: R) -> Result<(), ParameterError> {
         let nominal = self.nominal_temperature;
         // Silicon's band gap, in electronvolts.
         let gap = band_gap(nominal);
         // Level 1 takes silicon's intrinsic concentration at 300 K; level 3 scales it to
         // the nominal temperature.
         let intrinsic = match self.level {
-            Level::One => INTRINSIC_CONCENTRATION,
+            Level::One => R::constant(INTRINSIC_CONCENTRATION),
             Level::Three => {
                 let ratio = nominal / 300.0;
-                INTRINSIC_CONCENTRATION
-                    * ratio
+                ratio
+                    * INTRINSIC_CONCENTRATION
                     * ratio.sqrt()
-                    * (0.5 * gap * ELEMENTARY_CHARGE / BOLTZMANN * (1.0 / 300.0 - 1.0 / nominal))
+                    * (gap * 0.5 * ELEMENTARY_CHARGE / BOLTZMANN * -(nominal.recip() - 1.0 / 300.0))
                         .exp()
             }
         };
-        if doping <= intrinsic {
+        if doping.value() <= intrinsic.value() {
+            let (doping, intrinsic) = (doping.value(), intrinsic.value());
             return Err(ParameterError(format!(
                 "substrate_doping must exceed silicon's intrinsic concentration, \
                  {intrinsic:e} per cubic meter, not {doping:?}"
@@ -414,77 +420,80 @@ impl MosfetParameters {
         }
         let sign = self.channel.sign();
         let potential = self.surface_potential.unwrap_or_else(|| {
-            (2.0 * thermal_voltage(nominal) * (doping / intrinsic).ln()).max(0.1)
+            (nominal * BOLTZMANN / ELEMENTARY_CHARGE * 2.0 * (doping / intrinsic).ln())
+                .max(R::constant(0.1))
         });
         let body_effect = self.body_effect.unwrap_or_else(|| {
-            (2.0 * SILICON_PERMITTIVITY * ELEMENTARY_CHARGE * doping).sqrt() / oxide
+            (doping * (2.0 * SILICON_PERMITTIVITY * ELEMENTARY_CHARGE)).sqrt() / oxide
         });
         let gate_work_function = match self.gate_material {
-            GateMaterial::Aluminum => 3.2,
-            GateMaterial::OppositeDoping => 3.25 + 0.5 * gap - sign * 0.5 * gap,
-            GateMaterial::SameDoping => 3.25 + 0.5 * gap + sign * 0.5 * gap,
+            GateMaterial::Aluminum => R::constant(3.2),
+            GateMaterial::OppositeDoping => gap * 0.5 + 3.25 - gap * (sign * 0.5),
+            GateMaterial::SameDoping => gap * 0.5 + 3.25 + gap * (sign * 0.5),
         };
         let work_function_difference =
-            gate_work_function - (3.25 + 0.5 * gap + sign * 0.5 * potential);
+            gate_work_function - (gap * 0.5 + 3.25 + potential * (sign * 0.5));
         let flat_band =
             work_function_difference - self.surface_state_density * ELEMENTARY_CHARGE / oxide;
         process.surface_potential = potential;
         process.body_effect = body_effect;
         process.threshold = self
             .threshold_voltage
-            .unwrap_or_else(|| flat_band + sign * (body_effect * potential.sqrt() + potential));
+            .unwrap_or_else(|| flat_band + (body_effect * potential.sqrt() + potential) * sign);
         Ok(())
     }
 }
 
 /// The channel's square law, oriented as an n-channel's.
 #[derive(Debug, Clone, Copy)]
-struct SquareLaw {
-    beta: f64,
-    lambda: f64,
-    body_effect: f64,
-    surface_potential: f64,
+struct SquareLaw<R: Real> {
+    beta: R,
+    lambda: R,
+    body_effect: R,
+    surface_potential: R,
     /// `√φ`.
-    root_potential: f64,
+    root_potential: R,
     /// The threshold less the body effect at zero bias, `vto − γ · √φ`.
-    built_in: f64,
+    built_in: R,
 }
 
 /// What the square law yields at one bias.
 #[derive(Debug, Clone, Copy)]
-struct Conduction {
+struct Conduction<R: Real> {
     /// The current from drain to source.
-    current: Dual<3>,
+    current: Dual<R, 3>,
     /// The threshold, `von`.
-    threshold: Dual<3>,
+    threshold: Dual<R, 3>,
     /// The saturation voltage, `max(vgst, 0)`.
-    saturation: Dual<3>,
+    saturation: Dual<R, 3>,
     /// Whether the drain is at or above the source; otherwise the two swap.
     forward: bool,
 }
 
-impl SquareLaw {
+impl<R: Real> SquareLaw<R> {
     /// The drain current at the gate-source, drain-source and bulk-source voltages.
-    fn evaluate(&self, [vgs, vds, vbs]: [Dual<3>; 3]) -> Conduction {
-        let forward = vds.value >= 0.0;
+    fn evaluate(&self, [vgs, vds, vbs]: [Dual<R, 3>; 3]) -> Conduction<R> {
+        let forward = vds.value.value() >= 0.0;
         // With the drain below the source, the drain acts as the source.
         let (vgs, vds, vbs) = if forward {
             (vgs, vds, vbs)
         } else {
             (vgs - vds, -vds, vbs - vds)
         };
-        let root = if vbs.value <= 0.0 {
-            (self.surface_potential - vbs).sqrt()
+        let root = if vbs.value.value() <= 0.0 {
+            (-vbs).plus(self.surface_potential).sqrt()
         } else {
-            (self.root_potential - vbs / (2.0 * self.root_potential)).max(0.0)
+            (-vbs.divide(self.root_potential * 2.0))
+                .plus(self.root_potential)
+                .max(0.0)
         };
-        let threshold = root * self.body_effect + self.built_in;
+        let threshold = root.scale(self.body_effect).plus(self.built_in);
         let vgst = vgs - threshold;
-        let current = if vgst.value <= 0.0 {
-            Dual::constant(0.0)
+        let current = if vgst.value.value() <= 0.0 {
+            Dual::number(0.0)
         } else {
-            let betap = (vds * self.lambda + 1.0) * self.beta;
-            if vgst.value <= vds.value {
+            let betap = (vds.scale(self.lambda) + 1.0).scale(self.beta);
+            if vgst.value.value() <= vds.value.value() {
                 betap * vgst * vgst * 0.5
             } else {
                 betap * vds * (vgst - vds * 0.5)
@@ -501,14 +510,14 @@ impl SquareLaw {
 
 /// The channel's law, of the transistor's level.
 #[derive(Debug, Clone, Copy)]
-enum Law {
-    SquareLaw(SquareLaw),
-    Semiempirical(Semiempirical),
+enum Law<R: Real> {
+    SquareLaw(SquareLaw<R>),
+    Semiempirical(Semiempirical<R>),
 }
 
-impl Law {
+impl<R: Real> Law<R> {
     /// The drain current at the gate-source, drain-source and bulk-source voltages.
-    fn evaluate(&self, voltages: [Dual<3>; 3]) -> Conduction {
+    fn evaluate(&self, voltages: [Dual<R, 3>; 3]) -> Conduction<R> {
         match self {
             Self::SquareLaw(law) => law.evaluate(voltages),
             Self::Semiempirical(law) => law.evaluate(voltages),
@@ -518,69 +527,75 @@ impl Law {
 
 /// A junction between the bulk and the drain or the source.
 #[derive(Debug, Clone, Copy)]
-struct BulkJunction {
-    saturation_current: f64,
+struct BulkJunction<R: Real> {
+    saturation_current: R,
     /// The thermal voltage at the transistor's temperature.
     thermal_voltage: f64,
     critical_voltage: f64,
-    bottom: Option<Depletion>,
-    sidewall: Option<Depletion>,
+    bottom: Option<Depletion<R>>,
+    sidewall: Option<Depletion<R>>,
 }
 
-impl BulkJunction {
+impl<R: Real> BulkJunction<R> {
     /// The junction's current, with `gmin` across it, and its charge, at `voltage`.
-    fn evaluate(&self, voltage: Dual<3>, gmin: f64) -> (Dual<3>, Dual<3>) {
+    fn evaluate(&self, voltage: Dual<R, 3>, gmin: f64) -> (Dual<R, 3>, Dual<R, 3>) {
+        let at = voltage.value.value();
         let current = voltage.chain(junction_current(
-            voltage.value,
+            at,
             self.saturation_current,
-            self.thermal_voltage,
+            R::constant(self.thermal_voltage),
         )) + voltage * gmin;
-        let charge = voltage.chain(depletion_charge(self.bottom.as_ref(), voltage.value))
-            + voltage.chain(depletion_charge(self.sidewall.as_ref(), voltage.value));
+        let charge = voltage.chain(depletion_charge(self.bottom.as_ref(), at))
+            + voltage.chain(depletion_charge(self.sidewall.as_ref(), at));
         (current, charge)
     }
 }
 
 /// The gate oxide, across which Meyer's capacitances lie.
 #[derive(Debug, Clone, Copy)]
-struct Oxide {
+struct Oxide<R: Real> {
     /// The oxide's whole capacitance, `Cox`.
-    capacitance: f64,
-    surface_potential: f64,
+    capacitance: R,
+    surface_potential: R,
     /// The displacement currents towards the source, the drain and the bulk.
     displacements: [Displacement; 3],
 }
 
-impl Oxide {
+impl<R: Real> Oxide<R> {
     /// Meyer's capacitances from the gate to the source, the drain and the bulk, at the
     /// gate-source and gate-drain voltages, with the drain at or above the source, and the
     /// channel's threshold and saturation voltage.
-    fn meyer(&self, vgs: Dual<3>, vgd: Dual<3>, conduction: &Conduction) -> [Dual<3>; 3] {
+    fn meyer(
+        &self,
+        vgs: Dual<R, 3>,
+        vgd: Dual<R, 3>,
+        conduction: &Conduction<R>,
+    ) -> [Dual<R, 3>; 3] {
         let (oxide, potential) = (self.capacitance, self.surface_potential);
-        let zero = Dual::constant(0.0);
+        let zero = Dual::number(0.0);
         let vgst = vgs - conduction.threshold;
         // Accumulation, then depletion: the oxide faces the bulk alone.
-        if vgst.value <= -potential {
+        if vgst.value.value() <= -potential.value() {
             return [zero, zero, Dual::constant(oxide)];
         }
-        let bulk = if vgst.value <= 0.0 {
-            vgst * (-oxide / potential)
+        let bulk = if vgst.value.value() <= 0.0 {
+            vgst.scale(-oxide / potential)
         } else {
             zero
         };
-        if vgst.value <= -potential / 2.0 {
+        if vgst.value.value() <= -potential.value() / 2.0 {
             return [zero, zero, bulk];
         }
         // Inversion: the channel takes two thirds of the oxide, all on the source's side
         // in saturation, and shared with the drain below it.
-        let channel = if vgst.value <= 0.0 {
-            (vgst * (2.0 / potential) + 1.0) * (2.0 * oxide / 3.0)
+        let channel = if vgst.value.value() <= 0.0 {
+            (vgst.scale(R::constant(2.0) / potential) + 1.0).scale(oxide * 2.0 / 3.0)
         } else {
-            Dual::constant(2.0 * oxide / 3.0)
+            Dual::constant(oxide * 2.0 / 3.0)
         };
         let saturation = conduction.saturation.max(MEYER_SATURATION);
         let vds = vgs - vgd;
-        if vds.value >= saturation.value {
+        if vds.value.value() >= saturation.value.value() {
             return [channel, zero, bulk];
         }
         let sum = saturation * 2.0 - vds;
@@ -635,20 +650,20 @@ impl Displacement {
     /// `oxide`'s whole capacitance, and the derivatives with respect to `w` of Meyer's
     /// current from the gate to the node, `C · w / Cox`, for the Meyer `capacitance`.
     /// Returns `w`.
-    fn add(
+    fn add<R: Real>(
         &self,
         stamp: &Stamp<6>,
-        (oxide, capacitance): (f64, f64),
+        (oxide, capacitance): (R, R),
         input: &Input<'_>,
-        output: &mut Output<'_>,
+        output: &mut Output<'_, R>,
     ) -> f64 {
         let row = Some(self.unknown);
         let [own, gate, node, from_gate, from_node] = self.entries;
         let displacement = input.value(row);
         let voltage = stamp.voltage(input, GATE) - stamp.voltage(input, self.node);
-        output.add_residual(row, displacement);
+        output.add_residual(row, R::constant(displacement));
         output.add_charge(row, -oxide * voltage);
-        output.add_conductance(own, 1.0);
+        output.add_conductance(own, R::constant(1.0));
         output.add_capacitance(gate, -oxide);
         output.add_capacitance(node, oxide);
         output.add_conductance(from_gate, capacitance / oxide);
@@ -666,11 +681,15 @@ struct Bias {
     beyond: [f64; 3],
 }
 
-impl NativeDevice for Mosfet {
-    const NAME: &'static str = "mosfet";
-    type Parameters = MosfetParameters;
+impl NativeModel for Mosfet {
+    type Device<R: Real> = Mosfet<R>;
+}
 
-    fn interface(_: &MosfetParameters) -> Interface {
+impl<R: Real> NativeDevice<R> for Mosfet<R> {
+    const NAME: &'static str = "mosfet";
+    type Parameters = MosfetParameters<R>;
+
+    fn interface(_: &MosfetParameters<R>) -> Interface {
         Interface::new(
             &["drain", "gate", "source", "bulk"],
             &[
@@ -685,7 +704,7 @@ impl NativeDevice for Mosfet {
     }
 
     fn new(
-        parameters: MosfetParameters,
+        parameters: MosfetParameters<R>,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
         let temperatures =
@@ -697,7 +716,7 @@ impl NativeDevice for Mosfet {
         let junctions = parameters.junctions(&geometry, temperatures)?;
         let [drain_resistance, source_resistance] = parameters.series_resistances()?;
         let channel = parameters.law(&process, &geometry, temperatures)?;
-        let mut overlaps = [0.0; 3];
+        let mut overlaps = [R::constant(0.0); 3];
         for (overlap, (name, per_length, extent)) in overlaps.iter_mut().zip([
             (
                 "gate_source_overlap",
@@ -719,8 +738,8 @@ impl NativeDevice for Mosfet {
         }
 
         let [drain, gate, source, bulk] = [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let mut inner = |terminal, resistance: f64, label| {
-            if resistance > 0.0 {
+        let mut inner = |terminal, resistance: R, label| {
+            if resistance.value() > 0.0 {
                 Some(binding.internal(label, Quantity::Voltage))
             } else {
                 terminal
@@ -744,11 +763,11 @@ impl NativeDevice for Mosfet {
                 ],
             }
         });
-        let conductance = |resistance: f64| {
-            if resistance > 0.0 {
-                1.0 / resistance
+        let conductance = |resistance: R| {
+            if resistance.value() > 0.0 {
+                resistance.recip()
             } else {
-                0.0
+                R::constant(0.0)
             }
         };
         let sign = parameters.channel.sign();
@@ -762,7 +781,7 @@ impl NativeDevice for Mosfet {
             overlaps,
             oxide,
             last: [0.0; 3],
-            threshold: sign * process.threshold,
+            threshold: sign * process.threshold.value(),
         })
     }
 }
@@ -770,18 +789,18 @@ impl NativeDevice for Mosfet {
 /// A transistor's extent: its effective length, and its width, the sum of its effective
 /// lengths and its gate's area with every parallel copy counted.
 #[derive(Debug, Clone, Copy)]
-struct Geometry {
-    multiplier: f64,
-    length: f64,
+struct Geometry<R: Real> {
+    multiplier: R,
+    length: R,
     /// The effective width of one copy.
-    single_width: f64,
-    width: f64,
-    lengths: f64,
-    area: f64,
+    single_width: R,
+    width: R,
+    lengths: R,
+    area: R,
 }
 
-impl Geometry {
-    fn new(parameters: &MosfetParameters) -> Result<Self, ParameterError> {
+impl<R: Real> Geometry<R> {
+    fn new(parameters: &MosfetParameters<R>) -> Result<Self, ParameterError> {
         let multiplier = ParameterError::positive("multiplier", parameters.multiplier)?;
         let width = ParameterError::positive("width", parameters.width)?;
         let length = ParameterError::positive("length", parameters.length)?;
@@ -789,17 +808,21 @@ impl Geometry {
             ParameterError::non_negative("lateral_diffusion", parameters.lateral_diffusion)?;
         let narrowing = ParameterError::non_negative(
             "width_narrowing",
-            parameters.width_narrowing.unwrap_or(0.0),
+            parameters.width_narrowing.unwrap_or(R::constant(0.0)),
         )?;
-        let effective = length - 2.0 * diffusion + parameters.length_adjustment.unwrap_or(0.0);
-        if effective <= 0.0 {
+        let effective =
+            length - diffusion * 2.0 + parameters.length_adjustment.unwrap_or(R::constant(0.0));
+        if effective.value() <= 0.0 {
+            let effective = effective.value();
             return Err(ParameterError(format!(
                 "the effective length, length − 2 · lateral_diffusion + length_adjustment, \
                  must be positive, not {effective:?}"
             )));
         }
-        let effective_width = width - 2.0 * narrowing + parameters.width_adjustment.unwrap_or(0.0);
-        if effective_width <= 0.0 {
+        let effective_width =
+            width - narrowing * 2.0 + parameters.width_adjustment.unwrap_or(R::constant(0.0));
+        if effective_width.value() <= 0.0 {
+            let effective_width = effective_width.value();
             return Err(ParameterError(format!(
                 "the effective width, width − 2 · width_narrowing + width_adjustment, must \
                  be positive, not {effective_width:?}"
@@ -816,13 +839,13 @@ impl Geometry {
     }
 }
 
-impl MosfetParameters {
+impl<R: Real> MosfetParameters<R> {
     /// The bulk-drain and bulk-source junctions at `temperatures`.
     fn junctions(
         &self,
-        geometry: &Geometry,
-        temperatures: Temperatures,
-    ) -> Result<[BulkJunction; 2], ParameterError> {
+        geometry: &Geometry<R>,
+        temperatures: Temperatures<R>,
+    ) -> Result<[BulkJunction<R>; 2], ParameterError> {
         let multiplier = geometry.multiplier;
         let saturation = ParameterError::positive("saturation_current", self.saturation_current)?;
         let density = ParameterError::non_negative(
@@ -832,8 +855,8 @@ impl MosfetParameters {
         let potential = ParameterError::positive("junction_potential", self.junction_potential)?;
         let bottom_grading = below_one("bottom_grading", self.bottom_grading)?;
         let default_sidewall = match self.level {
-            Level::One => 0.5,
-            Level::Three => 0.33,
+            Level::One => R::constant(0.5),
+            Level::Three => R::constant(0.33),
         };
         let sidewall_grading = below_one(
             "sidewall_grading",
@@ -844,15 +867,19 @@ impl MosfetParameters {
             ParameterError::non_negative("bottom_capacitance", self.bottom_capacitance)?;
         let sidewall_capacitance =
             ParameterError::non_negative("sidewall_capacitance", self.sidewall_capacitance)?;
-        let by_density = density > 0.0 && self.drain_area > 0.0 && self.source_area > 0.0;
+        let by_density = density.value() > 0.0
+            && self.drain_area.value() > 0.0
+            && self.source_area.value() > 0.0;
         let vt = temperatures.thermal_voltage();
-        let scaling = (band_gap(temperatures.nominal) / thermal_voltage(temperatures.nominal)
+        let nominal = temperatures.nominal;
+        let scaling = (band_gap(nominal) / (nominal * BOLTZMANN / ELEMENTARY_CHARGE)
             - band_gap(temperatures.actual) / vt)
             .exp();
         let (scaled_potential, bottom_scaling) =
-            temperatures.junction(potential, 1.0, bottom_grading);
-        let (_, sidewall_scaling) = temperatures.junction(potential, 1.0, sidewall_grading);
-        let junction = |name, capacitance: Option<f64>, area: f64, perimeter: f64| {
+            temperatures.junction(potential, R::constant(1.0), bottom_grading);
+        let (_, sidewall_scaling) =
+            temperatures.junction(potential, R::constant(1.0), sidewall_grading);
+        let junction = |name, capacitance: Option<R>, area: R, perimeter: R| {
             ParameterError::non_negative(&format!("{name}_area"), area)?;
             ParameterError::non_negative(&format!("{name}_perimeter"), perimeter)?;
             let saturation_current = multiplier
@@ -871,7 +898,7 @@ impl MosfetParameters {
             Ok(BulkJunction {
                 saturation_current,
                 thermal_voltage: vt,
-                critical_voltage: critical_voltage(saturation_current, vt),
+                critical_voltage: critical_voltage(saturation_current.value(), vt),
                 bottom: Depletion::new(
                     multiplier * bottom * bottom_scaling,
                     scaled_potential,
@@ -906,14 +933,14 @@ impl MosfetParameters {
     /// once each of its parameters is checked.
     fn law(
         &self,
-        process: &Process,
-        geometry: &Geometry,
-        temperatures: Temperatures,
-    ) -> Result<Law, ParameterError> {
+        process: &Process<R>,
+        geometry: &Geometry<R>,
+        temperatures: Temperatures<R>,
+    ) -> Result<Law<R>, ParameterError> {
         let sign = self.channel.sign();
         let root_potential = process.surface_potential.sqrt();
         let built_in =
-            |shift: f64| sign * (process.threshold + shift) - process.body_effect * root_potential;
+            |shift: R| (process.threshold + shift) * sign - process.body_effect * root_potential;
         let beta = process.transconductance * geometry.width / geometry.length;
         let level_three = [
             ("max_drift_velocity", self.max_drift_velocity),
@@ -937,11 +964,11 @@ impl MosfetParameters {
             }
             return Ok(Law::SquareLaw(SquareLaw {
                 beta,
-                lambda: self.channel_length_modulation.unwrap_or(0.0),
+                lambda: self.channel_length_modulation.unwrap_or(R::constant(0.0)),
                 body_effect: process.body_effect,
                 surface_potential: process.surface_potential,
                 root_potential,
-                built_in: built_in(0.0),
+                built_in: built_in(R::constant(0.0)),
             }));
         };
         if self.channel_length_modulation.is_some() {
@@ -949,20 +976,23 @@ impl MosfetParameters {
                 "channel_length_modulation is level 1's".to_owned(),
             ));
         }
-        let non_negative =
-            |name, value: Option<f64>| ParameterError::non_negative(name, value.unwrap_or(0.0));
-        let oxide =
-            OXIDE_PERMITTIVITY / self.oxide_thickness.unwrap_or(LEVEL_THREE_OXIDE_THICKNESS);
+        let non_negative = |name, value: Option<R>| {
+            ParameterError::non_negative(name, value.unwrap_or(R::constant(0.0)))
+        };
+        let oxide = R::constant(OXIDE_PERMITTIVITY)
+            / self
+                .oxide_thickness
+                .unwrap_or(R::constant(LEVEL_THREE_OXIDE_THICKNESS));
         let length = geometry.length;
         Ok(Law::Semiempirical(Semiempirical {
             beta,
             length,
             surface_potential: process.surface_potential,
             body_effect: process.body_effect,
-            built_in: built_in(self.threshold_adjustment.unwrap_or(0.0)),
-            static_feedback: self.static_feedback.unwrap_or(0.0) * 8.15e-22
+            built_in: built_in(self.threshold_adjustment.unwrap_or(R::constant(0.0))),
+            static_feedback: self.static_feedback.unwrap_or(R::constant(0.0)) * 8.15e-22
                 / (oxide * length * length * length),
-            narrow: self.narrow_width_factor.unwrap_or(0.0)
+            narrow: self.narrow_width_factor.unwrap_or(R::constant(0.0))
                 * 0.5
                 * std::f64::consts::PI
                 * SILICON_PERMITTIVITY
@@ -970,10 +1000,10 @@ impl MosfetParameters {
             mobility_modulation: non_negative("mobility_modulation", self.mobility_modulation)?,
             saturation_field_factor: ParameterError::positive(
                 "saturation_field_factor",
-                self.saturation_field_factor.unwrap_or(0.2),
+                self.saturation_field_factor.unwrap_or(R::constant(0.2)),
             )?,
-            alpha: self.substrate_doping.map_or(0.0, |doping| {
-                2.0 * SILICON_PERMITTIVITY / (ELEMENTARY_CHARGE * doping)
+            alpha: self.substrate_doping.map_or(R::constant(0.0), |doping| {
+                R::constant(2.0 * SILICON_PERMITTIVITY) / (doping * ELEMENTARY_CHARGE)
             }),
             junction_depth: non_negative("junction_depth", self.junction_depth)?,
             lateral_diffusion: self.lateral_diffusion,
@@ -990,9 +1020,9 @@ impl MosfetParameters {
 
     /// The drain and source resistances, given or from the sheet resistance, of all the
     /// parallel copies together.
-    fn series_resistances(&self) -> Result<[f64; 2], ParameterError> {
+    fn series_resistances(&self) -> Result<[R; 2], ParameterError> {
         let sheet = ParameterError::non_negative("sheet_resistance", self.sheet_resistance)?;
-        let resistance = |name: &str, given: Option<f64>, squares: f64| {
+        let resistance = |name: &str, given: Option<R>, squares: R| {
             ParameterError::non_negative(&format!("{name}_squares"), squares)?;
             let resistance = match given {
                 Some(resistance) => {
@@ -1009,15 +1039,15 @@ impl MosfetParameters {
     }
 }
 
-impl Mosfet {
+impl<R: Real> Mosfet<R> {
     /// Adds the drain and source resistances.
-    fn add_series(&self, input: &Input<'_>, output: &mut Output<'_>) {
+    fn add_series(&self, input: &Input<'_>, output: &mut Output<'_, R>) {
         let stamp = &self.stamp;
         for (outer, inner, conductance) in [
             (DRAIN, INNER_DRAIN, self.drain_conductance),
             (SOURCE, INNER_SOURCE, self.source_conductance),
         ] {
-            if conductance > 0.0 {
+            if conductance.value() > 0.0 {
                 let voltage = stamp.voltage(input, outer) - stamp.voltage(input, inner);
                 stamp.current(output, outer, inner, conductance * voltage);
                 stamp.conductance(output, (outer, inner), (outer, inner), conductance);
@@ -1026,7 +1056,7 @@ impl Mosfet {
     }
 
     /// The terminal voltages at `input`, limited from the last evaluation's.
-    fn bias(&mut self, input: &Input<'_>, output: &mut Output<'_>) -> Bias {
+    fn bias(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) -> Bias {
         let stamp = &self.stamp;
         let applied = VARIABLES.map(|(plus, minus)| {
             self.sign * (stamp.voltage(input, plus) - stamp.voltage(input, minus))
@@ -1097,12 +1127,12 @@ impl Mosfet {
     fn add_current(
         &self,
         (from, to): (usize, usize),
-        current: Dual<3>,
+        current: Dual<R, 3>,
         bias: &Bias,
-        output: &mut Output<'_>,
+        output: &mut Output<'_, R>,
     ) {
         let stamp = &self.stamp;
-        stamp.current(output, from, to, self.sign * current.extend(bias.beyond));
+        stamp.current(output, from, to, current.extend(bias.beyond) * self.sign);
         for (variable, derivative) in VARIABLES.into_iter().zip(current.gradient) {
             stamp.conductance(output, (from, to), variable, derivative);
         }
@@ -1113,25 +1143,25 @@ impl Mosfet {
     fn add_charge(
         &self,
         (on, against): (usize, usize),
-        charge: Dual<3>,
+        charge: Dual<R, 3>,
         bias: &Bias,
-        output: &mut Output<'_>,
+        output: &mut Output<'_, R>,
     ) {
         let stamp = &self.stamp;
-        stamp.charge(output, on, against, self.sign * charge.extend(bias.beyond));
+        stamp.charge(output, on, against, charge.extend(bias.beyond) * self.sign);
         for (variable, derivative) in VARIABLES.into_iter().zip(charge.gradient) {
             stamp.capacitance(output, (on, against), variable, derivative);
         }
     }
 }
 
-impl Device for Mosfet {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_>) {
+impl<R: Real> Device<R> for Mosfet<R> {
+    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
         self.add_series(input, output);
         let bias = self.bias(input, output);
         let [vgs, vds, vbs] = Dual::variables(bias.voltages);
         let conduction = self.channel.evaluate([vgs, vds, vbs]);
-        self.threshold = conduction.threshold.value;
+        self.threshold = conduction.threshold.value.value();
         self.add_current(
             (INNER_DRAIN, INNER_SOURCE),
             conduction.current,
@@ -1148,9 +1178,14 @@ impl Device for Mosfet {
         }
 
         let [source_overlap, drain_overlap, bulk_overlap] = self.overlaps;
-        self.add_charge((GATE, INNER_SOURCE), vgs * source_overlap, &bias, output);
-        self.add_charge((GATE, INNER_DRAIN), vgd * drain_overlap, &bias, output);
-        self.add_charge((GATE, BULK), (vgs - vbs) * bulk_overlap, &bias, output);
+        self.add_charge(
+            (GATE, INNER_SOURCE),
+            vgs.scale(source_overlap),
+            &bias,
+            output,
+        );
+        self.add_charge((GATE, INNER_DRAIN), vgd.scale(drain_overlap), &bias, output);
+        self.add_charge((GATE, BULK), (vgs - vbs).scale(bulk_overlap), &bias, output);
 
         if let Some(oxide) = &self.oxide {
             let capacitances = if conduction.forward {
@@ -1163,7 +1198,7 @@ impl Device for Mosfet {
             for (displacement, capacitance) in oxide.displacements.iter().zip(capacitances) {
                 let current =
                     displacement.add(&self.stamp, (whole, capacitance.value), input, output);
-                let meyer = capacitance * (self.sign * current / whole);
+                let meyer = capacitance.scale(R::constant(self.sign * current) / whole);
                 self.add_current((GATE, displacement.node), meyer, &bias, output);
             }
         }
@@ -1175,7 +1210,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::testing::{Bench, assert_jacobians_match};
+    use crate::testing::{Bench, assert_jacobians_match, assert_parameter_gradients_match};
 
     const CHARGED: &str = r#"{"threshold_voltage": 0.8, "transconductance_parameter": 1e-4,
         "body_effect": 0.5, "channel_length_modulation": 0.02, "width": 10e-6,
@@ -1309,6 +1344,42 @@ mod tests {
             error(r#"{"bottom_grading": 1}"#),
             "bottom_grading must be at least 0 and below 1, not 1.0"
         );
+    }
+
+    #[test]
+    fn parameter_gradients_are_exact() {
+        let temperature = r#""nominal_temperature": 290, "junction_potential": 0.75,
+            "saturation_current": 2e-14, "bottom_grading": 0.45, "sidewall_grading": 0.35,
+            "depletion_coefficient": 0.45, "multiplier": 2, "#;
+        let level_one = CHARGED.replace('{', &format!("{{{temperature}"));
+        let resistive =
+            level_one.replace('{', r#"{"drain_resistance": 50, "source_resistance": 20, "#);
+        let derived = r#"{"substrate_doping": 1e22, "oxide_thickness": 2e-8,
+            "surface_state_density": 1e14, "surface_mobility": 0.05, "width": 10e-6,
+            "length": 2e-6, "sheet_resistance": 10, "drain_squares": 2, "source_squares": 3,
+            "saturation_current_density": 1e-4, "drain_area": 2e-11, "source_area": 3e-11,
+            "nominal_temperature": 290}"#;
+        let level_three = r#"{"level": 3, "threshold_voltage": 0.7, "body_effect": 0.4,
+            "width": 20e-6, "length": 2e-6, "lateral_diffusion": 1e-7,
+            "oxide_thickness": 3e-8, "substrate_doping": 1e22, "junction_depth": 3e-7,
+            "static_feedback": 0.5, "narrow_width_factor": 0.8, "mobility_modulation": 0.1,
+            "saturation_field_factor": 0.3, "fast_surface_state_density": 1e15,
+            "threshold_adjustment": 0.05, "max_drift_velocity": 1.5e5,
+            "width_narrowing": 1e-7, "length_adjustment": 1e-8, "width_adjustment": 2e-8,
+            "nominal_temperature": 290}"#;
+        for [drain, gate, bulk] in [
+            [3.0, 2.0, -0.5],
+            [0.3, 2.5, -0.2],
+            [-1.0, 1.5, -1.5],
+            [2.0, 0.2, -0.1],
+        ] {
+            let x = [drain, gate, 0.0, bulk, 1e-4, 2e-4, -1e-4];
+            let inner = [drain, gate, 0.0, bulk, 0.9 * drain, 0.01, 1e-4, 2e-4, -1e-4];
+            assert_parameter_gradients_match::<Mosfet>(&level_one, &x);
+            assert_parameter_gradients_match::<Mosfet>(derived, &inner);
+            assert_parameter_gradients_match::<Mosfet>(level_three, &x);
+            assert_parameter_gradients_match::<Mosfet>(&resistive, &inner);
+        }
     }
 
     proptest! {

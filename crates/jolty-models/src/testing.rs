@@ -245,15 +245,19 @@ impl<M: NativeModel> Rig<M> {
         &self,
         parameters: &jolty_ir::Parameters,
         x: (&[f64], f64),
-    ) -> (Vec<Gradient>, Vec<Gradient>) {
+    ) -> Option<(Vec<Gradient>, Vec<Gradient>)> {
         let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
         let mut binding = self.binding(&mut unknowns, &mut builder);
         let mut device = self
             .model
             .instantiate_gradient(parameters, &mut binding)
             .expect("a model of any real")
-            .expect("valid parameters");
-        residuals_and_charges(device.as_mut(), &builder.finish(x.0.len()), x)
+            .ok()?;
+        Some(residuals_and_charges(
+            device.as_mut(),
+            &builder.finish(x.0.len()),
+            x,
+        ))
     }
 }
 
@@ -325,7 +329,11 @@ pub(crate) fn assert_parameter_gradients_match_at<M: NativeModel>(
         let mut changed = parameters.clone();
         let value = at(&mut changed, &path).as_f64().expect("a number");
         *at(&mut changed, &path) = serde_json::json!({"value": value, "derivative": 1.0});
-        let (exact, exact_charge) = rig.exact(&object(&changed), (x, time));
+        // A number the model reads as a choice, such as a level, is no real parameter.
+        let Some((exact, exact_charge)) = rig.exact(&object(&changed), (x, time)) else {
+            assert!(value.fract() == 0.0, "{name} is a real parameter");
+            continue;
+        };
         // Central differences at a step and at half of it, extrapolated to a zero step:
         // the step large enough that a model's own iterations, such as a diode's matching
         // of its breakdown, settle alike above and below.
