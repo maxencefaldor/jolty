@@ -5,6 +5,14 @@ use jolty_models::{Input, Output, Quantity};
 use crate::elaborate::System;
 use crate::{Options, Simulator};
 
+/// How many roundings of the unknowns a residual may show and still count as zero.
+///
+/// Each unknown is stored to half a unit in its last place, so a residual cannot resolve
+/// changes finer than `ε·(|J|·|x|)` of its row, and each term it sums adds a rounding or two
+/// of its own. Without this floor, an equation whose terms cancel, such as the current
+/// through a milliohm between two nodes at hundreds of volts, could never converge.
+const RESIDUAL_ROUNDINGS: f64 = 8.0;
+
 /// The buffers one evaluation of the circuit fills, allocated once per simulator.
 #[derive(Debug)]
 pub(crate) struct Workspace {
@@ -21,6 +29,9 @@ pub(crate) struct Workspace {
     pub(crate) capacitance: Vec<f64>,
     /// The Jacobian of the system being solved, by pattern slot.
     jacobian: Vec<f64>,
+    /// `|J|·|x|` of each equation: how much its residual moves when every unknown moves by
+    /// its own magnitude, which bounds the residual's floating-point resolution.
+    resolution: Vec<f64>,
     /// The last Newton step.
     step: Vec<f64>,
 }
@@ -35,6 +46,7 @@ impl Workspace {
             conductance: vec![0.0; stored],
             capacitance: vec![0.0; stored],
             jacobian: vec![0.0; stored],
+            resolution: vec![0.0; unknowns],
             step: vec![0.0; unknowns],
         }
     }
@@ -168,6 +180,10 @@ impl Simulator {
                 }
             }
         }
+        workspace.resolution.fill(0.0);
+        for ((row, column), &value) in self.system.pattern.positions().zip(&workspace.jacobian) {
+            workspace.resolution[row] += (value * x[column]).abs();
+        }
     }
 
     /// Whether the last step was within tolerance of every unknown it moved.
@@ -186,8 +202,9 @@ impl Simulator {
         step.abs() / (options.relative_tolerance * magnitude + absolute)
     }
 
-    /// Whether every residual is within tolerance of the terms it sums. A node's residual is
-    /// a current; a branch's is a voltage.
+    /// Whether every residual is within tolerance of the terms it sums, or within the
+    /// rounding of the unknowns it depends on. A node's residual is a current; a branch's is a
+    /// voltage.
     fn residual_within_tolerance(&self, options: &Options) -> bool {
         let workspace = &self.workspace;
         self.system
@@ -199,8 +216,9 @@ impl Simulator {
                     Quantity::Voltage => options.current_tolerance,
                     Quantity::Current => options.voltage_tolerance,
                 };
+                let rounding = RESIDUAL_ROUNDINGS * f64::EPSILON * workspace.resolution[index];
                 workspace.residual[index].abs()
-                    <= options.relative_tolerance * workspace.scale[index] + absolute
+                    <= options.relative_tolerance * workspace.scale[index] + absolute + rounding
             })
     }
 

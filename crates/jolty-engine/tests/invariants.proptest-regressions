@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 71460f9adb0e767345d05f1e9b109ee932f57809f4bfcc75f39973334223692c # shrinks to network = Network { resistors: [(1, 0, 122736.25728955187), (2, 1, 20.798595577820823), (3, 0, 41499.67902400982), (4, 0, 1.0), (5, 3, 0.0016881664804069296), (6, 3, 0.5020527593168805), (6, 5, 121.50341666548965)], sources: [(6, -0.0033856454070907635), (3, -0.006781533926656366)] }

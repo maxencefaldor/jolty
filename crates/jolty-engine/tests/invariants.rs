@@ -107,7 +107,7 @@ impl Network {
         let mut simulator =
             Simulator::new(&circuit, &Library::standard()).expect("an elaborated circuit");
         let solution = simulator
-            .operating_point(&Options::default())
+            .operating_point(&tight())
             .expect("an operating point");
         (0..self.nodes())
             .map(|node| {
@@ -119,15 +119,26 @@ impl Network {
     }
 }
 
+/// Options far tighter than SPICE's, which every network must still meet.
+fn tight() -> Options {
+    Options {
+        relative_tolerance: 1e-9,
+        current_tolerance: 1e-15,
+        ..Options::default()
+    }
+}
+
 proptest! {
-    /// The currents into every node sum to zero, within the tolerance on the currents meeting
-    /// there.
+    /// The currents into every node sum to zero, within the relative tolerance on the
+    /// currents meeting there, or within the rounding of the node voltages they flow
+    /// between: one unit in the last place of a voltage of hundreds of volts moves the
+    /// current through a milliohm by tens of picoamperes.
     #[test]
     fn currents_balance_at_every_node(network in network()) {
+        let options = tight();
         let voltage = network.voltages(false);
         for node in 1..network.nodes() {
-            let mut sum = 0.0;
-            let mut largest: f64 = 0.0;
+            let (mut sum, mut largest, mut resolution) = (0.0, 0.0_f64, 0.0);
             for &(a, b, resistance) in &network.resistors {
                 let current = (voltage[a] - voltage[b]) / resistance;
                 let leaving = if node == a {
@@ -139,6 +150,7 @@ proptest! {
                 };
                 sum += leaving;
                 largest = largest.max(leaving.abs());
+                resolution += (voltage[a].abs() + voltage[b].abs()) / resistance;
             }
             for &(source, current) in &network.sources {
                 if source == node {
@@ -146,7 +158,10 @@ proptest! {
                     largest = largest.max(current.abs());
                 }
             }
-            prop_assert!(sum.abs() <= 1e-6 * largest + 1e-12, "node {node}: {sum} of {largest}");
+            let tolerance = options.relative_tolerance * largest
+                + options.current_tolerance
+                + 8.0 * f64::EPSILON * resolution;
+            prop_assert!(sum.abs() <= tolerance, "node {node}: {sum} of {largest}");
         }
     }
 

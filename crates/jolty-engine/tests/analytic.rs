@@ -97,6 +97,44 @@ fn a_divider_halves_its_input_and_its_source_delivers_current() {
 }
 
 #[test]
+fn a_milliohm_between_high_voltages_converges_to_tight_tolerances() {
+    // One unit in the last place of 400 V moves the current through the milliohm by 57 pA
+    // in 400 µA: far more than the relative tolerance, so only a residual that allows for
+    // the voltages' rounding can converge.
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(400.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e-3}),
+            &[("a", "in"), ("b", "out")],
+        ),
+        (
+            "R2",
+            "resistor",
+            json!({"resistance": 1e6}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let options = Options {
+        relative_tolerance: 1e-12,
+        ..Options::default()
+    };
+    let solution = simulator
+        .operating_point(&options)
+        .expect("an operating point");
+    assert_eq!(solution.strategy, Strategy::Direct);
+    let out = solution.values[index(&simulator, "out")];
+    assert_close(out, 400.0 * 1e6 / (1e6 + 1e-3), 1e-15);
+}
+
+#[test]
 fn a_current_source_pushes_current_into_its_negative_terminal() {
     let circuit = circuit(&[
         (
