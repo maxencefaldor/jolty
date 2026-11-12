@@ -297,6 +297,15 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
             add_operating_point(&operating_point, sensitivities.operating_point)?;
             result.set_item("operating_point", operating_point)?;
         }
+        Outcome::Stability(loop_gain) => {
+            result.set_item("kind", "stability")?;
+            result.set_item("probe", loop_gain.probe)?;
+            result.set_item("frequencies", PyArray1::from_vec(py, loop_gain.frequencies))?;
+            result.set_item("gains", PyArray1::from_vec(py, loop_gain.gains))?;
+            let operating_point = PyDict::new(py);
+            add_operating_point(&operating_point, loop_gain.operating_point)?;
+            result.set_item("operating_point", operating_point)?;
+        }
     }
     Ok(result)
 }

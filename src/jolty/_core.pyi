@@ -67,12 +67,20 @@ class SensitivityOutcome(TypedDict):
     derivatives: npt.NDArray[np.float64]
     operating_point: SolvedPoint
 
+class StabilityOutcome(TypedDict):
+    kind: Literal["stability"]
+    probe: str
+    frequencies: npt.NDArray[np.float64]
+    gains: npt.NDArray[np.complex128]
+    operating_point: SolvedPoint
+
 type Outcome = (
     OperatingPointOutcome
     | SweepOutcome
     | ResponseOutcome
     | WaveformsOutcome
     | SensitivityOutcome
+    | StabilityOutcome
 )
 
 class SourceOutcome(TypedDict):

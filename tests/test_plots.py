@@ -54,6 +54,22 @@ def test_a_response_plots_magnitude_and_phase() -> None:
     assert corner == pytest.approx(-3.01, abs=0.01)
 
 
+def test_a_loop_gain_plots_alone_against_its_margins_levels() -> None:
+    point = results.OperatingPoint(UNKNOWNS, np.zeros(5), "direct")
+    frequencies = np.array([0.0, 1e3, 1e4, 1e5])
+    gains = 100 / (1 + 1j * frequencies / 1e3) ** 2
+    loop = results.LoopGain(UNKNOWNS, "VP", frequencies, gains, point)
+    figure = plot("loop", loop, ["out"])
+    magnitude, phase = figure.axes
+    assert (magnitude.get_ylabel(), phase.get_ylabel()) == ("magnitude", "phase")
+    drawn, *_, level = magnitude.get_lines()
+    assert np.asarray(drawn.get_xdata(), dtype=float).tolist() == [1e3, 1e4, 1e5]
+    assert np.asarray(level.get_ydata(), dtype=float).tolist() == [0.0, 0.0]
+    inverted = phase.get_lines()[-1]
+    assert np.asarray(inverted.get_ydata(), dtype=float).tolist() == [-180.0, -180.0]
+    assert phase.get_xlabel() == "frequency"
+
+
 def test_a_sweep_plots_along_its_source() -> None:
     levels = np.array([0.0, 1.0])
     sweep = results.Sweep(UNKNOWNS, "I1", "current", levels, np.zeros((2, 5)))

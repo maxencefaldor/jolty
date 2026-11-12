@@ -34,6 +34,7 @@ from jolty.plan import (
     Options,
     Plan,
     Sensitivity,
+    Stability,
     Transient,
 )
 from jolty.simulate import Simulation
@@ -67,6 +68,7 @@ __all__ = [
     "SimulationError",
     "Specs",
     "SpiceError",
+    "Stability",
     "Terminal",
     "Transient",
     "__version__",

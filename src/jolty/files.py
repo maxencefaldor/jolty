@@ -5,7 +5,8 @@ A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A results file hol
 results of named analyses as a NumPy ``.npz`` archive: a JSON header that names the
 circuit's unknowns, logic nets, device terminals, derivatives and variables, and says
 what each analysis is, then the arrays of each analysis under keys such as
-``step.times``, ``step.values``, ``step.currents`` and ``step.conductances``.
+``step.times``, ``step.values``, ``step.currents`` and ``step.conductances``, or
+``loop.frequencies`` and ``loop.gains``.
 
 Examples:
     >>> import tempfile
@@ -73,8 +74,14 @@ class _Sensitivities(_Model):
     strategy: str
 
 
+class _LoopGain(_Model):
+    kind: Literal["stability"] = "stability"
+    probe: str
+    strategy: str
+
+
 type _Entry = Annotated[
-    _Point | _Sweep | _Response | _Waveforms | _Sensitivities,
+    _Point | _Sweep | _Response | _Waveforms | _Sensitivities | _LoopGain,
     Field(discriminator="kind"),
 ]
 
@@ -220,6 +227,15 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
                 arrays.update(
                     _point_arrays(f"{name}.operating_point", result.operating_point)
                 )
+            case results.LoopGain():
+                entries[name] = _LoopGain(
+                    probe=result.probe, strategy=result.operating_point.strategy
+                )
+                arrays[f"{name}.frequencies"] = result.frequencies
+                arrays[f"{name}.gains"] = result.gains
+                arrays.update(
+                    _point_arrays(f"{name}.operating_point", result.operating_point)
+                )
     names = circuits.pop()
     header = _Header(**names.model_dump(), analyses=entries)
     arrays[_HEADER] = np.array(header.model_dump_json())
@@ -295,12 +311,21 @@ def load_results(path: Path) -> dict[str, results.Result]:
                         data[f"{name}.derivatives"],
                         point,
                     )
+                case _LoopGain(probe=probe, strategy=strategy):
+                    point = _point(data, f"{name}.operating_point", strategy, header)
+                    loaded[name] = results.LoopGain(
+                        unknowns,
+                        probe,
+                        data[f"{name}.frequencies"],
+                        data[f"{name}.gains"],
+                        point,
+                    )
     return loaded
 
 
 def _names(result: results.Result) -> _Names:
     """The names of the columns of `result`'s circuit."""
-    if isinstance(result, results.Response | results.Sensitivities):
+    if isinstance(result, results.Response | results.Sensitivities | results.LoopGain):
         return _names(result.operating_point)
     return _Names(
         unknowns=result.unknowns,

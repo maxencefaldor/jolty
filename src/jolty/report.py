@@ -10,12 +10,13 @@ A corner's report states whether the circuit elaborates there and which analyses
 and a Monte Carlo analysis's what each requirement read over its samples and the yield.
 """
 
+from dataclasses import replace
 from typing import Annotated, Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from jolty import results
+from jolty import results, specs
 from jolty.specs import Spread, Yield
 from jolty.units import format_si
 
@@ -176,6 +177,53 @@ class TransientReport(_Model):
         return _join(head, lines, self.unlisted)
 
 
+class StabilityReport(_Model):
+    """The loop gain through a probe, and the margins it leaves."""
+
+    kind: Literal["stability"] = "stability"
+    name: str
+    probe: str = Field(description="The probe's path.")
+    lowest: float = Field(description="Lowest frequency, in hertz.")
+    highest: float = Field(description="Highest frequency, in hertz.")
+    frequencies: int = Field(description="Frequencies the analysis solved.")
+    gain: float = Field(description="The loop gain at the lowest frequency, in dB.")
+    phase: float = Field(
+        description="The loop gain's phase at the lowest frequency, in degrees."
+    )
+    crossover: float | None = Field(
+        description="Where the loop gain first falls through 0 dB, in hertz; null "
+        "when it does not over the positive frequencies."
+    )
+    phase_margin: float | None = Field(
+        description="180° plus the loop gain's phase at the crossover, in degrees."
+    )
+    gain_margin: float | None = Field(
+        description="Minus the loop gain where its phase first falls through -180°, "
+        "in dB; null when it does not over the positive frequencies."
+    )
+
+    def describe(self) -> str:
+        """The report as text."""
+        lowest, highest = format_si(self.lowest, "Hz"), format_si(self.highest, "Hz")
+        head = (
+            f"{self.name}: loop gain through {self.probe} at {self.frequencies} "
+            f"frequencies from {lowest} to {highest}"
+        )
+        lines = [head, f"  {self.gain:.4g} dB and {self.phase:.4g}° at {lowest}"]
+        if self.crossover is None or self.phase_margin is None:
+            lines.append("  it never falls through 0 dB")
+        else:
+            lines.append(
+                f"  crossover at {format_si(self.crossover, 'Hz')}, phase margin "
+                f"{self.phase_margin:.4g}°"
+            )
+        if self.gain_margin is None:
+            lines.append("  its phase never falls through -180°")
+        else:
+            lines.append(f"  gain margin {self.gain_margin:.4g} dB")
+        return "\n".join(lines)
+
+
 class Derivative(_Model):
     """An output's derivative with respect to one parameter."""
 
@@ -322,6 +370,7 @@ type AnalysisReport = Annotated[
     | ResponseReport
     | TransientReport
     | SensitivityReport
+    | StabilityReport
     | FailureReport,
     Field(discriminator="kind"),
 ]
@@ -402,6 +451,43 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 ),
                 unlisted=len(result.parameters) - len(listed_parameters),
             )
+        case results.LoopGain():
+            return _stability(name, result)
+
+
+def _stability(name: str, result: results.LoopGain) -> StabilityReport:
+    """The report of the stability analysis `name`.
+
+    Its margins are read over the positive frequencies, as log frequency needs.
+    """
+    order = np.argsort(result.frequencies)
+    lowest = result.gains[order[0]]
+    positive = result.frequencies > 0
+    read = replace(
+        result,
+        frequencies=result.frequencies[positive],
+        gains=result.gains[positive],
+    )
+    return StabilityReport(
+        name=name,
+        probe=result.probe,
+        lowest=float(result.frequencies[order[0]]),
+        highest=float(result.frequencies[order[-1]]),
+        frequencies=len(result.frequencies),
+        gain=float(20 * np.log10(np.abs(lowest))),
+        phase=float(np.degrees(np.angle(lowest))),
+        crossover=_reading(specs.crossover(name), read),
+        phase_margin=_reading(specs.phase_margin(name), read),
+        gain_margin=_reading(specs.gain_margin(name), read),
+    )
+
+
+def _reading(measurement: specs.Measurement, result: results.Result) -> float | None:
+    """What `measurement` reads of `result`, or None when it cannot read it."""
+    try:
+        return measurement.read(result).value
+    except specs.MeasurementError:
+        return None
 
 
 def _output(
@@ -430,8 +516,8 @@ def _output(
 
 
 def _nets(result: results.Result) -> tuple[str, ...]:
-    """The logic nets of `result`; responses and sensitivities have none of theirs."""
-    if isinstance(result, results.Response | results.Sensitivities):
+    """The logic nets of `result`; small-signal results and sensitivities have none."""
+    if isinstance(result, results.Response | results.Sensitivities | results.LoopGain):
         return ()
     return result.nets
 

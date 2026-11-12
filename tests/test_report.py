@@ -1,6 +1,9 @@
 # Copyright 2026 Maxence Faldor
 
+import math
+
 import numpy as np
+import pytest
 
 from jolty import report, results
 
@@ -64,6 +67,30 @@ def test_a_response_states_magnitudes() -> None:
     assert [extent.maximum for extent in summary.magnitudes] == [1.0, 1.0, 1e-3]
     assert summary.describe().startswith(
         "bode: response to V1 at 2 frequencies from 1 kHz to 1 MHz"
+    )
+
+
+def test_a_loop_gain_states_its_margins() -> None:
+    point = results.OperatingPoint(UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct")
+    frequencies = np.logspace(-2, 2, 4001)
+    gains = np.asarray(5 / (1 + 1j * frequencies) ** 3, dtype=np.complex128)
+    loop = results.LoopGain(UNKNOWNS, "VP", frequencies, gains, point)
+    summary = report.report("loop", loop, listed=10)
+    assert isinstance(summary, report.StabilityReport)
+    assert summary.crossover == pytest.approx(math.sqrt(5 ** (2 / 3) - 1), rel=1e-4)
+    assert summary.describe() == (
+        "loop: loop gain through VP at 4001 frequencies from 10 mHz to 100 Hz\n"
+        "  13.98 dB and -1.719° at 10 mHz\n"
+        "  crossover at 1.387 Hz, phase margin 17.37°\n"
+        "  gain margin 4.082 dB"
+    )
+    stable = results.LoopGain(UNKNOWNS, "VP", frequencies[:2], gains[:2] / 100, point)
+    assert (
+        report.report("loop", stable, listed=10)
+        .describe()
+        .endswith(
+            "  it never falls through 0 dB\n  its phase never falls through -180°"
+        )
     )
 
 

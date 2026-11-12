@@ -39,6 +39,7 @@ from jolty.plan import (
     Options,
     Plan,
     Sensitivity,
+    Stability,
     Transient,
 )
 from jolty.units import CURRENT, TEMPERATURE, VOLTAGE, Dimension, Quantity
@@ -188,6 +189,10 @@ class Simulation:
     def run(
         self, analysis: Sensitivity, options: Options | None = None
     ) -> results.Sensitivities: ...
+    @overload
+    def run(
+        self, analysis: Stability, options: Options | None = None
+    ) -> results.LoopGain: ...
     def run(self, analysis: Analysis, options: Options | None = None) -> results.Result:
         """Runs `analysis` with `options`, or with the engine's defaults.
 
@@ -296,6 +301,14 @@ class Simulation:
                     tuple(outcome["outputs"]),
                     parameters,
                     outcome["derivatives"],
+                    self._point(outcome["operating_point"]),
+                )
+            case "stability":
+                return results.LoopGain(
+                    unknowns,
+                    outcome["probe"],
+                    outcome["frequencies"],
+                    outcome["gains"],
                     self._point(outcome["operating_point"]),
                 )
 

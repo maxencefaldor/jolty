@@ -532,5 +532,22 @@ class Sensitivities:
         return _find(list(self.outputs), output, "the analysis has no output")
 
 
-type Result = OperatingPoint | Sweep | Response | Waveforms | Sensitivities
+@dataclass(frozen=True, slots=True)
+class LoopGain:
+    """The loop gain through a probe, at each frequency.
+
+    Negative feedback makes it positive at low frequencies; the specs' `phase_margin`,
+    `gain_margin` and `crossover` read how far it stays from -1.
+    """
+
+    unknowns: tuple[Unknown, ...]
+    probe: str
+    """The path of the probe the loop is broken at, such as ``VP``."""
+    frequencies: Real
+    gains: Complex
+    """The loop gain at each frequency."""
+    operating_point: OperatingPoint
+
+
+type Result = OperatingPoint | Sweep | Response | Waveforms | Sensitivities | LoopGain
 """The result of any analysis."""

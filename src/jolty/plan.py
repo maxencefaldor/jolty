@@ -113,7 +113,30 @@ class Sensitivity:
         return {"sensitivity": {"outputs": outputs}}
 
 
-type Analysis = OperatingPoint | DcSweep | Ac | Transient | Sensitivity
+@dataclass(frozen=True, slots=True)
+class Stability:
+    """The loop gain through a probe at each frequency, by Middlebrook's injections.
+
+    The probe is an independent voltage source in series with the loop, named by its
+    path, such as ``VP``: the loop's signal enters its ``positive`` terminal from its
+    ``negative`` one, and neither terminal is the ground, through which the injected
+    current returns. One voltage injected in series and one current injected from the
+    ground give the loop gain however the two sides load each other (Middlebrook, 1975).
+    Negative feedback makes the loop gain positive at low frequencies.
+    """
+
+    probe: str
+    frequencies: Sequence[Quantity]
+
+    def to_json(self) -> JsonValue:
+        """The analysis in the engine's format."""
+        frequencies: list[JsonValue] = [
+            frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
+        ]
+        return {"stability": {"probe": self.probe, "frequencies": frequencies}}
+
+
+type Analysis = OperatingPoint | DcSweep | Ac | Transient | Sensitivity | Stability
 """Any analysis."""
 
 

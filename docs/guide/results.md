@@ -9,6 +9,7 @@ A report states facts, one section per analysis in the plan's order:
 - an operating point lists every unknown's value and every logic net's level, and the strategy that found it;
 - a sweep, a frequency response or a transient lists each unknown's first, lowest, highest and last value, and each logic net's first and last level and how often it changed;
 - a sensitivity analysis lists, for each output, its value and its derivative with respect to each parameter, in the circuit's order;
+- a stability analysis states the loop gain at its lowest frequency, its crossover frequency and phase margin, and its gain margin;
 - a failed analysis says why it failed.
 
 A frequency response lists magnitudes per unit excitation: volts per volt, for a voltage source.
@@ -18,7 +19,7 @@ With `--output-format json`, the command prints the same report as data.
 ## Plots
 
 `jolty simulate` plots every analysis but operating points and sensitivities beside its results, as `<script>.<analysis>.plot.png`, and the MCP server sends the images with its text.
-A transient plots over time, a sweep along its source's levels, and a frequency response as a Bode plot:
+A transient plots over time, a sweep along its source's levels, and a frequency response as a Bode plot, as is a loop gain, against 0 dB and -180°, where its margins are read:
 
 ![The step response of the RC low-pass filter: the input steps to 1 V at 1 µs and the output charges toward it](../images/rc_filter.step.plot.png)
 

@@ -95,6 +95,9 @@ def every_kind() -> dict[str, results.Result]:
             np.array([[-2e-4, 0.4]]),
             point,
         ),
+        "loop": results.LoopGain(
+            UNKNOWNS, "VP", np.array([1e3, 1e6]), np.array([100 - 1j, -0.5j]), point
+        ),
     }
 
 
@@ -111,8 +114,11 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
         if isinstance(result, results.Sensitivities):
             assert isinstance(loaded, results.Sensitivities)
             np.testing.assert_array_equal(loaded.derivatives, result.derivatives)
+        elif isinstance(result, results.LoopGain):
+            assert isinstance(loaded, results.LoopGain)
+            np.testing.assert_array_equal(loaded.gains, result.gains)
         else:
-            assert not isinstance(loaded, results.Sensitivities)
+            assert not isinstance(loaded, results.Sensitivities | results.LoopGain)
             np.testing.assert_array_equal(loaded.values, result.values)
     sweep = read["sweep"]
     assert isinstance(sweep, results.Sweep)
@@ -141,6 +147,11 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     assert sensitivity.parameters[0] == PARAMETER
     assert sensitivity.derivative("out", "V1", "waveform.dc") == 0.4
     assert sensitivity.operating_point.strategy == "gmin_stepping"
+    loop = read["loop"]
+    assert isinstance(loop, results.LoopGain)
+    assert loop.probe == "VP"
+    np.testing.assert_array_equal(loop.frequencies, [1e3, 1e6])
+    assert loop.operating_point.current("C1", "a") == 1e-3
 
 
 def test_a_results_file_describes_one_circuit(tmp_path: Path) -> None:

@@ -40,14 +40,17 @@ Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in deg
 | `settling_time(analysis, signal, band=0.02)` | the time until the signal stays within `band` of its step from its final value | a transient |
 | `crossing(analysis, signal, level, edge="either")` | the first time the signal crosses `level` | a transient |
 | `frequency(analysis, signal, level=None)` | how often the signal rises through `level`, by default the midpoint of its range | a transient |
-| `gain(analysis, output, at, over=None)` | the gain in decibels at a frequency, of `output` over `over` or per unit excitation | a small-signal response |
-| `phase(analysis, output, at, over=None)` | the phase in degrees at a frequency, unwrapped from the lowest frequency | a small-signal response |
-| `bandwidth(analysis, output, drop=3.0, over=None)` | the first frequency where the gain falls `drop` decibels below its gain at the lowest frequency | a small-signal response |
-| `phase_margin(analysis, output, over=None)` | 180° plus the phase where the gain first falls through 0 dB | a small-signal response |
+| `gain(analysis, output=None, at, over=None)` | the gain in decibels at a frequency, of `output` over `over` or per unit excitation | a small-signal response or a loop gain |
+| `phase(analysis, output=None, at, over=None)` | the phase in degrees at a frequency, unwrapped from the lowest frequency | a small-signal response or a loop gain |
+| `bandwidth(analysis, output=None, drop=3.0, over=None)` | the first frequency where the gain falls `drop` decibels below its gain at the lowest frequency | a small-signal response or a loop gain |
+| `crossover(analysis, output=None, over=None)` | the first frequency where the gain falls through 0 dB | a small-signal response or a loop gain |
+| `phase_margin(analysis, output=None, over=None)` | 180° plus the phase where the gain first falls through 0 dB | a small-signal response or a loop gain |
+| `gain_margin(analysis, output=None, over=None)` | minus the gain in decibels where the phase first falls through -180° | a small-signal response or a loop gain |
 
 Every transient measurement takes a window, `start` and `stop`.
 A step runs from the signal's value at the window's start to its value at the window's end, so a window ends once the signal settles.
 Values between the points of a result are interpolated linearly, and a small-signal response's over log frequency.
+A small-signal measurement reads `output` in a response, and the loop gain itself in a stability analysis, without an output: `phase_margin("loop") >= 45` asks a loop for 45° of phase margin.
 
 ## Verdicts
 

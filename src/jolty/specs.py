@@ -534,7 +534,7 @@ def value(
             case results.OperatingPoint():
                 message = f"an operating point holds one value, not one at {at}"
                 raise MeasurementError(message)
-            case results.Response() | results.Sensitivities():
+            case results.Response() | results.Sensitivities() | results.LoopGain():
                 message = (
                     "a value reads an operating point, a transient or a DC sweep, "
                     f"not {_kind(result)}"
@@ -553,7 +553,7 @@ def value(
 
 def gain(
     analysis: str,
-    output: str,
+    output: str | None = None,
     *,
     at: Quantity,
     over: str | None = None,
@@ -562,9 +562,10 @@ def gain(
     """The gain of `output` at a frequency of a small-signal response, in decibels.
 
     The gain is of `output` over `over`, or per unit excitation, interpolated over log
-    frequency `at` the frequency.
+    frequency `at` the frequency. Without an output, it is the loop gain of a
+    stability analysis.
     """
-    traced, divisor = _Signal(output, reference), _divisor(over)
+    traced, divisor = _signals(output, over, reference)
     _check(at, "at")
 
     def read(result: results.Result) -> Reading:
@@ -578,7 +579,7 @@ def gain(
 
 def phase(
     analysis: str,
-    output: str,
+    output: str | None = None,
     *,
     at: Quantity,
     over: str | None = None,
@@ -587,9 +588,10 @@ def phase(
     """The phase of `output` at a frequency of a small-signal response, in degrees.
 
     The phase is relative to `over`, or to the excitation, unwrapped from the lowest
-    frequency and interpolated over log frequency `at` the frequency.
+    frequency and interpolated over log frequency `at` the frequency. Without an output,
+    it is the loop gain's, of a stability analysis.
     """
-    traced, divisor = _Signal(output, reference), _divisor(over)
+    traced, divisor = _signals(output, over, reference)
     _check(at, "at")
 
     def read(result: results.Result) -> Reading:
@@ -603,7 +605,7 @@ def phase(
 
 def bandwidth(
     analysis: str,
-    output: str,
+    output: str | None = None,
     *,
     drop: float = 3.0,
     over: str | None = None,
@@ -611,9 +613,9 @@ def bandwidth(
 ) -> Measurement:
     """The frequency where the gain of `output` first falls `drop` decibels.
 
-    The gain, of `output` over `over` or per unit excitation, falls below its gain at
-    the lowest frequency of a small-signal response; the frequency is interpolated over
-    log frequency.
+    The gain, of `output` over `over` or per unit excitation, or the loop gain of a
+    stability analysis without an output, falls below its gain at the lowest frequency;
+    the frequency is interpolated over log frequency.
 
     Raises:
         ValueError: When `drop` is not positive.
@@ -621,7 +623,7 @@ def bandwidth(
     if not drop > 0:
         message = f"a bandwidth's drop is positive, not {drop}"
         raise ValueError(message)
-    traced, divisor = _Signal(output, reference), _divisor(over)
+    traced, divisor = _signals(output, over, reference)
 
     def read(result: results.Result) -> Reading:
         frequencies, transfer = _transfer(result, traced, divisor)
@@ -640,9 +642,33 @@ def bandwidth(
     return Measurement(analysis, described, None, read)
 
 
+def crossover(
+    analysis: str,
+    output: str | None = None,
+    *,
+    over: str | None = None,
+    reference: str | None = None,
+) -> Measurement:
+    """The frequency where the gain of `output` first falls through 0 dB.
+
+    The gain is of `output` over `over`, or per unit excitation, in a small-signal
+    response; without an output, it is the loop gain of a stability analysis, and this
+    its crossover frequency. It is interpolated over log frequency.
+    """
+    traced, divisor = _signals(output, over, reference)
+
+    def read(result: results.Result) -> Reading:
+        frequencies, transfer = _transfer(result, traced, divisor)
+        logarithms = np.log(frequencies)
+        return Reading(math.exp(_unity(logarithms, transfer, traced, over)), FREQUENCY)
+
+    described = f"crossover frequency of {_over(traced, over)}"
+    return Measurement(analysis, described, None, read)
+
+
 def phase_margin(
     analysis: str,
-    output: str,
+    output: str | None = None,
     *,
     over: str | None = None,
     reference: str | None = None,
@@ -650,21 +676,49 @@ def phase_margin(
     """180° plus the phase of `output` where its gain first falls through 0 dB.
 
     The gain and the phase are of `output` relative to `over`, or to the excitation, in
-    a small-signal response. Measured on a loop's gain, this is its phase margin.
+    a small-signal response. Without an output, they are the loop gain's, of a
+    stability analysis, and this is the loop's phase margin.
     """
-    traced, divisor = _Signal(output, reference), _divisor(over)
+    traced, divisor = _signals(output, over, reference)
 
     def read(result: results.Result) -> Reading:
         frequencies, transfer = _transfer(result, traced, divisor)
         logarithms = np.log(frequencies)
-        unity = _crossings(logarithms, _decibels(transfer), 0.0, "falling")
-        if not unity.size:
-            message = f"the gain of {_over(traced, over)} never falls through 0 dB"
-            raise MeasurementError(message)
+        unity = _unity(logarithms, transfer, traced, over)
         phases = np.degrees(np.unwrap(np.angle(transfer)))
-        return Reading(180.0 + float(np.interp(unity[0], logarithms, phases)), "°")
+        return Reading(180.0 + float(np.interp(unity, logarithms, phases)), "°")
 
     return Measurement(analysis, f"phase margin of {_over(traced, over)}", "°", read)
+
+
+def gain_margin(
+    analysis: str,
+    output: str | None = None,
+    *,
+    over: str | None = None,
+    reference: str | None = None,
+) -> Measurement:
+    """Minus the gain of `output` where its phase first falls through -180°, in dB.
+
+    The gain and the phase, unwrapped from the lowest frequency, are of `output`
+    relative to `over`, or to the excitation, in a small-signal response. Without an
+    output, they are the loop gain's, of a stability analysis, and this is the loop's
+    gain margin.
+    """
+    traced, divisor = _signals(output, over, reference)
+
+    def read(result: results.Result) -> Reading:
+        frequencies, transfer = _transfer(result, traced, divisor)
+        logarithms = np.log(frequencies)
+        phases = np.degrees(np.unwrap(np.angle(transfer)))
+        inverted = _crossings(logarithms, phases, -180.0, "falling")
+        if not inverted.size:
+            message = f"the phase of {_over(traced, over)} never falls through -180°"
+            raise MeasurementError(message)
+        gains = _decibels(transfer)
+        return Reading(-float(np.interp(inverted[0], logarithms, gains)), "dB")
+
+    return Measurement(analysis, f"gain margin of {_over(traced, over)}", "dB", read)
 
 
 def maximum(
@@ -1110,33 +1164,65 @@ def _traced(
 
 
 def _transfer(
-    result: results.Result, output: _Signal, divisor: _Signal | None
+    result: results.Result, output: _Signal | None, divisor: _Signal | None
 ) -> tuple[results.Real, results.Complex]:
-    """The frequencies of a response, increasing, and the output over the divisor.
+    """The frequencies, increasing, and the output over the divisor, or the loop gain.
 
     Raises:
-        MeasurementError: When the result is not a small-signal response, a frequency
-            is not positive, or the divisor vanishes.
+        MeasurementError: When the result is neither a small-signal response read at an
+            output nor a loop gain read at none, a frequency is not positive, or the
+            divisor vanishes.
     """
-    if not isinstance(result, results.Response):
-        message = (
-            f"a gain or a phase reads a small-signal response, not {_kind(result)}"
-        )
-        raise MeasurementError(message)
+    match result:
+        case results.LoopGain() if output is None:
+            transfer = result.gains
+        case results.Response() if output is not None:
+            phasors, _ = output.trace(result)
+            if divisor is None:
+                transfer = phasors
+            else:
+                divisors, _ = divisor.trace(result)
+                if np.any(divisors == 0):
+                    message = f"{divisor} vanishes in the response"
+                    raise MeasurementError(message)
+                transfer = phasors / divisors
+        case results.LoopGain():
+            message = f"a loop gain is read without an output, not at {output}"
+            raise MeasurementError(message)
+        case results.Response():
+            message = "a small-signal response is read at an output"
+            raise MeasurementError(message)
+        case _:
+            message = (
+                "a gain or a phase reads a small-signal response or a loop gain, not "
+                f"{_kind(result)}"
+            )
+            raise MeasurementError(message)
     order = np.argsort(result.frequencies)
     frequencies = result.frequencies[order]
     if frequencies[0] <= 0:
         lowest = format_si(frequencies[0], "Hz")
         message = f"a response is read over log frequency, so not at {lowest}"
         raise MeasurementError(message)
-    phasors, _ = output.trace(result)
-    if divisor is None:
-        return frequencies, phasors[order]
-    divisors, _ = divisor.trace(result)
-    if np.any(divisors == 0):
-        message = f"{divisor} vanishes in the response"
+    return frequencies, transfer[order]
+
+
+def _unity(
+    logarithms: results.Real,
+    transfer: results.Complex,
+    output: _Signal | None,
+    over: str | None,
+) -> float:
+    """The log frequency where the gain of `transfer` first falls through 0 dB.
+
+    Raises:
+        MeasurementError: When it never does.
+    """
+    unity = _crossings(logarithms, _decibels(transfer), 0.0, "falling")
+    if not unity.size:
+        message = f"the gain of {_over(output, over)} never falls through 0 dB"
         raise MeasurementError(message)
-    return frequencies, (phasors / divisors)[order]
+    return float(unity[0])
 
 
 def _frequency_axis(frequencies: results.Real) -> _Axis:
@@ -1171,11 +1257,27 @@ def _crossings(
     return points[index] + fraction * (points[index + 1] - points[index])
 
 
-def _divisor(over: str | None) -> _Signal | None:
-    return None if over is None else _Signal(over)
+def _signals(
+    output: str | None, over: str | None, reference: str | None
+) -> tuple[_Signal | None, _Signal | None]:
+    """What a small-signal measurement reads, and what over; neither for a loop gain.
+
+    Raises:
+        ValueError: When there is a divisor or a reference, but no output.
+    """
+    if output is None:
+        if over is not None or reference is not None:
+            message = (
+                "a loop gain is read without an output, so without over or a reference"
+            )
+            raise ValueError(message)
+        return None, None
+    return _Signal(output, reference), None if over is None else _Signal(over)
 
 
-def _over(output: _Signal, over: str | None) -> str:
+def _over(output: _Signal | None, over: str | None) -> str:
+    if output is None:
+        return "the loop"
     return str(output) if over is None else f"{output} over {over}"
 
 
@@ -1191,6 +1293,8 @@ def _kind(result: results.Result) -> str:
             return "a transient"
         case results.Sensitivities():
             return "sensitivities"
+        case results.LoopGain():
+            return "a loop gain"
 
 
 def _check(point: Quantity | None, name: str) -> None:

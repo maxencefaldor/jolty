@@ -33,6 +33,7 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `Ac(source, frequencies)` | the small-signal response to a unit excitation of one source, around the operating point |
 | `Transient(stop, max_step=None, method="trapezoidal", times=())` | the response over time, from the operating point until `stop` |
 | `Sensitivity(outputs)` | the derivative of each output with respect to every number of every device's parameters, at the operating point |
+| `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
 
 A source is named by its path, such as `V1` or `bias/I1`.
 `linear(start, stop, points)` spaces levels evenly, and `decade(start, stop, per_decade)` spaces frequencies evenly on a log scale.
@@ -54,6 +55,31 @@ Each device's own derivative with respect to a parameter is exact: every device 
 A number a model reads as a choice, such as a MOSFET's level, is no real parameter and has no derivative.
 
 The result's `derivative(output, instance, parameter)` reads one derivative in SI base units, and `gradient(output)` an output's derivative with respect to every parameter, in the order of `parameters`.
+
+## Stability
+
+A stability analysis finds a feedback loop's gain, from which its phase and gain margins are read.
+The loop runs through a probe: a voltage source, usually of 0 V, placed in series with the loop where it carries the loop's signal on, its `positive` terminal toward the side the signal enters, as between an amplifier's output and its feedback network:
+
+```python
+probe = c.place(devices.voltage_source(0 * V), id="VP")
+c.connect(amplifier.output, probe.negative)
+c.connect(probe.positive, feedback.a)
+```
+
+A plan then finds the loop gain through it:
+
+```python
+Plan({"loop": Stability("VP", decade(1 * Hz, 1 * GHz, 20))})
+```
+
+The engine linearizes the circuit at its operating point and, at each frequency, injects a unit voltage in series through the probe and a unit current from the ground into its `positive` terminal.
+From the two, Middlebrook's formula gives the loop gain `T` however the two sides load each other, as Tian's method and Spectre's `stb` analysis do (Middlebrook, *Measurement of loop gain in feedback systems*, International Journal of Electronics 38(4), 1975).
+The injected current returns through the ground, so neither of the probe's terminals may be the ground.
+Negative feedback makes `T` positive at low frequencies, and divides each response it encloses by `1 + T`.
+
+The result's `gains` hold `T` at each of its `frequencies`.
+The report states it at the lowest frequency, where it first falls through 0 dB, the phase margin there, and the gain margin where its phase first falls through -180°; the specs' `crossover`, `phase_margin` and `gain_margin` read the same, and `gain` and `phase` read it at a frequency.
 
 ## Temperature
 
@@ -138,6 +164,7 @@ Every other choice the engine makes is one SPICE simulators make, save those the
 | Corners | Steps land on every corner of every waveform, and on every time asked for; after a corner, the first step is a tenth of the shorter of the last step and the gap to the next corner, and takes backward Euler. | SPICE. |
 | Ringing | Whenever some charge's derivative under the trapezoidal rule turns back and forth twice in a row by more than its tolerance, the next step takes backward Euler. | jolty's own, as simulators that mix the trapezoidal rule with backward Euler do: the trapezoidal rule carries an error in a derivative from step to step undamped. |
 | Slow convergence | A step whose Newton iteration runs out of iterations is retried from its last iterate rather than from the last solution. | jolty's own: an iteration converging slowly, as at a transistor turning off with nothing else to hold its source, goes on where it stopped. |
+| Loop gain | A unit voltage injected in series through the probe and a unit current injected from the ground into its `positive` terminal, both solved with one factorization at each frequency, give `u = v_x − i`, the voltage entering the loop less the current the probe carries on, and the loop gain `T = −u / (1 + u)`. | Middlebrook's double injection, the loop gain of Tian's method and Spectre's `stb`. |
 | Logic | Detectors' crossings are located by linear interpolation within a step, and a step that crosses early is retried to land on the crossing; at DC the logic and the analog circuit settle each other at most four times before the detectors still changing read unknown levels. | jolty's own event scheduler, after the connect elements of mixed-signal simulators. |
 | Logic loads | Each logic driver's load is the capacitance it drives, read from its small-signal current at 1 Hz at the operating point. | jolty's own. |
 

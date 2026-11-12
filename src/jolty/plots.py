@@ -1,9 +1,10 @@
 # Copyright 2026 Maxence Faldor
 """Plots of results: waveforms over time, DC sweeps over their levels, and Bode plots.
 
-A plot draws chosen unknowns and logic nets of one result. Voltages, currents and logic
-levels never share an axis: each quantity has a panel of its own, and a response has
-two, its magnitude and its phase. Logic nets share a panel in lanes of their own, each
+A plot draws chosen unknowns and logic nets of one result, or a loop gain alone, against
+0 dB and -180°, where its margins are read. Voltages, currents and logic levels never
+share an axis: each quantity has a panel of its own, and a response has two, its
+magnitude and its phase. Logic nets share a panel in lanes of their own, each
 named on its axis, with unknown levels hatched. Series take their colors in a fixed
 order, checked to stay apart under the common color-vision deficiencies; a legend names
 them, and up to four are also labeled at their end.
@@ -58,7 +59,7 @@ _MUTED: Final = "#52514e"
 _GRID: Final = "#e4e3df"
 _UNITS: Final = {"voltage": "V", "current": "A"}
 
-type Plotted = results.Sweep | results.Response | results.Waveforms
+type Plotted = results.Sweep | results.Response | results.Waveforms | results.LoopGain
 """A result a plot draws; an operating point has no axis to draw along."""
 
 type _Quantity = Literal["voltage", "current", "logic"]
@@ -88,37 +89,23 @@ def default_probes(
 def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
     """The plot of the unknowns `probes` in the result of the analysis `name`.
 
+    A loop gain's plot draws the loop gain alone, whatever the probes.
+
     Raises:
         JoltyError: When a probe names no unknown, or there are more than
             [`MAX_SERIES`][jolty.plots.MAX_SERIES] probes.
     """
+    if isinstance(result, results.LoopGain):
+        return _loop(name, result)
     if len(probes) > MAX_SERIES:
         message = f"a plot draws at most {MAX_SERIES} unknowns, not {len(probes)}"
         raise JoltyError(message)
-    nets = () if isinstance(result, results.Response) else result.nets
-    columns = {}
-    groups: dict[_Quantity, list[str]] = {"voltage": [], "current": [], "logic": []}
-    for probe in probes:
-        if probe in nets:
-            groups["logic"].append(probe)
-            continue
-        try:
-            columns[probe] = results.column(result.unknowns, probe)
-        except KeyError as error:
-            raise JoltyError(error.args[0]) from None
-        groups[result.unknowns[columns[probe]].quantity].append(probe)
-    quantities = [quantity for quantity, members in groups.items() if members]
+    groups, columns = _grouped(result, probes)
+    quantities = list(groups)
     panels = (
         2 * len(quantities) if isinstance(result, results.Response) else len(quantities)
     )
-    figure = Figure(
-        figsize=(8, 0.8 + 2.4 * max(panels, 1)),
-        dpi=150,
-        layout="constrained",
-        facecolor=_SURFACE,
-    )
-    figure.suptitle(f"{name}: {_describe(result)}", color=_INK, x=0.02, ha="left")
-    axes = list(figure.subplots(max(panels, 1), 1, sharex=True, squeeze=False)[:, 0])
+    figure, axes = _figure(name, result, panels)
     colors = {probe: COLORS[index] for index, probe in enumerate(probes)}
     x, x_unit = _abscissa(result)
     if isinstance(result, results.Response):
@@ -152,10 +139,75 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
                 for probe in groups[quantity]
             ]
             _draw(axes[index], x, series, quantity, _UNITS[quantity])
-    bottom = axes[-1]
-    bottom.xaxis.set_major_formatter(EngFormatter(unit=x_unit, sep=" "))
-    bottom.set_xlabel(_abscissa_label(result), color=_MUTED)
+    _label_abscissa(axes[-1], result, x_unit)
     return figure
+
+
+def _grouped(
+    result: results.Sweep | results.Response | results.Waveforms,
+    probes: Sequence[str],
+) -> tuple[dict[_Quantity, list[str]], dict[str, int]]:
+    """The `probes` by quantity, each quantity that has one, and each unknown's column.
+
+    Raises:
+        JoltyError: When a probe names neither an unknown nor a logic net.
+    """
+    nets = () if isinstance(result, results.Response) else result.nets
+    columns = {}
+    groups: dict[_Quantity, list[str]] = {"voltage": [], "current": [], "logic": []}
+    for probe in probes:
+        if probe in nets:
+            groups["logic"].append(probe)
+            continue
+        try:
+            columns[probe] = results.column(result.unknowns, probe)
+        except KeyError as error:
+            raise JoltyError(error.args[0]) from None
+        groups[result.unknowns[columns[probe]].quantity].append(probe)
+    return {quantity: found for quantity, found in groups.items() if found}, columns
+
+
+def _loop(name: str, result: results.LoopGain) -> Figure:
+    """The Bode plot of a loop gain, against 0 dB and -180°, where its margins are read.
+
+    Its frequencies are the positive ones, increasing, as a log axis needs.
+    """
+    order = np.argsort(result.frequencies)
+    order = order[result.frequencies[order] > 0]
+    frequencies, gains = result.frequencies[order], result.gains[order]
+    figure, (magnitude, phase) = _figure(name, result, 2)
+    label = f"T through {result.probe}"
+    color = COLORS[0]
+    _draw(magnitude, frequencies, [(label, color, _decibels(gains))], "magnitude", "dB")
+    phases = np.degrees(np.unwrap(np.angle(gains)))
+    _draw(phase, frequencies, [(label, color, phases)], "phase", "°")
+    for axes, level in ((magnitude, 0.0), (phase, -180.0)):
+        axes.axhline(level, color=_MUTED, linewidth=0.8, linestyle="--")
+        axes.set_xscale("log")
+    _label_abscissa(phase, result, "Hz")
+    return figure
+
+
+def _figure(name: str, result: Plotted, panels: int) -> tuple[Figure, list[Axes]]:
+    """A figure titled for the result of the analysis `name`.
+
+    It stacks `panels` axes, at least one, over a shared abscissa.
+    """
+    figure = Figure(
+        figsize=(8, 0.8 + 2.4 * max(panels, 1)),
+        dpi=150,
+        layout="constrained",
+        facecolor=_SURFACE,
+    )
+    figure.suptitle(f"{name}: {_describe(result)}", color=_INK, x=0.02, ha="left")
+    figure.subplots(max(panels, 1), 1, sharex=True, squeeze=False)
+    return figure, figure.axes
+
+
+def _label_abscissa(axes: Axes, result: Plotted, unit: str) -> None:
+    """Labels the abscissa of `axes`, the bottom panel, for `result`, in `unit`."""
+    axes.xaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
+    axes.set_xlabel(_abscissa_label(result), color=_MUTED)
 
 
 def _steps(
@@ -233,6 +285,8 @@ def _describe(result: Plotted) -> str:
             return f"DC sweep of {result.source}"
         case results.Response():
             return f"response to a unit excitation of {result.source}"
+        case results.LoopGain():
+            return f"loop gain through {result.probe}"
 
 
 def _abscissa(result: Plotted) -> tuple[results.Real, str]:
@@ -241,7 +295,7 @@ def _abscissa(result: Plotted) -> tuple[results.Real, str]:
             return result.times, "s"
         case results.Sweep():
             return result.levels, _UNITS[result.quantity]
-        case results.Response():
+        case results.Response() | results.LoopGain():
             return result.frequencies, "Hz"
 
 
@@ -251,7 +305,7 @@ def _abscissa_label(result: Plotted) -> str:
             return "time"
         case results.Sweep():
             return f"{result.source} {result.quantity}"
-        case results.Response():
+        case results.Response() | results.LoopGain():
             return "frequency"
 
 

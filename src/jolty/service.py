@@ -530,8 +530,14 @@ def _plot(
                 message = f"{name} is taken at one operating point: nothing to plot"
                 raise JoltyError(message)
             continue
-        nets = () if isinstance(result, results.Response) else result.nets
-        chosen = probes or plots.default_probes(result.unknowns, nets)
+        nets = (
+            result.nets if isinstance(result, results.Sweep | results.Waveforms) else ()
+        )
+        chosen = (
+            ()
+            if isinstance(result, results.LoopGain)
+            else tuple(probes) or plots.default_probes(result.unknowns, nets)
+        )
         target = files.plot_path(path, name)
         plots.save(plots.plot(name, result, chosen), target)
         drawn.append(Plot(analysis=name, path=target))

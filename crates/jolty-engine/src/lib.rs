@@ -45,6 +45,7 @@ mod observe;
 mod operating_point;
 mod options;
 mod sensitivity;
+mod stability;
 mod sweep;
 mod transient;
 
@@ -64,6 +65,7 @@ pub use observe::{Observation, Observations, Observed};
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;
 pub use sensitivity::{Parameter, Sensitivities, Sensitivity};
+pub use stability::{LoopGain, Stability};
 pub use sweep::{DcSweep, Sweep};
 pub use transient::{Statistics, Transient, Waveforms};
 
@@ -315,6 +317,10 @@ pub enum SimulationError {
     /// An analysis names an instance that is not an independent source.
     #[error("`{0}` is not an independent source")]
     NotASource(String),
+    /// A stability analysis's probe is not an independent voltage source between two nodes
+    /// other than the reference.
+    #[error("`{0}` is not a voltage source off the reference, as a probe must be")]
+    NotAProbe(String),
     /// An analysis's settings are out of range.
     #[error("invalid analysis: {0}")]
     InvalidAnalysis(String),

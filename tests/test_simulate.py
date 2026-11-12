@@ -1,6 +1,7 @@
 # Copyright 2026 Maxence Faldor
 
 import math
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -21,13 +22,17 @@ from jolty import (
     Sensitivity,
     Simulation,
     SimulationError,
+    Stability,
     Transient,
     component,
     devices,
 )
 from jolty.plan import decade, linear
+from jolty.specs import crossover, gain_margin, phase_margin
 from jolty.units import (
     A,
+    F,
+    GHz,
     Hz,
     K,
     Quantity,
@@ -137,6 +142,91 @@ def test_sensitivities_are_the_derivatives_of_a_divider() -> None:
         found.derivative("out", "R1", "resistanc")
     with pytest.raises(SimulationError, match="no unknown named `nowhere`"):
         simulation.run(Sensitivity(["nowhere"]))
+
+
+STAGES = ((100 * kohm, 1e3), (10 * kohm, 1e6), (1 * kohm, 1e7))
+"""Each stage of the amplifier: its load, which its 1 mS turns into its gain, and its
+pole, in hertz."""
+
+
+@component
+def follower(c: Builder) -> None:
+    """An amplifier fed back whole to its inverting input through the probe ``VP``.
+
+    Three stages of 1 mS each drive a load and a capacitor, then a buffer the output.
+    """
+    ground = c.port("ground", Role.GROUND)
+    level = c.place(devices.voltage_source(1 * V), id="VIN")
+    c.connect(level.negative, ground)
+    stages = [
+        c.place(devices.voltage_controlled_current_source(1 * mA / V), id=f"G{index}")
+        for index in range(1, len(STAGES) + 1)
+    ]
+    driving = level.positive
+    for index, (stage, (load, pole)) in enumerate(zip(stages, STAGES, strict=True), 1):
+        resistor = c.place(devices.resistor(load), id=f"R{index}")
+        capacitance = 1 / (2 * math.pi * pole * load.value) * F
+        capacitor = c.place(devices.capacitor(capacitance), id=f"C{index}")
+        c.connect(stage.control_positive, driving)
+        c.connect(stage.positive, resistor.b, capacitor.b, ground)
+        c.connect(stage.negative, resistor.a, capacitor.a, name=f"n{index}")
+        driving = stage.negative
+    for stage in stages[1:]:
+        c.connect(stage.control_negative, ground)
+    buffer = c.place(devices.voltage_controlled_voltage_source(1.0), id="E1")
+    c.connect(buffer.control_positive, driving)
+    c.connect(buffer.control_negative, buffer.negative, ground)
+    probe = c.place(devices.voltage_source(0 * V), id="VP")
+    c.connect(buffer.positive, probe.negative, name="out")
+    c.connect(probe.positive, stages[0].control_negative, name="fb")
+
+
+def open_loop(frequency: float) -> complex:
+    """The amplifier's gain, which the loop gain is."""
+    gain = complex(1.0)
+    for load, pole in STAGES:
+        gain *= 1e-3 * load.value / (1 + 1j * frequency / pole)
+    return gain
+
+
+def solved(function: Callable[[float], float], low: float, high: float) -> float:
+    """Where `function`, of opposite signs at `low` and `high`, crosses zero."""
+    for _ in range(200):
+        middle = math.sqrt(low * high)
+        if (function(middle) > 0) == (function(low) > 0):
+            low = middle
+        else:
+            high = middle
+    return low
+
+
+def test_a_stability_analysis_finds_the_loop_gain_and_its_margins() -> None:
+    simulation = Simulation(follower())
+    loop = simulation.run(Stability("VP", decade(1 * Hz, 1 * GHz, 200)))
+    expected = np.array([open_loop(frequency) for frequency in loop.frequencies])
+    np.testing.assert_allclose(loop.gains, expected, rtol=1e-6)
+    assert loop.probe == "VP"
+    assert loop.operating_point.voltage("out") == pytest.approx(1.0, rel=1e-3)
+
+    def phase_of(frequency: float) -> float:
+        return sum(math.degrees(math.atan(frequency / pole)) for _, pole in STAGES)
+
+    unity = solved(lambda f: abs(open_loop(f)) - 1, 1.0, 1e9)
+    inverted = solved(lambda f: phase_of(f) - 180, 1.0, 1e9)
+    margins = {
+        crossover("loop"): unity,
+        phase_margin("loop"): 180 - phase_of(unity),
+        gain_margin("loop"): -20 * math.log10(abs(open_loop(inverted))),
+    }
+    for measurement, wanted in margins.items():
+        assert measurement.read(loop).value == pytest.approx(wanted, rel=1e-3)
+
+
+def test_a_probe_is_a_voltage_source_off_the_ground() -> None:
+    simulation = Simulation(follower())
+    for probe in ("VIN", "G1", "R1"):
+        with pytest.raises(SimulationError, match=f"`{probe}` is not a voltage source"):
+            simulation.run(Stability(probe, [1 * kHz]))
 
 
 def test_results_read_the_current_into_every_terminal() -> None:

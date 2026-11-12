@@ -37,14 +37,17 @@ from jolty import (
     OperatingPoint,
     Role,
     Simulation,
+    Stability,
     Transient,
     component,
     devices,
+    results,
 )
 from jolty.plan import decade, linear
 from jolty.units import (
     A,
     F,
+    GHz,
     Hz,
     K,
     MHz,
@@ -410,6 +413,35 @@ def bjt_amplifier(c: Builder) -> None:
     c.connect(
         source.negative, supply.negative, lower.b, degeneration.b, bypass.b, ground
     )
+
+
+@component
+def feedback_pair(c: Builder) -> None:
+    """A common-emitter stage and a follower in a loop broken at the probe ``VP``.
+
+    The follower feeds back through a resistor with a capacitor across it. The source
+    ``IP`` drives nothing until an AC analysis excites it, injecting a current from the
+    ground where the loop enters the feedback network.
+    """
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(12 * V), id="V1")
+    stage = c.place(_bipolar("npn", "fixed"), id="Q1")
+    follower = c.place(_bipolar("npn", "fixed"), id="Q2")
+    collector = c.place(devices.resistor(10 * kohm), id="RC")
+    emitter = c.place(devices.resistor(470 * ohm), id="RE")
+    load = c.place(devices.resistor(2.2 * kohm), id="RL")
+    lower = c.place(devices.resistor(10 * kohm), id="R2")
+    feedback = c.place(devices.resistor(47 * kohm), id="RF")
+    across = c.place(devices.capacitor(2 * pF), id="CF")
+    probe = c.place(devices.voltage_source(0 * V), id="VP")
+    injection = c.place(devices.current_source(0 * A), id="IP")
+    c.connect(supply.positive, collector.a, follower.collector, name="supply")
+    c.connect(collector.b, stage.collector, follower.base, name="drive")
+    c.connect(follower.emitter, load.a, probe.negative, name="out")
+    c.connect(probe.positive, feedback.a, across.a, injection.negative, name="fb")
+    c.connect(feedback.b, across.b, lower.a, stage.base, name="base")
+    c.connect(stage.emitter, emitter.a, name="tail")
+    c.connect(supply.negative, emitter.b, load.b, lower.b, injection.positive, ground)
 
 
 @component
@@ -1025,6 +1057,22 @@ def test_ac_responses_agree_across_temperatures(
             scale=size(spice),
             tolerance=1e-6,
         )
+
+
+def test_loop_gains_agree() -> None:
+    """Jolty's loop gain against Middlebrook's, from ngspice's two injections."""
+    simulation = Simulation(feedback_pair())
+    loop = simulation.run(Stability("VP", decade(10 * Hz, 1 * GHz, 10)), TIGHT)
+    circuit = simulation.circuit
+    command = "ac dec 10 10 1g"
+    series = ngspice(netlist(circuit, excited="VP"), command)
+    shunt = ngspice(netlist(circuit, excited="IP"), command)
+    entering = series.vectors[vector(circuit, results.Unknown("fb", "voltage"))]
+    current = results.Unknown("VP:current", "current")
+    u = entering - shunt.vectors[vector(circuit, current)]
+    expected = -u / (1 + u)
+    assert abs(expected[0]) > 1
+    compare(loop.gains, expected, current, scale=size(expected), tolerance=1e-6)
 
 
 @pytest.mark.parametrize(

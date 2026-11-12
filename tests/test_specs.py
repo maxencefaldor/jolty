@@ -16,10 +16,12 @@ from jolty.specs import (
     average,
     bandwidth,
     crossing,
+    crossover,
     describe,
     evaluate,
     frequency,
     gain,
+    gain_margin,
     maximum,
     minimum,
     overshoot,
@@ -171,6 +173,50 @@ def test_the_phase_margin_of_an_integrator_with_a_pole_at_unity() -> None:
     assert (measured.value, measured.unit) == (pytest.approx(expected, abs=1e-6), "°")
 
 
+def loop_gain(frequencies: results.Real, gains: results.Complex) -> results.LoopGain:
+    return results.LoopGain(UNKNOWNS, "VP", frequencies, gains, point(0.0))
+
+
+def test_a_loop_gains_margins_are_read_without_an_output() -> None:
+    frequencies = np.logspace(-3, 3, 60_001)
+    gains = np.asarray(10 / (1 + 1j * frequencies) ** 3, dtype=np.complex128)
+    loop = loop_gain(frequencies, gains)
+    unity = math.sqrt(10 ** (2 / 3) - 1)
+    inverted = math.tan(math.radians(60))
+    expected = {
+        crossover("loop"): (unity, FREQUENCY),
+        phase_margin("loop"): (180 - 3 * math.degrees(math.atan(unity)), "°"),
+        gain_margin("loop"): (-20 * math.log10(10 / (1 + inverted**2) ** 1.5), "dB"),
+        gain("loop", at=1e-3 * Hz): (20.0, "dB"),
+        phase("loop", at=1 * Hz): (-135.0, "°"),
+    }
+    for measurement, (value_read, unit) in expected.items():
+        measured = measurement.read(loop)
+        assert measured.unit == unit, measurement
+        assert measured.value == pytest.approx(value_read, rel=1e-6), measurement
+    assert str(phase_margin("loop") >= 45) == "phase margin of the loop in loop ≥ 45 °"
+    assert str(gain_margin("loop") >= 6) == "gain margin of the loop in loop ≥ 6 dB"
+
+
+def test_a_loop_gain_is_read_without_an_output_and_a_response_at_one() -> None:
+    frequencies = np.logspace(0, 2, 3)
+    loop = loop_gain(frequencies, np.full(3, 0.5 + 0j))
+    assert unread(phase_margin("loop", "out") >= 45, loop) == (
+        "a loop gain is read without an output, not at out"
+    )
+    assert unread(phase_margin("ac") >= 45, low_pass()) == (
+        "a small-signal response is read at an output"
+    )
+    assert unread(gain_margin("loop") >= 6, loop) == (
+        "the phase of the loop never falls through -180°"
+    )
+    assert unread(crossover("loop") >= 1 * Hz, loop) == (
+        "the gain of the loop never falls through 0 dB"
+    )
+    with pytest.raises(ValueError, match="without over or a reference"):
+        phase_margin("loop", over="in")
+
+
 def test_requirements_state_their_bounds_in_the_unit_read() -> None:
     assert str(value("op", "out") >= 2 * V) == "out in op ≥ 2 V"
     assert str(gain("ac", "out", at=kHz) <= 3) == "gain of out at 1 kHz in ac ≤ 3 dB"
@@ -218,7 +264,8 @@ def test_a_requirement_is_unmeasured_when_it_cannot_be_read() -> None:
         == "the minimum, 1 A, is not in V, the unit of the value read"
     )
     assert unread(gain("op", "out", at=kHz) >= 0, point(2.0)) == (
-        "a gain or a phase reads a small-signal response, not an operating point"
+        "a gain or a phase reads a small-signal response or a loop gain, not an "
+        "operating point"
     )
     assert unread(value("op", "outt") >= 0 * V, point(2.0)) == (
         "the circuit has no unknown named 'outt'; close names: out"

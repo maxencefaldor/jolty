@@ -1,8 +1,10 @@
 //! The small-signal frequency response around the operating point.
 
 use std::f64::consts::TAU;
+use std::sync::Arc;
 
-use jolty_numerics::{Complex64, SparseLu};
+use jolty_models::Contributions;
+use jolty_numerics::{Complex64, Factors, Pattern, SparseLu};
 use serde::Deserialize;
 
 use crate::{OperatingPoint, Options, SimulationError, Simulator};
@@ -44,49 +46,26 @@ impl Simulator {
     /// for no frequency or a negative one, [`SimulationError::Singular`] when the linearized
     /// circuit is singular at a frequency, and the errors of [`Simulator::operating_point`].
     pub fn ac(&mut self, ac: &Ac, options: &Options) -> Result<Response, SimulationError> {
-        options.check()?;
-        if ac.frequencies.is_empty() {
-            return Err(SimulationError::InvalidAnalysis(
-                "an AC analysis needs at least one frequency".to_owned(),
-            ));
-        }
-        if let Some(frequency) = ac.frequencies.iter().find(|&&frequency| frequency < 0.0) {
-            return Err(SimulationError::InvalidAnalysis(format!(
-                "frequencies must be at least 0, not {frequency:?}"
-            )));
-        }
         let index = self.source_index(&ac.source)?;
-        let operating_point = self.operating_point(options)?;
-        self.evaluate(&operating_point.values, 0.0, (1.0, options.gmin), true);
-
-        let unknowns = self.system.unknowns.len();
-        let mut excitation = vec![0.0; unknowns];
+        let operating_point = self.linearize(&ac.frequencies, options)?;
+        let mut excitation = vec![0.0; self.system.unknowns.len()];
         if let Some(source) = self.system.devices[index].device.as_source() {
             source.level_derivative(&mut excitation);
         }
-        let mut solver = SparseLu::<Complex64>::new(self.system.pattern.clone())?;
-        let mut matrix = vec![Complex64::default(); self.system.pattern.len()];
-        let mut values = Vec::with_capacity(ac.frequencies.len());
-        let mut currents = Vec::with_capacity(ac.frequencies.len());
+        let mut linearization = Linearization::new(&self.system.pattern)?;
         self.observer
             .linearize(&operating_point.values, options.gmin);
+        let mut values = Vec::with_capacity(ac.frequencies.len());
+        let mut currents = Vec::with_capacity(ac.frequencies.len());
         for &frequency in &ac.frequencies {
-            let omega = TAU * frequency;
-            for ((value, &conductance), &capacitance) in matrix
-                .iter_mut()
-                .zip(&self.workspace.contributions.conductance)
-                .zip(&self.workspace.contributions.capacitance)
-            {
-                *value = Complex64::new(conductance, omega * capacitance);
-            }
             let mut phasors: Vec<Complex64> = excitation
                 .iter()
                 .map(|&d| Complex64::new(-d, 0.0))
                 .collect();
-            solver
-                .factor(&matrix)
-                .and_then(|mut factors| factors.solve(&mut phasors))?;
-            currents.push(self.observer.phasors(&phasors, omega, index));
+            linearization
+                .factor(&self.workspace.contributions, frequency)?
+                .solve(&mut phasors)?;
+            currents.push(self.observer.phasors(&phasors, TAU * frequency, index));
             values.push(phasors);
         }
         Ok(Response {
@@ -96,5 +75,63 @@ impl Simulator {
             values,
             currents,
         })
+    }
+
+    /// Checks a small-signal analysis's `frequencies`, solves the operating point and
+    /// evaluates the devices there, so the workspace holds `G` and `C`.
+    pub(crate) fn linearize(
+        &mut self,
+        frequencies: &[f64],
+        options: &Options,
+    ) -> Result<OperatingPoint, SimulationError> {
+        options.check()?;
+        if frequencies.is_empty() {
+            return Err(SimulationError::InvalidAnalysis(
+                "a small-signal analysis needs at least one frequency".to_owned(),
+            ));
+        }
+        if let Some(frequency) = frequencies.iter().find(|&&frequency| frequency < 0.0) {
+            return Err(SimulationError::InvalidAnalysis(format!(
+                "frequencies must be at least 0, not {frequency:?}"
+            )));
+        }
+        let operating_point = self.operating_point(options)?;
+        self.evaluate(&operating_point.values, 0.0, (1.0, options.gmin), true);
+        Ok(operating_point)
+    }
+}
+
+/// The matrix `G + jωC` of a circuit linearized at its operating point, factored at any
+/// frequency.
+pub(crate) struct Linearization {
+    solver: SparseLu<Complex64>,
+    matrix: Vec<Complex64>,
+}
+
+impl Linearization {
+    /// A linearization over `pattern`, whose symbolic analysis every frequency shares.
+    pub(crate) fn new(pattern: &Arc<Pattern>) -> Result<Self, SimulationError> {
+        Ok(Self {
+            solver: SparseLu::new(Arc::clone(pattern))?,
+            matrix: vec![Complex64::default(); pattern.len()],
+        })
+    }
+
+    /// `G + jωC` at `frequency`, from the `contributions` at the operating point, factored.
+    pub(crate) fn factor(
+        &mut self,
+        contributions: &Contributions,
+        frequency: f64,
+    ) -> Result<Factors<'_, Complex64>, SimulationError> {
+        let omega = TAU * frequency;
+        for ((value, &conductance), &capacitance) in self
+            .matrix
+            .iter_mut()
+            .zip(&contributions.conductance)
+            .zip(&contributions.capacitance)
+        {
+            *value = Complex64::new(conductance, omega * capacitance);
+        }
+        Ok(self.solver.factor(&self.matrix)?)
     }
 }
