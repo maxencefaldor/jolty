@@ -127,6 +127,26 @@ def resonator(c: Builder) -> None:
 
 
 @component
+def triangle(c: Builder) -> None:
+    """A pulse with no width, a triangle wave, which ngspice reads its own way."""
+    ground = c.port("ground", Role.GROUND)
+    pulse = Pulse(
+        initial=0 * V,
+        pulsed=1 * V,
+        rise=10 * us,
+        fall=10 * us,
+        width=0 * us,
+        period=20 * us,
+    )
+    source = c.place(devices.voltage_source(pulse), id="V1")
+    resistor = c.place(devices.resistor(1 * kohm), id="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    c.connect(source.positive, resistor.a, name="in")
+    c.connect(resistor.b, capacitor.a, name="out")
+    c.connect(capacitor.b, source.negative, ground)
+
+
+@component
 def clipper(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(0 * V), id="V1")
@@ -1087,6 +1107,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
     [
         (low_pass, 8 * us, 10 * ns),
         (resonator, 60 * us, 50 * ns),
+        (triangle, 60 * us, 50 * ns),
         (rectifier, 3 * ms, 1 * us),
         (driven_tank, 40 * us, 20 * ns),
         (jfet_stage, 15 * us, 10 * ns),

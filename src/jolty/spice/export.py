@@ -461,13 +461,23 @@ def vector(
     return f"i({source.lower()})"
 
 
+_INSTANT: Final = 1e-40
+"""A pulse's width of no time, as ngspice reads it: ngspice reads a width of 0 as the
+transient's stop time, while 1e-40 s vanishes beside any rise longer than 1e-24 s."""
+
+
 def _waveform(spec: JsonValue) -> str:
     match spec:
         case {"dc": float(level)}:
             return f"DC {level!r}"
         case {"pulse": dict(pulse)}:
             order = ("initial", "pulsed", "delay", "rise", "fall", "width", "period")
-            return _function("PULSE", [pulse[key] for key in order if key in pulse])
+            numbers = [
+                _INSTANT if key == "width" and pulse[key] == 0 else pulse[key]
+                for key in order
+                if key in pulse
+            ]
+            return _function("PULSE", numbers)
         case {
             "sine": {
                 "offset": float(offset),
