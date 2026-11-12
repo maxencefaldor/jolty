@@ -13,6 +13,9 @@ use crate::{Options, Simulator};
 /// through a milliohm between two nodes at hundreds of volts, could never converge.
 const RESIDUAL_ROUNDINGS: f64 = 8.0;
 
+/// How many unknowns a failure to converge names.
+pub(crate) const NAMED_UNKNOWNS: usize = 3;
+
 /// The buffers one evaluation of the circuit fills, allocated once per simulator.
 #[derive(Debug)]
 pub(crate) struct Workspace {

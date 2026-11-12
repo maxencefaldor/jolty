@@ -128,6 +128,8 @@ When Newton alone fails, the operating point steps the conductance across every 
 
 A transient integrates with the trapezoidal rule, Gear's second-order formula or backward Euler.
 It estimates each step's truncation error from divided differences, shortens a step whose error is too large, and lengthens the next when the error allows.
-It restarts with backward Euler after each corner of a waveform.
+It restarts with backward Euler after each corner of a waveform, and takes one step of it whenever the trapezoidal rule's derivatives ring.
+A step whose Newton iteration runs out of iterations is retried shorter, from the iteration's last iterate, so a slow convergence goes on where it stopped.
+When no step converges, however short, the transient fails and names why: the unknowns furthest from converging, or the equation whose truncation error stayed above its tolerance.
 
 The engine's results agree with ngspice's on a corpus of reference circuits: operating points, sweeps and frequency responses to within a millionth of each signal, and transients to within a thousandth of their swing.

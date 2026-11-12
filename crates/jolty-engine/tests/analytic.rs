@@ -3,8 +3,8 @@
 use std::f64::consts::{PI, TAU};
 
 use jolty_engine::{
-    Ac, Analysis, Conditions, DcSweep, Method, Options, Outcome, SimulationError, Simulator,
-    Strategy, Transient,
+    Ac, Analysis, Conditions, DcSweep, Method, Options, Outcome, Rejection, SimulationError,
+    Simulator, Strategy, Transient,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -716,4 +716,234 @@ fn analyses_name_what_they_cannot_find() {
         simulator.ac(&resistor, &options).unwrap_err(),
         SimulationError::NotASource("R1".to_owned())
     );
+}
+
+/// A transient of `circuit` until `stop`, in steps of at most a hundredth of it.
+fn transient(circuit: &Circuit, stop: f64, options: &Options) -> Result<Outcome, SimulationError> {
+    let transient = Transient {
+        stop,
+        max_step: Some(stop / 100.0),
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+    };
+    simulator(circuit).run(&Analysis::Transient(transient), options)
+}
+
+#[test]
+fn a_transient_names_the_unknowns_that_stopped_converging() {
+    // The only equation of `a`, v(a)² = v(c), loses its solution as the source falls below
+    // zero at 0.5 ms, so no step past it converges, however short.
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"piecewise": {"points": [[0, 1], [1e-3, -1]]}}}),
+            &[("positive", "c"), ("negative", "0")],
+        ),
+        (
+            "B1",
+            "behavioral_current_source",
+            json!({"expression": "1e-3 * (v(a) ^ 2 - v(c))"}),
+            &[("positive", "a"), ("negative", "0"), ("a", "a"), ("c", "c")],
+        ),
+    ]);
+    let error = transient(&circuit, 1e-3, &Options::default()).unwrap_err();
+    let SimulationError::StepTooSmall {
+        time,
+        rejection: Rejection::Unconverged { worst },
+        ..
+    } = &error
+    else {
+        panic!("{error}")
+    };
+    assert!((0.4e-3..=0.5e-3).contains(time), "it failed at {time} s");
+    assert_eq!(worst.first().map(String::as_str), Some("a"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("Newton iteration did not converge; furthest from converging: a"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_transient_names_the_equation_whose_error_it_could_not_bound() {
+    // No step is accurate enough for a truncation tolerance this small.
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"sine": {"offset": 0, "amplitude": 1, "frequency": 1e3}}}),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "in"), ("b", "out")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": 1e-6}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let options = Options {
+        truncation_tolerance: 1e-30,
+        ..Options::default()
+    };
+    let error = transient(&circuit, 1e-3, &options).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            SimulationError::StepTooSmall {
+                rejection: Rejection::Inaccurate(name),
+                ..
+            } if name == "out"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_transient_follows_a_source_that_only_its_transistor_holds() {
+    // Nothing but the transistor holds its source, so as its gate steps up the source
+    // follows to a threshold below it, where the current falls to zero quadratically: a
+    // double root, toward which Newton iteration only halves its error each iteration.
+    let (supply, threshold) = (5.0, 0.5);
+    let circuit = circuit(&[
+        (
+            "VD",
+            "voltage_source",
+            dc(supply),
+            &[("positive", "drain"), ("negative", "0")],
+        ),
+        (
+            "VG",
+            "voltage_source",
+            json!({"waveform": {"piecewise": {"points": [[0, 0], [1e-6, 0], [1.001e-6, supply]]}}}),
+            &[("positive", "gate"), ("negative", "0")],
+        ),
+        (
+            "M1",
+            "mosfet",
+            json!({"level": 1, "channel": "n", "width": 1e-5, "length": 1e-6,
+                   "threshold_voltage": threshold, "transconductance_parameter": 1e-4}),
+            &[
+                ("drain", "drain"),
+                ("gate", "gate"),
+                ("source", "source"),
+                ("bulk", "0"),
+            ],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let transient = Transient {
+        stop: 2e-6,
+        max_step: Some(1e-8),
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+    };
+    let outcome = simulator
+        .run(&Analysis::Transient(transient), &Options::default())
+        .unwrap();
+    let Outcome::Transient(waveforms) = outcome else {
+        panic!("a transient outcome")
+    };
+    let source = index(&simulator, "source");
+    let last = waveforms.values.last().unwrap()[source];
+    assert_close(last, supply - threshold, 1e-2);
+}
+
+/// A level 1 MOSFET of the given channel, its bulk on its source.
+fn mosfet<'a>(
+    id: &'a str,
+    channel: &str,
+    [drain, gate, source]: [&'a str; 3],
+) -> (&'a str, &'a str, Value, Vec<(&'a str, &'a str)>) {
+    let (width, threshold, transconductance) = if channel == "n" {
+        (1e-5, 0.5, 1e-4)
+    } else {
+        (2e-5, -0.5, 5e-5)
+    };
+    (
+        id,
+        "mosfet",
+        json!({"level": 1, "channel": channel, "width": width, "length": 1e-6,
+               "threshold_voltage": threshold, "transconductance_parameter": transconductance}),
+        vec![
+            ("drain", drain),
+            ("gate", gate),
+            ("source", source),
+            ("bulk", source),
+        ],
+    )
+}
+
+#[test]
+fn a_gate_converges_as_its_supply_powers_up() {
+    // A NAND gate, its inputs from inverters, all of them powering up with the supply: near
+    // their thresholds, the node between the NAND's NMOS converges so slowly that a step's
+    // Newton iteration runs out before it does. Starting each shorter step over from the
+    // last accepted point, the iteration never got further; going on from where it
+    // stopped, it converges.
+    let clock = |period: f64| {
+        json!({"waveform": {"pulse": {
+            "initial": 0, "pulsed": 5, "delay": 3e-8, "rise": 2e-9, "fall": 2e-9,
+            "width": 0.48 * period, "period": period,
+        }}})
+    };
+    let capacitor = json!({"capacitance": 5e-14});
+    let mut devices = vec![
+        mosfet("MIA", "n", ["a", "rawa", "0"]),
+        mosfet("MPA", "p", ["a", "rawa", "vdd"]),
+        mosfet("MIB", "n", ["b", "rawb", "0"]),
+        mosfet("MPB", "p", ["b", "rawb", "vdd"]),
+        mosfet("MNA", "n", ["out", "a", "mid"]),
+        mosfet("MNB", "n", ["mid", "b", "0"]),
+        mosfet("MQA", "p", ["out", "a", "vdd"]),
+        mosfet("MQB", "p", ["out", "b", "vdd"]),
+    ];
+    for (id, node) in [("CA", "a"), ("CB", "b"), ("CO", "out")] {
+        devices.push((
+            id,
+            "capacitor",
+            capacitor.clone(),
+            vec![("a", node), ("b", "0")],
+        ));
+    }
+    devices.push((
+        "VDD",
+        "voltage_source",
+        json!({"waveform": {"piecewise": {"points": [[0, 0], [1e-6, 5]]}}}),
+        vec![("positive", "vdd"), ("negative", "0")],
+    ));
+    devices.push((
+        "VA",
+        "voltage_source",
+        clock(1e-7),
+        vec![("positive", "rawa"), ("negative", "0")],
+    ));
+    devices.push((
+        "VB",
+        "voltage_source",
+        clock(9.1e-8),
+        vec![("positive", "rawb"), ("negative", "0")],
+    ));
+    let listed: Vec<Device<'_>> = devices
+        .iter()
+        .map(|(id, model, parameters, terminals)| {
+            (*id, *model, parameters.clone(), terminals.as_slice())
+        })
+        .collect();
+    let circuit = circuit(&listed);
+    let transient = Transient {
+        stop: 1e-6,
+        max_step: Some(1e-9),
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+    };
+    let outcome = simulator(&circuit).run(&Analysis::Transient(transient), &Options::default());
+    assert!(outcome.is_ok(), "{:?}", outcome.err());
 }

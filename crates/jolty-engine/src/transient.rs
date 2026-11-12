@@ -7,8 +7,8 @@ use jolty_numerics::integration::{Formula, Method, divided_difference};
 use serde::Deserialize;
 
 use crate::logic::{Command, Crossing, crossing};
-use crate::newton::Mode;
-use crate::{Observation, Observations, Options, SimulationError, Simulator, Strategy};
+use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
+use crate::{Observation, Observations, Options, Rejection, SimulationError, Simulator, Strategy};
 
 /// The first step after the start or a breakpoint, as a fraction of the shorter of the step
 /// before and the gap to the next breakpoint, so a short waveform segment takes several steps.
@@ -207,6 +207,11 @@ struct Stepper {
     time: f64,
     /// The solution at the last accepted point.
     x: Vec<f64>,
+    /// The last iterate of a step whose Newton iteration ran out of iterations, which the
+    /// shorter step after it starts from: an iteration converging slowly, as at a
+    /// transistor turning off with nothing else to hold its source, goes on where it
+    /// stopped instead of starting over.
+    resume: Option<Vec<f64>>,
     history: History,
     /// The length of the next step to try.
     next: f64,
@@ -223,14 +228,25 @@ struct Stepper {
 }
 
 impl Stepper {
-    /// Records a rejected step and shortens the next one to `next`.
-    fn reject(&mut self, next: f64) -> Result<Step, SimulationError> {
+    /// Records a rejected step, and shortens the next one to `next`.
+    fn shorten(&mut self, next: f64) {
         self.statistics.rejected += 1;
         self.next = next;
+    }
+
+    /// Records a step rejected for the reason `why` gives, and shortens the next one to
+    /// `next`, failing when it falls below the shortest step allowed.
+    fn reject(
+        &mut self,
+        next: f64,
+        why: impl FnOnce() -> Rejection,
+    ) -> Result<Step, SimulationError> {
+        self.shorten(next);
         if next < self.shortest {
             return Err(SimulationError::StepTooSmall {
                 time: self.time,
                 minimum: self.shortest,
+                rejection: why(),
             });
         }
         Ok(Step::Rejected)
@@ -294,6 +310,7 @@ impl Simulator {
             longest,
             shortest,
             time: 0.0,
+            resume: None,
             history: History {
                 earlier: VecDeque::with_capacity(HISTORY - 1),
                 last: (0.0, self.workspace.charge.clone()),
@@ -390,16 +407,20 @@ impl Simulator {
             );
         }
 
-        let mut candidate = stepper.x.clone();
+        let mut candidate = stepper.resume.take().unwrap_or_else(|| stepper.x.clone());
         let mode = Mode::Step {
             time: end,
             alpha: formula.alpha,
             history: &stepper.terms,
         };
-        let Ok(iterations) =
-            self.newton(&mut candidate, mode, options, options.transient_iterations)
-        else {
-            return stepper.reject(length * FAILURE_SHRINK);
+        let solved = self.newton(&mut candidate, mode, options, options.transient_iterations);
+        let Ok(iterations) = solved else {
+            if solved == Err(Failure::Diverged) && candidate.iter().all(|value| value.is_finite()) {
+                stepper.resume = Some(candidate.clone());
+            }
+            return stepper.reject(length * FAILURE_SHRINK, || Rejection::Unconverged {
+                worst: self.furthest_from_converging(&candidate, options, NAMED_UNKNOWNS),
+            });
         };
         let charge = self.workspace.charge.clone();
         let derivative: Vec<f64> = charge
@@ -413,16 +434,20 @@ impl Simulator {
             let new = (end, charge.as_slice());
             self.error_ratio(method, length, &stepper.history, new, &derivative, options)
         };
-        let factor = ratio.map_or(FACTOR_BOUNDS.1, |ratio| {
+        let factor = ratio.map_or(FACTOR_BOUNDS.1, |(ratio, _)| {
             (SAFETY * method.step_factor(ratio)).clamp(FACTOR_BOUNDS.0, FACTOR_BOUNDS.1)
         });
-        if ratio.is_some_and(|ratio| ratio > 1.0) {
-            return stepper.reject(length * factor);
+        if let Some((ratio, worst)) = ratio
+            && ratio > 1.0
+        {
+            let name = &self.system.unknowns[worst].name;
+            return stepper.reject(length * factor, || Rejection::Inaccurate(name.clone()));
         }
         let commands = match self.advance_logic(stepper, (end, &candidate), options) {
             Ok(commands) => commands,
             Err(early) => {
-                stepper.reject(early - stepper.time)?;
+                // `advance_logic` lands no closer than the shortest step allowed.
+                stepper.shorten(early - stepper.time);
                 return Ok(Step::Land(early));
             }
         };
@@ -589,7 +614,8 @@ impl Simulator {
     }
 
     /// The largest ratio of a charge's estimated truncation error to its tolerance, for the
-    /// step to `new`; `None` while too few points follow the last breakpoint to estimate it.
+    /// step to `new`, and the index of that charge's equation; `None` while too few points
+    /// follow the last breakpoint to estimate it.
     ///
     /// A charge's tolerance is the larger of a relative tolerance on the charge itself and one
     /// on the current it carries over the step, scaled by the truncation tolerance.
@@ -601,7 +627,7 @@ impl Simulator {
         new: (f64, &[f64]),
         derivative: &[f64],
         options: &Options,
-    ) -> Option<f64> {
+    ) -> Option<(f64, usize)> {
         let needed = method.order() + 2;
         let available = history.len() + 1;
         if available < needed {
@@ -614,7 +640,7 @@ impl Simulator {
         }
         times[needed - 1] = new.0;
         let mut samples = [0.0; HISTORY + 1];
-        let mut worst: f64 = 0.0;
+        let mut worst = (0.0, 0);
         for (index, unknown) in self.system.unknowns.iter().enumerate() {
             for (slot, (_, charge)) in samples.iter_mut().zip(&used) {
                 *slot = charge[index];
@@ -638,7 +664,9 @@ impl Simulator {
                     * derivative[index].abs().max(history.derivative[index].abs())
                     + absolute_current);
             let tolerance = options.truncation_tolerance * charge_tolerance.max(current_tolerance);
-            worst = worst.max(error / tolerance);
+            if error / tolerance > worst.0 {
+                worst = (error / tolerance, index);
+            }
         }
         Some(worst)
     }

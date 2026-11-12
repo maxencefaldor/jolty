@@ -6,7 +6,7 @@ use jolty_models::{Input, Level};
 use jolty_numerics::{Complex64, SparseLu};
 
 use crate::logic::{Bound, Events, detected};
-use crate::newton::{Failure, Mode};
+use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
 use crate::{Observation, Options, SimulationError, Simulator};
 
 /// The largest conductance gmin stepping starts from, in siemens.
@@ -20,8 +20,6 @@ const SMALLEST_SHUNT_DIVISOR: f64 = 1.00005;
 const FIRST_SOURCE_INCREMENT: f64 = 0.1;
 /// The smallest increment of the source scale before source stepping gives up.
 const SMALLEST_SOURCE_INCREMENT: f64 = 1e-4;
-/// How many unknowns a failure names.
-const NAMED_UNKNOWNS: usize = 3;
 /// The frequency, in hertz, at which a logic driver's load is read: low enough that every
 /// capacitance it drives charges fully.
 const LOAD_FREQUENCY: f64 = 1.0;

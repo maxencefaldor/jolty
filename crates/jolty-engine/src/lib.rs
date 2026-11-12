@@ -264,6 +264,20 @@ impl Simulator {
     }
 }
 
+/// Why the transient analysis rejected a step.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Rejection {
+    /// Newton iteration did not converge.
+    #[error("Newton iteration did not converge; furthest from converging: {}", .worst.join(", "))]
+    Unconverged {
+        /// The unknowns furthest from converging at the last iteration, worst first.
+        worst: Vec<String>,
+    },
+    /// The estimated truncation error exceeded its tolerance.
+    #[error("the truncation error of `{0}` exceeded its tolerance")]
+    Inaccurate(String),
+}
+
 /// Why an analysis failed.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum SimulationError {
@@ -283,12 +297,14 @@ pub enum SimulationError {
     #[error("the circuit's system is too large to factor")]
     TooLarge,
     /// The transient analysis shortened its step below the smallest it allows.
-    #[error("the time step fell below {minimum:e} s at t = {time:e} s")]
+    #[error("the time step fell below {minimum:e} s at t = {time:e} s: {rejection}")]
     StepTooSmall {
         /// The time the analysis could not step past, in seconds.
         time: f64,
         /// The smallest step allowed, in seconds.
         minimum: f64,
+        /// Why the analysis rejected its last step.
+        rejection: Rejection,
     },
     /// A sensitivity analysis names an output that is no unknown.
     #[error("there is no unknown named `{0}`")]
