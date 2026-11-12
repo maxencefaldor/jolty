@@ -3,6 +3,13 @@
 The repository holds jolty, a compiler and simulator for electronic circuits, built for AI agents.
 The README says what jolty does; the rules below say how to change it.
 
+## Scope
+
+jolty describes circuits, checks them, simulates them, measures them against specs, and writes them in the formats other tools read, such as SPICE netlists for ngspice.
+Physical design is out of scope: placing parts and routing wires on a board or a chip, and a foundry's checks before a chip is made.
+jolty exports to the tools that do these rather than doing them itself, and a foundry's transistor models run in ngspice on an exported netlist, not in the engine.
+A schematic's layout only draws a circuit as feedback; it lays out no board.
+
 ## Commands
 
 ```sh
