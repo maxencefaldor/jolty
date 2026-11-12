@@ -4,7 +4,7 @@ use crate::junction::{
     Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
     limit_junction,
 };
-use crate::stamp::{Bias, Stamp, series_conductance};
+use crate::stamp::{Bias, Series, Stamp};
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
     ParameterError, REFERENCE_TEMPERATURE, Real,
@@ -41,7 +41,9 @@ impl Channel {
 /// `b`: with `vgst = vgs − vto` and `β' = β · (1 + λ · vds)`, it is
 /// `β' · vgst² · (b + (1 − b) · vgst / (pb − vto))` in saturation. The transistor is
 /// symmetric: with the drain below the source, the two swap. A drain or source resistance
-/// adds an internal node, labelled `drain` or `source`.
+/// adds an internal node, labelled `drain` or `source`; one below
+/// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) also carries its current as an unknown,
+/// labelled `drain_current` or `source_current`.
 ///
 /// Away from its nominal temperature, its gate junctions' saturation current scales with
 /// the energy gap and their potential and capacitances with silicon's band gap; its
@@ -49,12 +51,12 @@ impl Channel {
 /// as ngspice scales them.
 #[derive(Debug)]
 pub struct Jfet<R: Real = f64> {
-    stamp: Stamp<5>,
+    stamp: Stamp<3>,
     sign: f64,
     /// The thermal voltage at the transistor's temperature.
     thermal_voltage: f64,
-    drain_conductance: R,
-    source_conductance: R,
+    drain_series: Series<R>,
+    source_series: Series<R>,
     channel: DrainCurrent<R>,
     saturation_current: R,
     critical_voltage: f64,
@@ -65,13 +67,11 @@ pub struct Jfet<R: Real = f64> {
     last: [f64; 2],
 }
 
-/// Local node indices: the terminals, then the internal drain and source, which are the
-/// terminals themselves without series resistance.
+/// Local node indices: the gate, then the drain and source behind their resistances, which
+/// are the terminals themselves without one.
 const GATE: usize = 0;
-const DRAIN: usize = 1;
-const SOURCE: usize = 2;
-const INNER_DRAIN: usize = 3;
-const INNER_SOURCE: usize = 4;
+const INNER_DRAIN: usize = 1;
+const INNER_SOURCE: usize = 2;
 
 /// The parameters of a [`Jfet`], with SPICE's defaults.
 #[derive(Debug, Clone, Deserialize)]
@@ -273,9 +273,10 @@ impl<R: Real> NativeDevice<R> for Jfet<R> {
             binding.terminal(1),
             binding.terminal(2),
         );
-        let inner_drain = binding.behind(drain, drain_resistance, "drain");
-        let inner_source = binding.behind(source, source_resistance, "source");
-        let stamp = Stamp::new(binding, [gate, drain, source, inner_drain, inner_source]);
+        let (drain_series, inner_drain) = Series::behind(binding, drain, drain_resistance, "drain");
+        let (source_series, inner_source) =
+            Series::behind(binding, source, source_resistance, "source");
+        let stamp = Stamp::new(binding, [gate, inner_drain, inner_source]);
         let temperatures = Temperatures::new(binding.temperature(), nominal_temperature)?;
         let vt = temperatures.thermal_voltage();
         let saturation_current = saturation_current
@@ -298,8 +299,8 @@ impl<R: Real> NativeDevice<R> for Jfet<R> {
             stamp,
             sign: channel.sign(),
             thermal_voltage: vt,
-            drain_conductance: series_conductance(drain_resistance),
-            source_conductance: series_conductance(source_resistance),
+            drain_series,
+            source_series,
             channel: DrainCurrent {
                 beta: transconductance_parameter
                     * temperatures.ratio().pow(beta_temperature_exponent),
@@ -324,14 +325,9 @@ impl<R: Real> NativeDevice<R> for Jfet<R> {
 
 impl<R: Real> Device<R> for Jfet<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
+        self.drain_series.add(input, output);
+        self.source_series.add(input, output);
         let stamp = &self.stamp;
-        stamp.series(input, output, (DRAIN, INNER_DRAIN), self.drain_conductance);
-        stamp.series(
-            input,
-            output,
-            (SOURCE, INNER_SOURCE),
-            self.source_conductance,
-        );
 
         let sign = self.sign;
         let gate = stamp.voltage(input, GATE);

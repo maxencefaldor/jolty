@@ -2,7 +2,7 @@ use jolty_numerics::Entry;
 use serde::Deserialize;
 
 use crate::junction::Temperatures;
-use crate::stamp::CurrentBranch;
+use crate::stamp::{CurrentBranch, SMALL_RESISTANCE};
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
     ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
@@ -12,15 +12,6 @@ use crate::{
 fn reference_temperature<R: Real>() -> R {
     R::constant(REFERENCE_TEMPERATURE)
 }
-
-/// The resistance below which a resistor carries its current as an unknown, in ohms.
-///
-/// A conductance stamped beside a far smaller one at a node swamps it in floating point: a
-/// node held only by gmin's picosiemens loses them beside a megasiemens, and its equation
-/// turns singular. A current unknown keeps the two apart, as modified nodal analysis does
-/// for the elements of its second group (Ho, Ruehli and Brennan, 1975); below 1 Ω, gmin
-/// keeps four digits beside the resistor's conductance.
-pub const SMALL_RESISTANCE: f64 = 1.0;
 
 /// A resistor between terminals `a` and `b`, whose resistance drifts with temperature and
 /// changes with its voltage.

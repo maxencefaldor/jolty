@@ -13,13 +13,72 @@ const NEGATIVE: usize = 1;
 /// The pair of them, the element's one branch.
 const PAIR: (usize, usize) = (POSITIVE, NEGATIVE);
 
-/// The conductance of a series `resistance`, or zero without one, where the terminal is its
-/// own node behind it.
-pub(crate) fn series_conductance<R: Real>(resistance: R) -> R {
-    if resistance.value() > 0.0 {
-        resistance.recip()
-    } else {
-        R::constant(0.0)
+/// The resistance below which a resistance carries its current as an unknown, in ohms.
+///
+/// A conductance stamped beside a far smaller one at a node swamps it in floating point: a
+/// node held only by gmin's picosiemens loses them beside a megasiemens, and its equation
+/// turns singular. A current unknown keeps the two apart, as modified nodal analysis does
+/// for the elements of its second group (Ho, Ruehli and Brennan, 1975); below 1 Ω, gmin
+/// keeps four digits beside the resistance's conductance.
+pub const SMALL_RESISTANCE: f64 = 1.0;
+
+/// A resistance in series with a device's terminal, from the terminal's node to an
+/// internal node behind it.
+#[derive(Debug)]
+pub(crate) enum Series<R: Real> {
+    /// No resistance: the terminal is its own node behind it.
+    None,
+    /// A conductance between the two nodes.
+    Conductance(TerminalPair, R),
+    /// Below [`SMALL_RESISTANCE`], a current of its own, held by Ohm's law, with its
+    /// resistance and the entry at (current, current).
+    Current(CurrentBranch, R, Option<Entry>),
+}
+
+impl<R: Real> Series<R> {
+    /// A series `resistance` from `terminal`, and the node behind it: an internal node
+    /// labelled `label` when the resistance is positive, else the terminal's own. The
+    /// current through a small one is an unknown labelled `label` and `_current`.
+    pub(crate) fn behind(
+        binding: &mut Binding<'_>,
+        terminal: Node,
+        resistance: R,
+        label: &str,
+    ) -> (Self, Node) {
+        let value = resistance.value();
+        if value <= 0.0 {
+            return (Self::None, terminal);
+        }
+        let inner = Some(binding.internal(label, Quantity::Voltage));
+        let series = if value < SMALL_RESISTANCE {
+            let branch =
+                CurrentBranch::new(binding, &format!("{label}_current"), [terminal, inner]);
+            let row = Some(branch.unknown());
+            Self::Current(branch, resistance, binding.entry(row, row))
+        } else {
+            Self::Conductance(
+                TerminalPair::new(binding, terminal, inner),
+                resistance.recip(),
+            )
+        };
+        (series, inner)
+    }
+
+    /// Adds the resistance's current, and its derivatives, to the circuit's equations.
+    pub(crate) fn add(&self, input: &Input<'_>, output: &mut Output<'_, R>) {
+        match self {
+            Self::None => {}
+            Self::Conductance(pair, conductance) => {
+                pair.add_current(output, *conductance * pair.voltage(input));
+                pair.add_conductance(output, *conductance);
+            }
+            Self::Current(branch, resistance, entry) => {
+                let current = branch.current(input);
+                let residual = R::constant(branch.voltage(input)) - *resistance * current;
+                branch.add(input, output, residual);
+                output.add_conductance(*entry, -*resistance);
+            }
+        }
     }
 }
 
@@ -78,22 +137,6 @@ impl<const N: usize> Stamp<N> {
     /// The voltage of the node at `index`.
     pub(crate) fn voltage(&self, input: &Input<'_>, index: usize) -> f64 {
         input.value(self.nodes[index])
-    }
-
-    /// Adds a series resistance's current, its `conductance` times the voltage of node
-    /// `outer` over node `inner`, and its derivative; nothing without one.
-    pub(crate) fn series<R: Real>(
-        &self,
-        input: &Input<'_>,
-        output: &mut Output<'_, R>,
-        (outer, inner): (usize, usize),
-        conductance: R,
-    ) {
-        if conductance.value() > 0.0 {
-            let voltage = self.voltage(input, outer) - self.voltage(input, inner);
-            self.current(output, outer, inner, conductance * voltage);
-            self.conductance(output, (outer, inner), (outer, inner), conductance);
-        }
     }
 
     /// Adds `current`, flowing through the device from node `from` to node `to`.

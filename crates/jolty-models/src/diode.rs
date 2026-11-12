@@ -4,6 +4,7 @@ use crate::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };
+use crate::stamp::Series;
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
     ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
@@ -14,17 +15,18 @@ use crate::{
 /// The junction carries the [junction current](crate::junction) with exponential slope
 /// `n·Vt`, plus `gmin · v`, and holds a depletion charge and a diffusion charge. With a
 /// series resistance, the junction sits between an internal node, labelled `junction`, and
-/// the cathode. Given a breakdown voltage, the reverse current grows exponentially beyond
-/// it, matched to the breakdown current there as ngspice matches it. Steps of the junction
-/// voltage are limited the way SPICE limits them, so Newton iterations cannot overflow the
-/// exponential.
+/// the cathode; below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE), the resistance also
+/// carries its current as an unknown, labelled `junction_current`. Given a breakdown
+/// voltage, the reverse current grows exponentially beyond it, matched to the breakdown
+/// current there as ngspice matches it. Steps of the junction voltage are limited the way
+/// SPICE limits them, so Newton iterations cannot overflow the exponential.
 ///
 /// Away from its nominal temperature, its saturation current scales with the energy gap,
 /// its junction potential and capacitance with silicon's band gap, and its breakdown
 /// voltage by its temperature coefficient, as ngspice scales them.
 #[derive(Debug)]
 pub struct Diode<R: Real = f64> {
-    series: Option<(TerminalPair, R)>,
+    series: Series<R>,
     junction: TerminalPair,
     saturation_current: R,
     /// The emission coefficient times the thermal voltage.
@@ -217,11 +219,7 @@ impl<R: Real> NativeDevice<R> for Diode<R> {
             .transpose()?;
 
         let (anode, cathode) = (binding.terminal(0), binding.terminal(1));
-        let inner = binding.behind(anode, series_resistance, "junction");
-        let series = (series_resistance.value() > 0.0).then(|| {
-            let pair = TerminalPair::new(binding, anode, inner);
-            (pair, series_resistance.recip())
-        });
+        let (series, inner) = Series::behind(binding, anode, series_resistance, "junction");
         let junction = TerminalPair::new(binding, inner, cathode);
         let slope = emission_coefficient * vt;
         Ok(Self {
@@ -289,10 +287,7 @@ impl<R: Real> Diode<R> {
 
 impl<R: Real> Device<R> for Diode<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        if let Some((pair, conductance)) = &self.series {
-            pair.add_current(output, *conductance * pair.voltage(input));
-            pair.add_conductance(output, *conductance);
-        }
+        self.series.add(input, output);
         let applied = self.junction.voltage(input);
         let voltage = input
             .limiting
@@ -378,6 +373,22 @@ mod tests {
     fn a_series_resistance_adds_an_internal_node() {
         let bench = Bench::new::<Diode>(r#"{"series_resistance": 10}"#);
         assert_eq!(bench.unknowns(), ["n0", "n1", "device:junction"]);
+    }
+
+    #[test]
+    fn a_small_series_resistance_carries_its_current_as_an_unknown() {
+        let small = r#"{"series_resistance": 0.5, "junction_capacitance": 1e-12}"#;
+        let mut bench = Bench::new::<Diode>(small);
+        assert_eq!(
+            bench.unknowns(),
+            ["n0", "n1", "device:junction", "device:junction_current"]
+        );
+        let x = [0.7, 0.0, 0.65, 0.1];
+        let residual = bench.evaluate(&x).residual;
+        assert!((residual[0] - 0.1).abs() < 1e-15, "{residual:?}");
+        assert!(residual[3].abs() < 1e-15, "{residual:?}");
+        assert_jacobians_match::<Diode>(small, &x);
+        assert_parameter_gradients_match::<Diode>(small, &x);
     }
 
     #[test]

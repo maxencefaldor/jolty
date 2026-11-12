@@ -10,7 +10,7 @@ use crate::junction::{
     BOLTZMANN, Depletion, ELEMENTARY_CHARGE, Temperatures, band_gap, below_one, critical_voltage,
     depletion_charge, junction_current, limit_drain, limit_gate, limit_junction,
 };
-use crate::stamp::{self, Stamp, series_conductance};
+use crate::stamp::{self, Series, Stamp};
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
     ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown,
@@ -88,13 +88,15 @@ pub enum GateMaterial {
 /// `C(v) · dv/dt`, which follows an unknown of the transistor's own: the displacement
 /// current through the whole oxide, `Cox · dv/dt`, labelled `gate_source_displacement`,
 /// `gate_drain_displacement` or `gate_bulk_displacement`. A drain or source resistance adds
-/// an internal node, labelled `drain` or `source`.
+/// an internal node, labelled `drain` or `source`; one below
+/// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) also carries its current as an unknown,
+/// labelled `drain_current` or `source_current`.
 #[derive(Debug)]
 pub struct Mosfet<R: Real = f64> {
-    stamp: Stamp<6>,
+    stamp: Stamp<4>,
     sign: f64,
-    drain_conductance: R,
-    source_conductance: R,
+    drain_series: Series<R>,
+    source_series: Series<R>,
     channel: Law<R>,
     /// The bulk-drain and bulk-source junctions.
     junctions: [BulkJunction<R>; 2],
@@ -119,14 +121,12 @@ const VARIABLE_NAMES: [&str; 5] = [
     "gate_bulk_capacitance",
 ];
 
-/// Local node indices: the terminals, then the internal drain and source, which are the
-/// terminals themselves without series resistance.
+/// Local node indices: the gate and the bulk, then the drain and source behind their
+/// resistances, which are the terminals themselves without one.
 const GATE: usize = 0;
-const DRAIN: usize = 1;
-const SOURCE: usize = 2;
-const BULK: usize = 3;
-const INNER_DRAIN: usize = 4;
-const INNER_SOURCE: usize = 5;
+const BULK: usize = 1;
+const INNER_DRAIN: usize = 2;
+const INNER_SOURCE: usize = 3;
 
 /// The pairs of nodes across which the voltages the transistor's equations take as
 /// variables lie: gate-source, drain-source and bulk-source.
@@ -664,7 +664,7 @@ impl Displacement {
     /// Returns `w`.
     fn add<R: Real>(
         &self,
-        stamp: &Stamp<6>,
+        stamp: &Stamp<4>,
         (oxide, capacitance): (R, R),
         input: &Input<'_>,
         output: &mut Output<'_, R>,
@@ -745,12 +745,10 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
         }
 
         let [drain, gate, source, bulk] = [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let inner_drain = binding.behind(drain, drain_resistance, "drain");
-        let inner_source = binding.behind(source, source_resistance, "source");
-        let stamp = Stamp::new(
-            binding,
-            [gate, drain, source, bulk, inner_drain, inner_source],
-        );
+        let (drain_series, inner_drain) = Series::behind(binding, drain, drain_resistance, "drain");
+        let (source_series, inner_source) =
+            Series::behind(binding, source, source_resistance, "source");
+        let stamp = Stamp::new(binding, [gate, bulk, inner_drain, inner_source]);
         let oxide = process.oxide.map(|per_area| {
             let mut displacement = |label, node| Displacement::new(binding, label, gate, node);
             Oxide {
@@ -767,8 +765,8 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
         Ok(Self {
             stamp,
             sign,
-            drain_conductance: series_conductance(drain_resistance),
-            source_conductance: series_conductance(source_resistance),
+            drain_series,
+            source_series,
             channel,
             junctions,
             overlaps,
@@ -1034,18 +1032,6 @@ impl<R: Real> MosfetParameters<R> {
 }
 
 impl<R: Real> Mosfet<R> {
-    /// Adds the drain and source resistances.
-    fn add_series(&self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let stamp = &self.stamp;
-        stamp.series(input, output, (DRAIN, INNER_DRAIN), self.drain_conductance);
-        stamp.series(
-            input,
-            output,
-            (SOURCE, INNER_SOURCE),
-            self.source_conductance,
-        );
-    }
-
     /// The terminal voltages at `input`, limited from the last evaluation's.
     fn bias(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) -> Bias {
         let stamp = &self.stamp;
@@ -1145,7 +1131,8 @@ impl<R: Real> Mosfet<R> {
 
 impl<R: Real> Device<R> for Mosfet<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        self.add_series(input, output);
+        self.drain_series.add(input, output);
+        self.source_series.add(input, output);
         let bias = self.bias(input, output);
         let [vgs, vds, vbs] = Dual::variables(bias.voltages);
         let conduction = self.channel.evaluate([vgs, vds, vbs]);

@@ -1,13 +1,23 @@
 # Copyright 2026 Maxence Faldor
 
+import math
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
 
-from jolty import Builder, Role, circuit, component, devices
-from jolty.units import kohm, nF
+from jolty import (
+    Ac,
+    Builder,
+    OperatingPoint,
+    Role,
+    Simulation,
+    circuit,
+    component,
+    devices,
+)
+from jolty.units import CURRENT, A, MHz, Quantity, V, kohm, nF
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks"
 COST_DOWN = BENCHMARKS / "cost_down"
@@ -436,3 +446,70 @@ def test_too_few_boards_that_meet_the_task_fall_short() -> None:
     spread, reasons = tolerate(circuit(loaded()), measure, below(1010))
     assert spread["yield"] == 1
     assert not reasons
+
+
+@pytest.mark.parametrize("name", ["IRF511", "IRF9230", "IRFZ44", "MTP50P03HDL"])
+def test_power_mosfets_meet_their_datasheets(name: str) -> None:
+    import power_mosfets  # noqa: PLC0415 - importable only once the path holds it
+
+    sheet = getattr(power_mosfets, name)
+    sign = 1.0 if sheet.channel == "n" else -1.0
+
+    def bench(gate: float | None, drain: Quantity) -> Simulation:
+        """The transistor, its gate at `gate` volts, its drain held or fed.
+
+        The drain takes a voltage or a current, both signed as its channel conducts.
+        Without a gate voltage, the gate is tied to the drain, which leaves the
+        symmetric channel off whichever way the current flows.
+        """
+
+        @component
+        def fixture(c: Builder) -> None:
+            ground = c.port("ground", Role.GROUND)
+            placed = c.place(power_mosfets.power_mosfet(sheet), id="X1")
+            c.connect(placed.source, ground)
+            if gate is None:
+                c.connect(placed.gate, placed.drain)
+            else:
+                gate_source = c.place(devices.voltage_source(sign * gate * V), id="VG")
+                c.connect(gate_source.positive, placed.gate, name="gate")
+                c.connect(gate_source.negative, ground)
+            if drain.dimension == CURRENT:
+                fed = c.place(devices.current_source(sign * drain), id="ID")
+                c.connect(fed.negative, placed.drain, name="drain")
+                c.connect(fed.positive, ground)
+            else:
+                held = c.place(devices.voltage_source(sign * drain), id="VD")
+                c.connect(held.positive, placed.drain, name="drain")
+                c.connect(held.negative, ground)
+
+        return Simulation(fixture())
+
+    on = bench(sheet.on_gate, sheet.on_current * A).run(OperatingPoint())
+    resistance = abs(on.voltage("drain")) / sheet.on_current
+    assert resistance == pytest.approx(sheet.on_resistance, rel=1e-6)
+    drop = bench(None, -sheet.diode_current * A).run(OperatingPoint())
+    assert abs(drop.voltage("drain")) == pytest.approx(sheet.diode_drop, rel=1e-3)
+    beta = power_mosfets.transconductance_parameter(sheet)
+    overdrive = (2 * sheet.transconductance_current / beta) ** 0.5
+    currents = [
+        abs(
+            bench(sheet.threshold + overdrive + step, 20 * V)
+            .run(OperatingPoint())
+            .current("VD")
+        )
+        for step in (-1e-3, 1e-3)
+    ]
+    assert (currents[1] - currents[0]) / 2e-3 >= sheet.transconductance * (1 - 1e-3)
+    still = bench(0.0, sheet.capacitance_voltage * V)
+    omega = 2 * math.pi * 1e6
+    through_gate = still.run(Ac("VG", [1 * MHz]))
+    through_drain = still.run(Ac("VD", [1 * MHz]))
+    found = {
+        "input": abs(through_gate.current("VG")[0]) / omega,
+        "reverse": abs(through_drain.current("VG")[0]) / omega,
+        "output": abs(through_drain.current("VD")[0]) / omega,
+    }
+    for kind, capacitance in found.items():
+        stated = getattr(sheet, f"{kind}_capacitance")
+        assert capacitance == pytest.approx(stated, rel=1e-3), kind

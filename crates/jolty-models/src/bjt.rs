@@ -4,9 +4,11 @@ use crate::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };
-use crate::stamp::{self, Stamp, series_conductance};
+use jolty_numerics::Entry;
+
+use crate::stamp::{self, CurrentBranch, SMALL_RESISTANCE, Series, Stamp};
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
     ParameterError, REFERENCE_TEMPERATURE, Real,
 };
 
@@ -53,7 +55,10 @@ pub enum Construction {
 /// and a diffusion charge set by its transit time; the forward transit time grows with
 /// the current and the base-collector voltage. Part of the base-collector depletion charge
 /// sits on the external base. A base, collector or emitter resistance adds an internal
-/// node, labelled `base`, `collector` or `emitter`.
+/// node, labelled `base`, `collector` or `emitter`; one below
+/// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE), the base's at its minimum, also carries
+/// its current as an unknown, labelled `base_current`, `collector_current` or
+/// `emitter_current`.
 ///
 /// A transistor with a substrate has a fourth terminal, `substrate`, joined by a junction
 /// to its internal collector if it is vertical or to its internal base if it is lateral.
@@ -65,11 +70,11 @@ pub enum Construction {
 /// capacitances with silicon's band gap, as ngspice scales them.
 #[derive(Debug)]
 pub struct BipolarTransistor<R: Real = f64> {
-    stamp: Stamp<6>,
+    stamp: Stamp<4>,
     sign: f64,
-    collector_conductance: R,
-    emitter_conductance: R,
-    base: Option<BaseResistance<R>>,
+    collector_series: Series<R>,
+    emitter_series: Series<R>,
+    base: Option<(BaseResistance<R>, BaseForm)>,
     junctions: Junctions<R>,
     charges: Option<Charges<R>>,
     substrate: Option<Substrate<R>>,
@@ -81,14 +86,16 @@ pub struct BipolarTransistor<R: Real = f64> {
     last: [f64; 2],
 }
 
-/// Local node indices: the terminals, then the internal collector, base and emitter, which
-/// are the terminals themselves without series resistance.
+/// The indices of the terminals a substrate junction may join: the collector and the base.
 const COLLECTOR: usize = 0;
 const BASE: usize = 1;
-const EMITTER: usize = 2;
-const INNER_COLLECTOR: usize = 3;
-const INNER_BASE: usize = 4;
-const INNER_EMITTER: usize = 5;
+
+/// Local node indices: the base terminal, then the collector, base and emitter behind their
+/// resistances, which are the terminals themselves without one.
+const OUTER_BASE: usize = 0;
+const INNER_COLLECTOR: usize = 1;
+const INNER_BASE: usize = 2;
+const INNER_EMITTER: usize = 3;
 
 /// The parameters of a [`BipolarTransistor`], with SPICE's defaults. A parameter SPICE
 /// treats as infinite at zero, such as an Early voltage, is infinite when left out.
@@ -339,6 +346,59 @@ impl<R: Real> Junctions<R> {
             transport,
             charge: (qb, dqb),
         }
+    }
+}
+
+/// How the base resistance joins the base terminal to the internal base.
+#[derive(Debug)]
+enum BaseForm {
+    /// A conductance between the two.
+    Conductance,
+    /// With a minimum below [`SMALL_RESISTANCE`], the base current as an unknown of its own,
+    /// held by `drop − r · i = 0`.
+    Current(BaseCurrent),
+}
+
+/// The base current as an unknown of its own, and the entries of its equation at itself
+/// and at the internal base, emitter and collector, on whose voltages the resistance
+/// depends.
+#[derive(Debug)]
+struct BaseCurrent {
+    branch: CurrentBranch,
+    entries: [Option<Entry>; 4],
+}
+
+impl BaseCurrent {
+    /// The current from the `base` terminal to the internal one, labelled `base_current`,
+    /// across a resistance that depends on the voltages of the internal `emitter` and
+    /// `collector`.
+    fn new(binding: &mut Binding<'_>, base: [Node; 2], emitter: Node, collector: Node) -> Self {
+        let branch = CurrentBranch::new(binding, "base_current", base);
+        let row = Some(branch.unknown());
+        let entries = [row, base[1], emitter, collector].map(|column| binding.entry(row, column));
+        Self { branch, entries }
+    }
+
+    /// Adds the current's equation for a `resistance` with derivatives `slopes` with respect
+    /// to the base-emitter and base-collector voltages of a transistor of polarity `sign`.
+    fn add<R: Real>(
+        &self,
+        (resistance, slopes): (R, [R; 2]),
+        bias: &Bias,
+        sign: f64,
+        input: &Input<'_>,
+        output: &mut Output<'_, R>,
+    ) {
+        let current = self.branch.current(input);
+        let drop = R::constant(self.branch.voltage(input));
+        let residual = drop - (resistance + bias.extend(slopes)) * current;
+        self.branch.add(input, output, residual);
+        let [emitter, collector] = slopes.map(|slope| slope * (current * sign));
+        let [own, at_base, at_emitter, at_collector] = self.entries;
+        output.add_conductance(own, -resistance);
+        output.add_conductance(at_base, -(emitter + collector));
+        output.add_conductance(at_emitter, emitter);
+        output.add_conductance(at_collector, collector);
     }
 }
 
@@ -848,7 +908,7 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
         let temperatures =
             Temperatures::new(binding.temperature(), parameters.nominal_temperature)?;
         let junctions = parameters.junctions(temperatures)?;
-        let base = parameters.base_resistance()?;
+        let base_resistance = parameters.base_resistance()?;
         let charges = parameters.charges(temperatures)?;
         let substrate_junction = parameters.substrate_junction(temperatures)?;
         let non_negative = ParameterError::non_negative;
@@ -857,9 +917,11 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
         let emitter_resistance = non_negative("emitter_resistance", parameters.emitter_resistance)?;
 
         let [collector, base_terminal, emitter] = [0, 1, 2].map(|index| binding.terminal(index));
-        let inner_collector = binding.behind(collector, collector_resistance, "collector");
+        let (collector_series, inner_collector) =
+            Series::behind(binding, collector, collector_resistance, "collector");
         let inner_base = binding.behind(base_terminal, parameters.base_resistance, "base");
-        let inner_emitter = binding.behind(emitter, emitter_resistance, "emitter");
+        let (emitter_series, inner_emitter) =
+            Series::behind(binding, emitter, emitter_resistance, "emitter");
         let substrate = substrate_junction.map(|junction| {
             let joined = match junction.construction {
                 Construction::Vertical => inner_collector,
@@ -872,22 +934,29 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
                 last: 0.0,
             }
         });
+        let base = base_resistance.map(|resistance| {
+            let form = if resistance.minimum.value() < SMALL_RESISTANCE {
+                let nodes = [base_terminal, inner_base];
+                BaseForm::Current(BaseCurrent::new(
+                    binding,
+                    nodes,
+                    inner_emitter,
+                    inner_collector,
+                ))
+            } else {
+                BaseForm::Conductance
+            };
+            (resistance, form)
+        });
         let stamp = Stamp::new(
             binding,
-            [
-                collector,
-                base_terminal,
-                emitter,
-                inner_collector,
-                inner_base,
-                inner_emitter,
-            ],
+            [base_terminal, inner_collector, inner_base, inner_emitter],
         );
         Ok(Self {
             stamp,
             sign: parameters.polarity.sign(),
-            collector_conductance: series_conductance(collector_resistance),
-            emitter_conductance: series_conductance(emitter_resistance),
+            collector_series,
+            emitter_series,
             base,
             thermal_voltage: temperatures.thermal_voltage(),
             critical_voltage: critical_voltage(
@@ -909,23 +978,6 @@ const BASE_EMITTER: (usize, usize) = (INNER_BASE, INNER_EMITTER);
 const BASE_COLLECTOR: (usize, usize) = (INNER_BASE, INNER_COLLECTOR);
 
 impl<R: Real> BipolarTransistor<R> {
-    /// Adds the collector and emitter resistances.
-    fn add_series(&self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let stamp = &self.stamp;
-        stamp.series(
-            input,
-            output,
-            (COLLECTOR, INNER_COLLECTOR),
-            self.collector_conductance,
-        );
-        stamp.series(
-            input,
-            output,
-            (EMITTER, INNER_EMITTER),
-            self.emitter_conductance,
-        );
-    }
-
     /// The junction voltages at `input`, limited from the last evaluation's.
     fn bias(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) -> Bias {
         let stamp = &self.stamp;
@@ -968,24 +1020,29 @@ impl<R: Real> BipolarTransistor<R> {
         }
     }
 
-    /// Adds the current through the base resistance, `drop / r`, which varies with the
-    /// drop and with the junction voltages the resistance depends on.
+    /// Adds the current through the base resistance, `drop / r`, or the equation of the
+    /// base current that crosses it; either varies with the junction voltages the
+    /// resistance depends on.
     fn add_base_resistance(
         &self,
-        resistance: &BaseResistance<R>,
+        (resistance, form): &(BaseResistance<R>, BaseForm),
         bias: &Bias,
         state: &State<R>,
         input: &Input<'_>,
         output: &mut Output<'_, R>,
     ) {
-        let stamp = &self.stamp;
         let (value, slopes) = resistance.evaluate(state);
-        let drop = stamp.voltage(input, BASE) - stamp.voltage(input, INNER_BASE);
+        if let BaseForm::Current(current) = form {
+            current.add((value, slopes), bias, self.sign, input, output);
+            return;
+        }
+        let stamp = &self.stamp;
+        let drop = stamp.voltage(input, OUTER_BASE) - stamp.voltage(input, INNER_BASE);
         let slopes = slopes.map(|slope| slope * -drop / (value * value));
-        let pair = (BASE, INNER_BASE);
+        let pair = (OUTER_BASE, INNER_BASE);
         stamp.current(
             output,
-            BASE,
+            OUTER_BASE,
             INNER_BASE,
             R::constant(drop) / value + bias.extend(slopes),
         );
@@ -1015,24 +1072,26 @@ impl<R: Real> BipolarTransistor<R> {
         let charge = (charge + capacitance * bias.beyond[1]) * sign;
         stamp.charge(output, INNER_BASE, INNER_COLLECTOR, charge);
         stamp.capacitance(output, BASE_COLLECTOR, BASE_COLLECTOR, capacitance);
-        let external = sign * (stamp.voltage(input, BASE) - stamp.voltage(input, INNER_COLLECTOR));
+        let external =
+            sign * (stamp.voltage(input, OUTER_BASE) - stamp.voltage(input, INNER_COLLECTOR));
         let (charge, capacitance) =
             depletion_charge(charges.external_base_collector.as_ref(), external);
-        let pair = (BASE, INNER_COLLECTOR);
-        stamp.charge(output, BASE, INNER_COLLECTOR, charge * sign);
+        let pair = (OUTER_BASE, INNER_COLLECTOR);
+        stamp.charge(output, OUTER_BASE, INNER_COLLECTOR, charge * sign);
         stamp.capacitance(output, pair, pair, capacitance);
     }
 }
 
 impl<R: Real> Device<R> for BipolarTransistor<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        self.add_series(input, output);
+        self.collector_series.add(input, output);
+        self.emitter_series.add(input, output);
         let bias = self.bias(input, output);
         let [vbe, vbc] = bias.voltages;
         let state = self.junctions.evaluate(vbe, vbc, input.gmin);
         self.add_currents(&bias, &state, output);
-        if let Some(resistance) = &self.base {
-            self.add_base_resistance(resistance, &bias, &state, input, output);
+        if let Some(base) = &self.base {
+            self.add_base_resistance(base, &bias, &state, input, output);
         }
         if let Some(charges) = &self.charges {
             self.add_charges(charges, &bias, &state, input, output);
@@ -1113,6 +1172,59 @@ mod tests {
                 "device:emitter"
             ]
         );
+    }
+
+    #[test]
+    fn small_series_resistances_carry_their_currents_as_unknowns() {
+        let small = |polarity: &str, halfway: &str| {
+            FULL.replace(
+                '{',
+                &format!(
+                    r#"{{"polarity": "{polarity}", "base_resistance": 0.8,
+                    "minimum_base_resistance": 0.2, {halfway} "collector_resistance": 0.5,
+                    "emitter_resistance": 0.1, "#
+                ),
+            )
+        };
+        let bench = Bench::new::<BipolarTransistor>(&small("npn", ""));
+        assert_eq!(
+            bench.unknowns(),
+            [
+                "n0",
+                "n1",
+                "n2",
+                "device:collector",
+                "device:collector_current",
+                "device:base",
+                "device:emitter",
+                "device:emitter_current",
+                "device:base_current",
+            ]
+        );
+        for (polarity, sign) in [("npn", 1.0), ("pnp", -1.0)] {
+            for halfway in ["", r#""base_resistance_current": 1e-4,"#] {
+                let parameters = small(polarity, halfway);
+                for [collector, base] in [[3.0, 0.7], [0.4, 0.72], [-0.5, 0.1], [0.2, -0.6]] {
+                    // Each current near what its resistance carries at these voltages, as
+                    // near a solution: arbitrary currents can leave a node's residual a
+                    // near-cancellation that finite differences cannot resolve.
+                    let x = [
+                        collector,
+                        base,
+                        0.0,
+                        0.98 * collector,
+                        0.02 * collector / 0.5,
+                        0.97 * base,
+                        0.01,
+                        -0.01 / 0.1,
+                        0.03 * base / 0.5,
+                    ]
+                    .map(|value| sign * value);
+                    assert_jacobians_match::<BipolarTransistor>(&parameters, &x);
+                    assert_parameter_gradients_match::<BipolarTransistor>(&parameters, &x);
+                }
+            }
+        }
     }
 
     #[test]

@@ -150,7 +150,7 @@ Every parameter is optional:
 | `saturation_current_temperature_exponent` | none | 3 |
 | `nominal_temperature` | K | 27 °C |
 
-A diode with a series resistance adds the voltage of its junction to the unknowns, as `D1:junction` for a diode `D1`.
+A diode with a series resistance adds the voltage of its junction to the unknowns, as `D1:junction` for a diode `D1`; below 1 Ω, the resistance adds its current too, as `D1:junction_current`, as a small resistor does.
 
 The junction follows SPICE as ngspice implements it, its reverse current settling on the saturation current below three thermal voltages of reverse bias.
 Given a breakdown voltage, the reverse current grows exponentially beyond it; ngspice moves the voltage slightly so the current there is the breakdown current, and jolty does the same.
@@ -184,7 +184,7 @@ Every parameter is optional:
 | `saturation_current_temperature_exponent` | `XTI` | none | 0 |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
 
-A drain or source resistance adds an internal node to the unknowns, as `J1:drain` or `J1:source` for a JFET `J1`.
+A drain or source resistance adds an internal node to the unknowns, as `J1:drain` or `J1:source` for a JFET `J1`; one below 1 Ω adds its current too, as `J1:drain_current` or `J1:source_current`, as a small resistor does.
 
 Away from the nominal temperature, the gate junctions' saturation current scales with the energy gap as a diode's, and their potential and capacitances follow silicon's band gap; the threshold moves by its temperature coefficient, and the transconductance parameter scales as `(T/Tn)^BEX`.
 ngspice scales a JFET's saturation current by its temperature exponent only when given, so it defaults to 0.
@@ -222,7 +222,7 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 | `saturation_current_temperature_exponent`, `beta_temperature_exponent` | `XTI`, `XTB` | none | 3, 0 |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
 
-A base, collector or emitter resistance adds an internal node to the unknowns, as `Q1:base`, `Q1:collector` or `Q1:emitter` for a transistor `Q1`.
+A base, collector or emitter resistance adds an internal node to the unknowns, as `Q1:base`, `Q1:collector` or `Q1:emitter` for a transistor `Q1`; one below 1 Ω, the base's at its minimum, adds its current too, as `Q1:base_current`, `Q1:collector_current` or `Q1:emitter_current`, as a small resistor does.
 
 A transistor built `"vertical"` or `"lateral"` has a fourth terminal, `substrate`, joined by a junction to its internal collector if vertical or to its internal base if lateral.
 The junction conducts the minimum conductance, as ngspice's does, and a diode's current given a substrate saturation current; its depletion capacitance grows linearly in forward bias.
@@ -293,7 +293,7 @@ The saturation current density replaces the saturation current when it and both 
 Away from the nominal temperature, the transconductance parameter and the surface mobility fall as `(T/Tn)^−1.5`, the surface potential follows silicon's band gap and intrinsic concentration, and the threshold moves with them; the junctions' saturation currents, potential and capacitances follow the band gap too, as in ngspice.
 A process derived from the substrate doping is derived at the nominal temperature.
 
-A drain or source resistance adds an internal node to the unknowns, as `M1:drain` or `M1:source` for a transistor `M1`.
+A drain or source resistance adds an internal node to the unknowns, as `M1:drain` or `M1:source` for a transistor `M1`; one below 1 Ω adds its current too, as `M1:drain_current` or `M1:source_current`, as a small resistor does.
 Meyer's capacitances depend on every terminal voltage, and no charge yields them, so each carries a current `C(v) · dv/dt` that follows a current of the transistor's own: the displacement current through the whole oxide towards the source, the drain or the bulk, the unknowns `M1:gate_source_displacement`, `M1:gate_drain_displacement` and `M1:gate_bulk_displacement`.
 The frequency response holds Meyer's capacitances exactly, as ngspice's does.
 With the bulk forward-biased, ngspice's small-signal model and Newton steps take the threshold's slope from the reverse-biased formula; jolty keeps every derivative exact.

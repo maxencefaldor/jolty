@@ -62,12 +62,11 @@ pub use logic::{
 pub use mosfet::{GateMaterial, Mosfet, MosfetParameters};
 pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
-    SMALL_RESISTANCE,
 };
 pub use photocell::{Photocell, PhotocellParameters};
 pub use real::{Gradient, Real};
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
-pub use stamp::TerminalPair;
+pub use stamp::{SMALL_RESISTANCE, TerminalPair};
 pub use switch::{VoltageControlledSwitch, VoltageControlledSwitchParameters};
 pub use topology::{Branch, BranchKind, Interface};
 

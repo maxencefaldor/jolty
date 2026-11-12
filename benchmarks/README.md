@@ -25,6 +25,7 @@ Its `reference.py` holds a design for each problem, which the scorer's tests mus
 `cubic_discrete` keeps his fixture, his four slow fitness cases and his transistors, and is met at the patented circuit's mean error as he measured it.
 `cubic` keeps his 2 V supply, but gives a reference current and tests from DC to the gigahertz the patent claims, against the patented circuit rebuilt from its text in `patent.py`.
 Koza simulated his circuits with exact parts; these four tasks are met only by a design that meets its task with exact parts and on 95 % of 100 boards built of it, each resistor within 1 % of its value and each capacitor within 5 %, so a design that holds only for exact values falls short.
+Two more of his six, the variable capacitor (US 6,013,958) and the high-current load (US 6,211,726), use power MOSFETs whose makers' SPICE models may not be redistributed; `power_mosfets.py` fits each of the four instead, by one stated recipe, to the figures its datasheet states.
 
 Run an agent on a task, Claude Code unless another command is given after the task:
 
