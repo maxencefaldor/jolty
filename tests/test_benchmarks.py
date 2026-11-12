@@ -115,3 +115,79 @@ def test_the_cubic_scorer_names_a_forbidden_part(tmp_path: Path) -> None:
     verdict = score(CUBIC, tmp_path)
     assert not verdict.met
     assert "D9 is a diode, which the task forbids" in verdict.reasons
+
+
+ANALOGCODER = BENCHMARKS / "analogcoder"
+
+
+def reference_designs(work: Path) -> None:
+    """Writes each of AnalogCoder's problems' reference design into `work`."""
+    reference = ANALOGCODER / "reference.py"
+    for number in range(1, 25):
+        (work / f"p{number}.py").write_text(
+            "import runpy\n"
+            f"_reference = runpy.run_path({str(reference)!r})\n"
+            f"LEVELS = _reference['LEVELS'].get({number}, {{}})\n"
+            "def build():\n"
+            f"    return _reference['build']({number})\n",
+            encoding="utf-8",
+        )
+
+
+def test_the_reference_designs_pass_every_analogcoder_check(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    reference_designs(tmp_path)
+    verdict = score(ANALOGCODER, tmp_path)
+    assert verdict.met, verdict.reasons
+    assert verdict.measurements["solved"] == 24
+
+
+def test_the_analogcoder_scorer_says_why_designs_fail(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    reference_designs(tmp_path)
+    (tmp_path / "p3.py").unlink()
+    (tmp_path / "p7.py").write_text(
+        "from jolty import Builder, Role, component, devices\n"
+        "@component\n"
+        "def inverter(c: Builder) -> None:\n"
+        "    ground = c.port('ground', Role.GROUND)\n"
+        "    c.port('vdd', Role.SUPPLY)\n"
+        "    amplifier = c.place(devices.voltage_controlled_voltage_source(-1.0), "
+        "id='E1')\n"
+        "    c.connect(amplifier.positive, c.port('vout'))\n"
+        "    c.connect(amplifier.control_positive, c.port('vin'))\n"
+        "    c.connect(amplifier.negative, amplifier.control_negative, ground)\n"
+        "build = inverter\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "p18.py").write_text(
+        "from jolty import Builder, Role, component, devices\n"
+        "from jolty.units import V, kohm, uF\n"
+        "LEVELS = {'vin': 2.5}\n"
+        "@component\n"
+        "def passive(c: Builder) -> None:\n"
+        "    ground = c.port('ground', Role.GROUND)\n"
+        "    c.port('vdd', Role.SUPPLY)\n"
+        "    resistor = c.place(devices.resistor(10 * kohm), id='R1')\n"
+        "    capacitor = c.place(devices.capacitor(3 * uF), id='CF')\n"
+        "    rest = c.place(devices.voltage_source(2.5 * V), id='VR')\n"
+        "    c.connect(resistor.a, c.port('vin'))\n"
+        "    c.connect(resistor.b, capacitor.a, c.port('vout'))\n"
+        "    c.connect(capacitor.b, rest.positive)\n"
+        "    c.connect(rest.negative, ground)\n"
+        "build = passive\n",
+        encoding="utf-8",
+    )
+    verdict = score(ANALOGCODER, tmp_path)
+    assert not verdict.met
+    assert verdict.measurements["solved"] == 21
+    assert "p3: there is no p3.py" in verdict.reasons
+    assert "p7: E1 is a voltage_controlled_voltage_source, which the task forbids" in (
+        verdict.reasons
+    )
+    assert any(
+        reason.startswith("p18: vout ramps at") and "while vin is above" in reason
+        for reason in verdict.reasons
+    ), verdict.reasons
