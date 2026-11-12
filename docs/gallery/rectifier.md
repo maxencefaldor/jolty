@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/rectifier.py`.
 
 [Open in 3D](rectifier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rectifier.py){ .md-button }
 
-4 devices, 4 unknowns, simulated in 1.44 s.
+4 devices, 4 unknowns, simulated in 1.29 s.
 
 ![The schematic](../images/gallery/rectifier.schematic.png)
 
@@ -22,7 +22,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `ripple` | 2 | 2.6e-05 | 1 | 1.3e-29 |
+| `ripple` | 2 | 7.2e-05 | 1 | 2.5e-08 |
 | `transfer` | 2 | 2.2e-06 | 1 | 2.2e-06 |
 
 ![The replication in ngspice](../images/gallery/rectifier.ripple.replication.png)

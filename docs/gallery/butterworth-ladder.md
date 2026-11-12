@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/butterworth_ladder.py`.
 
 [Open in 3D](butterworth-ladder.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/butterworth_ladder.py){ .md-button }
 
-8 devices, 7 unknowns, simulated in 1.98 s.
+8 devices, 7 unknowns, simulated in 1.58 s.
 
 ![The schematic](../images/gallery/butterworth_ladder.schematic.png)
 

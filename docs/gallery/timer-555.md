@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/timer_555.py`.
 
 [Open in 3D](timer-555.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/timer_555.py){ .md-button }
 
-16 devices, 17 unknowns, simulated in 2.43 s.
+16 devices, 17 unknowns, simulated in 1.80 s.
 
 ![The schematic](../images/gallery/timer_555.schematic.png)
 
@@ -17,7 +17,7 @@ Simulate it with `jolty simulate examples/timer_555.py`.
 
 | Requirement | jolty |
 | --- | --- |
-| frequency of out from 500 µs in run ≥ 6.664 kHz and ≤ 7.076 kHz | 6.73152 kHz, passed |
+| frequency of out from 500 µs in run ≥ 6.664 kHz and ≤ 7.076 kHz | 6.73154 kHz, passed |
 | maximum of timing from 500 µs in run ≥ 5.9 V and ≤ 6.1 V | 6.00843 V, passed |
 
 ## Checked in closed form

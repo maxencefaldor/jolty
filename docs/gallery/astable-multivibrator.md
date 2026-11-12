@@ -10,7 +10,7 @@ Simulate it with `jolty simulate examples/astable_multivibrator.py`.
 
 [Open in 3D](astable-multivibrator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/astable_multivibrator.py){ .md-button }
 
-9 devices, 10 unknowns, simulated in 2.06 s.
+9 devices, 10 unknowns, simulated in 2.25 s.
 
 ![The schematic](../images/gallery/astable_multivibrator.schematic.png)
 
@@ -18,9 +18,9 @@ Simulate it with `jolty simulate examples/astable_multivibrator.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of left from 2 ms in run ≥ 1.381 kHz and ≤ 1.688 kHz | 1.49008 kHz, passed | 1.48995 kHz, passed | 8.8e-05 |
-| maximum of left from 2 ms in run ≥ 8.5 V and ≤ 9.1 V | 9.00339 V, passed | 9.00002 V, passed | 3.7e-04 |
-| minimum of left from 2 ms in run ≤ 300 mV | 50.1631 mV, passed | 50.5049 mV, passed | 0.68 % |
+| frequency of left from 2 ms in run ≥ 1.381 kHz and ≤ 1.688 kHz | 1.48984 kHz, passed | 1.48995 kHz, passed | 7.2e-05 |
+| maximum of left from 2 ms in run ≥ 8.5 V and ≤ 9.1 V | 9.00002 V, passed | 9.00002 V, passed | 4.1e-08 |
+| minimum of left from 2 ms in run ≤ 300 mV | 50.4814 mV, passed | 50.5049 mV, passed | 4.7e-04 |
 
 ## Replicated in ngspice
 

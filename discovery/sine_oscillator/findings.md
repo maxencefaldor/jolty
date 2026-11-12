@@ -36,3 +36,9 @@ It runs again at -40 °C and 85 °C for the drift.
 
 `design.py` meets the frequency, the 27 °C amplitude, the distortion with a factor of seven to spare and the settling time, and fails the drift bound at both corners, as its specs report.
 Holding 5 % over the range needs the detector's drop out of the loop: a precision rectifier around a second op-amp, or a diode-compensated reference for the gate.
+
+## Limits
+
+The agent that wrote this prompt also designed the circuit, knowing the textbook answers, and judged the result itself: this is a showcase of what jolty lets an agent see, not a blind result.
+The JFET-controlled Wien bridge is a classic.
+Its distortion comes from nominal models: the resistors' and capacitors' own nonlinearity is not simulated, and the spread of a real 2N5457's pinch-off voltage would move the amplitude it settles at.

@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/rc_filter.py`, which checks its specs 
 
 [Open in 3D](rc-filter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rc_filter.py){ .md-button }
 
-3 devices, 3 unknowns, simulated in 1.74 s.
+3 devices, 3 unknowns, simulated in 1.55 s.
 
 ![The schematic](../images/gallery/rc_filter.schematic.png)
 

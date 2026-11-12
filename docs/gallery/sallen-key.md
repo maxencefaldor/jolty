@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/sallen_key.py`.
 
 [Open in 3D](sallen-key.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sallen_key.py){ .md-button }
 
-10 devices, 7 unknowns, simulated in 1.69 s.
+10 devices, 7 unknowns, simulated in 1.45 s.
 
 ![The schematic](../images/gallery/sallen_key.schematic.png)
 

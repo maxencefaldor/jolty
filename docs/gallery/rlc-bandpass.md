@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/rlc_bandpass.py`.
 
 [Open in 3D](rlc-bandpass.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rlc_bandpass.py){ .md-button }
 
-4 devices, 5 unknowns, simulated in 2.07 s.
+4 devices, 5 unknowns, simulated in 1.38 s.
 
 ![The schematic](../images/gallery/rlc_bandpass.schematic.png)
 

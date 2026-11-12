@@ -61,3 +61,9 @@ The first six rows read six controls, 0.5 V to 5 V; the last four read nineteen,
 `design.py` steps its control through 0.5, 1, 2, 3, 4 and 5 V in one transient, and each frequency lands within 0.09 % of 996.1 Hz/V, ten times inside the bound, as ngspice confirms, with two op-amps, a MOSFET, seven resistors and two capacitors.
 What limits it now is the delay's remaining dependence on the triangle's slope, 2.27 µs at 0.5 V against 1.93 µs at 5 V, and the time step: with 800 steps a period, the frequency at 5 V reads 0.37 % above its value with 8000.
 The slope itself, 0.4 % below 1 kHz/V, is set by R and C and the trigger's thresholds, and so would follow their tolerances in a built circuit.
+
+## Limits
+
+The agent that wrote this prompt also designed the circuit, knowing the textbook answers, and judged the result itself: this is a showcase of what jolty lets an agent see, not a blind result.
+Both remedies are known: a speed-up capacitor across a Schmitt trigger's feedback, and a resistor in series with the integrating capacitor to cancel the comparator's delay.
+The 2 µs delay belongs to the op-amp macromodel, so a real comparator would need its own resistor; offsets, the MOSFET's charge injection beyond its Meyer model, and the capacitor's tolerance are not simulated, so 0.09 % is a simulated figure, not a built one.

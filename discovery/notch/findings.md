@@ -33,3 +33,9 @@ No spec of jolty measures a response's minimum over a band, so the agent's own c
 
 `design.py` is the notch: four op-amps, eight resistors and three capacitors, 100 % yield over 200 samples, and at least 65 dB at its worst.
 The twin-T has fewer parts, but no twin-T of 1 % and 5 % parts meets the depth on 95 % of samples; holding a balance takes matched parts, or a trimmer.
+
+## Limits
+
+The agent that wrote this prompt also designed the circuit, knowing the textbook answers, and judged the result itself: this is a showcase of what jolty lets an agent see, not a blind result.
+Summing a biquad's band-pass and low-pass outputs is the textbook state-variable notch; what is new here is only the yield measured against the twin-T's.
+The Monte Carlo varies the resistors and capacitors; the op-amp macromodel has no offset, noise or spread, which a built notch would add.

@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/push_pull.py`.
 
 [Open in 3D](push-pull.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/push_pull.py){ .md-button }
 
-12 devices, 17 unknowns, simulated in 1.51 s.
+12 devices, 17 unknowns, simulated in 1.33 s.
 
 ![The schematic](../images/gallery/push_pull.schematic.png)
 

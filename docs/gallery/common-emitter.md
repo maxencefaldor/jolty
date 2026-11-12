@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/common_emitter.py`.
 
 [Open in 3D](common-emitter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/common_emitter.py){ .md-button }
 
-12 devices, 11 unknowns, simulated in 1.86 s.
+12 devices, 11 unknowns, simulated in 1.71 s.
 
 ![The schematic](../images/gallery/common_emitter.schematic.png)
 
@@ -29,7 +29,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 | --- | --- | --- | --- | --- |
 | `op` | 7 | 3.9e-07 | 2 | 3.5e-07 |
 | `bode` | 7 | 2.9e-06 | 2 | 2.9e-06 |
-| `tone` | 7 | 8.5e-05 | 2 | 1.6e-07 |
+| `tone` | 7 | 8.5e-05 | 2 | 0 |
 
 ![The replication in ngspice](../images/gallery/common_emitter.bode.replication.png)
 

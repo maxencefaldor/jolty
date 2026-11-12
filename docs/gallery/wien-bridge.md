@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/wien_bridge.py`.
 
 [Open in 3D](wien-bridge.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/wien_bridge.py){ .md-button }
 
-15 devices, 9 unknowns, simulated in 1.72 s.
+15 devices, 9 unknowns, simulated in 1.85 s.
 
 ![The schematic](../images/gallery/wien_bridge.schematic.png)
 

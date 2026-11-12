@@ -570,6 +570,61 @@ fn a_sine_through_an_rc_settles_to_the_ac_amplitude() {
 }
 
 #[test]
+fn the_trapezoidal_formula_stops_ringing_after_a_corner() {
+    // A source holds a capacitor at |sin|, whose corners at each zero are no breakpoint: the
+    // trapezoidal formula's current rings after each, by the slope's whole jump, until one
+    // step of backward Euler ends it.
+    let (capacitance, frequency) = (1e-6, 1e3);
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"sine": {"offset": 0, "amplitude": 1, "frequency": frequency}}}),
+            &[("positive", "s"), ("negative", "0")],
+        ),
+        (
+            "B1",
+            "behavioral_voltage_source",
+            json!({"expression": "abs(v(s))"}),
+            &[("positive", "out"), ("negative", "0"), ("s", "s")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let transient = Transient {
+        stop: 5e-3,
+        max_step: Some(1e-5),
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+    };
+    let outcome = simulator
+        .run(&Analysis::Transient(transient), &Options::default())
+        .unwrap();
+    let Outcome::Transient(waveforms) = outcome else {
+        panic!("a transient outcome")
+    };
+    let current = index(&simulator, "B1:current");
+    let peak = capacitance * TAU * frequency;
+    for (time, values) in waveforms.times.iter().zip(&waveforms.values) {
+        let phase = TAU * frequency * time;
+        if phase.sin().abs() < 0.5 {
+            continue;
+        }
+        let expected = peak * phase.cos().abs();
+        let error = (values[current].abs() - expected).abs();
+        assert!(
+            error < 1e-2 * peak,
+            "at {time} s the current is off by {error} A"
+        );
+    }
+}
+
+#[test]
 fn hierarchy_gives_the_flat_answer() {
     let document = json!({
         "format": "jolty-circuit", "version": 1, "top": "top",

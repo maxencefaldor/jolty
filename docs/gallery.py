@@ -940,6 +940,12 @@ def discoveries(built: Sequence[Built]) -> str:
             "ngspice. Where no design met a bound, the page says so, and why."
         ),
         (
+            "None of these runs was blind: the agent wrote each prompt knowing the "
+            "textbook answers, so they show what jolty lets an agent see rather than "
+            "what an agent can invent, and each page's limits say what a built circuit "
+            "would add."
+        ),
+        (
             "The prompts, candidates, experiments and designs are all in "
             "[`discovery/`](https://github.com/maxencefaldor/jolty/tree/main/discovery)."
         ),

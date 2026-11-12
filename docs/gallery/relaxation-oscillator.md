@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/relaxation_oscillator.py`.
 
 [Open in 3D](relaxation-oscillator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/relaxation_oscillator.py){ .md-button }
 
-10 devices, 5 unknowns, simulated in 1.23 s.
+10 devices, 5 unknowns, simulated in 1.06 s.
 
 ![The schematic](../images/gallery/relaxation_oscillator.schematic.png)
 

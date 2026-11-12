@@ -23,6 +23,8 @@ const FACTOR_BOUNDS: (f64, f64) = (0.1, 2.0);
 const SAFETY: f64 = 0.9;
 /// The most accepted points the error estimate reads: enough for second-order formulas.
 const HISTORY: usize = 3;
+/// The earlier derivatives kept to tell the trapezoidal formula's ringing, besides the last.
+const RINGING: usize = 2;
 
 /// A transient analysis from time zero, starting at the operating point.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -82,24 +84,37 @@ struct History {
     last: (f64, Vec<f64>),
     /// The charges' derivative at the last accepted point.
     derivative: Vec<f64>,
+    /// The derivatives at the points before the last, oldest first, while the trapezoidal
+    /// formula took them all: the run that shows whether it rings.
+    ringing: VecDeque<Vec<f64>>,
 }
 
 impl History {
     /// Starts afresh from the point at `time`, forgetting the points before a breakpoint.
     fn restart(&mut self, time: f64, charge: Vec<f64>, derivative: Vec<f64>) {
         self.earlier.clear();
+        self.ringing.clear();
         self.last = (time, charge);
         self.derivative = derivative;
     }
 
-    /// Appends the point at `time`, keeping the last [`HISTORY`] points.
-    fn accept(&mut self, time: f64, charge: Vec<f64>, derivative: Vec<f64>) {
+    /// Appends the point at `time`, keeping the last [`HISTORY`] points; `trapezoidal` says
+    /// whether the trapezoidal formula took its derivative, which a run of keeps.
+    fn accept(&mut self, time: f64, charge: Vec<f64>, derivative: Vec<f64>, trapezoidal: bool) {
         let previous = std::mem::replace(&mut self.last, (time, charge));
         if self.earlier.len() == HISTORY - 1 {
             self.earlier.pop_front();
         }
         self.earlier.push_back(previous);
-        self.derivative = derivative;
+        let before = std::mem::replace(&mut self.derivative, derivative);
+        if trapezoidal {
+            if self.ringing.len() == RINGING {
+                self.ringing.pop_front();
+            }
+            self.ringing.push_back(before);
+        } else {
+            self.ringing.clear();
+        }
     }
 
     /// The number of points kept.
@@ -199,6 +214,9 @@ struct Stepper {
     previous: f64,
     /// Whether the next step follows a breakpoint, and so uses backward Euler.
     restart: bool,
+    /// Whether the next step uses backward Euler, its error still controlled, to end the
+    /// trapezoidal formula's ringing.
+    damp: bool,
     /// The history terms of the step being tried, one per unknown.
     terms: Vec<f64>,
     statistics: Statistics,
@@ -280,10 +298,12 @@ impl Simulator {
                 earlier: VecDeque::with_capacity(HISTORY - 1),
                 last: (0.0, self.workspace.charge.clone()),
                 derivative: vec![0.0; unknowns],
+                ringing: VecDeque::with_capacity(RINGING),
             },
             next: first,
             previous: first,
             restart: true,
+            damp: false,
             terms: vec![0.0; unknowns],
             statistics: Statistics {
                 initial: initial.strategy,
@@ -356,7 +376,7 @@ impl Simulator {
         // Only a breakpoint is a corner in the waveforms, after which the integration
         // restarts; an observation is a time like any other.
         let corner = landing && target >= breakpoint;
-        let method = if stepper.restart {
+        let method = if stepper.restart || stepper.damp {
             Method::BackwardEuler
         } else {
             stepper.method
@@ -422,14 +442,58 @@ impl Simulator {
             stepper.time = end;
             stepper.history.restart(end, charge, derivative);
             stepper.restart = true;
+            stepper.damp = false;
             stepper.next = RESTART_FRACTION * length.min(gap);
         } else {
+            let trapezoidal = method == Method::Trapezoidal;
+            stepper.damp = trapezoidal && self.rings(&stepper.history, &derivative, options);
             stepper.time = end;
-            stepper.history.accept(end, charge, derivative);
+            stepper.history.accept(end, charge, derivative, trapezoidal);
             stepper.restart = false;
             stepper.next = length * factor;
         }
         Ok(Step::Accepted(found, settles))
+    }
+
+    /// Whether the trapezoidal formula rings: whether some charge's derivative, over the last
+    /// four points it took, turned back and forth twice by more than its tolerance.
+    ///
+    /// The formula carries an error in a derivative from step to step undamped, flipping its
+    /// sign each time; a smooth waveform turns at most once in so few steps. A derivative no
+    /// equation reads, such as a Meyer displacement while its capacitance is zero, would
+    /// gather that error without bound. One step of backward Euler, needing no derivative,
+    /// starts it afresh.
+    fn rings(&self, history: &History, newest: &[f64], options: &Options) -> bool {
+        if history.ringing.len() < RINGING {
+            return false;
+        }
+        let (oldest, older) = (&history.ringing[0], &history.ringing[1]);
+        self.system
+            .unknowns
+            .iter()
+            .enumerate()
+            .any(|(index, unknown)| {
+                let run = [
+                    oldest[index],
+                    older[index],
+                    history.derivative[index],
+                    newest[index],
+                ];
+                let turns = [run[1] - run[0], run[2] - run[1], run[3] - run[2]];
+                let absolute = if unknown.quantity.sums_currents() {
+                    options.current_tolerance
+                } else {
+                    options.voltage_tolerance
+                };
+                let largest = run
+                    .iter()
+                    .fold(0.0_f64, |most, value| most.max(value.abs()));
+                let tolerance = options.truncation_tolerance
+                    * (options.relative_tolerance * largest + absolute);
+                turns[0] * turns[1] < 0.0
+                    && turns[1] * turns[2] < 0.0
+                    && turns.iter().all(|turn| turn.abs() > tolerance)
+            })
     }
 
     /// Moves the logic from the stepper's last point to `end`, where the solution is

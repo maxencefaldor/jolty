@@ -4,6 +4,7 @@ Some circuits are famous for being hard to get right with few parts: a current s
 For each, a prompt states the bounds as an engineer would, and an agent, Claude, searched for a circuit with nothing but jolty: it wrote candidates as components, ran experiments with jolty's Python API and command line, read the exact currents, delays and drifts jolty reports, and kept what the numbers supported.
 Each page holds the prompt, every experiment's result and what it showed; the final design runs through `jolty simulate` and again in ngspice.
 Where no design met a bound, the page says so, and why.
+None of these runs was blind: the agent wrote each prompt knowing the textbook answers, so they show what jolty lets an agent see rather than what an agent can invent, and each page's limits say what a built circuit would add.
 The prompts, candidates, experiments and designs are all in [`discovery/`](https://github.com/maxencefaldor/jolty/tree/main/discovery).
 
 <div class="grid cards" markdown>

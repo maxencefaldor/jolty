@@ -8,7 +8,7 @@ A counter of logic sources steps the code every 10 ns, through buffers on 3.3 V.
 
 [Open in 3D](r2r-dac.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/r2r_dac.py){ .md-button }
 
-17 devices, 14 unknowns, simulated in 1.29 s.
+17 devices, 14 unknowns, simulated in 1.03 s.
 
 ![The schematic](../images/gallery/r2r_dac.schematic.png)
 

@@ -9,7 +9,7 @@ Simulate it with `jolty simulate discovery/vco/design.py`.
 
 [Open in 3D](vco.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/vco/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/vco){ .md-button }
 
-17 devices, 16 unknowns, simulated in 26.44 s.
+17 devices, 16 unknowns, simulated in 28.85 s.
 
 ![The schematic](../images/gallery/vco.inside.schematic.png)
 
@@ -85,16 +85,22 @@ The first six rows read six controls, 0.5 V to 5 V; the last four read nineteen,
 What limits it now is the delay's remaining dependence on the triangle's slope, 2.27 µs at 0.5 V against 1.93 µs at 5 V, and the time step: with 800 steps a period, the frequency at 5 V reads 0.37 % above its value with 8000.
 The slope itself, 0.4 % below 1 kHz/V, is set by R and C and the trigger's thresholds, and so would follow their tolerances in a built circuit.
 
+## Limits
+
+The agent that wrote this prompt also designed the circuit, knowing the textbook answers, and judged the result itself: this is a showcase of what jolty lets an agent see, not a blind result.
+Both remedies are known: a speed-up capacitor across a Schmitt trigger's feedback, and a resistor in series with the integrating capacitor to cancel the comparator's delay.
+The 2 µs delay belongs to the op-amp macromodel, so a real comparator would need its own resistor; offsets, the MOSFET's charge injection beyond its Meyer model, and the capacitor's tolerance are not simulated, so 0.09 % is a simulated figure, not a built one.
+
 ## Specs
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of out from 4 ms to 16 ms in run ≥ 493.1 Hz and ≤ 503 Hz | 497.679 Hz, passed | 497.668 Hz, passed | 2.2e-05 |
-| frequency of out from 18 ms to 24 ms in run ≥ 986.1 Hz and ≤ 1.006 kHz | 995.229 Hz, passed | 995.131 Hz, passed | 9.9e-05 |
-| frequency of out from 25 ms to 28 ms in run ≥ 1.972 kHz and ≤ 2.012 kHz | 1.99049 kHz, passed | 1.99038 kHz, passed | 5.6e-05 |
-| frequency of out from 28.67 ms to 30.67 ms in run ≥ 2.958 kHz and ≤ 3.018 kHz | 2.98689 kHz, passed | 2.98673 kHz, passed | 5.5e-05 |
-| frequency of out from 31.17 ms to 32.67 ms in run ≥ 3.944 kHz and ≤ 4.024 kHz | 3.98524 kHz, passed | 3.9847 kHz, passed | 1.3e-04 |
-| frequency of out from 33.07 ms to 34.27 ms in run ≥ 4.931 kHz and ≤ 5.03 kHz | 4.98484 kHz, passed | 4.98493 kHz, passed | 1.8e-05 |
+| frequency of out from 4 ms to 16 ms in run ≥ 493.1 Hz and ≤ 503 Hz | 497.674 Hz, passed | 497.668 Hz, passed | 1.1e-05 |
+| frequency of out from 18 ms to 24 ms in run ≥ 986.1 Hz and ≤ 1.006 kHz | 995.167 Hz, passed | 995.131 Hz, passed | 3.7e-05 |
+| frequency of out from 25 ms to 28 ms in run ≥ 1.972 kHz and ≤ 2.012 kHz | 1.99088 kHz, passed | 1.99038 kHz, passed | 2.5e-04 |
+| frequency of out from 28.67 ms to 30.67 ms in run ≥ 2.958 kHz and ≤ 3.018 kHz | 2.98745 kHz, passed | 2.98673 kHz, passed | 2.4e-04 |
+| frequency of out from 31.17 ms to 32.67 ms in run ≥ 3.944 kHz and ≤ 4.024 kHz | 3.98577 kHz, passed | 3.9847 kHz, passed | 2.7e-04 |
+| frequency of out from 33.07 ms to 34.27 ms in run ≥ 4.931 kHz and ≤ 5.03 kHz | 4.98706 kHz, passed | 4.98493 kHz, passed | 4.3e-04 |
 
 ## Replicated in ngspice
 

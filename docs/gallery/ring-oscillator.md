@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/ring_oscillator.py`.
 
 [Open in 3D](ring-oscillator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ring_oscillator.py){ .md-button }
 
-9 devices, 37 unknowns, simulated in 2.35 s.
+9 devices, 37 unknowns, simulated in 2.19 s.
 
 ![The schematic](../images/gallery/ring_oscillator.schematic.png)
 
@@ -17,8 +17,8 @@ Simulate it with `jolty simulate examples/ring_oscillator.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of out from 5 ns in run ≥ 400 MHz and ≤ 1 GHz | 926.497 MHz, passed | 926.485 MHz, passed | 1.3e-05 |
-| peak-to-peak of out from 5 ns in run ≥ 3 V | 3.37931 V, passed | 3.37964 V, passed | 9.6e-05 |
+| frequency of out from 5 ns in run ≥ 400 MHz and ≤ 1 GHz | 926.624 MHz, passed | 926.485 MHz, passed | 1.5e-04 |
+| peak-to-peak of out from 5 ns in run ≥ 3 V | 3.37918 V, passed | 3.37964 V, passed | 1.4e-04 |
 
 ## Replicated in ngspice
 

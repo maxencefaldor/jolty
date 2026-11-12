@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/full_adder.py`.
 
 [Open in 3D](full-adder.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/full_adder.py){ .md-button }
 
-10 devices, 12 unknowns, simulated in 6.11 s.
+10 devices, 12 unknowns, simulated in 5.62 s.
 
 ![The schematic](../images/gallery/full_adder.schematic.png)
 

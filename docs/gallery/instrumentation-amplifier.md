@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/instrumentation_amplifier.py`.
 
 [Open in 3D](instrumentation-amplifier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/instrumentation_amplifier.py){ .md-button }
 
-14 devices, 17 unknowns, simulated in 1.37 s.
+14 devices, 17 unknowns, simulated in 1.15 s.
 
 ![The schematic](../images/gallery/instrumentation_amplifier.schematic.png)
 

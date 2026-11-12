@@ -181,7 +181,7 @@ Rectifiers, regulators and switching converters.
 
 -   ![Half-wave rectifier, its schematic](images/gallery/rectifier.schematic.png)
 
-    **[Half-wave rectifier](gallery/rectifier.md)** · 0/0 specs · ngspice within 2.6e-05
+    **[Half-wave rectifier](gallery/rectifier.md)** · 0/0 specs · ngspice within 7.2e-05
 
     A half-wave rectifier: a diode charging a smoothing capacitor from a 50 Hz sine.
 
@@ -197,7 +197,7 @@ Rectifiers, regulators and switching converters.
 
 -   ![Cockcroft-Walton multiplier, its schematic](images/gallery/voltage_multiplier.schematic.png)
 
-    **[Cockcroft-Walton multiplier](gallery/voltage-multiplier.md)** · 1/1 specs · ngspice within 6.5e-04
+    **[Cockcroft-Walton multiplier](gallery/voltage-multiplier.md)** · 1/1 specs · ngspice within 1.6e-04
 
     A three-stage Cockcroft-Walton multiplier: six diodes and six capacitors.
 

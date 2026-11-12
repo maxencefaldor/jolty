@@ -8,7 +8,7 @@ Simulate it with `jolty simulate discovery/bandgap/design.py`.
 
 [Open in 3D](bandgap.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/bandgap/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/bandgap){ .md-button }
 
-9 devices, 14 unknowns, simulated in 1.08 s.
+9 devices, 14 unknowns, simulated in 1.39 s.
 
 ![The schematic](../images/gallery/bandgap.inside.schematic.png)
 
@@ -63,6 +63,12 @@ A 1 % error in R2 or R1 leaves it within 14.2 ppm/K.
 
 `design.py` meets the prompt with seven parts: 1.2414 V at 27 °C, 5.3 ppm/K and 0.31 mV/V, as its specs confirm at every corner.
 The curvature cancellation rests on the JFET's and the 2N3904's temperature models; a real part's spread of Idss would move the flat point, which a trimmed R2 would restore.
+
+## Limits
+
+The agent that wrote this prompt also designed the circuit, knowing the textbook answers, and judged the result itself: this is a showcase of what jolty lets an agent see, not a blind result.
+Widlar's three-transistor cell is from 1971, and a JFET's Idss as a feed is common.
+The 5.3 ppm/K comes from trimming R2 to 0.1 Ω on nominal models: the spread of Vbe and Idss between parts, and the transistors' differing temperatures, would put an untrimmed circuit well above it, and the curvature cancellation rests on two models' temperature terms.
 
 ## Specs
 

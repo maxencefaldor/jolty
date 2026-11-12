@@ -9,7 +9,7 @@ Simulate it with `jolty simulate discovery/current_source/design.py`.
 
 [Open in 3D](current-source.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/current_source/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/current_source){ .md-button }
 
-9 devices, 15 unknowns, simulated in 1.03 s.
+9 devices, 15 unknowns, simulated in 0.63 s.
 
 ![The schematic](../images/gallery/current_source.inside.schematic.png)
 
@@ -60,6 +60,12 @@ The final design runs through the command line, `jolty simulate discovery/curren
 
 The 1 % and 2 % bounds need both a cascode against the 2N3906's Early effect and a balance of Vbe/R and ΔVbe currents in near-equal shares, as a bandgap balances voltages: roughly a dozen parts.
 The best design of seven, `design.py`, holds 2.6 % across the line and fails the drift bound by 16 points, as its specs report at the cold corner.
+
+## Limits
+
+The agent that wrote this prompt also designed the circuit, knowing the textbook answers, and judged the result itself: this is a showcase of what jolty lets an agent see, not a blind result.
+Every topology here is in the textbooks: the two-transistor limiter, the PNP mirror, the ΔVbe cell.
+The results come from the makers' nominal SPICE models: the spread of Vbe and β between parts, and the self-heating jolty does not yet simulate, would move both the current and its drift in a built circuit.
 
 ## Specs
 
