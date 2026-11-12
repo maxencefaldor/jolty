@@ -3,8 +3,8 @@
 use dyn_stack::{MemBuffer, MemStack};
 use faer::diag::Diag;
 use faer::linalg::evd::ComputeEigenvectors;
-use faer::linalg::gevd::{gevd_cplx, gevd_scratch};
-use faer::{Mat, Par, Spec};
+use faer::linalg::gevd::{GevdParams, gevd_cplx, gevd_scratch};
+use faer::{Auto, Mat, Par, Spec};
 use num_complex::Complex64;
 
 /// A generalized eigenvalue of a pencil `(A, B)`, `alpha / beta`, kept as its pair so that
@@ -57,12 +57,19 @@ pub fn generalized_eigenvalues(
     let mut a = Mat::from_fn(n, n, |row, column| entry(a, row, column));
     let mut b = Mat::from_fn(n, n, |row, column| entry(b, row, column));
     let (mut alpha, mut beta) = (Diag::zeros(n), Diag::zeros(n));
+    // faer 0.24's blocked reduction to Hessenberg-triangular form returns zeros past its
+    // first block of 32 columns, and its blocked QZ sweeps stall on pencils of 75 to about
+    // 150 rows; the unblocked reduction and sweeps are exact, and as fast to 500 rows.
+    let mut params = <GevdParams as Auto<Complex64>>::auto();
+    params.hessenberg.block_size = 1;
+    params.schur.blocking_threshold = usize::MAX;
+    let spec = Spec::new(params);
     let scratch = gevd_scratch::<Complex64>(
         n,
         ComputeEigenvectors::No,
         ComputeEigenvectors::No,
         Par::Seq,
-        Spec::default(),
+        spec,
     );
     let mut buffer = MemBuffer::try_new(scratch).map_err(|_| PencilError::TooLarge)?;
     gevd_cplx(
@@ -74,7 +81,7 @@ pub fn generalized_eigenvalues(
         None,
         Par::Seq,
         MemStack::new(&mut buffer),
-        Spec::default(),
+        spec,
     )
     .map_err(|_| PencilError::Unconverged)?;
     Ok((0..n)
@@ -129,6 +136,46 @@ mod tests {
                 .expect("empty")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn finds_every_pole_of_a_long_rc_ladder() {
+        // A source drives 80 stages of a 1 kΩ resistor into 1 mF to the ground: its poles
+        // are −(2/RC)(1 − cos((2k − 1)π / 161)), for k from 1 to 80, against the pencil of
+        // the conductances and minus the capacitances, the source's node first and its
+        // current last.
+        let stages = 80;
+        let size = stages + 2;
+        let (conductance, capacitance) = (1e-3, 1e-3);
+        let mut a = vec![0.0; size * size];
+        let mut b = vec![0.0; size * size];
+        for stage in 0..stages {
+            for (row, column, sign) in [(0, 0, 1.0), (1, 1, 1.0), (0, 1, -1.0), (1, 0, -1.0)] {
+                a[(stage + column) * size + stage + row] += sign * conductance;
+            }
+            b[(stage + 1) * size + stage + 1] = -capacitance;
+        }
+        a[(size - 1) * size] = 1.0;
+        a[size - 1] = 1.0;
+        let found = finite(&generalized_eigenvalues(size, &a, &b).expect("converges"));
+        assert_eq!(found.len(), stages, "{found:?}");
+        let mut poles: Vec<f64> = found.iter().map(|pole| pole.re).collect();
+        poles.sort_by(f64::total_cmp);
+        let mut exact: Vec<f64> = (1..=stages)
+            .map(|k| {
+                let angle = f64::from(u32::try_from(2 * k - 1).expect("small"))
+                    * std::f64::consts::PI
+                    / f64::from(u32::try_from(2 * stages + 1).expect("small"));
+                -2.0 * conductance / capacitance * (1.0 - angle.cos())
+            })
+            .collect();
+        exact.sort_by(f64::total_cmp);
+        for (pole, exact) in poles.iter().zip(&exact) {
+            assert!(
+                (pole - exact).abs() < 1e-9 * exact.abs(),
+                "{pole} against {exact}"
+            );
+        }
     }
 
     #[test]

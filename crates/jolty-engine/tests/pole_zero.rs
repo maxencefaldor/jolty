@@ -144,6 +144,28 @@ fn a_ladder_matches_ngspice() {
 }
 
 #[test]
+fn a_long_rc_ladder_has_every_pole_its_closed_form_gives() {
+    // 120 stages of 1 kΩ into 1 nF: the poles are −(2/RC)(1 − cos((2k − 1)π / 241)).
+    let stages: u32 = 120;
+    let mut instances = vec![source("V1", "n0")];
+    for stage in 1..=stages {
+        let (from, to) = (format!("n{}", stage - 1), format!("n{stage}"));
+        instances.push(resistor(&format!("R{stage}"), 1e3, &from, &to));
+        instances.push(capacitor(&format!("C{stage}"), 1e-9, &to, "0"));
+    }
+    let found =
+        pole_zero(&circuit(&Value::Array(instances)), None, None).expect("a pole-zero analysis");
+    let mut expected: Vec<Complex64> = (1..=stages)
+        .map(|k| {
+            let angle = f64::from(2 * k - 1) * std::f64::consts::PI / f64::from(2 * stages + 1);
+            real(-2e6 * (1.0 - angle.cos()))
+        })
+        .collect();
+    expected.sort_by(|a, b| b.re.total_cmp(&a.re));
+    assert_roots(&found.poles, &expected);
+}
+
+#[test]
 fn a_resistive_circuit_has_no_poles() {
     let divider = circuit(&json!([
         source("V1", "in"),
