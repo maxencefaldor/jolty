@@ -17,8 +17,8 @@ fn reference_temperature<R: Real>() -> R {
 /// changes with its voltage.
 ///
 /// With `v` from `a` to `b`, its resistance is `r · (1 + vc1 · v + vc2 · v²)`, `r` its
-/// resistance at that temperature; the coefficients must keep it positive over the voltages
-/// it meets.
+/// resistance at that temperature; where the coefficients bend it below zero, it is
+/// negative there.
 #[derive(Debug)]
 pub struct Resistor<R: Real = f64> {
     pair: TerminalPair,

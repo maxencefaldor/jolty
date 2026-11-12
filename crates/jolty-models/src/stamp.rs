@@ -1,3 +1,7 @@
+//! How a device adds itself to the circuit's equations: the entries it claims among its
+//! nodes, the series resistances it places, the voltages it is evaluated at, and the
+//! branches whose currents are unknowns of their own.
+
 use jolty_numerics::Entry;
 
 use crate::{Binding, Input, Node, Output, Quantity, Real, Unknown};

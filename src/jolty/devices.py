@@ -110,7 +110,7 @@ def resistor(  # noqa: PLR0913 - the value, its tolerance, its drift and its cur
 
     Its resistance also changes with the voltage ``v`` from ``a`` to ``b``, by
     ``1 + vc1 · v + vc2 · v²``, with the linear and quadratic voltage coefficients, none
-    unless given; they must keep it positive over the voltages it meets.
+    unless given; where they bend it below zero, it is negative there, as in ngspice.
 
     Examples:
         >>> from jolty.units import K, V, kohm
