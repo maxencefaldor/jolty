@@ -10,10 +10,11 @@ use crate::junction::{
     BOLTZMANN, Depletion, ELEMENTARY_CHARGE, Temperatures, band_gap, below_one, critical_voltage,
     depletion_charge, junction_current, limit_drain, limit_gate, limit_junction,
 };
+use crate::noise::Flicker;
 use crate::stamp::{self, Series, Stamp};
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
+    NoiseSource, Output, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown,
 };
 
 /// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,
@@ -25,8 +26,9 @@ const OXIDE_PERMITTIVITY: f64 = 3.9 * VACUUM_PERMITTIVITY;
 const SILICON_PERMITTIVITY: f64 = 11.7 * VACUUM_PERMITTIVITY;
 /// Silicon's intrinsic carrier concentration at 300 K, per cubic meter.
 const INTRINSIC_CONCENTRATION: f64 = 1.45e16;
-/// The oxide thickness of a level 3 transistor that gives none, in meters.
-const LEVEL_THREE_OXIDE_THICKNESS: f64 = 1e-7;
+/// The oxide thickness, in meters, SPICE takes where none is given: for a level 3
+/// transistor's process, and for any transistor's flicker noise.
+const DEFAULT_OXIDE_THICKNESS: f64 = 1e-7;
 /// The least saturation voltage Meyer's capacitances take, in volts.
 const MEYER_SATURATION: f64 = 0.025;
 
@@ -109,6 +111,10 @@ pub struct Mosfet<R: Real = f64> {
     threshold: f64,
     /// The values of [`VARIABLE_NAMES`] at the last evaluation.
     variables: [f64; 5],
+    temperature: f64,
+    /// The flicker noise of the drain current, over the gate's area, every copy's
+    /// counted, and the oxide capacitance per area squared.
+    flicker: Flicker,
 }
 
 /// The variables a transistor reports: its threshold and saturation voltages, in its own
@@ -169,7 +175,7 @@ pub struct MosfetParameters<R: Real = f64> {
     /// each end, in meters; default 0.
     pub lateral_diffusion: R,
     /// The gate oxide's thickness, `tox`, in meters; default none at level 1, which leaves
-    /// the gate without Meyer's capacitances, and 0.1 µm at level 3.
+    /// the gate without Meyer's capacitances, and 0.1 µm at level 3 and for flicker noise.
     pub oxide_thickness: Option<R>,
     /// The surface mobility, `uo`, in square meters per volt-second, from which `kp`
     /// derives; default 0.06.
@@ -235,6 +241,11 @@ pub struct MosfetParameters<R: Real = f64> {
     pub gate_bulk_overlap: R,
     /// The temperature the parameters were measured at, in kelvins; default 27 °C.
     pub nominal_temperature: R,
+    /// The flicker noise coefficient of the drain current, `KF`; default 0, no flicker
+    /// noise.
+    pub flicker_coefficient: R,
+    /// The power of the drain current in the flicker noise, `AF`; default 1.
+    pub flicker_exponent: R,
     /// Level 3: the carriers' maximum drift velocity, `vmax`, in meters per second;
     /// default none, for no velocity saturation.
     pub max_drift_velocity: Option<R>,
@@ -305,6 +316,8 @@ impl<R: Real> Default for MosfetParameters<R> {
             gate_drain_overlap: R::constant(0.0),
             gate_bulk_overlap: R::constant(0.0),
             nominal_temperature: R::constant(REFERENCE_TEMPERATURE),
+            flicker_coefficient: R::constant(0.0),
+            flicker_exponent: R::constant(1.0),
             max_drift_velocity: None,
             junction_depth: None,
             fast_surface_state_density: None,
@@ -373,7 +386,7 @@ impl<R: Real> MosfetParameters<R> {
             Level::One => self.oxide_thickness,
             Level::Three => Some(
                 self.oxide_thickness
-                    .unwrap_or(R::constant(LEVEL_THREE_OXIDE_THICKNESS)),
+                    .unwrap_or(R::constant(DEFAULT_OXIDE_THICKNESS)),
             ),
         };
         let oxide = thickness
@@ -762,6 +775,13 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
             }
         });
         let sign = parameters.channel.sign();
+        let oxide_per_area = process
+            .oxide
+            .map_or(OXIDE_PERMITTIVITY / DEFAULT_OXIDE_THICKNESS, |per_area| {
+                per_area.value()
+            });
+        let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?
+            .scaled((geometry.area.value() * oxide_per_area * oxide_per_area).recip());
         Ok(Self {
             stamp,
             sign,
@@ -774,6 +794,8 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
             last: [0.0; 3],
             threshold: sign * process.threshold.value(),
             variables: [0.0; 5],
+            temperature: temperatures.actual,
+            flicker,
         })
     }
 }
@@ -974,7 +996,7 @@ impl<R: Real> MosfetParameters<R> {
         let oxide = R::constant(OXIDE_PERMITTIVITY)
             / self
                 .oxide_thickness
-                .unwrap_or(R::constant(LEVEL_THREE_OXIDE_THICKNESS));
+                .unwrap_or(R::constant(DEFAULT_OXIDE_THICKNESS));
         let length = geometry.length;
         Ok(Law::Semiempirical(Semiempirical {
             beta,
@@ -1196,6 +1218,33 @@ impl<R: Real> Device<R> for Mosfet<R> {
     fn variables(&self, values: &mut [f64]) {
         values.copy_from_slice(&self.variables);
     }
+
+    /// The thermal noise of the series resistances and of the channel, `8kT·gm / 3`, and
+    /// the drain current's flicker noise, `KF · |Id|^AF / (f · W · L · Cox²)` over the
+    /// effective gate, every parallel copy's width counted, as ngspice models them, with
+    /// SPICE's oxide thickness of 0.1 µm where none is given.
+    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
+        let temperature = self.temperature;
+        self.drain_series
+            .noise("drain thermal", temperature, sources);
+        self.source_series
+            .noise("source thermal", temperature, sources);
+        let stamp = &self.stamp;
+        let voltages = VARIABLES.map(|(plus, minus)| {
+            self.sign * (stamp.voltage(input, plus) - stamp.voltage(input, minus))
+        });
+        let current = self.channel.evaluate(Dual::variables(voltages)).current;
+        let nodes = stamp.nodes();
+        let channel = [nodes[INNER_DRAIN], nodes[INNER_SOURCE]];
+        let conductance = 2.0 / 3.0 * current.gradient[0].value();
+        sources.push(NoiseSource::thermal(
+            "channel thermal",
+            channel,
+            conductance,
+            temperature,
+        ));
+        self.flicker.add(channel, current.value.value(), sources);
+    }
 }
 
 #[cfg(test)]
@@ -1203,7 +1252,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::testing::{Bench, assert_jacobians_match, assert_parameter_gradients_match};
+    use crate::testing::{
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
+        thermal,
+    };
 
     const CHARGED: &str = r#"{"threshold_voltage": 0.8, "transconductance_parameter": 1e-4,
         "body_effect": 0.5, "channel_length_modulation": 0.02, "width": 10e-6,
@@ -1484,6 +1536,35 @@ mod tests {
                 parameters,
                 &[drain, gate, 0.0, bulk, 1e-4, 2e-4, -1e-4],
             );
+        }
+    }
+
+    #[test]
+    fn its_channel_makes_thermal_and_flicker_noise() {
+        // SPICE's oxide of 0.1 µm, over the effective gate of every copy.
+        let oxide = OXIDE_PERMITTIVITY / 1e-7;
+        for copies in [1.0, 2.0] {
+            let parameters = format!(
+                r#"{{"threshold_voltage": 1, "transconductance_parameter": 1e-4,
+                "saturation_current": 1e-30, "width": 10e-6, "length": 2e-6,
+                "lateral_diffusion": 1e-7, "multiplier": {copies},
+                "flicker_coefficient": 1e-25, "flicker_exponent": 1.2}}"#
+            );
+            let mut bench = Bench::new::<Mosfet>(&parameters);
+            let x = [5.0, 2.0, 0.0, -5.0];
+            let evaluation = bench.settle(&x);
+            let (current, gm) = (evaluation.residual[0], evaluation.conductance[0][1]);
+            let sources = bench.noise(&x);
+            let gate = copies * 10e-6 * (2e-6 - 2.0 * 1e-7);
+            let flicker = 1e-25 * current.powf(1.2) / (gate * oxide * oxide);
+            assert_close(
+                &[
+                    source(&sources, "channel thermal").density(1.0),
+                    source(&sources, "flicker").density(100.0),
+                ],
+                &[thermal(2.0 / 3.0 * gm), flicker / 100.0],
+            );
+            assert_eq!(sources.len(), 2);
         }
     }
 }

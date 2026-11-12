@@ -34,6 +34,7 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `Transient(stop, max_step=None, method="trapezoidal", times=())` | the response over time, from the operating point until `stop` |
 | `Sensitivity(outputs, of=None)` | the derivative of each output with respect to every number of every device's parameters, at the operating point or at each point of the analysis `of` |
 | `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
+| `Noise(output, frequencies, reference=None, source=None)` | the noise density at an output from every device's noise, at each frequency, and referred to an input source |
 
 A source is named by its path, such as `V1` or `bias/I1`.
 `linear(start, stop, points)` spaces levels evenly, and `decade(start, stop, per_decade)` spaces frequencies evenly on a log scale.
@@ -89,6 +90,26 @@ Negative feedback makes `T` positive at low frequencies, and divides each respon
 
 The result's `gains` hold `T` at each of its `frequencies`.
 The report states it at the lowest frequency, where it first falls through 0 dB, the phase margin there, and the gain margin where its phase first falls through -180°; the specs' `crossover`, `phase_margin` and `gain_margin` read the same, and `gain` and `phase` read it at a frequency.
+
+## Noise
+
+A noise analysis finds the noise density at an output, at each frequency, from every device's noise:
+
+```python
+Plan({"hiss": Noise("out", decade(10 * Hz, 100 * kHz, 10), source="V1")})
+```
+
+The output is an unknown, a voltage such as `out` or a current such as `V1:current`, or a voltage over a `reference` node, for a differential output.
+Devices make noise as SPICE models it: a resistance thermal noise, `4kT/R`, a junction's current shot noise, `2qI`, a field-effect transistor's channel thermal noise, `8kT·gm/3`, and a diode or transistor with a flicker coefficient `KF` flicker noise, `KF·|I|^AF/f`, of its current, a bipolar transistor's base current, or a MOSFET's drain current over its gate's area and the oxide capacitance squared, as [Devices](devices.md) says.
+A resistance under 1 Ω, whose current is an unknown of its own, makes its noise as a voltage in series, `4kTR`, so a short makes none.
+Frequencies are positive, as flicker noise needs.
+
+The engine linearizes the circuit at its operating point and, at each frequency, solves the transposed system once, with the output as its right-hand side: the solution weighs every equation's effect on the output, so every noise source's share comes from one solve, and the sources being independent, their densities add.
+Given a `source`, an independent source such as `V1`, the same solution gives the gain from its level to the output, and the output's density over the gain's square is the noise referred to that input, as SPICE's input noise is.
+
+The result's `densities` are the output's power densities, in V²/Hz or A²/Hz, at each of its `frequencies`, and `contributions` what each of its `sources`, a device and the noise it makes such as `thermal` or `collector shot`, adds to them.
+`referred()` gives the noise referred to the input, `contribution(instance, name=None)` what a device's noise, or one of its sources, adds, `density(at)` the density at a frequency, and `rms(start=None, stop=None)` the RMS noise over a band, each density a power law between frequencies as SPICE integrates it.
+The report states the noise density at the lowest and highest frequencies, the RMS noise over them, at the output and referred to the input, and the noisiest sources with their share of the output's noise power; the plot draws the noise density with the noisiest sources', and the noise referred to the input, on log axes; the specs' `noise_density` and `integrated_noise` read them.
 
 ## Temperature
 

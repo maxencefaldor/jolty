@@ -409,6 +409,8 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has fifteen parameters
     energy_gap: Quantity | None = None,
     saturation_current_temperature_exponent: float | None = None,
     nominal_temperature: Quantity | None = None,
+    flicker_coefficient: float | None = None,
+    flicker_exponent: float | None = None,
 ) -> Device:
     """A junction diode from ``anode`` to ``cathode``, in the SPICE model.
 
@@ -423,6 +425,11 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has fifteen parameters
     given; the junction potential and capacitance follow silicon's band gap, and the
     breakdown voltage falls by its temperature coefficient, none unless given, as in
     ngspice.
+
+    Its series resistance makes thermal noise and its current shot noise; with a
+    flicker coefficient ``KF``, none unless given, its current ``I`` also makes flicker
+    noise of ``KF · |I|^AF / f`` A²/Hz, ``AF`` the flicker exponent, 1 unless given, as
+    SPICE models it.
     """
     parameters = _parameters(
         {
@@ -448,6 +455,8 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has fifteen parameters
             "saturation_current_temperature_exponent": (
                 saturation_current_temperature_exponent
             ),
+            "flicker_coefficient": flicker_coefficient,
+            "flicker_exponent": flicker_exponent,
         },
     )
     return device("diode", parameters)
@@ -485,6 +494,8 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
     energy_gap: Quantity | None = None,
     saturation_current_temperature_exponent: float | None = None,
     nominal_temperature: Quantity | None = None,
+    flicker_coefficient: float | None = None,
+    flicker_exponent: float | None = None,
 ) -> Device:
     """A junction field-effect transistor between ``drain``, ``gate`` and ``source``.
 
@@ -503,6 +514,11 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
     silicon's band gap; the threshold moves by its temperature coefficient and the
     transconductance parameter scales by its temperature exponent, neither unless given,
     as in ngspice.
+
+    Its resistances make thermal noise, and its channel thermal noise of
+    ``8kT · gm / 3`` A²/Hz; with a flicker coefficient ``KF``, none unless given, its
+    drain current ``Id`` also makes flicker noise of ``KF · |Id|^AF / f`` A²/Hz, ``AF``
+    the flicker exponent, 1 unless given, as SPICE models it.
 
     Examples:
         >>> from jolty.units import V, mA
@@ -538,6 +554,8 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
             "saturation_current_temperature_exponent": (
                 saturation_current_temperature_exponent
             ),
+            "flicker_coefficient": flicker_coefficient,
+            "flicker_exponent": flicker_exponent,
         },
     )
     return device("jfet", parameters)
@@ -587,6 +605,8 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
     saturation_current_temperature_exponent: float | None = None,
     beta_temperature_exponent: float | None = None,
     nominal_temperature: Quantity | None = None,
+    flicker_coefficient: float | None = None,
+    flicker_exponent: float | None = None,
 ) -> Device:
     """A bipolar junction transistor between ``collector``, ``base`` and ``emitter``.
 
@@ -608,6 +628,11 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
     with the energy gap, 1.11 V unless given, and the temperature exponent, 3 unless
     given; the betas scale by their temperature exponent, none unless given, and the
     junctions' potentials and capacitances follow silicon's band gap, as in ngspice.
+
+    Its resistances make thermal noise, and its collector and base currents shot noise;
+    with a flicker coefficient ``KF``, none unless given, its base current ``Ib`` also
+    makes flicker noise of ``KF · |Ib|^AF / f`` A²/Hz, ``AF`` the flicker exponent, 1
+    unless given, as SPICE models it.
 
     Examples:
         >>> from jolty.units import V, fA
@@ -674,6 +699,8 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
                 saturation_current_temperature_exponent
             ),
             "beta_temperature_exponent": beta_temperature_exponent,
+            "flicker_coefficient": flicker_coefficient,
+            "flicker_exponent": flicker_exponent,
         },
     )
     return device("bipolar_transistor", parameters)
@@ -720,6 +747,8 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
     gate_drain_overlap: Quantity | None = None,
     gate_bulk_overlap: Quantity | None = None,
     nominal_temperature: Quantity | None = None,
+    flicker_coefficient: float | None = None,
+    flicker_exponent: float | None = None,
     max_drift_velocity: Quantity | None = None,
     junction_depth: Quantity | None = None,
     fast_surface_state_density: Quantity | None = None,
@@ -768,6 +797,13 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
     displacement currents through the whole oxide towards the source, the drain and the
     bulk: ``gate_source_displacement``, ``gate_drain_displacement`` and
     ``gate_bulk_displacement``.
+
+    Its resistances make thermal noise, and its channel thermal noise of
+    ``8kT · gm / 3`` A²/Hz; with a flicker coefficient ``KF``, none unless given, its
+    drain current ``Id`` also makes flicker noise of
+    ``KF · |Id|^AF / (f · W · Leff · Cox²)`` A²/Hz over its effective gate, the widths
+    of its parallel copies summed, with an oxide 0.1 µm thick unless given, ``AF`` the
+    flicker exponent, 1 unless given, as ngspice models it.
 
     Examples:
         >>> from jolty.units import nm, um
@@ -844,6 +880,8 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
             "bottom_grading": bottom_grading,
             "sidewall_grading": sidewall_grading,
             "depletion_coefficient": depletion_coefficient,
+            "flicker_coefficient": flicker_coefficient,
+            "flicker_exponent": flicker_exponent,
         },
     )
     return device("mosfet", parameters)

@@ -633,11 +633,14 @@ def _check_model(
 ) -> None:
     """Checks a resistor's, capacitor's or inductor's model card.
 
+    A flicker noise exponent changes nothing, as jolty models no flicker noise of
+    theirs: the coefficient, unless zero, is what fails.
+
     Raises:
         SpiceError: When a parameter is neither `allowed` nor one that changes nothing.
     """
     for name, expression in card.parameters.items():
-        if name in allowed or name in models.NOISE:
+        if name in allowed or name == "af":
             continue
         if evaluate(expression, scope) != 0:
             raise models.unmatched(card, name, statement)

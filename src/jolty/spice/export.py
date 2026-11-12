@@ -645,10 +645,15 @@ def _read_raw(text: str) -> Raw:
     return Raw(plot, {name: table[:, column] for column, name in enumerate(names)})
 
 
+_SCALES: Final = frozenset({"time", "frequency", "onoise_spectrum", "inoise_spectrum"})
+"""The vectors of a raw file that are neither a node's voltage nor a branch's current:
+the scales, and the noise densities at the output and referred to the input."""
+
+
 def _spice_name(name: str) -> str:
     """A raw file's vector name in the ``v(node)`` and ``i(device)`` forms."""
     if name.endswith("#branch"):
         return f"i({name.removesuffix('#branch')})"
-    if name.startswith(("v(", "i(")) or name in {"time", "frequency"}:
+    if name.startswith(("v(", "i(")) or name in _SCALES:
         return name
     return f"v({name})"

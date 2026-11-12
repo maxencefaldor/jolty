@@ -15,6 +15,7 @@ Examples:
 import math
 from dataclasses import dataclass
 from decimal import Decimal
+from fractions import Fraction
 from typing import Final, override
 
 from jolty.errors import DimensionError
@@ -34,17 +35,22 @@ _PREFIXES: Final = {
 }
 
 
+type Exponent = int | Fraction
+"""The power of a base unit: whole, or a fraction, as hertz's in a noise density's
+V/√Hz."""
+
+
 @dataclass(frozen=True, slots=True)
 class Dimension:
     """The exponents of the SI base units kilogram, metre, second, ampere and kelvin."""
 
-    kilogram: int = 0
-    metre: int = 0
-    second: int = 0
-    ampere: int = 0
-    kelvin: int = 0
+    kilogram: Exponent = 0
+    metre: Exponent = 0
+    second: Exponent = 0
+    ampere: Exponent = 0
+    kelvin: Exponent = 0
 
-    def _exponents(self) -> tuple[int, ...]:
+    def _exponents(self) -> tuple[Exponent, ...]:
         return (self.kilogram, self.metre, self.second, self.ampere, self.kelvin)
 
     def __mul__(self, other: Dimension) -> Dimension:
@@ -57,7 +63,7 @@ class Dimension:
         exponents = zip(self._exponents(), other._exponents(), strict=True)
         return Dimension(*(a - b for a, b in exponents))
 
-    def __pow__(self, power: int) -> Dimension:
+    def __pow__(self, power: Exponent) -> Dimension:
         """The dimension of a power."""
         return Dimension(*(exponent * power for exponent in self._exponents()))
 
@@ -68,6 +74,8 @@ class Dimension:
         Examples:
             >>> str(VOLTAGE), str(DIMENSIONLESS / VOLTAGE), str(LENGTH * TIME)
             ('V', 'V⁻¹', 'm·s')
+            >>> str(LENGTH ** Fraction(1, 2))
+            'm^1/2'
         """
         symbol = _SYMBOLS.get(self)
         if symbol is not None:
@@ -114,6 +122,9 @@ _SYMBOLS: Final = {
     CAPACITANCE: "F",
     INDUCTANCE: "H",
     CURRENT / VOLTAGE**2: "A/V\N{SUPERSCRIPT TWO}",
+    FREQUENCY ** Fraction(1, 2): "\N{SQUARE ROOT}Hz",
+    VOLTAGE / FREQUENCY ** Fraction(1, 2): "V/\N{SQUARE ROOT}Hz",
+    CURRENT / FREQUENCY ** Fraction(1, 2): "A/\N{SQUARE ROOT}Hz",
 }
 """The symbol of each named unit, to which an SI prefix binds."""
 
@@ -181,14 +192,16 @@ class Quantity:
         mantissa = Decimal(repr(value)).scaleb(-exponent).normalize()
         return f"{mantissa:f}{_PREFIXES[exponent]}{symbol}"
 
-    def __pow__(self, power: int) -> Quantity:
-        """The quantity raised to an integer `power`, as volts squared.
+    def __pow__(self, power: Exponent) -> Quantity:
+        """The quantity raised to a whole or fractional `power`, as volts squared.
 
         Examples:
             >>> str(1 * mA / V**2)
             '1 mA/V²'
+            >>> str(4 * nV / Hz ** Fraction(1, 2))
+            '4 nV/√Hz'
         """
-        return Quantity(self.value**power, self.dimension**power)
+        return Quantity(math.pow(self.value, power), self.dimension**power)
 
     def __add__(self, other: Quantity) -> Quantity:
         """The sum of two quantities of the same dimension."""
@@ -286,6 +299,7 @@ V: Final = Quantity(1.0, VOLTAGE)
 kV: Final = Quantity(1e3, VOLTAGE)
 mV: Final = Quantity(1e-3, VOLTAGE)
 uV: Final = Quantity(1e-6, VOLTAGE)
+nV: Final = Quantity(1e-9, VOLTAGE)
 A: Final = Quantity(1.0, CURRENT)
 mA: Final = Quantity(1e-3, CURRENT)
 uA: Final = Quantity(1e-6, CURRENT)
@@ -312,3 +326,5 @@ W: Final = Quantity(1.0, POWER)
 mW: Final = Quantity(1e-3, POWER)
 uW: Final = Quantity(1e-6, POWER)
 K: Final = Quantity(1.0, TEMPERATURE)
+rtHz: Final = Hz ** Fraction(1, 2)
+"""The square root of a hertz, the unit of a noise density such as ``4 * nV / rtHz``."""

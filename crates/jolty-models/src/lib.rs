@@ -23,6 +23,7 @@ mod jfet;
 mod junction;
 mod logic;
 mod mosfet;
+mod noise;
 mod passive;
 mod photocell;
 mod real;
@@ -60,6 +61,7 @@ pub use logic::{
     Stimulus, ThresholdDetector, ThresholdDetectorParameters, Timing, TimingParameters,
 };
 pub use mosfet::{GateMaterial, Mosfet, MosfetParameters};
+pub use noise::NoiseSource;
 pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
 };

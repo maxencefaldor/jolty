@@ -15,6 +15,7 @@ from jolty import (
     DcSweep,
     DimensionError,
     ElaborationError,
+    Noise,
     OperatingPoint,
     Options,
     Plan,
@@ -24,6 +25,7 @@ from jolty import (
     SimulationError,
     Stability,
     Transient,
+    _core,
     component,
     devices,
     results,
@@ -230,6 +232,59 @@ def test_a_probe_is_a_voltage_source_off_the_ground() -> None:
     for probe in ("VIN", "G1", "R1"):
         with pytest.raises(SimulationError, match=f"`{probe}` is not a voltage source"):
             simulation.run(Stability(probe, [1 * kHz]))
+
+
+FOUR_KT = 4 * _core.BOLTZMANN * _core.REFERENCE_TEMPERATURE
+"""`4kT` at 27 °C, in joules."""
+
+
+def test_a_noise_analysis_finds_each_resistors_noise_and_refers_it_back() -> None:
+    upper, lower = 1e3, 3e3
+    simulation = Simulation(divider(5 * V, upper * ohm, lower * ohm))
+    spectrum = simulation.run(Noise("out", decade(10 * Hz, 100 * kHz, 10), source="V1"))
+    parallel = upper * lower / (upper + lower)
+    np.testing.assert_allclose(spectrum.densities, FOUR_KT * parallel, rtol=1e-9)
+    np.testing.assert_allclose(
+        spectrum.contribution("R1", "thermal"),
+        FOUR_KT / upper * parallel**2,
+        rtol=1e-9,
+    )
+    np.testing.assert_allclose(
+        spectrum.referred(), FOUR_KT * parallel / 0.75**2, rtol=1e-9
+    )
+    assert spectrum.input is not None
+    np.testing.assert_allclose(spectrum.input.gains, 0.75, rtol=1e-9)
+    assert spectrum.rms() == pytest.approx(
+        math.sqrt(FOUR_KT * parallel * (1e5 - 10)), rel=1e-9
+    )
+    assert spectrum.density(5e3) == pytest.approx(FOUR_KT * parallel, rel=1e-9)
+    across = simulation.run(Noise("in", [1 * kHz], reference="out"))
+    assert across.densities[0] == pytest.approx(FOUR_KT * parallel, rel=1e-9)
+    current = simulation.run(Noise("V1:current", [1 * kHz]))
+    assert current.quantity == "current"
+    assert current.densities[0] == pytest.approx(FOUR_KT / (upper + lower), rel=1e-9)
+    with pytest.raises(KeyError, match="no noise source named 'R3'"):
+        spectrum.contribution("R3")
+    with pytest.raises(ValueError, match="named no source"):
+        current.referred()
+
+
+def test_a_capacitor_holds_its_resistors_noise_to_kt_over_c() -> None:
+    spectrum = Simulation(low_pass()).run(Noise("out", decade(1 * Hz, 100 * GHz, 50)))
+    capacitance = 1e-9
+    assert spectrum.rms() ** 2 == pytest.approx(FOUR_KT / 4 / capacitance, rel=1e-3)
+
+
+def test_a_noise_analysis_rejects_what_it_cannot_measure() -> None:
+    simulation = Simulation(divider(5 * V, 1 * kohm, 1 * kohm))
+    with pytest.raises(SimulationError, match="no unknown named `nowhere`"):
+        simulation.run(Noise("nowhere", [1 * kHz]))
+    with pytest.raises(SimulationError, match="frequencies must be positive"):
+        simulation.run(Noise("out", [0 * Hz]))
+    with pytest.raises(SimulationError, match="`R1` is not an independent source"):
+        simulation.run(Noise("out", [1 * kHz], source="R1"))
+    with pytest.raises(DimensionError, match="a frequency"):
+        simulation.run(Noise("out", [1 * V]))
 
 
 def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:

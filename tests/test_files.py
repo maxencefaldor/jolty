@@ -107,6 +107,30 @@ def every_kind() -> dict[str, results.Result]:
         "loop": results.LoopGain(
             UNKNOWNS, "VP", np.array([1e3, 1e6]), np.array([100 - 1j, -0.5j]), point
         ),
+        "hiss": results.NoiseSpectrum(
+            UNKNOWNS,
+            "out",
+            None,
+            "voltage",
+            np.array([1e3, 1e6]),
+            np.array([2e-17, 1e-17]),
+            (results.NoiseSource("R1", "thermal"), results.NoiseSource("D1", "shot")),
+            np.array([[1.5e-17, 0.5e-17], [0.5e-17, 0.5e-17]]),
+            results.NoiseInput("V1", "voltage", np.array([0.5, 0.25j])),
+            point,
+        ),
+        "quiet": results.NoiseSpectrum(
+            UNKNOWNS,
+            "out",
+            "in",
+            "voltage",
+            np.array([1e3]),
+            np.array([0.0]),
+            (),
+            np.empty((0, 1)),
+            None,
+            point,
+        ),
     }
 
 
@@ -126,8 +150,27 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
         elif isinstance(result, results.LoopGain):
             assert isinstance(loaded, results.LoopGain)
             np.testing.assert_array_equal(loaded.gains, result.gains)
+        elif isinstance(result, results.NoiseSpectrum):
+            assert isinstance(loaded, results.NoiseSpectrum)
+            assert (loaded.output, loaded.reference, loaded.quantity) == (
+                result.output,
+                result.reference,
+                result.quantity,
+            )
+            assert loaded.sources == result.sources
+            np.testing.assert_array_equal(loaded.densities, result.densities)
+            np.testing.assert_array_equal(loaded.contributions, result.contributions)
+            if result.input is None:
+                assert loaded.input is None
+            else:
+                assert loaded.input is not None
+                assert loaded.input.source == result.input.source
+                np.testing.assert_array_equal(loaded.input.gains, result.input.gains)
         else:
-            assert not isinstance(loaded, results.Sensitivities | results.LoopGain)
+            assert not isinstance(
+                loaded,
+                results.Sensitivities | results.LoopGain | results.NoiseSpectrum,
+            )
             np.testing.assert_array_equal(loaded.values, result.values)
     sweep = read["sweep"]
     assert isinstance(sweep, results.Sweep)

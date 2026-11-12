@@ -23,8 +23,10 @@ from jolty.specs import (
     frequency,
     gain,
     gain_margin,
+    integrated_noise,
     maximum,
     minimum,
+    noise_density,
     overshoot,
     peak_to_peak,
     phase,
@@ -34,7 +36,23 @@ from jolty.specs import (
     settling_time,
     value,
 )
-from jolty.units import CURRENT, FREQUENCY, TIME, VOLTAGE, A, Hz, V, kHz, mA, ms, s, us
+from jolty.units import (
+    CURRENT,
+    FREQUENCY,
+    TIME,
+    VOLTAGE,
+    A,
+    Hz,
+    V,
+    kHz,
+    mA,
+    ms,
+    nV,
+    rtHz,
+    s,
+    us,
+    uV,
+)
 
 UNKNOWNS = (
     results.Unknown("out", "voltage"),
@@ -501,3 +519,76 @@ def test_a_verdict_is_the_worst_of_every_run() -> None:
     )
     assert (verdict.status, verdict.corner, verdict.value) == ("failed", "low", 0.5)
     assert (unmeasured.status, unmeasured.corner) == ("unmeasured", "lost")
+
+
+def hiss(*, referred: bool = True) -> results.NoiseSpectrum:
+    """White noise of 16e-18 V²/Hz from 10 Hz to 100 kHz, plus flicker noise.
+
+    The flicker noise is 1e-15 V²/Hz at 1 Hz, falling as 1/f, and the input's gain 2.
+    """
+    frequencies = np.logspace(1, 5, 41)
+    white = np.full(frequencies.size, 16e-18)
+    flicker = 1e-15 / frequencies
+    noise_input = results.NoiseInput("V1", "voltage", np.full(frequencies.size, 2 + 0j))
+    return results.NoiseSpectrum(
+        UNKNOWNS,
+        "out",
+        None,
+        "voltage",
+        frequencies,
+        white + flicker,
+        (results.NoiseSource("R1", "thermal"), results.NoiseSource("D1", "flicker")),
+        np.stack([white, flicker]),
+        noise_input if referred else None,
+        point(0.0),
+    )
+
+
+def test_noise_reads_densities_and_rms_noise() -> None:
+    spectrum = hiss()
+    density = noise_density("hiss", at=1 * kHz).read(spectrum)
+    assert density.unit == VOLTAGE / rtHz.dimension
+    assert density.value == pytest.approx(math.sqrt(16e-18 + 1e-18), rel=1e-12)
+    between = noise_density("hiss", at=1.5 * kHz).read(spectrum)
+    assert between.value == pytest.approx(math.sqrt(16e-18 + 1e-15 / 1.5e3), rel=1e-12)
+    referred = noise_density("hiss", at=1 * kHz, referred=True).read(spectrum)
+    assert referred.value == pytest.approx(density.value / 2, rel=1e-12)
+    # The sum of two power laws is none, so the integral is close, not exact.
+    power = 16e-18 * (1e5 - 10) + 1e-15 * math.log(1e4)
+    total = integrated_noise("hiss").read(spectrum)
+    assert total.unit == VOLTAGE
+    assert total.value == pytest.approx(math.sqrt(power), rel=1e-4)
+    band = integrated_noise("hiss", start=100 * Hz, stop=10 * kHz).read(spectrum)
+    expected = 16e-18 * (1e4 - 100) + 1e-15 * math.log(100)
+    assert band.value == pytest.approx(math.sqrt(expected), rel=1e-4)
+    assert band.value == spectrum.rms(100.0, 1e4)
+    assert str(noise_density("hiss", at=1 * kHz) <= 10 * nV / rtHz) == (
+        "noise density at 1 kHz in hiss ≤ 10 nV/√Hz"
+    )
+    assert str(integrated_noise("hiss", referred=True) <= 1 * uV) == (
+        "RMS noise referred to the input from the lowest frequency to the highest "
+        "in hiss ≤ 1 µV"
+    )
+    assert verdict_of(
+        noise_density("hiss", at=1 * kHz) <= 5 * nV / rtHz, spectrum
+    ).status == ("passed")
+
+
+def test_noise_reads_a_noise_analysis_within_its_band() -> None:
+    spectrum = hiss(referred=False)
+    assert unread(noise_density("hiss", at=1 * kHz) <= 1 * V / rtHz, low_pass()) == (
+        "a noise density reads a noise analysis, not a small-signal response"
+    )
+    assert unread(integrated_noise("hiss", referred=True) <= 1 * V, spectrum) == (
+        "the noise analysis names no source to refer its noise to"
+    )
+    assert unread(noise_density("hiss", at=1 * Hz) <= 1 * V / rtHz, spectrum) == (
+        "at, 1 Hz, lies outside the frequencys, 10 Hz to 100 kHz"
+    )
+    assert unread(
+        integrated_noise("hiss", start=1 * kHz, stop=100 * Hz) <= 1 * V, spectrum
+    ) == ("the band from 1 kHz to 100 Hz is empty")
+    assert unread(value("hiss", "out") <= 1 * V, spectrum) == (
+        "a value reads an operating point, a transient or a DC sweep, not a noise "
+        "spectrum"
+    )

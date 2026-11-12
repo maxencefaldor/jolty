@@ -1,6 +1,7 @@
 # Copyright 2026 Maxence Faldor
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -165,3 +166,52 @@ def test_a_failure_says_why() -> None:
         name="step", error="the time step fell below 1e-18 s"
     )
     assert failure.describe() == "step: failed: the time step fell below 1e-18 s"
+
+
+def test_a_noise_spectrum_states_its_noisiest_sources() -> None:
+    point = results.OperatingPoint(UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct")
+    frequencies = np.array([10.0, 1e3, 1e5])
+    white = np.full(3, 16e-18)
+    flicker = 1e-15 / frequencies
+    spectrum = results.NoiseSpectrum(
+        UNKNOWNS,
+        "out",
+        None,
+        "voltage",
+        frequencies,
+        white + flicker,
+        (results.NoiseSource("R1", "thermal"), results.NoiseSource("D1", "flicker")),
+        np.stack([white, flicker]),
+        results.NoiseInput("V1", "voltage", np.full(3, 0.5 + 0j)),
+        point,
+    )
+    summary = report.report("hiss", spectrum, listed=1)
+    assert isinstance(summary, report.NoiseReport)
+    # Each source's noise is a power law, integrated exactly; their sum is none.
+    white_power = 16e-18 * (1e5 - 10)
+    flicker_power = 1e-15 * math.log(1e4)
+    assert summary.rms == spectrum.rms()
+    assert summary.rms == pytest.approx(math.sqrt(white_power + flicker_power), 1e-2)
+    assert summary.referred == pytest.approx(2 * spectrum.rms())
+    (noisiest,) = summary.contributors
+    assert (noisiest.instance, noisiest.noise) == ("R1", "thermal")
+    assert noisiest.rms == pytest.approx(math.sqrt(white_power))
+    assert noisiest.share == pytest.approx(white_power / (white_power + flicker_power))
+    assert summary.unlisted == 1
+    assert summary.describe() == (
+        "hiss: noise at out at 3 frequencies from 10 Hz to 100 kHz\n"
+        "  10.77 nV/√Hz at 10 Hz, 4.001 nV/√Hz at 100 kHz\n"
+        "  1.278 µV RMS over the frequencies, 2.555 µV RMS referred to V1\n"
+        "  R1  thermal  1.265 µV RMS  99.4%\n"
+        "  ... and 1 more in the results file"
+    )
+    single = replace(
+        spectrum,
+        frequencies=frequencies[:1],
+        densities=spectrum.densities[:1],
+        contributions=spectrum.contributions[:, :1],
+        input=None,
+    )
+    quiet = report.report("hiss", single, listed=10)
+    assert isinstance(quiet, report.NoiseReport)
+    assert (quiet.rms, quiet.referred, quiet.contributors) == (None, None, ())

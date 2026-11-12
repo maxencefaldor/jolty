@@ -8,6 +8,7 @@ A script writes a value as a number times a unit, such as `10 * kohm` or `4.7 * 
 The result is a `Quantity`: its value in SI base units and its `Dimension`, the exponents of the kilogram, metre, second, ampere and kelvin.
 
 Arithmetic combines dimensions, so `5 * V / (1 * kohm)` is a current, and `1 * kohm * (1 * uF)` is a time.
+Powers may be fractions, as a noise density's square root of a hertz is: `Hz ** Fraction(1, 2)` is `rtHz`.
 Adding or subtracting quantities of different dimensions raises a `DimensionError`.
 
 ## Checked where they are used
@@ -24,14 +25,15 @@ The module `jolty.units` defines the units below; the micro prefix is written `u
 | --- | --- |
 | Time | `s`, `ms`, `us`, `ns`, `ps` |
 | Frequency | `Hz`, `kHz`, `MHz`, `GHz` |
-| Voltage | `V`, `kV`, `mV`, `uV` |
-| Current | `A`, `mA`, `uA`, `nA`, `pA` |
+| Voltage | `V`, `kV`, `mV`, `uV`, `nV` |
+| Current | `A`, `mA`, `uA`, `nA`, `pA`, `fA` |
 | Resistance | `ohm`, `kohm`, `Mohm` |
 | Conductance | `S`, `mS`, `uS` |
 | Capacitance | `F`, `mF`, `uF`, `nF`, `pF`, `fF` |
 | Inductance | `H`, `mH`, `uH`, `nH` |
 | Power | `W`, `mW`, `uW` |
 | Temperature | `K` |
+| Noise density | `rtHz`, the square root of a hertz: `4 * nV / rtHz` |
 
 ## Printed with prefixes
 

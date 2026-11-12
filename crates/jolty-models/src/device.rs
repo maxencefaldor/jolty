@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use jolty_ir::Parameters;
 use serde::de::DeserializeOwned;
 
-use crate::{Binding, Detect, Drive, Gradient, Input, Interface, Output, Real};
+use crate::{Binding, Detect, Drive, Gradient, Input, Interface, NoiseSource, Output, Real};
 
 /// One placed device, bound to its unknowns, computing with plain numbers or with their
 /// exact derivatives with respect to a parameter.
@@ -44,6 +44,12 @@ pub trait Device<R: Real = f64>: fmt::Debug + Send {
     /// evaluation, in SI base units, to `values`.
     fn variables(&self, values: &mut [f64]) {
         let _ = values;
+    }
+
+    /// Appends the device's noise at the state `input`, the operating point a noise
+    /// analysis linearizes about, to `sources`: none for a noiseless device.
+    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
+        let _ = (input, sources);
     }
 }
 

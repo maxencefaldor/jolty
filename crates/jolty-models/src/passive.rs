@@ -4,8 +4,8 @@ use serde::Deserialize;
 use crate::junction::Temperatures;
 use crate::stamp::{CurrentBranch, SMALL_RESISTANCE};
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
-    ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, NoiseSource,
+    Output, ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
 };
 
 /// The default nominal temperature, at which a passive device's value was measured.
@@ -25,6 +25,7 @@ pub struct Resistor<R: Real = f64> {
     form: Form,
     resistance: R,
     coefficients: VoltageCoefficients<R>,
+    temperature: f64,
 }
 
 /// How a resistor adds its current to its nodes' equations.
@@ -146,6 +147,7 @@ impl<R: Real> NativeDevice<R> for Resistor<R> {
                 linear: parameters.voltage_coefficient,
                 quadratic: parameters.quadratic_voltage_coefficient,
             },
+            temperature: temperatures.actual,
         })
     }
 }
@@ -171,6 +173,25 @@ impl<R: Real> Device<R> for Resistor<R> {
                 output.add_conductance(*entry, -resistance);
             }
         }
+    }
+
+    /// The thermal noise of the resistance at its voltage, `r · f(v)`: a current of
+    /// `4kT / (r · f(v))` across it, or a voltage of `4kT · r · f(v)` in series with it
+    /// where its current is an unknown.
+    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
+        let temperature = self.temperature;
+        sources.push(match &self.form {
+            Form::Conductance(pair) => {
+                let (factor, _) = self.coefficients.factor(pair.voltage(input));
+                let conductance = (self.resistance * factor).value().recip();
+                NoiseSource::thermal("thermal", pair.nodes(), conductance, temperature)
+            }
+            Form::Current(branch, _) => {
+                let (factor, _) = self.coefficients.factor(branch.voltage(input));
+                let resistance = (self.resistance * factor).value();
+                NoiseSource::thermal_in_series("thermal", branch.unknown(), resistance, temperature)
+            }
+        });
     }
 }
 
@@ -330,8 +351,10 @@ impl<R: Real> Device<R> for Inductor<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Unknown;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
+        thermal,
     };
 
     #[test]
@@ -468,6 +491,30 @@ mod tests {
         assert!(
             error.to_string().starts_with("unknown field `capacity`"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn a_resistor_makes_thermal_noise() {
+        let bench = Bench::new::<Resistor>(r#"{"resistance": 1000}"#);
+        let sources = bench.noise(&[3.0, 1.0]);
+        let noise = source(&sources, "thermal");
+        assert_eq!(
+            noise.equations,
+            [Some(Unknown::new(0)), Some(Unknown::new(1))]
+        );
+        assert_close(&[noise.density(1.0)], &[thermal(1e-3)]);
+        // A small one's is a voltage in series with its current, and a short makes none.
+        let small = Bench::new::<Resistor>(r#"{"resistance": 0.5}"#);
+        let sources = small.noise(&[1.0, 0.0, 2.0]);
+        let noise = source(&sources, "thermal");
+        assert_eq!(noise.equations, [Some(Unknown::new(2)), None]);
+        assert_close(&[noise.density(1.0)], &[thermal(0.5)]);
+        let bent = Bench::new::<Resistor>(r#"{"resistance": 1000, "voltage_coefficient": 0.1}"#);
+        let sources = bent.noise(&[2.0, 0.0]);
+        assert_close(
+            &[source(&sources, "thermal").density(1.0)],
+            &[thermal(1.0 / 1200.0)],
         );
     }
 }

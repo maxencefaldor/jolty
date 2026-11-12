@@ -2,8 +2,8 @@ use jolty_numerics::Entry;
 use serde::Deserialize;
 
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Quantity, Real, Unknown,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
+    NoiseSource, Output, ParameterError, Quantity, Real, Unknown,
 };
 
 /// The illuminance, in lux, below which a photocell's response to light rounds off to
@@ -30,6 +30,7 @@ pub struct Photocell<R: Real = f64> {
     lag: Option<Lag<R>>,
     /// The entries joining `a` and `b` to every terminal.
     entries: [[Option<Entry>; 4]; 2],
+    temperature: f64,
 }
 
 /// A photocell's lagging response, and the entries its equation claims.
@@ -121,6 +122,7 @@ impl<R: Real> NativeDevice<R> for Photocell<R> {
             gamma,
             lag,
             entries,
+            temperature: binding.temperature(),
         })
     }
 }
@@ -177,12 +179,34 @@ impl<R: Real> Device<R> for Photocell<R> {
             output.add_capacitance(own, lag.time);
         }
     }
+
+    /// The thermal noise of the conductance its response sets.
+    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
+        let [a, b, light_positive, light_negative] = self.nodes;
+        let response = self.lag.as_ref().map_or_else(
+            || {
+                self.settled(input.value(light_positive) - input.value(light_negative))
+                    .0
+            },
+            |lag| R::constant(input.value(Some(lag.response))),
+        );
+        let conductance = self.dark_conductance + self.conductance * response;
+        sources.push(NoiseSource::thermal(
+            "thermal",
+            [a, b],
+            conductance.value(),
+            self.temperature,
+        ));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{Bench, assert_jacobians_match, assert_parameter_gradients_match};
+    use crate::testing::{
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
+        thermal,
+    };
 
     const CELL: &str = r#"{"resistance": 1e4, "gamma": 0.8, "dark_resistance": 1e6}"#;
 
@@ -236,5 +260,19 @@ mod tests {
         let error = Bench::try_new::<Photocell>(r#"{"resistance": 1e4, "response_time": -1}"#)
             .expect_err("a negative time");
         assert!(error.0.starts_with("response_time"), "{}", error.0);
+    }
+
+    #[test]
+    fn its_conductance_makes_thermal_noise() {
+        let mut bench = Bench::new::<Photocell>(CELL);
+        for light in [0.0, 10.0, 300.0] {
+            let x = [1.0, 0.0, light, 0.0];
+            let conductance = bench.evaluate(&x).residual[0];
+            let sources = bench.noise(&x);
+            assert_close(
+                &[source(&sources, "thermal").density(1.0)],
+                &[thermal(conductance)],
+            );
+        }
     }
 }

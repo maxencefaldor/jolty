@@ -150,7 +150,42 @@ class Stability:
         return {"stability": {"probe": self.probe, "frequencies": frequencies}}
 
 
-type Analysis = OperatingPoint | DcSweep | Ac | Transient | Sensitivity | Stability
+@dataclass(frozen=True, slots=True)
+class Noise:
+    """The noise density at an output at each frequency, from every device's noise.
+
+    The output is an unknown by name, a voltage such as ``out`` or a current such as
+    ``V1:current``, or a voltage over a `reference` node, for a differential output.
+    Resistances make thermal noise, junctions shot noise, and diodes and transistors
+    with a flicker coefficient flicker noise, as SPICE models them. Given a `source`,
+    an independent source such as ``V1``, the gain from its level to the output refers
+    the noise back to it, as an input's noise.
+    """
+
+    output: str
+    frequencies: Sequence[Quantity]
+    reference: str | None = None
+    source: str | None = None
+
+    def to_json(self) -> JsonValue:
+        """The analysis in the engine's format."""
+        frequencies: list[JsonValue] = [
+            frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
+        ]
+        noise: dict[str, JsonValue] = {
+            "output": self.output,
+            "frequencies": frequencies,
+        }
+        if self.reference is not None:
+            noise["reference"] = self.reference
+        if self.source is not None:
+            noise["source"] = self.source
+        return {"noise": noise}
+
+
+type Analysis = (
+    OperatingPoint | DcSweep | Ac | Transient | Sensitivity | Stability | Noise
+)
 """Any analysis."""
 
 

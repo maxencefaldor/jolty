@@ -4,10 +4,11 @@ use crate::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };
+use crate::noise::Flicker;
 use crate::stamp::Series;
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
-    ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, NoiseSource,
+    Output, ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
 };
 
 /// A junction diode from terminal `anode` to terminal `cathode`, in the SPICE model.
@@ -38,6 +39,8 @@ pub struct Diode<R: Real = f64> {
     breakdown: Option<Breakdown<R>>,
     /// The junction voltage of the last evaluation, from which the next step is limited.
     last_voltage: f64,
+    temperature: f64,
+    flicker: Flicker,
 }
 
 /// A diode's reverse breakdown.
@@ -116,6 +119,10 @@ pub struct DiodeParameters<R: Real = f64> {
     pub saturation_current_temperature_exponent: R,
     /// The temperature the parameters were measured at, in kelvins; default 27 °C.
     pub nominal_temperature: R,
+    /// The flicker noise coefficient, `KF`; default 0, no flicker noise.
+    pub flicker_coefficient: R,
+    /// The power of the current in the flicker noise, `AF`; default 1.
+    pub flicker_exponent: R,
 }
 
 impl<R: Real> Default for DiodeParameters<R> {
@@ -136,6 +143,8 @@ impl<R: Real> Default for DiodeParameters<R> {
             energy_gap: R::constant(1.11),
             saturation_current_temperature_exponent: R::constant(3.0),
             nominal_temperature: R::constant(REFERENCE_TEMPERATURE),
+            flicker_coefficient: R::constant(0.0),
+            flicker_exponent: R::constant(1.0),
         }
     }
 }
@@ -175,7 +184,10 @@ impl<R: Real> NativeDevice<R> for Diode<R> {
             energy_gap,
             saturation_current_temperature_exponent,
             nominal_temperature,
+            flicker_coefficient,
+            flicker_exponent,
         } = parameters;
+        let flicker = Flicker::new(flicker_coefficient, flicker_exponent)?;
         ParameterError::positive("saturation_current", saturation_current)?;
         ParameterError::positive("emission_coefficient", emission_coefficient)?;
         ParameterError::non_negative("series_resistance", series_resistance)?;
@@ -237,6 +249,8 @@ impl<R: Real> NativeDevice<R> for Diode<R> {
             transit_time,
             breakdown,
             last_voltage: 0.0,
+            temperature: temperatures.actual,
+            flicker,
         })
     }
 }
@@ -318,6 +332,17 @@ impl<R: Real> Device<R> for Diode<R> {
             .add_charge(output, charge + capacitance * (applied - voltage));
         self.junction.add_capacitance(output, capacitance);
     }
+
+    /// The series resistance's thermal noise, and the junction current's shot and flicker
+    /// noise.
+    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
+        self.series
+            .noise("series thermal", self.temperature, sources);
+        let (current, _) = self.current(self.junction.voltage(input));
+        let nodes = self.junction.nodes();
+        sources.push(NoiseSource::shot("shot", nodes, current.value()));
+        self.flicker.add(nodes, current.value(), sources);
+    }
 }
 
 #[cfg(test)]
@@ -325,8 +350,11 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::testing::{Bench, assert_jacobians_match, assert_parameter_gradients_match};
-    use crate::thermal_voltage;
+    use crate::testing::{
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
+        thermal,
+    };
+    use crate::{ELEMENTARY_CHARGE, thermal_voltage};
 
     const THERMAL_VOLTAGE: f64 = thermal_voltage(REFERENCE_TEMPERATURE);
 
@@ -442,5 +470,29 @@ mod tests {
             let with_resistance = CHARGED.replace('{', r#"{"series_resistance": 5, "#);
             assert_jacobians_match::<Diode>(&with_resistance, &[voltage + 0.01, 0.0, voltage]);
         }
+    }
+
+    #[test]
+    fn its_current_makes_shot_and_flicker_noise() {
+        let parameters = r#"{"saturation_current": 1e-14, "series_resistance": 10,
+            "flicker_coefficient": 1e-12, "flicker_exponent": 1.5}"#;
+        let mut bench = Bench::new::<Diode>(parameters);
+        let x = [0.7, 0.0, 0.69];
+        // The junction's current leaves through the cathode.
+        let current = -bench.settle(&x).residual[1];
+        let sources = bench.noise(&x);
+        let shot = source(&sources, "shot");
+        assert_close(&[shot.density(1.0)], &[2.0 * ELEMENTARY_CHARGE * current]);
+        let flicker = source(&sources, "flicker");
+        assert_eq!(flicker.equations, shot.equations);
+        assert_close(
+            &[flicker.density(100.0)],
+            &[1e-12 * current.powf(1.5) / 100.0],
+        );
+        let series = source(&sources, "series thermal");
+        assert_close(&[series.density(1.0)], &[thermal(0.1)]);
+        assert_eq!(sources.len(), 3);
+        let quiet = Bench::new::<Diode>(r#"{"saturation_current": 1e-14}"#).noise(&x[..2]);
+        assert_eq!(quiet.len(), 1, "{quiet:?}");
     }
 }

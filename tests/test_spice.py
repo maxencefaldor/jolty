@@ -240,12 +240,29 @@ def test_what_jolty_cannot_read_is_an_error_where_it_is(
 
 def test_parameters_that_change_nothing_are_left_out() -> None:
     parts = library(
-        ".model DX D(IS=1e-14 KF=0 AF=1)\n.model QUIET RES(T_ABS=-273.15)\n"
-        ".subckt a x\nD1 x 0 DX\nR1 x 0 QUIET 1k\n.ends"
+        ".model NX NMOS(VTO=1 NLEV=2 GDSNOI=1)\n"
+        ".model QUIET RES(T_ABS=-273.15 KF=0 AF=1)\n"
+        ".subckt a x\nM1 x x 0 0 NX\nR1 x 0 QUIET 1k\n.ends"
     )
-    diode, resistor = parts.component("a").definition.instances
-    assert diode.parameters == {"saturation_current": 1e-14}
+    transistor, resistor = parts.component("a").definition.instances
+    assert transistor.parameters == {"channel": "n", "threshold_voltage": 1.0}
     assert resistor.parameters == {"resistance": 1e3}
+
+
+def test_flicker_noise_parameters_carry_over() -> None:
+    parts = library(
+        ".model DX D(IS=1e-14 KF=1e-16 AF=1.2)\n.subckt a x\nD1 x 0 DX\n.ends"
+    )
+    (diode,) = parts.component("a").definition.instances
+    assert diode.parameters == {
+        "saturation_current": 1e-14,
+        "flicker_coefficient": 1e-16,
+        "flicker_exponent": 1.2,
+    }
+    with pytest.raises(SpiceError, match="counterpart to `KF`"):
+        library(
+            ".model LOUD RES(KF=1e-12)\n.subckt a x\nR1 x 0 LOUD 1k\n.ends"
+        ).component("a")
 
 
 def test_temperature_parameters_come_in_kelvins() -> None:

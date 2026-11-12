@@ -40,6 +40,8 @@ A resistor's or capacitor's value also bends with the voltage `v` from `a` to `b
 A resistor then carries `v / (r · (1 + vc1 · v + vc2 · v²))`, and a capacitor holds the charge `c · (v + vc1 · v² / 2 + vc2 · v³ / 3)`, whose slope is its bent capacitance.
 The formula holds at every voltage, as in ngspice: where the coefficients bend a value below zero, it is negative there.
 
+In a [noise analysis](simulation.md#noise), a resistor makes thermal noise, `4kT/R` A²/Hz at its resistance there, or a voltage of `4kT·R` V²/Hz in series below 1 Ω, as a switch and a photocell do at theirs; capacitors and inductors make none.
+
 A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and `device.toleranced(parameter, relative, distribution, lot)` gives any device's number parameter a `"uniform"`, `"normal"`, `"log_uniform"` or `"log_normal"` tolerance, by its path, such as `waveform.dc` for a source's DC level, and optionally a lot it shares a spread with; [Monte Carlo analyses](simulation.md#monte-carlo) sample them.
 
 ## Independent sources
@@ -149,6 +151,7 @@ Every parameter is optional:
 | `energy_gap` | V | 1.11 V, silicon's |
 | `saturation_current_temperature_exponent` | none | 3 |
 | `nominal_temperature` | K | 27 °C |
+| `flicker_coefficient`, `flicker_exponent` | none | 0: no flicker noise, 1 |
 
 A diode with a series resistance adds the voltage of its junction to the unknowns, as `D1:junction` for a diode `D1`; below 1 Ω, the resistance adds its current too, as `D1:junction_current`, as a small resistor does.
 
@@ -157,6 +160,8 @@ Given a breakdown voltage, the reverse current grows exponentially beyond it; ng
 
 Away from the nominal temperature `Tn`, the saturation current scales by `(T/Tn)^(XTI/n) · exp((T/Tn − 1) · Eg / (n · Vt))`, with `Eg` the energy gap, `XTI` its temperature exponent and `Vt` the thermal voltage at `T`.
 The junction potential and capacitance follow silicon's band gap, and the breakdown voltage falls by its temperature coefficient, as in ngspice.
+
+In a [noise analysis](simulation.md#noise), the series resistance makes thermal noise, `4kT/R` A²/Hz, and the junction's current `I` shot noise, `2q·|I|`, and flicker noise, `KF·|I|^AF/f`, `KF` the flicker coefficient and `AF` its exponent, `KF` and `AF` in SPICE.
 
 ## JFET
 
@@ -183,11 +188,14 @@ Every parameter is optional:
 | `energy_gap` | `EG` | V | 1.11 V, silicon's |
 | `saturation_current_temperature_exponent` | `XTI` | none | 0 |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
+| `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 
 A drain or source resistance adds an internal node to the unknowns, as `J1:drain` or `J1:source` for a JFET `J1`; one below 1 Ω adds its current too, as `J1:drain_current` or `J1:source_current`, as a small resistor does.
 
 Away from the nominal temperature, the gate junctions' saturation current scales with the energy gap as a diode's, and their potential and capacitances follow silicon's band gap; the threshold moves by its temperature coefficient, and the transconductance parameter scales as `(T/Tn)^BEX`.
 ngspice scales a JFET's saturation current by its temperature exponent only when given, so it defaults to 0.
+
+In a [noise analysis](simulation.md#noise), the resistances make thermal noise, the channel thermal noise of `8kT·gm/3` A²/Hz, and the drain current `Id` flicker noise of `KF·|Id|^AF/f`, as in ngspice.
 
 ## Bipolar transistor
 
@@ -221,6 +229,7 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 | `energy_gap` | `EG` | V | 1.11 V, silicon's |
 | `saturation_current_temperature_exponent`, `beta_temperature_exponent` | `XTI`, `XTB` | none | 3, 0 |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
+| `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 
 A base, collector or emitter resistance adds an internal node to the unknowns, as `Q1:base`, `Q1:collector` or `Q1:emitter` for a transistor `Q1`; one below 1 Ω, the base's at its minimum, adds its current too, as `Q1:base_current`, `Q1:collector_current` or `Q1:emitter_current`, as a small resistor does.
 
@@ -229,6 +238,8 @@ The junction conducts the minimum conductance, as ngspice's does, and a diode's 
 The substrate parameters need a substrate.
 
 Away from the nominal temperature, the saturation currents scale with the energy gap as a diode's, the leakage currents with their own emission coefficients; the betas scale as `(T/Tn)^XTB`, dividing the leakage currents too, and the junctions' potentials and capacitances follow silicon's band gap, as in ngspice.
+
+In a [noise analysis](simulation.md#noise), the resistances make thermal noise, the base resistance at its bias, the collector current shot noise, and the base current `Ib` shot noise and flicker noise of `KF·|Ib|^AF/f`, as in ngspice.
 
 ngspice leaves out of its small-signal model and its Newton steps how a falling base resistance depends on the junction voltages; jolty keeps every derivative, so its frequency response is the exact slope of its DC model, and its Newton steps converge faster to the same operating point.
 
@@ -268,6 +279,7 @@ Every parameter is optional:
 | `depletion_coefficient` | `FC` | none | 0.5 |
 | `gate_source_overlap`, `gate_drain_overlap`, `gate_bulk_overlap` | `CGSO`, `CGDO`, `CGBO` | F/m | 0 |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
+| `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 | `level` | `LEVEL` | 1 or 3 | 1 |
 
 Level 3 replaces the square law with a law of short channels, takes no channel-length modulation, gives the oxide a thickness of 0.1 µm and the sidewall a grading coefficient of 0.33 unless given, and adds parameters of its own:
@@ -297,3 +309,5 @@ A drain or source resistance adds an internal node to the unknowns, as `M1:drain
 Meyer's capacitances depend on every terminal voltage, and no charge yields them, so each carries a current `C(v) · dv/dt` that follows a current of the transistor's own: the displacement current through the whole oxide towards the source, the drain or the bulk, the unknowns `M1:gate_source_displacement`, `M1:gate_drain_displacement` and `M1:gate_bulk_displacement`.
 The frequency response holds Meyer's capacitances exactly, as ngspice's does.
 With the bulk forward-biased, ngspice's small-signal model and Newton steps take the threshold's slope from the reverse-biased formula; jolty keeps every derivative exact.
+
+In a [noise analysis](simulation.md#noise), the resistances make thermal noise, the channel thermal noise of `8kT·gm/3` A²/Hz, and the drain current `Id` flicker noise of `KF·|Id|^AF/(f·W·Leff·Cox²)` over the effective gate, the widths of the parallel copies summed, with an oxide 0.1 µm thick unless given, as in ngspice.

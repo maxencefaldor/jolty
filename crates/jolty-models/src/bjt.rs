@@ -6,10 +6,11 @@ use crate::junction::{
 };
 use jolty_numerics::Entry;
 
+use crate::noise::Flicker;
 use crate::stamp::{self, CurrentBranch, SMALL_RESISTANCE, Series, Stamp};
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
-    ParameterError, REFERENCE_TEMPERATURE, Real,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
+    NoiseSource, Output, ParameterError, REFERENCE_TEMPERATURE, Real,
 };
 
 /// The doping order of a bipolar transistor.
@@ -84,6 +85,8 @@ pub struct BipolarTransistor<R: Real = f64> {
     /// The base-emitter and base-collector voltages of the last evaluation, from which the
     /// next steps are limited.
     last: [f64; 2],
+    temperature: f64,
+    flicker: Flicker,
 }
 
 /// The indices of the terminals a substrate junction may join: the collector and the base.
@@ -198,6 +201,11 @@ pub struct BipolarTransistorParameters<R: Real = f64> {
     pub beta_temperature_exponent: R,
     /// The temperature the parameters were measured at, in kelvins; default 27 °C.
     pub nominal_temperature: R,
+    /// The flicker noise coefficient of the base current, `KF`; default 0, no flicker
+    /// noise.
+    pub flicker_coefficient: R,
+    /// The power of the base current in the flicker noise, `AF`; default 1.
+    pub flicker_exponent: R,
 }
 
 impl<R: Real> Default for BipolarTransistorParameters<R> {
@@ -245,6 +253,8 @@ impl<R: Real> Default for BipolarTransistorParameters<R> {
             saturation_current_temperature_exponent: R::constant(3.0),
             beta_temperature_exponent: R::constant(0.0),
             nominal_temperature: R::constant(REFERENCE_TEMPERATURE),
+            flicker_coefficient: R::constant(0.0),
+            flicker_exponent: R::constant(1.0),
         }
     }
 }
@@ -907,6 +917,7 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
     ) -> Result<Self, ParameterError> {
         let temperatures =
             Temperatures::new(binding.temperature(), parameters.nominal_temperature)?;
+        let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?;
         let junctions = parameters.junctions(temperatures)?;
         let base_resistance = parameters.base_resistance()?;
         let charges = parameters.charges(temperatures)?;
@@ -967,6 +978,8 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
             charges,
             substrate,
             last: [0.0; 2],
+            temperature: temperatures.actual,
+            flicker,
         })
     }
 }
@@ -1100,6 +1113,54 @@ impl<R: Real> Device<R> for BipolarTransistor<R> {
             substrate.evaluate(input, output);
         }
     }
+
+    /// The thermal noise of the series resistances, and the shot noise of the collector
+    /// and base currents, with the base current's flicker noise, as SPICE models them.
+    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
+        let temperature = self.temperature;
+        self.collector_series
+            .noise("collector thermal", temperature, sources);
+        self.emitter_series
+            .noise("emitter thermal", temperature, sources);
+        let stamp = &self.stamp;
+        let base = stamp.voltage(input, INNER_BASE);
+        let vbe = self.sign * (base - stamp.voltage(input, INNER_EMITTER));
+        let vbc = self.sign * (base - stamp.voltage(input, INNER_COLLECTOR));
+        let state = self.junctions.evaluate(vbe, vbc, input.gmin);
+        let nodes = stamp.nodes();
+        if let Some((resistance, form)) = &self.base {
+            let resistance = resistance.evaluate(&state).0.value();
+            sources.push(match form {
+                BaseForm::Conductance => NoiseSource::thermal(
+                    "base thermal",
+                    [nodes[OUTER_BASE], nodes[INNER_BASE]],
+                    resistance.recip(),
+                    temperature,
+                ),
+                BaseForm::Current(current) => NoiseSource::thermal_in_series(
+                    "base thermal",
+                    current.branch.unknown(),
+                    resistance,
+                    temperature,
+                ),
+            });
+        }
+        let [(base_emitter, _), (base_collector, _)] = state.base;
+        let collector = state.transport.0 - base_collector;
+        let base_current = (base_emitter + base_collector).value();
+        sources.push(NoiseSource::shot(
+            "collector shot",
+            [nodes[INNER_COLLECTOR], nodes[INNER_EMITTER]],
+            collector.value(),
+        ));
+        let base_to_emitter = [nodes[INNER_BASE], nodes[INNER_EMITTER]];
+        sources.push(NoiseSource::shot(
+            "base shot",
+            base_to_emitter,
+            base_current,
+        ));
+        self.flicker.add(base_to_emitter, base_current, sources);
+    }
 }
 
 #[cfg(test)]
@@ -1107,8 +1168,11 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::testing::{Bench, assert_jacobians_match, assert_parameter_gradients_match};
-    use crate::thermal_voltage;
+    use crate::testing::{
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
+        thermal,
+    };
+    use crate::{ELEMENTARY_CHARGE, Unknown, thermal_voltage};
 
     const THERMAL_VOLTAGE: f64 = thermal_voltage(REFERENCE_TEMPERATURE);
 
@@ -1416,5 +1480,49 @@ mod tests {
                 ],
             );
         }
+    }
+
+    #[test]
+    fn its_currents_make_shot_and_flicker_noise() {
+        let parameters = r#"{"saturation_current": 1e-15, "flicker_coefficient": 1e-14,
+            "flicker_exponent": 1.2}"#;
+        let mut bench = Bench::new::<BipolarTransistor>(parameters);
+        let x = [5.0, 0.65, 0.0];
+        let evaluation = bench.settle(&x);
+        let (collector, base) = (evaluation.residual[0], evaluation.residual[1]);
+        let sources = bench.noise(&x);
+        let shot = |current: f64| 2.0 * ELEMENTARY_CHARGE * current;
+        let collector_shot = source(&sources, "collector shot");
+        assert_close(&[collector_shot.density(1.0)], &[shot(collector)]);
+        let base_shot = source(&sources, "base shot");
+        assert_close(&[base_shot.density(1.0)], &[shot(base)]);
+        let flicker = source(&sources, "flicker");
+        assert_eq!(flicker.equations, base_shot.equations);
+        assert_close(&[flicker.density(10.0)], &[1e-14 * base.powf(1.2) / 10.0]);
+        assert_eq!(sources.len(), 3);
+
+        // The series resistances' thermal noise, the small base resistance's a voltage in
+        // series with its current.
+        let resistive = r#"{"saturation_current": 1e-15, "collector_resistance": 20,
+            "emitter_resistance": 2, "base_resistance": 0.5}"#;
+        let bench = Bench::new::<BipolarTransistor>(resistive);
+        let unknowns = bench.unknowns();
+        let at = |name: &str| unknowns.iter().position(|unknown| *unknown == name);
+        let base_current = at("device:base_current").expect("the base current");
+        let mut x = vec![0.0; unknowns.len()];
+        x[..3].copy_from_slice(&[5.0, 0.65, 0.0]);
+        let sources = bench.noise(&x);
+        assert_close(
+            &[
+                source(&sources, "collector thermal").density(1.0),
+                source(&sources, "emitter thermal").density(1.0),
+                source(&sources, "base thermal").density(1.0),
+            ],
+            &[thermal(0.05), thermal(0.5), thermal(0.5)],
+        );
+        assert_eq!(
+            source(&sources, "base thermal").equations,
+            [Some(Unknown::new(base_current)), None]
+        );
     }
 }

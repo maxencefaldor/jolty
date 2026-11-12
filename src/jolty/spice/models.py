@@ -23,6 +23,13 @@ from jolty.units import celsius
 type Table = Mapping[str, tuple[str, float]]
 """Each SPICE parameter's jolty name, and the factor to SI base units."""
 
+FLICKER: Final[Table] = {
+    "kf": ("flicker_coefficient", 1.0),
+    "af": ("flicker_exponent", 1.0),
+}
+"""The flicker noise of a diode's or a transistor's current: SPICE's ``KF`` and
+``AF``."""
+
 DIODE: Final[Table] = {
     "is": ("saturation_current", 1.0),
     "n": ("emission_coefficient", 1.0),
@@ -42,6 +49,7 @@ DIODE: Final[Table] = {
     "tcv": ("breakdown_temperature_coefficient", 1.0),
     "eg": ("energy_gap", 1.0),
     "xti": ("saturation_current_temperature_exponent", 1.0),
+    **FLICKER,
 }
 
 JFET: Final[Table] = {
@@ -61,6 +69,7 @@ JFET: Final[Table] = {
     "bex": ("beta_temperature_exponent", 1.0),
     "eg": ("energy_gap", 1.0),
     "xti": ("saturation_current_temperature_exponent", 1.0),
+    **FLICKER,
 }
 
 BIPOLAR: Final[Table] = {
@@ -114,6 +123,7 @@ BIPOLAR: Final[Table] = {
     "eg": ("energy_gap", 1.0),
     "xti": ("saturation_current_temperature_exponent", 1.0),
     "xtb": ("beta_temperature_exponent", 1.0),
+    **FLICKER,
 }
 
 MOSFET: Final[Table] = {
@@ -155,6 +165,7 @@ MOSFET: Final[Table] = {
     "xw": ("width_adjustment", 1.0),
     "delvto": ("threshold_adjustment", 1.0),
     "delvt0": ("threshold_adjustment", 1.0),
+    **FLICKER,
 }
 
 MOSFET_INSTANCE: Final[Table] = {
@@ -190,8 +201,9 @@ OWN_TEMPERATURES: Final = frozenset({"t_abs", "t_rel_global", "t_rel_local"})
 """PSpice's parameters that set a device's own temperature apart from the circuit's,
 which jolty does not model: they change nothing for a device that does not drift."""
 
-NOISE: Final = frozenset({"kf", "af", "nlev", "gdsnoi"})
-"""Parameters that only noise analyses read."""
+NOISE: Final = frozenset({"nlev", "gdsnoi"})
+"""PSpice's choices among a MOSFET's noise equations, which ngspice's level 1 and 3
+ignore, keeping SPICE's own, as jolty does."""
 
 
 @dataclass(frozen=True, slots=True)

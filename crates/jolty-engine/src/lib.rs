@@ -3,7 +3,9 @@
 //! A [`Simulator`] elaborates a circuit once, flattening its hierarchy into devices bound to
 //! unknowns and claiming the sparsity pattern of its matrix, then runs any number of analyses
 //! on it: an [operating point](Simulator::operating_point), a [DC sweep](Simulator::dc_sweep),
-//! a [small-signal frequency response](Simulator::ac) and a [transient](Simulator::transient).
+//! a [small-signal frequency response](Simulator::ac), a [transient](Simulator::transient),
+//! [sensitivities](Simulator::sensitivity), the [loop gain](Simulator::stability) through a
+//! probe and the [noise](Simulator::noise) at an output.
 //! Every analysis solves the charge-oriented equations `f(x) + d/dt q(x) = 0` by Newton
 //! iteration with one sparse LU solver, whose symbolic analysis is shared by all of them.
 //! Logic devices join logic nets, which an event scheduler simulates beside the analog
@@ -41,6 +43,7 @@ mod analysis;
 mod elaborate;
 mod logic;
 mod newton;
+mod noise;
 mod observe;
 mod operating_point;
 mod options;
@@ -61,6 +64,7 @@ pub use analysis::{Analysis, Outcome};
 pub use elaborate::{ElaborationError, ElaborationProblem, Location, Placed};
 pub use jolty_numerics::integration::Method;
 pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
+pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseSpectrum};
 pub use observe::{Observation, Observations, Observed};
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;

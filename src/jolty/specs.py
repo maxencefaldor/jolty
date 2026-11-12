@@ -49,6 +49,7 @@ from jolty.units import (
     Quantity,
     finite,
     format_si,
+    rtHz,
 )
 
 type Plain = Literal["dB", "°", "%"]
@@ -537,7 +538,12 @@ def value(
             case results.OperatingPoint():
                 message = f"an operating point holds one value, not one at {at}"
                 raise MeasurementError(message)
-            case results.Response() | results.Sensitivities() | results.LoopGain():
+            case (
+                results.Response()
+                | results.Sensitivities()
+                | results.LoopGain()
+                | results.NoiseSpectrum()
+            ):
                 message = (
                     "a value reads an operating point, a transient or a DC sweep, "
                     f"not {_kind(result)}"
@@ -1027,6 +1033,65 @@ def distortion(  # noqa: PLR0913 - a window, its signal, the fundamental, the ha
     return Measurement(analysis, described, "dB", read)
 
 
+def noise_density(
+    analysis: str, *, at: Quantity, referred: bool = False
+) -> Measurement:
+    """The noise density of a noise analysis's output at a frequency.
+
+    It is the square root of the power density, in V/√Hz for a voltage and A/√Hz for a
+    current, as datasheets give it, interpolated as a power law between frequencies
+    `at` the frequency. Referred, it is the noise referred to the analysis's source,
+    as that input's own noise, in the unit of the source's level.
+    """
+    _check(at, "at")
+
+    def read(result: results.Result) -> Reading:
+        spectrum = _spectrum(result, "a noise density", referred=referred)
+        point = _frequency_axis(spectrum.frequencies).locate(at, "at")
+        density = spectrum.density(point, referred=referred)
+        return Reading(
+            math.sqrt(density), _noise_unit(spectrum, referred) / rtHz.dimension
+        )
+
+    referral = " referred to the input" if referred else ""
+    return Measurement(analysis, f"noise density{referral} at {at}", None, read)
+
+
+def integrated_noise(
+    analysis: str,
+    *,
+    start: Quantity | None = None,
+    stop: Quantity | None = None,
+    referred: bool = False,
+) -> Measurement:
+    """The RMS noise of a noise analysis's output from `start` to `stop`.
+
+    It is the square root of the power density integrated over the band, by default
+    every frequency of the analysis, each density a power law between frequencies as
+    SPICE integrates it, in volts or amperes. Referred, it is the noise referred to the
+    analysis's source, as that input's own noise, in the unit of the source's level.
+    """
+    _check(start, "start")
+    _check(stop, "stop")
+
+    def read(result: results.Result) -> Reading:
+        spectrum = _spectrum(result, "an integrated noise", referred=referred)
+        axis = _frequency_axis(np.sort(spectrum.frequencies))
+        low = None if start is None else axis.locate(start, "start")
+        high = None if stop is None else axis.locate(stop, "stop")
+        if low is not None and high is not None and low >= high:
+            message = f"the band from {start} to {stop} is empty"
+            raise MeasurementError(message)
+        rms = spectrum.rms(low, high, referred=referred)
+        return Reading(rms, _noise_unit(spectrum, referred))
+
+    referral = " referred to the input" if referred else ""
+    lowest = "the lowest frequency" if start is None else str(start)
+    highest = "the highest" if stop is None else str(stop)
+    described = f"RMS noise{referral} from {lowest} to {highest}"
+    return Measurement(analysis, described, None, read)
+
+
 @dataclass(frozen=True, slots=True)
 class _Signal:
     """An unknown, or a voltage relative to the voltage of a reference."""
@@ -1338,26 +1403,51 @@ def _signals(
     return _Signal(output, reference), None if over is None else _Signal(over)
 
 
+def _spectrum(
+    result: results.Result, what: str, *, referred: bool
+) -> results.NoiseSpectrum:
+    """`result`, a noise analysis's, with a source to refer its noise to if `referred`.
+
+    Raises:
+        MeasurementError: When it is not, or has none.
+    """
+    if not isinstance(result, results.NoiseSpectrum):
+        message = f"{what} reads a noise analysis, not {_kind(result)}"
+        raise MeasurementError(message)
+    if referred and result.input is None:
+        message = "the noise analysis names no source to refer its noise to"
+        raise MeasurementError(message)
+    return result
+
+
+def _noise_unit(spectrum: results.NoiseSpectrum, referred: bool) -> Dimension:  # noqa: FBT001
+    """The unit of the noise's amplitude: the output's, or the input's if `referred`."""
+    quantity = spectrum.quantity
+    if referred and spectrum.input is not None:
+        quantity = spectrum.input.quantity
+    return VOLTAGE if quantity == "voltage" else CURRENT
+
+
 def _over(output: _Signal | None, over: str | None) -> str:
     if output is None:
         return "the loop"
     return str(output) if over is None else f"{output} over {over}"
 
 
+_KINDS: Final[dict[type, str]] = {
+    results.OperatingPoint: "an operating point",
+    results.Sweep: "a DC sweep",
+    results.Response: "a small-signal response",
+    results.Waveforms: "a transient",
+    results.Sensitivities: "sensitivities",
+    results.LoopGain: "a loop gain",
+    results.NoiseSpectrum: "a noise spectrum",
+}
+"""What each kind of result is, as messages name it."""
+
+
 def _kind(result: results.Result) -> str:
-    match result:
-        case results.OperatingPoint():
-            return "an operating point"
-        case results.Sweep():
-            return "a DC sweep"
-        case results.Response():
-            return "a small-signal response"
-        case results.Waveforms():
-            return "a transient"
-        case results.Sensitivities():
-            return "sensitivities"
-        case results.LoopGain():
-            return "a loop gain"
+    return _KINDS[type(result)]
 
 
 def _check(point: Quantity | None, name: str) -> None:

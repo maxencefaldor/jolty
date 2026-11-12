@@ -47,11 +47,14 @@ Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in deg
 | `crossover(analysis, output=None, over=None)` | the first frequency where the gain falls through 0 dB | a small-signal response or a loop gain |
 | `phase_margin(analysis, output=None, over=None)` | 180° plus the phase where the gain first falls through 0 dB | a small-signal response or a loop gain |
 | `gain_margin(analysis, output=None, over=None)` | minus the gain in decibels where the phase first falls through -180° | a small-signal response or a loop gain |
+| `noise_density(analysis, at, referred=False)` | the noise density at a frequency, in V/√Hz or A/√Hz, at the output or referred to the input | a noise analysis |
+| `integrated_noise(analysis, start=None, stop=None, referred=False)` | the RMS noise from `start` to `stop`, by default every frequency, at the output or referred to the input | a noise analysis |
 
 Every transient measurement takes a window, `start` and `stop`.
 A step runs from the signal's value at the window's start to its value at the window's end, so a window ends once the signal settles.
 Values between the points of a result are interpolated linearly, and a small-signal response's over log frequency.
 A small-signal measurement reads `output` in a response, and the loop gain itself in a stability analysis, without an output: `phase_margin("loop") >= 45` asks a loop for 45° of phase margin.
+A noise density is interpolated as a power law between frequencies, and its bound is in V/√Hz, such as `noise_density("hiss", at=1 * kHz) <= 10 * nV / rtHz`.
 
 ## Verdicts
 

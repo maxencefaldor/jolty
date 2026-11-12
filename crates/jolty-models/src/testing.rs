@@ -3,8 +3,9 @@
 use jolty_numerics::{Pattern, PatternBuilder};
 
 use crate::{
-    Binding, Contributions, Device, Gradient, Input, Model, Native, NativeDevice, NativeModel,
-    Node, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown, UnknownInfo,
+    BOLTZMANN, Binding, Contributions, Device, Gradient, Input, Model, Native, NativeDevice,
+    NativeModel, Node, NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown,
+    UnknownInfo,
 };
 
 /// One device whose terminals each connect to an unknown of their own.
@@ -128,6 +129,31 @@ impl Bench {
     pub(crate) fn device(&mut self) -> &mut dyn Device {
         self.device.as_mut()
     }
+
+    /// The device's noise sources at `x`.
+    pub(crate) fn noise(&self, x: &[f64]) -> Vec<NoiseSource> {
+        let mut sources = Vec::new();
+        self.device.noise(&Input::new(x, 0.0, 0.0), &mut sources);
+        sources
+    }
+}
+
+/// The source named `name` among `sources`.
+///
+/// # Panics
+///
+/// Panics unless exactly one source has that name.
+pub(crate) fn source<'a>(sources: &'a [NoiseSource], name: &str) -> &'a NoiseSource {
+    let mut named = sources.iter().filter(|source| source.name == name);
+    let found = named.next().unwrap_or_else(|| panic!("no {name} noise"));
+    assert!(named.next().is_none(), "two {name} noises");
+    found
+}
+
+/// `4kT` at the reference temperature times `value`: the thermal noise density of a
+/// conductance's current, or of a resistance's voltage.
+pub(crate) fn thermal(value: f64) -> f64 {
+    4.0 * BOLTZMANN * REFERENCE_TEMPERATURE * value
 }
 
 /// Checks that a device's conductances and capacitances are the derivatives of its residuals

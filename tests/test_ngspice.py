@@ -34,6 +34,7 @@ from jolty import (
     Builder,
     Component,
     DcSweep,
+    Noise,
     OperatingPoint,
     Role,
     Simulation,
@@ -965,6 +966,87 @@ def switched(c: Builder) -> None:
     )
 
 
+@component
+def flickering(c: Builder) -> None:
+    """Four devices with flicker noise, their currents meeting at the output.
+
+    They are a diode, a bipolar transistor, a JFET and a MOSFET of two copies.
+    """
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(15 * V), id="V2")
+    source = c.place(devices.voltage_source(1.5 * V), id="V1")
+    load = c.place(devices.resistor(1 * kohm), id="RD")
+    unipolar = c.place(
+        devices.mosfet(
+            width=10 * um,
+            length=2 * um,
+            lateral_diffusion=0.1 * um,
+            multiplier=2,
+            threshold_voltage=1 * V,
+            transconductance_parameter=50 * uA / V**2,
+            oxide_thickness=20 * nm,
+            flicker_coefficient=1e-24,
+            flicker_exponent=1.3,
+        ),
+        id="M1",
+    )
+    degeneration = c.place(devices.resistor(1 * kohm), id="RS")
+    bipolar = c.place(
+        devices.bipolar_transistor(
+            saturation_current=1e-15 * A,
+            base_resistance=200 * ohm,
+            flicker_coefficient=1e-14,
+            flicker_exponent=1.2,
+        ),
+        id="Q1",
+    )
+    base = c.place(devices.resistor(470 * kohm), id="RB")
+    channel = c.place(
+        devices.jfet(
+            threshold_voltage=-2 * V,
+            transconductance_parameter=1 * mA / V**2,
+            flicker_coefficient=1e-15,
+        ),
+        id="J1",
+    )
+    tail = c.place(devices.resistor(2 * kohm), id="RJ")
+    diode = c.place(
+        devices.diode(
+            saturation_current=1e-14 * A,
+            series_resistance=5 * ohm,
+            flicker_coefficient=1e-16,
+            flicker_exponent=1.1,
+        ),
+        id="D1",
+    )
+    bleed = c.place(devices.resistor(47 * kohm), id="RL")
+    c.connect(source.positive, unipolar.gate, name="in")
+    c.connect(supply.positive, load.a, base.a, name="supply")
+    c.connect(
+        load.b,
+        unipolar.drain,
+        bipolar.collector,
+        channel.drain,
+        bleed.a,
+        name="out",
+    )
+    c.connect(unipolar.source, degeneration.a, name="sink")
+    c.connect(base.b, bipolar.base, name="base")
+    c.connect(channel.source, tail.a, name="tail")
+    c.connect(bleed.b, diode.anode, name="bleed")
+    c.connect(
+        source.negative,
+        supply.negative,
+        degeneration.b,
+        unipolar.bulk,
+        bipolar.emitter,
+        channel.gate,
+        tail.b,
+        diode.cathode,
+        ground,
+    )
+
+
 @pytest.mark.parametrize(
     "top",
     [
@@ -1174,6 +1256,36 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
             scale=size(spice),
             tolerance=1e-6,
         )
+
+
+@pytest.mark.parametrize(
+    ("top", "source"),
+    [
+        (low_pass, "V1"),
+        (resonator, "V1"),
+        (jfet_stage, "V1"),
+        (bjt_amplifier, "V1"),
+        (integrated_stage, "V1"),
+        (nmos_stage, "V1"),
+        (level_three_stage, "V1"),
+        (flickering, "V1"),
+    ],
+)
+def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
+    """The noise at the output, and referred to the input, as ngspice finds them."""
+    simulation = Simulation(top())
+    spectrum = simulation.run(
+        Noise("out", decade(1 * Hz, 100 * MHz, 5), source=source), TIGHT
+    )
+    lines = netlist(simulation.circuit, excited=source)
+    raw = ngspice(lines, f"noise v(out) V{source} dec 5 1 100meg\nsetplot noise1")
+    np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
+    np.testing.assert_allclose(
+        np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.sqrt(spectrum.referred()), raw.real("inoise_spectrum"), rtol=1e-5
+    )
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,7 @@
 
 use jolty_numerics::Entry;
 
-use crate::{Binding, Input, Node, Output, Quantity, Real, Unknown};
+use crate::{Binding, Input, Node, NoiseSource, Output, Quantity, Real, Unknown};
 
 /// The local index of a two-terminal element's positive node in its stamp.
 const POSITIVE: usize = 0;
@@ -62,6 +62,27 @@ impl<R: Real> Series<R> {
             )
         };
         (series, inner)
+    }
+
+    /// Appends the resistance's thermal noise at `temperature`, named `name`, to `sources`.
+    pub(crate) fn noise(
+        &self,
+        name: &'static str,
+        temperature: f64,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        sources.push(match self {
+            Self::None => return,
+            Self::Conductance(pair, conductance) => {
+                NoiseSource::thermal(name, pair.nodes(), conductance.value(), temperature)
+            }
+            Self::Current(branch, resistance, _) => NoiseSource::thermal_in_series(
+                name,
+                branch.unknown(),
+                resistance.value(),
+                temperature,
+            ),
+        });
     }
 
     /// Adds the resistance's current, and its derivatives, to the circuit's equations.
@@ -132,6 +153,11 @@ impl<const N: usize> Stamp<N> {
     pub(crate) fn new(binding: &mut Binding<'_>, nodes: [Node; N]) -> Self {
         let entries = nodes.map(|row| nodes.map(|column| binding.entry(row, column)));
         Self { nodes, entries }
+    }
+
+    /// The nodes, in the order they were claimed.
+    pub(crate) fn nodes(&self) -> [Node; N] {
+        self.nodes
     }
 
     /// The voltage of the node at `index`.
@@ -211,6 +237,12 @@ impl TerminalPair {
     #[must_use]
     pub fn voltage(&self, input: &Input<'_>) -> f64 {
         self.0.voltage(input, POSITIVE) - self.0.voltage(input, NEGATIVE)
+    }
+
+    /// The positive and the negative node.
+    #[must_use]
+    pub fn nodes(&self) -> [Node; 2] {
+        self.0.nodes()
     }
 
     /// Adds `current`, flowing through the element, to the two nodes' equations.

@@ -1,8 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""Plots of results: waveforms over time, DC sweeps over their levels, and Bode plots.
+"""Plots of results: waveforms, DC sweeps, Bode plots and noise spectra.
 
 A plot draws chosen unknowns and logic nets of one result, or a loop gain alone, against
-0 dB and -180°, where its margins are read. Voltages, currents and logic levels never
+0 dB and -180°, where its margins are read, or a noise spectrum alone: the output's
+noise density with its noisiest sources', and the noise referred to the input, on log
+axes. Voltages, currents and logic levels never
 share an axis: each quantity has a panel of its own, and a response has two, its
 magnitude and its phase. Logic nets share a panel in lanes of their own, each
 named on its axis, with unknown levels hatched. Series take their colors in a fixed
@@ -59,7 +61,13 @@ _MUTED: Final = "#52514e"
 _GRID: Final = "#e4e3df"
 _UNITS: Final = {"voltage": "V", "current": "A"}
 
-type Plotted = results.Sweep | results.Response | results.Waveforms | results.LoopGain
+type Plotted = (
+    results.Sweep
+    | results.Response
+    | results.Waveforms
+    | results.LoopGain
+    | results.NoiseSpectrum
+)
 """A result a plot draws; an operating point has no axis to draw along."""
 
 type _Quantity = Literal["voltage", "current", "logic"]
@@ -89,7 +97,8 @@ def default_probes(
 def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
     """The plot of the unknowns `probes` in the result of the analysis `name`.
 
-    A loop gain's plot draws the loop gain alone, whatever the probes.
+    A loop gain's plot draws the loop gain alone, and a noise spectrum's the noise
+    alone, whatever the probes.
 
     Raises:
         JoltyError: When a probe names no unknown, or there are more than
@@ -97,6 +106,8 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
     """
     if isinstance(result, results.LoopGain):
         return _loop(name, result)
+    if isinstance(result, results.NoiseSpectrum):
+        return _noise(name, result)
     if len(probes) > MAX_SERIES:
         message = f"a plot draws at most {MAX_SERIES} unknowns, not {len(probes)}"
         raise JoltyError(message)
@@ -185,6 +196,50 @@ def _loop(name: str, result: results.LoopGain) -> Figure:
         axes.axhline(level, color=_MUTED, linewidth=0.8, linestyle="--")
         axes.set_xscale("log")
     _label_abscissa(phase, result, "Hz")
+    return figure
+
+
+def _noise(name: str, result: results.NoiseSpectrum) -> Figure:
+    """The noise density of the output, with its noisiest sources', on log axes.
+
+    The sources are the noisiest over the frequencies, as many as colors remain; the
+    noise referred to the input, given one, has a panel of its own, in its unit.
+    """
+    order = np.argsort(result.frequencies)
+    frequencies = result.frequencies[order]
+    powers = result.contributions[:, order]
+    if len(frequencies) > 1:
+        totals = [results.integrate(frequencies, row) for row in powers]
+    else:
+        totals = [float(row[0]) for row in powers]
+    noisiest = sorted(range(len(totals)), key=lambda index: -totals[index])
+    over = "" if result.reference is None else f" over {result.reference}"
+    series = [(f"{result.output}{over}", COLORS[0], np.sqrt(result.densities[order]))]
+    series.extend(
+        (
+            f"{result.sources[index].instance} {result.sources[index].name}",
+            color,
+            np.sqrt(powers[index]),
+        )
+        for index, color in zip(noisiest, COLORS[1:], strict=False)
+    )
+    figure, axes = _figure(name, result, 1 if result.input is None else 2)
+    unit = f"{_UNITS[result.quantity]}/\N{SQUARE ROOT}Hz"
+    _draw(axes[0], frequencies, series, "noise density", unit)
+    if result.input is not None:
+        referred = np.sqrt(result.referred()[order])
+        label = f"referred to {result.input.source}"
+        _draw(
+            axes[1],
+            frequencies,
+            [(label, COLORS[0], referred)],
+            "input noise density",
+            f"{_UNITS[result.input.quantity]}/\N{SQUARE ROOT}Hz",
+        )
+    for each in axes:
+        each.set_xscale("log")
+        each.set_yscale("log")
+    _label_abscissa(axes[-1], result, "Hz")
     return figure
 
 
@@ -287,6 +342,9 @@ def _describe(result: Plotted) -> str:
             return f"response to a unit excitation of {result.source}"
         case results.LoopGain():
             return f"loop gain through {result.probe}"
+        case results.NoiseSpectrum():
+            over = "" if result.reference is None else f" over {result.reference}"
+            return f"noise at {result.output}{over}"
 
 
 def _abscissa(result: Plotted) -> tuple[results.Real, str]:
@@ -295,7 +353,7 @@ def _abscissa(result: Plotted) -> tuple[results.Real, str]:
             return result.times, "s"
         case results.Sweep():
             return result.levels, _UNITS[result.quantity]
-        case results.Response() | results.LoopGain():
+        case results.Response() | results.LoopGain() | results.NoiseSpectrum():
             return result.frequencies, "Hz"
 
 
@@ -305,7 +363,7 @@ def _abscissa_label(result: Plotted) -> str:
             return "time"
         case results.Sweep():
             return f"{result.source} {result.quantity}"
-        case results.Response() | results.LoopGain():
+        case results.Response() | results.LoopGain() | results.NoiseSpectrum():
             return "frequency"
 
 

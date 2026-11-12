@@ -4,10 +4,11 @@ use crate::junction::{
     Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
     limit_junction,
 };
+use crate::noise::Flicker;
 use crate::stamp::{Bias, Series, Stamp};
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
-    ParameterError, REFERENCE_TEMPERATURE, Real,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, NoiseSource,
+    Output, ParameterError, REFERENCE_TEMPERATURE, Real,
 };
 
 /// The channel of a field-effect transistor.
@@ -65,6 +66,8 @@ pub struct Jfet<R: Real = f64> {
     /// The gate-source and gate-drain voltages of the last evaluation, from which the next
     /// steps are limited.
     last: [f64; 2],
+    temperature: f64,
+    flicker: Flicker,
 }
 
 /// Local node indices: the gate, then the drain and source behind their resistances, which
@@ -116,6 +119,11 @@ pub struct JfetParameters<R: Real = f64> {
     pub saturation_current_temperature_exponent: R,
     /// The temperature the parameters were measured at, in kelvins; default 27 °C.
     pub nominal_temperature: R,
+    /// The flicker noise coefficient of the drain current, `KF`; default 0, no flicker
+    /// noise.
+    pub flicker_coefficient: R,
+    /// The power of the drain current in the flicker noise, `AF`; default 1.
+    pub flicker_exponent: R,
 }
 
 impl<R: Real> Default for JfetParameters<R> {
@@ -138,6 +146,8 @@ impl<R: Real> Default for JfetParameters<R> {
             energy_gap: R::constant(1.11),
             saturation_current_temperature_exponent: R::constant(0.0),
             nominal_temperature: R::constant(REFERENCE_TEMPERATURE),
+            flicker_coefficient: R::constant(0.0),
+            flicker_exponent: R::constant(1.0),
         }
     }
 }
@@ -248,7 +258,10 @@ impl<R: Real> NativeDevice<R> for Jfet<R> {
             energy_gap,
             saturation_current_temperature_exponent,
             nominal_temperature,
+            flicker_coefficient,
+            flicker_exponent,
         } = parameters;
+        let flicker = Flicker::new(flicker_coefficient, flicker_exponent)?;
         ParameterError::non_negative("transconductance_parameter", transconductance_parameter)?;
         ParameterError::non_negative("drain_resistance", drain_resistance)?;
         ParameterError::non_negative("source_resistance", source_resistance)?;
@@ -319,6 +332,8 @@ impl<R: Real> NativeDevice<R> for Jfet<R> {
             gate_source: depletion(gate_source_capacitance),
             gate_drain: depletion(gate_drain_capacitance),
             last: [0.0; 2],
+            temperature: temperatures.actual,
+            flicker,
         })
     }
 }
@@ -377,6 +392,31 @@ impl<R: Real> Device<R> for Jfet<R> {
         stamp.conductance(output, channel, (GATE, INNER_SOURCE), gm);
         stamp.conductance(output, channel, channel, gds);
     }
+
+    /// The thermal noise of the series resistances and of the channel, `8kT·gm / 3`, and
+    /// the drain current's flicker noise, as SPICE models them.
+    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
+        let temperature = self.temperature;
+        self.drain_series
+            .noise("drain thermal", temperature, sources);
+        self.source_series
+            .noise("source thermal", temperature, sources);
+        let stamp = &self.stamp;
+        let gate = stamp.voltage(input, GATE);
+        let vgs = self.sign * (gate - stamp.voltage(input, INNER_SOURCE));
+        let vgd = self.sign * (gate - stamp.voltage(input, INNER_DRAIN));
+        let (current, gm, _) = self.channel.evaluate(vgs, vgs - vgd);
+        let nodes = stamp.nodes();
+        let channel = [nodes[INNER_DRAIN], nodes[INNER_SOURCE]];
+        let conductance = 2.0 / 3.0 * gm.value();
+        sources.push(NoiseSource::thermal(
+            "channel thermal",
+            channel,
+            conductance,
+            temperature,
+        ));
+        self.flicker.add(channel, current.value(), sources);
+    }
 }
 
 #[cfg(test)]
@@ -384,7 +424,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::testing::{Bench, assert_jacobians_match, assert_parameter_gradients_match};
+    use crate::testing::{
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
+        thermal,
+    };
 
     const CHARGED: &str = r#"{"gate_source_capacitance": 2e-12, "gate_drain_capacitance": 1e-12,
         "channel_length_modulation": 0.02, "doping_tail": 0.8, "transconductance_parameter": 1e-3}"#;
@@ -458,5 +501,25 @@ mod tests {
                 &[sign * drain, sign * gate, 0.0, sign * 0.9 * drain, sign * 0.01],
             );
         }
+    }
+
+    #[test]
+    fn its_channel_makes_thermal_and_flicker_noise() {
+        let parameters = r#"{"threshold_voltage": -2, "transconductance_parameter": 1e-3,
+            "saturation_current": 1e-30, "flicker_coefficient": 1e-14}"#;
+        let mut bench = Bench::new::<Jfet>(parameters);
+        let x = [5.0, 0.0, 1.0];
+        let evaluation = bench.settle(&x);
+        let (current, gm) = (evaluation.residual[0], evaluation.conductance[0][1]);
+        let sources = bench.noise(&x);
+        assert_close(
+            &[source(&sources, "channel thermal").density(1.0)],
+            &[thermal(2.0 / 3.0 * gm)],
+        );
+        assert_close(
+            &[source(&sources, "flicker").density(1.0)],
+            &[1e-14 * current],
+        );
+        assert_eq!(sources.len(), 2);
     }
 }

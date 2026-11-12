@@ -8,7 +8,8 @@
 use std::sync::Mutex;
 
 use jolty_engine::{
-    Analysis, Derivatives, Observation, Observations, OperatingPoint, Options, Outcome, Statistics,
+    Analysis, Derivatives, NoiseSpectrum, Observation, Observations, OperatingPoint, Options,
+    Outcome, Statistics,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library, Quantity};
@@ -309,8 +310,55 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
             add_operating_point(&operating_point, loop_gain.operating_point)?;
             result.set_item("operating_point", operating_point)?;
         }
+        Outcome::Noise(spectrum) => {
+            result.set_item("kind", "noise")?;
+            add_noise(&result, spectrum)?;
+        }
     }
     Ok(result)
+}
+
+/// The noise at an output, at each frequency, with each device noise source's share: the
+/// sources as `(device, name)` pairs, and their contributions one row per source; and the
+/// source it is referred to, if any, with the gains from it.
+fn add_noise(result: &Bound<'_, PyDict>, spectrum: NoiseSpectrum) -> PyResult<()> {
+    let py = result.py();
+    result.set_item("output", spectrum.output)?;
+    result.set_item("reference", spectrum.reference)?;
+    result.set_item("quantity", quantity_name(spectrum.quantity))?;
+    let count = spectrum.frequencies.len();
+    result.set_item("frequencies", PyArray1::from_vec(py, spectrum.frequencies))?;
+    result.set_item("densities", PyArray1::from_vec(py, spectrum.densities))?;
+    let input = match spectrum.input {
+        Some(input) => {
+            let found = PyDict::new(py);
+            found.set_item("source", input.source)?;
+            found.set_item("quantity", quantity_name(input.quantity))?;
+            found.set_item("gains", PyArray1::from_vec(py, input.gains))?;
+            Some(found)
+        }
+        None => None,
+    };
+    result.set_item("input", input)?;
+    let sources: Vec<(String, &str)> = spectrum
+        .contributions
+        .iter()
+        .map(|contribution| (contribution.device.clone(), contribution.name))
+        .collect();
+    let rows = sources.len();
+    let flat: Vec<f64> = spectrum
+        .contributions
+        .into_iter()
+        .flat_map(|contribution| contribution.densities)
+        .collect();
+    result.set_item("sources", sources)?;
+    result.set_item(
+        "contributions",
+        PyArray1::from_vec(py, flat).reshape([rows, count])?,
+    )?;
+    let operating_point = PyDict::new(py);
+    add_operating_point(&operating_point, spectrum.operating_point)?;
+    result.set_item("operating_point", operating_point)
 }
 
 fn add_operating_point(

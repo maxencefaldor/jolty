@@ -70,6 +70,40 @@ def test_a_loop_gain_plots_alone_against_its_margins_levels() -> None:
     assert phase.get_xlabel() == "frequency"
 
 
+def test_a_noise_spectrum_plots_its_density_and_its_noisiest_sources() -> None:
+    point = results.OperatingPoint(UNKNOWNS, np.zeros(5), "direct")
+    frequencies = np.array([10.0, 1e3, 1e5])
+    contributions = np.stack([np.full(3, 4e-18), 1e-15 / frequencies])
+    spectrum = results.NoiseSpectrum(
+        UNKNOWNS,
+        "out",
+        None,
+        "voltage",
+        frequencies,
+        contributions.sum(axis=0),
+        (results.NoiseSource("R1", "thermal"), results.NoiseSource("D1", "flicker")),
+        contributions,
+        results.NoiseInput("I1", "current", np.full(3, 1e3 + 0j)),
+        point,
+    )
+    figure = plot("hiss", spectrum, ["in"])
+    density, referred = figure.axes
+    assert (density.get_ylabel(), referred.get_ylabel()) == (
+        "noise density",
+        "input noise density",
+    )
+    assert (density.get_xscale(), density.get_yscale()) == ("log", "log")
+    total, noisiest, quieter = density.get_lines()[:3]
+    assert [total.get_label(), noisiest.get_label(), quieter.get_label()] == [
+        "out",
+        "R1 thermal",
+        "D1 flicker",
+    ]
+    drawn = np.asarray(referred.get_lines()[0].get_ydata(), dtype=float)
+    np.testing.assert_allclose(drawn, np.sqrt(contributions.sum(axis=0)) / 1e3)
+    assert referred.get_xlabel() == "frequency"
+
+
 def test_a_sweep_plots_along_its_source() -> None:
     levels = np.array([0.0, 1.0])
     sweep = results.Sweep(UNKNOWNS, "I1", "current", levels, np.zeros((2, 5)))

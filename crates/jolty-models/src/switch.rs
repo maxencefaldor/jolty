@@ -2,8 +2,8 @@ use jolty_numerics::Entry;
 use serde::Deserialize;
 
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Real,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
+    NoiseSource, Output, ParameterError, Real,
 };
 
 /// A voltage-controlled switch, in PSpice's model: a resistance between `positive` and
@@ -28,6 +28,7 @@ pub struct VoltageControlledSwitch<R: Real = f64> {
     log_ratio: R,
     /// The entries joining each output terminal to every terminal.
     entries: [[Option<Entry>; 4]; 2],
+    temperature: f64,
 }
 
 /// The parameters of a [`VoltageControlledSwitch`], with PSpice's defaults.
@@ -106,6 +107,7 @@ impl<R: Real> NativeDevice<R> for VoltageControlledSwitch<R> {
             log_mean: (on_resistance * off_resistance).sqrt().ln(),
             log_ratio: (on_resistance / off_resistance).ln(),
             entries,
+            temperature: binding.temperature(),
         })
     }
 }
@@ -145,6 +147,19 @@ impl<R: Real> Device<R> for VoltageControlledSwitch<R> {
             }
         }
     }
+
+    /// The thermal noise of the resistance the control sets.
+    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
+        let [positive, negative, control_positive, control_negative] = self.nodes;
+        let control = input.value(control_positive) - input.value(control_negative);
+        let (conductance, _) = self.conductance(control);
+        sources.push(NoiseSource::thermal(
+            "thermal",
+            [positive, negative],
+            conductance.value(),
+            self.temperature,
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -152,7 +167,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::testing::{Bench, assert_jacobians_match, assert_parameter_gradients_match};
+    use crate::testing::{
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
+        thermal,
+    };
 
     const SWITCH: &str = r#"{"on_resistance": 10, "off_resistance": 1e6,
         "on_voltage": 2, "off_voltage": 1}"#;
@@ -207,6 +225,18 @@ mod tests {
             control in 0.0..3.0f64,
         ) {
             assert_jacobians_match::<VoltageControlledSwitch>(SWITCH, &[voltage, 0.0, control, 0.0]);
+        }
+    }
+
+    #[test]
+    fn its_resistance_makes_thermal_noise() {
+        let bench = Bench::new::<VoltageControlledSwitch>(SWITCH);
+        for (control, conductance) in [(3.0, 0.1), (0.0, 1e-6)] {
+            let sources = bench.noise(&[1.0, 0.0, control, 0.0]);
+            assert_close(
+                &[source(&sources, "thermal").density(1.0)],
+                &[thermal(conductance)],
+            );
         }
     }
 }

@@ -535,7 +535,7 @@ def _plot(
         )
         chosen = (
             ()
-            if isinstance(result, results.LoopGain)
+            if isinstance(result, results.LoopGain | results.NoiseSpectrum)
             else tuple(probes) or plots.default_probes(result.unknowns, nets)
         )
         target = files.plot_path(path, name)

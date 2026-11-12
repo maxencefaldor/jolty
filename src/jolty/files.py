@@ -5,8 +5,9 @@ A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A results file hol
 results of named analyses as a NumPy ``.npz`` archive: a JSON header that names the
 circuit's unknowns, logic nets, device terminals, derivatives and variables, and says
 what each analysis is, then the arrays of each analysis under keys such as
-``step.times``, ``step.values``, ``step.currents`` and ``step.conductances``, or
-``loop.frequencies`` and ``loop.gains``.
+``step.times``, ``step.values``, ``step.currents`` and ``step.conductances``,
+``loop.frequencies`` and ``loop.gains``, or ``hiss.densities`` and
+``hiss.contributions``.
 
 Examples:
     >>> import tempfile
@@ -80,8 +81,29 @@ class _LoopGain(_Model):
     strategy: str
 
 
+class _NoiseInput(_Model):
+    source: str
+    quantity: Literal["voltage", "current"]
+
+
+class _NoiseSpectrum(_Model):
+    kind: Literal["noise"] = "noise"
+    output: str
+    reference: str | None
+    quantity: Literal["voltage", "current"]
+    sources: tuple[tuple[str, str], ...]
+    input: _NoiseInput | None
+    strategy: str
+
+
 type _Entry = Annotated[
-    _Point | _Sweep | _Response | _Waveforms | _Sensitivities | _LoopGain,
+    _Point
+    | _Sweep
+    | _Response
+    | _Waveforms
+    | _Sensitivities
+    | _LoopGain
+    | _NoiseSpectrum,
     Field(discriminator="kind"),
 ]
 
@@ -234,6 +256,17 @@ def _save(name: str, result: results.Result, arrays: dict[str, np.ndarray]) -> _
                 [np.empty(0), *(trace.levels for trace in traces)]
             )
             return _Waveforms(statistics=result.statistics)
+        case _:
+            return _save_linear(name, result, arrays)
+
+
+def _save_linear(
+    name: str,
+    result: results.Sensitivities | results.LoopGain | results.NoiseSpectrum,
+    arrays: dict[str, np.ndarray],
+) -> _Entry:
+    """The header's entry of sensitivities, a loop gain or a noise spectrum."""
+    match result:
         case results.Sensitivities():
             arrays[f"{name}.parameters"] = np.array(
                 [parameter.value for parameter in result.parameters], dtype=float
@@ -253,6 +286,28 @@ def _save(name: str, result: results.Result, arrays: dict[str, np.ndarray]) -> _
             point = result.operating_point
             arrays.update(_point_arrays(f"{name}.operating_point", point))
             return _LoopGain(probe=result.probe, strategy=point.strategy)
+        case results.NoiseSpectrum():
+            arrays[f"{name}.frequencies"] = result.frequencies
+            arrays[f"{name}.densities"] = result.densities
+            arrays[f"{name}.contributions"] = result.contributions
+            point = result.operating_point
+            arrays.update(_point_arrays(f"{name}.operating_point", point))
+            found = None
+            if result.input is not None:
+                arrays[f"{name}.gains"] = result.input.gains
+                found = _NoiseInput(
+                    source=result.input.source, quantity=result.input.quantity
+                )
+            return _NoiseSpectrum(
+                output=result.output,
+                reference=result.reference,
+                quantity=result.quantity,
+                sources=tuple(
+                    (source.instance, source.name) for source in result.sources
+                ),
+                input=found,
+                strategy=point.strategy,
+            )
 
 
 def _load(
@@ -295,6 +350,19 @@ def _load(
                 _traces(data, name),
                 **_observed(data, name, header),
             )
+        case _:
+            return _load_linear(data, name, entry, header)
+
+
+def _load_linear(
+    data: Mapping[str, np.ndarray],
+    name: str,
+    entry: _Sensitivities | _LoopGain | _NoiseSpectrum,
+    header: _Header,
+) -> results.Result:
+    """The sensitivities, loop gain or noise spectrum stored under `name` in `data`."""
+    unknowns = header.unknowns
+    match entry:
         case _Sensitivities(outputs=outputs, parameters=named, result=differentiated):
             parameters = tuple(
                 results.Parameter(instance, parameter, float(value))
@@ -303,7 +371,10 @@ def _load(
                 )
             )
             found = _load(data, f"{name}.result", differentiated, header)
-            if isinstance(found, results.Sensitivities | results.LoopGain):
+            if isinstance(
+                found,
+                results.Sensitivities | results.LoopGain | results.NoiseSpectrum,
+            ):
                 message = (
                     f"the sensitivities {name} differentiate neither an operating "
                     "point, a sweep, a response nor a transient"
@@ -320,13 +391,34 @@ def _load(
                 data[f"{name}.gains"],
                 _point(data, f"{name}.operating_point", strategy, header),
             )
+        case _NoiseSpectrum():
+            found_input = None
+            if entry.input is not None:
+                found_input = results.NoiseInput(
+                    entry.input.source, entry.input.quantity, data[f"{name}.gains"]
+                )
+            return results.NoiseSpectrum(
+                unknowns,
+                entry.output,
+                entry.reference,
+                entry.quantity,
+                data[f"{name}.frequencies"],
+                data[f"{name}.densities"],
+                tuple(
+                    results.NoiseSource(instance, source)
+                    for instance, source in entry.sources
+                ),
+                data[f"{name}.contributions"],
+                found_input,
+                _point(data, f"{name}.operating_point", entry.strategy, header),
+            )
 
 
 def _names(result: results.Result) -> _Names:
     """The names of the columns of `result`'s circuit."""
     if isinstance(result, results.Sensitivities):
         return _names(result.result)
-    if isinstance(result, results.Response | results.LoopGain):
+    if isinstance(result, results.Response | results.LoopGain | results.NoiseSpectrum):
         return _names(result.operating_point)
     return _Names(
         unknowns=result.unknowns,

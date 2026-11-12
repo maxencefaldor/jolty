@@ -35,6 +35,7 @@ from jolty.plan import (
     Ac,
     Analysis,
     DcSweep,
+    Noise,
     OperatingPoint,
     Options,
     Plan,
@@ -193,6 +194,10 @@ class Simulation:
     def run(
         self, analysis: Stability, options: Options | None = None
     ) -> results.LoopGain: ...
+    @overload
+    def run(
+        self, analysis: Noise, options: Options | None = None
+    ) -> results.NoiseSpectrum: ...
     def run(self, analysis: Analysis, options: Options | None = None) -> results.Result:
         """Runs `analysis` with `options`, or with the engine's defaults.
 
@@ -292,6 +297,16 @@ class Simulation:
                     traces,
                     **self._observed(outcome),
                 )
+            case _:
+                return self._linear(outcome)
+
+    def _linear(
+        self,
+        outcome: _core.SensitivityOutcome | _core.StabilityOutcome | _core.NoiseOutcome,
+    ) -> results.Result:
+        """The result of sensitivities, a loop gain or a noise spectrum."""
+        unknowns = self.unknowns
+        match outcome["kind"]:
             case "sensitivity":
                 parameters = tuple(
                     results.Parameter(instance, name, float(value))
@@ -325,6 +340,28 @@ class Simulation:
                     outcome["probe"],
                     outcome["frequencies"],
                     outcome["gains"],
+                    self._point(outcome["operating_point"]),
+                )
+            case "noise":
+                found = outcome["input"]
+                noise_input = None
+                if found is not None:
+                    noise_input = results.NoiseInput(
+                        found["source"], found["quantity"], found["gains"]
+                    )
+                return results.NoiseSpectrum(
+                    unknowns,
+                    outcome["output"],
+                    outcome["reference"],
+                    outcome["quantity"],
+                    outcome["frequencies"],
+                    outcome["densities"],
+                    tuple(
+                        results.NoiseSource(instance, name)
+                        for instance, name in outcome["sources"]
+                    ),
+                    outcome["contributions"],
+                    noise_input,
                     self._point(outcome["operating_point"]),
                 )
 

@@ -10,6 +10,7 @@ A corner's report states whether the circuit elaborates there and which analyses
 and a Monte Carlo analysis's what each requirement read over its samples and the yield.
 """
 
+import math
 from dataclasses import replace
 from typing import Annotated, Final, Literal
 
@@ -224,6 +225,96 @@ class StabilityReport(_Model):
         return "\n".join(lines)
 
 
+class NoiseContributor(_Model):
+    """What one noise source of a device adds to a noise analysis's output."""
+
+    instance: str = Field(description="The device's path.")
+    noise: str = Field(
+        description="What makes the noise, such as thermal or collector shot."
+    )
+    rms: float = Field(
+        description="Its RMS noise at the output over the frequencies, in volts or "
+        "amperes as the output is."
+    )
+    share: float = Field(
+        description="Its fraction of the output's noise power over the frequencies."
+    )
+
+
+class NoiseReport(_Model):
+    """The noise at an output, and the devices that make the most of it."""
+
+    kind: Literal["noise"] = "noise"
+    name: str
+    output: str = Field(description="The output, an unknown by name.")
+    reference: str | None = Field(
+        description="The node the output voltage is over; null for the ground."
+    )
+    quantity: Quantity = Field(description="What the output is.")
+    lowest: float = Field(description="Lowest frequency, in hertz.")
+    highest: float = Field(description="Highest frequency, in hertz.")
+    frequencies: int = Field(description="Frequencies the analysis solved.")
+    first: float = Field(
+        description="The output's noise density at the lowest frequency, in V/√Hz or "
+        "A/√Hz."
+    )
+    last: float = Field(
+        description="The output's noise density at the highest frequency, in V/√Hz or "
+        "A/√Hz."
+    )
+    rms: float | None = Field(
+        description="The output's RMS noise over the frequencies, in volts or "
+        "amperes; null for one frequency."
+    )
+    source: str | None = Field(
+        description="The source the noise is referred to; null for none."
+    )
+    referred: float | None = Field(
+        description="The RMS noise referred to the source over the frequencies, in "
+        "the unit of its level; null without a source or for one frequency."
+    )
+    referred_quantity: Quantity | None = Field(
+        description="What the source's level is; null without a source."
+    )
+    contributors: tuple[NoiseContributor, ...] = Field(
+        description="The noise sources that make the most noise, the most first."
+    )
+    unlisted: int = Field(description="Noise sources left out of the list.")
+
+    def describe(self) -> str:
+        """The report as text."""
+        lowest, highest = format_si(self.lowest, "Hz"), format_si(self.highest, "Hz")
+        over = "" if self.reference is None else f" over {self.reference}"
+        unit = _SYMBOLS[self.quantity]
+        head = (
+            f"{self.name}: noise at {self.output}{over} at {self.frequencies} "
+            f"frequencies from {lowest} to {highest}"
+        )
+        density = f"{unit}/\N{SQUARE ROOT}Hz"
+        first, last = format_si(self.first, density), format_si(self.last, density)
+        lines = [head, f"  {first} at {lowest}, {last} at {highest}"]
+        if self.rms is not None:
+            total = f"  {format_si(self.rms, unit)} RMS over the frequencies"
+            if self.referred is not None and self.referred_quantity is not None:
+                referred = format_si(self.referred, _SYMBOLS[self.referred_quantity])
+                total += f", {referred} RMS referred to {self.source}"
+            lines.append(total)
+            lines.extend(
+                _table(
+                    [
+                        [
+                            each.instance,
+                            each.noise,
+                            f"{format_si(each.rms, unit)} RMS",
+                            f"{each.share:.1%}",
+                        ]
+                        for each in self.contributors
+                    ]
+                )
+            )
+        return _join(head, lines[1:], self.unlisted)
+
+
 class Derivative(_Model):
     """An output's derivative with respect to one parameter."""
 
@@ -417,6 +508,7 @@ type AnalysisReport = Annotated[
     | TransientReport
     | SensitivityReport
     | StabilityReport
+    | NoiseReport
     | FailureReport,
     Field(discriminator="kind"),
 ]
@@ -485,10 +577,66 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 ),
                 unlisted=unlisted,
             )
+        case _:
+            return _linear(name, result, listed)
+
+
+def _linear(
+    name: str,
+    result: results.Sensitivities | results.LoopGain | results.NoiseSpectrum,
+    listed: int,
+) -> AnalysisReport:
+    """The report of sensitivities, a loop gain or a noise spectrum."""
+    match result:
         case results.Sensitivities():
             return _sensitivities(name, result, listed)
         case results.LoopGain():
             return _stability(name, result)
+        case results.NoiseSpectrum():
+            return _noise(name, result, listed)
+
+
+def _noise(name: str, result: results.NoiseSpectrum, listed: int) -> NoiseReport:
+    """The report of the noise analysis `name`, its `listed` noisiest sources."""
+    order = np.argsort(result.frequencies)
+    frequencies = result.frequencies[order]
+    banded = len(frequencies) > 1
+    powers = [
+        results.integrate(frequencies, row[order]) if banded else float(row[order[0]])
+        for row in result.contributions
+    ]
+    total = math.fsum(powers)
+    noisiest = sorted(range(len(powers)), key=lambda index: -powers[index])[:listed]
+    contributors = tuple(
+        NoiseContributor(
+            instance=result.sources[index].instance,
+            noise=result.sources[index].name,
+            rms=math.sqrt(powers[index]),
+            share=powers[index] / total if total > 0 else 0.0,
+        )
+        for index in noisiest
+        if banded
+    )
+    noise_input = result.input
+    return NoiseReport(
+        name=name,
+        output=result.output,
+        reference=result.reference,
+        quantity=result.quantity,
+        lowest=float(frequencies[0]),
+        highest=float(frequencies[-1]),
+        frequencies=len(frequencies),
+        first=math.sqrt(float(result.densities[order[0]])),
+        last=math.sqrt(float(result.densities[order[-1]])),
+        rms=result.rms() if banded else None,
+        source=None if noise_input is None else noise_input.source,
+        referred=result.rms(referred=True)
+        if banded and noise_input is not None
+        else None,
+        referred_quantity=None if noise_input is None else noise_input.quantity,
+        contributors=contributors,
+        unlisted=len(result.sources) - len(contributors),
+    )
 
 
 def _stability(name: str, result: results.LoopGain) -> StabilityReport:
@@ -609,7 +757,13 @@ def _axis(result: results.Sweep | results.Response | results.Waveforms) -> resul
 
 def _nets(result: results.Result) -> tuple[str, ...]:
     """The logic nets of `result`; small-signal results and sensitivities have none."""
-    if isinstance(result, results.Response | results.Sensitivities | results.LoopGain):
+    if isinstance(
+        result,
+        results.Response
+        | results.Sensitivities
+        | results.LoopGain
+        | results.NoiseSpectrum,
+    ):
         return ()
     return result.nets
 

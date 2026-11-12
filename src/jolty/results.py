@@ -17,6 +17,7 @@ logic nets, which ``level`` reads by name: 0, 1, or NaN for an unknown level.
 """
 
 import difflib
+import math
 from dataclasses import dataclass, field
 from typing import Literal, TypedDict
 
@@ -560,5 +561,224 @@ class LoopGain:
     operating_point: OperatingPoint
 
 
-type Result = OperatingPoint | Sweep | Response | Waveforms | Sensitivities | LoopGain
+@dataclass(frozen=True, slots=True)
+class NoiseSource:
+    """One noise source of a device."""
+
+    instance: str
+    """The device's path, such as ``X1/Q1``."""
+    name: str
+    """What makes the noise, such as ``thermal``, ``collector shot`` or ``flicker``."""
+
+
+@dataclass(frozen=True, slots=True)
+class NoiseInput:
+    """The independent source a noise analysis refers its output's noise back to."""
+
+    source: str
+    """The source's path, such as ``V1``."""
+    quantity: Literal["voltage", "current"]
+    """What the source's level is."""
+    gains: Complex
+    """The gain from the source's level to the output at each frequency."""
+
+
+@dataclass(frozen=True, slots=True)
+class NoiseSpectrum:
+    """The noise at an output, at each frequency.
+
+    `densities` are the output's one-sided noise power densities, in V²/Hz for a
+    voltage and A²/Hz for a current, and `contributions` what each of `sources` adds to
+    them, one row per source. Given an input, ``referred`` divides them by the gain's
+    square, as the input's own noise would be. ``rms`` integrates a density over a
+    band, as a power law between frequencies, as SPICE does.
+
+    Examples:
+        >>> point = OperatingPoint((Unknown("out", "voltage"),), np.array([2.0]), "")
+        >>> spectrum = NoiseSpectrum(
+        ...     point.unknowns,
+        ...     "out",
+        ...     None,
+        ...     "voltage",
+        ...     np.array([1.0, 1e4]),
+        ...     np.array([4e-18, 4e-18]),
+        ...     (NoiseSource("R1", "thermal"),),
+        ...     np.array([[4e-18, 4e-18]]),
+        ...     NoiseInput("V1", "voltage", np.array([0.5, 0.5 + 0j])),
+        ...     point,
+        ... )
+        >>> f"{spectrum.rms():.3g}", spectrum.referred().tolist()
+        ('2e-07', [1.6e-17, 1.6e-17])
+        >>> spectrum.density(100.0)
+        4e-18
+    """
+
+    unknowns: tuple[Unknown, ...]
+    output: str
+    """The output's unknown, by name."""
+    reference: str | None
+    """The node the output voltage is taken over; the ground if None."""
+    quantity: Literal["voltage", "current"]
+    """What the output is."""
+    frequencies: Real
+    densities: Real
+    sources: tuple[NoiseSource, ...]
+    contributions: Real
+    input: NoiseInput | None
+    operating_point: OperatingPoint
+
+    def referred(self) -> Real:
+        """The noise referred to the input at each frequency, in V²/Hz or A²/Hz.
+
+        It is the output's density over the gain's square, in the unit of the source's
+        level squared per hertz.
+
+        Raises:
+            ValueError: When the analysis named no source to refer its noise to.
+        """
+        if self.input is None:
+            message = "the noise analysis named no source to refer its noise to"
+            raise ValueError(message)
+        with np.errstate(divide="ignore"):
+            return self.densities / np.abs(self.input.gains) ** 2
+
+    def contribution(self, instance: str, name: str | None = None) -> Real:
+        """What the noise of `instance`, or its source `name`, adds at each frequency.
+
+        It is in the unit of the output's densities.
+
+        Raises:
+            KeyError: When the instance makes no such noise.
+        """
+        rows = [
+            index
+            for index, source in enumerate(self.sources)
+            if source.instance == instance and name in {None, source.name}
+        ]
+        if not rows:
+            labels = [f"{source.instance} {source.name}" for source in self.sources]
+            wanted = instance if name is None else f"{instance} {name}"
+            _find(labels, wanted, "the analysis has no noise source")
+        return self.contributions[rows].sum(axis=0)
+
+    def density(self, at: float, *, referred: bool = False) -> float:
+        """The density at the frequency `at`, in hertz.
+
+        It is a power law between the frequencies around it.
+
+        Raises:
+            ValueError: When the frequency does not lie within the frequencies, or the
+                analysis named no source to refer its noise to.
+        """
+        densities = self.referred() if referred else self.densities
+        order = np.argsort(self.frequencies)
+        points = self.frequencies[order]
+        if not points[0] <= at <= points[-1]:
+            message = (
+                f"{at!r} Hz does not lie within the frequencies, "
+                f"{float(points[0])!r} Hz to {float(points[-1])!r} Hz"
+            )
+            raise ValueError(message)
+        return _power_law(points, densities[order], at)
+
+    def rms(
+        self,
+        start: float | None = None,
+        stop: float | None = None,
+        *,
+        referred: bool = False,
+    ) -> float:
+        """The RMS noise from `start` to `stop`, in hertz, by default every frequency.
+
+        It is the square root of the density integrated over the band, in volts or
+        amperes, the density a power law between frequencies, as SPICE integrates it.
+
+        Raises:
+            ValueError: When the band does not lie within the frequencies, or is
+                empty, or the analysis named no source to refer its noise to.
+        """
+        densities = self.referred() if referred else self.densities
+        return math.sqrt(integrate(self.frequencies, densities, start, stop))
+
+
+def integrate(
+    frequencies: Real,
+    densities: Real,
+    start: float | None = None,
+    stop: float | None = None,
+) -> float:
+    """The integral of `densities` from `start` to `stop`, by default every frequency.
+
+    The density is a power law between `frequencies`, as SPICE integrates noise.
+
+    Examples:
+        >>> integrate(np.array([1.0, 10.0]), np.array([1.0, 0.1]))
+        2.3025850929940463
+        >>> round(integrate(np.array([1.0, 100.0]), np.array([2.0, 2.0]), 10.0))
+        180
+
+    Raises:
+        ValueError: When the band does not lie within the frequencies, or is empty.
+    """
+    order = np.argsort(frequencies)
+    points, values = frequencies[order], densities[order]
+    low = float(points[0]) if start is None else start
+    high = float(points[-1]) if stop is None else stop
+    if not points[0] <= low < high <= points[-1]:
+        message = (
+            f"a band from {low!r} Hz to {high!r} Hz does not lie within the "
+            f"frequencies, {float(points[0])!r} Hz to {float(points[-1])!r} Hz"
+        )
+        raise ValueError(message)
+    inside = (points > low) & (points < high)
+    band = np.concatenate(([low], points[inside], [high]))
+    levels = np.concatenate(
+        (
+            [_power_law(points, values, low)],
+            values[inside],
+            [_power_law(points, values, high)],
+        )
+    )
+    return math.fsum(
+        _segment(
+            *map(float, band[index : index + 2]), *map(float, levels[index : index + 2])
+        )
+        for index in range(band.size - 1)
+    )
+
+
+def _power_law(points: Real, values: Real, at: float) -> float:
+    """The density at `at`, a power law between the two frequencies around it."""
+    index = int(np.clip(np.searchsorted(points, at), 1, points.size - 1))
+    first, last = float(points[index - 1]), float(points[index])
+    low, high = float(values[index - 1]), float(values[index])
+    if at in {first, last}:
+        return low if at == first else high
+    if low <= 0 or high <= 0:
+        return low + (high - low) * (at - first) / (last - first)
+    return low * math.exp(
+        math.log(high / low) * math.log(at / first) / math.log(last / first)
+    )
+
+
+def _segment(first: float, last: float, low: float, high: float) -> float:
+    """The integral from `first` to `last` of the power law from `low` to `high`."""
+    if low <= 0 or high <= 0:
+        return 0.5 * (low + high) * (last - first)
+    span = math.log(last / first)
+    # With the density ∝ f^a, the integral is low·first·(e^{(a+1)·span} - 1)/(a + 1).
+    growth = math.log(high / low) + span
+    factor = 1.0 if growth == 0 else math.expm1(growth) / growth
+    return low * first * span * factor
+
+
+type Result = (
+    OperatingPoint
+    | Sweep
+    | Response
+    | Waveforms
+    | Sensitivities
+    | LoopGain
+    | NoiseSpectrum
+)
 """The result of any analysis."""

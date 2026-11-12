@@ -51,7 +51,7 @@ Temperature parameters become the devices' own: a model's `TNOM`, or PSpice's `T
 A resistor's or capacitor's `VC1` and `VC2`, as HSPICE and Spectre write them, bend its value with its voltage; ngspice has no such parameters, so a netlist written for it gives that resistor or capacitor as an expression.
 PSpice's `T_ABS`, `T_REL_GLOBAL` and `T_REL_LOCAL` set a device's own temperature, which jolty does not model: they change nothing for a resistor, capacitor or inductor that does not drift, and are an error otherwise.
 Expressions read `TEMP` and `VT` at 27 °C, whatever the temperature the circuit is simulated at.
-Parameters that only noise analyses read are left out.
+A diode's or transistor's `KF` and `AF` give its flicker noise; PSpice's `NLEV` and `GDSNOI`, which choose other noise equations, are left out, as ngspice leaves them; and a resistor's, capacitor's or inductor's `KF`, flicker noise jolty does not model, is an error unless zero.
 Any other parameter or element that jolty does not model is an error that names the file, the line and the statement; nothing is silently dropped.
 
 ## Agreement with ngspice

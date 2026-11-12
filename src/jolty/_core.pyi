@@ -74,6 +74,23 @@ class StabilityOutcome(TypedDict):
     gains: npt.NDArray[np.complex128]
     operating_point: SolvedPoint
 
+class NoiseInputOutcome(TypedDict):
+    source: str
+    quantity: Literal["voltage", "current"]
+    gains: npt.NDArray[np.complex128]
+
+class NoiseOutcome(TypedDict):
+    kind: Literal["noise"]
+    output: str
+    reference: str | None
+    quantity: Literal["voltage", "current"]
+    frequencies: npt.NDArray[np.float64]
+    densities: npt.NDArray[np.float64]
+    input: NoiseInputOutcome | None
+    sources: list[tuple[str, str]]
+    contributions: npt.NDArray[np.float64]
+    operating_point: SolvedPoint
+
 type Outcome = (
     OperatingPointOutcome
     | SweepOutcome
@@ -81,6 +98,7 @@ type Outcome = (
     | WaveformsOutcome
     | SensitivityOutcome
     | StabilityOutcome
+    | NoiseOutcome
 )
 
 class SourceOutcome(TypedDict):
