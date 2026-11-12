@@ -14,6 +14,7 @@ The default levels below hold until settings or options set others (see [Checks]
 | [`current-cutset`](#current-cutset) | `error` |
 | [`driver-conflict`](#driver-conflict) | `error` |
 | [`floating-input`](#floating-input) | `error` |
+| [`unstable-pole`](#unstable-pole) | `warn` |
 
 ## unconnected-terminal
 
@@ -54,3 +55,9 @@ Wherever they drive different levels, the net's level is unknown.
 
 Logic inputs read a logic net that no output drives, so its level is always unknown.
 A net that a single input joins is left to unconnected-terminal.
+
+## unstable-pole
+
+The circuit linearized at its operating point has a pole whose real part is above a millionth of its magnitude: a natural mode grows away from the operating point, as an oscillation that builds up or a latch that tips, so the circuit does not rest there.
+A real pole, or a conjugate pair, raises one diagnostic, naming the nets where its mode's amplitude is at least half its largest.
+A simulation checks it at its plan's operating point, on circuits of at most 500 unknowns.

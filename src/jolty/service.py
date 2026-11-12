@@ -415,7 +415,12 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     chosen = _levels(request, settings)
     script = await _existing(request.script)
     plan = script if request.plan is None else await _existing(request.plan)
-    job = runner.Job(script=script, plan=plan, listed=settings.listed_unknowns)
+    job = runner.Job(
+        script=script,
+        plan=plan,
+        listed=settings.listed_unknowns,
+        check=request.check,
+    )
     path = request.output or files.circuit_path(request.script)
     target = request.results or files.results_path(request.script)
     built, output = await _run(job, settings, results=target)

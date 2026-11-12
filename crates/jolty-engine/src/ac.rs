@@ -174,14 +174,23 @@ impl Linearization {
         contributions: &Contributions,
         frequency: f64,
     ) -> Result<Factors<'_, Complex64>, SimulationError> {
-        let omega = TAU * frequency;
+        self.factor_at(contributions, Complex64::new(0.0, TAU * frequency))
+    }
+
+    /// `G + sC` at the complex frequency `s`, from the `contributions` at the operating
+    /// point, factored.
+    pub(crate) fn factor_at(
+        &mut self,
+        contributions: &Contributions,
+        s: Complex64,
+    ) -> Result<Factors<'_, Complex64>, SimulationError> {
         for ((value, &conductance), &capacitance) in self
             .matrix
             .iter_mut()
             .zip(&contributions.conductance)
             .zip(&contributions.capacitance)
         {
-            *value = Complex64::new(conductance, omega * capacitance);
+            *value = conductance + s * capacitance;
         }
         Ok(self.solver.factor(&self.matrix)?)
     }

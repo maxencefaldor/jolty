@@ -19,8 +19,9 @@ from jolty.checks import Diagnostic, Instance, levels, report, rules
 from jolty.cli import main
 from jolty.files import save_circuit
 from jolty.ir import Source
+from jolty.service import SimulateResult
 from jolty.settings import Level
-from jolty.units import V, kohm, mA, mH, nF, ns, ps
+from jolty.units import Quantity, S, V, kohm, mA, mH, nF, ns, ps
 
 
 def raised(top: Component) -> list[str]:
@@ -192,7 +193,8 @@ def test_every_rule_has_a_case_that_raises_it() -> None:
         latch(sources=0),
     ]
     found = {rule for case in cases for rule in raised(case)}
-    assert found == set(rules())
+    at_point = Simulation(tank(0.2e-3 * S)).check_operating_point()
+    assert found | {diagnostic.rule for diagnostic in at_point} == set(rules())
 
 
 def test_levels_apply_settings_then_options() -> None:
@@ -292,3 +294,84 @@ def test_explain_states_each_rule_and_its_level(
     assert run("explain") == 0
     assert capsys.readouterr().out.count("\n\n") == len(rules()) - 1
     assert run("explain", "bogus") == 2
+
+
+@component
+def tank(c: Builder, feedback: Quantity) -> None:
+    """1 nF and 1 mH losing 0.1 mS through 10 kΩ, and `feedback` fed back as current."""
+    ground = c.port("ground", Role.GROUND)
+    resistor = c.place(devices.resistor(10 * kohm), id="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    inductor = c.place(devices.inductor(1 * mH), id="L1")
+    source = c.place(devices.voltage_controlled_current_source(feedback), id="G1")
+    c.connect(
+        resistor.a,
+        capacitor.a,
+        inductor.a,
+        source.negative,
+        source.control_positive,
+        name="n",
+    )
+    c.connect(
+        resistor.b,
+        capacitor.b,
+        inductor.b,
+        source.positive,
+        source.control_negative,
+        ground,
+    )
+
+
+def test_unstable_pole() -> None:
+    # More feedback than loss: the tank's ringing grows.
+    (growing,) = Simulation(tank(0.2e-3 * S)).check_operating_point()
+    assert (growing.rule, growing.level, growing.nets) == (
+        "unstable-pole",
+        Level.WARN,
+        ("n",),
+    )
+    assert growing.message.startswith("the operating point is unstable: its poles at")
+    # Less feedback than loss: it dies away.
+    assert Simulation(tank(0.05e-3 * S)).check_operating_point() == ()
+
+
+TIPPING = """
+from jolty import Builder, OperatingPoint, Plan, Role, component, devices
+from jolty.units import S, kohm, nF
+
+
+@component
+def tipping(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    resistor = c.place(devices.resistor(1 * kohm), id="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    gain = c.place(devices.voltage_controlled_current_source(GAIN * S), id="G1")
+    c.connect(resistor.a, capacitor.a, gain.negative, gain.control_positive, name="n")
+    c.connect(resistor.b, capacitor.b, gain.positive, gain.control_negative, ground)
+
+
+def build():
+    return tipping()
+
+
+def plan():
+    return Plan({"rest": OperatingPoint()})
+"""
+"""1 kΩ across 1 nF, and GAIN siemens of the node's voltage fed back into it."""
+
+
+def test_simulate_checks_the_rules_at_the_operating_point(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = tmp_path / "tipping.py"
+
+    def raised(gain: str, *options: str) -> tuple[str, ...]:
+        script.write_text(TIPPING.replace("GAIN", gain), encoding="utf-8")
+        arguments = ("simulate", str(script), "--no-plot", "--output-format", "json")
+        assert run(*arguments, *options) == 0
+        report = SimulateResult.model_validate_json(capsys.readouterr().out).report
+        return () if report is None else tuple(d.rule for d in report.diagnostics)
+
+    assert raised("2e-3") == ("unstable-pole",)
+    assert raised("0.5e-3") == ()
+    assert raised("2e-3", "--no-check") == ()

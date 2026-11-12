@@ -165,6 +165,58 @@ fn a_long_rc_ladder_has_every_pole_its_closed_form_gives() {
     assert_roots(&found.poles, &expected);
 }
 
+/// A transconductance that feeds `node`'s own voltage back into it as current: a negative
+/// conductance of `transconductance`.
+fn negative_conductance(id: &str, transconductance: f64, node: &str) -> Value {
+    json!({"id": id, "of": {"device": "voltage_controlled_current_source"},
+           "parameters": {"transconductance": transconductance},
+           "terminals": {"positive": "0", "negative": node,
+                         "control_positive": node, "control_negative": "0"}})
+}
+
+fn growing_modes(instances: &Value) -> Vec<jolty_engine::Mode> {
+    let mut simulator = Simulator::new(
+        &circuit(instances),
+        &Library::standard(),
+        &Conditions::default(),
+    )
+    .expect("the circuit elaborates");
+    simulator
+        .growing_modes(&Options::default())
+        .expect("the modes")
+}
+
+#[test]
+fn a_negative_conductance_grows_and_a_lossless_resonator_does_not() {
+    // 1 kΩ against a 2 mS negative conductance across 1 nF: s = (2e-3 − 1e-3) / 1e-9.
+    let latch = growing_modes(&json!([
+        resistor("R1", 1e3, "n", "0"),
+        capacitor("C1", 1e-9, "n", "0"),
+        negative_conductance("G1", 2e-3, "n"),
+    ]));
+    assert_eq!(latch.len(), 1, "{latch:?}");
+    assert_roots(&[latch[0].pole], &[real(1e6)]);
+    assert!((latch[0].shape[0].norm() - 1.0).abs() < 1e-12);
+    // The same across 1 mH too: C s² − 1e-4 s + 1/L = 0, a pair that grows as it rings.
+    let oscillator = growing_modes(&json!([
+        resistor("R1", 1e4, "n", "0"),
+        capacitor("C1", 1e-9, "n", "0"),
+        inductor("L1", 1e-3, "n", "0"),
+        negative_conductance("G1", 2e-4, "n"),
+    ]));
+    let (re, im) = (1e-4 / 2e-9, (4e-9_f64 / 1e-3 - 1e-8).sqrt() / 2e-9);
+    assert_eq!(oscillator.len(), 1, "{oscillator:?}");
+    assert_roots(&[oscillator[0].pole], &[Complex64::new(re, im)]);
+    // Without the negative conductance and the resistor, the tank only rings.
+    let tank = growing_modes(&json!([
+        capacitor("C1", 1e-9, "n", "0"),
+        inductor("L1", 1e-3, "n", "0"),
+        source("V1", "s"),
+        resistor("R1", 1e3, "s", "0"),
+    ]));
+    assert!(tank.is_empty(), "{tank:?}");
+}
+
 #[test]
 fn a_resistive_circuit_has_no_poles() {
     let divider = circuit(&json!([

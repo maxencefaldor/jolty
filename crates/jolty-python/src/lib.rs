@@ -153,20 +153,30 @@ impl Simulator {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let diagnostics = PyList::empty(py);
-        for diagnostic in jolty_checks::check(&simulator) {
-            let item = PyDict::new(py);
-            item.set_item("rule", diagnostic.rule)?;
-            item.set_item("message", diagnostic.message)?;
-            let instances = PyList::empty(py);
-            for location in &diagnostic.instances {
-                instances.append(location_to_python(py, location)?)?;
-            }
-            item.set_item("instances", instances)?;
-            item.set_item("nets", diagnostic.nets)?;
-            diagnostics.append(item)?;
-        }
-        Ok(diagnostics)
+        diagnostics_to_python(py, jolty_checks::check(&simulator))
+    }
+
+    /// Every diagnostic of the rules on the circuit linearized at its operating point under
+    /// `options`, a JSON object, as `check` gives them; none for a circuit of more unknowns
+    /// than the checks linearize. A circuit with no operating point raises
+    /// `SimulationError`.
+    fn check_operating_point<'py>(
+        &self,
+        py: Python<'py>,
+        options: &str,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
+        let found = py.detach(|| {
+            let mut simulator = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            jolty_checks::check_operating_point(&mut simulator, &options)
+        });
+        diagnostics_to_python(
+            py,
+            found.map_err(|error| SimulationError::new_err(error.to_string()))?,
+        )
     }
 
     /// Where the last analysis used logic devices outside their domains, each a dictionary
@@ -484,6 +494,28 @@ fn cube<'py, T: Element + Copy>(
         .map_or(0, Vec::len);
     let flat: Vec<T> = points.iter().flatten().flatten().copied().collect();
     PyArray1::from_vec(py, flat).reshape([points.len(), rows, columns])
+}
+
+/// Each of `found` as a dictionary of its `rule`, its `message`, its `instances` and its
+/// `nets`.
+fn diagnostics_to_python(
+    py: Python<'_>,
+    found: Vec<jolty_checks::Diagnostic>,
+) -> PyResult<Bound<'_, PyList>> {
+    let diagnostics = PyList::empty(py);
+    for diagnostic in found {
+        let item = PyDict::new(py);
+        item.set_item("rule", diagnostic.rule)?;
+        item.set_item("message", diagnostic.message)?;
+        let instances = PyList::empty(py);
+        for location in &diagnostic.instances {
+            instances.append(location_to_python(py, location)?)?;
+        }
+        item.set_item("instances", instances)?;
+        item.set_item("nets", diagnostic.nets)?;
+        diagnostics.append(item)?;
+    }
+    Ok(diagnostics)
 }
 
 /// Each problem of `error`, a dictionary of its `message` and its `instance` or `None`.

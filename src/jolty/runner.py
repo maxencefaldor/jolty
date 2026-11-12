@@ -40,7 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from jolty import checks, fidelity, files, ir, report, variation
 from jolty.builder import Component, circuit
-from jolty.errors import ElaborationError, JoltyError, ScriptError
+from jolty.errors import ElaborationError, JoltyError, ScriptError, SimulationError
 from jolty.fidelity import FidelityReport
 from jolty.plan import Corner, MonteCarlo, Plan, WorstCase
 from jolty.results import Result
@@ -79,6 +79,10 @@ class Job(BaseModel):
         description="The script that defines plan(); null to elaborate only.",
     )
     listed: int = Field(ge=1, description="Unknowns each report lists.")
+    check: bool = Field(
+        default=True,
+        description="Whether to check the rules at the plan's operating point.",
+    )
 
 
 class Built(BaseModel):
@@ -103,7 +107,8 @@ class Built(BaseModel):
     )
     diagnostics: tuple[checks.Diagnostic, ...] = Field(
         default=(),
-        description="The structural checks' diagnostics, at their default levels.",
+        description="The checks' diagnostics, at their default levels: the structural "
+        "ones, then, with a plan, those at its operating point.",
     )
     analyses: tuple[report.AnalysisReport, ...] = Field(
         default=(), description="A report per analysis of the plan, in its order."
@@ -205,6 +210,7 @@ def _run(job: Job, directory: Path) -> Built:
             return Built(circuit=built, problems=error.problems)
     outside: list[fidelity.Outside] = []
     solved, reports = _analyses(simulation, plan, job.listed, outside)
+    at_point = _at_operating_point(simulation, plan) if job.check else ()
     if solved:
         files.save_results(directory / RESULTS, solved)
     corners: list[report.CornerReport] = []
@@ -243,6 +249,7 @@ def _run(job: Job, directory: Path) -> Built:
     )
     return elaborated.model_copy(
         update={
+            "diagnostics": elaborated.diagnostics + at_point,
             "analyses": reports,
             "corners": tuple(corners),
             "monte_carlo": monte_carlo,
@@ -252,6 +259,19 @@ def _run(job: Job, directory: Path) -> Built:
             and checked.model_copy(update={"outside": tuple(outside)}),
         }
     )
+
+
+def _at_operating_point(
+    simulation: Simulation, plan: Plan
+) -> tuple[checks.Diagnostic, ...]:
+    """The diagnostics of the rules at the plan's operating point.
+
+    A circuit with no operating point has none: the analyses that need it report why.
+    """
+    try:
+        return simulation.check_operating_point(plan.options)
+    except SimulationError:
+        return ()
 
 
 def _fidelity(

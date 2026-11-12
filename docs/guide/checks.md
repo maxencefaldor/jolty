@@ -11,6 +11,19 @@ A controlled source's control inputs only sense their nodes.
 From that graph alone, the checks find what makes a circuit's equations singular or meaningless: a terminal that connects to nothing, a source shorted by its own net, a loop of voltage sources, or a group of nodes with no DC path to the ground.
 The [rules reference](../reference/rules.md) gives each rule's exact condition.
 
+## At the operating point
+
+A simulation also checks the circuit linearized at its plan's operating point, solved with the plan's options, before reading any analysis.
+A pole of the linearized circuit with a positive real part is a natural mode that grows away from the operating point, so the circuit does not rest there: an amplifier whose feedback makes it oscillate, or a latch balanced between its states.
+The rule `unstable-pole` states it, with the nets where the growing mode is largest, though the plan asks for no stability or pole-zero analysis:
+
+```text
+warn[unstable-pole]: the operating point is unstable: its poles at 50000.000000000015 ± 998749.2177719092j rad/s have a positive real part, so an oscillation near 158955.8749175632 Hz grows from it, largest at `n`
+```
+
+An oscillator raises it by design, so it is a warning, which a plan for one can ignore.
+The poles are found by the QZ algorithm on the dense linearized circuit, which takes about a second at 500 unknowns, so a circuit of more unknowns is not checked at its operating point.
+
 ## Diagnostics
 
 Each diagnostic names its level and rule, states the fact, and lists the instances involved with the script line that placed each one:

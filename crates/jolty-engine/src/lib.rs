@@ -71,7 +71,7 @@ pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseSpectrum};
 pub use observe::{Observation, Observations, Observed};
 pub use operating_point::{OperatingPoint, OperatingPoints, Strategy};
 pub use options::Options;
-pub use pole_zero::{PoleZero, PolesZeros};
+pub use pole_zero::{Mode, PoleZero, PolesZeros};
 pub use sensitivity::{Derivatives, Differentiated, Parameter, Sensitivities, Sensitivity};
 pub use stability::{LoopGain, Stability};
 pub use sweep::{DcSweep, Sweep};

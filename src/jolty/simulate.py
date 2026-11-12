@@ -175,6 +175,26 @@ class Simulation:
         """Every diagnostic the structural checks find, at its rule's default level."""
         return checks.diagnostics(self._core.check())
 
+    def check_operating_point(
+        self, options: Options | None = None
+    ) -> tuple[checks.Diagnostic, ...]:
+        """Every diagnostic of the rules at the circuit's operating point.
+
+        The operating point is solved with `options`, and each diagnostic is at its
+        rule's default level, such as a mode that grows away from the operating point;
+        a circuit of more than 500 unknowns has none.
+
+        Raises:
+            SimulationError: When the circuit has no operating point.
+        """
+        chosen = Options() if options is None else options
+        settings = json.dumps(chosen.to_json(), allow_nan=False)
+        try:
+            found = self._core.check_operating_point(settings)
+        except _core.SimulationError as error:
+            raise SimulationError(str(error)) from None
+        return checks.diagnostics(found)
+
     @overload
     def run(
         self, analysis: OperatingPoint, options: Options | None = None

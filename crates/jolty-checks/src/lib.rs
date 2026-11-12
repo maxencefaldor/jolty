@@ -1,11 +1,13 @@
-//! The structural checks of jolty: facts about a circuit's topology, found before any
-//! analysis.
+//! The checks of jolty: facts about a circuit's topology, found before any analysis, and
+//! about the circuit linearized at its operating point.
 //!
 //! Each [`Rule`] names one fact a check can state, with its default [`Level`] and the exact
 //! condition it checks. [`check`] reads an elaborated circuit through the branches each
-//! device declares, and returns a [`Diagnostic`] for every instance of every rule, each
-//! naming the instances and nets involved. A diagnostic states a fact and never how to
-//! change the circuit.
+//! device declares, and returns a [`Diagnostic`] for every instance of every structural
+//! rule, each naming the instances and nets involved; [`check_operating_point`] returns
+//! those of the rules on the circuit linearized at its operating point, such as a natural
+//! mode that grows away from it. A diagnostic states a fact and never how to change the
+//! circuit.
 //!
 //! ```
 //! use jolty_engine::{Conditions, Simulator};
@@ -32,6 +34,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod point;
 mod rules;
 mod structure;
 
@@ -39,6 +42,7 @@ use std::fmt;
 
 use jolty_engine::{Location, Simulator};
 
+pub use point::{MOST_LINEARIZED, check_operating_point};
 pub use rules::RULES;
 
 /// How a check reports a rule's diagnostics, by the names ty gives its levels.

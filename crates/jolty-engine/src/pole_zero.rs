@@ -16,12 +16,18 @@
 //! a zero within `10⁻¹⁰` times the largest pole or zero lies there, as a coupling
 //! capacitor's does. The pencils are real, so their roots are real or come in conjugate
 //! pairs, which the roots found are made exactly.
+//!
+//! A pole with a positive real part is a natural mode that grows away from the operating
+//! point: an oscillation that builds up, or a latch that tips. Its shape, the amplitude of
+//! each unknown in it, solves `(G + sC) x = 0` at the pole, found by inverse iteration
+//! with the sparse factorization of `G + sC` just beside it.
 
 use std::cmp::Ordering;
 
 use jolty_numerics::{Complex64, Eigenvalue, PencilError, generalized_eigenvalues};
 use serde::Deserialize;
 
+use crate::ac::Linearization;
 use crate::{OperatingPoint, Options, SimulationError, Simulator};
 
 /// The ratio of an eigenvalue's denominator to its numerator below which it is infinite: a
@@ -43,6 +49,18 @@ const REAL: f64 = 1e-9;
 /// The equilibration passes, each of which brings every row's and column's largest entry
 /// nearer to 1.
 const PASSES: usize = 4;
+
+/// The real part, relative to its magnitude, above which a pole grows: well above the
+/// error of the QZ iteration, so that a lossless resonator's poles do not.
+const GROWING: f64 = 1e-6;
+
+/// The distance from a pole, relative to its magnitude, at which inverse iteration factors
+/// `G + sC`: near enough that the pole's mode dominates the solution a million times over,
+/// far enough that the factorization stays regular.
+const BESIDE: f64 = 1e-6;
+
+/// The steps of inverse iteration, each of which multiplies the mode's lead by `1 / BESIDE`.
+const ITERATIONS: usize = 2;
 
 /// A pole-zero analysis: the poles of the circuit linearized at its operating point, and,
 /// given a source and an output, the zeros of the transfer function between them.
@@ -77,6 +95,16 @@ pub struct PolesZeros {
     /// The zeros of the transfer function from the source to the output, in the same
     /// order, given both.
     pub zeros: Option<Vec<Complex64>>,
+}
+
+/// A natural mode of the circuit linearized at its operating point.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mode {
+    /// Its pole, in radians per second; of a conjugate pair, the member above the real
+    /// axis.
+    pub pole: Complex64,
+    /// The amplitude of each unknown in the mode, the largest of magnitude 1.
+    pub shape: Vec<Complex64>,
 }
 
 impl Simulator {
@@ -115,19 +143,7 @@ impl Simulator {
         };
         let operating_point = self.linearized(options)?;
         let n = self.system.unknowns.len();
-        let mut conductance = vec![0.0; n * n];
-        let mut capacitance = vec![0.0; n * n];
-        let contributions = &self.workspace.contributions;
-        for (((row, column), &g), &c) in self
-            .system
-            .pattern
-            .positions()
-            .zip(&contributions.conductance)
-            .zip(&contributions.capacitance)
-        {
-            conductance[column * n + row] += g;
-            capacitance[column * n + row] += c;
-        }
+        let (conductance, capacitance) = self.dense_pencil();
         let poles =
             roots(n, conductance.clone(), capacitance.clone())?.ok_or(SimulationError::Singular)?;
         let zeros = match transfer {
@@ -175,6 +191,61 @@ impl Simulator {
             poles,
             zeros,
         })
+    }
+
+    /// The natural modes that grow away from the operating point: those whose poles have a
+    /// real part above a millionth of their magnitude, a conjugate pair once, by
+    /// decreasing real part.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Simulator::pole_zero`] without a source.
+    pub fn growing_modes(&mut self, options: &Options) -> Result<Vec<Mode>, SimulationError> {
+        self.linearized(options)?;
+        let n = self.system.unknowns.len();
+        let (conductance, capacitance) = self.dense_pencil();
+        let poles = roots(n, conductance, capacitance)?.ok_or(SimulationError::Singular)?;
+        let mut growing: Vec<Complex64> = poles
+            .into_iter()
+            .filter(|pole| pole.re > GROWING * pole.norm() && pole.im >= 0.0)
+            .collect();
+        growing.sort_by(|x, y| y.re.total_cmp(&x.re));
+        let mut linearization = Linearization::new(&self.system.pattern)?;
+        growing
+            .into_iter()
+            .map(|pole| {
+                let beside = pole * Complex64::new(1.0, BESIDE);
+                let mut factors = linearization.factor_at(&self.workspace.contributions, beside)?;
+                let mut shape = vec![Complex64::new(1.0, 0.0); n];
+                for _ in 0..ITERATIONS {
+                    factors.solve(&mut shape)?;
+                    let largest = shape.iter().map(|value| value.norm()).fold(0.0, f64::max);
+                    for value in &mut shape {
+                        *value /= largest;
+                    }
+                }
+                Ok(Mode { pole, shape })
+            })
+            .collect()
+    }
+
+    /// The matrices `G` and `C` the workspace holds, dense in column-major order.
+    fn dense_pencil(&self) -> (Vec<f64>, Vec<f64>) {
+        let n = self.system.unknowns.len();
+        let mut conductance = vec![0.0; n * n];
+        let mut capacitance = vec![0.0; n * n];
+        let contributions = &self.workspace.contributions;
+        for (((row, column), &g), &c) in self
+            .system
+            .pattern
+            .positions()
+            .zip(&contributions.conductance)
+            .zip(&contributions.capacitance)
+        {
+            conductance[column * n + row] += g;
+            capacitance[column * n + row] += c;
+        }
+        (conductance, capacitance)
     }
 }
 
