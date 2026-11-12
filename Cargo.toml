@@ -9,14 +9,17 @@ rust-version = "1.97"
 license = "Apache-2.0"
 repository = "https://github.com/maxencefaldor/jolty"
 authors = ["Maxence Faldor"]
+homepage = "https://github.com/maxencefaldor/jolty"
+keywords = ["circuit", "simulation", "spice", "electronics", "agents"]
+categories = ["science", "simulation", "compilers"]
 
 [workspace.dependencies]
-jolty-checks = { path = "crates/jolty-checks" }
-jolty-engine = { path = "crates/jolty-engine" }
-jolty-expressions = { path = "crates/jolty-expressions" }
-jolty-ir = { path = "crates/jolty-ir" }
-jolty-models = { path = "crates/jolty-models" }
-jolty-numerics = { path = "crates/jolty-numerics" }
+jolty-checks = { path = "crates/jolty-checks", version = "0.1.0" }
+jolty-engine = { path = "crates/jolty-engine", version = "0.1.0" }
+jolty-expressions = { path = "crates/jolty-expressions", version = "0.1.0" }
+jolty-ir = { path = "crates/jolty-ir", version = "0.1.0" }
+jolty-models = { path = "crates/jolty-models", version = "0.1.0" }
+jolty-numerics = { path = "crates/jolty-numerics", version = "0.1.0" }
 
 dyn-stack = "0.13"
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }

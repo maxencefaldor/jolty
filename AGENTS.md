@@ -83,3 +83,9 @@ Each module imports only from the modules listed before it:
 - **Numbers in messages** are written in their shortest exact form, such as `-1e-9`; reports write them with SI prefixes, such as `-1 nV`.
 - **Tests:** the engine is checked against closed-form solutions, by property tests of the laws every circuit obeys, such as Kirchhoff's current law, and against ngspice on a corpus of circuits (`tests/test_ngspice.py`) and on vendors' macromodels (`tests/test_vendor.py`), both skipped when ngspice is not installed.
   The layout is checked by property tests over random circuits: nets never touch, and wires never cross a symbol.
+
+## Releasing
+
+`CHANGELOG.md` records what each version changes, under `Unreleased` until it ships.
+A tag `vX.Y.Z` on `main` releases that version: `.github/workflows/release.yml` checks the tag against the versions in `pyproject.toml` and `Cargo.toml`, builds the wheels for Linux, macOS and Windows and the source distribution, publishes them to PyPI through trusted publishing, and publishes every crate but `jolty-python` to crates.io with the `CARGO_REGISTRY_TOKEN` secret.
+Nothing publishes without a tag.
