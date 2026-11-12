@@ -12,7 +12,9 @@ BOLTZMANN: float
 ELEMENTARY_CHARGE: float
 REFERENCE_TEMPERATURE: float
 
-class ElaborationError(Exception): ...
+class ElaborationError(Exception):
+    args: tuple[list[ProblemOutcome]]
+
 class SimulationError(Exception): ...
 
 class Observed(TypedDict):
@@ -125,6 +127,10 @@ class SourceOutcome(TypedDict):
 class InstanceOutcome(TypedDict):
     path: str
     source: SourceOutcome | None
+
+class ProblemOutcome(TypedDict):
+    message: str
+    instance: InstanceOutcome | None
 
 class DiagnosticOutcome(TypedDict):
     rule: str

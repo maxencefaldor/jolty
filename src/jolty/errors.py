@@ -29,12 +29,12 @@ class ScriptError(JoltyError):
 
 
 class ElaborationError(JoltyError):
-    """The engine cannot elaborate a circuit: every problem it found, one per line."""
+    """The engine cannot elaborate a circuit: every problem it found, as errors."""
 
     def __init__(self, problems: Sequence[str]) -> None:
-        """Holds `problems`, each a sentence naming the instance and its source line."""
+        """Holds `problems`, each what is wrong, then its instance and source line."""
         self.problems = tuple(problems)
-        super().__init__("\n".join(self.problems))
+        super().__init__("\n\n".join(self.problems))
 
 
 class SimulationError(JoltyError):

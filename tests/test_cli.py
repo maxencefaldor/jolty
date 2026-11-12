@@ -105,8 +105,10 @@ def test_a_circuit_that_does_not_elaborate_exits_with_1(
     assert run("simulate", "low_pass.py") == 1
     out = capsys.readouterr().out
     assert (
-        "the circuit does not elaborate:\n"
-        "  instance `C1` (low_pass.py:11): capacitance must be at least 0, not -1e-9"
+        "error: capacitance must be at least 0, not -1e-9\n"
+        "  = C1, low_pass.py:11 in low_pass()\n"
+        "\n"
+        "the circuit does not elaborate: 1 error"
     ) in out
     assert not script.with_name("low_pass.results.npz").exists()
 

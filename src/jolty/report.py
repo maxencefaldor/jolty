@@ -563,7 +563,7 @@ class CornerReport(_Model):
         """The report as text."""
         head = f"corner {self.name}, at {self.temperature - 273.15:.4g} °C"
         if self.problems:
-            listed = "".join(f"\n  {problem}" for problem in self.problems)
+            listed = "".join(f"\n{_indented(problem)}" for problem in self.problems)
             return f"{head}: the circuit does not elaborate:{listed}"
         if self.failures:
             listed = "".join(f"\n  {failure.describe()}" for failure in self.failures)
@@ -1065,6 +1065,10 @@ def _table(rows: list[list[str]]) -> list[str]:
         ).rstrip()
         for row in rows
     ]
+
+
+def _indented(text: str) -> str:
+    return "\n".join(f"  {line}" for line in text.splitlines())
 
 
 def _join(head: str, lines: list[str], unlisted: int) -> str:

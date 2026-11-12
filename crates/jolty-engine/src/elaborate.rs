@@ -151,16 +151,13 @@ impl fmt::Display for Location {
 }
 
 /// A reason a circuit cannot be elaborated.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ElaborationProblem {
     /// The circuit's structure is invalid.
-    #[error(transparent)]
-    Structure(#[from] Problem),
+    Structure(Problem),
     /// The top component has no ground port, so the circuit has no reference node.
-    #[error("the top component `{0}` has no ground port to be the reference node")]
     NoReference(Name),
     /// The top component has several ground ports.
-    #[error("the top component `{top}` has {count} ground ports, and the reference is one node")]
     SeveralReferences {
         /// The top component.
         top: Name,
@@ -168,7 +165,6 @@ pub enum ElaborationProblem {
         count: usize,
     },
     /// An instance is of a model the library does not hold.
-    #[error("instance {at} is of unknown model `{model}`")]
     UnknownModel {
         /// The instance.
         at: Location,
@@ -176,7 +172,6 @@ pub enum ElaborationProblem {
         model: Name,
     },
     /// An instance leaves a terminal of its model unconnected.
-    #[error("instance {at} leaves terminal `{terminal}` of its {model} unconnected")]
     UnconnectedTerminal {
         /// The instance.
         at: Location,
@@ -186,7 +181,6 @@ pub enum ElaborationProblem {
         terminal: String,
     },
     /// An instance connects a terminal its model does not have.
-    #[error("instance {at} connects `{terminal}`, which a {model} does not have")]
     UnknownTerminal {
         /// The instance.
         at: Location,
@@ -196,7 +190,6 @@ pub enum ElaborationProblem {
         terminal: Name,
     },
     /// An instance's parameters are invalid for its model.
-    #[error("instance {at}: {message}")]
     Parameters {
         /// The instance.
         at: Location,
@@ -204,10 +197,6 @@ pub enum ElaborationProblem {
         message: String,
     },
     /// A logic pin joins an electrical net, and its model cannot cross to one.
-    #[error(
-        "instance {at} joins its logic pin `{pin}` to the electrical net `{net}`, and a {model} \
-         has no supply and ground to cross to it"
-    )]
     LogicPinOnElectricalNet {
         /// The instance.
         at: Location,
@@ -219,14 +208,78 @@ pub enum ElaborationProblem {
         net: String,
     },
     /// A model stands in for a component instance the circuit does not have.
-    #[error("the circuit has no component instance at `{0}`, for which a model stands in")]
     UnknownSubstitute(String),
     /// Parameters replace those of an instance the circuit does not have.
-    #[error("the circuit has no device at `{0}`, whose parameters are replaced")]
     UnknownOverride(String),
     /// The circuit's system is too large to factor.
-    #[error("the circuit's system is too large to factor")]
     TooLarge,
+}
+
+impl ElaborationProblem {
+    /// The instance the problem is about, if it is about one.
+    #[must_use]
+    pub fn location(&self) -> Option<&Location> {
+        match self {
+            Self::UnknownModel { at, .. }
+            | Self::UnconnectedTerminal { at, .. }
+            | Self::UnknownTerminal { at, .. }
+            | Self::Parameters { at, .. }
+            | Self::LogicPinOnElectricalNet { at, .. } => Some(at),
+            _ => None,
+        }
+    }
+
+    /// What is wrong, without the instance [`ElaborationProblem::location`] names.
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::Structure(problem) => problem.to_string(),
+            Self::NoReference(top) => {
+                format!("the top component `{top}` has no ground port to be the reference node")
+            }
+            Self::SeveralReferences { top, count } => format!(
+                "the top component `{top}` has {count} ground ports, and the reference is one node"
+            ),
+            Self::UnknownModel { model, .. } => format!("unknown model `{model}`"),
+            Self::UnconnectedTerminal {
+                model, terminal, ..
+            } => format!("terminal `{terminal}` of its {model} is unconnected"),
+            Self::UnknownTerminal {
+                model, terminal, ..
+            } => format!("connects `{terminal}`, which a {model} does not have"),
+            Self::Parameters { message, .. } => message.clone(),
+            Self::LogicPinOnElectricalNet {
+                model, pin, net, ..
+            } => format!(
+                "joins its logic pin `{pin}` to the electrical net `{net}`, and a {model} has no \
+                 supply and ground to cross to it"
+            ),
+            Self::UnknownSubstitute(path) => format!(
+                "the circuit has no component instance at `{path}`, for which a model stands in"
+            ),
+            Self::UnknownOverride(path) => {
+                format!("the circuit has no device at `{path}`, whose parameters are replaced")
+            }
+            Self::TooLarge => "the circuit's system is too large to factor".to_owned(),
+        }
+    }
+}
+
+impl fmt::Display for ElaborationProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.location() {
+            Some(at) => write!(f, "instance {at}: {}", self.message()),
+            None => f.write_str(&self.message()),
+        }
+    }
+}
+
+impl std::error::Error for ElaborationProblem {}
+
+impl From<Problem> for ElaborationProblem {
+    fn from(problem: Problem) -> Self {
+        Self::Structure(problem)
+    }
 }
 
 /// Every [`ElaborationProblem`] of a circuit.
@@ -1201,9 +1254,9 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "instance `Q1` is of unknown model `transistor`\n\
-             instance `C1` connects `c`, which a capacitor does not have\n\
-             instance `C1` leaves terminal `b` of its capacitor unconnected\n\
+            "instance `Q1`: unknown model `transistor`\n\
+             instance `C1`: connects `c`, which a capacitor does not have\n\
+             instance `C1`: terminal `b` of its capacitor is unconnected\n\
              instance `R1` (amp.py:9): resistance must be positive, not -1.0"
         );
     }

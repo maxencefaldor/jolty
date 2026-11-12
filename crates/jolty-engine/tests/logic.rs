@@ -374,8 +374,8 @@ fn a_logic_pin_crosses_to_an_electrical_net_only_through_a_supply() {
     ));
     assert_eq!(
         error.to_string(),
-        "instance `U1` joins its logic pin `a` to the electrical net `n`, and a logic_cell has \
-         no supply and ground to cross to it"
+        "instance `U1`: joins its logic pin `a` to the electrical net `n`, and a logic_cell \
+         has no supply and ground to cross to it"
     );
 }
 

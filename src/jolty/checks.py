@@ -101,6 +101,28 @@ class Report(_Model):
         )
 
 
+def problem(found: _core.ProblemOutcome) -> str:
+    """A problem the engine `found`, in a compiler's form.
+
+    The form is what is wrong, then the instance and the script line that placed it, if
+    the problem is about one.
+
+    Examples:
+        >>> source = {"file": "amp.py", "line": 9, "function": "amp"}
+        >>> found = {
+        ...     "message": "resistance must be positive, not -1.0",
+        ...     "instance": {"path": "R1", "source": source},
+        ... }
+        >>> print(problem(found))
+        error: resistance must be positive, not -1.0
+          = R1, amp.py:9 in amp()
+    """
+    text = f"error: {found['message']}"
+    if found["instance"] is not None:
+        text += f"\n  = {_instance(found['instance'])}"
+    return text
+
+
 def diagnostics(found: Iterable[_core.DiagnosticOutcome]) -> tuple[Diagnostic, ...]:
     """The diagnostics the engine `found`, each at its rule's default level."""
     known = rules()
@@ -110,17 +132,19 @@ def diagnostics(found: Iterable[_core.DiagnosticOutcome]) -> tuple[Diagnostic, .
             level=known[diagnostic["rule"]].level,
             message=diagnostic["message"],
             instances=tuple(
-                Instance(
-                    path=instance["path"],
-                    source=None
-                    if instance["source"] is None
-                    else ir.Source.model_validate(instance["source"]),
-                )
-                for instance in diagnostic["instances"]
+                _instance(instance) for instance in diagnostic["instances"]
             ),
             nets=tuple(diagnostic["nets"]),
         )
         for diagnostic in found
+    )
+
+
+def _instance(found: _core.InstanceOutcome) -> Instance:
+    source = found["source"]
+    return Instance(
+        path=found["path"],
+        source=None if source is None else ir.Source.model_validate(source),
     )
 
 

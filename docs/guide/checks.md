@@ -55,4 +55,4 @@ uv run jolty build coupled.py --warn no-dc-path
 `jolty check` checks a saved circuit file, with no script to run.
 A report lists the errors first, up to the setting `max_diagnostics`, and counts the rest.
 
-A circuit the engine cannot elaborate, such as one with a negative resistance or no ground port, is not checked: the command lists every reason it does not elaborate instead.
+A circuit the engine cannot elaborate, such as one with a negative resistance or no ground port, is not checked: the command lists every reason it does not elaborate instead, in the same form as a diagnostic but with no rule, since no level turns a problem off.

@@ -157,8 +157,7 @@ class CircuitSummary(_Model):
             counts.append(_plural(self.unknowns, "unknown"))
         text = f"saved {self.path}: {', '.join(counts)}"
         if self.problems:
-            listed = "\n".join(f"  {problem}" for problem in self.problems)
-            text += f"\n\nthe circuit does not elaborate:\n{listed}"
+            text += f"\n\n{_unelaborated('the circuit', self.problems)}"
         return text
 
 
@@ -836,8 +835,7 @@ class CheckResult(CommandResult):
     def describe(self) -> str:
         """The result as text."""
         if self.report is None:
-            listed = "\n".join(f"  {problem}" for problem in self.problems)
-            return f"{self.circuit} does not elaborate:\n{listed}"
+            return _unelaborated(str(self.circuit), self.problems)
         return self.report.describe()
 
 
@@ -1117,6 +1115,12 @@ def _with_output(message: str, output: ScriptOutput) -> str:
 
 def _indent(text: str) -> str:
     return "\n".join(f"  {line}" if line else line for line in text.splitlines())
+
+
+def _unelaborated(circuit: str, problems: Collection[str]) -> str:
+    """Each of a circuit's `problems`, then how many stop it from elaborating."""
+    count = _plural(len(problems), "error")
+    return "\n\n".join([*problems, f"{circuit} does not elaborate: {count}"])
 
 
 def _plural(count: int, noun: str) -> str:

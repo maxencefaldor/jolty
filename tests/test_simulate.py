@@ -714,7 +714,7 @@ def test_problems_name_the_instance_and_the_script_line() -> None:
     problems = raised.value.problems
     assert any("ground" in problem for problem in problems)
     assert any(
-        "`R1` (tests/test_simulate.py:" in problem and "positive" in problem
+        "positive" in problem and "= R1, tests/test_simulate.py:" in problem
         for problem in problems
     )
 

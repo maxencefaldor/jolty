@@ -8,8 +8,8 @@
 use std::sync::Mutex;
 
 use jolty_engine::{
-    Analysis, Derivatives, NoiseSpectrum, Observation, Observations, OperatingPoint, Options,
-    Outcome, PolesZeros, Statistics,
+    Analysis, Derivatives, Location, NoiseSpectrum, Observation, Observations, OperatingPoint,
+    Options, Outcome, PolesZeros, Statistics,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library, Quantity};
@@ -46,8 +46,18 @@ impl Simulator {
     /// in kelvins, with the parameters of the JSON object `overrides`, by instance path,
     /// replacing the circuit's own, and the models of the JSON object `substitutes`, each a
     /// `model` and its `parameters` by component instance path, standing in for them.
+    ///
+    /// A circuit that does not elaborate raises `ElaborationError` with a list of its
+    /// problems, each a dictionary of its `message` and its `instance`, as a diagnostic's,
+    /// or `None`.
     #[new]
-    fn new(circuit: &str, temperature: f64, overrides: &str, substitutes: &str) -> PyResult<Self> {
+    fn new(
+        py: Python<'_>,
+        circuit: &str,
+        temperature: f64,
+        overrides: &str,
+        substitutes: &str,
+    ) -> PyResult<Self> {
         let circuit = Circuit::from_json(circuit).map_err(|error| unreadable(&error))?;
         let conditions = jolty_engine::Conditions {
             temperature,
@@ -55,10 +65,9 @@ impl Simulator {
             substitutes: serde_json::from_str(substitutes).map_err(|error| unreadable(&error))?,
         };
         let inner = jolty_engine::Simulator::new(&circuit, &Library::standard(), &conditions)
-            .map_err(|error| {
-                let problems: Vec<String> =
-                    error.problems().iter().map(ToString::to_string).collect();
-                ElaborationError::new_err((problems,))
+            .map_err(|error| match problems_to_python(py, &error) {
+                Ok(problems) => ElaborationError::new_err((problems.unbind(),)),
+                Err(error) => error,
             })?;
         let unknowns = inner
             .unknowns()
@@ -150,21 +159,8 @@ impl Simulator {
             item.set_item("rule", diagnostic.rule)?;
             item.set_item("message", diagnostic.message)?;
             let instances = PyList::empty(py);
-            for location in diagnostic.instances {
-                let instance = PyDict::new(py);
-                instance.set_item("path", location.path)?;
-                let source = match location.source {
-                    Some(source) => {
-                        let line = PyDict::new(py);
-                        line.set_item("file", source.file)?;
-                        line.set_item("line", source.line)?;
-                        line.set_item("function", source.function)?;
-                        Some(line)
-                    }
-                    None => None,
-                };
-                instance.set_item("source", source)?;
-                instances.append(instance)?;
+            for location in &diagnostic.instances {
+                instances.append(location_to_python(py, location)?)?;
             }
             item.set_item("instances", instances)?;
             item.set_item("nets", diagnostic.nets)?;
@@ -488,6 +484,44 @@ fn cube<'py, T: Element + Copy>(
         .map_or(0, Vec::len);
     let flat: Vec<T> = points.iter().flatten().flatten().copied().collect();
     PyArray1::from_vec(py, flat).reshape([points.len(), rows, columns])
+}
+
+/// Each problem of `error`, a dictionary of its `message` and its `instance` or `None`.
+fn problems_to_python<'py>(
+    py: Python<'py>,
+    error: &jolty_engine::ElaborationError,
+) -> PyResult<Bound<'py, PyList>> {
+    let problems = PyList::empty(py);
+    for problem in error.problems() {
+        let item = PyDict::new(py);
+        item.set_item("message", problem.message())?;
+        let instance = problem
+            .location()
+            .map(|location| location_to_python(py, location))
+            .transpose()?;
+        item.set_item("instance", instance)?;
+        problems.append(item)?;
+    }
+    Ok(problems)
+}
+
+/// An instance as a dictionary of its `path` and its `source`, the script line that placed
+/// it, as a dictionary of its `file`, `line` and `function`, or `None`.
+fn location_to_python<'py>(py: Python<'py>, location: &Location) -> PyResult<Bound<'py, PyDict>> {
+    let instance = PyDict::new(py);
+    instance.set_item("path", &location.path)?;
+    let source = match &location.source {
+        Some(source) => {
+            let line = PyDict::new(py);
+            line.set_item("file", &source.file)?;
+            line.set_item("line", source.line)?;
+            line.set_item("function", &source.function)?;
+            Some(line)
+        }
+        None => None,
+    };
+    instance.set_item("source", source)?;
+    Ok(instance)
 }
 
 fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Bound<'_, PyDict>> {

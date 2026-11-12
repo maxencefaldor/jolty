@@ -75,4 +75,9 @@ The top component has exactly one ground port, the reference node of every volta
 ## Provenance
 
 Every instance records the line of the script that placed it.
-Problems name the instance by its path and that line, such as ``instance `X1/C1` (filter.py:12)``, so the agent knows what to edit.
+Problems name the instance by its path and that line, as a compiler names the line of an error, so the agent knows what to edit:
+
+```text
+error: capacitance must be at least 0, not -1e-9
+  = X1/C1, filter.py:12 in low_pass()
+```

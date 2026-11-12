@@ -217,7 +217,7 @@ class _Cell:
         try:
             return Simulation(circuit, self.temperature)
         except JoltyError as error:
-            message = f"the test bench of {self.name} does not elaborate: {error}"
+            message = f"the test bench of {self.name} does not elaborate:\n{error}"
             raise CharacterizationError(message) from None
 
     def levels(self, row: int) -> tuple[float, ...]:

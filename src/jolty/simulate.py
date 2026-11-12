@@ -152,7 +152,8 @@ class Simulation:
                 json.dumps(stand_ins, allow_nan=False),
             )
         except _core.ElaborationError as error:
-            raise ElaborationError(error.args[0]) from None
+            (found,) = error.args
+            raise ElaborationError([checks.problem(each) for each in found]) from None
         self.unknowns = tuple(
             results.Unknown(name, quantity) for name, quantity in self._core.unknowns
         )
