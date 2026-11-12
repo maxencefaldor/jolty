@@ -27,7 +27,7 @@ def specs() -> Specs:
 A measurement names the analysis whose result it reads, such as `bode`, and the signal it reads, such as `out`.
 A signal is an unknown, such as the voltage `out` or `X1/mid` or the current `V1:current`, and `reference=` makes a voltage relative to another net's.
 Comparing a measurement makes a requirement: `>=` a minimum, `<=` a maximum, `.between(minimum, maximum)`, or `.within(target, tolerance)`.
-Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in degrees and an overshoot in percent, so their bounds are numbers.
+Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in degrees, an overshoot in percent and a damping ratio a plain number, so their bounds are numbers.
 
 ## Measurements
 
@@ -49,6 +49,8 @@ Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in deg
 | `gain_margin(analysis, output=None, over=None)` | minus the gain in decibels where the phase first falls through -180° | a small-signal response or a loop gain |
 | `noise_density(analysis, at, referred=False)` | the noise density at a frequency, in V/√Hz or A/√Hz, at the output or referred to the input | a noise analysis |
 | `integrated_noise(analysis, start=None, stop=None, referred=False)` | the RMS noise from `start` to `stop`, by default every frequency, at the output or referred to the input | a noise analysis |
+| `damping(analysis)` | the least damping ratio of the poles, a plain number: negative for a pole in the right half-plane | a pole-zero analysis |
+| `dominant_pole(analysis)` | the natural frequency of the pole nearest the origin, in hertz | a pole-zero analysis |
 
 Every transient measurement takes a window, `start` and `stop`.
 A step runs from the signal's value at the window's start to its value at the window's end, so a window ends once the signal settles.

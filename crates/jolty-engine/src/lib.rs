@@ -5,7 +5,8 @@
 //! on it: an [operating point](Simulator::operating_point), a [DC sweep](Simulator::dc_sweep),
 //! a [small-signal frequency response](Simulator::ac), a [transient](Simulator::transient),
 //! [sensitivities](Simulator::sensitivity), the [loop gain](Simulator::stability) through a
-//! probe and the [noise](Simulator::noise) at an output.
+//! probe, the [noise](Simulator::noise) at an output, and the [poles and
+//! zeros](Simulator::pole_zero).
 //! Every analysis solves the charge-oriented equations `f(x) + d/dt q(x) = 0` by Newton
 //! iteration with one sparse LU solver, whose symbolic analysis is shared by all of them.
 //! Logic devices join logic nets, which an event scheduler simulates beside the analog
@@ -47,6 +48,7 @@ mod noise;
 mod observe;
 mod operating_point;
 mod options;
+mod pole_zero;
 mod sensitivity;
 mod stability;
 mod sweep;
@@ -68,6 +70,7 @@ pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseSpectrum};
 pub use observe::{Observation, Observations, Observed};
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;
+pub use pole_zero::{PoleZero, PolesZeros};
 pub use sensitivity::{Derivatives, Differentiated, Parameter, Sensitivities, Sensitivity};
 pub use stability::{LoopGain, Stability};
 pub use sweep::{DcSweep, Sweep};
@@ -329,6 +332,9 @@ pub enum SimulationError {
     /// An analysis's settings are out of range.
     #[error("invalid analysis: {0}")]
     InvalidAnalysis(String),
+    /// The QZ iteration of a pole-zero analysis did not converge.
+    #[error("the eigenvalues of the linearized circuit did not converge")]
+    Unconverged,
     /// The options are out of range.
     #[error("invalid options: {0}")]
     InvalidOptions(String),

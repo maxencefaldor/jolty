@@ -39,6 +39,7 @@ from jolty.plan import (
     OperatingPoint,
     Options,
     Plan,
+    PoleZero,
     Sensitivity,
     Stability,
     Transient,
@@ -198,6 +199,10 @@ class Simulation:
     def run(
         self, analysis: Noise, options: Options | None = None
     ) -> results.NoiseSpectrum: ...
+    @overload
+    def run(
+        self, analysis: PoleZero, options: Options | None = None
+    ) -> results.PolesZeros: ...
     def run(self, analysis: Analysis, options: Options | None = None) -> results.Result:
         """Runs `analysis` with `options`, or with the engine's defaults.
 
@@ -302,9 +307,12 @@ class Simulation:
 
     def _linear(
         self,
-        outcome: _core.SensitivityOutcome | _core.StabilityOutcome | _core.NoiseOutcome,
+        outcome: _core.SensitivityOutcome
+        | _core.StabilityOutcome
+        | _core.NoiseOutcome
+        | _core.PoleZeroOutcome,
     ) -> results.Result:
-        """The result of sensitivities, a loop gain or a noise spectrum."""
+        """The result of sensitivities, a loop gain, a noise spectrum or poles."""
         unknowns = self.unknowns
         match outcome["kind"]:
             case "sensitivity":
@@ -362,6 +370,16 @@ class Simulation:
                     ),
                     outcome["contributions"],
                     noise_input,
+                    self._point(outcome["operating_point"]),
+                )
+            case "pole_zero":
+                return results.PolesZeros(
+                    unknowns,
+                    outcome["poles"],
+                    outcome["zeros"],
+                    outcome["source"],
+                    outcome["output"],
+                    outcome["reference"],
                     self._point(outcome["operating_point"]),
                 )
 

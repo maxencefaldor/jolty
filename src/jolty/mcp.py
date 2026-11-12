@@ -85,7 +85,9 @@ with jolty.specs.phase_margin, gain_margin and crossover, and Noise(output,
 frequencies, reference=None, source=None): the noise density at an output from every
 device's thermal, shot and flicker noise, referred to the input source if given, read
 with jolty.specs.noise_density (in V/√Hz, such as 10 * nV / rtHz) and
-integrated_noise. Unknowns
+integrated_noise, and PoleZero(source=None, output=None, reference=None): the poles of
+the linearized circuit, and the zeros of the transfer function from source to output,
+read with jolty.specs.damping and dominant_pole. Unknowns
 are named by path: a net such as out or stage/mid, and the current through a source or
 inductor such as V1:current. Every result holds the current into every terminal of every
 device and the charge it holds, read with current(instance, terminal) and

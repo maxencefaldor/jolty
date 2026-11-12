@@ -17,8 +17,10 @@ from jolty.specs import (
     bandwidth,
     crossing,
     crossover,
+    damping,
     describe,
     distortion,
+    dominant_pole,
     evaluate,
     frequency,
     gain,
@@ -591,4 +593,31 @@ def test_noise_reads_a_noise_analysis_within_its_band() -> None:
     assert unread(value("hiss", "out") <= 1 * V, spectrum) == (
         "a value reads an operating point, a transient or a DC sweep, not a noise "
         "spectrum"
+    )
+
+
+def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
+    poles = np.array([-3e3 + 4e3j, -3e3 - 4e3j, -1e6 + 0j])
+    found = results.PolesZeros(UNKNOWNS, poles, None, None, None, None, point(0.0))
+    least = damping("pz").read(found)
+    assert (least.value, least.unit) == (pytest.approx(0.6), "")
+    slowest = dominant_pole("pz").read(found)
+    assert slowest.value == pytest.approx(5e3 / (2 * math.pi))
+    assert slowest.unit == FREQUENCY
+    assert str(damping("pz") >= 0.5) == "least damping ratio of the poles in pz ≥ 0.5"
+    assert (
+        verdict_of(damping("pz") >= 0.7, found)
+        .describe()
+        .startswith("failed: least damping ratio of the poles in pz ≥ 0.7: read 0.6")
+    )
+    growing = results.PolesZeros(
+        UNKNOWNS, np.array([1e3 + 0j]), None, None, None, None, point(0.0)
+    )
+    assert damping("pz").read(growing).value == -1.0
+    empty = results.PolesZeros(
+        UNKNOWNS, np.empty(0, dtype=complex), None, None, None, None, point(0.0)
+    )
+    assert unread(damping("pz") >= 0, empty) == "the circuit has no poles"
+    assert unread(dominant_pole("pz") >= 1 * Hz, low_pass()) == (
+        "a dominant pole reads a pole-zero analysis, not a small-signal response"
     )

@@ -96,6 +96,14 @@ class _NoiseSpectrum(_Model):
     strategy: str
 
 
+class _PolesZeros(_Model):
+    kind: Literal["pole_zero"] = "pole_zero"
+    source: str | None
+    output: str | None
+    reference: str | None
+    strategy: str
+
+
 type _Entry = Annotated[
     _Point
     | _Sweep
@@ -103,7 +111,8 @@ type _Entry = Annotated[
     | _Waveforms
     | _Sensitivities
     | _LoopGain
-    | _NoiseSpectrum,
+    | _NoiseSpectrum
+    | _PolesZeros,
     Field(discriminator="kind"),
 ]
 
@@ -262,10 +271,13 @@ def _save(name: str, result: results.Result, arrays: dict[str, np.ndarray]) -> _
 
 def _save_linear(
     name: str,
-    result: results.Sensitivities | results.LoopGain | results.NoiseSpectrum,
+    result: results.Sensitivities
+    | results.LoopGain
+    | results.NoiseSpectrum
+    | results.PolesZeros,
     arrays: dict[str, np.ndarray],
 ) -> _Entry:
-    """The header's entry of sensitivities, a loop gain or a noise spectrum."""
+    """The header's entry of sensitivities, a loop gain, a noise spectrum or poles."""
     match result:
         case results.Sensitivities():
             arrays[f"{name}.parameters"] = np.array(
@@ -306,6 +318,18 @@ def _save_linear(
                     (source.instance, source.name) for source in result.sources
                 ),
                 input=found,
+                strategy=point.strategy,
+            )
+        case results.PolesZeros():
+            arrays[f"{name}.poles"] = result.poles
+            if result.zeros is not None:
+                arrays[f"{name}.zeros"] = result.zeros
+            point = result.operating_point
+            arrays.update(_point_arrays(f"{name}.operating_point", point))
+            return _PolesZeros(
+                source=result.source,
+                output=result.output,
+                reference=result.reference,
                 strategy=point.strategy,
             )
 
@@ -357,10 +381,10 @@ def _load(
 def _load_linear(
     data: Mapping[str, np.ndarray],
     name: str,
-    entry: _Sensitivities | _LoopGain | _NoiseSpectrum,
+    entry: _Sensitivities | _LoopGain | _NoiseSpectrum | _PolesZeros,
     header: _Header,
 ) -> results.Result:
-    """The sensitivities, loop gain or noise spectrum stored under `name` in `data`."""
+    """The sensitivities, loop gain, noise spectrum or poles stored under `name`."""
     unknowns = header.unknowns
     match entry:
         case _Sensitivities(outputs=outputs, parameters=named, result=differentiated):
@@ -373,7 +397,10 @@ def _load_linear(
             found = _load(data, f"{name}.result", differentiated, header)
             if isinstance(
                 found,
-                results.Sensitivities | results.LoopGain | results.NoiseSpectrum,
+                results.Sensitivities
+                | results.LoopGain
+                | results.NoiseSpectrum
+                | results.PolesZeros,
             ):
                 message = (
                     f"the sensitivities {name} differentiate neither an operating "
@@ -412,13 +439,31 @@ def _load_linear(
                 found_input,
                 _point(data, f"{name}.operating_point", entry.strategy, header),
             )
+        case _PolesZeros(
+            source=source, output=output, reference=reference, strategy=strategy
+        ):
+            return results.PolesZeros(
+                unknowns,
+                data[f"{name}.poles"],
+                data.get(f"{name}.zeros"),
+                source,
+                output,
+                reference,
+                _point(data, f"{name}.operating_point", strategy, header),
+            )
 
 
 def _names(result: results.Result) -> _Names:
     """The names of the columns of `result`'s circuit."""
     if isinstance(result, results.Sensitivities):
         return _names(result.result)
-    if isinstance(result, results.Response | results.LoopGain | results.NoiseSpectrum):
+    if isinstance(
+        result,
+        results.Response
+        | results.LoopGain
+        | results.NoiseSpectrum
+        | results.PolesZeros,
+    ):
         return _names(result.operating_point)
     return _Names(
         unknowns=result.unknowns,

@@ -12,7 +12,7 @@ Specs state what a circuit must do, and every simulation measures its results ag
 A plan can run a component as a logic cell characterized from its own circuit, as the full adder example runs its nine transistor-level NAND gates, and spot checks hold each cell to its circuit.
 A sensitivity analysis gives the derivative of any unknown with respect to every parameter of every device, at the operating point, along a DC sweep, over frequency or over time.
 A stability analysis gives a feedback loop's gain through a probe, by Middlebrook's double injection, and specs read its phase and gain margins.
-A noise analysis gives the noise density at any output from every device's thermal, shot and flicker noise, each source's share, and the noise referred to an input.
+A noise analysis gives the noise density at any output from every device's thermal, shot and flicker noise, each source's share, and the noise referred to an input, and a pole-zero analysis the circuit's natural frequencies and a transfer function's zeros.
 Every result holds each device's own state, its terminals' currents and charges, the derivatives of its equations and its model's variables, at every point, and a 3D viewer plays any simulation on the circuit's layout.
 
 The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.

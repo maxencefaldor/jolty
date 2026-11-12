@@ -3,7 +3,7 @@
 use std::f64::consts::TAU;
 use std::sync::Arc;
 
-use jolty_models::Contributions;
+use jolty_models::{Contributions, Quantity, Unknown};
 use jolty_numerics::{Complex64, Factors, Pattern, SparseLu};
 use serde::Deserialize;
 
@@ -95,9 +95,60 @@ impl Simulator {
                 "frequencies must be at least 0, not {frequency:?}"
             )));
         }
+        self.linearized(options)
+    }
+
+    /// Solves the operating point and evaluates the devices there, so the workspace holds
+    /// `G` and `C`.
+    pub(crate) fn linearized(
+        &mut self,
+        options: &Options,
+    ) -> Result<OperatingPoint, SimulationError> {
         let operating_point = self.operating_point(options)?;
         self.evaluate(&operating_point.values, 0.0, (1.0, options.gmin), true);
         Ok(operating_point)
+    }
+
+    /// The unknown named `output`, and the one named `reference` it is taken over, if
+    /// any, with what the difference is: a voltage over a node, or any unknown alone. The
+    /// reference node's name names no unknown.
+    pub(crate) fn measured(
+        &self,
+        output: &str,
+        reference: Option<&str>,
+    ) -> Result<(Option<Unknown>, Option<Unknown>, Quantity), SimulationError> {
+        let found = self.node(output)?;
+        let base = reference.map(|name| self.node(name)).transpose()?.flatten();
+        if found == base {
+            return Err(SimulationError::InvalidAnalysis(format!(
+                "the output `{output}` is taken over itself"
+            )));
+        }
+        let quantity = |node: Option<Unknown>| {
+            node.map_or(Quantity::Voltage, |unknown| {
+                self.system.unknowns[unknown.index()].quantity
+            })
+        };
+        let quantity = match (quantity(found), quantity(base), reference) {
+            (quantity, _, None) => quantity,
+            (Quantity::Voltage, Quantity::Voltage, Some(_)) => Quantity::Voltage,
+            (_, _, Some(name)) => {
+                return Err(SimulationError::InvalidAnalysis(format!(
+                    "an output over a node is a voltage, but `{output}` over `{name}` is not"
+                )));
+            }
+        };
+        Ok((found, base, quantity))
+    }
+
+    /// The node or unknown named `name`: none for the reference node.
+    fn node(&self, name: &str) -> Result<Option<Unknown>, SimulationError> {
+        if name == self.reference() {
+            return Ok(None);
+        }
+        self.unknown(name)
+            .map(Some)
+            .ok_or_else(|| SimulationError::UnknownOutput(name.to_owned()))
     }
 }
 

@@ -19,6 +19,7 @@ from jolty import (
     OperatingPoint,
     Options,
     Plan,
+    PoleZero,
     Role,
     Sensitivity,
     Simulation,
@@ -285,6 +286,19 @@ def test_a_noise_analysis_rejects_what_it_cannot_measure() -> None:
         simulation.run(Noise("out", [1 * kHz], source="R1"))
     with pytest.raises(DimensionError, match="a frequency"):
         simulation.run(Noise("out", [1 * V]))
+
+
+def test_a_low_pass_has_one_real_pole_and_no_zero() -> None:
+    simulation = Simulation(low_pass())
+    found = simulation.run(PoleZero(source="V1", output="out"))
+    np.testing.assert_allclose(found.poles, [-1e6], rtol=1e-9)
+    assert found.zeros is not None
+    assert found.zeros.size == 0
+    assert results.dampings(found.poles).tolist() == [1.0]
+    alone = simulation.run(PoleZero())
+    assert alone.zeros is None
+    with pytest.raises(SimulationError, match="both or neither"):
+        simulation.run(PoleZero(source="V1"))
 
 
 def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:

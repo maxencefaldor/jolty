@@ -3,8 +3,9 @@
 use serde::Deserialize;
 
 use crate::{
-    Ac, DcSweep, LoopGain, Noise, NoiseSpectrum, OperatingPoint, Options, Response, Sensitivities,
-    Sensitivity, SimulationError, Simulator, Stability, Sweep, Transient, Waveforms,
+    Ac, DcSweep, LoopGain, Noise, NoiseSpectrum, OperatingPoint, Options, PoleZero, PolesZeros,
+    Response, Sensitivities, Sensitivity, SimulationError, Simulator, Stability, Sweep, Transient,
+    Waveforms,
 };
 
 /// An analysis to run.
@@ -28,6 +29,8 @@ pub enum Analysis {
     Stability(Stability),
     /// The noise at an output.
     Noise(Noise),
+    /// The poles, and the zeros of a transfer function.
+    PoleZero(PoleZero),
 }
 
 /// The result of an [`Analysis`].
@@ -47,6 +50,8 @@ pub enum Outcome {
     Stability(LoopGain),
     /// The noise at an output.
     Noise(NoiseSpectrum),
+    /// The poles and zeros.
+    PoleZero(PolesZeros),
 }
 
 impl Simulator {
@@ -74,6 +79,7 @@ impl Simulator {
                 Outcome::Stability(self.stability(stability, options)?)
             }
             Analysis::Noise(noise) => Outcome::Noise(self.noise(noise, options)?),
+            Analysis::PoleZero(analysis) => Outcome::PoleZero(self.pole_zero(analysis, options)?),
         })
     }
 }

@@ -104,6 +104,37 @@ def test_a_noise_spectrum_plots_its_density_and_its_noisiest_sources() -> None:
     assert referred.get_xlabel() == "frequency"
 
 
+def test_poles_and_zeros_plot_at_their_frequency_and_damping() -> None:
+    point = results.OperatingPoint(UNKNOWNS, np.zeros(5), "direct")
+    found = results.PolesZeros(
+        UNKNOWNS,
+        np.array([-3e3 + 4e3j, -3e3 - 4e3j, 1e6 + 0j]),
+        np.array([0j, -2e3 + 0j]),
+        "V1",
+        "out",
+        None,
+        point,
+    )
+    figure = plot("pz", found, ["in"])
+    (axes,) = figure.axes
+    assert (axes.get_ylabel(), axes.get_xlabel(), axes.get_xscale()) == (
+        "damping ratio",
+        "natural frequency",
+        "log",
+    )
+    poles, zeros, boundary = axes.get_lines()
+    np.testing.assert_allclose(
+        np.asarray(poles.get_xdata(), dtype=float),
+        [5e3 / (2 * np.pi), 1e6 / (2 * np.pi)],
+    )
+    assert np.asarray(poles.get_ydata(), dtype=float).tolist() == [
+        pytest.approx(0.6),
+        -1.0,
+    ]
+    assert np.asarray(zeros.get_ydata(), dtype=float).tolist() == [1.0]
+    assert np.asarray(boundary.get_ydata(), dtype=float).tolist() == [0.0, 0.0]
+
+
 def test_a_sweep_plots_along_its_source() -> None:
     levels = np.array([0.0, 1.0])
     sweep = results.Sweep(UNKNOWNS, "I1", "current", levels, np.zeros((2, 5)))

@@ -16,8 +16,8 @@ requirement, against the specs' yield target.
 
 A measurement reads a signal, an unknown of the circuit such as the voltage ``out`` or
 the current ``V1:current``, or a voltage relative to the voltage of a ``reference``.
-Bounds are quantities, such as ``2 * V``; a gain is in decibels, a phase in degrees and
-an overshoot in percent, so their bounds are numbers.
+Bounds are quantities, such as ``2 * V``; a gain is in decibels, a phase in degrees, an
+overshoot in percent and a damping ratio a plain number, so their bounds are numbers.
 
 Examples:
     >>> from jolty.units import V, kHz
@@ -52,8 +52,8 @@ from jolty.units import (
     rtHz,
 )
 
-type Plain = Literal["dB", "°", "%"]
-"""The unit of a measurement that reads a plain number."""
+type Plain = Literal["dB", "°", "%", ""]
+"""The unit of a measurement that reads a plain number: none for a ratio."""
 
 type Bound = Quantity | float
 """A bound: a quantity, or a number for a measurement in dB, degrees or percent."""
@@ -543,6 +543,7 @@ def value(
                 | results.Sensitivities()
                 | results.LoopGain()
                 | results.NoiseSpectrum()
+                | results.PolesZeros()
             ):
                 message = (
                     "a value reads an operating point, a transient or a DC sweep, "
@@ -1092,6 +1093,37 @@ def integrated_noise(
     return Measurement(analysis, described, None, read)
 
 
+def damping(analysis: str) -> Measurement:
+    """The least damping ratio of a pole-zero analysis's poles, a plain number.
+
+    A pole's damping ratio is minus its real part over its magnitude: 1 for a real pole
+    in the left half-plane, between 0 and 1 for a conjugate pair that rings, the less
+    the more it rings, and negative for a pole in the right half-plane, which grows. So
+    ``damping("pz") >= 0`` asks for stability, and ``damping("pz") >= 0.5`` for little
+    ringing.
+    """
+
+    def read(result: results.Result) -> Reading:
+        poles = _poles(result, "a damping")
+        return Reading(float(np.min(results.dampings(poles))), "")
+
+    return Measurement(analysis, "least damping ratio of the poles", "", read)
+
+
+def dominant_pole(analysis: str) -> Measurement:
+    """The natural frequency of a pole-zero analysis's pole nearest the origin.
+
+    It is the pole's magnitude over 2π, in hertz: the slowest of the circuit's natural
+    frequencies, which dominates how it settles.
+    """
+
+    def read(result: results.Result) -> Reading:
+        poles = _poles(result, "a dominant pole")
+        return Reading(float(results.natural_frequencies(poles).min()), FREQUENCY)
+
+    return Measurement(analysis, "dominant pole", None, read)
+
+
 @dataclass(frozen=True, slots=True)
 class _Signal:
     """An unknown, or a voltage relative to the voltage of a reference."""
@@ -1420,6 +1452,21 @@ def _spectrum(
     return result
 
 
+def _poles(result: results.Result, what: str) -> results.Complex:
+    """The poles of `result`, a pole-zero analysis's.
+
+    Raises:
+        MeasurementError: When it is not, or the circuit has no poles.
+    """
+    if not isinstance(result, results.PolesZeros):
+        message = f"{what} reads a pole-zero analysis, not {_kind(result)}"
+        raise MeasurementError(message)
+    if not result.poles.size:
+        message = "the circuit has no poles"
+        raise MeasurementError(message)
+    return result.poles
+
+
 def _noise_unit(spectrum: results.NoiseSpectrum, referred: bool) -> Dimension:  # noqa: FBT001
     """The unit of the noise's amplitude: the output's, or the input's if `referred`."""
     quantity = spectrum.quantity
@@ -1442,6 +1489,7 @@ _KINDS: Final[dict[type, str]] = {
     results.Sensitivities: "sensitivities",
     results.LoopGain: "a loop gain",
     results.NoiseSpectrum: "a noise spectrum",
+    results.PolesZeros: "poles and zeros",
 }
 """What each kind of result is, as messages name it."""
 
@@ -1489,4 +1537,6 @@ def _format(value: float, unit: str) -> str:
     """`value` in `unit`, to four significant digits, with an SI prefix if any."""
     if unit in {"dB", "°", "%"}:
         return f"{value:.4g} {unit}"
+    if not unit:
+        return f"{value:.4g}"
     return format_si(value, unit)

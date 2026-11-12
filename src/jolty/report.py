@@ -315,6 +315,65 @@ class NoiseReport(_Model):
         return _join(head, lines[1:], self.unlisted)
 
 
+class Root(_Model):
+    """A pole or a zero, or a conjugate pair of them."""
+
+    real: float = Field(description="The real part, in radians per second.")
+    imaginary: float = Field(
+        description="The imaginary part, in radians per second: zero for a real root, "
+        "and positive for a pair, whose other member is its conjugate."
+    )
+    frequency: float = Field(
+        description="The natural frequency, the magnitude over 2π, in hertz."
+    )
+    damping: float | None = Field(
+        description="The damping ratio, minus the real part over the magnitude: 1 for "
+        "a real root in the left half-plane, negative in the right half-plane; null at "
+        "the origin."
+    )
+
+    def written(self, kind: str) -> list[str]:
+        """The root as a table's row: its kind, value, frequency and damping."""
+        value = format_si(self.real, "rad/s")
+        if self.imaginary:
+            value += f" ± j{format_si(self.imaginary, 'rad/s')}"
+        damping = "" if self.damping is None else f"damping {self.damping:.4g}"
+        return [kind, value, format_si(self.frequency, "Hz"), damping]
+
+
+class PoleZeroReport(_Model):
+    """The poles of the linearized circuit, and the zeros of a transfer function."""
+
+    kind: Literal["pole_zero"] = "pole_zero"
+    name: str
+    source: str | None = Field(description="The source the transfer function is from.")
+    output: str | None = Field(description="The output the transfer function is to.")
+    reference: str | None = Field(
+        description="The node the output voltage is over; null for the ground."
+    )
+    poles: tuple[Root, ...] = Field(
+        description="The poles, by increasing magnitude, a conjugate pair once."
+    )
+    zeros: tuple[Root, ...] | None = Field(
+        description="The zeros, likewise, given a source and an output."
+    )
+    unlisted: int = Field(description="Roots left out of the lists.")
+
+    def describe(self) -> str:
+        """The report as text."""
+        count = sum(2 if root.imaginary else 1 for root in self.poles)
+        head = f"{self.name}: {count} poles listed"
+        if self.zeros is not None:
+            zeros = sum(2 if root.imaginary else 1 for root in self.zeros)
+            over = "" if self.reference is None else f" over {self.reference}"
+            head += (
+                f", and {zeros} zeros of {self.output}{over} per {self.source} listed"
+            )
+        rows = [root.written("pole") for root in self.poles]
+        rows.extend(root.written("zero") for root in self.zeros or ())
+        return _join(head, _table(rows), self.unlisted)
+
+
 class Derivative(_Model):
     """An output's derivative with respect to one parameter."""
 
@@ -509,6 +568,7 @@ type AnalysisReport = Annotated[
     | SensitivityReport
     | StabilityReport
     | NoiseReport
+    | PoleZeroReport
     | FailureReport,
     Field(discriminator="kind"),
 ]
@@ -583,10 +643,13 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
 
 def _linear(
     name: str,
-    result: results.Sensitivities | results.LoopGain | results.NoiseSpectrum,
+    result: results.Sensitivities
+    | results.LoopGain
+    | results.NoiseSpectrum
+    | results.PolesZeros,
     listed: int,
 ) -> AnalysisReport:
-    """The report of sensitivities, a loop gain or a noise spectrum."""
+    """The report of sensitivities, a loop gain, a noise spectrum or poles and zeros."""
     match result:
         case results.Sensitivities():
             return _sensitivities(name, result, listed)
@@ -594,6 +657,42 @@ def _linear(
             return _stability(name, result)
         case results.NoiseSpectrum():
             return _noise(name, result, listed)
+        case results.PolesZeros():
+            return _poles_zeros(name, result, listed)
+
+
+def _poles_zeros(name: str, result: results.PolesZeros, listed: int) -> PoleZeroReport:
+    """The report of the pole-zero analysis `name`, its first `listed` roots."""
+    poles = _roots(result.poles)
+    zeros = None if result.zeros is None else _roots(result.zeros)
+    every = len(poles) + len(zeros or ())
+    shown_poles = poles[:listed]
+    shown_zeros = None if zeros is None else zeros[: listed - len(shown_poles)]
+    return PoleZeroReport(
+        name=name,
+        source=result.source,
+        output=result.output,
+        reference=result.reference,
+        poles=shown_poles,
+        zeros=shown_zeros,
+        unlisted=every - len(shown_poles) - len(shown_zeros or ()),
+    )
+
+
+def _roots(roots: results.Complex) -> tuple[Root, ...]:
+    """`roots` as the report lists them: real ones, and each conjugate pair once."""
+    frequencies = results.natural_frequencies(roots)
+    dampings = results.dampings(roots)
+    return tuple(
+        Root(
+            real=float(root.real),
+            imaginary=float(root.imag),
+            frequency=float(frequency),
+            damping=None if np.isnan(damping) else float(damping),
+        )
+        for root, frequency, damping in zip(roots, frequencies, dampings, strict=True)
+        if root.imag >= 0
+    )
 
 
 def _noise(name: str, result: results.NoiseSpectrum, listed: int) -> NoiseReport:
@@ -762,7 +861,8 @@ def _nets(result: results.Result) -> tuple[str, ...]:
         results.Response
         | results.Sensitivities
         | results.LoopGain
-        | results.NoiseSpectrum,
+        | results.NoiseSpectrum
+        | results.PolesZeros,
     ):
         return ()
     return result.nets

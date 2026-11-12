@@ -9,7 +9,7 @@
 //! their densities add. The same weights give the gain from an input source's level, and
 //! the output's noise over the gain's square is the noise referred to that input.
 
-use jolty_models::{Input, Node, NoiseSource, Quantity, Unknown};
+use jolty_models::{Input, Node, NoiseSource, Quantity};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
@@ -115,19 +115,9 @@ impl Simulator {
         noise: &Noise,
         options: &Options,
     ) -> Result<NoiseSpectrum, SimulationError> {
-        let output = self.node(&noise.output)?;
-        let reference = match &noise.reference {
-            Some(name) => self.node(name)?,
-            None => None,
-        };
-        if output == reference {
-            return Err(SimulationError::InvalidAnalysis(format!(
-                "the noise output `{}` is taken over itself",
-                noise.output
-            )));
-        }
+        let (output, reference, quantity) =
+            self.measured(&noise.output, noise.reference.as_deref())?;
         let unknowns = self.system.unknowns.len();
-        let quantity = self.output_quantity(noise, output, reference)?;
         let (mut input, level) = match &noise.source {
             Some(path) => {
                 let index = self.source_index(path)?;
@@ -203,38 +193,5 @@ impl Simulator {
             contributions,
             input,
         })
-    }
-
-    /// What the output of `noise` is, from its unknown and its reference's: a voltage
-    /// over a node, or any unknown alone.
-    fn output_quantity(
-        &self,
-        noise: &Noise,
-        output: Option<Unknown>,
-        reference: Option<Unknown>,
-    ) -> Result<Quantity, SimulationError> {
-        let quantity = |node: Option<Unknown>| {
-            node.map_or(Quantity::Voltage, |unknown| {
-                self.system.unknowns[unknown.index()].quantity
-            })
-        };
-        match (quantity(output), quantity(reference), &noise.reference) {
-            (quantity, _, None) => Ok(quantity),
-            (Quantity::Voltage, Quantity::Voltage, Some(_)) => Ok(Quantity::Voltage),
-            (_, _, Some(name)) => Err(SimulationError::InvalidAnalysis(format!(
-                "a noise output over a node is a voltage, but `{}` over `{name}` is not",
-                noise.output
-            ))),
-        }
-    }
-
-    /// The node or unknown named `name`: none for the reference node.
-    fn node(&self, name: &str) -> Result<Option<Unknown>, SimulationError> {
-        if name == self.reference() {
-            return Ok(None);
-        }
-        self.unknown(name)
-            .map(Some)
-            .ok_or_else(|| SimulationError::UnknownOutput(name.to_owned()))
     }
 }

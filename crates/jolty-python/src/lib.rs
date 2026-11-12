@@ -314,6 +314,20 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
             result.set_item("kind", "noise")?;
             add_noise(&result, spectrum)?;
         }
+        Outcome::PoleZero(found) => {
+            result.set_item("kind", "pole_zero")?;
+            result.set_item("source", found.source)?;
+            result.set_item("output", found.output)?;
+            result.set_item("reference", found.reference)?;
+            result.set_item("poles", PyArray1::from_vec(py, found.poles))?;
+            result.set_item(
+                "zeros",
+                found.zeros.map(|zeros| PyArray1::from_vec(py, zeros)),
+            )?;
+            let operating_point = PyDict::new(py);
+            add_operating_point(&operating_point, found.operating_point)?;
+            result.set_item("operating_point", operating_point)?;
+        }
     }
     Ok(result)
 }

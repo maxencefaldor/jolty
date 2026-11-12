@@ -35,6 +35,7 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `Sensitivity(outputs, of=None)` | the derivative of each output with respect to every number of every device's parameters, at the operating point or at each point of the analysis `of` |
 | `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
 | `Noise(output, frequencies, reference=None, source=None)` | the noise density at an output from every device's noise, at each frequency, and referred to an input source |
+| `PoleZero(source=None, output=None, reference=None)` | the poles of the circuit linearized at its operating point, and the zeros of the transfer function from a source to an output |
 
 A source is named by its path, such as `V1` or `bias/I1`.
 `linear(start, stop, points)` spaces levels evenly, and `decade(start, stop, per_decade)` spaces frequencies evenly on a log scale.
@@ -110,6 +111,23 @@ Given a `source`, an independent source such as `V1`, the same solution gives th
 The result's `densities` are the output's power densities, in V²/Hz or A²/Hz, at each of its `frequencies`, and `contributions` what each of its `sources`, a device and the noise it makes such as `thermal` or `collector shot`, adds to them.
 `referred()` gives the noise referred to the input, `contribution(instance, name=None)` what a device's noise, or one of its sources, adds, `density(at)` the density at a frequency, and `rms(start=None, stop=None)` the RMS noise over a band, each density a power law between frequencies as SPICE integrates it.
 The report states the noise density at the lowest and highest frequencies, the RMS noise over them, at the output and referred to the input, and the noisiest sources with their share of the output's noise power; the plot draws the noise density with the noisiest sources', and the noise referred to the input, on log axes; the specs' `noise_density` and `integrated_noise` read them.
+
+## Poles and zeros
+
+A pole-zero analysis finds the circuit's poles, its natural frequencies, and, given a source and an output, the zeros of the transfer function between them:
+
+```python
+Plan({"pz": PoleZero(source="V1", output="out")})
+```
+
+Linearized at its operating point, the circuit's small-signal equations are `(G + sC) x = −u·b` at the complex frequency `s`, where `u` is the source's level.
+The poles are the `s` at which `G + sC` is singular, the finite generalized eigenvalues of the pencil `(G, −C)`, and the zeros those at which the transfer function vanishes, the finite eigenvalues of the pencil bordered by the source's excitation and the output's reading.
+The engine solves both pencils, dense, by the QZ algorithm, after scaling the frequency by the circuit's own and equilibrating their rows and columns; an eigenvalue beyond 10¹² times the circuit's frequency is infinite, and a zero within 10⁻¹⁰ times the largest pole or zero lies at the origin, as a coupling capacitor's does.
+The circuit has an operating point, so no pole lies at the origin.
+A natural frequency the source cannot excite, or the output cannot see, is both a pole and a zero, as ngspice reports it too.
+
+The result's `poles` and `zeros` are complex frequencies in radians per second, by increasing magnitude, a conjugate pair's upper member first, and `natural_frequencies(roots)` and `dampings(roots)` read each as a frequency in hertz, its magnitude over 2π, and a damping ratio, minus its real part over its magnitude: 1 for a real root in the left half-plane, between 0 and 1 for a pair that rings, and negative for a pole in the right half-plane, which grows.
+The report lists each root, a pair once, with its frequency and damping; the plot draws each at its natural frequency and damping ratio; and the specs' `damping` and `dominant_pole` read the least damping ratio and the slowest pole's frequency.
 
 ## Temperature
 

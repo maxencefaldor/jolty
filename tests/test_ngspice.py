@@ -36,6 +36,7 @@ from jolty import (
     DcSweep,
     Noise,
     OperatingPoint,
+    PoleZero,
     Role,
     Simulation,
     Stability,
@@ -1286,6 +1287,43 @@ def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
     np.testing.assert_allclose(
         np.sqrt(spectrum.referred()), raw.real("inoise_spectrum"), rtol=1e-5
     )
+
+
+def _ordered(roots: results.Complex) -> results.Complex:
+    """`roots` by increasing magnitude, a conjugate pair's upper member first."""
+    return roots[np.lexsort((-roots.imag, np.round(np.abs(roots), 6)))]
+
+
+@pytest.mark.parametrize(
+    "top", [low_pass, resonator, amplifier, jfet_stage, bjt_amplifier, nmos_stage]
+)
+def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
+    """The poles, and the zeros from the input to the output, as ngspice finds them."""
+    simulation = Simulation(top())
+    found = simulation.run(PoleZero(source="V1", output="out"), TIGHT)
+    lines = netlist(simulation.circuit, excited="V1")
+    raw = ngspice(lines, "pz in 0 out 0 vol pz")
+    roots = {
+        kind: _ordered(
+            np.array(
+                [
+                    values[0]
+                    for name, values in raw.vectors.items()
+                    if name.startswith(f"v({kind}(")
+                ],
+                dtype=np.complex128,
+            )
+        )
+        for kind in ("pole", "zero")
+    }
+    assert found.zeros is not None
+    for kind, jolty in (("pole", found.poles), ("zero", found.zeros)):
+        spice = roots[kind]
+        assert jolty.size == spice.size, (kind, jolty, spice)
+        scale = max(np.abs(spice).max(initial=0.0), 1.0)
+        np.testing.assert_allclose(
+            _ordered(jolty), spice, rtol=1e-6, atol=1e-9 * scale, err_msg=kind
+        )
 
 
 @pytest.mark.parametrize(

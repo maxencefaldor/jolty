@@ -91,6 +91,15 @@ class NoiseOutcome(TypedDict):
     contributions: npt.NDArray[np.float64]
     operating_point: SolvedPoint
 
+class PoleZeroOutcome(TypedDict):
+    kind: Literal["pole_zero"]
+    source: str | None
+    output: str | None
+    reference: str | None
+    poles: npt.NDArray[np.complex128]
+    zeros: npt.NDArray[np.complex128] | None
+    operating_point: SolvedPoint
+
 type Outcome = (
     OperatingPointOutcome
     | SweepOutcome
@@ -99,6 +108,7 @@ type Outcome = (
     | SensitivityOutcome
     | StabilityOutcome
     | NoiseOutcome
+    | PoleZeroOutcome
 )
 
 class SourceOutcome(TypedDict):

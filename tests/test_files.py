@@ -1,5 +1,6 @@
 # Copyright 2026 Maxence Faldor
 
+import dataclasses
 from pathlib import Path
 from typing import TypedDict
 
@@ -75,6 +76,7 @@ def every_kind() -> dict[str, results.Result]:
             point,
             TERMINALS,
             np.array([[1j, -1j]]),
+            NAMES["composites"],
         ),
         "step": results.Waveforms(
             UNKNOWNS,
@@ -119,6 +121,18 @@ def every_kind() -> dict[str, results.Result]:
             results.NoiseInput("V1", "voltage", np.array([0.5, 0.25j])),
             point,
         ),
+        "pz": results.PolesZeros(
+            UNKNOWNS,
+            np.array([-1e3 + 2e3j, -1e3 - 2e3j]),
+            np.array([0j]),
+            "V1",
+            "out",
+            None,
+            point,
+        ),
+        "poles": results.PolesZeros(
+            UNKNOWNS, np.array([-1e6 + 0j]), None, None, None, None, point
+        ),
         "quiet": results.NoiseSpectrum(
             UNKNOWNS,
             "out",
@@ -134,6 +148,28 @@ def every_kind() -> dict[str, results.Result]:
     }
 
 
+def assert_same(loaded: object, written: object, where: str) -> None:
+    """Asserts a result loaded is the one written, field by field, arrays and all."""
+    assert type(loaded) is type(written), where
+    if dataclasses.is_dataclass(written):
+        for field in dataclasses.fields(written):
+            assert_same(
+                getattr(loaded, field.name),
+                getattr(written, field.name),
+                f"{where}.{field.name}",
+            )
+    elif isinstance(written, np.ndarray):
+        assert isinstance(loaded, np.ndarray), where
+        np.testing.assert_array_equal(loaded, written, err_msg=where)
+    elif isinstance(written, tuple | list):
+        assert isinstance(loaded, tuple | list), where
+        assert len(loaded) == len(written), where
+        for index, (first, second) in enumerate(zip(loaded, written, strict=True)):
+            assert_same(first, second, f"{where}[{index}]")
+    else:
+        assert loaded == written, where
+
+
 def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     path = tmp_path / "bench.results.npz"
     written = every_kind()
@@ -141,37 +177,7 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     read = load_results(path)
     assert list(read) == list(written)
     for name, result in written.items():
-        loaded = read[name]
-        assert type(loaded) is type(result)
-        assert loaded.unknowns == UNKNOWNS
-        if isinstance(result, results.Sensitivities):
-            assert isinstance(loaded, results.Sensitivities)
-            np.testing.assert_array_equal(loaded.derivatives, result.derivatives)
-        elif isinstance(result, results.LoopGain):
-            assert isinstance(loaded, results.LoopGain)
-            np.testing.assert_array_equal(loaded.gains, result.gains)
-        elif isinstance(result, results.NoiseSpectrum):
-            assert isinstance(loaded, results.NoiseSpectrum)
-            assert (loaded.output, loaded.reference, loaded.quantity) == (
-                result.output,
-                result.reference,
-                result.quantity,
-            )
-            assert loaded.sources == result.sources
-            np.testing.assert_array_equal(loaded.densities, result.densities)
-            np.testing.assert_array_equal(loaded.contributions, result.contributions)
-            if result.input is None:
-                assert loaded.input is None
-            else:
-                assert loaded.input is not None
-                assert loaded.input.source == result.input.source
-                np.testing.assert_array_equal(loaded.input.gains, result.input.gains)
-        else:
-            assert not isinstance(
-                loaded,
-                results.Sensitivities | results.LoopGain | results.NoiseSpectrum,
-            )
-            np.testing.assert_array_equal(loaded.values, result.values)
+        assert_same(read[name], result, name)
     sweep = read["sweep"]
     assert isinstance(sweep, results.Sweep)
     assert (sweep.source, sweep.quantity) == ("V1", "voltage")

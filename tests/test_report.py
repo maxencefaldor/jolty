@@ -215,3 +215,30 @@ def test_a_noise_spectrum_states_its_noisiest_sources() -> None:
     quiet = report.report("hiss", single, listed=10)
     assert isinstance(quiet, report.NoiseReport)
     assert (quiet.rms, quiet.referred, quiet.contributors) == (None, None, ())
+
+
+def test_poles_and_zeros_list_each_pair_once() -> None:
+    point = results.OperatingPoint(UNKNOWNS, np.zeros(3), "direct")
+    found = results.PolesZeros(
+        UNKNOWNS,
+        np.array([-3e3 + 4e3j, -3e3 - 4e3j, -1e6 + 0j]),
+        np.array([0j]),
+        "V1",
+        "out",
+        None,
+        point,
+    )
+    summary = report.report("pz", found, listed=10)
+    assert isinstance(summary, report.PoleZeroReport)
+    assert [root.damping for root in summary.poles] == [pytest.approx(0.6), 1.0]
+    assert summary.zeros is not None
+    assert summary.zeros[0].damping is None
+    assert summary.describe() == (
+        "pz: 3 poles listed, and 1 zeros of out per V1 listed\n"
+        "  pole  -3 krad/s ± j4 krad/s  795.8 Hz   damping 0.6\n"
+        "  pole  -1 Mrad/s              159.2 kHz  damping 1\n"
+        "  zero  0 rad/s                0 Hz"
+    )
+    short = report.report("pz", found, listed=1)
+    assert isinstance(short, report.PoleZeroReport)
+    assert (len(short.poles), short.zeros, short.unlisted) == (1, (), 2)

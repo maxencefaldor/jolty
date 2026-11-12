@@ -183,8 +183,43 @@ class Noise:
         return {"noise": noise}
 
 
+@dataclass(frozen=True, slots=True)
+class PoleZero:
+    """The poles of the linearized circuit, and the zeros of a transfer function.
+
+    The circuit is linearized at its operating point, and the transfer function is from
+    a `source` to an `output`, given both. The poles are the circuit's natural
+    frequencies, the complex frequencies at which its small-signal equations have a
+    solution without any excitation. The output is an unknown by name, or a voltage
+    over a `reference` node.
+    """
+
+    source: str | None = None
+    output: str | None = None
+    reference: str | None = None
+
+    def to_json(self) -> JsonValue:
+        """The analysis in the engine's format."""
+        found = {
+            "source": self.source,
+            "output": self.output,
+            "reference": self.reference,
+        }
+        given: dict[str, JsonValue] = {
+            key: value for key, value in found.items() if value is not None
+        }
+        return {"pole_zero": given}
+
+
 type Analysis = (
-    OperatingPoint | DcSweep | Ac | Transient | Sensitivity | Stability | Noise
+    OperatingPoint
+    | DcSweep
+    | Ac
+    | Transient
+    | Sensitivity
+    | Stability
+    | Noise
+    | PoleZero
 )
 """Any analysis."""
 

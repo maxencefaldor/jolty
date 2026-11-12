@@ -1,15 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""Plots of results: waveforms, DC sweeps, Bode plots and noise spectra.
+"""Plots of results: waveforms, DC sweeps, Bode plots, noise spectra and pole maps.
 
 A plot draws chosen unknowns and logic nets of one result, or a loop gain alone, against
 0 dB and -180°, where its margins are read, or a noise spectrum alone: the output's
 noise density with its noisiest sources', and the noise referred to the input, on log
-axes. Voltages, currents and logic levels never
-share an axis: each quantity has a panel of its own, and a response has two, its
-magnitude and its phase. Logic nets share a panel in lanes of their own, each
-named on its axis, with unknown levels hatched. Series take their colors in a fixed
-order, checked to stay apart under the common color-vision deficiencies; a legend names
-them, and up to four are also labeled at their end.
+axes, or poles and zeros alone, each at its natural frequency and damping ratio.
+Voltages, currents and logic levels never share an axis: each quantity has a panel of
+its own, and a response has two, its magnitude and its phase. Logic nets share a panel
+in lanes of their own, each named on its axis, with unknown levels hatched. Series take
+their colors in a fixed order, checked to stay apart under the common color-vision
+deficiencies; a legend names them, and up to four are also labeled at their end.
 
 Examples:
     >>> import numpy as np
@@ -67,6 +67,7 @@ type Plotted = (
     | results.Waveforms
     | results.LoopGain
     | results.NoiseSpectrum
+    | results.PolesZeros
 )
 """A result a plot draws; an operating point has no axis to draw along."""
 
@@ -97,8 +98,8 @@ def default_probes(
 def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
     """The plot of the unknowns `probes` in the result of the analysis `name`.
 
-    A loop gain's plot draws the loop gain alone, and a noise spectrum's the noise
-    alone, whatever the probes.
+    A loop gain's plot draws the loop gain alone, a noise spectrum's the noise alone,
+    and a pole-zero analysis's its poles and zeros alone, whatever the probes.
 
     Raises:
         JoltyError: When a probe names no unknown, or there are more than
@@ -108,6 +109,8 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
         return _loop(name, result)
     if isinstance(result, results.NoiseSpectrum):
         return _noise(name, result)
+    if isinstance(result, results.PolesZeros):
+        return _poles_zeros(name, result)
     if len(probes) > MAX_SERIES:
         message = f"a plot draws at most {MAX_SERIES} unknowns, not {len(probes)}"
         raise JoltyError(message)
@@ -243,6 +246,38 @@ def _noise(name: str, result: results.NoiseSpectrum) -> Figure:
     return figure
 
 
+def _poles_zeros(name: str, result: results.PolesZeros) -> Figure:
+    """Each pole and zero at its natural frequency, on a log axis, and damping ratio.
+
+    A damping ratio below zero is a root in the right half-plane, across the line at
+    zero; a conjugate pair shares its point, and a zero at the origin has none.
+    """
+    figure, (axes,) = _figure(name, result, 1)
+    _style(axes, "damping ratio")
+    roots = [("poles", "x", COLORS[0], result.poles)]
+    if result.zeros is not None:
+        roots.append(("zeros", "o", COLORS[1], result.zeros))
+    for label, marker, color, found in roots:
+        shown = found[(found.imag >= 0) & (np.abs(found) > 0)]
+        axes.plot(
+            results.natural_frequencies(shown),
+            results.dampings(shown),
+            linestyle="none",
+            marker=marker,
+            markersize=8,
+            markerfacecolor="none",
+            color=color,
+            label=label,
+        )
+    axes.axhline(0.0, color=_MUTED, linewidth=0.8, linestyle="--")
+    axes.set_xscale("log")
+    legend = axes.legend(loc="best", frameon=False, fontsize=8)
+    for text in legend.get_texts():
+        text.set_color(_INK)
+    _label_abscissa(axes, result, "Hz")
+    return figure
+
+
 def _figure(name: str, result: Plotted, panels: int) -> tuple[Figure, list[Axes]]:
     """A figure titled for the result of the analysis `name`.
 
@@ -345,6 +380,10 @@ def _describe(result: Plotted) -> str:
         case results.NoiseSpectrum():
             over = "" if result.reference is None else f" over {result.reference}"
             return f"noise at {result.output}{over}"
+        case results.PolesZeros():
+            over = "" if result.reference is None else f" over {result.reference}"
+            zeros = f", and zeros of {result.output}{over} per {result.source}"
+            return "poles" + ("" if result.zeros is None else zeros)
 
 
 def _abscissa(result: Plotted) -> tuple[results.Real, str]:
@@ -355,6 +394,8 @@ def _abscissa(result: Plotted) -> tuple[results.Real, str]:
             return result.levels, _UNITS[result.quantity]
         case results.Response() | results.LoopGain() | results.NoiseSpectrum():
             return result.frequencies, "Hz"
+        case results.PolesZeros():
+            return results.natural_frequencies(result.poles), "Hz"
 
 
 def _abscissa_label(result: Plotted) -> str:
@@ -365,6 +406,8 @@ def _abscissa_label(result: Plotted) -> str:
             return f"{result.source} {result.quantity}"
         case results.Response() | results.LoopGain() | results.NoiseSpectrum():
             return "frequency"
+        case results.PolesZeros():
+            return "natural frequency"
 
 
 def _draw(

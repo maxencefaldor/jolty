@@ -772,6 +772,62 @@ def _segment(first: float, last: float, low: float, high: float) -> float:
     return low * first * span * factor
 
 
+@dataclass(frozen=True, slots=True)
+class PolesZeros:
+    """The poles of the linearized circuit, and the zeros of a transfer function.
+
+    The circuit is linearized at its operating point, and the transfer function is from
+    a source to an output, given both. Each is a complex frequency `s`, in radians per
+    second, by increasing magnitude, a conjugate pair's member above the real axis
+    first; a pole in the right half-plane, with a positive real part, grows.
+    ``natural_frequencies`` and ``dampings`` read them as a frequency and a damping
+    ratio, as a second-order section's are written.
+
+    Examples:
+        >>> point = OperatingPoint((Unknown("out", "voltage"),), np.array([0.0]), "")
+        >>> found = PolesZeros(
+        ...     point.unknowns,
+        ...     np.array([-3 + 4j, -3 - 4j]),
+        ...     np.array([0j]),
+        ...     "V1",
+        ...     "out",
+        ...     None,
+        ...     point,
+        ... )
+        >>> natural_frequencies(found.poles) * 2 * np.pi
+        array([5., 5.])
+        >>> dampings(found.poles)
+        array([0.6, 0.6])
+    """
+
+    unknowns: tuple[Unknown, ...]
+    poles: Complex
+    zeros: Complex | None
+    """The zeros, given a source and an output."""
+    source: str | None
+    """The path of the source the transfer function is from."""
+    output: str | None
+    """The output the transfer function is to."""
+    reference: str | None
+    """The node the output voltage is taken over; the ground if None."""
+    operating_point: OperatingPoint
+
+
+def natural_frequencies(roots: Complex) -> Real:
+    """The natural frequency of each of `roots`, its magnitude over 2π, in hertz."""
+    return np.abs(roots) / (2 * np.pi)
+
+
+def dampings(roots: Complex) -> Real:
+    """The damping ratio of each of `roots`, minus its real part over its magnitude.
+
+    It is 1 for a real root in the left half-plane, between 0 and 1 for a conjugate pair
+    that rings, and negative in the right half-plane; NaN at the origin.
+    """
+    with np.errstate(invalid="ignore"):
+        return -roots.real / np.abs(roots)
+
+
 type Result = (
     OperatingPoint
     | Sweep
@@ -780,5 +836,6 @@ type Result = (
     | Sensitivities
     | LoopGain
     | NoiseSpectrum
+    | PolesZeros
 )
 """The result of any analysis."""
