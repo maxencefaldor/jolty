@@ -1,10 +1,10 @@
-use jolty_numerics::Entry;
 use serde::Deserialize;
 
+use crate::stamp::CurrentBranch;
 use crate::waveform::Waveform;
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Quantity, Real, Source, Unknown,
+    ParameterError, Real, Source,
 };
 
 /// The parameters of an independent source.
@@ -22,14 +22,9 @@ pub struct SourceParameters<R: Real = f64> {
 /// delivers power carries a negative current.
 #[derive(Debug)]
 pub struct VoltageSource<R: Real = f64> {
-    positive: Node,
-    negative: Node,
-    current: Unknown,
+    branch: CurrentBranch,
     waveform: Waveform<R>,
     held: Option<f64>,
-    /// The entries at (positive, current), (negative, current), (current, positive) and
-    /// (current, negative).
-    entries: [Option<Entry>; 4],
 }
 
 impl NativeModel for VoltageSource {
@@ -51,47 +46,20 @@ impl<R: Real> NativeDevice<R> for VoltageSource<R> {
         parameters: SourceParameters<R>,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let (positive, negative) = (binding.terminal(0), binding.terminal(1));
-        let current = binding.internal("current", Quantity::Current);
-        let branch = Some(current);
-        let entries = [
-            binding.entry(positive, branch),
-            binding.entry(negative, branch),
-            binding.entry(branch, positive),
-            binding.entry(branch, negative),
-        ];
+        let terminals = [binding.terminal(0), binding.terminal(1)];
         Ok(Self {
-            positive,
-            negative,
-            current,
+            branch: CurrentBranch::new(binding, "current", terminals),
             waveform: parameters.waveform,
             held: None,
-            entries,
         })
     }
 }
 
 impl<R: Real> Device<R> for VoltageSource<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let [
-            positive_current,
-            negative_current,
-            current_positive,
-            current_negative,
-        ] = self.entries;
-        let (one, branch) = (R::constant(1.0), Some(self.current));
-        let current = input.value(branch);
-        output.add_residual(self.positive, R::constant(current));
-        output.add_residual(self.negative, R::constant(-current));
-        output.add_conductance(positive_current, one);
-        output.add_conductance(negative_current, -one);
         let level = level(self.held, &self.waveform, input.time) * input.source_scale;
-        output.add_residual(
-            branch,
-            -(level - (input.value(self.positive) - input.value(self.negative))),
-        );
-        output.add_conductance(current_positive, one);
-        output.add_conductance(current_negative, -one);
+        let voltage = self.branch.voltage(input);
+        self.branch.add(input, output, -(level - voltage));
     }
 
     fn breakpoints(&self, start: f64, stop: f64, times: &mut Vec<f64>) {
@@ -115,7 +83,7 @@ impl<R: Real> Source for VoltageSource<R> {
     }
 
     fn level_derivative(&self, derivative: &mut [f64]) {
-        derivative[self.current.index()] -= 1.0;
+        derivative[self.branch.unknown().index()] -= 1.0;
     }
 }
 

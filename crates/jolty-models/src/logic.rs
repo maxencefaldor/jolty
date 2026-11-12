@@ -18,9 +18,10 @@ use jolty_numerics::Entry;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::stamp::CurrentBranch;
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
-    ParameterError, Quantity, TerminalPair, Unknown,
+    ParameterError, TerminalPair, Unknown,
 };
 
 /// The most inputs a logic cell may have: its truth table has a row per combination.
@@ -898,15 +899,14 @@ pub struct LogicDriverParameters {}
 /// from `output` through the driver to `ground`, is an unknown labelled `current`.
 #[derive(Debug)]
 pub struct LogicDriver {
-    pair: TerminalPair,
+    /// The branch from the output to the ground, through the driver.
+    branch: CurrentBranch,
     supply: Node,
     ground: Node,
-    current: Unknown,
     /// The ramp of `s`: from `(start, from)` to `(end, to)`.
     ramp: (f64, f64, f64, f64),
-    /// The entries at (output, current), (ground, current), (current, output), (current,
-    /// ground) and (current, supply).
-    entries: [Option<Entry>; 5],
+    /// The entries at (current, ground) and (current, supply).
+    entries: [Option<Entry>; 2],
 }
 
 impl LogicDriver {
@@ -941,20 +941,13 @@ impl NativeDevice for LogicDriver {
             binding.terminal(1),
             binding.terminal(2),
         );
-        let current = binding.internal("current", Quantity::Current);
-        let branch = Some(current);
-        let entries = [
-            binding.entry(output, branch),
-            binding.entry(ground, branch),
-            binding.entry(branch, output),
-            binding.entry(branch, ground),
-            binding.entry(branch, supply),
-        ];
+        let branch = CurrentBranch::new(binding, "current", [output, ground]);
+        let row = Some(branch.unknown());
+        let entries = [binding.entry(row, ground), binding.entry(row, supply)];
         Ok(Self {
-            pair: TerminalPair::new(binding, output, ground),
+            branch,
             supply,
             ground,
-            current,
             ramp: (
                 0.0,
                 Level::Unknown.fraction(),
@@ -968,22 +961,13 @@ impl NativeDevice for LogicDriver {
 
 impl Device for LogicDriver {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_>) {
-        let [
-            output_current,
-            ground_current,
-            current_output,
-            current_ground,
-            current_supply,
-        ] = self.entries;
-        let branch = Some(self.current);
-        self.pair.add_current(output, input.value(branch));
-        output.add_conductance(output_current, 1.0);
-        output.add_conductance(ground_current, -1.0);
+        // The output held at its fraction of the supply's swing above the ground.
         let fraction = self.fraction(input.time);
         let swing = input.value(self.supply) - input.value(self.ground);
-        output.add_residual(branch, self.pair.voltage(input) - fraction * swing);
-        output.add_conductance(current_output, 1.0);
-        output.add_conductance(current_ground, fraction - 1.0);
+        self.branch
+            .add(input, output, self.branch.voltage(input) - fraction * swing);
+        let [current_ground, current_supply] = self.entries;
+        output.add_conductance(current_ground, fraction);
         output.add_conductance(current_supply, -fraction);
     }
 
@@ -1004,7 +988,7 @@ impl Drive for LogicDriver {
     }
 
     fn current(&self) -> Unknown {
-        self.current
+        self.branch.unknown()
     }
 }
 

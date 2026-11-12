@@ -1,11 +1,12 @@
+use jolty_numerics::Entry;
 use serde::Deserialize;
 
 use crate::junction::Temperatures;
+use crate::stamp::CurrentBranch;
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, TerminalPair, Unknown,
+    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
+    ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
 };
-use jolty_numerics::Entry;
 
 /// The default nominal temperature, at which a passive device's value was measured.
 fn reference_temperature<R: Real>() -> R {
@@ -228,12 +229,10 @@ impl<R: Real> Device<R> for Capacitor<R> {
 /// `current`. Its equation is `v_a − v_b − d/dt (L·i) = 0`, so at DC it is a short circuit.
 #[derive(Debug)]
 pub struct Inductor<R: Real = f64> {
-    a: Node,
-    b: Node,
-    current: Unknown,
+    branch: CurrentBranch,
     inductance: R,
-    /// The entries at (a, current), (b, current), (current, a), (current, b), (current, current).
-    entries: [Option<Entry>; 5],
+    /// The entry at (current, current).
+    entry: Option<Entry>,
 }
 
 /// The parameters of an [`Inductor`].
@@ -274,43 +273,25 @@ impl<R: Real> NativeDevice<R> for Inductor<R> {
                 parameters.temperature_coefficient,
                 parameters.quadratic_temperature_coefficient,
             );
-        let (a, b) = (binding.terminal(0), binding.terminal(1));
-        let current = binding.internal("current", Quantity::Current);
-        let branch = Some(current);
-        let entries = [
-            binding.entry(a, branch),
-            binding.entry(b, branch),
-            binding.entry(branch, a),
-            binding.entry(branch, b),
-            binding.entry(branch, branch),
-        ];
+        let terminals = [binding.terminal(0), binding.terminal(1)];
+        let branch = CurrentBranch::new(binding, "current", terminals);
+        let row = Some(branch.unknown());
         Ok(Self {
-            a,
-            b,
-            current,
+            branch,
             inductance,
-            entries,
+            entry: binding.entry(row, row),
         })
     }
 }
 
 impl<R: Real> Device<R> for Inductor<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let [a_current, b_current, current_a, current_b, current_current] = self.entries;
-        let (one, branch) = (R::constant(1.0), Some(self.current));
-        let current = input.value(branch);
-        output.add_residual(self.a, R::constant(current));
-        output.add_residual(self.b, R::constant(-current));
-        output.add_conductance(a_current, one);
-        output.add_conductance(b_current, -one);
-        output.add_residual(
-            branch,
-            R::constant(input.value(self.a) - input.value(self.b)),
-        );
-        output.add_conductance(current_a, one);
-        output.add_conductance(current_b, -one);
-        output.add_charge(branch, -self.inductance * current);
-        output.add_capacitance(current_current, -self.inductance);
+        // v = L di/dt: the voltage, and the flux `L i` as the equation's charge, negated.
+        let voltage = self.branch.voltage(input);
+        self.branch.add(input, output, R::constant(voltage));
+        let row = Some(self.branch.unknown());
+        output.add_charge(row, -self.inductance * self.branch.current(input));
+        output.add_capacitance(self.entry, -self.inductance);
     }
 }
 

@@ -1,6 +1,6 @@
 use jolty_numerics::Entry;
 
-use crate::{Binding, Input, Node, Output, Real};
+use crate::{Binding, Input, Node, Output, Quantity, Real, Unknown};
 
 /// The local index of a two-terminal element's positive node in its stamp.
 const POSITIVE: usize = 0;
@@ -184,5 +184,75 @@ impl TerminalPair {
     /// Adds `capacitance`, the derivative of the charge with respect to the voltage.
     pub fn add_capacitance<R: Real>(&self, output: &mut Output<'_, R>, capacitance: R) {
         self.0.capacitance(output, PAIR, PAIR, capacitance);
+    }
+}
+
+/// A branch from a positive node to a negative one whose current, flowing through it, is an
+/// unknown of its own, as a voltage source's or an inductor's is: the current enters both
+/// nodes' equations, and the branch's own equation constrains its voltage.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CurrentBranch {
+    current: Unknown,
+    nodes: [Node; 2],
+    /// The entries at (each node, current) and (current, each node).
+    entries: [Option<Entry>; 4],
+}
+
+impl CurrentBranch {
+    /// A branch from `positive` to `negative`, its current a new unknown labelled `label`.
+    pub(crate) fn new(
+        binding: &mut Binding<'_>,
+        label: &str,
+        [positive, negative]: [Node; 2],
+    ) -> Self {
+        let current = binding.internal(label, Quantity::Current);
+        let row = Some(current);
+        Self {
+            current,
+            nodes: [positive, negative],
+            entries: [
+                binding.entry(positive, row),
+                binding.entry(negative, row),
+                binding.entry(row, positive),
+                binding.entry(row, negative),
+            ],
+        }
+    }
+
+    /// The branch's unknown, its current, and its own equation's, where a device claims the
+    /// entries of whatever else that equation reads.
+    pub(crate) const fn unknown(&self) -> Unknown {
+        self.current
+    }
+
+    /// The current through the branch.
+    pub(crate) fn current(&self, input: &Input<'_>) -> f64 {
+        input.value(Some(self.current))
+    }
+
+    /// The branch's voltage, its positive node's over its negative node's.
+    pub(crate) fn voltage(&self, input: &Input<'_>) -> f64 {
+        input.value(self.nodes[0]) - input.value(self.nodes[1])
+    }
+
+    /// Adds the branch's current to its nodes' equations, and `residual` to its own
+    /// equation, with the derivatives of both with respect to the current and the voltage;
+    /// a device adds the derivatives of the rest of its equation itself.
+    pub(crate) fn add<R: Real>(&self, input: &Input<'_>, output: &mut Output<'_, R>, residual: R) {
+        let [positive, negative] = self.nodes;
+        let [
+            positive_current,
+            negative_current,
+            current_positive,
+            current_negative,
+        ] = self.entries;
+        let (one, current) = (R::constant(1.0), self.current(input));
+        output.add_residual(positive, R::constant(current));
+        output.add_residual(negative, R::constant(-current));
+        output.add_conductance(positive_current, one);
+        output.add_conductance(negative_current, -one);
+        output.add_residual(Some(self.current), residual);
+        output.add_conductance(current_positive, one);
+        output.add_conductance(current_negative, -one);
     }
 }

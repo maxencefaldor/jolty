@@ -4,9 +4,10 @@ use jolty_expressions::{Expression, Variable, Workspace};
 use jolty_numerics::Entry;
 use serde::Deserialize;
 
+use crate::stamp::CurrentBranch;
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Quantity, Real, Unknown,
+    ParameterError, Real, Unknown,
 };
 
 /// An expression a behavioral source follows: an [expression](jolty_expressions) of the
@@ -117,55 +118,6 @@ pub struct BehavioralParameters {
     pub expression: Behavior,
 }
 
-/// A sensing port: a short circuit between two terminals, whose current is an unknown.
-#[derive(Debug, Clone, Copy)]
-struct Port {
-    current: Unknown,
-    nodes: [Node; 2],
-    /// The entries at (each terminal, current) and (current, each terminal).
-    entries: [Option<Entry>; 4],
-}
-
-impl Port {
-    fn new(binding: &mut Binding<'_>, label: &str, nodes: [Node; 2]) -> Self {
-        let current = binding.internal(label, Quantity::Current);
-        let row = Some(current);
-        Self {
-            current,
-            nodes,
-            entries: [
-                binding.entry(nodes[0], row),
-                binding.entry(nodes[1], row),
-                binding.entry(row, nodes[0]),
-                binding.entry(row, nodes[1]),
-            ],
-        }
-    }
-
-    /// Adds the port's current to its terminals, and its equation: no voltage across it.
-    fn add<R: Real>(&self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let row = Some(self.current);
-        let [positive, negative] = self.nodes;
-        let current = input.value(row);
-        output.add_residual(positive, R::constant(current));
-        output.add_residual(negative, R::constant(-current));
-        output.add_residual(
-            row,
-            R::constant(input.value(positive) - input.value(negative)),
-        );
-        let [
-            positive_current,
-            negative_current,
-            current_positive,
-            current_negative,
-        ] = self.entries;
-        output.add_conductance(positive_current, R::constant(1.0));
-        output.add_conductance(negative_current, R::constant(-1.0));
-        output.add_conductance(current_positive, R::constant(1.0));
-        output.add_conductance(current_negative, R::constant(-1.0));
-    }
-}
-
 /// A behavior bound to the unknowns it reads and the equations it enters.
 #[derive(Debug)]
 struct Formula {
@@ -173,7 +125,8 @@ struct Formula {
     workspace: Workspace,
     /// What each variable reads: the difference of two nodes, a port's current, or time.
     reads: Vec<Read>,
-    ports: Vec<Port>,
+    /// The sensing ports: short circuits whose currents are unknowns.
+    ports: Vec<CurrentBranch>,
     /// The equations the expression enters, each with the factor it enters with.
     rows: Vec<(Node, f64)>,
     /// For each variable, the entries of its derivative in each row, with their factors.
@@ -199,11 +152,11 @@ impl Formula {
             ports: port_ends,
             ..
         } = behavior;
-        let ports: Vec<Port> = port_ends
+        let ports: Vec<CurrentBranch> = port_ends
             .iter()
             .map(|(label, ends)| {
                 let nodes = ends.map(|index| binding.terminal(index));
-                Port::new(binding, label, nodes)
+                CurrentBranch::new(binding, label, nodes)
             })
             .collect();
         let reads: Vec<Read> = readings
@@ -213,7 +166,7 @@ impl Formula {
                     binding.terminal(positive),
                     negative.and_then(|index| binding.terminal(index)),
                 ),
-                Reading::Current(port) => Read::Current(ports[port].current),
+                Reading::Current(port) => Read::Current(ports[port].unknown()),
                 Reading::Time => Read::Time,
             })
             .collect();
@@ -275,7 +228,8 @@ impl Formula {
             }
         }
         for port in &self.ports {
-            port.add(input, output);
+            // A short circuit: no voltage across it.
+            port.add(input, output, R::constant(port.voltage(input)));
         }
     }
 }
@@ -329,10 +283,7 @@ impl<R: Real> Device<R> for BehavioralCurrentSource<R> {
 pub struct BehavioralVoltageSource<R: Real = f64> {
     real: PhantomData<fn() -> R>,
     formula: Formula,
-    nodes: [Node; 2],
-    current: Unknown,
-    /// The entries at (each terminal, current) and (current, each terminal).
-    entries: [Option<Entry>; 4],
+    branch: CurrentBranch,
 }
 
 impl NativeModel for BehavioralVoltageSource {
@@ -351,46 +302,22 @@ impl<R: Real> NativeDevice<R> for BehavioralVoltageSource<R> {
         parameters: BehavioralParameters,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let nodes = [binding.terminal(0), binding.terminal(1)];
-        let current = binding.internal("current", Quantity::Current);
-        let row = Some(current);
-        let entries = [
-            binding.entry(nodes[0], row),
-            binding.entry(nodes[1], row),
-            binding.entry(row, nodes[0]),
-            binding.entry(row, nodes[1]),
-        ];
+        let terminals = [binding.terminal(0), binding.terminal(1)];
+        let branch = CurrentBranch::new(binding, "current", terminals);
+        let row = Some(branch.unknown());
         Ok(Self {
             real: PhantomData,
             formula: Formula::new(parameters.expression, binding, vec![(row, -1.0)]),
-            nodes,
-            current,
-            entries,
+            branch,
         })
     }
 }
 
 impl<R: Real> Device<R> for BehavioralVoltageSource<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let row = Some(self.current);
-        let [positive, negative] = self.nodes;
-        let current = input.value(row);
-        output.add_residual(positive, R::constant(current));
-        output.add_residual(negative, R::constant(-current));
-        output.add_residual(
-            row,
-            R::constant(input.value(positive) - input.value(negative)),
-        );
-        let [
-            positive_current,
-            negative_current,
-            current_positive,
-            current_negative,
-        ] = self.entries;
-        output.add_conductance(positive_current, R::constant(1.0));
-        output.add_conductance(negative_current, R::constant(-1.0));
-        output.add_conductance(current_positive, R::constant(1.0));
-        output.add_conductance(current_negative, R::constant(-1.0));
+        // The branch's voltage, less the formula's value, which the formula adds itself.
+        let voltage = self.branch.voltage(input);
+        self.branch.add(input, output, R::constant(voltage));
         self.formula.add(input, output);
     }
 }
