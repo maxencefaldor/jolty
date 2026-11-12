@@ -14,10 +14,10 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from scoring import count_devices
+from scoring import count_devices, disallowed
 from verdict import Verdict
 
-from jolty import Builder, Component, Role, Simulation, circuit, component, devices, ir
+from jolty import Builder, Component, Role, Simulation, circuit, component, devices
 from jolty.plan import DcSweep, Transient, linear
 from jolty.units import A, Hz, V, s, uA
 from jolty.waveforms import Sine
@@ -79,24 +79,6 @@ def _error(level: np.ndarray, output: np.ndarray) -> float:
     return float(np.mean(np.abs(output - level**3 / REFERENCE**2)))
 
 
-def disallowed(built: ir.Circuit, transistor: devices.Device) -> list[str]:
-    """The devices of the design that are neither `transistor` nor allowed."""
-    found = []
-    for name, made in built.components.items():
-        if name == built.top:
-            continue
-        for instance in made.instances:
-            if not isinstance(instance.of, ir.DeviceOf):
-                continue
-            kind = instance.of.device
-            if kind == transistor.model:
-                if instance.parameters != transistor.parameters:
-                    found.append(f"{instance.id} is not the given transistor")
-            elif kind not in ALLOWED:
-                found.append(f"{instance.id} is a {kind}, which the task forbids")
-    return found
-
-
 def score(task: Path, work: Path) -> Verdict:
     """The verdict on the cubic `work` against `task`."""
     patent = runpy.run_path(str(task / "patent.py"))["cubic"]()
@@ -109,7 +91,7 @@ def score(task: Path, work: Path) -> Verdict:
     if not isinstance(made, Component):
         return Verdict(met=False, reasons=("build() returns no component",))
     built = circuit(bench(made))
-    reasons = disallowed(built, transistor)
+    reasons = disallowed(built, [transistor], ALLOWED)
     reference, found = errors(patent), errors(made)
     ratios = [mine / theirs for mine, theirs in zip(found, reference, strict=True)]
     total = float(np.mean(ratios))

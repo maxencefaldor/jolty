@@ -1,11 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""What the tasks' scorers share: scripts simulated, and parts counted."""
+"""What the tasks' scorers share: scripts simulated, parts counted and parts checked."""
 
 import asyncio
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
-from jolty import files, ir, service
+from jolty import devices, files, ir, service
 from jolty.settings import Settings
 
 
@@ -50,3 +51,30 @@ def _count(circuit: ir.Circuit, component: ir.Component) -> int:
         else:
             total += 1
     return total
+
+
+def disallowed(
+    built: ir.Circuit, given: Iterable[devices.Device], allowed: Iterable[str]
+) -> list[str]:
+    """Why each device below the top of `built` is neither `given` nor `allowed`.
+
+    A device of a given part's model must take that part's parameters; any other device
+    must be of an allowed model, such as ``resistor``.
+    """
+    parts = [(part.model, part.parameters) for part in given]
+    models = {model for model, _ in parts}
+    permitted = set(allowed)
+    found = []
+    for name, made in built.components.items():
+        if name == built.top:
+            continue
+        for instance in made.instances:
+            if not isinstance(instance.of, ir.DeviceOf):
+                continue
+            kind = instance.of.device
+            if kind in models:
+                if (kind, instance.parameters) not in parts:
+                    found.append(f"{instance.id} is not a given part")
+            elif kind not in permitted:
+                found.append(f"{instance.id} is a {kind}, which the task forbids")
+    return found

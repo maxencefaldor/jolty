@@ -245,3 +245,61 @@ def test_a_converter_blind_to_one_input_falls_short(tmp_path: Path) -> None:
     (reason,) = verdict.reasons
     assert reason.startswith("the fitness is ")
     assert verdict.measurements["devices"] == 1
+
+
+BALUN = BENCHMARKS / "balun"
+
+
+def balun(work: Path, body: str) -> None:
+    """Writes a balun whose placements are `body` into `work`."""
+    (work / "design.py").write_text(
+        "from jolty import Builder, Role, component, devices\n"
+        "from jolty.units import nF\n"
+        "@component\n"
+        "def balun(c: Builder) -> None:\n"
+        "    ground = c.port('ground', Role.GROUND)\n"
+        "    c.port('vcc', Role.SUPPLY)\n"
+        "    source = c.port('input')\n"
+        "    in_phase, out_of_phase = c.port('in_phase'), c.port('out_of_phase')\n"
+        f"{body}"
+        "build = balun\n",
+        encoding="utf-8",
+    )
+
+
+def test_an_ideal_balun_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    balun(
+        tmp_path,
+        "    gains = (('E0', in_phase, 0.5), ('E1', out_of_phase, -0.5))\n"
+        "    for name, port, gain in gains:\n"
+        "        amplifier = c.place(devices.voltage_controlled_voltage_source(gain), "
+        "id=name)\n"
+        "        c.connect(amplifier.positive, port)\n"
+        "        c.connect(amplifier.control_positive, source)\n"
+        "        c.connect(amplifier.negative, amplifier.control_negative, ground)\n",
+    )
+    verdict = score(BALUN, tmp_path)
+    for error in ("in-phase gain", "difference gain", "difference phase"):
+        assert verdict.measurements[f"{error} error"] == pytest.approx(0.0, abs=1e-9)
+    assert verdict.measurements["distortion"] < -200
+    assert verdict.reasons == (
+        "E0 is a voltage_controlled_voltage_source, which the task forbids",
+        "E1 is a voltage_controlled_voltage_source, which the task forbids",
+    )
+
+
+def test_a_balun_without_an_inverted_output_falls_short(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    balun(
+        tmp_path,
+        "    coupling = c.place(devices.capacitor(100 * nF), id='C1')\n"
+        "    c.connect(coupling.a, source)\n"
+        "    c.connect(coupling.b, in_phase)\n",
+    )
+    verdict = score(BALUN, tmp_path)
+    assert not verdict.met
+    assert any("out-of-phase phase" in reason for reason in verdict.reasons)
+    assert any("difference's gain" in reason for reason in verdict.reasons)

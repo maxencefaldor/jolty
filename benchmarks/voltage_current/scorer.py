@@ -18,14 +18,13 @@ flows out of ``output`` when ``plus`` is the higher.
 
 import runpy
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
-from scoring import count_devices
+from scoring import count_devices, disallowed
 from verdict import Verdict
 
-from jolty import Builder, Component, Role, Simulation, circuit, component, devices, ir
+from jolty import Builder, Component, Role, Simulation, circuit, component, devices
 from jolty.plan import Transient
 from jolty.units import Hz, V, ohm, s
 from jolty.waveforms import Piecewise, Sine
@@ -112,29 +111,10 @@ def errors(made: Component) -> list[float]:
     return found
 
 
-def disallowed(built: ir.Circuit, given: Mapping[str, devices.Device]) -> list[str]:
-    """The devices of the design that are neither a given transistor nor allowed."""
-    transistors = [(part.model, part.parameters) for part in given.values()]
-    found = []
-    for name, made in built.components.items():
-        if name == built.top:
-            continue
-        for instance in made.instances:
-            if not isinstance(instance.of, ir.DeviceOf):
-                continue
-            kind = instance.of.device
-            if kind == "bipolar_transistor":
-                if (kind, instance.parameters) not in transistors:
-                    found.append(f"{instance.id} is not a given transistor")
-            elif kind not in ALLOWED:
-                found.append(f"{instance.id} is a {kind}, which the task forbids")
-    return found
-
-
 def score(task: Path, work: Path) -> Verdict:
     """The verdict on the voltage-current converter in `work`."""
     parts = runpy.run_path(str(task / "given" / "parts.py"))
-    given = {"npn": parts["npn"](), "pnp": parts["pnp"]()}
+    given = [parts["npn"](), parts["pnp"]()]
     design = work / "design.py"
     if not design.is_file():
         return Verdict(met=False, reasons=(f"there is no {design}",))
@@ -143,7 +123,7 @@ def score(task: Path, work: Path) -> Verdict:
     if not isinstance(made, Component):
         return Verdict(met=False, reasons=("build() returns no component",))
     built = circuit(bench(made, 0))
-    reasons = disallowed(built, given)
+    reasons = disallowed(built, given, ALLOWED)
     found = errors(made)
     fitness = float(
         np.mean([mine / theirs for mine, theirs in zip(found, PATENT, strict=True)])
