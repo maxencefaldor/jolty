@@ -18,6 +18,7 @@ from jolty.specs import (
     crossing,
     crossover,
     describe,
+    distortion,
     evaluate,
     frequency,
     gain,
@@ -215,6 +216,42 @@ def test_a_loop_gain_is_read_without_an_output_and_a_response_at_one() -> None:
     )
     with pytest.raises(ValueError, match="without over or a reference"):
         phase_margin("loop", over="in")
+
+
+def test_distortion_reads_the_harmonics_of_the_last_period() -> None:
+    times = np.linspace(0, 3e-3, 30_001)
+    angle = 2 * math.pi * 1e3 * times
+    settled = 0.2 + np.sin(angle) + 0.01 * np.sin(2 * angle) + 0.005 * np.cos(3 * angle)
+    start_up = np.where(times < 1e-3, np.sin(7 * angle), 0.0)
+    signal = waveforms(times, settled + start_up)
+    expected = 20 * math.log10(math.hypot(0.01, 0.005))
+    measured = distortion("t", "out", fundamental=1 * kHz).read(signal)
+    assert (measured.value, measured.unit) == (pytest.approx(expected, abs=1e-3), "dB")
+    two = distortion("t", "out", fundamental=1 * kHz, start=1 * ms).read(signal)
+    assert two.value == pytest.approx(expected, abs=1e-3)
+    second = distortion("t", "out", fundamental=1 * kHz, harmonics=2).read(signal)
+    assert second.value == pytest.approx(-40.0, abs=1e-3)
+    clean = waveforms(times, np.sin(angle))
+    assert distortion("t", "out", fundamental=1 * kHz).read(clean).value < -150
+    assert str(distortion("t", "out", fundamental=1 * kHz) <= -40) == (
+        "distortion of out at 1 kHz in t ≤ -40 dB"
+    )
+
+
+def test_distortion_needs_a_period_and_a_fundamental() -> None:
+    times = np.linspace(0, 1e-3, 1001)
+    short = waveforms(times, np.sin(2 * math.pi * 1e3 * times))
+    assert unread(distortion("t", "out", fundamental=500 * Hz) <= 0, short) == (
+        "out spans less than a period of 500 Hz"
+    )
+    flat = waveforms(times, np.zeros_like(times))
+    assert unread(distortion("t", "out", fundamental=1 * kHz) <= 0, flat) == (
+        "out has no component at 1 kHz"
+    )
+    with pytest.raises(ValueError, match="between 2 and 511, not 1"):
+        distortion("t", "out", fundamental=1 * kHz, harmonics=1)
+    with pytest.raises(ValueError, match="positive and finite"):
+        distortion("t", "out", fundamental=0 * Hz)
 
 
 def test_requirements_state_their_bounds_in_the_unit_read() -> None:

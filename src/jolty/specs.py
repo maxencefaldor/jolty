@@ -81,6 +81,9 @@ _SEVERITY: Final[dict[Status, int]] = {
 _ON_AXIS: Final = 1e-9
 """How far past an end of an axis, relative to its span, a point still lies on it."""
 
+_SAMPLES_PER_PERIOD: Final = 1024
+"""The points a distortion samples each period of its fundamental at, interpolated."""
+
 
 class MeasurementError(JoltyError):
     """A measurement cannot be read from the result of its analysis."""
@@ -962,6 +965,66 @@ def frequency(  # noqa: PLR0913 - a window, its signal and the level
         return Reading(float((rises.size - 1) / (rises[-1] - rises[0])), FREQUENCY)
 
     return Measurement(analysis, f"frequency of {window}", None, read)
+
+
+def distortion(  # noqa: PLR0913 - a window, its signal, the fundamental, the harmonics
+    analysis: str,
+    signal: str,
+    *,
+    fundamental: Quantity,
+    harmonics: int = 9,
+    start: Quantity | None = None,
+    stop: Quantity | None = None,
+    reference: str | None = None,
+) -> Measurement:
+    """The total harmonic distortion of a transient's `signal`, in decibels.
+
+    It is the root sum of the squares of the amplitudes of harmonics 2 to `harmonics`
+    of the `fundamental`, over the fundamental's amplitude, as SPICE's ``.four`` finds
+    it, in decibels: -40 dB is 1 %. The amplitudes are read over the last period of the
+    fundamental before the window's stop, as SPICE reads them, or over every whole
+    period from the window's start to its stop when it has a start. A signal without
+    harmonics reads -6000 dB.
+
+    Raises:
+        DimensionError: When the fundamental is not a frequency.
+        ValueError: When the fundamental is not positive, or `harmonics` is less than 2
+            or more than the samples of a period resolve.
+    """
+    frequency = fundamental.to(FREQUENCY, "the fundamental")
+    if not 0 < frequency < math.inf:
+        message = (
+            f"a distortion's fundamental is positive and finite, not {fundamental}"
+        )
+        raise ValueError(message)
+    if not 2 <= harmonics < _SAMPLES_PER_PERIOD // 2:  # noqa: PLR2004 - the first one
+        message = (
+            f"a distortion counts harmonics up to between 2 and "
+            f"{_SAMPLES_PER_PERIOD // 2 - 1}, not {harmonics}"
+        )
+        raise ValueError(message)
+    window = _Window(_Signal(signal, reference), start, stop)
+
+    def read(result: results.Result) -> Reading:
+        times, values, _ = window.transient(result, "a distortion")
+        span = (times[-1] - times[0]) * frequency
+        periods = 1 if start is None else math.floor(span * (1 + _ON_AXIS))
+        if span * (1 + _ON_AXIS) < periods or periods < 1:
+            message = f"{window} spans less than a period of {fundamental}"
+            raise MeasurementError(message)
+        samples = periods * _SAMPLES_PER_PERIOD
+        at = times[-1] - periods / frequency * (1 - np.arange(samples) / samples)
+        spectrum = np.abs(np.fft.rfft(np.interp(at, times, values)))
+        amplitudes = spectrum[periods : periods * harmonics + 1 : periods]
+        if amplitudes[0] == 0:
+            message = f"{window} has no component at {fundamental}"
+            raise MeasurementError(message)
+        total = math.sqrt(float(np.sum(amplitudes[1:] ** 2)))
+        ratio = max(total / float(amplitudes[0]), 1e-300)
+        return Reading(20 * math.log10(ratio), "dB")
+
+    described = f"distortion of {window} at {fundamental}"
+    return Measurement(analysis, described, "dB", read)
 
 
 @dataclass(frozen=True, slots=True)

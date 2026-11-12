@@ -40,6 +40,7 @@ Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in deg
 | `settling_time(analysis, signal, band=0.02)` | the time until the signal stays within `band` of its step from its final value | a transient |
 | `crossing(analysis, signal, level, edge="either")` | the first time the signal crosses `level` | a transient |
 | `frequency(analysis, signal, level=None)` | how often the signal rises through `level`, by default the midpoint of its range | a transient |
+| `distortion(analysis, signal, fundamental, harmonics=9)` | the total harmonic distortion in decibels, harmonics 2 to `harmonics` of the fundamental over its amplitude, over the last period before the window's stop, or every whole period of a window with a start | a transient |
 | `gain(analysis, output=None, at, over=None)` | the gain in decibels at a frequency, of `output` over `over` or per unit excitation | a small-signal response or a loop gain |
 | `phase(analysis, output=None, at, over=None)` | the phase in degrees at a frequency, unwrapped from the lowest frequency | a small-signal response or a loop gain |
 | `bandwidth(analysis, output=None, drop=3.0, over=None)` | the first frequency where the gain falls `drop` decibels below its gain at the lowest frequency | a small-signal response or a loop gain |

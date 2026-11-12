@@ -37,7 +37,16 @@ import numpy as np
 from scoring import Board, count_devices, disallowed, judge, tolerate
 from verdict import Verdict
 
-from jolty import Builder, Component, Role, Simulation, circuit, component, devices
+from jolty import (
+    Builder,
+    Component,
+    Role,
+    Simulation,
+    circuit,
+    component,
+    devices,
+    specs,
+)
 from jolty.plan import Ac, OperatingPoint, Transient, decade
 from jolty.units import F, Hz, MHz, V, mV, ohm, s
 from jolty.waveforms import Sine
@@ -60,8 +69,6 @@ FUNDAMENTAL = 10e6
 """The distortion's frequency, in hertz."""
 HARMONICS = 9
 """The highest harmonic the distortion counts."""
-SAMPLES = 200
-"""The points of the last period the distortion's spectrum is taken over."""
 
 
 @component
@@ -106,12 +113,14 @@ def distortion(made: Component, board: Board) -> float:
     waveforms = Simulation(circuit(bench(made, distorting=True)), overrides=board).run(
         Transient(stop=2 * period * s, max_step=period / 1000 * s)
     )
-    difference = waveforms.voltage("out_of_phase") - waveforms.voltage("in_phase")
-    times = period + period * np.arange(SAMPLES) / SAMPLES
-    spectrum = np.fft.rfft(np.interp(times, waveforms.times, difference))
-    harmonics = np.abs(spectrum[1 : HARMONICS + 1])
-    total = np.sqrt(np.sum(harmonics[1:] ** 2))
-    return float(20 * np.log10(max(total, 1e-300) / max(harmonics[0], 1e-300)))
+    harmonics = specs.distortion(
+        "distortion",
+        "out_of_phase",
+        reference="in_phase",
+        fundamental=FUNDAMENTAL * Hz,
+        harmonics=HARMONICS,
+    )
+    return harmonics.read(waveforms).value
 
 
 def measure(made: Component, board: Board) -> dict[str, float]:

@@ -290,7 +290,7 @@ def test_an_ideal_balun_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
     verdict = score(BALUN, tmp_path)
     for error in ("difference gain", "worst in-phase gain", "worst difference phase"):
         assert verdict.measurements[f"{error} error"] == pytest.approx(0.0, abs=1e-6)
-    assert verdict.measurements["distortion"] < -200
+    assert verdict.measurements["distortion"] < -150
     assert verdict.reasons == (
         "E0 is a voltage_controlled_voltage_source, which the task forbids",
         "E1 is a voltage_controlled_voltage_source, which the task forbids",
