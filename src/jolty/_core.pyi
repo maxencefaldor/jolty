@@ -64,8 +64,8 @@ class SensitivityOutcome(TypedDict):
     outputs: list[str]
     parameters: list[tuple[str, str]]
     values: npt.NDArray[np.float64]
-    derivatives: npt.NDArray[np.float64]
-    operating_point: SolvedPoint
+    derivatives: npt.NDArray[np.float64] | npt.NDArray[np.complex128]
+    result: Outcome
 
 class StabilityOutcome(TypedDict):
     kind: Literal["stability"]

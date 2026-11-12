@@ -26,6 +26,7 @@ from jolty import (
     Transient,
     component,
     devices,
+    results,
 )
 from jolty.plan import decade, linear
 from jolty.specs import crossover, gain_margin, phase_margin
@@ -35,6 +36,7 @@ from jolty.units import (
     GHz,
     Hz,
     K,
+    MHz,
     Quantity,
     V,
     celsius,
@@ -134,7 +136,8 @@ def test_sensitivities_are_the_derivatives_of_a_divider() -> None:
         assert found.derivative("V1:current", instance, name) == pytest.approx(
             current, rel=1e-6
         )
-    assert found.operating_point.voltage("out") == pytest.approx(4.0)
+    assert isinstance(found.result, results.OperatingPoint)
+    assert found.result.voltage("out") == pytest.approx(4.0)
     np.testing.assert_allclose(found.gradient("out"), [0.8, -8e-4, 2e-4], rtol=1e-6)
     with pytest.raises(KeyError, match="no output named 'in'"):
         found.gradient("in")
@@ -227,6 +230,54 @@ def test_a_probe_is_a_voltage_source_off_the_ground() -> None:
     for probe in ("VIN", "G1", "R1"):
         with pytest.raises(SimulationError, match=f"`{probe}` is not a voltage source"):
             simulation.run(Stability(probe, [1 * kHz]))
+
+
+def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
+    upper, lower = 1e3, 4e3
+    levels = linear(-2 * V, 2 * V, 5)
+    swept = Simulation(divider(5 * V, upper * ohm, lower * ohm)).run(
+        Sensitivity(["out"], of=DcSweep("V1", levels))
+    )
+    assert isinstance(swept.result, results.Sweep)
+    np.testing.assert_allclose(
+        swept.derivative("out", "R1", "resistance"),
+        -swept.result.levels * lower / (upper + lower) ** 2,
+        rtol=1e-6,
+    )
+    np.testing.assert_allclose(
+        swept.derivative("out", "V1", "waveform.dc"), np.zeros(5), atol=1e-12
+    )
+    resistance, capacitance = 1e3, 1e-9
+    frequencies = decade(1 * kHz, 10 * MHz, 5)
+    filtered = Simulation(low_pass()).run(
+        Sensitivity(["out"], of=Ac("V1", frequencies))
+    )
+    assert isinstance(filtered.result, results.Response)
+    omega = 2 * np.pi * filtered.result.frequencies
+    corner = 1 + 1j * omega * resistance * capacitance
+    np.testing.assert_allclose(
+        filtered.derivative("out", "C1", "capacitance"),
+        -1j * omega * resistance / corner**2,
+        rtol=1e-6,
+    )
+    charging = Simulation(low_pass()).run(
+        Sensitivity(["out"], of=Transient(5 * us, max_step=1e-3 * us))
+    )
+    assert isinstance(charging.result, results.Waveforms)
+    # After the source's ramp of 1 ns to 1 V, out is 1 - k exp(-t / tau).
+    ramp, tau = 1e-9, resistance * capacitance
+    grown = math.exp(ramp / tau)
+    k = tau / ramp * (grown - 1)
+    k_slope = (grown - 1) / ramp - grown / tau
+    times = charging.result.times
+    after = times >= ramp
+    decay = np.exp(-times[after] / tau)
+    expected = -capacitance * (k_slope + k * times[after] / tau**2) * decay
+    found = charging.derivative("out", "R1", "resistance")
+    assert isinstance(found, np.ndarray)
+    np.testing.assert_allclose(
+        found[after], expected, atol=1e-4 * np.abs(expected).max()
+    )
 
 
 def test_results_read_the_current_into_every_terminal() -> None:

@@ -95,6 +95,15 @@ def every_kind() -> dict[str, results.Result]:
             np.array([[-2e-4, 0.4]]),
             point,
         ),
+        "over": results.Sensitivities(
+            UNKNOWNS,
+            ("out",),
+            (PARAMETER,),
+            np.array([[[0.0]], [[1.0]]]),
+            results.Waveforms(
+                UNKNOWNS, np.array([0.0, 1e-6]), np.ones((2, 2)), STATISTICS, **NAMES
+            ),
+        ),
         "loop": results.LoopGain(
             UNKNOWNS, "VP", np.array([1e3, 1e6]), np.array([100 - 1j, -0.5j]), point
         ),
@@ -141,12 +150,25 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     assert step.statistics == STATISTICS
     np.testing.assert_array_equal(step.current("X1", "p"), [2, 2])
     np.testing.assert_array_equal(step.variable("M1", "threshold_voltage"), [1, 1])
+
+
+def test_results_files_hold_sensitivities_and_what_they_differentiate(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bench.results.npz"
+    save_results(path, every_kind())
+    read = load_results(path)
     sensitivity = read["sensitivity"]
     assert isinstance(sensitivity, results.Sensitivities)
     assert sensitivity.outputs == ("out",)
     assert sensitivity.parameters[0] == PARAMETER
     assert sensitivity.derivative("out", "V1", "waveform.dc") == 0.4
-    assert sensitivity.operating_point.strategy == "gmin_stepping"
+    assert isinstance(sensitivity.result, results.OperatingPoint)
+    assert sensitivity.result.strategy == "gmin_stepping"
+    over = read["over"]
+    assert isinstance(over, results.Sensitivities)
+    assert isinstance(over.result, results.Waveforms)
+    np.testing.assert_array_equal(over.derivative("out", "X1/R1", "resistance"), [0, 1])
     loop = read["loop"]
     assert isinstance(loop, results.LoopGain)
     assert loop.probe == "VP"

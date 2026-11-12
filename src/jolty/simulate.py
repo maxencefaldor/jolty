@@ -232,8 +232,11 @@ class Simulation:
         }
 
     def _encode(self, analysis: Analysis) -> JsonValue:
-        if isinstance(analysis, DcSweep):
-            return analysis.to_json(self._level(analysis))
+        match analysis:
+            case DcSweep():
+                return analysis.to_json(self._level(analysis))
+            case Sensitivity(of=DcSweep() as sweep):
+                return analysis.to_json(self._level(sweep))
         return analysis.to_json()
 
     def _level(self, sweep: DcSweep) -> Dimension:
@@ -296,12 +299,25 @@ class Simulation:
                         outcome["parameters"], outcome["values"], strict=True
                     )
                 )
+                differentiated = self._result(outcome["result"])
+                if not isinstance(
+                    differentiated,
+                    results.OperatingPoint
+                    | results.Sweep
+                    | results.Response
+                    | results.Waveforms,
+                ):
+                    message = f"the engine differentiated {outcome['result']['kind']}"
+                    raise SimulationError(message)
+                derivatives = outcome["derivatives"]
+                if isinstance(differentiated, results.OperatingPoint):
+                    derivatives = derivatives[0]
                 return results.Sensitivities(
                     unknowns,
                     tuple(outcome["outputs"]),
                     parameters,
-                    outcome["derivatives"],
-                    self._point(outcome["operating_point"]),
+                    derivatives,
+                    differentiated,
                 )
             case "stability":
                 return results.LoopGain(

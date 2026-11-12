@@ -32,7 +32,7 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `DcSweep(source, levels)` | the DC solution at each level of one independent source |
 | `Ac(source, frequencies)` | the small-signal response to a unit excitation of one source, around the operating point |
 | `Transient(stop, max_step=None, method="trapezoidal", times=())` | the response over time, from the operating point until `stop` |
-| `Sensitivity(outputs)` | the derivative of each output with respect to every number of every device's parameters, at the operating point |
+| `Sensitivity(outputs, of=None)` | the derivative of each output with respect to every number of every device's parameters, at the operating point or at each point of the analysis `of` |
 | `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
 
 A source is named by its path, such as `V1` or `bias/I1`.
@@ -49,12 +49,21 @@ A sensitivity analysis differentiates unknowns, such as `out` or `V1:current`, w
 Plan({"sensitivity": Sensitivity(["out", "V1:current"])})
 ```
 
+Given another analysis, it differentiates the outputs at each of its points instead: each level of a DC sweep, each frequency of a small-signal response, whose phasors' derivatives are complex, and each time of a transient:
+
+```python
+Plan({"drift": Sensitivity(["out"], of=Transient(stop=1 * ms))})
+```
+
 A parameter is a number of a device's parameters, named by the device's path and its keys, such as `R1` and `resistance`, or `V1` and `waveform.dc` within an object; a list's entries are keyed by their index from 0, such as `waveform.piecewise.1.1`.
-The derivatives come from the adjoint method: one solve with the transposed Jacobian per output serves every parameter, so many parameters cost little.
+At a DC point, the derivatives come from the adjoint method: one solve with the transposed Jacobian per output serves every parameter, so many parameters cost little.
+Over frequency, the adjoint at each frequency reads how the matrix `G + jωC` moves with each parameter, directly and through the operating point; the second part is a central difference along the operating point's own derivative, a microvolt either way, since devices give no second derivatives.
+Over time, the direct method carries each parameter's derivative of the solution from step to step through the same integration formula, starting from the operating point's, with each step's Jacobian evaluated again at its solution (Hocevar, Yang, Trick and Epler, 1985); a derivative moves no step and no logic event.
 Each device's own derivative with respect to a parameter is exact: every device computes with dual numbers that carry the derivative of each value with respect to the parameter through the same equations, temperature scaling included.
 A number a model reads as a choice, such as a MOSFET's level, is no real parameter and has no derivative.
 
-The result's `derivative(output, instance, parameter)` reads one derivative in SI base units, and `gradient(output)` an output's derivative with respect to every parameter, in the order of `parameters`.
+The result's `derivative(output, instance, parameter)` reads one derivative in SI base units, a number at the operating point and an array over the points otherwise, and `gradient(output)` an output's derivative with respect to every parameter, in the order of `parameters`.
+Its `result` holds the result of the analysis differentiated, whose levels, frequencies or times the derivatives follow.
 
 ## Stability
 

@@ -8,7 +8,7 @@ A report states facts, one section per analysis in the plan's order:
 
 - an operating point lists every unknown's value and every logic net's level, and the strategy that found it;
 - a sweep, a frequency response or a transient lists each unknown's first, lowest, highest and last value, and each logic net's first and last level and how often it changed;
-- a sensitivity analysis lists, for each output, its value and its derivative with respect to each parameter, in the circuit's order;
+- a sensitivity analysis lists, for each output, its value and its derivative with respect to each parameter, in the circuit's order, or, along another analysis, each derivative's largest and where;
 - a stability analysis states the loop gain at its lowest frequency, its crossover frequency and phase margin, and its gain margin;
 - a failed analysis says why it failed.
 

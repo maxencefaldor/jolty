@@ -8,11 +8,11 @@
 use std::sync::Mutex;
 
 use jolty_engine::{
-    Analysis, Observation, Observations, OperatingPoint, Options, Outcome, Statistics,
+    Analysis, Derivatives, Observation, Observations, OperatingPoint, Options, Outcome, Statistics,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library, Quantity};
-use numpy::{Element, PyArray1, PyArray2, PyArrayMethods};
+use numpy::{Element, PyArray1, PyArray2, PyArray3, PyArrayMethods};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
@@ -292,10 +292,13 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
                 .unzip();
             result.set_item("parameters", parameters)?;
             result.set_item("values", PyArray1::from_vec(py, values))?;
-            result.set_item("derivatives", matrix(py, &sensitivities.derivatives)?)?;
-            let operating_point = PyDict::new(py);
-            add_operating_point(&operating_point, sensitivities.operating_point)?;
-            result.set_item("operating_point", operating_point)?;
+            match &sensitivities.derivatives {
+                Derivatives::Real(points) => result.set_item("derivatives", cube(py, points)?)?,
+                Derivatives::Complex(points) => {
+                    result.set_item("derivatives", cube(py, points)?)?;
+                }
+            }
+            result.set_item("result", outcome_to_python(py, *sensitivities.result)?)?;
         }
         Outcome::Stability(loop_gain) => {
             result.set_item("kind", "stability")?;
@@ -387,6 +390,20 @@ fn matrix<'py, T: Element + Copy>(
     let columns = rows.first().map_or(0, Vec::len);
     let flat: Vec<T> = rows.iter().flatten().copied().collect();
     PyArray1::from_vec(py, flat).reshape([rows.len(), columns])
+}
+
+/// `points` as a three-dimensional array, with as many points even when they are empty.
+fn cube<'py, T: Element + Copy>(
+    py: Python<'py>,
+    points: &[Vec<Vec<T>>],
+) -> PyResult<Bound<'py, PyArray3<T>>> {
+    let rows = points.first().map_or(0, Vec::len);
+    let columns = points
+        .first()
+        .and_then(|first| first.first())
+        .map_or(0, Vec::len);
+    let flat: Vec<T> = points.iter().flatten().flatten().copied().collect();
+    PyArray1::from_vec(py, flat).reshape([points.len(), rows, columns])
 }
 
 fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Bound<'_, PyDict>> {

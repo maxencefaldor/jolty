@@ -64,7 +64,7 @@ pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
 pub use observe::{Observation, Observations, Observed};
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;
-pub use sensitivity::{Parameter, Sensitivities, Sensitivity};
+pub use sensitivity::{Derivatives, Differentiated, Parameter, Sensitivities, Sensitivity};
 pub use stability::{LoopGain, Stability};
 pub use sweep::{DcSweep, Sweep};
 pub use transient::{Statistics, Transient, Waveforms};

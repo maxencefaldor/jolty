@@ -76,8 +76,9 @@ Role.OUTPUT, one supply and one ground, and spot checks hold each cell to its ci
 
 Analyses, in jolty.plan: OperatingPoint(), DcSweep(source, levels),
 Ac(source, frequencies) with decade(start, stop, per_decade), Transient(stop,
-max_step, method), Sensitivity(outputs): the derivative of each output unknown with
-respect to every number of every device's parameters at the operating point, and
+max_step, method), Sensitivity(outputs, of=None): the derivative of each output unknown
+with respect to every number of every device's parameters at the operating point, or
+at each level, frequency or time of the DcSweep, Ac or Transient given as of, and
 Stability(probe, frequencies): the loop gain through a 0 V voltage source in series
 with a feedback loop, its positive terminal toward the side the signal enters, read
 with jolty.specs.phase_margin, gain_margin and crossover. Unknowns

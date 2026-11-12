@@ -11,7 +11,7 @@ and a Monte Carlo analysis's what each requirement read over its samples and the
 """
 
 from dataclasses import replace
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -232,7 +232,13 @@ class Derivative(_Model):
     value: float = Field(description="The parameter's value, in SI base units.")
     derivative: float = Field(
         description="The output's derivative with respect to the parameter, in SI "
-        "base units."
+        "base units: at the operating point, or the largest in magnitude over the "
+        "points, signed, a response's magnitude."
+    )
+    at: float | None = Field(
+        default=None,
+        description="The level, frequency or time it is largest at, in SI base units; "
+        "null at an operating point.",
     )
 
 
@@ -241,21 +247,42 @@ class OutputSensitivity(_Model):
 
     output: str
     quantity: Quantity
-    value: float = Field(description="Its value, in volts or amperes.")
+    value: float | None = Field(
+        default=None,
+        description="Its value at the operating point, in volts or amperes; null "
+        "along another analysis.",
+    )
     derivatives: tuple[Derivative, ...] = Field(
         description="Its derivative with respect to the first parameters, in the "
         "circuit's order."
     )
 
 
+type Differentiated = Literal["operating_point", "dc_sweep", "ac", "transient"]
+"""The analysis a sensitivity analysis differentiates."""
+
+_ALONG: Final[dict[Differentiated, str]] = {
+    "dc_sweep": "along a DC sweep at {points} levels",
+    "ac": "over a response at {points} frequencies",
+    "transient": "over a transient at {points} times",
+}
+
+
 class SensitivityReport(_Model):
-    """DC sensitivities."""
+    """Sensitivities at the operating point, or along a sweep, a response or time."""
 
     kind: Literal["sensitivity"] = "sensitivity"
     name: str
-    strategy: str = Field(
-        description="How the engine found the operating point: direct, "
-        "gmin_stepping or source_stepping."
+    of: Differentiated = Field(description="The analysis differentiated.")
+    points: int = Field(description="The points the derivatives are taken at.")
+    strategy: str | None = Field(
+        default=None,
+        description="How the engine found the operating point: direct, gmin_stepping "
+        "or source_stepping; null along a sweep or a transient.",
+    )
+    unit: str = Field(
+        default="",
+        description="The unit of the points: V or A along a sweep, Hz, or s.",
     )
     parameters: int = Field(
         description="Parameters the derivatives are with respect to."
@@ -265,21 +292,28 @@ class SensitivityReport(_Model):
 
     def describe(self) -> str:
         """The report as text."""
-        strategy = _STRATEGIES.get(self.strategy, self.strategy)
+        if self.of == "operating_point":
+            strategy = _STRATEGIES.get(self.strategy or "", self.strategy)
+            where = f"at the operating point, found by {strategy}"
+        else:
+            where = _ALONG[self.of].format(points=self.points)
         head = (
             f"{self.name}: derivatives with respect to {self.parameters} parameters "
-            f"at the operating point, found by {strategy}"
+            f"{where}"
         )
         lines = [head]
         for output in self.outputs:
-            value = format_si(output.value, _SYMBOLS[output.quantity])
-            lines.append(f"  {output.output} = {value}")
+            if output.value is None:
+                lines.append(f"  {output.output}")
+            else:
+                value = format_si(output.value, _SYMBOLS[output.quantity])
+                lines.append(f"  {output.output} = {value}")
             rows = [
                 [
                     each.instance,
                     each.parameter,
                     f"at {each.value!r}",
-                    f"{each.derivative!r}",
+                    self._derivative(each),
                 ]
                 for each in output.derivatives
             ]
@@ -287,6 +321,12 @@ class SensitivityReport(_Model):
             if self.unlisted:
                 lines.append(f"      ... and {self.unlisted} more in the results file")
         return "\n".join(lines)
+
+    def _derivative(self, derivative: Derivative) -> str:
+        if derivative.at is None:
+            return repr(derivative.derivative)
+        at = format_si(derivative.at, self.unit)
+        return f"largest {derivative.derivative!r} at {at}"
 
 
 class FailureReport(_Model):
@@ -440,17 +480,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 unlisted=unlisted,
             )
         case results.Sensitivities():
-            listed_parameters = result.parameters[:listed]
-            return SensitivityReport(
-                name=name,
-                strategy=result.operating_point.strategy,
-                parameters=len(result.parameters),
-                outputs=tuple(
-                    _output(result, output, len(listed_parameters))
-                    for output in result.outputs
-                ),
-                unlisted=len(result.parameters) - len(listed_parameters),
-            )
+            return _sensitivities(name, result, listed)
         case results.LoopGain():
             return _stability(name, result)
 
@@ -490,29 +520,85 @@ def _reading(measurement: specs.Measurement, result: results.Result) -> float | 
         return None
 
 
+def _sensitivities(
+    name: str, result: results.Sensitivities, listed: int
+) -> SensitivityReport:
+    """The report of the sensitivity analysis `name`, its first `listed` parameters."""
+    listed_parameters = min(listed, len(result.parameters))
+    match result.result:
+        case results.OperatingPoint() as point:
+            of, points, strategy, unit = "operating_point", 1, point.strategy, ""
+        case results.Sweep() as sweep:
+            of, points, strategy = "dc_sweep", len(sweep.levels), None
+            unit = _SYMBOLS[sweep.quantity]
+        case results.Response() as response:
+            of, points, unit = "ac", len(response.frequencies), "Hz"
+            strategy = response.operating_point.strategy
+        case results.Waveforms() as waveforms:
+            of, points, strategy, unit = "transient", len(waveforms.times), None, "s"
+    return SensitivityReport(
+        name=name,
+        of=of,
+        points=points,
+        strategy=strategy,
+        unit=unit,
+        parameters=len(result.parameters),
+        outputs=tuple(
+            _output(result, output, listed_parameters) for output in result.outputs
+        ),
+        unlisted=len(result.parameters) - listed_parameters,
+    )
+
+
 def _output(
     result: results.Sensitivities, output: str, listed: int
 ) -> OutputSensitivity:
-    """The value of `output`, and its derivatives by the first `listed` parameters."""
+    """The value of `output`, and its derivatives by the first `listed` parameters.
+
+    Along an analysis other than the operating point, each is where it is largest.
+    """
     gradient = result.gradient(output)
+    column = results.column(result.unknowns, output)
+    quantity = result.unknowns[column].quantity
+    match result.result:
+        case results.OperatingPoint() as point:
+            value = float(point.values[column])
+            found = [(float(derivative.real), None) for derivative in gradient[:listed]]
+        case results.Sweep() | results.Response() | results.Waveforms() as along:
+            value = None
+            axis = _axis(along)
+            found = []
+            for derivatives in gradient[:, :listed].T:
+                largest = int(np.argmax(np.abs(derivatives)))
+                peak = derivatives[largest]
+                signed = float(abs(peak)) if np.iscomplexobj(peak) else float(peak)
+                found.append((signed, float(axis[largest])))
     derivatives = tuple(
         Derivative(
             instance=parameter.instance,
             parameter=parameter.name,
             value=parameter.value,
-            derivative=float(derivative),
+            derivative=derivative,
+            at=at,
         )
-        for parameter, derivative in zip(
-            result.parameters[:listed], gradient[:listed], strict=True
+        for parameter, (derivative, at) in zip(
+            result.parameters[:listed], found, strict=True
         )
     )
-    column = results.column(result.unknowns, output)
     return OutputSensitivity(
-        output=output,
-        quantity=result.unknowns[column].quantity,
-        value=float(result.operating_point.values[column]),
-        derivatives=derivatives,
+        output=output, quantity=quantity, value=value, derivatives=derivatives
     )
+
+
+def _axis(result: results.Sweep | results.Response | results.Waveforms) -> results.Real:
+    """The levels, frequencies or times of `result`."""
+    match result:
+        case results.Sweep():
+            return result.levels
+        case results.Response():
+            return result.frequencies
+        case results.Waveforms():
+            return result.times
 
 
 def _nets(result: results.Result) -> tuple[str, ...]:

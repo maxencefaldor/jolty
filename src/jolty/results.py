@@ -485,10 +485,12 @@ class Parameter:
 
 @dataclass(frozen=True, slots=True)
 class Sensitivities:
-    """DC sensitivities: each output's derivative with respect to each parameter.
+    """Sensitivities: each output's derivative with respect to each parameter.
 
     `derivatives` has one row per output and one column per parameter, in SI base
-    units, at `operating_point`.
+    units, at an operating point. Along a DC sweep, over a response or over time, it has
+    one such matrix per level, frequency or time of `result`, first, as `result`'s own
+    values have one row per point; a response's are the derivatives of its phasors.
 
     Examples:
         >>> point = OperatingPoint((Unknown("out", "voltage"),), np.array([2.0]), "")
@@ -510,11 +512,16 @@ class Sensitivities:
     """The unknowns differentiated, by name, in the order of `derivatives`' rows."""
     parameters: tuple[Parameter, ...]
     """Every parameter, in the order of `derivatives`' columns."""
-    derivatives: Real
-    operating_point: OperatingPoint
+    derivatives: Real | Complex
+    result: OperatingPoint | Sweep | Response | Waveforms
+    """The result of the analysis differentiated."""
 
-    def derivative(self, output: str, instance: str, parameter: str) -> float:
+    def derivative(
+        self, output: str, instance: str, parameter: str
+    ) -> float | Real | Complex:
         """The derivative of `output` with respect to `parameter` of `instance`.
+
+        It is one number at an operating point, and one per point of `result` otherwise.
 
         Raises:
             KeyError: When the analysis has no such output or parameter.
@@ -522,11 +529,15 @@ class Sensitivities:
         labels = [f"{found.instance} {found.name}" for found in self.parameters]
         missing = "the analysis has no parameter"
         index = _find(labels, f"{instance} {parameter}", missing)
-        return float(self.derivatives[self._row(output), index])
+        found = self.derivatives[..., self._row(output), index]
+        return float(found) if found.ndim == 0 else found
 
-    def gradient(self, output: str) -> Real:
-        """The derivative of `output` with respect to each parameter, in their order."""
-        return self.derivatives[self._row(output)]
+    def gradient(self, output: str) -> Real | Complex:
+        """The derivative of `output` with respect to each parameter, in their order.
+
+        It is one per point of `result`, first, but at an operating point.
+        """
+        return self.derivatives[..., self._row(output), :]
 
     def _row(self, output: str) -> int:
         return _find(list(self.outputs), output, "the analysis has no output")

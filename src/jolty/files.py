@@ -71,7 +71,7 @@ class _Sensitivities(_Model):
     kind: Literal["sensitivity"] = "sensitivity"
     outputs: tuple[str, ...]
     parameters: tuple[tuple[str, str], ...]
-    strategy: str
+    result: _Entry
 
 
 class _LoopGain(_Model):
@@ -99,7 +99,7 @@ class _Names(_Model):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     analyses: dict[str, _Entry]
 
 
@@ -173,69 +173,8 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
     if len(circuits) != 1:
         message = "a results file holds analyses of one circuit, one or more"
         raise ValueError(message)
-    entries: dict[str, _Entry] = {}
     arrays: dict[str, np.ndarray] = {}
-    for name, result in analyses.items():
-        match result:
-            case results.OperatingPoint():
-                entries[name] = _Point(strategy=result.strategy)
-                arrays.update(_point_arrays(name, result))
-            case results.Sweep():
-                entries[name] = _Sweep(source=result.source, quantity=result.quantity)
-                arrays[f"{name}.levels"] = result.levels
-                arrays[f"{name}.values"] = result.values
-                arrays[f"{name}.logic"] = result.logic
-                arrays.update(_observed_arrays(name, result))
-            case results.Response():
-                entries[name] = _Response(
-                    source=result.source, strategy=result.operating_point.strategy
-                )
-                arrays[f"{name}.frequencies"] = result.frequencies
-                arrays[f"{name}.values"] = result.values
-                arrays[f"{name}.currents"] = result.currents
-                arrays.update(
-                    _point_arrays(f"{name}.operating_point", result.operating_point)
-                )
-            case results.Waveforms():
-                entries[name] = _Waveforms(statistics=result.statistics)
-                arrays[f"{name}.times"] = result.times
-                arrays[f"{name}.values"] = result.values
-                arrays.update(_observed_arrays(name, result))
-                traces = result.logic
-                arrays[f"{name}.logic.counts"] = np.array(
-                    [len(trace.times) for trace in traces], dtype=np.int64
-                )
-                arrays[f"{name}.logic.times"] = np.concatenate(
-                    [np.empty(0), *(trace.times for trace in traces)]
-                )
-                arrays[f"{name}.logic.levels"] = np.concatenate(
-                    [np.empty(0), *(trace.levels for trace in traces)]
-                )
-            case results.Sensitivities():
-                entries[name] = _Sensitivities(
-                    outputs=result.outputs,
-                    parameters=tuple(
-                        (parameter.instance, parameter.name)
-                        for parameter in result.parameters
-                    ),
-                    strategy=result.operating_point.strategy,
-                )
-                arrays[f"{name}.parameters"] = np.array(
-                    [parameter.value for parameter in result.parameters], dtype=float
-                )
-                arrays[f"{name}.derivatives"] = result.derivatives
-                arrays.update(
-                    _point_arrays(f"{name}.operating_point", result.operating_point)
-                )
-            case results.LoopGain():
-                entries[name] = _LoopGain(
-                    probe=result.probe, strategy=result.operating_point.strategy
-                )
-                arrays[f"{name}.frequencies"] = result.frequencies
-                arrays[f"{name}.gains"] = result.gains
-                arrays.update(
-                    _point_arrays(f"{name}.operating_point", result.operating_point)
-                )
+    entries = {name: _save(name, result, arrays) for name, result in analyses.items()}
     names = circuits.pop()
     header = _Header(**names.model_dump(), analyses=entries)
     arrays[_HEADER] = np.array(header.model_dump_json())
@@ -255,77 +194,139 @@ def load_results(path: Path) -> dict[str, results.Result]:
         except KeyError, ValidationError:
             message = f"{path} is not a jolty results file"
             raise JoltyError(message) from None
-        unknowns, nets = header.unknowns, header.nets
-        loaded: dict[str, results.Result] = {}
-        for name, entry in header.analyses.items():
-            match entry:
-                case _Point(strategy=strategy):
-                    loaded[name] = _point(data, name, strategy, header)
-                case _Sweep(source=source, quantity=quantity):
-                    loaded[name] = results.Sweep(
-                        unknowns,
-                        source,
-                        quantity,
-                        data[f"{name}.levels"],
-                        data[f"{name}.values"],
-                        nets,
-                        data[f"{name}.logic"],
-                        **_observed(data, name, header),
-                    )
-                case _Response(source=source, strategy=strategy):
-                    point = _point(data, f"{name}.operating_point", strategy, header)
-                    loaded[name] = results.Response(
-                        unknowns,
-                        source,
-                        data[f"{name}.frequencies"],
-                        data[f"{name}.values"],
-                        point,
-                        terminals=header.terminals,
-                        currents=data[f"{name}.currents"],
-                        composites=header.composites,
-                    )
-                case _Waveforms(statistics=statistics):
-                    loaded[name] = results.Waveforms(
-                        unknowns,
-                        data[f"{name}.times"],
-                        data[f"{name}.values"],
-                        statistics,
-                        nets,
-                        _traces(data, name),
-                        **_observed(data, name, header),
-                    )
-                case _Sensitivities(
-                    outputs=outputs, parameters=named, strategy=strategy
-                ):
-                    parameters = tuple(
-                        results.Parameter(instance, parameter, float(value))
-                        for (instance, parameter), value in zip(
-                            named, data[f"{name}.parameters"], strict=True
-                        )
-                    )
-                    point = _point(data, f"{name}.operating_point", strategy, header)
-                    loaded[name] = results.Sensitivities(
-                        unknowns,
-                        outputs,
-                        parameters,
-                        data[f"{name}.derivatives"],
-                        point,
-                    )
-                case _LoopGain(probe=probe, strategy=strategy):
-                    point = _point(data, f"{name}.operating_point", strategy, header)
-                    loaded[name] = results.LoopGain(
-                        unknowns,
-                        probe,
-                        data[f"{name}.frequencies"],
-                        data[f"{name}.gains"],
-                        point,
-                    )
-    return loaded
+        return {
+            name: _load(data, name, entry, header)
+            for name, entry in header.analyses.items()
+        }
+
+
+def _save(name: str, result: results.Result, arrays: dict[str, np.ndarray]) -> _Entry:
+    """The header's entry of `result`, its arrays added to `arrays` under `name`."""
+    match result:
+        case results.OperatingPoint():
+            arrays.update(_point_arrays(name, result))
+            return _Point(strategy=result.strategy)
+        case results.Sweep():
+            arrays[f"{name}.levels"] = result.levels
+            arrays[f"{name}.values"] = result.values
+            arrays[f"{name}.logic"] = result.logic
+            arrays.update(_observed_arrays(name, result))
+            return _Sweep(source=result.source, quantity=result.quantity)
+        case results.Response():
+            arrays[f"{name}.frequencies"] = result.frequencies
+            arrays[f"{name}.values"] = result.values
+            arrays[f"{name}.currents"] = result.currents
+            point = result.operating_point
+            arrays.update(_point_arrays(f"{name}.operating_point", point))
+            return _Response(source=result.source, strategy=point.strategy)
+        case results.Waveforms():
+            arrays[f"{name}.times"] = result.times
+            arrays[f"{name}.values"] = result.values
+            arrays.update(_observed_arrays(name, result))
+            traces = result.logic
+            arrays[f"{name}.logic.counts"] = np.array(
+                [len(trace.times) for trace in traces], dtype=np.int64
+            )
+            arrays[f"{name}.logic.times"] = np.concatenate(
+                [np.empty(0), *(trace.times for trace in traces)]
+            )
+            arrays[f"{name}.logic.levels"] = np.concatenate(
+                [np.empty(0), *(trace.levels for trace in traces)]
+            )
+            return _Waveforms(statistics=result.statistics)
+        case results.Sensitivities():
+            arrays[f"{name}.parameters"] = np.array(
+                [parameter.value for parameter in result.parameters], dtype=float
+            )
+            arrays[f"{name}.derivatives"] = result.derivatives
+            return _Sensitivities(
+                outputs=result.outputs,
+                parameters=tuple(
+                    (parameter.instance, parameter.name)
+                    for parameter in result.parameters
+                ),
+                result=_save(f"{name}.result", result.result, arrays),
+            )
+        case results.LoopGain():
+            arrays[f"{name}.frequencies"] = result.frequencies
+            arrays[f"{name}.gains"] = result.gains
+            point = result.operating_point
+            arrays.update(_point_arrays(f"{name}.operating_point", point))
+            return _LoopGain(probe=result.probe, strategy=point.strategy)
+
+
+def _load(
+    data: Mapping[str, np.ndarray], name: str, entry: _Entry, header: _Header
+) -> results.Result:
+    """The result stored under `name` in `data`, as `entry` says it is."""
+    unknowns, nets = header.unknowns, header.nets
+    match entry:
+        case _Point(strategy=strategy):
+            return _point(data, name, strategy, header)
+        case _Sweep(source=source, quantity=quantity):
+            return results.Sweep(
+                unknowns,
+                source,
+                quantity,
+                data[f"{name}.levels"],
+                data[f"{name}.values"],
+                nets,
+                data[f"{name}.logic"],
+                **_observed(data, name, header),
+            )
+        case _Response(source=source, strategy=strategy):
+            return results.Response(
+                unknowns,
+                source,
+                data[f"{name}.frequencies"],
+                data[f"{name}.values"],
+                _point(data, f"{name}.operating_point", strategy, header),
+                terminals=header.terminals,
+                currents=data[f"{name}.currents"],
+                composites=header.composites,
+            )
+        case _Waveforms(statistics=statistics):
+            return results.Waveforms(
+                unknowns,
+                data[f"{name}.times"],
+                data[f"{name}.values"],
+                statistics,
+                nets,
+                _traces(data, name),
+                **_observed(data, name, header),
+            )
+        case _Sensitivities(outputs=outputs, parameters=named, result=differentiated):
+            parameters = tuple(
+                results.Parameter(instance, parameter, float(value))
+                for (instance, parameter), value in zip(
+                    named, data[f"{name}.parameters"], strict=True
+                )
+            )
+            found = _load(data, f"{name}.result", differentiated, header)
+            if isinstance(found, results.Sensitivities | results.LoopGain):
+                message = (
+                    f"the sensitivities {name} differentiate neither an operating "
+                    "point, a sweep, a response nor a transient"
+                )
+                raise JoltyError(message)
+            return results.Sensitivities(
+                unknowns, outputs, parameters, data[f"{name}.derivatives"], found
+            )
+        case _LoopGain(probe=probe, strategy=strategy):
+            return results.LoopGain(
+                unknowns,
+                probe,
+                data[f"{name}.frequencies"],
+                data[f"{name}.gains"],
+                _point(data, f"{name}.operating_point", strategy, header),
+            )
 
 
 def _names(result: results.Result) -> _Names:
     """The names of the columns of `result`'s circuit."""
-    if isinstance(result, results.Response | results.Sensitivities | results.LoopGain):
+    if isinstance(result, results.Sensitivities):
+        return _names(result.result)
+    if isinstance(result, results.Response | results.LoopGain):
         return _names(result.operating_point)
     return _Names(
         unknowns=result.unknowns,

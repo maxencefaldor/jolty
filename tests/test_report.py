@@ -125,6 +125,41 @@ def test_sensitivities_list_each_derivative_in_the_circuit_s_order() -> None:
     )
 
 
+def test_sensitivities_along_an_analysis_state_where_each_is_largest() -> None:
+    point = results.OperatingPoint(UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct")
+    frequencies = np.array([1e3, 1e6])
+    values = np.ones((2, 3), dtype=np.complex128)
+    response = results.Response(UNKNOWNS, "V1", frequencies, values, point)
+    parameter = results.Parameter("C1", "capacitance", 1e-9)
+    derivatives = np.array([[[1j]], [[-3 + 4j]]])
+    sensitivities = results.Sensitivities(
+        UNKNOWNS, ("out",), (parameter,), derivatives, response
+    )
+    summary = report.report("sens", sensitivities, listed=5)
+    assert isinstance(summary, report.SensitivityReport)
+    assert (summary.of, summary.points, summary.unit) == ("ac", 2, "Hz")
+    assert summary.describe() == (
+        "sens: derivatives with respect to 1 parameters over a response at 2 "
+        "frequencies\n"
+        "  out\n"
+        "    C1  capacitance  at 1e-09  largest 5.0 at 1 MHz"
+    )
+    times = np.array([0.0, 1e-6, 2e-6])
+    statistics = results.Statistics("direct", 2, 0, 4)
+    waveforms = results.Waveforms(UNKNOWNS, times, np.zeros((3, 3)), statistics)
+    falling = results.Sensitivities(
+        UNKNOWNS,
+        ("out",),
+        (parameter,),
+        np.array([[[0.5]], [[-2.0]], [[1.0]]]),
+        waveforms,
+    )
+    summary = report.report("t", falling, listed=5)
+    assert isinstance(summary, report.SensitivityReport)
+    (derivative,) = summary.outputs[0].derivatives
+    assert (derivative.derivative, derivative.at) == (-2.0, 1e-6)
+
+
 def test_a_failure_says_why() -> None:
     failure = report.FailureReport(
         name="step", error="the time step fell below 1e-18 s"

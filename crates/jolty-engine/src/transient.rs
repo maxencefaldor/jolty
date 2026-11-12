@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::logic::{Command, Crossing, crossing};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
+use crate::sensitivity::Forward;
 use crate::{Observation, Observations, Options, Rejection, SimulationError, Simulator, Strategy};
 
 /// The first step after the start or a breakpoint, as a fraction of the shorter of the step
@@ -224,6 +225,8 @@ struct Stepper {
     damp: bool,
     /// The history terms of the step being tried, one per unknown.
     terms: Vec<f64>,
+    /// The integration formula of the last accepted step.
+    formula: Formula,
     statistics: Statistics,
 }
 
@@ -271,6 +274,16 @@ impl Simulator {
         transient: &Transient,
         options: &Options,
     ) -> Result<Waveforms, SimulationError> {
+        self.transient_with(transient, options, None)
+    }
+
+    /// Runs `transient`, carrying `forward`'s derivatives along its accepted steps.
+    pub(crate) fn transient_with(
+        &mut self,
+        transient: &Transient,
+        options: &Options,
+        mut forward: Option<&mut Forward>,
+    ) -> Result<Waveforms, SimulationError> {
         options.check()?;
         // Without unknowns, nothing analog needs steps, and the logic moves on at once.
         let longest = if self.system.unknowns.is_empty() {
@@ -297,6 +310,9 @@ impl Simulator {
         let mut observations = transient.times.clone();
         observations.sort_by(f64::total_cmp);
         let initial = self.operating_point(options)?;
+        if let Some(forward) = forward.as_deref_mut() {
+            self.start_forward(forward, &initial.values, options)?;
+        }
         self.evaluate(&initial.values, 0.0, (1.0, options.gmin), true);
         self.events.start(&self.system.logic, transient.stop);
         let unknowns = initial.values.len();
@@ -322,6 +338,7 @@ impl Simulator {
             restart: true,
             damp: false,
             terms: vec![0.0; unknowns],
+            formula: Formula::new(Method::BackwardEuler, first, first),
             statistics: Statistics {
                 initial: initial.strategy,
                 accepted: 0,
@@ -342,6 +359,11 @@ impl Simulator {
             let observation = observations.get(passed).copied().unwrap_or(f64::INFINITY);
             match self.step_toward(&mut stepper, (breakpoint, gap), observation, options)? {
                 Step::Accepted(found, settles) => {
+                    if let Some(forward) = forward.as_deref_mut() {
+                        let at = (stepper.time, stepper.x.as_slice());
+                        let formula = (&stepper.formula, stepper.restart);
+                        self.advance_forward(forward, at, formula, options)?;
+                    }
                     self.watch_supplies(&stepper.x, stepper.time, options);
                     times.push(stepper.time);
                     values.push(stepper.x.clone());
@@ -454,6 +476,7 @@ impl Simulator {
 
         stepper.statistics.accepted += 1;
         stepper.statistics.iterations += iterations;
+        stepper.formula = formula;
         stepper.x = candidate;
         stepper.previous = length;
         let settles = self.follow(&commands);

@@ -212,7 +212,7 @@ impl Simulator {
         }
     }
 
-    fn hold_source(&mut self, index: usize, level: Option<f64>) {
+    pub(crate) fn hold_source(&mut self, index: usize, level: Option<f64>) {
         if let Some(source) = self.system.devices[index].device.as_source() {
             source.hold(level);
         }
