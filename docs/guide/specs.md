@@ -91,4 +91,6 @@ monte carlo: 1000 samples of 2 toleranced parameters, seed 1; 0 failed
 ```
 
 `Specs(requirements, yield_target=0.9)` sets the yield the samples must reach; `jolty simulate` exits with 1 when the estimate falls below it.
+
+A plan's [worst case](simulation.md#worst-case) judges each requirement again at the extremes of the tolerances that worsen it, and `jolty simulate` exits with 1 when one fails there.
 With `--output-format json`, the verdicts come as data, values and slacks in SI base units.

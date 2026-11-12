@@ -38,6 +38,7 @@ from jolty.plan import (
     Sensitivity,
     Stability,
     Transient,
+    WorstCase,
 )
 from jolty.simulate import Simulation
 from jolty.specs import Specs
@@ -75,6 +76,7 @@ __all__ = [
     "Stability",
     "Terminal",
     "Transient",
+    "WorstCase",
     "__version__",
     "circuit",
     "component",

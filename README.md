@@ -8,7 +8,7 @@ Each build checks every device and connection, reports each problem with the scr
 jolty is on its seventh milestone, gradients and discovery: board-level circuits of passive devices, sources, diodes and transistors, simulated at the operating point, over DC sweeps, in frequency and in time, beside logic that an event scheduler simulates.
 Vendors' SPICE macromodels, such as an op-amp's, read as components and agree with ngspice.
 Every build checks the circuit's structure and draws its schematic, and every simulation plots its analyses, so an agent sees what it built.
-Specs state what a circuit must do, and every simulation measures its results against them, at every temperature and corner its plan names, and over Monte Carlo samples of its parts' tolerances.
+Specs state what a circuit must do, and every simulation measures its results against them, at every temperature and corner its plan names, over Monte Carlo samples of its parts' tolerances, and at their worst-case extremes.
 A plan can run a component as a logic cell characterized from its own circuit, as the full adder example runs its nine transistor-level NAND gates, and spot checks hold each cell to its circuit.
 A sensitivity analysis gives the derivative of any unknown with respect to every parameter of every device, at the operating point, along a DC sweep, over frequency or over time.
 A stability analysis gives a feedback loop's gain through a probe, by Middlebrook's double injection, and specs read its phase and gain margins.

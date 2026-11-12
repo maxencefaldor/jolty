@@ -16,11 +16,11 @@ from jolty import (
     devices,
     ir,
 )
-from jolty.plan import MonteCarlo, OperatingPoint
+from jolty.plan import MonteCarlo, OperatingPoint, WorstCase
 from jolty.runner import Built, Job, run
 from jolty.specs import Specs, value
 from jolty.units import A, V, kohm, nF
-from jolty.variation import Varied, sample, toleranced
+from jolty.variation import Varied, extreme, moved, sample, toleranced
 
 
 @component
@@ -343,3 +343,105 @@ def test_each_sample_runs_on_the_same_parts_at_every_corner(
     ]
     assert spread.values.minimum == pytest.approx(min(low), rel=1e-6)
     assert spread.values.maximum == pytest.approx(max(low), rel=1e-6)
+
+
+WORST = """
+from jolty import Builder, Corner, OperatingPoint, Plan, Role, Specs, WorstCase
+from jolty import component, devices, ir
+from jolty.specs import value
+from jolty.units import V, kohm
+
+DIE = ir.Lot(name="die", relative=0.2)
+
+
+@component
+def divider(c: Builder, supply) -> None:
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(supply), id="V1")
+    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), id="R1")
+    lower = c.place(
+        devices.resistor(1 * kohm).toleranced("resistance", 0.01, "normal"), id="R2"
+    )
+    c.connect(source.positive, upper.a)
+    c.connect(upper.b, lower.a, name="out")
+    c.connect(lower.b, source.negative, ground)
+    # A matched pair on one die, whose shared spread cancels in their ratio.
+    top = c.place(
+        devices.resistor(1 * kohm).toleranced("resistance", 0.001, lot=DIE), id="R3"
+    )
+    bottom = c.place(
+        devices.resistor(1 * kohm).toleranced("resistance", 0.001, lot=DIE), id="R4"
+    )
+    c.connect(source.positive, top.a)
+    c.connect(top.b, bottom.a, name="matched")
+    c.connect(bottom.b, ground)
+
+
+def build(supply=5 * V):
+    return divider(supply)
+
+
+def plan():
+    return Plan(
+        {"op": OperatingPoint()},
+        corners={"low": Corner(supply=4.9 * V)},
+        worst_case=WorstCase(),
+    )
+
+
+def specs():
+    return Specs(
+        [
+            value("op", "out").within(2.5 * V, 0.02 * V),
+            value("op", "matched").within(2.5 * V, 3e-3 * V),
+        ]
+    )
+"""
+
+
+def test_a_worst_case_sets_each_tolerance_at_the_extreme_that_worsens_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "divider.py"
+    script.write_text(WORST, encoding="utf-8")
+    outcome = run(Job(script=script, plan=script, listed=10), tmp_path)
+    assert isinstance(outcome, Built), str(outcome)
+    report = outcome.worst_case
+    assert report is not None
+    # Four parameters moved at each of two conditions, then each bound's extremes.
+    assert (report.toleranced, report.corners, report.runs) == (4, ("low",), 16)
+    divided, matched = report.verdicts
+    # R1 up and R2 down by their whole tolerance, at the low supply.
+    assert divided.value == pytest.approx(4.9 * 0.99 / 2, rel=1e-9)
+    assert (divided.status, divided.corner) == ("failed", "low")
+    # The die's spread cancels in the ratio, so only the parts' own tolerances count.
+    assert matched.value == pytest.approx(4.9 * 0.999 / 2, rel=1e-9)
+    assert not report.ok
+    assert report.describe().startswith(
+        "worst case: 4 toleranced parameters, each moved 0.1 of its tolerance, at low; "
+        "16 runs\n  failed: out in op ≥ 2.48 V and ≤ 2.52 V: read 2.426 V at the "
+        "corner low"
+    )
+
+
+def test_a_worst_case_moves_a_step_of_its_tolerance() -> None:
+    with pytest.raises(ValueError, match="above 0 and at most 1, not 0"):
+        WorstCase(step=0)
+    varied = [
+        Varied("R1", "resistance", 1e3, ir.Tolerance(relative=0.1)),
+        Varied(
+            "R2",
+            "resistance",
+            1e3,
+            ir.Tolerance(
+                relative=0.01,
+                lot=ir.Lot(name="die", relative=1.0, distribution="log_uniform"),
+            ),
+        ),
+    ]
+    assert moved(varied, 0, 0.5) == {"R1": {"resistance": pytest.approx(1050.0)}}
+    assert extreme(varied, [-1.0, 1.0], {("die", "resistance"): -1.0}) == {
+        "R1": {"resistance": pytest.approx(900.0)},
+        "R2": {"resistance": pytest.approx(1e3 * 1.01 / 2)},
+    }

@@ -36,7 +36,13 @@ from jolty import (
 )
 from jolty.errors import ElaborationError, JoltyError
 from jolty.fidelity import FidelityReport
-from jolty.report import AnalysisReport, CornerReport, FailureReport, MonteCarloReport
+from jolty.report import (
+    AnalysisReport,
+    CornerReport,
+    FailureReport,
+    MonteCarloReport,
+    WorstCaseReport,
+)
 from jolty.settings import Level, Settings
 from jolty.simulate import Simulation
 from jolty.specs import Verdict
@@ -280,6 +286,9 @@ class SimulateResult(CommandResult):
     monte_carlo: MonteCarloReport | None = Field(
         description="What the plan's Monte Carlo analysis found; null without one."
     )
+    worst_case: WorstCaseReport | None = Field(
+        description="What the plan's worst-case analysis found; null without one."
+    )
     specs: tuple[Verdict, ...] = Field(
         description="The verdict on each requirement of the plan's specs, in order; "
         "empty when the plan defines no specs()."
@@ -311,8 +320,9 @@ class SimulateResult(CommandResult):
 
         It meets its plan when every analysis ends, at the plan's own conditions and
         at every corner, every requirement passes, if only marginally, the Monte Carlo
-        analysis's yield reaches the specs' target, and every model its fidelity chose
-        agrees with its circuit where a spot check looked.
+        analysis's yield reaches the specs' target, every requirement passes at its
+        worst-case extremes, and every model its fidelity chose agrees with its circuit
+        where a spot check looked.
         """
         checked = self.report is None or self.report.ok
         return (
@@ -327,6 +337,7 @@ class SimulateResult(CommandResult):
                 or self.monte_carlo.passing is None
                 or self.monte_carlo.passing.met
             )
+            and (self.worst_case is None or self.worst_case.ok)
             and all(verdict.status in {"passed", "marginal"} for verdict in self.specs)
             and (self.fidelity is None or self.fidelity.ok)
         )
@@ -345,6 +356,8 @@ class SimulateResult(CommandResult):
         blocks.extend(corner.describe() for corner in self.corners)
         if self.monte_carlo is not None:
             blocks.append(self.monte_carlo.describe())
+        if self.worst_case is not None:
+            blocks.append(self.worst_case.describe())
         if self.specs:
             blocks.append(specs.describe(self.specs))
         if self.fidelity is not None:
@@ -434,6 +447,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         analyses=built.analyses,
         corners=built.corners,
         monte_carlo=built.monte_carlo,
+        worst_case=built.worst_case,
         specs=built.specs,
         fidelity=built.fidelity,
         schematic=drawn,

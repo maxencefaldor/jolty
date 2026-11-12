@@ -305,6 +305,34 @@ class MonteCarlo:
 
 
 @dataclass(frozen=True, slots=True)
+class WorstCase:
+    """Each requirement at the extremes of the circuit's tolerances that worsen it.
+
+    At the plan's own conditions and at each corner, a run per toleranced parameter,
+    moved a `step` of its tolerance, finds which way each requirement's value moves with
+    it. Then, for each bound of each requirement, every parameter goes to the extreme of
+    its tolerance that moves the value toward the bound, and a lot's shared spread to
+    the extreme its parts move it toward together, as PSpice's worst-case analysis sets
+    them, and the requirement is judged there. A normal tolerance's extreme is its three
+    standard deviations.
+    """
+
+    step: float = 0.1
+
+    def __post_init__(self) -> None:
+        """Checks the step.
+
+        Raises:
+            ValueError: When it is not above 0 and at most 1.
+        """
+        if not 0 < self.step <= 1:
+            message = (
+                f"a worst case moves a step above 0 and at most 1, not {self.step}"
+            )
+            raise ValueError(message)
+
+
+@dataclass(frozen=True, slots=True)
 class Characterized:
     """A logic model characterized from a component's own circuit, at `supply`.
 
@@ -364,8 +392,9 @@ class Plan:
 
     Each analysis is named by a Python identifier, such as ``step`` or ``bode``, which
     names its results too. The circuit's devices are simulated at `temperature`, 27 °C
-    unless given, then at each of the `corners`, each named by an identifier too, and on
-    the samples of a `monte_carlo` analysis.
+    unless given, then at each of the `corners`, each named by an identifier too, on
+    the samples of a `monte_carlo` analysis, and at the extremes of a `worst_case`
+    analysis.
 
     Its `fidelity` maps scopes, patterns of instance paths such as ``adder/*``, where
     ``*`` matches within a level of the hierarchy and ``**`` across levels, to the
@@ -378,6 +407,7 @@ class Plan:
     temperature: Quantity | None = None
     corners: Mapping[str, Corner] = field(default_factory=dict)
     monte_carlo: MonteCarlo | None = None
+    worst_case: WorstCase | None = None
     fidelity: Mapping[str, Characterized] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

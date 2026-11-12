@@ -20,12 +20,14 @@ standard output may be a protocol channel: what a script prints is captured, a t
 stops a script or an analysis that runs too long, and a crash ends only the runner.
 """
 
+import functools
 import itertools
+import json
 import runpy
 import sys
 import sysconfig
 import traceback
-from collections.abc import Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Final, Literal, override
@@ -37,10 +39,10 @@ from jolty import checks, fidelity, files, ir, report, variation
 from jolty.builder import Component, circuit
 from jolty.errors import ElaborationError, JoltyError, ScriptError
 from jolty.fidelity import FidelityReport
-from jolty.plan import Corner, MonteCarlo, Plan
+from jolty.plan import Corner, MonteCarlo, Plan, WorstCase
 from jolty.results import Result
 from jolty.simulate import Simulation, kelvins
-from jolty.specs import Specs, Verdict, evaluate, spread
+from jolty.specs import Requirement, Specs, Verdict, evaluate, judge, reading, spread
 
 JOB: Final = "job.json"
 """The file in the job's directory that holds the job."""
@@ -109,6 +111,10 @@ class Built(BaseModel):
     monte_carlo: report.MonteCarloReport | None = Field(
         default=None,
         description="What the plan's Monte Carlo analysis found; null without one.",
+    )
+    worst_case: report.WorstCaseReport | None = Field(
+        default=None,
+        description="What the plan's worst-case analysis found; null without one.",
     )
     specs: tuple[Verdict, ...] = Field(
         default=(),
@@ -221,11 +227,23 @@ def _run(job: Job, directory: Path) -> Built:
         if plan.monte_carlo is None
         else _monte_carlo(chosen, chosen_at, plan, plan.monte_carlo, specs)
     )
+    worst_case = (
+        None
+        if plan.worst_case is None
+        else _worst_case(
+            [(None, chosen, solved)]
+            + [(name, chosen_at[name], at_corners[name]) for name in chosen_at],
+            plan,
+            plan.worst_case,
+            specs,
+        )
+    )
     return elaborated.model_copy(
         update={
             "analyses": reports,
             "corners": tuple(corners),
             "monte_carlo": monte_carlo,
+            "worst_case": worst_case,
             "specs": verdicts,
             "fidelity": checked
             and checked.model_copy(update={"outside": tuple(outside)}),
@@ -383,6 +401,121 @@ def _samples(
             continue
         solved, reports = _analyses(simulation, plan, 1)
         yield solved, not any(isinstance(r, report.FailureReport) for r in reports)
+
+
+type _Conditions = tuple[str | None, fidelity.Fidelity | None, Mapping[str, Result]]
+"""A run's conditions: its corner, None for the plan's own; the models chosen there,
+None where the circuit does not elaborate; and the results of its nominal run."""
+
+
+def _worst_case(
+    conditions: Sequence[_Conditions],
+    plan: Plan,
+    worst_case: WorstCase,
+    specs: Specs | None,
+) -> report.WorstCaseReport:
+    """Each requirement of `specs` at the extremes of the tolerances that worsen it.
+
+    At each of `conditions`, a run per toleranced parameter, moved its `worst_case`
+    step, finds which way each requirement's value moves with it, and a run per bound
+    of each requirement sets every parameter, and every lot's spread, at the extreme
+    that moves the value toward the bound; runs at the same extremes are shared. A
+    requirement's verdict is its worst over every bound and conditions where the
+    circuit elaborates.
+    """
+    requirements = () if specs is None else specs.requirements
+    found: list[list[tuple[str | None, Mapping[str, Result]]]] = [
+        [] for _ in requirements
+    ]
+    runs = 0
+    for corner, chosen, nominal in conditions:
+        if chosen is None or not requirements:
+            continue
+        varied = variation.toleranced(chosen.built)
+        run = functools.partial(_overridden, chosen, plan)
+        slopes = _slopes(varied, requirements, nominal, worst_case.step, run)
+        runs += len(varied)
+        extremes: dict[str, Mapping[str, Result]] = {}
+        for index, requirement in enumerate(requirements):
+            bounds = [
+                direction
+                for direction, bound in (
+                    (-1.0, requirement.minimum),
+                    (1.0, requirement.maximum),
+                )
+                if bound is not None
+            ]
+            for toward in bounds:
+                directions = [toward * slope[index] for slope in slopes]
+                lots: dict[variation.Lot, float] = {}
+                for parameter, direction in zip(varied, directions, strict=True):
+                    if (key := variation.lot(parameter)) is not None:
+                        lots[key] = lots.get(key, 0.0) + direction
+                overrides = variation.extreme(
+                    varied,
+                    [float(np.sign(direction)) for direction in directions],
+                    {key: float(np.sign(direction)) for key, direction in lots.items()},
+                )
+                key = json.dumps(overrides, sort_keys=True)
+                if key not in extremes:
+                    extremes[key] = run(overrides)
+                    runs += 1
+                found[index].append((corner, extremes[key]))
+    verdicts = tuple(
+        judge(requirement, plan.analyses, at)
+        for requirement, at in zip(requirements, found, strict=True)
+        if at
+    )
+    first = next((chosen for _, chosen, _ in conditions if chosen is not None), None)
+    return report.WorstCaseReport(
+        step=worst_case.step,
+        toleranced=0 if first is None else len(variation.toleranced(first.built)),
+        corners=tuple(corner for corner, _, _ in conditions if corner is not None),
+        runs=runs,
+        verdicts=verdicts,
+    )
+
+
+def _overridden(
+    chosen: fidelity.Fidelity, plan: Plan, overrides: dict[str, dict[str, float]]
+) -> dict[str, Result]:
+    """The results of `plan`'s analyses that end on the circuit `chosen` holds.
+
+    Its parameters are replaced by `overrides`; no analysis ends where it does not
+    elaborate.
+    """
+    solved: dict[str, Result] = {}
+    try:
+        simulation = chosen.simulation(overrides)
+    except ElaborationError:
+        return solved
+    solved, _ = _analyses(simulation, plan, 1)
+    return solved
+
+
+def _slopes(
+    varied: Sequence[variation.Varied],
+    requirements: Sequence[Requirement],
+    nominal: Mapping[str, Result],
+    step: float,
+    run: Callable[[dict[str, dict[str, float]]], Mapping[str, Result]],
+) -> list[list[float]]:
+    """How far each requirement's value moves, per parameter of `varied` moved.
+
+    Each parameter moves `step` of its tolerance, and `run` runs the analyses there;
+    a value moves from its value on the `nominal` results, and 0 where either cannot be
+    read.
+    """
+    base = [reading(requirement, nominal) for requirement in requirements]
+    slopes = []
+    for index in range(len(varied)):
+        moved = run(variation.moved(varied, index, step))
+        slope = []
+        for requirement, before in zip(requirements, base, strict=True):
+            after = reading(requirement, moved)
+            slope.append(0.0 if before is None or after is None else after - before)
+        slopes.append(slope)
+    return slopes
 
 
 def _specs(script: Path, namespaces: dict[Path, dict[str, object]]) -> Specs | None:

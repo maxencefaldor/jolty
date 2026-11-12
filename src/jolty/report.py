@@ -18,7 +18,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from jolty import results, specs
-from jolty.specs import Spread, Yield
+from jolty.specs import Spread, Verdict, Yield
 from jolty.units import format_si
 
 type Quantity = Literal["voltage", "current"]
@@ -557,6 +557,49 @@ class MonteCarloReport(_Model):
         lines.extend(f"  {spread.describe(self.samples)}" for spread in self.spreads)
         if self.passing is not None:
             lines.append(f"  {self.passing.describe()}")
+        return "\n".join(lines)
+
+
+class WorstCaseReport(_Model):
+    """What each requirement read at the extremes of the tolerances that worsen it."""
+
+    step: float = Field(
+        description="The fraction of its tolerance each parameter moved to find which "
+        "way each requirement's value moves with it."
+    )
+    toleranced: int = Field(description="The toleranced parameters moved.")
+    corners: tuple[str, ...] = Field(
+        default=(),
+        description="The corners the worst case also ran at, after the plan's own "
+        "conditions.",
+    )
+    runs: int = Field(
+        description="The simulations run: one per parameter and conditions to find "
+        "which way each value moves, and one per distinct set of extremes."
+    )
+    verdicts: tuple[Verdict, ...] = Field(
+        default=(),
+        description="Each requirement's verdict, the worst over its bounds' extremes "
+        "at the plan's own conditions and at each corner.",
+    )
+
+    @property
+    def ok(self) -> bool:
+        """Whether every requirement passes, if marginally, at its extremes."""
+        return all(
+            verdict.status in {"passed", "marginal"} for verdict in self.verdicts
+        )
+
+    def describe(self) -> str:
+        """The report as text."""
+        at = "".join(f", at {name}" for name in self.corners)
+        head = (
+            f"worst case: {self.toleranced} toleranced parameters, each moved "
+            f"{self.step:.4g} of its tolerance{at}; {self.runs} runs"
+        )
+        lines = [head]
+        for verdict in self.verdicts:
+            lines.extend(f"  {line}" for line in verdict.describe().splitlines())
         return "\n".join(lines)
 
 

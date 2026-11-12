@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""Monte Carlo samples of a circuit's tolerances.
+"""Monte Carlo samples of a circuit's tolerances, and their extremes.
 
 A device may give some of its parameters a tolerance, such as a resistor's 1 %, or a
 supply's DC level, ``waveform.dc``. Each sample draws every such parameter of every
@@ -8,7 +8,8 @@ device instance, independently, around its nominal value, by a factor its
 apart, since each is its own instance. A part from a lot is scaled by the lot's factor
 too, drawn once per sample for each parameter and shared by every part in the lot, as
 the parts on one die drift together. A sample replaces the parameters by instance path,
-then by parameter path, as the engine's overrides do.
+then by parameter path, as the engine's overrides do. A worst case moves each parameter,
+and each lot's spread, to an extreme of its tolerance instead, or a step toward one.
 
 Examples:
     >>> import numpy as np
@@ -30,7 +31,7 @@ Examples:
 """
 
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -85,6 +86,70 @@ def sample(
             parameter.nominal * factor
         )
     return drawn
+
+
+type Lot = tuple[str, str]
+"""A lot's spread of one parameter: the lot's name and the parameter's path."""
+
+
+def lot(varied: Varied) -> Lot | None:
+    """The lot whose spread `varied` shares, by name and parameter; None for none."""
+    shared = varied.tolerance.lot
+    return None if shared is None else (shared.name, varied.parameter)
+
+
+def moved(
+    varied: Sequence[Varied], index: int, fraction: float
+) -> dict[str, dict[str, float]]:
+    """The parameter of `varied` at `index` moved `fraction` of its tolerance up.
+
+    The others keep their nominal values, which the circuit holds already.
+    """
+    parameter = varied[index]
+    value = parameter.nominal * edge(parameter.tolerance, fraction)
+    return {parameter.path: {parameter.parameter: value}}
+
+
+def extreme(
+    varied: Iterable[Varied],
+    directions: Sequence[float],
+    lots: Mapping[Lot, float],
+) -> dict[str, dict[str, float]]:
+    """Each of `varied` at the extreme of its tolerance in its direction.
+
+    A direction is 1 up, -1 down, or 0 for the nominal value; each part is scaled by its
+    lot's spread too, at the extreme in the lot's direction in `lots`, 0 unless given.
+    The values come by instance path, then by parameter path.
+    """
+    found: dict[str, dict[str, float]] = {}
+    for parameter, direction in zip(varied, directions, strict=True):
+        factor = edge(parameter.tolerance, direction)
+        if (shared := parameter.tolerance.lot) is not None:
+            key = (shared.name, parameter.parameter)
+            factor *= edge(shared, lots.get(key, 0.0))
+        found.setdefault(parameter.path, {})[parameter.parameter] = (
+            parameter.nominal * factor
+        )
+    return found
+
+
+def edge(spread: ir.Tolerance | ir.Lot, direction: float) -> float:
+    """The factor `direction` of the way from nominal to the upper extreme of `spread`.
+
+    The extreme is its relative tolerance, three standard deviations of a normal one, or
+    its factor ``1 + relative`` for a logarithmic one; -1 is the lower extreme.
+
+    Examples:
+        >>> edge(ir.Tolerance(relative=0.05), -1)
+        0.95
+        >>> edge(ir.Tolerance(relative=1.0, distribution="log_uniform"), -1)
+        0.5
+    """
+    match spread.distribution:
+        case "uniform" | "normal":
+            return 1 + direction * spread.relative
+        case "log_uniform" | "log_normal":
+            return math.pow(1 + spread.relative, direction)
 
 
 def _factor(spread: ir.Tolerance | ir.Lot, generator: np.random.Generator) -> float:

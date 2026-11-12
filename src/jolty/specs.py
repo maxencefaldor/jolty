@@ -28,7 +28,7 @@ Examples:
 
 import math
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, override
 
@@ -470,12 +470,36 @@ def evaluate(
     """
     runs = [(None, solved), *(corners or {}).items()]
     return tuple(
-        min(
-            (_verdict(requirement, planned, found, corner) for corner, found in runs),
-            key=_badness,
-        )
-        for requirement in specs.requirements
+        judge(requirement, planned, runs) for requirement in specs.requirements
     )
+
+
+def judge(
+    requirement: Requirement,
+    planned: Collection[str],
+    runs: Iterable[tuple[str | None, Mapping[str, results.Result]]],
+) -> Verdict:
+    """The worst verdict on `requirement` over `runs`.
+
+    Each run holds the results of the analyses that ended, by name, and is named by its
+    corner, None for the plan's own conditions; `planned` names every analysis.
+
+    Raises:
+        ValueError: When there is no run.
+    """
+    verdicts = [_verdict(requirement, planned, found, corner) for corner, found in runs]
+    if not verdicts:
+        message = f"{requirement} is judged on a run or more"
+        raise ValueError(message)
+    return min(verdicts, key=_badness)
+
+
+def reading(
+    requirement: Requirement, found: Mapping[str, results.Result]
+) -> float | None:
+    """The value `requirement` reads of the results `found`; None when it cannot."""
+    verdict = _verdict(requirement, found.keys(), found, None)
+    return verdict.value
 
 
 def _badness(verdict: Verdict) -> tuple[int, float]:
