@@ -204,7 +204,7 @@ def converter(work: Path, body: str) -> None:
         "@component\n"
         "def converter(c: Builder) -> None:\n"
         "    ground = c.port('ground', Role.GROUND)\n"
-        "    c.port('vee', Role.SUPPLY)\n"
+        "    vee = c.port('vee', Role.SUPPLY)\n"
         "    plus, minus, output = c.port('plus'), c.port('minus'), c.port('output')\n"
         f"{body}"
         "build = converter\n",
@@ -336,3 +336,29 @@ def test_an_ideal_discrete_cubic_has_no_error_but_is_forbidden(tmp_path: Path) -
     assert verdict.reasons == (
         "B1 is a behavioral_current_source, which the task forbids",
     )
+
+
+def test_a_converter_that_oscillates_does_not_settle(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    parts = VOLTAGE_CURRENT / "given" / "parts.py"
+    converter(
+        tmp_path,
+        "    from runpy import run_path\n"
+        "    from jolty.units import pF\n"
+        f"    npn = run_path({str(parts)!r})['npn']\n"
+        "    stages = [c.place(npn(), id=f'Q{index}') for index in range(3)]\n"
+        "    for index, stage in enumerate(stages):\n"
+        "        load = c.place(devices.resistor(10 * kohm), id=f'RC{index}')\n"
+        "        drive = c.place(devices.resistor(100 * kohm), id=f'RB{index}')\n"
+        "        slow = c.place(devices.capacitor(100 * pF), id=f'C{index}')\n"
+        "        c.connect(load.a, minus)\n"
+        "        c.connect(load.b, stage.collector, drive.a, slow.a)\n"
+        "        c.connect(drive.b, stages[(index + 1) % 3].base)\n"
+        "        c.connect(slow.b, stage.emitter, vee)\n"
+        "    out = c.place(devices.resistor(1 * kohm), id='RO')\n"
+        "    c.connect(out.a, stages[0].collector)\n"
+        "    c.connect(out.b, output)\n",
+    )
+    verdict = score(VOLTAGE_CURRENT, tmp_path)
+    assert any("still swings" in reason for reason in verdict.reasons)

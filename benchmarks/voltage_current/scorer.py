@@ -9,7 +9,9 @@ divided by the patented circuit's on that case, as Koza measured it: 41, 36, 26 
 µA, which he gives in microvolts, as many across the 1 Ω load. The fitness is the four
 ratios' mean, as Koza weighted it, so the patent's is 1, and the circuit genetic
 programming evolved reached 0.619. The work meets the task when it builds from the
-allowed parts alone and its fitness is at most 1.
+allowed parts alone, its fitness is at most 1, and its output current settles within
+40 µs after ``VS`` steps by 10 mV at three points of its range: a check Koza's fitness
+lacks, since its steps of 1/30 s cannot see an oscillation.
 
 Koza's added input is ``plus`` and his subtracted one ``minus``; his evolved circuit
 sources a current from the first and sinks one into the second, so the output current
@@ -26,8 +28,8 @@ from verdict import Verdict
 
 from jolty import Builder, Component, Role, Simulation, circuit, component, devices
 from jolty.plan import Transient
-from jolty.units import Hz, V, ohm, s
-from jolty.waveforms import Piecewise, Sine
+from jolty.units import Hz, V, ns, ohm, s, us
+from jolty.waveforms import Piecewise, Pulse, Sine
 
 TRANSCONDUCTANCE = 1e-3
 """The output current per volt of the inputs' difference, in amperes per volt."""
@@ -39,6 +41,14 @@ EVOLVED = 0.619
 """The fitness of the circuit genetic programming evolved, as Koza found."""
 ALLOWED = {"resistor", "capacitor"}
 """The devices the design may hold besides the given transistors."""
+STEP = 10e-3
+"""The step of ``VS`` the output current must settle after, in volts."""
+SETTLING = ((6.0, 4.0, 0.0), (10.0, 2.0, 1.0), (2.0, 10.0, -1.0))
+"""Where it must settle: ``plus``, ``minus`` and ``VS`` before the step, in volts."""
+UNSETTLED = 1e-6
+"""The swing of the output current, in amperes, beyond which it has not settled."""
+SETTLED = 40e-6
+"""The time from which the output current must have settled, in seconds."""
 
 
 def ramp(start: float, end: float) -> devices.Device:
@@ -63,27 +73,53 @@ def cases() -> list[tuple[devices.Device, devices.Device]]:
     ]
 
 
+def swing() -> devices.Device:
+    """Koza's ``VS``: 1 V about 0 V at 3.2 Hz."""
+    return devices.voltage_source(
+        Sine(offset=0 * V, amplitude=1 * V, frequency=3.2 * Hz)
+    )
+
+
+def step(level: float) -> devices.Device:
+    """A ``VS`` that steps from `level` to 10 mV above it at 1 µs, over 1 ns."""
+    return devices.voltage_source(
+        Pulse(
+            initial=level * V,
+            pulsed=(level + STEP) * V,
+            delay=1 * us,
+            rise=1 * ns,
+            fall=1 * ns,
+            width=1 * s,
+        )
+    )
+
+
 @component
-def bench(c: Builder, made: Component, case: int) -> None:
-    """`made` on Koza's fixture, its inputs driven as in `case`."""
+def bench(
+    c: Builder,
+    made: Component,
+    inputs: tuple[devices.Device, devices.Device],
+    output: devices.Device,
+) -> None:
+    """`made` on Koza's fixture, driven by `inputs` and `output`.
+
+    `inputs` drive ``plus`` and ``minus``, and `output` is ``VS``.
+    """
     ground = c.port("ground", Role.GROUND)
     placed = c.place(made, id="X1")
     supply = c.place(devices.voltage_source(-15 * V), id="VEE")
     c.connect(supply.positive, placed.vee)
     c.connect(supply.negative, placed.ground, ground)
-    for name, source in zip(("plus", "minus"), cases()[case], strict=True):
+    for name, source in zip(("plus", "minus"), inputs, strict=True):
         driven = c.place(source, id=f"V{name.upper()}")
         series = c.place(devices.resistor(1e-6 * ohm), id=f"R{name.upper()}")
         c.connect(driven.positive, series.a, name=name)
         c.connect(series.b, placed[name])
         c.connect(driven.negative, ground)
-    swing = c.place(
-        devices.voltage_source(Sine(offset=0 * V, amplitude=1 * V, frequency=3.2 * Hz)),
-        id="VS",
-    )
+    held = c.place(output, id="VS")
     load = c.place(devices.resistor(1 * ohm), id="RLOAD")
-    c.connect(placed.output, swing.positive, name="output")
-    c.connect(swing.negative, load.a, name="load")
+    c.connect(placed.output, held.positive, name="output")
+    c.connect(held.negative, load.a, name="load")
     c.connect(load.b, ground)
 
 
@@ -91,8 +127,8 @@ def errors(made: Component) -> list[float]:
     """The mean absolute error of `made`'s output current in each case, in amperes."""
     times = np.linspace(0.0, 1.0, TIMES)
     found = []
-    for case in range(len(PATENT)):
-        waveforms = Simulation(circuit(bench(made, case))).run(
+    for inputs in cases():
+        waveforms = Simulation(circuit(bench(made, inputs, swing()))).run(
             Transient(
                 stop=1 * s,
                 max_step=(1 / (10 * (TIMES - 1))) * s,
@@ -111,6 +147,29 @@ def errors(made: Component) -> list[float]:
     return found
 
 
+def unsettled(made: Component) -> list[str]:
+    """Where `made`'s output current does not settle after ``VS`` steps by 10 mV.
+
+    The fitness cases' steps are milliseconds long, too long to see an oscillation; this
+    reads the current over the last 10 µs of 50, at steps of 10 ns.
+    """
+    found = []
+    for plus, minus, level in SETTLING:
+        inputs = (devices.voltage_source(plus * V), devices.voltage_source(minus * V))
+        waveforms = Simulation(circuit(bench(made, inputs, step(level)))).run(
+            Transient(stop=50 * us, max_step=10 * ns)
+        )
+        late = waveforms.times >= SETTLED
+        current = waveforms.current("RLOAD", "a")[late]
+        swing = float(np.ptp(current))
+        if swing > UNSETTLED:
+            found.append(
+                f"with plus at {plus} V, minus at {minus} V and VS stepped from "
+                f"{level} V, the output current still swings by {swing:.3g} A"
+            )
+    return found
+
+
 def score(task: Path, work: Path) -> Verdict:
     """The verdict on the voltage-current converter in `work`."""
     parts = runpy.run_path(str(task / "given" / "parts.py"))
@@ -122,8 +181,9 @@ def score(task: Path, work: Path) -> Verdict:
     made = runpy.run_path(str(design))["build"]()
     if not isinstance(made, Component):
         return Verdict(met=False, reasons=("build() returns no component",))
-    built = circuit(bench(made, 0))
+    built = circuit(bench(made, cases()[0], swing()))
     reasons = disallowed(built, given, ALLOWED)
+    reasons += unsettled(made)
     found = errors(made)
     fitness = float(
         np.mean([mine / theirs for mine, theirs in zip(found, PATENT, strict=True)])
