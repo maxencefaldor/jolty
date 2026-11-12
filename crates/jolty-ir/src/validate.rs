@@ -71,10 +71,11 @@ pub enum Problem {
         id: Name,
     },
     /// An instance gives a tolerance to a parameter it gives no number to, or a tolerance
-    /// that is not at least 0 and below 1.
+    /// its distribution does not [take](crate::Distribution::takes).
     #[error(
         "instance `{component}/{id}` gives `{parameter}` a tolerance of {relative}, which \
-         needs a number for it and a tolerance at least 0 and below 1"
+         needs a number for it and a tolerance at least 0, and below 1 unless its logarithm \
+         spreads"
     )]
     InvalidTolerance {
         /// The component that places the instance.
@@ -86,11 +87,12 @@ pub enum Problem {
         /// The tolerance, in its shortest exact form.
         relative: String,
     },
-    /// An instance takes a parameter from a lot whose tolerance is not at least 0 and
-    /// below 1.
+    /// An instance takes a parameter from a lot whose tolerance its distribution does not
+    /// [take](crate::Distribution::takes).
     #[error(
         "instance `{component}/{id}` takes `{parameter}` from lot `{lot}` with a tolerance \
-         of {relative}, which needs to be at least 0 and below 1"
+         of {relative}, which needs to be at least 0, and below 1 unless its logarithm \
+         spreads"
     )]
     InvalidLot {
         /// The component that places the instance.
@@ -253,7 +255,7 @@ fn check_component(
         for (parameter, tolerance) in &instance.tolerances {
             let numeric = crate::parameter(&instance.parameters, parameter)
                 .is_some_and(serde_json::Value::is_number);
-            if !numeric || !(0.0..1.0).contains(&tolerance.relative) {
+            if !numeric || !tolerance.distribution.takes(tolerance.relative) {
                 problems.push(Problem::InvalidTolerance {
                     component: name.clone(),
                     id: instance.id.clone(),
@@ -262,7 +264,7 @@ fn check_component(
                 });
             }
             if let Some(lot) = &tolerance.lot
-                && !(0.0..1.0).contains(&lot.relative)
+                && !lot.distribution.takes(lot.relative)
             {
                 problems.push(Problem::InvalidLot {
                     component: name.clone(),
@@ -552,13 +554,25 @@ mod tests {
             messages,
             [
                 "instance `top/R4` takes `resistance` from lot `die` with a tolerance of 1.5, \
-                 which needs to be at least 0 and below 1",
+                 which needs to be at least 0, and below 1 unless its logarithm spreads",
                 "instances `top/R1` and `top/R3` spread `resistance` of lot `die` differently, \
                  and a lot spreads each parameter one way",
                 "instances `top/R1` and `top/R4` spread `resistance` of lot `die` differently, \
                  and a lot spreads each parameter one way",
             ]
         );
+    }
+
+    #[test]
+    fn a_logarithmic_spread_takes_any_factor() {
+        use crate::Distribution;
+        assert!(Distribution::LogUniform.takes(35.0));
+        assert!(Distribution::LogNormal.takes(0.0));
+        assert!(!Distribution::LogUniform.takes(f64::INFINITY));
+        assert!(!Distribution::LogNormal.takes(-0.1));
+        assert!(Distribution::Uniform.takes(0.0));
+        assert!(!Distribution::Uniform.takes(1.0));
+        assert!(!Distribution::Normal.takes(-0.1));
     }
 
     #[test]

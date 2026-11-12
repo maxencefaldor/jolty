@@ -20,9 +20,10 @@ from jolty import (
     circuit,
     component,
     devices,
+    ir,
 )
 from jolty.plan import linear
-from jolty.units import CURRENT, A, MHz, Quantity, V, kohm, nF
+from jolty.units import CURRENT, A, MHz, Quantity, V, kohm, mA, nF
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks"
 COST_DOWN = BENCHMARKS / "cost_down"
@@ -261,8 +262,10 @@ def test_a_converter_blind_to_one_input_falls_short(tmp_path: Path) -> None:
     )
     verdict = score(VOLTAGE_CURRENT, tmp_path)
     assert not verdict.met
-    nominal, *cornered = verdict.reasons
+    fitness = [reason for reason in verdict.reasons if "the fitness is " in reason]
+    nominal, *cornered = fitness
     assert nominal.startswith("the fitness is ")
+    assert "settles 0.00398 A from its 0.002 A" in verdict.reasons[1]
     assert [reason.split(", the fitness is ")[0] for reason in cornered] == [
         "at 0 °C with the supplies 5 % low",
         "at 0 °C with the supplies 5 % high",
@@ -463,39 +466,71 @@ def test_an_integrated_designs_resistors_stray_together() -> None:
     first = np.array([board.parts["X1/R1"]["resistance"] / 1e3 for board in drawn])
     second = np.array([board.parts["X1/R2"]["resistance"] / 3e3 for board in drawn])
     assert np.abs(first - 1).max() > 0.15
-    assert np.abs(first - second).max() <= 0.002
+    assert np.abs(first / second - 1).max() <= 0.0025
 
 
 def test_the_given_transistors_stray_within_their_datasheets() -> None:
-    from scoring import BETAS  # noqa: PLC0415 - importable only once the path holds it
+    from scoring import REELS  # noqa: PLC0415 - importable only once the path holds it
 
     given = runpy.run_path(str(VOLTAGE_CURRENT / "given" / "parts.py"))
+    measures = {
+        "forward_beta": (_gain_at_10_milliamperes, 100.0, 300.0),
+        "saturation_current": (_saturation_voltage, 0.65, 0.85),
+    }
     for make, polarity, sign in (
         (given["npn"], "npn", 1.0),
         (given["pnp"], "pnp", -1.0),
     ):
         made = make()
-        spread = BETAS[polarity].relative
-        for scale in (1 - spread, 1 + spread):
-            beta = made.parameters["forward_beta"]
-            assert isinstance(beta, float)
-            stray = replace(
-                made, parameters={**made.parameters, "forward_beta": beta * scale}
-            )
-            assert 100 <= _gain_at_10_milliamperes(stray, sign) <= 300
-        assert (
-            _gain_at_10_milliamperes(
-                replace(
-                    made,
-                    parameters={
-                        **made.parameters,
-                        "forward_beta": beta * (1 - spread - 0.02),
-                    },
-                ),
-                sign,
-            )
-            < 100
-        )
+        for parameter, tolerance in REELS[polarity].items():
+            measure, least, most = measures[parameter]
+            for wider in (0.0, 0.05):
+                readings = [
+                    measure(_scaled(made, parameter, factor), sign)
+                    for factor in _extremes(tolerance, wider)
+                ]
+                within = all(least <= reading <= most for reading in readings)
+                assert within == (wider == 0), (polarity, parameter, readings)
+
+
+def _extremes(tolerance: ir.Tolerance, wider: float) -> tuple[float, float]:
+    """The least and greatest factors `tolerance` and its lot draw.
+
+    The lot's spread is widened by `wider`, relative to it.
+    """
+    assert tolerance.lot is not None
+    lot = tolerance.lot.relative * (1 + wider)
+    if tolerance.distribution.startswith("log"):
+        greatest = (1 + lot) * (1 + tolerance.relative)
+        return 1 / greatest, greatest
+    return (1 - lot) * (1 - tolerance.relative), (1 + lot) * (1 + tolerance.relative)
+
+
+def _scaled(
+    transistor: devices.Device, parameter: str, factor: float
+) -> devices.Device:
+    """`transistor` with `parameter` scaled by `factor`."""
+    value = transistor.parameters[parameter]
+    assert isinstance(value, float)
+    return replace(
+        transistor, parameters={**transistor.parameters, parameter: value * factor}
+    )
+
+
+def _saturation_voltage(transistor: devices.Device, sign: float) -> float:
+    """The base-emitter voltage of `transistor` in saturation, at 10 mA and 1 mA."""
+
+    @component
+    def fixture(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        placed = c.place(transistor, id="Q1")
+        collector = c.place(devices.current_source(sign * 10 * mA), id="IC")
+        base = c.place(devices.current_source(sign * 1 * mA), id="IB")
+        c.connect(collector.negative, placed.collector)
+        c.connect(base.negative, placed.base, name="base")
+        c.connect(collector.positive, base.positive, placed.emitter, ground)
+
+    return abs(Simulation(fixture()).run(OperatingPoint()).voltage("base"))
 
 
 def _gain_at_10_milliamperes(transistor: devices.Device, sign: float) -> float:

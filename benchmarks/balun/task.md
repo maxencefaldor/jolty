@@ -24,7 +24,9 @@ The design meets the task when it holds only the parts allowed and, with its par
 - the DC offset between the outputs is at most 1.72 mV.
 
 It must meet the task from 0 °C to 70 °C with its supply anywhere within 5 % of its level: the scorer checks it at 27 °C with the supply exact, and at 0 °C and at 70 °C with the supply 5 % low and 5 % high.
-On each board, every resistor lies anywhere within 1 % of its value and every capacitor within 5 %, whatever tolerance you give them, and each transistor's forward beta strays as far as its datasheet's current gain at 10 mA, 100 to 300, allows: a 2N3904's within 57 % of its model's, a 2N3906's within 38 %, each part apart from every other.
+On each board, every resistor lies anywhere within 1 % of its value and every capacitor within 5 %, whatever tolerance you give them.
+The board's 2N3904s come from one reel and its 2N3906s from another, each reel anywhere its datasheet allows: a current gain at 10 mA from 100 to 300, and a base-emitter saturation voltage at 10 mA from 0.65 V to 0.85 V, where the models give 160 and 0.743 V for the 2N3904, and 163 and 0.791 V for the 2N3906.
+On a reel, each transistor's current gain lies within 2 % of any other's and its base-emitter voltage within 2 mV, as a matched pair's from adjacent die do.
 
 A reference circuit reaches 0.60 dB and −33.9 dB; lower is better on both, and at equal results, fewer parts are better.
 

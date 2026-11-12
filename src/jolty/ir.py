@@ -11,9 +11,9 @@ object, as ``waveform.dc`` names a source's DC level.
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Literal, override
+from typing import Literal, Self, override
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 class _Model(BaseModel):
@@ -67,30 +67,55 @@ class Source(_Model):
         return f"{self.file}:{self.line} {within}"
 
 
-class Lot(_Model):
+type Distribution = Literal["uniform", "normal", "log_uniform", "log_normal"]
+"""How values spread within a tolerance.
+
+A value lies off its nominal one by a factor: ``1 + d``, with ``d`` evenly within a
+``uniform`` tolerance or normally within a ``normal`` one, the tolerance three standard
+deviations; or ``(1 + relative) ** u``, with ``u`` evenly within 1 of 0 for
+``log_uniform`` or normally for ``log_normal``, 1 three standard deviations, as an
+exponential's argument spreads, such as a saturation current's when the junction voltage
+it sets does.
+"""
+
+
+class _Spread(_Model):
+    """A tolerance and how values spread within it."""
+
+    relative: float = Field(ge=0, allow_inf_nan=False)
+    distribution: Distribution = "uniform"
+
+    @model_validator(mode="after")
+    def _taken(self) -> Self:
+        """Holds a linear spread below 1, so that no value reaches 0."""
+        if self.relative >= 1 and not self.distribution.startswith("log"):
+            message = (
+                f"a {self.distribution} tolerance needs to be below 1, not "
+                f"{self.relative}; only a logarithmic one may exceed it"
+            )
+            raise ValueError(message)
+        return self
+
+
+class Lot(_Spread):
     """A spread that the parts of one lot share.
 
     As parts from one reel or one die drift together, each parameter of theirs takes
-    one deviation from the lot per sample, which adds to each part's own. A lot is
-    known by its name wherever in the hierarchy a part names it, and spreads each
-    parameter one way.
+    one factor from the lot per sample, which scales each part's own. A lot is known by
+    its name wherever in the hierarchy a part names it, and spreads each parameter one
+    way.
     """
 
     name: str
-    relative: float = Field(ge=0, lt=1)
-    distribution: Literal["uniform", "normal"] = "uniform"
 
 
-class Tolerance(_Model):
+class Tolerance(_Spread):
     """How far a parameter's value may lie from its nominal one, relative to it.
 
-    Values spread evenly within a ``uniform`` tolerance, and normally within a
-    ``normal`` one, with the tolerance three standard deviations. A part's own deviation
-    is drawn apart from every other part's; one in a `lot` adds the lot's.
+    A part's own factor is drawn apart from every other part's; one in a `lot` is scaled
+    by the lot's too.
     """
 
-    relative: float = Field(ge=0, lt=1)
-    distribution: Literal["uniform", "normal"] = "uniform"
     lot: Lot | None = Field(default=None, exclude_if=lambda lot: lot is None)
 
 

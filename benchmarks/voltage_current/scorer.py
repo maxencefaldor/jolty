@@ -2,19 +2,21 @@
 """The voltage-current converter task's scorer, which the agent never sees.
 
 It places the agent's component on Koza's test fixture for the voltage-current converter
-of US patent 6,166,529 (Genetic Programming IV, sections 15.3.1.4 and 15.3.5.4) and
-runs his four fitness cases: one second each, the output current read at 31 times, 1/30
-s apart. Each case's mean absolute error against 1 mA/V times the inputs' difference is
+of US patent 6,166,529 (Genetic Programming IV, sections 15.3.1.4 and 15.3.5.4) and runs
+his four fitness cases: one second each, the output current read at 31 times, 1/30 s
+apart. Each case's mean absolute error against 1 mA/V times the inputs' difference is
 divided by the patented circuit's on that case, as Koza measured it: 41, 36, 26 and 44
 µA, which he gives in microvolts, as many across the 1 Ω load. The fitness is the four
 ratios' mean, as Koza weighted it, so the patent's is 1, and the circuit genetic
 programming evolved reached 0.619. The work meets the task when it builds from the
-allowed parts alone, its fitness is at most 1, and its output current settles within
-40 µs after ``VS`` steps by 10 mV at three points of its range: a check Koza's fitness
-lacks, since its steps of 1/30 s cannot see an oscillation. Both must hold from 0 °C to
+allowed parts alone, its fitness is at most 1, and its output current settles within 40
+µs after ``VS`` steps by 10 mV at three points of its range, to within 44 µA, the
+patent's largest mean error, of 1 mA/V times the inputs' difference: a check Koza's
+fitness lacks, since its steps of 1/30 s cannot see an oscillation, and its 31 readings
+may miss the output's extremes. All of it must hold from 0 °C to
 70 °C with the supply within 5 % of -15 V, and on 95 % of boards of the design too,
-built of resistors within 1 %, capacitors within 5 % and transistors whose current gain
-spans their datasheets', each board over the same range: margins Koza's circuits,
+built of resistors within 1 %, capacitors within 5 % and transistors from reels anywhere
+in their datasheets' ranges, each board over the same range: margins Koza's circuits,
 simulated with exact parts at 27 °C, need not keep.
 
 Koza's added input is ``plus`` and his subtracted one ``minus``; his evolved circuit
@@ -56,6 +58,10 @@ UNSETTLED = 1e-6
 """The swing of the output current, in amperes, beyond which it has not settled."""
 SETTLED = 40e-6
 """The time from which the output current must have settled, in seconds."""
+SETTLED_ERROR = max(PATENT)
+"""How far, in amperes, the settled output current may lie from 1 mA/V times the inputs'
+difference: the patent's largest mean error over a case, so that a design no worse than
+the patent on average is no worse at these points either."""
 
 
 def ramp(start: float, end: float) -> devices.Device:
@@ -136,7 +142,8 @@ def measure(made: Component, board: Board) -> dict[str, float]:
     Each case gives its mean absolute error of the output current, in amperes, and the
     fitness weighs them. The fitness cases' steps are milliseconds long, too long to see
     an oscillation; each settling step gives the swing of the output current over the
-    last 10 µs of 50, read at steps of 10 ns.
+    last 10 µs of 50, read at steps of 10 ns, and its mean's error against 1 mA/V
+    times the inputs' difference.
     """
     times = np.linspace(0.0, 1.0, TIMES)
     errors = []
@@ -171,6 +178,8 @@ def measure(made: Component, board: Board) -> dict[str, float]:
         late = waveforms.times >= SETTLED
         current = waveforms.current("RLOAD", "a")[late]
         measurements[f"swing {case}"] = float(np.ptp(current))
+        wanted = TRANSCONDUCTANCE * (plus - minus)
+        measurements[f"settled error {case}"] = abs(float(np.mean(current)) - wanted)
     return measurements
 
 
@@ -187,6 +196,14 @@ def shortfalls(found: dict[str, float]) -> list[str]:
             reasons.append(
                 f"with plus at {plus} V, minus at {minus} V and VS stepped from "
                 f"{level} V, the output current still swings by {swing:.3g} A"
+            )
+        error = found[f"settled error {case}"]
+        if error > SETTLED_ERROR:
+            reasons.append(
+                f"with plus at {plus} V, minus at {minus} V and VS stepped from "
+                f"{level} V, the output current settles {error:.3g} A from its "
+                f"{TRANSCONDUCTANCE * (plus - minus):.3g} A, more than the patent's "
+                f"largest mean error, {SETTLED_ERROR:.3g} A"
             )
     return reasons
 

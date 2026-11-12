@@ -3,13 +3,12 @@
 
 A device may give some of its parameters a tolerance, such as a resistor's 1 %, or a
 supply's DC level, ``waveform.dc``. Each sample draws every such parameter of every
-device instance, independently, around its nominal value: evenly within a ``uniform``
-tolerance, and normally within a ``normal`` one, the tolerance three standard
-deviations. Two placements of one component vary apart, since each is its own instance.
-A part from a lot adds the lot's deviation, drawn once per sample for each parameter
-and shared by every part in the lot, as the parts on one die drift together. A sample
-replaces the parameters by instance path, then by parameter path, as the engine's
-overrides do.
+device instance, independently, around its nominal value, by a factor its
+[distribution][jolty.ir.Distribution] spreads. Two placements of one component vary
+apart, since each is its own instance. A part from a lot is scaled by the lot's factor
+too, drawn once per sample for each parameter and shared by every part in the lot, as
+the parts on one die drift together. A sample replaces the parameters by instance path,
+then by parameter path, as the engine's overrides do.
 
 Examples:
     >>> import numpy as np
@@ -30,9 +29,9 @@ Examples:
     True
 """
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal
 
 import numpy as np
 
@@ -69,35 +68,37 @@ def sample(
     """One sample of the `varied` parameters, drawn from `generator`.
 
     It holds each parameter's value, by instance path then by parameter path. Each
-    parameter draws its own deviation, then the deviation of its lot, if it has one and
-    no parameter before it in the lot drew it.
+    parameter draws its own factor, then the factor of its lot, if it has one and no
+    parameter before it in the lot drew it.
     """
     drawn: dict[str, dict[str, float]] = {}
     lots: dict[tuple[str, str], float] = {}
     for parameter in varied:
         tolerance = parameter.tolerance
-        deviation = _deviation(tolerance.relative, tolerance.distribution, generator)
+        factor = _factor(tolerance, generator)
         if (lot := tolerance.lot) is not None:
             key = (lot.name, parameter.parameter)
             if key not in lots:
-                lots[key] = _deviation(lot.relative, lot.distribution, generator)
-            deviation += lots[key]
-        value = parameter.nominal * (1 + deviation)
-        drawn.setdefault(parameter.path, {})[parameter.parameter] = value
+                lots[key] = _factor(lot, generator)
+            factor *= lots[key]
+        drawn.setdefault(parameter.path, {})[parameter.parameter] = (
+            parameter.nominal * factor
+        )
     return drawn
 
 
-def _deviation(
-    relative: float,
-    distribution: Literal["uniform", "normal"],
-    generator: np.random.Generator,
-) -> float:
-    """A relative deviation within `relative`, spread by `distribution`."""
-    match distribution:
+def _factor(spread: ir.Tolerance | ir.Lot, generator: np.random.Generator) -> float:
+    """A factor drawn from `generator` within `spread`, as its distribution has it."""
+    relative = spread.relative
+    match spread.distribution:
         case "uniform":
-            return float(generator.uniform(-relative, relative))
+            return 1 + float(generator.uniform(-relative, relative))
         case "normal":
-            return float(generator.normal(0.0, relative / 3))
+            return 1 + float(generator.normal(0.0, relative / 3))
+        case "log_uniform":
+            return math.pow(1 + relative, float(generator.uniform(-1.0, 1.0)))
+        case "log_normal":
+            return math.pow(1 + relative, float(generator.normal(0.0, 1 / 3)))
 
 
 def _walk(circuit: ir.Circuit, component: str, prefix: str) -> Iterable[Varied]:

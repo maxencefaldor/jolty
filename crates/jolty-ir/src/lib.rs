@@ -136,7 +136,8 @@ pub struct Instance {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tolerance {
-    /// The part's own tolerance, at least 0 and below 1, such as `0.01` for 1 %.
+    /// The part's own tolerance, such as `0.01` for 1 %, as its distribution
+    /// [takes](Distribution::takes) it.
     pub relative: f64,
     /// How values spread within it.
     #[serde(default)]
@@ -147,8 +148,8 @@ pub struct Tolerance {
 }
 
 /// A spread that the parts of one lot share, as parts from one reel, or on one die, drift
-/// together: each parameter of theirs takes one deviation from it per sample, which adds
-/// to each part's own.
+/// together: each parameter of theirs takes one factor from it per sample, which scales
+/// each part's own.
 ///
 /// A lot is known by its name wherever in the hierarchy a part names it, and spreads each
 /// parameter one way.
@@ -157,7 +158,7 @@ pub struct Tolerance {
 pub struct Lot {
     /// The lot's name.
     pub name: Name,
-    /// The lot's tolerance, at least 0 and below 1.
+    /// The lot's tolerance, as its distribution [takes](Distribution::takes) it.
     pub relative: f64,
     /// How the lot's deviations spread within it.
     #[serde(default)]
@@ -165,6 +166,11 @@ pub struct Lot {
 }
 
 /// How a parameter's values spread within its tolerance.
+///
+/// A value lies off its nominal one by a factor: `1 + d`, with `d` within the tolerance,
+/// or for a logarithmic spread `(1 + relative)^u`, with `u` within 1 of 0, as an
+/// exponential's argument spreads, such as a saturation current's when the junction
+/// voltage it sets does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Distribution {
@@ -173,6 +179,22 @@ pub enum Distribution {
     Uniform,
     /// Normally, with the tolerance three standard deviations.
     Normal,
+    /// Evenly in the logarithm, within a factor of `1 + relative` either way.
+    LogUniform,
+    /// Normally in the logarithm, a factor of `1 + relative` three standard deviations.
+    LogNormal,
+}
+
+impl Distribution {
+    /// Whether this distribution takes a tolerance of `relative`: at least 0, and below
+    /// 1 unless it spreads the logarithm.
+    #[must_use]
+    pub fn takes(self, relative: f64) -> bool {
+        match self {
+            Self::Uniform | Self::Normal => (0.0..1.0).contains(&relative),
+            Self::LogUniform | Self::LogNormal => relative >= 0.0 && relative.is_finite(),
+        }
+    }
 }
 
 /// What an instance is: a device of a model, or another component.

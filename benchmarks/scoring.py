@@ -10,6 +10,7 @@ boards meet it in all of them.
 """
 
 import asyncio
+import math
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -113,19 +114,42 @@ PARTS: Final[Mapping[str, tuple[str, ir.Tolerance]]] = {
     "capacitor": ("capacitance", ir.Tolerance(relative=0.05)),
 }
 """Each part a design may add, by model: the parameter that strays, and how far."""
-BETAS: Final[Mapping[str, ir.Tolerance]] = {
-    "npn": ir.Tolerance(relative=0.57),
-    "pnp": ir.Tolerance(relative=0.38),
+THERMAL_VOLTAGE: Final = 0.025852
+"""kT/q at 27 °C, in volts: the base-emitter voltage a factor of e in saturation current
+moves."""
+REELS: Final[Mapping[str, Mapping[str, ir.Tolerance]]] = {
+    polarity: {
+        "forward_beta": ir.Tolerance(
+            relative=0.01, lot=ir.Lot(name=part, relative=beta)
+        ),
+        "saturation_current": ir.Tolerance(
+            relative=math.expm1(1e-3 / THERMAL_VOLTAGE),
+            distribution="log_uniform",
+            lot=ir.Lot(name=part, relative=junction, distribution="log_uniform"),
+        ),
+    }
+    for polarity, part, beta, junction in (
+        ("npn", "2N3904", 0.57, 34.0),
+        ("pnp", "2N3906", 0.37, 8.5),
+    )
 }
-"""How far the forward beta strays, by polarity, of the 2N3904, an NPN, and the 2N3906,
-a PNP: the widest spread about their makers' models that keeps their current gain at 10
-mA, 160 and 163 in the models, within their datasheets' 100 to 300."""
+"""How the given transistors stray, by polarity: the 2N3904, an NPN, and the 2N3906, a
+PNP.
+
+A board's transistors of one type come from one reel, which may lie anywhere its
+datasheet allows: a current gain at 10 mA from 100 to 300, 160 and 163 in the models,
+and a base-emitter saturation voltage at 10 mA from 0.65 V to 0.85 V, 0.743 V and
+0.791 V in the models. The reel's spread is the widest about the model that keeps each
+transistor on it within both. On a reel, each strays from the others as little as a
+matched pair cut from adjacent die (Diodes' DMMT3904W): its current gain within 2 % and
+its base-emitter voltage within 2 mV of any other's."""
 DIE: Final = ir.Lot(name="die", relative=0.2)
 """The lot of an integrated circuit's resistors: within 20 % of their values together,
 the middle of the 15 % to 25 % monolithic resistors keep (US 6,819,093)."""
 MATCHED: Final = ir.Tolerance(relative=0.001, distribution="normal", lot=DIE)
 """An integrated resistor: within 0.1 % of the others on its die, three standard
 deviations, the moderate matching of Hastings's *The Art of Analog Layout*."""
+
 BOARDS: Final = 100
 """The boards built of a design that meets its task with exact parts."""
 YIELD: Final = 0.95
@@ -220,13 +244,13 @@ def parts(instance: ir.Instance) -> dict[str, ir.Tolerance]:
 def discrete(instance: ir.Instance) -> dict[str, ir.Tolerance]:
     """How far a part of a discrete design strays.
 
-    A resistor and a capacitor stray as [`parts`][] has them, and a 2N3904's or a
-    2N3906's forward beta as far as its datasheet lets it.
+    A resistor and a capacitor stray as [`parts`][] has them, and a 2N3904 or a 2N3906
+    with its reel, as [`REELS`][] has it.
     """
     match instance.of:
         case ir.DeviceOf(device="bipolar_transistor"):
             polarity = instance.parameters.get("polarity", "npn")
-            return {"forward_beta": BETAS[str(polarity)]}
+            return dict(REELS[str(polarity)])
         case _:
             return parts(instance)
 
@@ -235,7 +259,8 @@ def integrated(instance: ir.Instance) -> dict[str, ir.Tolerance]:
     """How far a part of an integrated design strays.
 
     A resistor strays with its die, and within its matching of the others, and a
-    capacitor as [`parts`][] has it.
+    capacitor as [`parts`][] has it. Transistors stay exact, as the patent's do in the
+    errors a design's are judged against.
     """
     match instance.of:
         case ir.DeviceOf(device="resistor"):

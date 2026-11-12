@@ -20,9 +20,9 @@ within his fitness's tolerances at every frequency, 3 dB and 10°, and the DC of
 at most 1.72 mV, the most the patent's total of 1.72 leaves room for at his weight of
 1,000 per volt. All of it must hold from 0 °C to 70 °C with the supply within 5 % of 1
 V, and on 95 % of boards of the design too, built of resistors within 1 %, capacitors
-within 5 % and transistors whose current gain spans their datasheets', each board over
-the same range: margins Koza's circuits, simulated with exact parts at 27 °C, need not
-keep.
+within 5 % and transistors from reels anywhere in their datasheets' ranges, each board
+over the same range: margins Koza's circuits, simulated with exact parts at 27 °C, need
+not keep.
 
 Koza does not state the source's DC level; the source reaches the input through 1 µF as
 well as 75 Ω, so a design biases its own input rather than drawing its bias through the

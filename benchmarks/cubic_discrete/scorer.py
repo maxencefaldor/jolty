@@ -12,13 +12,13 @@ ms, one cycle of a sine between them over 1 ms, a ramp back down over 10 ms, and
 held for 10 ms.
 
 The task is met when the output's absolute error, averaged over the four cases, is at
-most 6.76 mV, the patented circuit's with the 2N3904 and the 2N3906 as Koza measured
-it; the circuit genetic programming evolved reached 4.20 mV. Koza's fitness weighs each
+most 6.76 mV, the patented circuit's with the 2N3904 and the 2N3906 as Koza measured it;
+the circuit genetic programming evolved reached 4.20 mV. Koza's fitness weighs each
 error 1 below 7 mV and 10 above; the share of errors below 7 mV, his hits, is reported
 beside it: 61 % for the patent, 93.6 % for the evolved circuit. The error must stay
-within the patent's from 0 °C to 70 °C with the supply within 5 % of 2 V, and on 95 %
-of boards of the design too, built of resistors within 1 %, capacitors within 5 % and
-transistors whose current gain spans their datasheets', each board over the same
+within the patent's from 0 °C to 70 °C with the supply within 5 % of 2 V, and on 95 % of
+boards of the design too, built of resistors within 1 %, capacitors within 5 % and
+transistors from reels anywhere in their datasheets' ranges, each board over the same
 range: margins Koza's circuits, simulated with exact parts at 27 °C, need not keep.
 
 Koza does not give the sine's phase; it starts at its middle and rises, as SPICE's do.

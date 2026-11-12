@@ -19,7 +19,7 @@ from jolty import (
 from jolty.plan import MonteCarlo, OperatingPoint
 from jolty.runner import Built, Job, run
 from jolty.specs import Specs, value
-from jolty.units import V, kohm, nF
+from jolty.units import A, V, kohm, nF
 from jolty.variation import Varied, sample, toleranced
 
 
@@ -75,7 +75,7 @@ def test_values_spread_within_their_tolerance() -> None:
 def test_a_tolerance_needs_a_number_below_one() -> None:
     with pytest.raises(ValueError, match="gives inductance no number"):
         devices.resistor(1 * kohm).toleranced("inductance", 0.1)
-    with pytest.raises(ValueError, match="less than 1"):
+    with pytest.raises(ValueError, match="needs to be below 1"):
         devices.resistor(1 * kohm, tolerance=1.5)
     built = circuit(pair())
     top = built.components["cell"]
@@ -210,7 +210,7 @@ def test_a_supply_takes_a_tolerance_by_its_path() -> None:
         Simulation(built, overrides={"V1": {"waveform.sine.offset": 1.0}})
 
 
-def test_the_parts_of_a_lot_share_its_deviation() -> None:
+def test_the_parts_of_a_lot_share_its_factor() -> None:
     die = ir.Lot(name="die", relative=0.2)
 
     @component
@@ -233,7 +233,7 @@ def test_the_parts_of_a_lot_share_its_deviation() -> None:
         np.array([d[id]["resistance"] for d in drawn]) / 1e3 - 1 for id in ("R1", "R2")
     )
     capacitance = np.array([d["C1"]["capacitance"] for d in drawn]) / 1e-9 - 1
-    assert np.abs(first - second).max() <= 0.002 + 1e-12
+    assert np.abs((1 + first) / (1 + second) - 1).max() <= 0.0021
     assert first.std() == pytest.approx(0.2 / math.sqrt(3), rel=0.05)
     assert abs(np.corrcoef(first, capacitance)[0, 1]) < 0.1
     wider = ir.Lot(name="die", relative=0.3)
@@ -247,6 +247,36 @@ def test_the_parts_of_a_lot_share_its_deviation() -> None:
 
     with pytest.raises(ElaborationError, match="spread `resistance` of lot `die`"):
         Simulation(mixed())
+
+
+def test_an_exponentials_argument_spreads_in_its_logarithm() -> None:
+    reel = ir.Lot(name="reel", relative=35.0, distribution="log_uniform")
+    transistor = devices.bipolar_transistor(saturation_current=1e-14 * A).toleranced(
+        "saturation_current", math.expm1(1e-3 / 0.02585), "log_uniform", lot=reel
+    )
+
+    @component
+    def pair(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        for id in ("Q1", "Q2"):
+            placed = c.place(transistor, id=id)
+            c.connect(placed.collector, placed.base, placed.emitter, ground)
+
+    varied = toleranced(circuit(pair()))
+    nominal = varied[0].nominal
+    generator = np.random.default_rng(0)
+    drawn = [sample(varied, generator) for _ in range(2000)]
+    first, second = (
+        np.log(np.array([d[id]["saturation_current"] for d in drawn]) / nominal)
+        for id in ("Q1", "Q2")
+    )
+    assert np.abs(first).max() <= math.log(36) + 1e-3 / 0.02585 + 1e-12
+    assert first.std() == pytest.approx(math.log(36) / math.sqrt(3), rel=0.05)
+    # Base-emitter voltages within 2 mV of each other, at 0.02585 V per neper.
+    assert np.abs(first - second).max() * 0.02585 <= 2e-3 + 1e-12
+    with pytest.raises(ValueError, match="only a logarithmic one may exceed it"):
+        ir.Tolerance(relative=1.5)
+    assert ir.Tolerance(relative=1.5, distribution="log_normal").relative == 1.5
 
 
 CORNERED = """
