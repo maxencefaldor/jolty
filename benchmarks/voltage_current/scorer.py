@@ -11,9 +11,11 @@ ratios' mean, as Koza weighted it, so the patent's is 1, and the circuit genetic
 programming evolved reached 0.619. The work meets the task when it builds from the
 allowed parts alone, its fitness is at most 1, and its output current settles within
 40 µs after ``VS`` steps by 10 mV at three points of its range: a check Koza's fitness
-lacks, since its steps of 1/30 s cannot see an oscillation. Both must hold on 95 % of
-boards of the design too, built of resistors within 1 % and capacitors within 5 %, a
-margin Koza's circuits, simulated with exact parts, need not keep.
+lacks, since its steps of 1/30 s cannot see an oscillation. Both must hold from 0 °C to
+70 °C with the supply within 5 % of -15 V, and on 95 % of boards of the design too,
+built of resistors within 1 %, capacitors within 5 % and transistors whose current gain
+spans their datasheets', each board over the same range: margins Koza's circuits,
+simulated with exact parts at 27 °C, need not keep.
 
 Koza's added input is ``plus`` and his subtracted one ``minus``; his evolved circuit
 sources a current from the first and sinks one into the second, so the output current
@@ -26,10 +28,10 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-from scoring import Board, count_devices, disallowed, judge, tolerate
+from scoring import Board, cornered, count_devices, disallowed, discrete, tolerate
 from verdict import Verdict
 
-from jolty import Builder, Component, Role, Simulation, circuit, component, devices
+from jolty import Builder, Component, Role, circuit, component, devices
 from jolty.plan import Transient
 from jolty.units import Hz, V, ns, ohm, s, us
 from jolty.waveforms import Piecewise, Pulse, Sine
@@ -44,6 +46,8 @@ EVOLVED = 0.619
 """The fitness of the circuit genetic programming evolved, as Koza found."""
 ALLOWED = {"resistor", "capacitor"}
 """The devices the design may hold besides the given transistors."""
+SUPPLIES = ("VEE",)
+"""The bench's supply, which strays within 5 % of its level in the corners."""
 STEP = 10e-3
 """The step of ``VS`` the output current must settle after, in volts."""
 SETTLING = ((6.0, 4.0, 0.0), (10.0, 2.0, 1.0), (2.0, 10.0, -1.0))
@@ -137,8 +141,8 @@ def measure(made: Component, board: Board) -> dict[str, float]:
     times = np.linspace(0.0, 1.0, TIMES)
     errors = []
     for inputs in cases():
-        waveforms = Simulation(
-            circuit(bench(made, inputs, swing())), overrides=board
+        waveforms = board.simulation(
+            circuit(bench(made, inputs, swing())), SUPPLIES
         ).run(
             Transient(
                 stop=1 * s,
@@ -161,8 +165,8 @@ def measure(made: Component, board: Board) -> dict[str, float]:
     }
     for case, (plus, minus, level) in enumerate(SETTLING, start=1):
         inputs = (devices.voltage_source(plus * V), devices.voltage_source(minus * V))
-        waveforms = Simulation(
-            circuit(bench(made, inputs, step(level))), overrides=board
+        waveforms = board.simulation(
+            circuit(bench(made, inputs, step(level))), SUPPLIES
         ).run(Transient(stop=50 * us, max_step=10 * ns))
         late = waveforms.times >= SETTLED
         current = waveforms.current("RLOAD", "a")[late]
@@ -201,10 +205,10 @@ def score(task: Path, work: Path) -> Verdict:
     built = circuit(bench(made, cases()[0], swing()))
     reasons = disallowed(built, given, ALLOWED)
     measured = partial(measure, made)
-    measurements, short = judge(measured, shortfalls)
+    measurements, short = cornered(measured, shortfalls)
     reasons += short
     if not reasons:
-        spread, reasons = tolerate(built, measured, shortfalls)
+        spread, reasons = tolerate(built, measured, shortfalls, discrete)
         measurements |= spread
     measurements |= {
         f"patent's error {case}": theirs for case, theirs in enumerate(PATENT, start=1)

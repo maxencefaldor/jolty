@@ -6,21 +6,33 @@ mean absolute error of its output current against the input's cube over the refe
 square: a DC sweep, and a sine at 1 MHz, 100 MHz and 1 GHz. Each error is divided by the
 patented circuit's, ``patent.py``, on the same case, as Koza weighted his fitness cases,
 and the score is their mean. The work meets the task when it builds from the allowed
-parts alone and scores at most 1, with exact parts and on 95 % of boards of the design,
-built of resistors within 1 % and capacitors within 5 %.
+parts alone and scores at most 1 from 0 °C to 70 °C with the supply within 5 % of 2 V,
+each corner against the patent's in it, with exact parts and on 95 % of boards of the
+design over the same range. On a board, as on one die, the resistors lie together
+within 20 % of their values, and each within 0.1 % of the others; each capacitor lies
+within 5 %.
 """
 
 import runpy
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path
 
 import numpy as np
-from scoring import EXACT, Board, count_devices, disallowed, judge, tolerate
+from scoring import (
+    CORNERS,
+    Board,
+    Corner,
+    cornered,
+    count_devices,
+    disallowed,
+    integrated,
+    tolerate,
+)
 from verdict import Verdict
 
-from jolty import Builder, Component, Role, Simulation, circuit, component, devices
+from jolty import Builder, Component, Role, circuit, component, devices
 from jolty.plan import DcSweep, Transient, linear
 from jolty.units import A, Hz, V, s, uA
 from jolty.waveforms import Sine
@@ -31,6 +43,8 @@ FREQUENCIES = (1e6, 1e8, 1e9)
 """The sine cases' frequencies, in hertz."""
 ALLOWED = {"resistor", "capacitor"}
 """The devices the design may hold besides the given transistor."""
+SUPPLIES = ("VS",)
+"""The bench's supply, which strays within 5 % of its level in the corners."""
 
 
 @component
@@ -67,13 +81,13 @@ NAMES = ("dc", *(f"{frequency:.0e} Hz" for frequency in FREQUENCIES))
 
 def errors(made: Component, board: Board) -> list[float]:
     """Each case's mean absolute error of `made`'s output on `board`, in amperes."""
-    swept = Simulation(circuit(bench(made)), overrides=board).run(
+    swept = board.simulation(circuit(bench(made)), SUPPLIES).run(
         DcSweep("IIN", linear(0 * A, 200 * uA, 41))
     )
     found = [_error(swept.levels, np.abs(swept.current("VM")))]
     for frequency in FREQUENCIES:
         period = 1 / frequency
-        waveforms = Simulation(circuit(bench(made, frequency)), overrides=board).run(
+        waveforms = board.simulation(circuit(bench(made, frequency)), SUPPLIES).run(
             Transient(stop=4 * period * s, max_step=period / 200 * s)
         )
         late = waveforms.times >= 2 * period
@@ -86,10 +100,15 @@ def _error(level: np.ndarray, output: np.ndarray) -> float:
     return float(np.mean(np.abs(output - level**3 / REFERENCE**2)))
 
 
-def measure(made: Component, patent: Sequence[float], board: Board) -> dict[str, float]:
-    """The errors on `board` of `made`, and their score against the `patent`'s."""
+def measure(
+    made: Component, patent: Mapping[Corner, Sequence[float]], board: Board
+) -> dict[str, float]:
+    """The errors on `board` of `made`, and their score against the `patent`'s.
+
+    The patent's are those in the board's corner.
+    """
     found = errors(made, board)
-    measurements = {"score": float(np.mean(np.divide(found, patent)))}
+    measurements = {"score": float(np.mean(np.divide(found, patent[board.corner])))}
     measurements |= {
         f"error {name}": error for name, error in zip(NAMES, found, strict=True)
     }
@@ -105,7 +124,8 @@ def shortfalls(found: dict[str, float]) -> list[str]:
 
 def score(task: Path, work: Path) -> Verdict:
     """The verdict on the cubic `work` against `task`."""
-    patent = errors(runpy.run_path(str(task / "patent.py"))["cubic"](), EXACT)
+    patented = runpy.run_path(str(task / "patent.py"))["cubic"]()
+    patent = {corner: errors(patented, Board(corner=corner)) for corner in CORNERS}
     transistor = runpy.run_path(str(task / "given" / "parts.py"))["npn"]()
     design = work / "design.py"
     if not design.is_file():
@@ -117,14 +137,14 @@ def score(task: Path, work: Path) -> Verdict:
     built = circuit(bench(made))
     reasons = disallowed(built, [transistor], ALLOWED)
     measured = partial(measure, made, patent)
-    measurements, short = judge(measured, shortfalls)
+    measurements, short = cornered(measured, shortfalls)
     reasons += short
     if not reasons:
-        spread, reasons = tolerate(built, measured, shortfalls)
+        spread, reasons = tolerate(built, measured, shortfalls, integrated)
         measurements |= spread
     measurements |= {
         f"patent's error {name}": error
-        for name, error in zip(NAMES, patent, strict=True)
+        for name, error in zip(NAMES, patent[CORNERS[0]], strict=True)
     }
     measurements["devices"] = float(count_devices(built, "X1"))
     return Verdict(met=not reasons, measurements=measurements, reasons=tuple(reasons))

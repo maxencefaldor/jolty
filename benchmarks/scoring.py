@@ -1,39 +1,131 @@
 # Copyright 2026 Maxence Faldor
 """What the scorers share: scripts simulated, parts counted and checked, designs judged.
 
-A scorer measures a design with its parts exact, then, if it meets its task, on boards
-built of real parts, whose values stray within their tolerances: it meets the task only
-when enough of those boards meet it too.
+A scorer measures a design with its parts exact, in each corner of the conditions it
+must work in: at 0 °C and at 70 °C, the commercial range, with its supplies 5 % low and
+5 % high, besides 27 °C and its supplies exact. If it meets its task in every corner, it
+is measured again on boards built of real parts, whose values stray within their
+tolerances, each board in every corner: it meets the task only when enough of those
+boards meet it in all of them.
 """
 
 import asyncio
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
 from typing import Final
 
 import numpy as np
 
-from jolty import devices, files, ir, service, variation
+from jolty import Simulation, devices, files, ir, service, variation
 from jolty.errors import SimulationError
 from jolty.settings import Settings
+from jolty.units import celsius
 
-type Board = Mapping[str, Mapping[str, float]]
-"""The values of a board's parts that stray from the design's, by instance path then by
-parameter name, as a Monte Carlo sample holds them."""
+
+@dataclass(frozen=True, slots=True)
+class Corner:
+    """Conditions a design must work in: its temperature and its supplies' level."""
+
+    temperature: float = 27.0
+    """The temperature, in degrees Celsius."""
+    supply: float = 1.0
+    """Each supply's level, relative to its nominal one."""
+
+    def describe(self) -> str:
+        """The corner in words, such as ``at 0 °C with the supplies 5 % low``."""
+        if self.supply == 1:
+            return f"at {self.temperature:g} °C"
+        side = "low" if self.supply < 1 else "high"
+        return (
+            f"at {self.temperature:g} °C with the supplies "
+            f"{abs(self.supply - 1) * 100:g} % {side}"
+        )
+
+
+NOMINAL: Final = Corner()
+"""The nominal conditions: 27 °C, every supply at its level."""
+CORNERS: Final = (
+    NOMINAL,
+    *(
+        Corner(temperature, supply)
+        for temperature in (0.0, 70.0)
+        for supply in (0.95, 1.05)
+    ),
+)
+"""The nominal conditions, then the four that bound those a design must work in: from
+0 °C to 70 °C, and each supply within 5 % of its level."""
+
+
+@dataclass(frozen=True, slots=True)
+class Board:
+    """A board of the design, in a corner.
+
+    Its parts are the values that stray from the design's, by instance path then by
+    parameter path, as a Monte Carlo sample holds them; a board without any is the
+    design, its parts exact.
+    """
+
+    parts: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    corner: Corner = NOMINAL
+
+    def simulation(self, built: ir.Circuit, supplies: Iterable[str]) -> Simulation:
+        """`built` on the board: of its parts, at its corner's temperature.
+
+        Each of `supplies`, the ids of DC voltage sources at the top of `built`, takes
+        its level in the corner.
+
+        Raises:
+            KeyError: When a supply is no DC source at the top.
+        """
+        top = built.components[built.top]
+        levels: dict[str, Mapping[str, float]] = {}
+        for id in supplies:
+            instance = top.instance(id)
+            match (
+                None
+                if instance is None
+                else ir.parameter(instance.parameters, "waveform.dc")
+            ):
+                case float() | int() as level:
+                    levels[id] = {"waveform.dc": level * self.corner.supply}
+                case _:
+                    message = f"{id} is no DC source at the top of the bench"
+                    raise KeyError(message)
+        return Simulation(
+            built,
+            temperature=celsius(self.corner.temperature),
+            overrides={**self.parts, **levels},
+        )
+
+
 type Measure = Callable[[Board], dict[str, float]]
 """What a scorer measures on a board of the design, by name."""
 type Shortfalls = Callable[[dict[str, float]], list[str]]
 """Why what a scorer measured on a board falls short of the task, if it does."""
+type Spread = Callable[[ir.Instance], dict[str, ir.Tolerance]]
+"""How far each parameter of a device instance of the design strays on its boards, by
+parameter path."""
 
-EXACT: Final[Board] = MappingProxyType[str, Mapping[str, float]]({})
-"""The board whose parts all take the design's values."""
-TOLERANCES: Final[Mapping[str, tuple[str, ir.Tolerance]]] = {
+PARTS: Final[Mapping[str, tuple[str, ir.Tolerance]]] = {
     "resistor": ("resistance", ir.Tolerance(relative=0.01)),
     "capacitor": ("capacitance", ir.Tolerance(relative=0.05)),
 }
 """Each part a design may add, by model: the parameter that strays, and how far."""
+BETAS: Final[Mapping[str, ir.Tolerance]] = {
+    "npn": ir.Tolerance(relative=0.57),
+    "pnp": ir.Tolerance(relative=0.38),
+}
+"""How far the forward beta strays, by polarity, of the 2N3904, an NPN, and the 2N3906,
+a PNP: the widest spread about their makers' models that keeps their current gain at 10
+mA, 160 and 163 in the models, within their datasheets' 100 to 300."""
+DIE: Final = ir.Lot(name="die", relative=0.2)
+"""The lot of an integrated circuit's resistors: within 20 % of their values together,
+the middle of the 15 % to 25 % monolithic resistors keep (US 6,819,093)."""
+MATCHED: Final = ir.Tolerance(relative=0.001, distribution="normal", lot=DIE)
+"""An integrated resistor: within 0.1 % of the others on its die, three standard
+deviations, the moderate matching of Hastings's *The Art of Analog Layout*."""
 BOARDS: Final = 100
 """The boards built of a design that meets its task with exact parts."""
 YIELD: Final = 0.95
@@ -112,75 +204,145 @@ def disallowed(
     return found
 
 
-def boards(built: ir.Circuit) -> list[Board]:
-    """The boards built of the design below the top of `built`.
+def parts(instance: ir.Instance) -> dict[str, ir.Tolerance]:
+    """How far a part a design adds strays: a resistor within 1 %, a capacitor 5 %.
 
-    On each, every resistor lies within 1 % of its value and every capacitor within 5 %,
-    drawn evenly and independently, whatever tolerance the design gives them; the given
-    parts and the bench's stay exact. A design without either has one board, the exact
-    one.
+    Any other device stays exact.
+    """
+    match instance.of:
+        case ir.DeviceOf(device=model) if model in PARTS:
+            parameter, tolerance = PARTS[model]
+            return {parameter: tolerance}
+        case _:
+            return {}
+
+
+def discrete(instance: ir.Instance) -> dict[str, ir.Tolerance]:
+    """How far a part of a discrete design strays.
+
+    A resistor and a capacitor stray as [`parts`][] has them, and a 2N3904's or a
+    2N3906's forward beta as far as its datasheet lets it.
+    """
+    match instance.of:
+        case ir.DeviceOf(device="bipolar_transistor"):
+            polarity = instance.parameters.get("polarity", "npn")
+            return {"forward_beta": BETAS[str(polarity)]}
+        case _:
+            return parts(instance)
+
+
+def integrated(instance: ir.Instance) -> dict[str, ir.Tolerance]:
+    """How far a part of an integrated design strays.
+
+    A resistor strays with its die, and within its matching of the others, and a
+    capacitor as [`parts`][] has it.
+    """
+    match instance.of:
+        case ir.DeviceOf(device="resistor"):
+            return {"resistance": MATCHED}
+        case _:
+            return parts(instance)
+
+
+def boards(built: ir.Circuit, spread: Spread) -> list[Board]:
+    """The boards built of the design below the top of `built`, in the nominal corner.
+
+    Each part's values are drawn as `spread` has them, whatever tolerance the design
+    gives them; the bench's parts stay exact. A design that strays nowhere has one
+    board, the exact one.
     """
     components = {
         name: component
         if name == built.top
         else component.model_copy(
-            update={"instances": [_toleranced(each) for each in component.instances]}
+            update={
+                "instances": [
+                    each.model_copy(update={"tolerances": spread(each)})
+                    for each in component.instances
+                ]
+            }
         )
         for name, component in built.components.items()
     }
     varied = variation.toleranced(built.model_copy(update={"components": components}))
     if not varied:
-        return [EXACT]
+        return [Board()]
     generator = np.random.default_rng(SEED)
-    return [variation.sample(varied, generator) for _ in range(BOARDS)]
-
-
-def _toleranced(instance: ir.Instance) -> ir.Instance:
-    match instance.of:
-        case ir.DeviceOf(device=model) if model in TOLERANCES:
-            parameter, tolerance = TOLERANCES[model]
-            return instance.model_copy(update={"tolerances": {parameter: tolerance}})
-        case ir.DeviceOf():
-            return instance.model_copy(update={"tolerances": {}})
-        case ir.ComponentOf():
-            return instance
+    return [Board(variation.sample(varied, generator)) for _ in range(BOARDS)]
 
 
 def judge(
-    measure: Measure, shortfalls: Shortfalls, board: Board = EXACT
+    measure: Measure, shortfalls: Shortfalls, board: Board | None = None
 ) -> tuple[dict[str, float], list[str]]:
     """What `measure` finds on `board`, and why it falls short of the task.
 
-    It falls short where `shortfalls` finds it does, or when a simulation fails.
+    The board is the exact design by default. It falls short where `shortfalls` finds
+    it does, or when a simulation fails.
     """
     try:
-        found = measure(board)
+        found = measure(board or Board())
     except SimulationError as error:
         return {}, [f"the simulation fails: {error}"]
     return found, shortfalls(found)
 
 
+def cornered(
+    measure: Measure, shortfalls: Shortfalls
+) -> tuple[dict[str, float], list[str]]:
+    """What `measure` finds on the exact design in every corner, and why it falls short.
+
+    It falls short in any corner where it falls short of the task. The measurements
+    are those in the nominal corner, then those in each other, named after it, such as
+    ``at 0 °C with the supplies 5 % low: fitness``.
+    """
+    measurements: dict[str, float] = {}
+    reasons: list[str] = []
+    for corner in CORNERS:
+        found, short = judge(measure, shortfalls, Board(corner=corner))
+        named = corner == NOMINAL
+        measurements |= {
+            name if named else f"{corner.describe()}: {name}": value
+            for name, value in found.items()
+        }
+        reasons += (
+            short if named else [f"{corner.describe()}, {each}" for each in short]
+        )
+    return measurements, reasons
+
+
 def tolerate(
-    built: ir.Circuit, measure: Measure, shortfalls: Shortfalls
+    built: ir.Circuit, measure: Measure, shortfalls: Shortfalls, spread: Spread
 ) -> tuple[dict[str, float], list[str]]:
     """What `measure` finds on the boards of `built`, and why too few meet the task.
 
-    The measurements are the share of boards that meet the task, ``yield``, and the
-    median over the boards of each of `measure`'s.
+    A board meets the task when it meets it in every corner. The measurements are the
+    share of boards that do, ``yield``, and the median over the boards of each of
+    `measure`'s in the nominal corner.
     """
-    drawn = boards(built)
-    judged = [judge(measure, shortfalls, board) for board in drawn]
-    found = [measured for measured, _ in judged if measured]
-    short = [reasons[0] for _, reasons in judged if reasons]
+    drawn = boards(built, spread)
+    nominal: list[dict[str, float]] = []
+    short: list[str] = []
+    for board in drawn:
+        for corner in CORNERS:
+            found, reasons = judge(measure, shortfalls, Board(board.parts, corner))
+            if corner == NOMINAL and found:
+                nominal.append(found)
+            if reasons:
+                short.append(
+                    reasons[0]
+                    if corner == NOMINAL
+                    else f"{corner.describe()}, {reasons[0]}"
+                )
+                break
     share = 1 - len(short) / len(drawn)
-    spread = {"yield": share} | {
-        f"median {name}": float(np.median([each[name] for each in found]))
-        for name in (found[0] if found else {})
+    measured = {"yield": share} | {
+        f"median {name}": float(np.median([each[name] for each in nominal]))
+        for name in (nominal[0] if nominal else {})
     }
     if share >= YIELD:
-        return spread, []
+        return measured, []
     reason = (
-        f"{share:.0%} of {len(drawn)} boards meet the task, fewer than {YIELD:.0%}; "
-        f"on the first that falls short, {short[0]}"
+        f"{share:.0%} of {len(drawn)} boards meet the task in every corner, fewer than "
+        f"{YIELD:.0%}; on the first that falls short, {short[0]}"
     )
-    return spread, [reason]
+    return measured, [reason]

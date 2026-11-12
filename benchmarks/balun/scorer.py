@@ -18,9 +18,11 @@ evolved circuit's was 0.47 dB; and a distortion of at most -33.9 dB, the patent'
 the evolved circuit's was -65.6 dB. To be a balun at all, each output must also lie
 within his fitness's tolerances at every frequency, 3 dB and 10°, and the DC offset be
 at most 1.72 mV, the most the patent's total of 1.72 leaves room for at his weight of
-1,000 per volt. All of it must hold on 95 % of boards of the design too, built of
-resistors within 1 % and capacitors within 5 %, a margin Koza's circuits, simulated
-with exact parts, need not keep.
+1,000 per volt. All of it must hold from 0 °C to 70 °C with the supply within 5 % of 1
+V, and on 95 % of boards of the design too, built of resistors within 1 %, capacitors
+within 5 % and transistors whose current gain spans their datasheets', each board over
+the same range: margins Koza's circuits, simulated with exact parts at 27 °C, need not
+keep.
 
 Koza does not state the source's DC level; the source reaches the input through 1 µF as
 well as 75 Ω, so a design biases its own input rather than drawing its bias through the
@@ -34,14 +36,13 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-from scoring import Board, count_devices, disallowed, judge, tolerate
+from scoring import Board, cornered, count_devices, disallowed, discrete, tolerate
 from verdict import Verdict
 
 from jolty import (
     Builder,
     Component,
     Role,
-    Simulation,
     circuit,
     component,
     devices,
@@ -53,6 +54,8 @@ from jolty.waveforms import Sine
 
 ALLOWED = {"resistor", "capacitor"}
 """The devices the design may hold besides the given transistors."""
+SUPPLIES = ("VCC",)
+"""The bench's supply, which strays within 5 % of its level in the corners."""
 GAIN = 0.60
 """The patented circuit's mean absolute error of the difference's gain, in decibels."""
 DISTORTION = -33.9
@@ -110,7 +113,7 @@ def off(gain: np.ndarray, phase: float) -> np.ndarray:
 def distortion(made: Component, board: Board) -> float:
     """The difference's distortion on `board`, over its second period, in decibels."""
     period = 1 / FUNDAMENTAL
-    waveforms = Simulation(circuit(bench(made, distorting=True)), overrides=board).run(
+    waveforms = board.simulation(circuit(bench(made, distorting=True)), SUPPLIES).run(
         Transient(stop=2 * period * s, max_step=period / 1000 * s)
     )
     harmonics = specs.distortion(
@@ -129,7 +132,7 @@ def measure(made: Component, board: Board) -> dict[str, float]:
     The difference's gain error is a mean over the frequencies, as Koza gives it; each
     other error over the frequencies is its worst.
     """
-    simulation = Simulation(circuit(bench(made)), overrides=board)
+    simulation = board.simulation(circuit(bench(made)), SUPPLIES)
     response = simulation.run(Ac("VIN", decade(1 * MHz, 100 * MHz, 20)))
     in_phase = response.voltage("in_phase")
     out_of_phase = response.voltage("out_of_phase")
@@ -188,10 +191,10 @@ def score(task: Path, work: Path) -> Verdict:
     built = circuit(bench(made))
     reasons = disallowed(built, [parts["npn"](), parts["pnp"]()], ALLOWED)
     measured = partial(measure, made)
-    measurements, short = judge(measured, shortfalls)
+    measurements, short = cornered(measured, shortfalls)
     reasons += short
     if not reasons:
-        spread, reasons = tolerate(built, measured, shortfalls)
+        spread, reasons = tolerate(built, measured, shortfalls, discrete)
         measurements |= spread
     measurements |= {f"evolved {name}": value for name, value in EVOLVED.items()}
     measurements["devices"] = float(count_devices(built, "X1"))

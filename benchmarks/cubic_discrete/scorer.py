@@ -16,9 +16,10 @@ most 6.76 mV, the patented circuit's with the 2N3904 and the 2N3906 as Koza meas
 it; the circuit genetic programming evolved reached 4.20 mV. Koza's fitness weighs each
 error 1 below 7 mV and 10 above; the share of errors below 7 mV, his hits, is reported
 beside it: 61 % for the patent, 93.6 % for the evolved circuit. The error must stay
-within the patent's on 95 % of boards of the design too, built of resistors within 1 %
-and capacitors within 5 %, a margin Koza's circuits, simulated with exact parts, need
-not keep.
+within the patent's from 0 °C to 70 °C with the supply within 5 % of 2 V, and on 95 %
+of boards of the design too, built of resistors within 1 %, capacitors within 5 % and
+transistors whose current gain spans their datasheets', each board over the same
+range: margins Koza's circuits, simulated with exact parts at 27 °C, need not keep.
 
 Koza does not give the sine's phase; it starts at its middle and rises, as SPICE's do.
 His fixture also puts 1 µΩ in series with the input and the output, as the bench does.
@@ -30,10 +31,10 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-from scoring import Board, count_devices, disallowed, judge, tolerate
+from scoring import Board, cornered, count_devices, disallowed, discrete, tolerate
 from verdict import Verdict
 
-from jolty import Builder, Component, Role, Simulation, circuit, component, devices
+from jolty import Builder, Component, Role, circuit, component, devices
 from jolty.plan import Transient
 from jolty.units import A, Hz, Quantity, V, ms, ohm, s
 from jolty.waveforms import Piecewise, Sine
@@ -54,6 +55,8 @@ HIT = 7e-3
 """The error below which Koza counts a hit, in volts."""
 ALLOWED = {"resistor", "capacitor"}
 """The devices the design may hold besides the given transistors."""
+SUPPLIES = ("VCC",)
+"""The bench's supply, which strays within 5 % of its level in the corners."""
 
 
 def cases() -> list[tuple[Piecewise | Sine | Quantity, float]]:
@@ -97,7 +100,7 @@ def measure(made: Component, board: Board) -> dict[str, float]:
     found = []
     for case, (_, duration) in enumerate(cases()):
         times = np.linspace(0.0, duration, TIMES)
-        waveforms = Simulation(circuit(bench(made, case)), overrides=board).run(
+        waveforms = board.simulation(circuit(bench(made, case)), SUPPLIES).run(
             Transient(
                 stop=duration * s,
                 max_step=duration / (10 * (TIMES - 1)) * s,
@@ -146,10 +149,10 @@ def score(task: Path, work: Path) -> Verdict:
     built = circuit(bench(made, 3))
     reasons = disallowed(built, [parts["npn"](), parts["pnp"]()], ALLOWED)
     measured = partial(measure, made)
-    measurements, short = judge(measured, shortfalls)
+    measurements, short = cornered(measured, shortfalls)
     reasons += short
     if not reasons:
-        spread, reasons = tolerate(built, measured, shortfalls)
+        spread, reasons = tolerate(built, measured, shortfalls, discrete)
         measurements |= spread
     measurements |= {
         "patent's mean absolute error": PATENT,

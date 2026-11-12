@@ -1,15 +1,19 @@
 # Copyright 2026 Maxence Faldor
 
 import math
+import runpy
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from jolty import (
     Ac,
     Builder,
+    DcSweep,
     OperatingPoint,
     Role,
     Simulation,
@@ -17,6 +21,7 @@ from jolty import (
     component,
     devices,
 )
+from jolty.plan import linear
 from jolty.units import CURRENT, A, MHz, Quantity, V, kohm, nF
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks"
@@ -256,8 +261,14 @@ def test_a_converter_blind_to_one_input_falls_short(tmp_path: Path) -> None:
     )
     verdict = score(VOLTAGE_CURRENT, tmp_path)
     assert not verdict.met
-    (reason,) = verdict.reasons
-    assert reason.startswith("the fitness is ")
+    nominal, *cornered = verdict.reasons
+    assert nominal.startswith("the fitness is ")
+    assert [reason.split(", the fitness is ")[0] for reason in cornered] == [
+        "at 0 °C with the supplies 5 % low",
+        "at 0 °C with the supplies 5 % high",
+        "at 70 °C with the supplies 5 % low",
+        "at 70 °C with the supplies 5 % high",
+    ]
     assert verdict.measurements["devices"] == 1
 
 
@@ -331,8 +342,9 @@ def test_a_balun_whose_input_floats_fails_to_simulate(tmp_path: Path) -> None:
         "    c.connect(series.a, source)\n",
     )
     verdict = score(BALUN, tmp_path)
-    (reason,) = verdict.reasons
-    assert reason.startswith("the simulation fails: ")
+    assert len(verdict.reasons) == 5
+    assert verdict.reasons[0].startswith("the simulation fails: ")
+    assert all("the simulation fails: " in reason for reason in verdict.reasons)
 
 
 CUBIC_DISCRETE = BENCHMARKS / "cubic_discrete"
@@ -415,37 +427,160 @@ def loaded(c: Builder) -> None:
 
 
 def test_boards_draw_the_designs_resistors_and_capacitors_alone() -> None:
-    from scoring import BOARDS, boards  # noqa: PLC0415 - importable only once the path holds it
+    from scoring import BOARDS, NOMINAL, boards, parts  # noqa: PLC0415 - importable only once the path holds it
 
-    drawn = boards(circuit(loaded()))
+    drawn = boards(circuit(loaded()), parts)
     assert len(drawn) == BOARDS
-    assert all(set(board) == {"X1/R1", "X1/C1"} for board in drawn)
+    assert all(set(board.parts) == {"X1/R1", "X1/C1"} for board in drawn)
+    assert all(board.corner == NOMINAL for board in drawn)
     for path, parameter, nominal, tolerance in (
         ("X1/R1", "resistance", 1e3, 0.01),
         ("X1/C1", "capacitance", 1e-9, 0.05),
     ):
-        strays = [abs(board[path][parameter] / nominal - 1) for board in drawn]
+        strays = [abs(board.parts[path][parameter] / nominal - 1) for board in drawn]
         assert 0.9 * tolerance < max(strays) <= tolerance
-    assert boards(circuit(loaded())) == drawn
+    assert boards(circuit(loaded()), parts) == drawn
+
+
+def test_an_integrated_designs_resistors_stray_together() -> None:
+    from scoring import boards, integrated  # noqa: PLC0415 - importable only once the path holds it
+
+    @component
+    def pair(c: Builder) -> None:
+        a, b = c.port("a"), c.port("b")
+        for id, value in (("R1", 1 * kohm), ("R2", 3 * kohm)):
+            placed = c.place(devices.resistor(value), id=id)
+            c.connect(placed.a, a)
+            c.connect(placed.b, b)
+
+    @component
+    def die(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        placed = c.place(pair(), id="X1")
+        c.connect(placed.a, placed.b, ground)
+
+    drawn = boards(circuit(die()), integrated)
+    first = np.array([board.parts["X1/R1"]["resistance"] / 1e3 for board in drawn])
+    second = np.array([board.parts["X1/R2"]["resistance"] / 3e3 for board in drawn])
+    assert np.abs(first - 1).max() > 0.15
+    assert np.abs(first - second).max() <= 0.002
+
+
+def test_the_given_transistors_stray_within_their_datasheets() -> None:
+    from scoring import BETAS  # noqa: PLC0415 - importable only once the path holds it
+
+    given = runpy.run_path(str(VOLTAGE_CURRENT / "given" / "parts.py"))
+    for make, polarity, sign in (
+        (given["npn"], "npn", 1.0),
+        (given["pnp"], "pnp", -1.0),
+    ):
+        made = make()
+        spread = BETAS[polarity].relative
+        for scale in (1 - spread, 1 + spread):
+            beta = made.parameters["forward_beta"]
+            assert isinstance(beta, float)
+            stray = replace(
+                made, parameters={**made.parameters, "forward_beta": beta * scale}
+            )
+            assert 100 <= _gain_at_10_milliamperes(stray, sign) <= 300
+        assert (
+            _gain_at_10_milliamperes(
+                replace(
+                    made,
+                    parameters={
+                        **made.parameters,
+                        "forward_beta": beta * (1 - spread - 0.02),
+                    },
+                ),
+                sign,
+            )
+            < 100
+        )
+
+
+def _gain_at_10_milliamperes(transistor: devices.Device, sign: float) -> float:
+    """The current gain of `transistor` at 10 mA of collector current and 1 V."""
+
+    @component
+    def fixture(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        placed = c.place(transistor, id="Q1")
+        collector = c.place(devices.voltage_source(sign * 1 * V), id="VC")
+        base = c.place(devices.voltage_source(0 * V), id="VB")
+        c.connect(collector.positive, placed.collector)
+        c.connect(base.positive, placed.base)
+        c.connect(collector.negative, base.negative, placed.emitter, ground)
+
+    swept = Simulation(fixture()).run(
+        DcSweep("VB", linear(sign * 0.6 * V, sign * 0.9 * V, 301))
+    )
+    collector = np.abs(swept.current("VC"))
+    base = np.abs(swept.current("VB"))
+    return float(np.interp(10e-3, collector, collector / base))
+
+
+def test_a_board_sets_its_corner_on_the_bench() -> None:
+    from scoring import Board, Corner  # noqa: PLC0415 - importable only once the path holds it
+
+    @component
+    def divider(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        supply = c.place(devices.voltage_source(2 * V), id="VCC")
+        upper = c.place(devices.resistor(1 * kohm), id="R1")
+        lower = c.place(devices.resistor(1 * kohm), id="R2")
+        c.connect(supply.positive, upper.a)
+        c.connect(upper.b, lower.a, name="out")
+        c.connect(lower.b, supply.negative, ground)
+
+    corner = Corner(temperature=70.0, supply=0.95)
+    board = Board({"R2": {"resistance": 3e3}}, corner)
+    simulation = board.simulation(circuit(divider()), ["VCC"])
+    assert simulation.temperature == pytest.approx(343.15)
+    point = simulation.run(OperatingPoint())
+    assert point.voltage("out") == pytest.approx(2 * 0.95 * 3 / 4)
+    assert corner.describe() == "at 70 °C with the supplies 5 % low"
+    with pytest.raises(KeyError, match="R1 is no DC source"):
+        board.simulation(circuit(divider()), ["R1"])
 
 
 def test_too_few_boards_that_meet_the_task_fall_short() -> None:
-    from scoring import tolerate  # noqa: PLC0415 - importable only once the path holds it
+    from scoring import Board, parts, tolerate  # noqa: PLC0415 - importable only once the path holds it
 
-    def measure(board: Mapping[str, Mapping[str, float]]) -> dict[str, float]:
-        return {"resistance": board["X1/R1"]["resistance"]}
+    def measure(board: Board) -> dict[str, float]:
+        return {"resistance": board.parts["X1/R1"]["resistance"]}
 
     def below(most: float) -> Callable[[dict[str, float]], list[str]]:
         return lambda found: [] if found["resistance"] <= most else ["it is too high"]
 
-    spread, reasons = tolerate(circuit(loaded()), measure, below(1005))
+    spread, reasons = tolerate(circuit(loaded()), measure, below(1005), parts)
     assert 0.6 < spread["yield"] < 0.9
     assert spread["median resistance"] == pytest.approx(1000, abs=2)
     (reason,) = reasons
     assert reason.endswith("on the first that falls short, it is too high")
-    spread, reasons = tolerate(circuit(loaded()), measure, below(1010))
+    spread, reasons = tolerate(circuit(loaded()), measure, below(1010), parts)
     assert spread["yield"] == 1
     assert not reasons
+
+
+def test_a_design_must_meet_its_task_in_every_corner() -> None:
+    from scoring import Board, cornered, parts, tolerate  # noqa: PLC0415 - importable only once the path holds it
+
+    def measure(board: Board) -> dict[str, float]:
+        return {"temperature": board.corner.temperature}
+
+    def cool(found: dict[str, float]) -> list[str]:
+        return [] if found["temperature"] < 50 else ["it runs too hot"]
+
+    measurements, reasons = cornered(measure, cool)
+    assert measurements["temperature"] == 27
+    assert measurements["at 70 °C with the supplies 5 % high: temperature"] == 70
+    assert reasons == [
+        "at 70 °C with the supplies 5 % low, it runs too hot",
+        "at 70 °C with the supplies 5 % high, it runs too hot",
+    ]
+    spread, (reason,) = tolerate(circuit(loaded()), measure, cool, parts)
+    assert spread["yield"] == 0
+    assert reason.endswith("at 70 °C with the supplies 5 % low, it runs too hot")
 
 
 @pytest.mark.parametrize("name", ["IRF511", "IRF9230", "IRFZ44", "MTP50P03HDL"])

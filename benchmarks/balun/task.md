@@ -16,14 +16,15 @@ The scorer measures, relative to the source's signal:
 - from the operating point: the DC offset between the outputs;
 - from a transient of 200 ns, the source a 10 MHz sine of 10 mV: the difference's total harmonic distortion, harmonics 2 to 9, over its second period.
 
-The design meets the task when it holds only the parts allowed and, both with its parts exact and on at least 95 % of 100 boards built of it:
+The design meets the task when it holds only the parts allowed and, with its parts exact in each of the conditions below, and on at least 95 % of 100 boards built of it, each in all of them:
 
 - the difference's gain is within 0.60 dB of 0 dB on average over the 41 frequencies;
 - its total harmonic distortion is at most −33.9 dB;
 - each output's gain is within 3 dB of −6.02 dB, and each output's phase, and the difference's, within 10° of its own, at every one of the 41 frequencies;
 - the DC offset between the outputs is at most 1.72 mV.
 
-On each board, every resistor lies anywhere within 1 % of its value and every capacitor within 5 %, whatever tolerance you give them, while the transistors stay as given.
+It must meet the task from 0 °C to 70 °C with its supply anywhere within 5 % of its level: the scorer checks it at 27 °C with the supply exact, and at 0 °C and at 70 °C with the supply 5 % low and 5 % high.
+On each board, every resistor lies anywhere within 1 % of its value and every capacitor within 5 %, whatever tolerance you give them, and each transistor's forward beta strays as far as its datasheet's current gain at 10 mA, 100 to 300, allows: a 2N3904's within 57 % of its model's, a 2N3906's within 38 %, each part apart from every other.
 
 A reference circuit reaches 0.60 dB and −33.9 dB; lower is better on both, and at equal results, fewer parts are better.
 
