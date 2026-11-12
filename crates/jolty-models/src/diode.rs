@@ -6,7 +6,7 @@ use crate::junction::{
 };
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
-    ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, TerminalPair,
+    ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
 };
 
 /// A junction diode from terminal `anode` to terminal `cathode`, in the SPICE model.
@@ -217,16 +217,12 @@ impl<R: Real> NativeDevice<R> for Diode<R> {
             .transpose()?;
 
         let (anode, cathode) = (binding.terminal(0), binding.terminal(1));
-        let (series, junction) = if series_resistance.value() > 0.0 {
-            let internal = Some(binding.internal("junction", Quantity::Voltage));
-            let series = TerminalPair::new(binding, anode, internal);
-            (
-                Some((series, series_resistance.recip())),
-                TerminalPair::new(binding, internal, cathode),
-            )
-        } else {
-            (None, TerminalPair::new(binding, anode, cathode))
-        };
+        let inner = binding.behind(anode, series_resistance, "junction");
+        let series = (series_resistance.value() > 0.0).then(|| {
+            let pair = TerminalPair::new(binding, anode, inner);
+            (pair, series_resistance.recip())
+        });
+        let junction = TerminalPair::new(binding, inner, cathode);
         let slope = emission_coefficient * vt;
         Ok(Self {
             series,

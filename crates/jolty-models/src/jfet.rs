@@ -4,10 +4,10 @@ use crate::junction::{
     Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
     limit_junction,
 };
-use crate::stamp::Stamp;
+use crate::stamp::{Bias, Stamp, series_conductance};
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
-    ParameterError, Quantity, REFERENCE_TEMPERATURE, Real,
+    ParameterError, REFERENCE_TEMPERATURE, Real,
 };
 
 /// The channel of a field-effect transistor.
@@ -273,16 +273,8 @@ impl<R: Real> NativeDevice<R> for Jfet<R> {
             binding.terminal(1),
             binding.terminal(2),
         );
-        let inner_drain = if drain_resistance.value() > 0.0 {
-            Some(binding.internal("drain", Quantity::Voltage))
-        } else {
-            drain
-        };
-        let inner_source = if source_resistance.value() > 0.0 {
-            Some(binding.internal("source", Quantity::Voltage))
-        } else {
-            source
-        };
+        let inner_drain = binding.behind(drain, drain_resistance, "drain");
+        let inner_source = binding.behind(source, source_resistance, "source");
         let stamp = Stamp::new(binding, [gate, drain, source, inner_drain, inner_source]);
         let temperatures = Temperatures::new(binding.temperature(), nominal_temperature)?;
         let vt = temperatures.thermal_voltage();
@@ -330,28 +322,16 @@ impl<R: Real> NativeDevice<R> for Jfet<R> {
     }
 }
 
-/// The conductance of a series `resistance`, or zero without one.
-fn series_conductance<R: Real>(resistance: R) -> R {
-    if resistance.value() > 0.0 {
-        resistance.recip()
-    } else {
-        R::constant(0.0)
-    }
-}
-
 impl<R: Real> Device<R> for Jfet<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
         let stamp = &self.stamp;
-        for (outer, inner, conductance) in [
-            (DRAIN, INNER_DRAIN, self.drain_conductance),
-            (SOURCE, INNER_SOURCE, self.source_conductance),
-        ] {
-            if conductance.value() > 0.0 {
-                let voltage = stamp.voltage(input, outer) - stamp.voltage(input, inner);
-                stamp.current(output, outer, inner, conductance * voltage);
-                stamp.conductance(output, (outer, inner), (outer, inner), conductance);
-            }
-        }
+        stamp.series(input, output, (DRAIN, INNER_DRAIN), self.drain_conductance);
+        stamp.series(
+            input,
+            output,
+            (SOURCE, INNER_SOURCE),
+            self.source_conductance,
+        );
 
         let sign = self.sign;
         let gate = stamp.voltage(input, GATE);
@@ -370,9 +350,10 @@ impl<R: Real> Device<R> for Jfet<R> {
         }
         let limited = [0, 1].map(|index| limits[index].unwrap_or(applied[index]));
         self.last = limited;
-        let [vgs, vgd] = limited;
-        // How far the applied voltages lie beyond the limited ones.
-        let beyond = [applied[0] - vgs, applied[1] - vgd];
+        let Bias {
+            voltages: [vgs, vgd],
+            beyond,
+        } = Bias::new(applied, limited);
 
         // Each gate junction, evaluated at its limited voltage and extended linearly.
         for (inner, voltage, delta, depletion) in [

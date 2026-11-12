@@ -10,7 +10,7 @@ use crate::junction::{
     BOLTZMANN, Depletion, ELEMENTARY_CHARGE, Temperatures, band_gap, below_one, critical_voltage,
     depletion_charge, junction_current, limit_drain, limit_gate, limit_junction,
 };
-use crate::stamp::Stamp;
+use crate::stamp::{self, Stamp, series_conductance};
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
     ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown,
@@ -684,14 +684,9 @@ impl Displacement {
     }
 }
 
-/// The terminal voltages one evaluation uses, oriented as an n-channel's: limited, and how
-/// far the applied ones lie beyond them, along which every value is extended linearly.
-#[derive(Debug, Clone, Copy)]
-struct Bias {
-    /// The gate-source, drain-source and bulk-source voltages, limited.
-    voltages: [f64; 3],
-    beyond: [f64; 3],
-}
+/// The gate-source, drain-source and bulk-source voltages of one evaluation, oriented as an
+/// n-channel's.
+type Bias = stamp::Bias<3>;
 
 impl NativeModel for Mosfet {
     type Device<R: Real> = Mosfet<R>;
@@ -750,15 +745,8 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
         }
 
         let [drain, gate, source, bulk] = [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let mut inner = |terminal, resistance: R, label| {
-            if resistance.value() > 0.0 {
-                Some(binding.internal(label, Quantity::Voltage))
-            } else {
-                terminal
-            }
-        };
-        let inner_drain = inner(drain, drain_resistance, "drain");
-        let inner_source = inner(source, source_resistance, "source");
+        let inner_drain = binding.behind(drain, drain_resistance, "drain");
+        let inner_source = binding.behind(source, source_resistance, "source");
         let stamp = Stamp::new(
             binding,
             [gate, drain, source, bulk, inner_drain, inner_source],
@@ -775,19 +763,12 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
                 ],
             }
         });
-        let conductance = |resistance: R| {
-            if resistance.value() > 0.0 {
-                resistance.recip()
-            } else {
-                R::constant(0.0)
-            }
-        };
         let sign = parameters.channel.sign();
         Ok(Self {
             stamp,
             sign,
-            drain_conductance: conductance(drain_resistance),
-            source_conductance: conductance(source_resistance),
+            drain_conductance: series_conductance(drain_resistance),
+            source_conductance: series_conductance(source_resistance),
             channel,
             junctions,
             overlaps,
@@ -1056,16 +1037,13 @@ impl<R: Real> Mosfet<R> {
     /// Adds the drain and source resistances.
     fn add_series(&self, input: &Input<'_>, output: &mut Output<'_, R>) {
         let stamp = &self.stamp;
-        for (outer, inner, conductance) in [
-            (DRAIN, INNER_DRAIN, self.drain_conductance),
-            (SOURCE, INNER_SOURCE, self.source_conductance),
-        ] {
-            if conductance.value() > 0.0 {
-                let voltage = stamp.voltage(input, outer) - stamp.voltage(input, inner);
-                stamp.current(output, outer, inner, conductance * voltage);
-                stamp.conductance(output, (outer, inner), (outer, inner), conductance);
-            }
-        }
+        stamp.series(input, output, (DRAIN, INNER_DRAIN), self.drain_conductance);
+        stamp.series(
+            input,
+            output,
+            (SOURCE, INNER_SOURCE),
+            self.source_conductance,
+        );
     }
 
     /// The terminal voltages at `input`, limited from the last evaluation's.
@@ -1080,10 +1058,7 @@ impl<R: Real> Mosfet<R> {
         }
         let voltages = limited.unwrap_or(applied);
         self.last = voltages;
-        Bias {
-            voltages,
-            beyond: [0, 1, 2].map(|index| applied[index] - voltages[index]),
-        }
+        Bias::new(applied, voltages)
     }
 
     /// The `applied` gate-source, drain-source and bulk-source voltages limited from the

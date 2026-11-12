@@ -4,10 +4,10 @@ use crate::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };
-use crate::stamp::Stamp;
+use crate::stamp::{self, Stamp, series_conductance};
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
-    ParameterError, Quantity, REFERENCE_TEMPERATURE, Real,
+    ParameterError, REFERENCE_TEMPERATURE, Real,
 };
 
 /// The doping order of a bipolar transistor.
@@ -857,16 +857,9 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
         let emitter_resistance = non_negative("emitter_resistance", parameters.emitter_resistance)?;
 
         let [collector, base_terminal, emitter] = [0, 1, 2].map(|index| binding.terminal(index));
-        let mut inner = |terminal, resistance: R, label| {
-            if resistance.value() > 0.0 {
-                Some(binding.internal(label, Quantity::Voltage))
-            } else {
-                terminal
-            }
-        };
-        let inner_collector = inner(collector, collector_resistance, "collector");
-        let inner_base = inner(base_terminal, parameters.base_resistance, "base");
-        let inner_emitter = inner(emitter, emitter_resistance, "emitter");
+        let inner_collector = binding.behind(collector, collector_resistance, "collector");
+        let inner_base = binding.behind(base_terminal, parameters.base_resistance, "base");
+        let inner_emitter = binding.behind(emitter, emitter_resistance, "emitter");
         let substrate = substrate_junction.map(|junction| {
             let joined = match junction.construction {
                 Construction::Vertical => inner_collector,
@@ -890,18 +883,11 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
                 inner_emitter,
             ],
         );
-        let conductance = |resistance: R| {
-            if resistance.value() > 0.0 {
-                resistance.recip()
-            } else {
-                R::constant(0.0)
-            }
-        };
         Ok(Self {
             stamp,
             sign: parameters.polarity.sign(),
-            collector_conductance: conductance(collector_resistance),
-            emitter_conductance: conductance(emitter_resistance),
+            collector_conductance: series_conductance(collector_resistance),
+            emitter_conductance: series_conductance(emitter_resistance),
             base,
             thermal_voltage: temperatures.thermal_voltage(),
             critical_voltage: critical_voltage(
@@ -916,22 +902,8 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
     }
 }
 
-/// The junction voltages one evaluation uses: limited, and how far the applied ones lie
-/// beyond them, along which every value is extended linearly.
-#[derive(Debug, Clone, Copy)]
-struct Bias {
-    /// The base-emitter and base-collector voltages, limited.
-    voltages: [f64; 2],
-    beyond: [f64; 2],
-}
-
-impl Bias {
-    /// How far a value with derivatives `slopes` moves from the limited voltages to the
-    /// applied ones.
-    fn extend<R: Real>(&self, slopes: [R; 2]) -> R {
-        slopes[0] * self.beyond[0] + slopes[1] * self.beyond[1]
-    }
-}
+/// The base-emitter and base-collector voltages of one evaluation.
+type Bias = stamp::Bias<2>;
 
 const BASE_EMITTER: (usize, usize) = (INNER_BASE, INNER_EMITTER);
 const BASE_COLLECTOR: (usize, usize) = (INNER_BASE, INNER_COLLECTOR);
@@ -940,16 +912,18 @@ impl<R: Real> BipolarTransistor<R> {
     /// Adds the collector and emitter resistances.
     fn add_series(&self, input: &Input<'_>, output: &mut Output<'_, R>) {
         let stamp = &self.stamp;
-        for (outer, inner, conductance) in [
-            (COLLECTOR, INNER_COLLECTOR, self.collector_conductance),
-            (EMITTER, INNER_EMITTER, self.emitter_conductance),
-        ] {
-            if conductance.value() > 0.0 {
-                let voltage = stamp.voltage(input, outer) - stamp.voltage(input, inner);
-                stamp.current(output, outer, inner, conductance * voltage);
-                stamp.conductance(output, (outer, inner), (outer, inner), conductance);
-            }
-        }
+        stamp.series(
+            input,
+            output,
+            (COLLECTOR, INNER_COLLECTOR),
+            self.collector_conductance,
+        );
+        stamp.series(
+            input,
+            output,
+            (EMITTER, INNER_EMITTER),
+            self.emitter_conductance,
+        );
     }
 
     /// The junction voltages at `input`, limited from the last evaluation's.
@@ -974,10 +948,7 @@ impl<R: Real> BipolarTransistor<R> {
         }
         let voltages = [0, 1].map(|index| limits[index].unwrap_or(applied[index]));
         self.last = voltages;
-        Bias {
-            voltages,
-            beyond: [applied[0] - voltages[0], applied[1] - voltages[1]],
-        }
+        Bias::new(applied, voltages)
     }
 
     /// Adds the transport current and the base currents through each junction.

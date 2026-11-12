@@ -313,7 +313,7 @@ impl Simulator {
             resume: None,
             history: History {
                 earlier: VecDeque::with_capacity(HISTORY - 1),
-                last: (0.0, self.workspace.charge.clone()),
+                last: (0.0, self.workspace.contributions.charge.clone()),
                 derivative: vec![0.0; unknowns],
                 ringing: VecDeque::with_capacity(RINGING),
             },
@@ -422,7 +422,7 @@ impl Simulator {
                 worst: self.furthest_from_converging(&candidate, options, NAMED_UNKNOWNS),
             });
         };
-        let charge = self.workspace.charge.clone();
+        let charge = self.workspace.contributions.charge.clone();
         let derivative: Vec<f64> = charge
             .iter()
             .zip(&stepper.terms)
@@ -505,11 +505,7 @@ impl Simulator {
                     newest[index],
                 ];
                 let turns = [run[1] - run[0], run[2] - run[1], run[3] - run[2]];
-                let absolute = if unknown.quantity.sums_currents() {
-                    options.current_tolerance
-                } else {
-                    options.voltage_tolerance
-                };
+                let absolute = options.equation_tolerance(unknown.quantity);
                 let largest = run
                     .iter()
                     .fold(0.0_f64, |most, value| most.max(value.abs()));
@@ -651,11 +647,7 @@ impl Simulator {
                 divided_difference(&times[..needed], &samples[..needed]),
             );
             let previous_charge = history.last.1[index];
-            let absolute_current = if unknown.quantity.sums_currents() {
-                options.current_tolerance
-            } else {
-                options.voltage_tolerance
-            };
+            let absolute_current = options.equation_tolerance(unknown.quantity);
             let charge_tolerance = options.relative_tolerance
                 * new.1[index].abs().max(previous_charge.abs())
                 + options.charge_tolerance;

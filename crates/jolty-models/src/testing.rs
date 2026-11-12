@@ -3,8 +3,8 @@
 use jolty_numerics::{Pattern, PatternBuilder};
 
 use crate::{
-    Binding, Device, Gradient, Input, Model, Native, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown, UnknownInfo,
+    Binding, Contributions, Device, Gradient, Input, Model, Native, NativeDevice, NativeModel,
+    Node, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown, UnknownInfo,
 };
 
 /// One device whose terminals each connect to an unknown of their own.
@@ -97,19 +97,18 @@ impl Bench {
     }
 
     pub(crate) fn evaluate_with(&mut self, input: &Input<'_>) -> Evaluation {
-        let (n, stored) = (self.unknowns.len(), self.pattern.len());
-        let (mut residual, mut scale, mut charge) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
-        let (mut conductance, mut capacitance) = (vec![0.0; stored], vec![0.0; stored]);
-        let mut output = Output::new(
-            &self.pattern,
-            &mut residual,
-            &mut scale,
-            &mut charge,
-            &mut conductance,
-            &mut capacitance,
-        );
+        let n = self.unknowns.len();
+        let mut contributions = Contributions::new(&self.pattern);
+        let mut output = contributions.output(&self.pattern);
         self.device.evaluate(input, &mut output);
         let limited = output.is_limited();
+        let Contributions {
+            residual,
+            charge,
+            conductance,
+            capacitance,
+            ..
+        } = contributions;
         let dense = |values: &[f64]| {
             let mut matrix = vec![vec![0.0; n]; n];
             for ((row, column), value) in self.pattern.positions().zip(values) {
@@ -190,16 +189,11 @@ fn residuals_and_charges<R: Real>(
     pattern: &Pattern,
     (x, time): (&[f64], f64),
 ) -> (Vec<R>, Vec<R>) {
-    let mut buffers = [(); 3].map(|()| vec![R::default(); x.len()]);
-    let [residual, scale, charge] = &mut buffers;
-    let mut matrices = [(); 2].map(|()| vec![R::default(); pattern.len()]);
-    let [conductance, capacitance] = &mut matrices;
-    let mut output = Output::new(pattern, residual, scale, charge, conductance, capacitance);
+    let mut contributions = Contributions::new(pattern);
     let mut input = Input::new(x, time, 1e-12);
     input.limiting = false;
-    device.evaluate(&input, &mut output);
-    let [residual, _, charge] = buffers;
-    (residual, charge)
+    device.evaluate(&input, &mut contributions.output(pattern));
+    (contributions.residual, contributions.charge)
 }
 
 /// A device of `M` made from parameters, each of its terminals on an unknown of its own,

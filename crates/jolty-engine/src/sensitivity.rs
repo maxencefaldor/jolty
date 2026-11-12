@@ -9,7 +9,7 @@
 //! and evaluated at the operating point.
 
 use jolty_ir::Parameters;
-use jolty_models::{Binding, Gradient, Input, Output, UnknownInfo};
+use jolty_models::{Binding, Contributions, Gradient, Input, UnknownInfo};
 use jolty_numerics::PatternBuilder;
 use serde::Deserialize;
 use serde_json::Value;
@@ -80,7 +80,9 @@ impl Simulator {
         let operating_point = self.operating_point(options)?;
         let x = &operating_point.values;
         self.evaluate(x, 0.0, (1.0, options.gmin), false);
-        let mut factors = self.solver.factor(&self.workspace.conductance)?;
+        let mut factors = self
+            .solver
+            .factor(&self.workspace.contributions.conductance)?;
         let mut adjoints = Vec::with_capacity(outputs.len());
         for output in &outputs {
             let mut adjoint = vec![0.0; x.len()];
@@ -156,17 +158,18 @@ impl Simulator {
             .model
             .instantiate_gradient(&seeded, &mut binding)
             .ok()?;
-        let dimension = self.system.unknowns.len();
-        let pattern = builder.finish(dimension);
-        let mut buffers = [(); 3].map(|()| vec![Gradient::default(); dimension]);
-        let [residual, scale, charge] = &mut buffers;
-        let mut matrices = [(); 2].map(|()| vec![Gradient::default(); pattern.len()]);
-        let [conductance, capacitance] = &mut matrices;
-        let mut output = Output::new(&pattern, residual, scale, charge, conductance, capacitance);
+        let pattern = builder.finish(self.system.unknowns.len());
+        let mut contributions = Contributions::<Gradient>::new(&pattern);
         let mut input = Input::new(x, 0.0, options.gmin);
         input.limiting = false;
-        device.evaluate(&input, &mut output);
-        Some(residual.iter().map(|value| value.derivative).collect())
+        device.evaluate(&input, &mut contributions.output(&pattern));
+        Some(
+            contributions
+                .residual
+                .iter()
+                .map(|value| value.derivative)
+                .collect(),
+        )
     }
 }
 

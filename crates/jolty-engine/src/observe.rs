@@ -14,8 +14,8 @@
 //! apart and its internal unknowns: the device's own small-signal model, exactly.
 
 use jolty_models::{
-    Binding, Device, Input, Level, LogicDriver, LogicDriverParameters, NativeDevice, Node, Output,
-    ParameterError, Quantity, ThresholdDetector, Unknown, UnknownInfo,
+    Binding, Contributions, Device, Input, Level, LogicDriver, LogicDriverParameters, NativeDevice,
+    Node, ParameterError, Quantity, ThresholdDetector, Unknown, UnknownInfo,
 };
 use jolty_numerics::integration::Formula;
 use jolty_numerics::{Complex64, Pattern, PatternBuilder};
@@ -137,11 +137,7 @@ struct Probe {
     /// Its variables' range among every device's.
     variables: std::ops::Range<usize>,
     x: Vec<f64>,
-    residual: Vec<f64>,
-    scale: Vec<f64>,
-    charge: Vec<f64>,
-    conductance: Vec<f64>,
-    capacitance: Vec<f64>,
+    contributions: Contributions,
 }
 
 impl Probe {
@@ -150,26 +146,10 @@ impl Probe {
         for (value, source) in self.x.iter_mut().zip(&self.sources) {
             *value = source.map_or(0.0, |unknown| x[unknown.index()]);
         }
-        for buffer in [
-            &mut self.residual,
-            &mut self.scale,
-            &mut self.charge,
-            &mut self.conductance,
-            &mut self.capacitance,
-        ] {
-            buffer.fill(0.0);
-        }
-        let mut output = Output::new(
-            &self.pattern,
-            &mut self.residual,
-            &mut self.scale,
-            &mut self.charge,
-            &mut self.conductance,
-            &mut self.capacitance,
-        );
         let mut input = Input::new(&self.x, time, gmin);
         input.limiting = false;
-        self.device.evaluate(&input, &mut output);
+        self.device
+            .evaluate(&input, &mut self.contributions.output(&self.pattern));
     }
 }
 
@@ -289,7 +269,6 @@ impl Observer {
             )
             .collect();
         let pattern = builder.finish(count);
-        let stored = pattern.len();
         let first = self.names.len();
         let first_derivative = self.derivatives.len();
         self.names.extend(local[..terminals].iter().cloned());
@@ -307,18 +286,14 @@ impl Observer {
         self.probes.push(Probe {
             placed,
             device: copy,
-            pattern,
             sources,
             terminals,
             first,
             first_derivative,
             variables: start..self.variables.len(),
             x: vec![0.0; count],
-            residual: vec![0.0; count],
-            scale: vec![0.0; count],
-            charge: vec![0.0; count],
-            conductance: vec![0.0; stored],
-            capacitance: vec![0.0; stored],
+            contributions: Contributions::new(&pattern),
+            pattern,
         });
         Ok(())
     }
@@ -426,13 +401,17 @@ impl Observer {
         for probe in &mut self.probes {
             probe.evaluate(x, time, gmin);
             let range = probe.first..probe.first + probe.terminals;
-            found.currents[range.clone()].copy_from_slice(&probe.residual[..probe.terminals]);
-            found.charges[range].copy_from_slice(&probe.charge[..probe.terminals]);
+            found.currents[range.clone()]
+                .copy_from_slice(&probe.contributions.residual[..probe.terminals]);
+            found.charges[range].copy_from_slice(&probe.contributions.charge[..probe.terminals]);
             let count = probe.x.len();
-            let positions = probe
-                .pattern
-                .positions()
-                .zip(probe.conductance.iter().zip(&probe.capacitance));
+            let positions = probe.pattern.positions().zip(
+                probe
+                    .contributions
+                    .conductance
+                    .iter()
+                    .zip(&probe.contributions.capacitance),
+            );
             for ((row, column), (&conductance, &capacitance)) in positions {
                 let index = probe.first_derivative + row * count + column;
                 found.conductances[index] = conductance;
@@ -467,10 +446,13 @@ impl Observer {
                 probe.sources[column]
                     .map_or(Complex64::default(), |unknown| values[unknown.index()])
             };
-            let positions = probe
-                .pattern
-                .positions()
-                .zip(probe.conductance.iter().zip(&probe.capacitance));
+            let positions = probe.pattern.positions().zip(
+                probe
+                    .contributions
+                    .conductance
+                    .iter()
+                    .zip(&probe.contributions.capacitance),
+            );
             for ((row, column), (&conductance, &capacitance)) in positions {
                 if row < probe.terminals {
                     found[probe.first + row] +=

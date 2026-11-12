@@ -1,6 +1,6 @@
 //! Newton iteration on the circuit's equations.
 
-use jolty_models::{Input, Output};
+use jolty_models::{Contributions, Input};
 
 use crate::elaborate::System;
 use crate::{Options, Simulator};
@@ -19,17 +19,9 @@ pub(crate) const NAMED_UNKNOWNS: usize = 3;
 /// The buffers one evaluation of the circuit fills, allocated once per simulator.
 #[derive(Debug)]
 pub(crate) struct Workspace {
-    /// The residual of every equation; after [`Simulator::combine`], the full residual of the
-    /// system being solved.
-    pub(crate) residual: Vec<f64>,
-    /// The largest magnitude of a term of each residual.
-    pub(crate) scale: Vec<f64>,
-    /// The charge of every equation.
-    pub(crate) charge: Vec<f64>,
-    /// `∂f/∂x`, by pattern slot.
-    pub(crate) conductance: Vec<f64>,
-    /// `∂q/∂x`, by pattern slot.
-    pub(crate) capacitance: Vec<f64>,
+    /// What the devices added; after [`Simulator::combine`], the residual is the full
+    /// residual of the system being solved.
+    pub(crate) contributions: Contributions,
     /// The Jacobian of the system being solved, by pattern slot.
     jacobian: Vec<f64>,
     /// `|J|·|x|` of each equation: how much its residual moves when every unknown moves by
@@ -43,11 +35,7 @@ impl Workspace {
     pub(crate) fn new(system: &System) -> Self {
         let (unknowns, stored) = (system.unknowns.len(), system.pattern.len());
         Self {
-            residual: vec![0.0; unknowns],
-            scale: vec![0.0; unknowns],
-            charge: vec![0.0; unknowns],
-            conductance: vec![0.0; stored],
-            capacitance: vec![0.0; stored],
+            contributions: Contributions::new(&system.pattern),
             jacobian: vec![0.0; stored],
             resolution: vec![0.0; unknowns],
             step: vec![0.0; unknowns],
@@ -89,24 +77,7 @@ impl Simulator {
         (source_scale, gmin): (f64, f64),
         limiting: bool,
     ) -> bool {
-        let workspace = &mut self.workspace;
-        for buffer in [
-            &mut workspace.residual,
-            &mut workspace.scale,
-            &mut workspace.charge,
-            &mut workspace.conductance,
-            &mut workspace.capacitance,
-        ] {
-            buffer.fill(0.0);
-        }
-        let mut output = Output::new(
-            &self.system.pattern,
-            &mut workspace.residual,
-            &mut workspace.scale,
-            &mut workspace.charge,
-            &mut workspace.conductance,
-            &mut workspace.capacitance,
-        );
+        let mut output = self.workspace.contributions.output(&self.system.pattern);
         let mut input = Input::new(x, time, gmin);
         input.source_scale = source_scale;
         input.limiting = limiting;
@@ -144,7 +115,8 @@ impl Simulator {
                 return Ok(iteration);
             }
             let workspace = &mut self.workspace;
-            for (step, residual) in workspace.step.iter_mut().zip(&workspace.residual) {
+            let residual = &workspace.contributions.residual;
+            for (step, residual) in workspace.step.iter_mut().zip(residual) {
                 *step = -residual;
             }
             self.solver
@@ -161,32 +133,40 @@ impl Simulator {
 
     /// Turns the evaluated device contributions into the residual and Jacobian of `mode`.
     fn combine(&mut self, x: &[f64], mode: Mode<'_>) {
-        let workspace = &mut self.workspace;
+        let Workspace {
+            contributions,
+            jacobian,
+            resolution,
+            ..
+        } = &mut self.workspace;
         match mode {
             Mode::Dc { shunt, .. } => {
-                workspace.jacobian.copy_from_slice(&workspace.conductance);
+                jacobian.copy_from_slice(&contributions.conductance);
                 if shunt > 0.0 {
                     for &(unknown, entry) in &self.system.node_diagonals {
                         let index = unknown.index();
-                        workspace.jacobian[self.system.pattern.slot(entry)] += shunt;
+                        jacobian[self.system.pattern.slot(entry)] += shunt;
                         let current = shunt * x[index];
-                        workspace.residual[index] += current;
-                        workspace.scale[index] = workspace.scale[index].max(current.abs());
+                        contributions.residual[index] += current;
+                        let scale = &mut contributions.scale[index];
+                        *scale = scale.max(current.abs());
                     }
                 }
             }
             Mode::Step { alpha, history, .. } => {
-                for ((jacobian, conductance), capacitance) in workspace
-                    .jacobian
+                for ((jacobian, conductance), capacitance) in jacobian
                     .iter_mut()
-                    .zip(&workspace.conductance)
-                    .zip(&workspace.capacitance)
+                    .zip(&contributions.conductance)
+                    .zip(&contributions.capacitance)
                 {
                     *jacobian = conductance + alpha * capacitance;
                 }
-                let rows = workspace.residual.iter_mut().zip(&mut workspace.scale);
+                let rows = contributions
+                    .residual
+                    .iter_mut()
+                    .zip(&mut contributions.scale);
                 for ((residual, scale), (&charge, &term)) in
-                    rows.zip(workspace.charge.iter().zip(history))
+                    rows.zip(contributions.charge.iter().zip(history))
                 {
                     let reactive = alpha * charge + term;
                     *residual += reactive;
@@ -194,9 +174,9 @@ impl Simulator {
                 }
             }
         }
-        workspace.resolution.fill(0.0);
-        for ((row, column), &value) in self.system.pattern.positions().zip(&workspace.jacobian) {
-            workspace.resolution[row] += (value * x[column]).abs();
+        resolution.fill(0.0);
+        for ((row, column), &value) in self.system.pattern.positions().zip(jacobian.iter()) {
+            resolution[row] += (value * x[column]).abs();
         }
     }
 
@@ -209,11 +189,7 @@ impl Simulator {
     fn step_error(&self, x: &[f64], index: usize, options: &Options) -> f64 {
         let step = self.workspace.step[index];
         let magnitude = x[index].abs().max((x[index] - step).abs());
-        let absolute = if self.system.unknowns[index].quantity.is_current() {
-            options.current_tolerance
-        } else {
-            options.voltage_tolerance
-        };
+        let absolute = options.value_tolerance(self.system.unknowns[index].quantity);
         step.abs() / (options.relative_tolerance * magnitude + absolute)
     }
 
@@ -227,14 +203,11 @@ impl Simulator {
             .iter()
             .enumerate()
             .all(|(index, unknown)| {
-                let absolute = if unknown.quantity.sums_currents() {
-                    options.current_tolerance
-                } else {
-                    options.voltage_tolerance
-                };
+                let absolute = options.equation_tolerance(unknown.quantity);
                 let rounding = RESIDUAL_ROUNDINGS * f64::EPSILON * workspace.resolution[index];
-                workspace.residual[index].abs()
-                    <= options.relative_tolerance * workspace.scale[index] + absolute + rounding
+                let contributions = &workspace.contributions;
+                contributions.residual[index].abs()
+                    <= options.relative_tolerance * contributions.scale[index] + absolute + rounding
             })
     }
 

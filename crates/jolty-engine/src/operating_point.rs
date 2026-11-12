@@ -111,11 +111,11 @@ impl Simulator {
         }
         self.evaluate(values, 0.0, (1.0, options.gmin), true);
         let omega = TAU * LOAD_FREQUENCY;
-        let matrix: Vec<Complex64> = self
-            .workspace
+        let contributions = &self.workspace.contributions;
+        let matrix: Vec<Complex64> = contributions
             .conductance
             .iter()
-            .zip(&self.workspace.capacitance)
+            .zip(&contributions.capacitance)
             .map(|(&conductance, &capacitance)| Complex64::new(conductance, omega * capacitance))
             .collect();
         let Ok(mut solver) = SparseLu::<Complex64>::new(self.system.pattern.clone()) else {

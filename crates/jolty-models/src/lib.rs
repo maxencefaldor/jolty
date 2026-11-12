@@ -39,7 +39,7 @@ use std::sync::Arc;
 pub use behavioral::{
     Behavior, BehavioralCurrentSource, BehavioralParameters, BehavioralVoltageSource,
 };
-pub use binding::{Binding, Node, Quantity, TerminalPair, Unknown, UnknownInfo};
+pub use binding::{Binding, Node, Quantity, Unknown, UnknownInfo};
 pub use bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
 pub use controlled::{
     CurrentControlledCurrentSource, CurrentControlledCurrentSourceParameters,
@@ -49,7 +49,7 @@ pub use controlled::{
 };
 pub use device::{Device, Model, Native, NativeDevice, NativeModel, ParameterError, Source};
 pub use diode::{Diode, DiodeParameters};
-pub use evaluation::{Input, Output};
+pub use evaluation::{Contributions, Input, Output};
 pub use jfet::{Channel, Jfet, JfetParameters};
 pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
 pub use logic::{
@@ -64,6 +64,7 @@ pub use passive::{
 };
 pub use real::{Gradient, Real};
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
+pub use stamp::TerminalPair;
 pub use switch::{VoltageControlledSwitch, VoltageControlledSwitchParameters};
 pub use topology::{Branch, BranchKind, Interface};
 

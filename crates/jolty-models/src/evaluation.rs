@@ -40,85 +40,106 @@ impl<'a> Input<'a> {
     }
 }
 
-/// Where devices add their contributions during one evaluation of the circuit.
+/// What devices add to the circuit's equations in one evaluation.
 ///
-/// Every slice starts zeroed. Residuals and charges are indexed by unknown; conductances and
-/// capacitances by the pattern's value slots. Alongside each residual, `scale` keeps the
-/// largest magnitude of a term added to it, against which convergence is judged. Its
-/// numbers are plain, or carry their derivative with respect to a parameter when a device
-/// computes with [`crate::Gradient`].
-#[derive(Debug)]
-pub struct Output<'a, R: Real = f64> {
-    pattern: &'a Pattern,
-    residual: &'a mut [R],
-    scale: &'a mut [R],
-    charge: &'a mut [R],
-    conductance: &'a mut [R],
-    capacitance: &'a mut [R],
-    limited: bool,
+/// Residuals, their scales and charges hold one value per unknown; conductances and
+/// capacitances one per stored position of the pattern. Alongside each residual, `scale`
+/// keeps the largest magnitude of a term added to it, against which convergence is judged.
+/// The numbers are plain, or carry their derivative with respect to a parameter when the
+/// devices compute with [`crate::Gradient`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Contributions<R: Real = f64> {
+    /// The residual of each unknown's equation, `f(x)`.
+    pub residual: Vec<R>,
+    /// The largest magnitude of a term of each residual.
+    pub scale: Vec<R>,
+    /// The charge of each unknown's equation, `q(x)`.
+    pub charge: Vec<R>,
+    /// `∂f/∂x`, by stored position.
+    pub conductance: Vec<R>,
+    /// `∂q/∂x`, by stored position.
+    pub capacitance: Vec<R>,
 }
 
-impl<'a, R: Real> Output<'a, R> {
-    /// An output over zeroed buffers: `residual`, `scale` and `charge` hold one value per
-    /// unknown, `conductance` and `capacitance` one per stored position of `pattern`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a buffer has the wrong length.
-    pub fn new(
-        pattern: &'a Pattern,
-        residual: &'a mut [R],
-        scale: &'a mut [R],
-        charge: &'a mut [R],
-        conductance: &'a mut [R],
-        capacitance: &'a mut [R],
-    ) -> Self {
-        let dimension = pattern.dimension();
-        assert!(
-            residual.len() == dimension && scale.len() == dimension && charge.len() == dimension,
-            "one residual, scale and charge per unknown"
-        );
-        assert!(
-            conductance.len() == pattern.len() && capacitance.len() == pattern.len(),
-            "one conductance and capacitance per stored position"
-        );
+impl<R: Real> Contributions<R> {
+    /// Zeroed contributions over `pattern`.
+    #[must_use]
+    pub fn new(pattern: &Pattern) -> Self {
+        let (unknowns, stored) = (pattern.dimension(), pattern.len());
         Self {
-            pattern,
-            residual,
-            scale,
-            charge,
-            conductance,
-            capacitance,
-            limited: false,
+            residual: vec![R::default(); unknowns],
+            scale: vec![R::default(); unknowns],
+            charge: vec![R::default(); unknowns],
+            conductance: vec![R::default(); stored],
+            capacitance: vec![R::default(); stored],
         }
     }
 
+    /// Zeroes every contribution and opens them to the devices' additions over `pattern`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the contributions were not made over a pattern of the same size.
+    pub fn output<'a>(&'a mut self, pattern: &'a Pattern) -> Output<'a, R> {
+        assert!(
+            self.residual.len() == pattern.dimension() && self.conductance.len() == pattern.len(),
+            "contributions sized for another pattern"
+        );
+        for values in [
+            &mut self.residual,
+            &mut self.scale,
+            &mut self.charge,
+            &mut self.conductance,
+            &mut self.capacitance,
+        ] {
+            values.fill(R::default());
+        }
+        Output {
+            pattern,
+            contributions: self,
+            limited: false,
+        }
+    }
+}
+
+/// Where devices add their contributions during one evaluation of the circuit: zeroed
+/// [`Contributions`], open over the pattern that places their conductances and capacitances.
+#[derive(Debug)]
+pub struct Output<'a, R: Real = f64> {
+    pattern: &'a Pattern,
+    contributions: &'a mut Contributions<R>,
+    limited: bool,
+}
+
+impl<R: Real> Output<'_, R> {
     /// Adds `value` to the residual of `row`'s equation.
     pub fn add_residual(&mut self, row: Node, value: R) {
         if let Some(row) = row {
-            self.residual[row.index()] += value;
-            self.scale[row.index()] = self.scale[row.index()].max(value.abs());
+            let contributions = &mut *self.contributions;
+            contributions.residual[row.index()] += value;
+            let scale = &mut contributions.scale[row.index()];
+            *scale = scale.max(value.abs());
         }
     }
 
     /// Adds `value` to the charge of `row`'s equation.
     pub fn add_charge(&mut self, row: Node, value: R) {
         if let Some(row) = row {
-            self.charge[row.index()] += value;
+            self.contributions.charge[row.index()] += value;
         }
     }
 
     /// Adds `value` to the conductance at `entry`.
     pub fn add_conductance(&mut self, entry: Option<Entry>, value: R) {
         if let Some(entry) = entry {
-            self.conductance[self.pattern.slot(entry)] += value;
+            self.contributions.conductance[self.pattern.slot(entry)] += value;
         }
     }
 
     /// Adds `value` to the capacitance at `entry`.
     pub fn add_capacitance(&mut self, entry: Option<Entry>, value: R) {
         if let Some(entry) = entry {
-            self.capacitance[self.pattern.slot(entry)] += value;
+            self.contributions.capacitance[self.pattern.slot(entry)] += value;
         }
     }
 

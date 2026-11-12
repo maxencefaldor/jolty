@@ -1,6 +1,6 @@
 use jolty_numerics::{Entry, PatternBuilder};
 
-use crate::{Input, Output, Real};
+use crate::Real;
 
 /// A node voltage or branch current the engine solves for, by its index in the solution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -117,82 +117,18 @@ impl<'a> Binding<'a> {
         Unknown(self.unknowns.len() - 1)
     }
 
-    /// Claims the matrix entry at `row` and `column`, or none when either is the reference.
-    pub fn entry(&mut self, row: Node, column: Node) -> Option<Entry> {
-        Some(self.pattern.entry(row?.index(), column?.index()))
-    }
-}
-
-/// The two nodes of a two-terminal element and the four matrix entries that join them.
-///
-/// Current flows from the positive node through the element to the negative node, and the
-/// element's voltage is the positive node's voltage minus the negative node's.
-#[derive(Debug, Clone, Copy)]
-pub struct TerminalPair {
-    positive: Node,
-    negative: Node,
-    entries: [Option<Entry>; 4],
-}
-
-impl TerminalPair {
-    /// Claims the entries that join `positive` and `negative`.
-    pub fn new(binding: &mut Binding<'_>, positive: Node, negative: Node) -> Self {
-        let entries = [
-            binding.entry(positive, positive),
-            binding.entry(positive, negative),
-            binding.entry(negative, positive),
-            binding.entry(negative, negative),
-        ];
-        Self {
-            positive,
-            negative,
-            entries,
+    /// The node behind a terminal's series `resistance`: an internal node labelled `label`
+    /// when the resistance is positive, else the terminal's own node.
+    pub(crate) fn behind<R: Real>(&mut self, terminal: Node, resistance: R, label: &str) -> Node {
+        if resistance.value() > 0.0 {
+            Some(self.internal(label, Quantity::Voltage))
+        } else {
+            terminal
         }
     }
 
-    /// The element's voltage.
-    #[must_use]
-    pub fn voltage(&self, input: &Input<'_>) -> f64 {
-        input.value(self.positive) - input.value(self.negative)
-    }
-
-    /// Adds `current`, flowing through the element, to the two nodes' equations.
-    pub fn add_current<R: Real>(&self, output: &mut Output<'_, R>, current: R) {
-        output.add_residual(self.positive, current);
-        output.add_residual(self.negative, -current);
-    }
-
-    /// Adds `charge`, held on the positive node and its opposite on the negative node.
-    pub fn add_charge<R: Real>(&self, output: &mut Output<'_, R>, charge: R) {
-        output.add_charge(self.positive, charge);
-        output.add_charge(self.negative, -charge);
-    }
-
-    /// Adds `conductance`, the derivative of the current with respect to the voltage.
-    pub fn add_conductance<R: Real>(&self, output: &mut Output<'_, R>, conductance: R) {
-        let [
-            positive_positive,
-            positive_negative,
-            negative_positive,
-            negative_negative,
-        ] = self.entries;
-        output.add_conductance(positive_positive, conductance);
-        output.add_conductance(positive_negative, -conductance);
-        output.add_conductance(negative_positive, -conductance);
-        output.add_conductance(negative_negative, conductance);
-    }
-
-    /// Adds `capacitance`, the derivative of the charge with respect to the voltage.
-    pub fn add_capacitance<R: Real>(&self, output: &mut Output<'_, R>, capacitance: R) {
-        let [
-            positive_positive,
-            positive_negative,
-            negative_positive,
-            negative_negative,
-        ] = self.entries;
-        output.add_capacitance(positive_positive, capacitance);
-        output.add_capacitance(positive_negative, -capacitance);
-        output.add_capacitance(negative_positive, -capacitance);
-        output.add_capacitance(negative_negative, capacitance);
+    /// Claims the matrix entry at `row` and `column`, or none when either is the reference.
+    pub fn entry(&mut self, row: Node, column: Node) -> Option<Entry> {
+        Some(self.pattern.entry(row?.index(), column?.index()))
     }
 }

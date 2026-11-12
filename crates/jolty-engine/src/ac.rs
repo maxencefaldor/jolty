@@ -74,8 +74,8 @@ impl Simulator {
             let omega = TAU * frequency;
             for ((value, &conductance), &capacitance) in matrix
                 .iter_mut()
-                .zip(&self.workspace.conductance)
-                .zip(&self.workspace.capacitance)
+                .zip(&self.workspace.contributions.conductance)
+                .zip(&self.workspace.contributions.capacitance)
             {
                 *value = Complex64::new(conductance, omega * capacitance);
             }
