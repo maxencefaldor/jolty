@@ -23,7 +23,9 @@ Your design is scored in four cases, each a transient of one second read at 31 t
 Each sine starts at its middle at 0 s and rises, as `VS` does.
 In each case the scorer takes the mean absolute error of the output current over the 31 times, and divides it by a reference circuit's error on that case: 41 µA, 36 µA, 26 µA and 44 µA.
 The fitness is the mean of the four ratios, lower being better; the reference circuit's is 1.
-The design meets the task when its fitness is at most 1, it holds only the parts allowed, and its output current is stable: after `VS` steps by 10 mV in 1 ns, the current must settle, swinging by less than 1 µA from 40 µs to 50 µs after the start, with `plus` and `minus` at 6 V and 4 V, at 10 V and 2 V with `VS` from 1 V, and at 2 V and 10 V with `VS` from −1 V before its step.
+Its output current must also be stable: after `VS` steps by 10 mV in 1 ns, the current must settle, swinging by less than 1 µA from 40 µs to 50 µs after the start, with `plus` and `minus` at 6 V and 4 V, at 10 V and 2 V with `VS` from 1 V, and at 2 V and 10 V with `VS` from −1 V before its step.
+The design meets the task when it holds only the parts allowed, and its fitness is at most 1 and its output current stable, both with its parts exact and on at least 95 % of 100 boards built of it.
+On each board, every resistor lies anywhere within 1 % of its value and every capacitor within 5 %, whatever tolerance you give them, while the transistors stay as given.
 At an equal fitness, fewer parts are better.
 
 You have jolty, a compiler and simulator for electronic circuits: its command line, `jolty`, its MCP server, `jolty-mcp`, and its Python package.

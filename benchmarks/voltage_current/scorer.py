@@ -11,7 +11,9 @@ ratios' mean, as Koza weighted it, so the patent's is 1, and the circuit genetic
 programming evolved reached 0.619. The work meets the task when it builds from the
 allowed parts alone, its fitness is at most 1, and its output current settles within
 40 µs after ``VS`` steps by 10 mV at three points of its range: a check Koza's fitness
-lacks, since its steps of 1/30 s cannot see an oscillation.
+lacks, since its steps of 1/30 s cannot see an oscillation. Both must hold on 95 % of
+boards of the design too, built of resistors within 1 % and capacitors within 5 %, a
+margin Koza's circuits, simulated with exact parts, need not keep.
 
 Koza's added input is ``plus`` and his subtracted one ``minus``; his evolved circuit
 sources a current from the first and sinks one into the second, so the output current
@@ -20,10 +22,11 @@ flows out of ``output`` when ``plus`` is the higher.
 
 import runpy
 import sys
+from functools import partial
 from pathlib import Path
 
 import numpy as np
-from scoring import count_devices, disallowed
+from scoring import Board, count_devices, disallowed, judge, tolerate
 from verdict import Verdict
 
 from jolty import Builder, Component, Role, Simulation, circuit, component, devices
@@ -123,12 +126,20 @@ def bench(
     c.connect(load.b, ground)
 
 
-def errors(made: Component) -> list[float]:
-    """The mean absolute error of `made`'s output current in each case, in amperes."""
+def measure(made: Component, board: Board) -> dict[str, float]:
+    """Koza's four fitness cases on `board` of `made`, and its three settling steps.
+
+    Each case gives its mean absolute error of the output current, in amperes, and the
+    fitness weighs them. The fitness cases' steps are milliseconds long, too long to see
+    an oscillation; each settling step gives the swing of the output current over the
+    last 10 µs of 50, read at steps of 10 ns.
+    """
     times = np.linspace(0.0, 1.0, TIMES)
-    found = []
+    errors = []
     for inputs in cases():
-        waveforms = Simulation(circuit(bench(made, inputs, swing()))).run(
+        waveforms = Simulation(
+            circuit(bench(made, inputs, swing())), overrides=board
+        ).run(
             Transient(
                 stop=1 * s,
                 max_step=(1 / (10 * (TIMES - 1))) * s,
@@ -143,31 +154,37 @@ def errors(made: Component) -> list[float]:
         wanted = TRANSCONDUCTANCE * (
             read(waveforms.voltage("plus")) - read(waveforms.voltage("minus"))
         )
-        found.append(float(np.mean(np.abs(output - wanted))))
-    return found
-
-
-def unsettled(made: Component) -> list[str]:
-    """Where `made`'s output current does not settle after ``VS`` steps by 10 mV.
-
-    The fitness cases' steps are milliseconds long, too long to see an oscillation; this
-    reads the current over the last 10 µs of 50, at steps of 10 ns.
-    """
-    found = []
-    for plus, minus, level in SETTLING:
+        errors.append(float(np.mean(np.abs(output - wanted))))
+    measurements = {"fitness": float(np.mean(np.divide(errors, PATENT)))}
+    measurements |= {
+        f"error {case}": error for case, error in enumerate(errors, start=1)
+    }
+    for case, (plus, minus, level) in enumerate(SETTLING, start=1):
         inputs = (devices.voltage_source(plus * V), devices.voltage_source(minus * V))
-        waveforms = Simulation(circuit(bench(made, inputs, step(level)))).run(
-            Transient(stop=50 * us, max_step=10 * ns)
-        )
+        waveforms = Simulation(
+            circuit(bench(made, inputs, step(level))), overrides=board
+        ).run(Transient(stop=50 * us, max_step=10 * ns))
         late = waveforms.times >= SETTLED
         current = waveforms.current("RLOAD", "a")[late]
-        swing = float(np.ptp(current))
+        measurements[f"swing {case}"] = float(np.ptp(current))
+    return measurements
+
+
+def shortfalls(found: dict[str, float]) -> list[str]:
+    """Why the measurements `found` fall short of the task, if they do."""
+    reasons = []
+    if found["fitness"] > 1:
+        reasons.append(
+            f"the fitness is {found['fitness']:.4g}, more than the patent's 1"
+        )
+    for case, (plus, minus, level) in enumerate(SETTLING, start=1):
+        swing = found[f"swing {case}"]
         if swing > UNSETTLED:
-            found.append(
+            reasons.append(
                 f"with plus at {plus} V, minus at {minus} V and VS stepped from "
                 f"{level} V, the output current still swings by {swing:.3g} A"
             )
-    return found
+    return reasons
 
 
 def score(task: Path, work: Path) -> Verdict:
@@ -183,19 +200,17 @@ def score(task: Path, work: Path) -> Verdict:
         return Verdict(met=False, reasons=("build() returns no component",))
     built = circuit(bench(made, cases()[0], swing()))
     reasons = disallowed(built, given, ALLOWED)
-    reasons += unsettled(made)
-    found = errors(made)
-    fitness = float(
-        np.mean([mine / theirs for mine, theirs in zip(found, PATENT, strict=True)])
-    )
-    if fitness > 1:
-        reasons.append(f"the fitness is {fitness:.4g}, more than the patent's 1")
-    measurements = {
-        "fitness": fitness,
+    measured = partial(measure, made)
+    measurements, short = judge(measured, shortfalls)
+    reasons += short
+    if not reasons:
+        spread, reasons = tolerate(built, measured, shortfalls)
+        measurements |= spread
+    measurements |= {
+        f"patent's error {case}": theirs for case, theirs in enumerate(PATENT, start=1)
+    }
+    measurements |= {
         "evolved fitness": EVOLVED,
         "devices": float(count_devices(built, "X1")),
     }
-    for case, (mine, theirs) in enumerate(zip(found, PATENT, strict=True), start=1):
-        measurements[f"error {case}"] = mine
-        measurements[f"patent's error {case}"] = theirs
     return Verdict(met=not reasons, measurements=measurements, reasons=tuple(reasons))

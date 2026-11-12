@@ -6,15 +6,18 @@ mean absolute error of its output current against the input's cube over the refe
 square: a DC sweep, and a sine at 1 MHz, 100 MHz and 1 GHz. Each error is divided by the
 patented circuit's, ``patent.py``, on the same case, as Koza weighted his fitness cases,
 and the score is their mean. The work meets the task when it builds from the allowed
-parts alone and scores at most 1.
+parts alone and scores at most 1, with exact parts and on 95 % of boards of the design,
+built of resistors within 1 % and capacitors within 5 %.
 """
 
 import runpy
 import sys
+from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 
 import numpy as np
-from scoring import count_devices, disallowed
+from scoring import EXACT, Board, count_devices, disallowed, judge, tolerate
 from verdict import Verdict
 
 from jolty import Builder, Component, Role, Simulation, circuit, component, devices
@@ -58,15 +61,19 @@ def bench(c: Builder, made: Component, frequency: float = 0.0) -> None:
     c.connect(supply.negative, placed.ground, ground)
 
 
-def errors(made: Component) -> list[float]:
-    """The mean absolute error of `made`'s output in each case, in amperes."""
-    swept = Simulation(circuit(bench(made))).run(
+NAMES = ("dc", *(f"{frequency:.0e} Hz" for frequency in FREQUENCIES))
+"""The four cases' names."""
+
+
+def errors(made: Component, board: Board) -> list[float]:
+    """Each case's mean absolute error of `made`'s output on `board`, in amperes."""
+    swept = Simulation(circuit(bench(made)), overrides=board).run(
         DcSweep("IIN", linear(0 * A, 200 * uA, 41))
     )
     found = [_error(swept.levels, np.abs(swept.current("VM")))]
     for frequency in FREQUENCIES:
         period = 1 / frequency
-        waveforms = Simulation(circuit(bench(made, frequency))).run(
+        waveforms = Simulation(circuit(bench(made, frequency)), overrides=board).run(
             Transient(stop=4 * period * s, max_step=period / 200 * s)
         )
         late = waveforms.times >= 2 * period
@@ -79,9 +86,26 @@ def _error(level: np.ndarray, output: np.ndarray) -> float:
     return float(np.mean(np.abs(output - level**3 / REFERENCE**2)))
 
 
+def measure(made: Component, patent: Sequence[float], board: Board) -> dict[str, float]:
+    """The errors on `board` of `made`, and their score against the `patent`'s."""
+    found = errors(made, board)
+    measurements = {"score": float(np.mean(np.divide(found, patent)))}
+    measurements |= {
+        f"error {name}": error for name, error in zip(NAMES, found, strict=True)
+    }
+    return measurements
+
+
+def shortfalls(found: dict[str, float]) -> list[str]:
+    """Why the measurements `found` fall short of the task, if they do."""
+    if found["score"] <= 1:
+        return []
+    return [f"the score is {found['score']:.4g}, more than the patent's 1"]
+
+
 def score(task: Path, work: Path) -> Verdict:
     """The verdict on the cubic `work` against `task`."""
-    patent = runpy.run_path(str(task / "patent.py"))["cubic"]()
+    patent = errors(runpy.run_path(str(task / "patent.py"))["cubic"](), EXACT)
     transistor = runpy.run_path(str(task / "given" / "parts.py"))["npn"]()
     design = work / "design.py"
     if not design.is_file():
@@ -92,14 +116,15 @@ def score(task: Path, work: Path) -> Verdict:
         return Verdict(met=False, reasons=("build() returns no component",))
     built = circuit(bench(made))
     reasons = disallowed(built, [transistor], ALLOWED)
-    reference, found = errors(patent), errors(made)
-    ratios = [mine / theirs for mine, theirs in zip(found, reference, strict=True)]
-    total = float(np.mean(ratios))
-    if total > 1:
-        reasons.append(f"the score is {total:.4g}, more than the patent's 1")
-    names = ["dc", *(f"{frequency:.0e} Hz" for frequency in FREQUENCIES)]
-    measurements = {"score": total, "devices": float(count_devices(built, "X1"))}
-    for name, mine, theirs in zip(names, found, reference, strict=True):
-        measurements[f"error {name}"] = mine
-        measurements[f"patent's error {name}"] = theirs
+    measured = partial(measure, made, patent)
+    measurements, short = judge(measured, shortfalls)
+    reasons += short
+    if not reasons:
+        spread, reasons = tolerate(built, measured, shortfalls)
+        measurements |= spread
+    measurements |= {
+        f"patent's error {name}": error
+        for name, error in zip(NAMES, patent, strict=True)
+    }
+    measurements["devices"] = float(count_devices(built, "X1"))
     return Verdict(met=not reasons, measurements=measurements, reasons=tuple(reasons))

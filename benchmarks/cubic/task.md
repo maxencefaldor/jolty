@@ -12,7 +12,9 @@ No other transistor, diode, source or behavioral element may appear in your circ
 
 Your design is scored in four cases: a DC sweep of `Iin` from 0 to 200 µA in 5 µA steps, and `Iin = 100 µA + 90 µA · sin(2π f t)` at f = 1 MHz, 100 MHz and 1 GHz, each read over its third and fourth periods.
 In each case the scorer measures the mean absolute error of `Iout` against `Iin³ / Iref²`, divides it by a reference circuit's error on the same case, and averages the four ratios: the score, lower being better.
-The design meets the task when its score is at most 1 and it holds only the parts allowed; at an equal score, fewer parts are better.
+The design meets the task when it holds only the parts allowed and its score is at most 1, both with its parts exact and on at least 95 % of 100 boards built of it.
+On each board, every resistor lies anywhere within 1 % of its value and every capacitor within 5 %, whatever tolerance you give them, while the transistors stay as given.
+At an equal score, fewer parts are better.
 
 You have jolty, a compiler and simulator for electronic circuits: its command line, `jolty`, its MCP server, `jolty-mcp`, and its Python package.
 Work as long as you need, and verify what you claim.

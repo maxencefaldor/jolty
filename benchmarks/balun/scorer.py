@@ -12,30 +12,34 @@ harmonic distortion, harmonics 2 to 9 of a 10 MHz sine of 10 mV over 200 ns.
 Koza's fitness sums these, but his totals, 1.72 for the patented circuit and 0.429 for
 the one genetic programming evolved, cannot come from the sums his text states: a gain
 error of 0.60 dB, the patent's on the difference, would alone sum to some 25 over 41
-frequencies. The task is met
-instead on the two figures he gives for both circuits: the difference's gain within
-0.60 dB of the source's on average, the patent's, where the evolved circuit's was 0.47
-dB; and a distortion of at most -33.9 dB, the patent's, where the evolved circuit's was
--65.6 dB. To be a balun at all, each output must also lie within his fitness's
-tolerances on average, 3 dB and 10°, and the DC offset be at most 1.72 mV, the most the
-patent's total of 1.72 leaves room for at his weight of 1,000 per volt.
+frequencies. The task is met instead on the two figures he gives for both circuits: the
+difference's gain within 0.60 dB of the source's on average, the patent's, where the
+evolved circuit's was 0.47 dB; and a distortion of at most -33.9 dB, the patent's, where
+the evolved circuit's was -65.6 dB. To be a balun at all, each output must also lie
+within his fitness's tolerances at every frequency, 3 dB and 10°, and the DC offset be
+at most 1.72 mV, the most the patent's total of 1.72 leaves room for at his weight of
+1,000 per volt. All of it must hold on 95 % of boards of the design too, built of
+resistors within 1 % and capacitors within 5 %, a margin Koza's circuits, simulated
+with exact parts, need not keep.
 
-The source's DC level, which Koza does not state, is 0 V, and the distortion's sine has
-the 10 mV amplitude of his frequency sweeps. Phases are compared on the circle, so that
--179° lies 1° from 180°.
+Koza does not state the source's DC level; the source reaches the input through 1 µF as
+well as 75 Ω, so a design biases its own input rather than drawing its bias through the
+source. The distortion's sine has the 10 mV amplitude of his frequency sweeps. Phases
+are compared on the circle, so that -179° lies 1° from 180°.
 """
 
 import runpy
 import sys
+from functools import partial
 from pathlib import Path
 
 import numpy as np
-from scoring import count_devices, disallowed
+from scoring import Board, count_devices, disallowed, judge, tolerate
 from verdict import Verdict
 
 from jolty import Builder, Component, Role, Simulation, circuit, component, devices
 from jolty.plan import Ac, OperatingPoint, Transient, decade
-from jolty.units import Hz, MHz, V, mV, ohm, s
+from jolty.units import F, Hz, MHz, V, mV, ohm, s
 from jolty.waveforms import Sine
 
 ALLOWED = {"resistor", "capacitor"}
@@ -50,6 +54,8 @@ TOLERANCE = {"gain": 3.0, "phase": 10.0}
 """Koza's tolerances on each output's gain, in decibels, and phase, in degrees."""
 OFFSET = 1.72e-3
 """The largest DC offset between the outputs, in volts."""
+BLOCKING = 1e-6
+"""The capacitance that keeps the source's DC level from the input, in farads."""
 FUNDAMENTAL = 10e6
 """The distortion's frequency, in hertz."""
 HARMONICS = 9
@@ -72,8 +78,10 @@ def bench(c: Builder, made: Component, *, distorting: bool = False) -> None:
         else 0 * V
     )
     source = c.place(devices.voltage_source(level), id="VIN")
+    block = c.place(devices.capacitor(BLOCKING * F), id="CIN")
     series = c.place(devices.resistor(75 * ohm), id="RSRC")
-    c.connect(source.positive, series.a, name="source")
+    c.connect(source.positive, block.a, name="source")
+    c.connect(block.b, series.a, name="coupled")
     c.connect(series.b, placed.input, name="input")
     c.connect(source.negative, ground)
     for output in ("in_phase", "out_of_phase"):
@@ -92,10 +100,10 @@ def off(gain: np.ndarray, phase: float) -> np.ndarray:
     return np.abs((np.angle(gain, deg=True) - phase + 180.0) % 360.0 - 180.0)
 
 
-def distortion(made: Component) -> float:
-    """The difference's harmonic distortion over its second period, in decibels."""
+def distortion(made: Component, board: Board) -> float:
+    """The difference's distortion on `board`, over its second period, in decibels."""
     period = 1 / FUNDAMENTAL
-    waveforms = Simulation(circuit(bench(made, distorting=True))).run(
+    waveforms = Simulation(circuit(bench(made, distorting=True)), overrides=board).run(
         Transient(stop=2 * period * s, max_step=period / 1000 * s)
     )
     difference = waveforms.voltage("out_of_phase") - waveforms.voltage("in_phase")
@@ -106,9 +114,13 @@ def distortion(made: Component) -> float:
     return float(20 * np.log10(max(total, 1e-300) / max(harmonics[0], 1e-300)))
 
 
-def measure(made: Component) -> dict[str, float]:
-    """Koza's seven fitness cases on `made`, each as a mean over its frequencies."""
-    simulation = Simulation(circuit(bench(made)))
+def measure(made: Component, board: Board) -> dict[str, float]:
+    """Koza's seven fitness cases on `board` of `made`.
+
+    The difference's gain error is a mean over the frequencies, as Koza gives it; each
+    other error over the frequencies is its worst.
+    """
+    simulation = Simulation(circuit(bench(made)), overrides=board)
     response = simulation.run(Ac("VIN", decade(1 * MHz, 100 * MHz, 20)))
     in_phase = response.voltage("in_phase")
     out_of_phase = response.voltage("out_of_phase")
@@ -116,16 +128,16 @@ def measure(made: Component) -> dict[str, float]:
     half = decibels(np.array(0.5))
     solution = simulation.run(OperatingPoint())
     return {
-        "in-phase gain error": float(np.mean(np.abs(decibels(in_phase) - half))),
-        "out-of-phase gain error": float(
-            np.mean(np.abs(decibels(out_of_phase) - half))
-        ),
-        "in-phase phase error": float(np.mean(off(in_phase, 0.0))),
-        "out-of-phase phase error": float(np.mean(off(out_of_phase, 180.0))),
-        "difference phase error": float(np.mean(off(difference, 180.0))),
         "difference gain error": float(np.mean(np.abs(decibels(difference)))),
+        "distortion": distortion(made, board),
         "offset": abs(solution.voltage("out_of_phase") - solution.voltage("in_phase")),
-        "distortion": distortion(made),
+        "worst in-phase gain error": float(np.max(np.abs(decibels(in_phase) - half))),
+        "worst out-of-phase gain error": float(
+            np.max(np.abs(decibels(out_of_phase) - half))
+        ),
+        "worst in-phase phase error": float(np.max(off(in_phase, 0.0))),
+        "worst out-of-phase phase error": float(np.max(off(out_of_phase, 180.0))),
+        "worst difference phase error": float(np.max(off(difference, 180.0))),
     }
 
 
@@ -142,13 +154,13 @@ def shortfalls(found: dict[str, float]) -> list[str]:
             f"the distortion is {found['distortion']:.4g} dB, above {DISTORTION} dB"
         )
     for output in ("in-phase", "out-of-phase"):
-        error = found[f"{output} gain error"]
+        error = found[f"worst {output} gain error"]
         if error > TOLERANCE["gain"]:
-            reasons.append(f"the {output} gain is {error:.4g} dB off on average")
+            reasons.append(f"the {output} gain is {error:.4g} dB off at worst")
     for signal in ("in-phase", "out-of-phase", "difference"):
-        error = found[f"{signal} phase error"]
+        error = found[f"worst {signal} phase error"]
         if error > TOLERANCE["phase"]:
-            reasons.append(f"the {signal} phase is {error:.4g}° off on average")
+            reasons.append(f"the {signal} phase is {error:.4g}° off at worst")
     if found["offset"] > OFFSET:
         reasons.append(f"the outputs' DC levels differ by {found['offset']:.4g} V")
     return reasons
@@ -166,8 +178,12 @@ def score(task: Path, work: Path) -> Verdict:
         return Verdict(met=False, reasons=("build() returns no component",))
     built = circuit(bench(made))
     reasons = disallowed(built, [parts["npn"](), parts["pnp"]()], ALLOWED)
-    found = measure(made)
-    reasons += shortfalls(found)
-    measurements = found | {f"evolved {name}": value for name, value in EVOLVED.items()}
+    measured = partial(measure, made)
+    measurements, short = judge(measured, shortfalls)
+    reasons += short
+    if not reasons:
+        spread, reasons = tolerate(built, measured, shortfalls)
+        measurements |= spread
+    measurements |= {f"evolved {name}": value for name, value in EVOLVED.items()}
     measurements["devices"] = float(count_devices(built, "X1"))
     return Verdict(met=not reasons, measurements=measurements, reasons=tuple(reasons))

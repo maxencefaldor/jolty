@@ -1,9 +1,13 @@
 # Copyright 2026 Maxence Faldor
 
 import sys
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
+
+from jolty import Builder, Role, circuit, component, devices
+from jolty.units import kohm, nF
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks"
 COST_DOWN = BENCHMARKS / "cost_down"
@@ -254,7 +258,7 @@ def balun(work: Path, body: str) -> None:
     """Writes a balun whose placements are `body` into `work`."""
     (work / "design.py").write_text(
         "from jolty import Builder, Role, component, devices\n"
-        "from jolty.units import nF\n"
+        "from jolty.units import Mohm, ohm\n"
         "@component\n"
         "def balun(c: Builder) -> None:\n"
         "    ground = c.port('ground', Role.GROUND)\n"
@@ -272,6 +276,9 @@ def test_an_ideal_balun_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
 
     balun(
         tmp_path,
+        "    bias = c.place(devices.resistor(1000 * Mohm), id='R1')\n"
+        "    c.connect(bias.a, source)\n"
+        "    c.connect(bias.b, ground)\n"
         "    gains = (('E0', in_phase, 0.5), ('E1', out_of_phase, -0.5))\n"
         "    for name, port, gain in gains:\n"
         "        amplifier = c.place(devices.voltage_controlled_voltage_source(gain), "
@@ -281,8 +288,8 @@ def test_an_ideal_balun_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
         "        c.connect(amplifier.negative, amplifier.control_negative, ground)\n",
     )
     verdict = score(BALUN, tmp_path)
-    for error in ("in-phase gain", "difference gain", "difference phase"):
-        assert verdict.measurements[f"{error} error"] == pytest.approx(0.0, abs=1e-9)
+    for error in ("difference gain", "worst in-phase gain", "worst difference phase"):
+        assert verdict.measurements[f"{error} error"] == pytest.approx(0.0, abs=1e-6)
     assert verdict.measurements["distortion"] < -200
     assert verdict.reasons == (
         "E0 is a voltage_controlled_voltage_source, which the task forbids",
@@ -295,14 +302,27 @@ def test_a_balun_without_an_inverted_output_falls_short(tmp_path: Path) -> None:
 
     balun(
         tmp_path,
-        "    coupling = c.place(devices.capacitor(100 * nF), id='C1')\n"
-        "    c.connect(coupling.a, source)\n"
-        "    c.connect(coupling.b, in_phase)\n",
+        "    series = c.place(devices.resistor(75 * ohm), id='R1')\n"
+        "    c.connect(series.a, source)\n"
+        "    c.connect(series.b, in_phase)\n",
     )
     verdict = score(BALUN, tmp_path)
     assert not verdict.met
     assert any("out-of-phase phase" in reason for reason in verdict.reasons)
     assert any("difference's gain" in reason for reason in verdict.reasons)
+
+
+def test_a_balun_whose_input_floats_fails_to_simulate(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    balun(
+        tmp_path,
+        "    series = c.place(devices.resistor(75 * ohm), id='R1')\n"
+        "    c.connect(series.a, source)\n",
+    )
+    verdict = score(BALUN, tmp_path)
+    (reason,) = verdict.reasons
+    assert reason.startswith("the simulation fails: ")
 
 
 CUBIC_DISCRETE = BENCHMARKS / "cubic_discrete"
@@ -362,3 +382,57 @@ def test_a_converter_that_oscillates_does_not_settle(tmp_path: Path) -> None:
     )
     verdict = score(VOLTAGE_CURRENT, tmp_path)
     assert any("still swings" in reason for reason in verdict.reasons)
+
+
+@component
+def parallel(c: Builder) -> None:
+    """A design of a resistor beside a capacitor, which gives the resistor 20 %."""
+    a, b = c.port("a"), c.port("b")
+    resistor = c.place(devices.resistor(1 * kohm, tolerance=0.2), id="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    c.connect(resistor.a, capacitor.a, a)
+    c.connect(resistor.b, capacitor.b, b)
+
+
+@component
+def loaded(c: Builder) -> None:
+    """`parallel` on a bench that loads it with an exact resistor."""
+    ground = c.port("ground", Role.GROUND)
+    placed = c.place(parallel(), id="X1")
+    load = c.place(devices.resistor(1 * kohm), id="RLOAD")
+    c.connect(placed.a, load.a, name="a")
+    c.connect(placed.b, load.b, ground)
+
+
+def test_boards_draw_the_designs_resistors_and_capacitors_alone() -> None:
+    from scoring import BOARDS, boards  # noqa: PLC0415 - importable only once the path holds it
+
+    drawn = boards(circuit(loaded()))
+    assert len(drawn) == BOARDS
+    assert all(set(board) == {"X1/R1", "X1/C1"} for board in drawn)
+    for path, parameter, nominal, tolerance in (
+        ("X1/R1", "resistance", 1e3, 0.01),
+        ("X1/C1", "capacitance", 1e-9, 0.05),
+    ):
+        strays = [abs(board[path][parameter] / nominal - 1) for board in drawn]
+        assert 0.9 * tolerance < max(strays) <= tolerance
+    assert boards(circuit(loaded())) == drawn
+
+
+def test_too_few_boards_that_meet_the_task_fall_short() -> None:
+    from scoring import tolerate  # noqa: PLC0415 - importable only once the path holds it
+
+    def measure(board: Mapping[str, Mapping[str, float]]) -> dict[str, float]:
+        return {"resistance": board["X1/R1"]["resistance"]}
+
+    def below(most: float) -> Callable[[dict[str, float]], list[str]]:
+        return lambda found: [] if found["resistance"] <= most else ["it is too high"]
+
+    spread, reasons = tolerate(circuit(loaded()), measure, below(1005))
+    assert 0.6 < spread["yield"] < 0.9
+    assert spread["median resistance"] == pytest.approx(1000, abs=2)
+    (reason,) = reasons
+    assert reason.endswith("on the first that falls short, it is too high")
+    spread, reasons = tolerate(circuit(loaded()), measure, below(1010))
+    assert spread["yield"] == 1
+    assert not reasons

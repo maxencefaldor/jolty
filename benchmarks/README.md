@@ -21,9 +21,10 @@ Its `reference.py` holds a design for each problem, which the scorer's tests mus
 
 `cubic`, `cubic_discrete`, `voltage_current` and `balun` come from Koza's re-invention of six circuits patented after 2000 (Koza, Keane, Streeter, Mydlowec, Yu and Lanza, *Genetic Programming IV*, 2003, chapter 15).
 `voltage_current` keeps his test fixture, his fitness cases and his transistors, and weighs each case by the patented circuit's error as he measured it, so its fitness is computed as his was: the patent's is 1, and his evolved circuit's 0.619.
-`balun` keeps his fixture and his seven fitness cases, but is met on the two figures he published for the patented and the evolved circuit, since his fitness totals cannot come from the sums his text states.
+`balun` keeps his seven fitness cases and his fixture, but for a capacitor that keeps the source's DC level from the input, and is met on the two figures he published for the patented and the evolved circuit, since his fitness totals cannot come from the sums his text states.
 `cubic_discrete` keeps his fixture, his four slow fitness cases and his transistors, and is met at the patented circuit's mean error as he measured it.
 `cubic` keeps his 2 V supply, but gives a reference current and tests from DC to the gigahertz the patent claims, against the patented circuit rebuilt from its text in `patent.py`.
+Koza simulated his circuits with exact parts; these four tasks are met only by a design that meets its task with exact parts and on 95 % of 100 boards built of it, each resistor within 1 % of its value and each capacitor within 5 %, so a design that holds only for exact values falls short.
 
 Run an agent on a task, Claude Code unless another command is given after the task:
 

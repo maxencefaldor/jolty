@@ -15,7 +15,10 @@ The task is met when the output's absolute error, averaged over the four cases, 
 most 6.76 mV, the patented circuit's with the 2N3904 and the 2N3906 as Koza measured
 it; the circuit genetic programming evolved reached 4.20 mV. Koza's fitness weighs each
 error 1 below 7 mV and 10 above; the share of errors below 7 mV, his hits, is reported
-beside it: 61 % for the patent, 93.6 % for the evolved circuit.
+beside it: 61 % for the patent, 93.6 % for the evolved circuit. The error must stay
+within the patent's on 95 % of boards of the design too, built of resistors within 1 %
+and capacitors within 5 %, a margin Koza's circuits, simulated with exact parts, need
+not keep.
 
 Koza does not give the sine's phase; it starts at its middle and rises, as SPICE's do.
 His fixture also puts 1 µΩ in series with the input and the output, a convenience of
@@ -25,10 +28,11 @@ hold, as the input is at 0 V, rounds the node's own conductances away.
 
 import runpy
 import sys
+from functools import partial
 from pathlib import Path
 
 import numpy as np
-from scoring import count_devices, disallowed
+from scoring import Board, count_devices, disallowed, judge, tolerate
 from verdict import Verdict
 
 from jolty import Builder, Component, Role, Simulation, circuit, component, devices
@@ -88,12 +92,12 @@ def bench(c: Builder, made: Component, case: int) -> None:
     c.connect(meter.negative, placed.output, name="output")
 
 
-def errors(made: Component) -> list[np.ndarray]:
-    """The output's error at each of the 101 times of each case, in volts."""
+def measure(made: Component, board: Board) -> dict[str, float]:
+    """The output's error on `board` of `made`, over each case and over all four."""
     found = []
     for case, (_, duration) in enumerate(cases()):
         times = np.linspace(0.0, duration, TIMES)
-        waveforms = Simulation(circuit(bench(made, case))).run(
+        waveforms = Simulation(circuit(bench(made, case)), overrides=board).run(
             Transient(
                 stop=duration * s,
                 max_step=duration / (10 * (TIMES - 1)) * s,
@@ -105,7 +109,28 @@ def errors(made: Component) -> list[np.ndarray]:
         )
         command = np.interp(times, waveforms.times, waveforms.voltage("command"))
         found.append(output - command**3)
-    return found
+    means = [float(np.mean(np.abs(error))) for error in found]
+    measurements = {
+        "mean absolute error": float(np.mean(means)),
+        "hits": float(np.mean(np.abs(np.concatenate(found)) < HIT)),
+    }
+    names = ("rising ramp", "sine", "falling ramp", "constant")
+    for name, mean, error in zip(names, means, found, strict=True):
+        measurements[f"{name} mean absolute error"] = mean
+        measurements[f"{name} maximum absolute error"] = float(np.max(np.abs(error)))
+    return measurements
+
+
+def shortfalls(found: dict[str, float]) -> list[str]:
+    """Why the measurements `found` fall short of the task, if they do."""
+    mean = found["mean absolute error"]
+    if mean <= PATENT:
+        return []
+    reason = (
+        f"the mean absolute error is {mean * 1e3:.4g} mV, more than the patent's "
+        f"{PATENT * 1e3:.4g} mV"
+    )
+    return [reason]
 
 
 def score(task: Path, work: Path) -> Verdict:
@@ -120,22 +145,15 @@ def score(task: Path, work: Path) -> Verdict:
         return Verdict(met=False, reasons=("build() returns no component",))
     built = circuit(bench(made, 3))
     reasons = disallowed(built, [parts["npn"](), parts["pnp"]()], ALLOWED)
-    found = errors(made)
-    mean = float(np.mean([np.mean(np.abs(error)) for error in found]))
-    if mean > PATENT:
-        reasons.append(
-            f"the mean absolute error is {mean * 1e3:.4g} mV, more than the "
-            f"patent's {PATENT * 1e3:.4g} mV"
-        )
-    measurements = {
-        "mean absolute error": mean,
+    measured = partial(measure, made)
+    measurements, short = judge(measured, shortfalls)
+    reasons += short
+    if not reasons:
+        spread, reasons = tolerate(built, measured, shortfalls)
+        measurements |= spread
+    measurements |= {
         "patent's mean absolute error": PATENT,
         "evolved mean absolute error": EVOLVED,
-        "hits": float(np.mean(np.abs(np.concatenate(found)) < HIT)),
         "devices": float(count_devices(built, "X1")),
     }
-    names = ("rising ramp", "sine", "falling ramp", "constant")
-    for name, error in zip(names, found, strict=True):
-        measurements[f"{name} mean absolute error"] = float(np.mean(np.abs(error)))
-        measurements[f"{name} maximum absolute error"] = float(np.max(np.abs(error)))
     return Verdict(met=not reasons, measurements=measurements, reasons=tuple(reasons))
