@@ -303,3 +303,36 @@ def test_a_balun_without_an_inverted_output_falls_short(tmp_path: Path) -> None:
     assert not verdict.met
     assert any("out-of-phase phase" in reason for reason in verdict.reasons)
     assert any("difference's gain" in reason for reason in verdict.reasons)
+
+
+CUBIC_DISCRETE = BENCHMARKS / "cubic_discrete"
+
+
+def test_an_ideal_discrete_cubic_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    (tmp_path / "design.py").write_text(
+        "from jolty import Builder, Role, component, devices\n"
+        "from jolty.units import kohm\n"
+        "@component\n"
+        "def cubic(c: Builder) -> None:\n"
+        "    ground = c.port('ground', Role.GROUND)\n"
+        "    c.port('vcc', Role.SUPPLY)\n"
+        "    signal, output = c.port('input'), c.port('output')\n"
+        "    sense = c.place(devices.resistor(1 * kohm), id='R1')\n"
+        "    c.connect(sense.a, signal)\n"
+        "    c.connect(sense.b, ground)\n"
+        "    expression = '(v(s) / 0.1) ^ 3 / 10500'\n"
+        "    cube = c.place(devices.behavioral_current_source(expression), id='B1')\n"
+        "    c.connect(cube.positive, output)\n"
+        "    c.connect(cube.negative, ground)\n"
+        "    c.connect(cube.s, signal)\n"
+        "build = cubic\n",
+        encoding="utf-8",
+    )
+    verdict = score(CUBIC_DISCRETE, tmp_path)
+    assert verdict.measurements["mean absolute error"] < 1e-9
+    assert verdict.measurements["hits"] == 1
+    assert verdict.reasons == (
+        "B1 is a behavioral_current_source, which the task forbids",
+    )
