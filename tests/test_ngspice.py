@@ -1083,6 +1083,45 @@ def test_operating_points_agree(top: Callable[[], Component]) -> None:
         compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
 
 
+@component
+def bare_transistor(c: Builder, polarity: Literal["npn", "pnp"]) -> None:
+    """A transistor without a substrate, its base fed through 100 kΩ from the ground.
+
+    Its emitter is held 1 V away, and its collector current is its beta times the
+    base's, so a picoampere into its base moves its collector a hundred times as much.
+    """
+    ground = c.port("ground", Role.GROUND)
+    level = 1 * V if polarity == "pnp" else -1 * V
+    supply = c.place(devices.voltage_source(level), id="V1")
+    base = c.place(devices.resistor(100 * kohm), id="RB")
+    load = c.place(devices.resistor(1 * kohm), id="RC")
+    transistor = c.place(
+        devices.bipolar_transistor(polarity=polarity, saturation_current=8.7 * fA),
+        id="Q1",
+    )
+    c.connect(supply.positive, transistor.emitter, name="emitter")
+    c.connect(base.a, transistor.base, name="base")
+    c.connect(load.a, transistor.collector, name="collector")
+    c.connect(supply.negative, base.b, load.b, ground)
+
+
+@pytest.mark.parametrize("polarity", ["npn", "pnp"])
+def test_a_transistor_without_a_substrate_agrees_to_rounding(
+    polarity: Literal["npn", "pnp"],
+) -> None:
+    """A transistor without a substrate agrees with ngspice's to rounding.
+
+    ngspice grounds a missing substrate, whose junction conducts gmin; written on the
+    junction's own side, it carries nothing, as jolty's transistor has no junction.
+    """
+    simulation = Simulation(bare_transistor(polarity))
+    point = simulation.run(OperatingPoint(), TIGHT)
+    raw = ngspice(netlist(simulation.circuit), "op")
+    for column, unknown in compared(simulation):
+        spice = raw.real(vector(simulation.circuit, unknown))[0]
+        compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-10)
+
+
 TEMPERATURES = {"cold": celsius(-40), "hot": celsius(125)}
 """The temperatures, away from the nominal 27 °C, at which both engines also run."""
 

@@ -165,6 +165,23 @@ ELEMENTS = {
 }
 
 
+def _nets(instance: ir.Instance, model: str) -> list[str]:
+    """The nets of the terminals of a device of `model`, in its SPICE element's order.
+
+    ngspice joins a bipolar transistor's missing substrate to the ground, where its
+    substrate junction conducts gmin even without a diode. Joined instead to the
+    terminal that junction lies on, the collector of an NPN, built vertically unless
+    ``SUBS`` says otherwise, or the base of a PNP, built laterally, it carries nothing,
+    as jolty's transistor without a substrate has no junction there.
+    """
+    terminals = instance.terminals
+    nets = [terminals[name] for name in ELEMENTS[model].terminals if name in terminals]
+    if model == "bipolar_transistor" and "substrate" not in terminals:
+        npn = instance.parameters.get("polarity", "npn") == "npn"
+        nets.append(terminals["collector" if npn else "base"])
+    return nets
+
+
 def _spice(table: models.Table) -> dict[str, tuple[str, float]]:
     """Each jolty parameter's first SPICE name, and the factor to SPICE's units."""
     names: dict[str, tuple[str, float]] = {}
@@ -272,11 +289,7 @@ def netlist(
             continue
         element(instance)
         model, values = instance.of.device, instance.parameters
-        nets = (
-            instance.terminals[name]
-            for name in ELEMENTS[model].terminals
-            if name in instance.terminals
-        )
+        nets = _nets(instance, model)
         nodes = " ".join("0" if net == ground else net for net in nets)
         match model:
             case "voltage_source" | "current_source":
@@ -566,6 +579,20 @@ class Raw:
         return self.vectors[name].real
 
 
+_TRANSIENT_OPERATING_POINT: Final = "Transient op started"
+"""What ngspice prints when Newton iteration, gmin stepping and source stepping all fail
+to find an operating point, and it takes the end of a transient from zero instead."""
+
+_SHORTEST_TRANSIENT_OPERATING_POINT: Final = "optran 1 1 1 1n 1n 0"
+"""Keeps ngspice's first Newton iteration, gmin stepping and source stepping, and makes
+the transient it falls back to a single nanosecond: its end is refused anyway, and the
+default 10 µs can take minutes on a circuit that defeats the others."""
+
+
+TIMEOUT: Final = 300
+"""The seconds ngspice may run an analysis."""
+
+
 def ngspice(  # noqa: PLR0913 - a deck, its analysis, and how ngspice runs it
     lines: list[str],
     analysis: str,
@@ -580,6 +607,11 @@ def ngspice(  # noqa: PLR0913 - a deck, its analysis, and how ngspice runs it
     ngspice includes `libraries`, and reads them as PSpice writes them, in its PSpice
     compatibility mode, if `pspice`. `options` replaces the tight options. It runs at
     jolty's `temperature`, in kelvins, its models' nominal temperature at jolty's 27 °C.
+
+    Raises:
+        JoltyError: When ngspice runs out of time, writes no results, runs no
+            analysis, or finds its operating point only as the end of a transient of
+            fixed length, which it does not check to be one.
     """
     nominal = spice_celsius(_core.REFERENCE_TEMPERATURE)
     deck = [
@@ -590,6 +622,7 @@ def ngspice(  # noqa: PLR0913 - a deck, its analysis, and how ngspice runs it
         f".options temp={spice_celsius(temperature)!r} tnom={nominal!r}",
         ".control",
         "set filetype=ascii",
+        _SHORTEST_TRANSIENT_OPERATING_POINT,
         analysis,
         "write result.raw all",
         ".endc",
@@ -604,14 +637,18 @@ def ngspice(  # noqa: PLR0913 - a deck, its analysis, and how ngspice runs it
             settings = directory / ".spiceinit"
             settings.write_text("set ngbehavior=ps\n", encoding="utf-8")
         (directory / "circuit.cir").write_text("\n".join(deck) + "\n", encoding="utf-8")
-        done = subprocess.run(  # noqa: S603 - ngspice runs the deck written here
-            [NGSPICE, "-b", "circuit.cir"],
-            capture_output=True,
-            check=False,  # ngspice exits with 0 on most errors: the raw file tells
-            text=True,
-            timeout=300,
-            cwd=directory,
-        )
+        try:
+            done = subprocess.run(  # noqa: S603 - ngspice runs the deck written here
+                [NGSPICE, "-b", "circuit.cir"],
+                capture_output=True,
+                check=False,  # ngspice exits with 0 on most errors: the raw file tells
+                text=True,
+                timeout=TIMEOUT,
+                cwd=directory,
+            )
+        except subprocess.TimeoutExpired:
+            message = f"ngspice ran for more than {TIMEOUT} s"
+            raise JoltyError(message) from None
         raw = directory / "result.raw"
         if not raw.is_file():
             message = f"ngspice wrote no results:\n{done.stdout}{done.stderr}"
@@ -619,6 +656,12 @@ def ngspice(  # noqa: PLR0913 - a deck, its analysis, and how ngspice runs it
         result = _read_raw(raw.read_text(encoding="utf-8"))
     if result.plot == "Constant values":
         message = f"ngspice ran no analysis:\n{done.stdout}{done.stderr}"
+        raise JoltyError(message)
+    if _TRANSIENT_OPERATING_POINT in done.stdout + done.stderr:
+        message = (
+            "ngspice found no operating point but by a transient of fixed length, "
+            f"whose end it does not check to be one:\n{done.stdout}{done.stderr}"
+        )
         raise JoltyError(message)
     return result
 
