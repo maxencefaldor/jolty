@@ -3,11 +3,15 @@
 
 Usage: ``uv run python benchmarks/run.py TASK [AGENT ...]``, where ``TASK`` is a task's
 directory, such as ``benchmarks/cost_down``, and ``AGENT`` the command that runs the
-agent, Claude Code by default. The runner copies the task's files into a fresh working
-directory, runs the agent there with the task's ``task.md`` as its prompt and jolty's
-command line and MCP server on its path, keeps what it printed in ``transcript.txt``,
-and scores the directory with ``score.py``. It prints the working directory and the
+agent, Claude Code by default. The runner copies the files of the task's ``given``
+directory, and only those, into a fresh working directory, runs the agent there with the
+task's ``task.md`` as its prompt and jolty's command line and MCP server on its path,
+keeps what it printed in ``transcript.txt``, and scores the directory with the task's
+own scorer, which the agent never sees. It prints the working directory and the
 verdict, and exits with 0 when the work meets the task.
+
+With ``-`` as the agent, it only prepares the working directory and prints it, for an
+agent started some other way; ``score.py`` scores the directory afterwards.
 """
 
 import json
@@ -35,12 +39,19 @@ def default_agent() -> list[str]:
     ]
 
 
+def prepare(task: Path, work: Path) -> str:
+    """Copies `task`'s given files into `work`, and returns the task's prompt."""
+    given = task / "given"
+    if given.is_dir():
+        for path in given.iterdir():
+            if path.is_file():
+                shutil.copy(path, work / path.name)
+    return (task / "task.md").read_text(encoding="utf-8")
+
+
 def run(task: Path, agent: list[str], work: Path) -> int:
     """Runs `agent` on `task` in `work`, keeps its transcript there, and scores it."""
-    for path in task.iterdir():
-        if path.name != "task.md":
-            shutil.copy(path, work / path.name)
-    prompt = (task / "task.md").read_text(encoding="utf-8")
+    prompt = prepare(task, work)
     scripts = Path(sys.executable).parent
     environment = {**os.environ, "PATH": f"{scripts}{os.pathsep}{os.environ['PATH']}"}
     with (work / "transcript.txt").open("w", encoding="utf-8") as transcript:
@@ -63,6 +74,10 @@ def main() -> None:
     task = Path(sys.argv[1]).resolve()
     agent = sys.argv[2:] or default_agent()
     work = Path(tempfile.mkdtemp(prefix=f"jolty-{task.name}-"))
+    if agent == ["-"]:
+        prepare(task, work)
+        print(work)
+        raise SystemExit(0)
     raise SystemExit(run(task, agent, work))
 
 
