@@ -33,7 +33,9 @@ The builder offers three methods:
 - `c.place(item, id=...)` places a device or another component as an instance, and returns it.
   The instance's terminals are its attributes, such as `first.a`, or items, such as `first["a"]`.
 - `c.connect(*points, name=None)` joins terminals, ports and nets into one net.
-  Given a name, the net takes it, and later connections can join it by that name.
+  Given a name, the net takes it, and later connections join it as `Net(name)`; giving the same name to a second connection declares it twice, which is an error.
+
+`c.port` returns the port's net, and `c.net(name)` declares a named net before anything joins it; each name is declared once, by one of these or by `connect`'s `name`.
 
 Connections accumulate: two `connect` calls that share a point make one net.
 Joining two nets that both have names, such as two ports, is an error, since it would short them.

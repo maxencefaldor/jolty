@@ -202,9 +202,12 @@ class Builder:
     def connect(self, *points: Point, name: str | None = None) -> None:
         """Joins `points` into one net, and declares it as the net `name` if given.
 
+        Later connections join a named net as ``Net(name)``.
+
         Raises:
-            BuildError: When a point does not belong to this component, or the
-                connection would join two nets that have different names.
+            BuildError: When a point does not belong to this component, the
+                connection would join two nets that have different names, or `name`
+                is invalid or already declared.
         """
         joined = [*points, self.net(name)] if name is not None else list(points)
         for point in joined:
