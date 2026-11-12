@@ -1,7 +1,9 @@
 //! What every device does: the current into every terminal and the charge it holds, the
 //! derivatives of its equations, and its variables.
 
-use jolty_engine::{Ac, Conditions, DcSweep, Method, Observation, Options, Simulator, Transient};
+use jolty_engine::{
+    Ac, Conditions, DcSweep, Method, Observation, Observed, Options, Simulator, Transient,
+};
 use jolty_ir::Circuit;
 use jolty_models::Library;
 use jolty_numerics::Complex64;
@@ -162,7 +164,7 @@ fn terminals_that_share_a_net_or_join_the_reference_keep_their_own_currents() {
             &tight(),
         )
         .unwrap();
-    let currents = &sweep.observations[0].currents;
+    let currents = sweep.observations.point(0).currents;
     let drain = currents[terminal(&swept, "M1.drain")];
     let source = currents[terminal(&swept, "M1.source")];
     assert!(drain > 1e-5, "{drain}");
@@ -189,8 +191,8 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
             .unwrap();
         let (capacitor, resistor) = (terminal(&simulator, "C1.a"), terminal(&simulator, "R1.b"));
         let mut charging = 0.0_f64;
-        for (values, found) in waveforms.values.iter().zip(&waveforms.observations) {
-            let off = imbalance(&simulator, &found.currents);
+        for (values, found) in waveforms.values.iter().zip(waveforms.observations.iter()) {
+            let off = imbalance(&simulator, found.currents);
             assert!(off < 1e-8, "{method:?}: {off}");
             assert!((found.charges[capacitor] - 1e-10 * values[out]).abs() < 1e-22);
             charging = charging.max(found.currents[capacitor]);
@@ -411,7 +413,7 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         times: Vec::new(),
     };
     let waveforms = simulator.transient(&transient, &tight()).unwrap();
-    let pin = |index: usize, found: &Observation| -> f64 {
+    let pin = |index: usize, found: Observed<'_>| -> f64 {
         simulator.composites()[index]
             .1
             .iter()
@@ -421,7 +423,7 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
     let fraction = derivative(&simulator, "U1:y:current", "U1:y.supply");
     let resistor = terminal(&simulator, "R1.a");
     let (mut high, mut low) = (false, false);
-    for (time, found) in waveforms.times.iter().zip(&waveforms.observations) {
+    for (time, found) in waveforms.times.iter().zip(waveforms.observations.iter()) {
         // The driver takes the resistor's current from its output to the ground.
         assert!((pin(1, found) + found.currents[resistor]).abs() < 1e-12);
         let sum: f64 = (0..4).map(|index| pin(index, found)).sum();

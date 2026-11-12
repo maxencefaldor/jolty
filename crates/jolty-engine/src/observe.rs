@@ -43,6 +43,80 @@ pub struct Observation {
     pub variables: Vec<f64>,
 }
 
+/// What every device did at each point of a sweep or a transient.
+///
+/// Each quantity's rows lie end to end, one row per point, so a long analysis holds each
+/// quantity in one allocation; [`Observations::point`] views one point's rows.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Observations {
+    /// The number of points.
+    pub points: usize,
+    /// Each point's [`Observation::currents`], one after another.
+    pub currents: Vec<f64>,
+    /// Each point's [`Observation::charges`], one after another.
+    pub charges: Vec<f64>,
+    /// Each point's [`Observation::conductances`], one after another.
+    pub conductances: Vec<f64>,
+    /// Each point's [`Observation::capacitances`], one after another.
+    pub capacitances: Vec<f64>,
+    /// Each point's [`Observation::variables`], one after another.
+    pub variables: Vec<f64>,
+}
+
+/// What every device did at one point of [`Observations`], as views of its rows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Observed<'a> {
+    /// The current into each terminal, as [`Observation::currents`].
+    pub currents: &'a [f64],
+    /// The charge each terminal holds, as [`Observation::charges`].
+    pub charges: &'a [f64],
+    /// The derivatives of the residuals, as [`Observation::conductances`].
+    pub conductances: &'a [f64],
+    /// The derivatives of the charges, as [`Observation::capacitances`].
+    pub capacitances: &'a [f64],
+    /// The value of each variable, as [`Observation::variables`].
+    pub variables: &'a [f64],
+}
+
+impl Observations {
+    /// Appends what every device did at one more point.
+    pub fn push(&mut self, point: &Observation) {
+        self.points += 1;
+        self.currents.extend_from_slice(&point.currents);
+        self.charges.extend_from_slice(&point.charges);
+        self.conductances.extend_from_slice(&point.conductances);
+        self.capacitances.extend_from_slice(&point.capacitances);
+        self.variables.extend_from_slice(&point.variables);
+    }
+
+    /// What every device did at the point `index`.
+    ///
+    /// # Panics
+    ///
+    /// When `index` is not below [`Observations::points`].
+    #[must_use]
+    pub fn point(&self, index: usize) -> Observed<'_> {
+        assert!(index < self.points, "no point {index} of {}", self.points);
+        let points = self.points;
+        let row = |values: &[f64]| -> std::ops::Range<usize> {
+            let width = values.len() / points;
+            index * width..(index + 1) * width
+        };
+        Observed {
+            currents: &self.currents[row(&self.currents)],
+            charges: &self.charges[row(&self.charges)],
+            conductances: &self.conductances[row(&self.conductances)],
+            capacitances: &self.capacitances[row(&self.capacitances)],
+            variables: &self.variables[row(&self.variables)],
+        }
+    }
+
+    /// What every device did at each point, in order.
+    pub fn iter(&self) -> impl Iterator<Item = Observed<'_>> {
+        (0..self.points).map(|index| self.point(index))
+    }
+}
+
 /// A device made again with each terminal on a node of its own.
 #[derive(Debug)]
 struct Probe {

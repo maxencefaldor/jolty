@@ -7,7 +7,9 @@
 
 use std::sync::Mutex;
 
-use jolty_engine::{Analysis, Observation, OperatingPoint, Options, Outcome, Statistics};
+use jolty_engine::{
+    Analysis, Observation, Observations, OperatingPoint, Options, Outcome, Statistics,
+};
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library, Quantity};
 use numpy::{Element, PyArray1, PyArray2, PyArrayMethods};
@@ -246,8 +248,8 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
             result.set_item("source", sweep.source)?;
             result.set_item("quantity", quantity_name(sweep.quantity))?;
             result.set_item("levels", PyArray1::from_vec(py, sweep.levels))?;
-            result.set_item("values", PyArray2::from_vec2(py, &sweep.values)?)?;
-            add_observations(&result, &sweep.observations)?;
+            result.set_item("values", stacked(py, sweep.values)?)?;
+            add_observations(&result, sweep.observations)?;
             let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();
             result.set_item("logic", matrix(py, &logic)?)?;
         }
@@ -264,8 +266,8 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
         Outcome::Transient(waveforms) => {
             result.set_item("kind", "transient")?;
             result.set_item("times", PyArray1::from_vec(py, waveforms.times))?;
-            result.set_item("values", PyArray2::from_vec2(py, &waveforms.values)?)?;
-            add_observations(&result, &waveforms.observations)?;
+            result.set_item("values", stacked(py, waveforms.values)?)?;
+            add_observations(&result, waveforms.observations)?;
             let traces = PyList::empty(py);
             for trace in waveforms.logic {
                 let (times, levels): (Vec<f64>, Vec<Level>) = trace.into_iter().unzip();
@@ -330,22 +332,30 @@ fn add_operating_point(
 /// Adds what every device did at each point to `result`: the terminals' `currents` and
 /// `charges`, the derivatives' `conductances` and `capacitances`, and the `variables`, one
 /// row per point.
-fn add_observations(result: &Bound<'_, PyDict>, points: &[Observation]) -> PyResult<()> {
+fn add_observations(result: &Bound<'_, PyDict>, observations: Observations) -> PyResult<()> {
     let py = result.py();
-    let rows = |field: fn(&Observation) -> &Vec<f64>| -> Vec<Vec<f64>> {
-        points.iter().map(|point| field(point).clone()).collect()
+    let points = observations.points;
+    // Each quantity's rows already lie end to end, so the arrays take them without a copy.
+    let rows = |values: Vec<f64>| {
+        let width = values.len().checked_div(points).unwrap_or(0);
+        PyArray1::from_vec(py, values).reshape([points, width])
     };
-    result.set_item("currents", matrix(py, &rows(|point| &point.currents))?)?;
-    result.set_item("charges", matrix(py, &rows(|point| &point.charges))?)?;
-    result.set_item(
-        "conductances",
-        matrix(py, &rows(|point| &point.conductances))?,
-    )?;
-    result.set_item(
-        "capacitances",
-        matrix(py, &rows(|point| &point.capacitances))?,
-    )?;
-    result.set_item("variables", matrix(py, &rows(|point| &point.variables))?)
+    result.set_item("currents", rows(observations.currents)?)?;
+    result.set_item("charges", rows(observations.charges)?)?;
+    result.set_item("conductances", rows(observations.conductances)?)?;
+    result.set_item("capacitances", rows(observations.capacitances)?)?;
+    result.set_item("variables", rows(observations.variables)?)
+}
+
+/// `rows`, all of one length, as a two-dimensional array with as many rows even when
+/// they are empty; each row is freed once copied, so the values are held about once.
+fn stacked(py: Python<'_>, rows: Vec<Vec<f64>>) -> PyResult<Bound<'_, PyArray2<f64>>> {
+    let (count, columns) = (rows.len(), rows.first().map_or(0, Vec::len));
+    let mut flat = Vec::with_capacity(count * columns);
+    for row in rows {
+        flat.extend_from_slice(&row);
+    }
+    PyArray1::from_vec(py, flat).reshape([count, columns])
 }
 
 /// Logic levels as numbers: 0, 1, and NaN for an unknown level.

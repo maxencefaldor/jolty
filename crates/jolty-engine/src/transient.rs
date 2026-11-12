@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::logic::{Command, Crossing, crossing};
 use crate::newton::Mode;
-use crate::{Observation, Options, SimulationError, Simulator, Strategy};
+use crate::{Observation, Observations, Options, SimulationError, Simulator, Strategy};
 
 /// The first step after the start or a breakpoint, as a fraction of the shorter of the step
 /// before and the gap to the next breakpoint, so a short waveform segment takes several steps.
@@ -52,7 +52,7 @@ pub struct Waveforms {
     /// What every device did at each time: the current into each terminal and the charge it
     /// holds, its derivatives and its variables. A current includes its charge's
     /// derivative, by the step's integration formula.
-    pub observations: Vec<Observation>,
+    pub observations: Observations,
     /// Each logic net's changes: its level at time zero, then each time it changes, in
     /// seconds, and its new level.
     pub logic: Vec<Vec<(f64, Level)>>,
@@ -294,7 +294,8 @@ impl Simulator {
             x: initial.values,
         };
         let (mut times, mut values) = (vec![0.0], vec![stepper.x.clone()]);
-        let mut observed = vec![self.observer.start(&stepper.x, options.gmin)];
+        let mut observed = Observations::default();
+        observed.push(&self.observer.start(&stepper.x, options.gmin));
         while stepper.time < transient.stop {
             if let Some(change) = self.events.next_analog_change(&self.system.logic) {
                 breakpoints.insert(change);
@@ -307,7 +308,7 @@ impl Simulator {
                     self.watch_supplies(&stepper.x, stepper.time, options);
                     times.push(stepper.time);
                     values.push(stepper.x.clone());
-                    observed.push(found);
+                    observed.push(&found);
                     for time in settles {
                         breakpoints.insert(time);
                     }

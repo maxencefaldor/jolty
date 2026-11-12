@@ -60,7 +60,7 @@ pub use analysis::{Analysis, Outcome};
 pub use elaborate::{ElaborationError, ElaborationProblem, Location, Placed};
 pub use jolty_numerics::integration::Method;
 pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
-pub use observe::Observation;
+pub use observe::{Observation, Observations, Observed};
 pub use operating_point::{OperatingPoint, Strategy};
 pub use options::Options;
 pub use sensitivity::{Parameter, Sensitivities, Sensitivity};
