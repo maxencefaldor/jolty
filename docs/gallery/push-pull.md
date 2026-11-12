@@ -6,9 +6,9 @@ A 2N3904 sources the load's current and a 2N3906 sinks it, each an emitter follo
 Two 1N4148 diodes between their bases hold both just on, so neither lets go as the signal crosses zero, and the output follows the input without the dead band of a class B stage.
 Simulate it with `jolty simulate examples/push_pull.py`.
 
-[Open in 3D](push-pull.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/push_pull.py){ .md-button }
+[Open in 3D](push-pull.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/push_pull.py){ .md-button }
 
-12 devices, 17 unknowns, simulated in 1.42 s.
+12 devices, 17 unknowns, simulated in 1.51 s.
 
 ![The schematic](../images/gallery/push_pull.schematic.png)
 

@@ -5,9 +5,9 @@ A first-order RC low-pass filter: its step response and its frequency response.
 The filter's time constant is 1 µs and its cutoff frequency 159 kHz.
 Simulate it with `jolty simulate examples/rc_filter.py`, which checks its specs too.
 
-[Open in 3D](rc-filter.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rc_filter.py){ .md-button }
+[Open in 3D](rc-filter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rc_filter.py){ .md-button }
 
-3 devices, 3 unknowns, simulated in 1.88 s.
+3 devices, 3 unknowns, simulated in 1.74 s.
 
 ![The schematic](../images/gallery/rc_filter.schematic.png)
 

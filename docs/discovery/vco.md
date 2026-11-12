@@ -7,9 +7,9 @@ A 2.2 nF capacitor across the Schmitt trigger's 10 kΩ feedback hurries its rege
 Every frequency from 0.5 V to 5 V lies within 0.1 % of 996 Hz/V.
 Simulate it with `jolty simulate discovery/vco/design.py`.
 
-[Open in 3D](vco.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/vco/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/vco){ .md-button }
+[Open in 3D](vco.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/vco/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/vco){ .md-button }
 
-17 devices, 16 unknowns, simulated in 25.64 s.
+17 devices, 16 unknowns, simulated in 26.44 s.
 
 ![The schematic](../images/gallery/vco.inside.schematic.png)
 

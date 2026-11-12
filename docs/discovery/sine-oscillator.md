@@ -7,9 +7,9 @@ Dividing before the detector scales the JFET's threshold and the diode's drop al
 It settles within 100 ms to 2.02 V peak at 995.5 Hz with 0.068 % distortion, and drifts +16 % at -40 °C and -11 % at 85 °C, the detector diode's -2 mV/K.
 Simulate it with `jolty simulate discovery/sine_oscillator/design.py`.
 
-[Open in 3D](sine-oscillator.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/sine_oscillator/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/sine_oscillator){ .md-button }
+[Open in 3D](sine-oscillator.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/sine_oscillator/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/sine_oscillator){ .md-button }
 
-18 devices, 12 unknowns, simulated in 12.31 s.
+18 devices, 12 unknowns, simulated in 13.04 s.
 
 ![The schematic](../images/gallery/sine_oscillator.inside.schematic.png)
 

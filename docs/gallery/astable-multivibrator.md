@@ -8,9 +8,9 @@ Each half period is RC·ln 2 = 0.326 ms with 10 nF: a period of 0.652 ms, 1.53 k
 Slightly unequal capacitors break the symmetry that would hold the circuit balanced.
 Simulate it with `jolty simulate examples/astable_multivibrator.py`.
 
-[Open in 3D](astable-multivibrator.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/astable_multivibrator.py){ .md-button }
+[Open in 3D](astable-multivibrator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/astable_multivibrator.py){ .md-button }
 
-9 devices, 10 unknowns, simulated in 1.95 s.
+9 devices, 10 unknowns, simulated in 2.06 s.
 
 ![The schematic](../images/gallery/astable_multivibrator.schematic.png)
 

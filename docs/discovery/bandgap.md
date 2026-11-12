@@ -6,9 +6,9 @@ Q1, diode-connected, and Q2 over 155 Ω form a Widlar current source, so R2 hold
 Fed by a resistor, the cell's output moves 44 mV for each volt of supply; fed by a 2N5457 whose gate is on its source, a current source of its Idss, it moves 0.31 mV, and the JFET's own drift turns out to straighten the bandgap's curvature: 1.2414 V within 1.08 mV from -40 °C to 125 °C, 5.3 ppm/K, with seven parts.
 Simulate it with `jolty simulate discovery/bandgap/design.py`.
 
-[Open in 3D](bandgap.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/bandgap/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/bandgap){ .md-button }
+[Open in 3D](bandgap.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/bandgap/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/bandgap){ .md-button }
 
-9 devices, 14 unknowns, simulated in 0.87 s.
+9 devices, 14 unknowns, simulated in 1.08 s.
 
 ![The schematic](../images/gallery/bandgap.inside.schematic.png)
 

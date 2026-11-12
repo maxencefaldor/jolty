@@ -6,9 +6,9 @@ Each stage adds twice the input's peak: from a 10 V sine, an unloaded ladder of 
 The capacitors charge a little each cycle, so the output climbs over tens of cycles.
 Simulate it with `jolty simulate examples/voltage_multiplier.py`.
 
-[Open in 3D](voltage-multiplier.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/voltage_multiplier.py){ .md-button }
+[Open in 3D](voltage-multiplier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/voltage_multiplier.py){ .md-button }
 
-14 devices, 14 unknowns, simulated in 2.99 s.
+14 devices, 14 unknowns, simulated in 2.78 s.
 
 ![The schematic](../images/gallery/voltage_multiplier.schematic.png)
 

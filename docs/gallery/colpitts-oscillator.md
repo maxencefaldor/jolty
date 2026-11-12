@@ -6,9 +6,9 @@ The tank's 100 µH resonates with its capacitors in series, 1 nF and 10 nF makin
 The supply's rise starts it.
 Simulate it with `jolty simulate examples/colpitts_oscillator.py`.
 
-[Open in 3D](colpitts-oscillator.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/colpitts_oscillator.py){ .md-button }
+[Open in 3D](colpitts-oscillator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/colpitts_oscillator.py){ .md-button }
 
-9 devices, 8 unknowns, simulated in 1.69 s.
+9 devices, 8 unknowns, simulated in 1.68 s.
 
 ![The schematic](../images/gallery/colpitts_oscillator.schematic.png)
 

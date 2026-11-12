@@ -7,9 +7,9 @@ Summed into a virtual ground through a capacitor and a resistor, which turn them
 Over 200 samples of 1 % resistors and 5 % capacitors, every one notches deeper than 65 dB between 45 Hz and 55 Hz.
 Simulate it with `jolty simulate discovery/notch/design.py`.
 
-[Open in 3D](notch.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/notch/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/notch){ .md-button }
+[Open in 3D](notch.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/notch/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/notch){ .md-button }
 
-18 devices, 18 unknowns, simulated in 2.37 s.
+18 devices, 18 unknowns, simulated in 2.77 s.
 
 ![The schematic](../images/gallery/notch.inside.schematic.png)
 

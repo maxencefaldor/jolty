@@ -6,9 +6,9 @@ One T is two resistors R with a capacitor 2C to ground; the other two capacitors
 With R = 10 kΩ and C = 10 nF, their outputs cancel exactly at f₀ = 1/(2πRC) = 1.592 kHz, and the filter passes the frequencies far from it.
 Simulate it with `jolty simulate examples/twin_t_notch.py`.
 
-[Open in 3D](twin-t-notch.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/twin_t_notch.py){ .md-button }
+[Open in 3D](twin-t-notch.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/twin_t_notch.py){ .md-button }
 
-8 devices, 5 unknowns, simulated in 1.65 s.
+8 devices, 5 unknowns, simulated in 1.52 s.
 
 ![The schematic](../images/gallery/twin_t_notch.schematic.png)
 

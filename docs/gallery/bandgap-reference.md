@@ -8,9 +8,9 @@ With R₁/R₃ = 10.7 the two drifts cancel: the output stays within 2.2 mV of 1
 Ten megohms from a 5 V supply start it.
 Simulate it with `jolty simulate examples/bandgap_reference.py`.
 
-[Open in 3D](bandgap-reference.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/bandgap_reference.py){ .md-button }
+[Open in 3D](bandgap-reference.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/bandgap_reference.py){ .md-button }
 
-19 devices, 26 unknowns, simulated in 1.10 s.
+19 devices, 26 unknowns, simulated in 0.87 s.
 
 ![The schematic](../images/gallery/bandgap_reference.schematic.png)
 

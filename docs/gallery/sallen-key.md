@@ -6,9 +6,9 @@ Two 10 kΩ resistors, 20 nF from their junction back to the output and 10 nF to 
 A follower drives the output: the op-amp of the shared parts, 100 dB of gain and 1 MHz of bandwidth.
 Simulate it with `jolty simulate examples/sallen_key.py`.
 
-[Open in 3D](sallen-key.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sallen_key.py){ .md-button }
+[Open in 3D](sallen-key.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sallen_key.py){ .md-button }
 
-10 devices, 7 unknowns, simulated in 1.63 s.
+10 devices, 7 unknowns, simulated in 1.69 s.
 
 ![The schematic](../images/gallery/sallen_key.schematic.png)
 

@@ -6,9 +6,9 @@ Two followers with 10 kΩ feedback resistors share a 2.2 kΩ gain resistor, a ga
 A 10 mV difference riding on 2 V comes out as 100.9 mV.
 Simulate it with `jolty simulate examples/instrumentation_amplifier.py`.
 
-[Open in 3D](instrumentation-amplifier.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/instrumentation_amplifier.py){ .md-button }
+[Open in 3D](instrumentation-amplifier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/instrumentation_amplifier.py){ .md-button }
 
-14 devices, 17 unknowns, simulated in 1.29 s.
+14 devices, 17 unknowns, simulated in 1.37 s.
 
 ![The schematic](../images/gallery/instrumentation_amplifier.schematic.png)
 

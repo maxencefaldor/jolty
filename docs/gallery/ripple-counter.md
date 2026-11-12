@@ -7,9 +7,9 @@ Fed its own complement, a flip-flop toggles on every rising edge and halves its 
 The clear holds both at zero for the first nanoseconds.
 Simulate it with `jolty simulate examples/ripple_counter.py`.
 
-[Open in 3D](ripple-counter.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ripple_counter.py){ .md-button }
+[Open in 3D](ripple-counter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ripple_counter.py){ .md-button }
 
-11 devices, 6 unknowns, simulated in 1.16 s.
+11 devices, 6 unknowns, simulated in 1.11 s.
 
 ![The schematic](../images/gallery/ripple_counter.schematic.png)
 

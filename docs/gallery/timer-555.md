@@ -7,9 +7,9 @@ Outside: 1 kΩ and 10 kΩ charge 10 nF from 9 V to two thirds of it, and the 10 
 The output is high for 0.693(Ra + Rb)C = 76.2 µs and low for 0.693·Rb·C = 69.3 µs: a period of 145.5 µs, 6.87 kHz.
 Simulate it with `jolty simulate examples/timer_555.py`.
 
-[Open in 3D](timer-555.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/timer_555.py){ .md-button }
+[Open in 3D](timer-555.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/timer_555.py){ .md-button }
 
-16 devices, 17 unknowns, simulated in 2.39 s.
+16 devices, 17 unknowns, simulated in 2.43 s.
 
 ![The schematic](../images/gallery/timer_555.schematic.png)
 

@@ -7,9 +7,9 @@ Its gain is 1 + 22 kΩ/10 kΩ = 3.2, enough to start; as the swing grows, two 1N
 A 1 µA pulse at the start sets it going.
 Simulate it with `jolty simulate examples/wien_bridge.py`.
 
-[Open in 3D](wien-bridge.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/wien_bridge.py){ .md-button }
+[Open in 3D](wien-bridge.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/wien_bridge.py){ .md-button }
 
-15 devices, 9 unknowns, simulated in 1.60 s.
+15 devices, 9 unknowns, simulated in 1.72 s.
 
 ![The schematic](../images/gallery/wien_bridge.schematic.png)
 

@@ -5,9 +5,9 @@ A long-tailed pair: two 2N3904s sharing a 1 mA tail, steering it between them.
 The difference of the bases splits the tail as a hyperbolic tangent: the collector currents' difference is I·tanh(Vd/2Vt), so the outputs' difference swings ±I·Rc = ±10 V and its small-signal gain is gm·Rc = (I/2)/Vt·Rc, some 193.
 Simulate it with `jolty simulate examples/differential_pair.py`.
 
-[Open in 3D](differential-pair.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/differential_pair.py){ .md-button }
+[Open in 3D](differential-pair.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/differential_pair.py){ .md-button }
 
-8 devices, 13 unknowns, simulated in 1.48 s.
+8 devices, 13 unknowns, simulated in 1.28 s.
 
 ![The schematic](../images/gallery/differential_pair.schematic.png)
 

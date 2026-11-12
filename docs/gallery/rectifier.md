@@ -5,9 +5,9 @@ A half-wave rectifier: a diode charging a smoothing capacitor from a 50 Hz sine.
 The diode's parameters are those of a small-signal silicon diode such as the 1N4148.
 Simulate it with `jolty simulate examples/rectifier.py`.
 
-[Open in 3D](rectifier.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rectifier.py){ .md-button }
+[Open in 3D](rectifier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rectifier.py){ .md-button }
 
-4 devices, 4 unknowns, simulated in 1.52 s.
+4 devices, 4 unknowns, simulated in 1.44 s.
 
 ![The schematic](../images/gallery/rectifier.schematic.png)
 

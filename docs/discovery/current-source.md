@@ -7,9 +7,9 @@ A plain limiter feeds Q2 through a resistor from the line, so Q2's current, and 
 The current is Vbe/Rs, so it still falls 0.3 %/K with temperature.
 Simulate it with `jolty simulate discovery/current_source/design.py`.
 
-[Open in 3D](current-source.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/current_source/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/current_source){ .md-button }
+[Open in 3D](current-source.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/current_source/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/current_source){ .md-button }
 
-9 devices, 15 unknowns, simulated in 1.04 s.
+9 devices, 15 unknowns, simulated in 1.03 s.
 
 ![The schematic](../images/gallery/current_source.inside.schematic.png)
 

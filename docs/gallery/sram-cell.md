@@ -7,9 +7,9 @@ Raising the word line opens the access transistors onto the bit lines: driven ap
 The bench starts writing a 0, so the operating point holds one state of the two the cell could, then writes a 1, holds it, writes a 0 and holds it.
 Simulate it with `jolty simulate examples/sram_cell.py`.
 
-[Open in 3D](sram-cell.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sram_cell.py){ .md-button }
+[Open in 3D](sram-cell.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sram_cell.py){ .md-button }
 
-8 devices, 28 unknowns, simulated in 1.68 s.
+8 devices, 28 unknowns, simulated in 1.57 s.
 
 ![The schematic](../images/gallery/sram_cell.schematic.png)
 

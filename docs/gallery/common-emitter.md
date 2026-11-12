@@ -7,9 +7,9 @@ The midband gain is the collector's 4.7 kΩ over the emitter's 100 Ω and the tr
 Coupling capacitors pass the band from tens of hertz up.
 Simulate it with `jolty simulate examples/common_emitter.py`.
 
-[Open in 3D](common-emitter.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/common_emitter.py){ .md-button }
+[Open in 3D](common-emitter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/common_emitter.py){ .md-button }
 
-12 devices, 11 unknowns, simulated in 2.00 s.
+12 devices, 11 unknowns, simulated in 1.86 s.
 
 ![The schematic](../images/gallery/common_emitter.schematic.png)
 

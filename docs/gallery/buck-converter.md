@@ -6,9 +6,9 @@ A switch closes for half of each 10 µs period, and the inductor carries the cur
 With 100 µH and 100 µF, the LC filter rings at 1.6 kHz and its ripple is small.
 Simulate it with `jolty simulate examples/buck_converter.py`.
 
-[Open in 3D](buck-converter.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/buck_converter.py){ .md-button }
+[Open in 3D](buck-converter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/buck_converter.py){ .md-button }
 
-7 devices, 8 unknowns, simulated in 3.34 s.
+7 devices, 8 unknowns, simulated in 3.59 s.
 
 ![The schematic](../images/gallery/buck_converter.schematic.png)
 

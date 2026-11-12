@@ -6,9 +6,9 @@ Its elements are the Butterworth prototype's, 0.618, 1.618, 2, 1.618 and 0.618, 
 Between its terminations its gain is half, times 1/√(1 + (f/f_c)¹⁰): -6.02 dB in its passband, 3.01 dB less at the cutoff, and falling 100 dB a decade above it.
 Simulate it with `jolty simulate examples/butterworth_ladder.py`.
 
-[Open in 3D](butterworth-ladder.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/butterworth_ladder.py){ .md-button }
+[Open in 3D](butterworth-ladder.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/butterworth_ladder.py){ .md-button }
 
-8 devices, 7 unknowns, simulated in 1.89 s.
+8 devices, 7 unknowns, simulated in 1.98 s.
 
 ![The schematic](../images/gallery/butterworth_ladder.schematic.png)
 

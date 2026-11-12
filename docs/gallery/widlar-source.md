@@ -5,9 +5,9 @@ A Widlar current source: a small output current from a large reference.
 The reference transistor carries about 1 mA, set by 11.3 kΩ from 12 V; an emitter resistor of 1.55 kΩ under the output transistor takes the difference of their base-emitter voltages, Vt·ln(Iref/Iout) = Iout·Re, so the output settles near 50 µA and stays there as its collector's voltage moves.
 Simulate it with `jolty simulate examples/widlar_source.py`.
 
-[Open in 3D](widlar-source.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/widlar_source.py){ .md-button }
+[Open in 3D](widlar-source.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/widlar_source.py){ .md-button }
 
-6 devices, 10 unknowns, simulated in 0.79 s.
+6 devices, 10 unknowns, simulated in 1.05 s.
 
 ![The schematic](../images/gallery/widlar_source.schematic.png)
 

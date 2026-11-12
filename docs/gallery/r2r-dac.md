@@ -6,9 +6,9 @@ Each bit's logic level drives a 20 kΩ leg of a ladder of 10 kΩ rungs, terminat
 Every node of the ladder looks into 20 kΩ either way, so each bit adds its weight, half the previous bit's, and the output is the supply times the code over 16, exactly.
 A counter of logic sources steps the code every 10 ns, through buffers on 3.3 V. Simulate it with `jolty simulate examples/r2r_dac.py`.
 
-[Open in 3D](r2r-dac.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/r2r_dac.py){ .md-button }
+[Open in 3D](r2r-dac.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/r2r_dac.py){ .md-button }
 
-17 devices, 14 unknowns, simulated in 1.55 s.
+17 devices, 14 unknowns, simulated in 1.29 s.
 
 ![The schematic](../images/gallery/r2r_dac.schematic.png)
 

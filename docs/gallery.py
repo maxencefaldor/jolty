@@ -13,10 +13,11 @@ signal both engines report lies from the other's.
 
 The script writes ``docs/gallery.md``, a page per example under ``docs/gallery``, the
 images under ``docs/images/gallery``, and each example's 3D viewer as
-``docs/gallery/<name>.html``; and ``docs/discovery.md`` with a page and a viewer per
-discovery under ``docs/discovery``, each page holding the discovery's findings. A spec
-that fails in either engine, but for the specs a discovery's findings report as
-failing, stops the script once every page is written.
+``docs/gallery/<name>.view.html``; and ``docs/discovery.md``, with a page holding its
+findings and a viewer per discovery under ``docs/discovery``. Once every page is
+written, the script fails on a spec an example fails in either engine, and on a spec
+on whose verdict the engines disagree for a discovery, whose findings report the
+bounds it misses.
 """
 
 import asyncio
@@ -105,7 +106,8 @@ class Entry:
 
         A discovery's opens inside its design, the instance its bench places as ``X1``.
         """
-        return f"{self.slug}.html#view=X1" if self.discovered else f"{self.slug}.html"
+        page = f"{self.slug}.view.html"
+        return f"{page}#view=X1" if self.discovered else page
 
     @property
     def source(self) -> str:
@@ -545,7 +547,7 @@ def build(entry: Entry) -> Built:
             schematic.save(schematic.draw(circuit, "X1"), inner)
             images.insert(0, inner.name)
         viewer.write_viewer(
-            DOCS / entry.folder / f"{entry.slug}.html",
+            DOCS / entry.folder / f"{entry.slug}.view.html",
             circuit,
             solved,
             title=entry.title,

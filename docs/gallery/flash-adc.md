@@ -7,9 +7,9 @@ Each comparator compares the input to one tap; together they read the input as a
 A ramp from 0 to 3.3 V walks the code from 0 to 7.
 Simulate it with `jolty simulate examples/flash_adc.py`.
 
-[Open in 3D](flash-adc.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/flash_adc.py){ .md-button }
+[Open in 3D](flash-adc.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/flash_adc.py){ .md-button }
 
-21 devices, 31 unknowns, simulated in 1.33 s.
+21 devices, 31 unknowns, simulated in 1.24 s.
 
 ![The schematic](../images/gallery/flash_adc.schematic.png)
 

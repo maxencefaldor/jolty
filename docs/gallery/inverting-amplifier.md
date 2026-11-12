@@ -5,9 +5,9 @@ An inverting amplifier: a gain of -10 set by two resistors around an op-amp.
 The op-amp's finite gain A = 10⁵ takes the closed-loop gain to -10/(1 + 11/A), and its 1 MHz gain-bandwidth product sets the bandwidth at 1 MHz/11 = 90.9 kHz, where the gain is 3 dB down.
 Simulate it with `jolty simulate examples/inverting_amplifier.py`.
 
-[Open in 3D](inverting-amplifier.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/inverting_amplifier.py){ .md-button }
+[Open in 3D](inverting-amplifier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/inverting_amplifier.py){ .md-button }
 
-8 devices, 6 unknowns, simulated in 1.68 s.
+8 devices, 6 unknowns, simulated in 1.81 s.
 
 ![The schematic](../images/gallery/inverting_amplifier.schematic.png)
 

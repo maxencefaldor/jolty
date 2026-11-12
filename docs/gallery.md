@@ -17,7 +17,7 @@ Passive and active filters, their responses in closed form.
 
     A first-order RC low-pass filter: its step response and its frequency response.
 
-    [Open in 3D](gallery/rc-filter.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rc_filter.py)
+    [Open in 3D](gallery/rc-filter.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rc_filter.py)
 
 -   ![Series RLC band-pass, its schematic](images/gallery/rlc_bandpass.schematic.png)
 
@@ -25,7 +25,7 @@ Passive and active filters, their responses in closed form.
 
     A series RLC band-pass filter, its output across the resistor.
 
-    [Open in 3D](gallery/rlc-bandpass.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rlc_bandpass.py)
+    [Open in 3D](gallery/rlc-bandpass.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rlc_bandpass.py)
 
 -   ![Fifth-order Butterworth ladder, its schematic](images/gallery/butterworth_ladder.schematic.png)
 
@@ -33,7 +33,7 @@ Passive and active filters, their responses in closed form.
 
     A fifth-order Butterworth low-pass filter: an LC ladder between two 50 Ω ends.
 
-    [Open in 3D](gallery/butterworth-ladder.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/butterworth_ladder.py)
+    [Open in 3D](gallery/butterworth-ladder.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/butterworth_ladder.py)
 
 -   ![Twin-T notch, its schematic](images/gallery/twin_t_notch.schematic.png)
 
@@ -41,7 +41,7 @@ Passive and active filters, their responses in closed form.
 
     A twin-T notch filter: two T networks in parallel that cancel at one frequency.
 
-    [Open in 3D](gallery/twin-t-notch.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/twin_t_notch.py)
+    [Open in 3D](gallery/twin-t-notch.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/twin_t_notch.py)
 
 -   ![Sallen-Key low-pass, its schematic](images/gallery/sallen_key.schematic.png)
 
@@ -49,7 +49,7 @@ Passive and active filters, their responses in closed form.
 
     A unity-gain Sallen-Key low-pass filter: the second-order Butterworth response.
 
-    [Open in 3D](gallery/sallen-key.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sallen_key.py)
+    [Open in 3D](gallery/sallen-key.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sallen_key.py)
 
 </div>
 
@@ -65,7 +65,7 @@ Transistors and op-amps, biased and amplifying.
 
     An inverting amplifier: a gain of -10 set by two resistors around an op-amp.
 
-    [Open in 3D](gallery/inverting-amplifier.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/inverting_amplifier.py)
+    [Open in 3D](gallery/inverting-amplifier.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/inverting_amplifier.py)
 
 -   ![Instrumentation amplifier, its schematic](images/gallery/instrumentation_amplifier.schematic.png)
 
@@ -73,7 +73,7 @@ Transistors and op-amps, biased and amplifying.
 
     A three-op-amp instrumentation amplifier: a gain of 10.09 that rejects common mode.
 
-    [Open in 3D](gallery/instrumentation-amplifier.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/instrumentation_amplifier.py)
+    [Open in 3D](gallery/instrumentation-amplifier.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/instrumentation_amplifier.py)
 
 -   ![Common-emitter amplifier, its schematic](images/gallery/common_emitter.schematic.png)
 
@@ -81,7 +81,7 @@ Transistors and op-amps, biased and amplifying.
 
     A common-emitter amplifier: a 2N3904 biased by a divider, its emitter degenerated.
 
-    [Open in 3D](gallery/common-emitter.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/common_emitter.py)
+    [Open in 3D](gallery/common-emitter.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/common_emitter.py)
 
 -   ![Long-tailed pair, its schematic](images/gallery/differential_pair.schematic.png)
 
@@ -89,7 +89,7 @@ Transistors and op-amps, biased and amplifying.
 
     A long-tailed pair: two 2N3904s sharing a 1 mA tail, steering it between them.
 
-    [Open in 3D](gallery/differential-pair.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/differential_pair.py)
+    [Open in 3D](gallery/differential-pair.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/differential_pair.py)
 
 -   ![Widlar current source, its schematic](images/gallery/widlar_source.schematic.png)
 
@@ -97,7 +97,7 @@ Transistors and op-amps, biased and amplifying.
 
     A Widlar current source: a small output current from a large reference.
 
-    [Open in 3D](gallery/widlar-source.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/widlar_source.py)
+    [Open in 3D](gallery/widlar-source.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/widlar_source.py)
 
 -   ![Class AB push-pull stage, its schematic](images/gallery/push_pull.schematic.png)
 
@@ -105,7 +105,7 @@ Transistors and op-amps, biased and amplifying.
 
     A class AB push-pull output stage: complementary followers, biased past crossover.
 
-    [Open in 3D](gallery/push-pull.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/push_pull.py)
+    [Open in 3D](gallery/push-pull.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/push_pull.py)
 
 -   ![Bandgap reference, its schematic](images/gallery/bandgap_reference.schematic.png)
 
@@ -113,7 +113,7 @@ Transistors and op-amps, biased and amplifying.
 
     A bandgap voltage reference: two transistors' base-emitter voltages cancelling drift.
 
-    [Open in 3D](gallery/bandgap-reference.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/bandgap_reference.py)
+    [Open in 3D](gallery/bandgap-reference.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/bandgap_reference.py)
 
 </div>
 
@@ -129,7 +129,7 @@ Circuits with no stable state, running at the rate they set.
 
     A Wien bridge oscillator, its amplitude held by two diodes.
 
-    [Open in 3D](gallery/wien-bridge.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/wien_bridge.py)
+    [Open in 3D](gallery/wien-bridge.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/wien_bridge.py)
 
 -   ![Op-amp relaxation oscillator, its schematic](images/gallery/relaxation_oscillator.schematic.png)
 
@@ -137,7 +137,7 @@ Circuits with no stable state, running at the rate they set.
 
     An op-amp relaxation oscillator: a Schmitt trigger timing itself through an RC.
 
-    [Open in 3D](gallery/relaxation-oscillator.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/relaxation_oscillator.py)
+    [Open in 3D](gallery/relaxation-oscillator.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/relaxation_oscillator.py)
 
 -   ![Astable multivibrator, its schematic](images/gallery/astable_multivibrator.schematic.png)
 
@@ -145,7 +145,7 @@ Circuits with no stable state, running at the rate they set.
 
     The astable multivibrator: two cross-coupled 2N3904s flipping each other in turn.
 
-    [Open in 3D](gallery/astable-multivibrator.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/astable_multivibrator.py)
+    [Open in 3D](gallery/astable-multivibrator.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/astable_multivibrator.py)
 
 -   ![Colpitts oscillator, its schematic](images/gallery/colpitts_oscillator.schematic.png)
 
@@ -153,7 +153,7 @@ Circuits with no stable state, running at the rate they set.
 
     A Colpitts oscillator: a 2N3904 in common base, its tank a coil and two capacitors.
 
-    [Open in 3D](gallery/colpitts-oscillator.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/colpitts_oscillator.py)
+    [Open in 3D](gallery/colpitts-oscillator.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/colpitts_oscillator.py)
 
 -   ![CMOS ring oscillator, its schematic](images/gallery/ring_oscillator.schematic.png)
 
@@ -161,7 +161,7 @@ Circuits with no stable state, running at the rate they set.
 
     A ring oscillator of five CMOS inverters, transistor by transistor.
 
-    [Open in 3D](gallery/ring-oscillator.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ring_oscillator.py)
+    [Open in 3D](gallery/ring-oscillator.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ring_oscillator.py)
 
 -   ![555 timer, astable, its schematic](images/gallery/timer_555.schematic.png)
 
@@ -169,7 +169,7 @@ Circuits with no stable state, running at the rate they set.
 
     The 555 timer, built from its block diagram, running astable.
 
-    [Open in 3D](gallery/timer-555.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/timer_555.py)
+    [Open in 3D](gallery/timer-555.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/timer_555.py)
 
 </div>
 
@@ -185,7 +185,7 @@ Rectifiers, regulators and switching converters.
 
     A half-wave rectifier: a diode charging a smoothing capacitor from a 50 Hz sine.
 
-    [Open in 3D](gallery/rectifier.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rectifier.py)
+    [Open in 3D](gallery/rectifier.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rectifier.py)
 
 -   ![Zener shunt regulator, its schematic](images/gallery/zener_regulator.schematic.png)
 
@@ -193,7 +193,7 @@ Rectifiers, regulators and switching converters.
 
     A zener shunt regulator: a 5.1 V zener holding a load's supply against its input.
 
-    [Open in 3D](gallery/zener-regulator.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/zener_regulator.py)
+    [Open in 3D](gallery/zener-regulator.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/zener_regulator.py)
 
 -   ![Cockcroft-Walton multiplier, its schematic](images/gallery/voltage_multiplier.schematic.png)
 
@@ -201,7 +201,7 @@ Rectifiers, regulators and switching converters.
 
     A three-stage Cockcroft-Walton multiplier: six diodes and six capacitors.
 
-    [Open in 3D](gallery/voltage-multiplier.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/voltage_multiplier.py)
+    [Open in 3D](gallery/voltage-multiplier.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/voltage_multiplier.py)
 
 -   ![Buck converter, its schematic](images/gallery/buck_converter.schematic.png)
 
@@ -209,7 +209,7 @@ Rectifiers, regulators and switching converters.
 
     A buck converter: a switch, a diode and an LC filter stepping 12 V down to 6 V.
 
-    [Open in 3D](gallery/buck-converter.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/buck_converter.py)
+    [Open in 3D](gallery/buck-converter.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/buck_converter.py)
 
 -   ![Boost converter, its schematic](images/gallery/boost_converter.schematic.png)
 
@@ -217,7 +217,7 @@ Rectifiers, regulators and switching converters.
 
     A boost converter: an inductor charged by a switch and dumped through a diode.
 
-    [Open in 3D](gallery/boost-converter.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/boost_converter.py)
+    [Open in 3D](gallery/boost-converter.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/boost_converter.py)
 
 </div>
 
@@ -233,7 +233,7 @@ CMOS at transistor level, and logic at event speed beside analog circuits.
 
     The CMOS inverter: its transfer curve, its switching threshold, its edges.
 
-    [Open in 3D](gallery/cmos-inverter.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/cmos_inverter.py)
+    [Open in 3D](gallery/cmos-inverter.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/cmos_inverter.py)
 
 -   ![Six-transistor SRAM cell, its schematic](images/gallery/sram_cell.schematic.png)
 
@@ -241,7 +241,7 @@ CMOS at transistor level, and logic at event speed beside analog circuits.
 
     A six-transistor SRAM cell: two cross-coupled inverters and two access transistors.
 
-    [Open in 3D](gallery/sram-cell.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sram_cell.py)
+    [Open in 3D](gallery/sram-cell.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sram_cell.py)
 
 -   ![Full adder of NAND gates, its schematic](images/gallery/full_adder.schematic.png)
 
@@ -249,7 +249,7 @@ CMOS at transistor level, and logic at event speed beside analog circuits.
 
     A full adder of nine CMOS NAND gates, each gate four transistors.
 
-    [Open in 3D](gallery/full-adder.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/full_adder.py)
+    [Open in 3D](gallery/full-adder.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/full_adder.py)
 
 -   ![Four-bit ripple-carry adder, its schematic](images/gallery/ripple_adder.schematic.png)
 
@@ -257,7 +257,7 @@ CMOS at transistor level, and logic at event speed beside analog circuits.
 
     A four-bit ripple-carry adder of logic gates, adding pairs of numbers in turn.
 
-    [Open in 3D](gallery/ripple-adder.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ripple_adder.py)
+    [Open in 3D](gallery/ripple-adder.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ripple_adder.py)
 
 -   ![Ripple counter of D flip-flops, its schematic](images/gallery/ripple_counter.schematic.png)
 
@@ -265,7 +265,7 @@ CMOS at transistor level, and logic at event speed beside analog circuits.
 
     A two-bit ripple counter of edge-triggered D flip-flops, each six NAND gates.
 
-    [Open in 3D](gallery/ripple-counter.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ripple_counter.py)
+    [Open in 3D](gallery/ripple-counter.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ripple_counter.py)
 
 -   ![R-2R ladder DAC, its schematic](images/gallery/r2r_dac.schematic.png)
 
@@ -273,7 +273,7 @@ CMOS at transistor level, and logic at event speed beside analog circuits.
 
     A four-bit R-2R ladder DAC, counting from 0 to 15.
 
-    [Open in 3D](gallery/r2r-dac.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/r2r_dac.py)
+    [Open in 3D](gallery/r2r-dac.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/r2r_dac.py)
 
 -   ![Three-bit flash ADC, its schematic](images/gallery/flash_adc.schematic.png)
 
@@ -281,6 +281,6 @@ CMOS at transistor level, and logic at event speed beside analog circuits.
 
     A three-bit flash ADC: seven comparators on a resistor ladder, and an encoder.
 
-    [Open in 3D](gallery/flash-adc.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/flash_adc.py)
+    [Open in 3D](gallery/flash-adc.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/flash_adc.py)
 
 </div>

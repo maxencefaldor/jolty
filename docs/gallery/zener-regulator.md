@@ -6,9 +6,9 @@ A 220 Ω resistor feeds the zener and a 1 kΩ load from a 12 V input.
 Above the zener's knee, the input's changes fall across the resistor, and the output moves by the zener's small resistance over the resistor's: a line regulation of some 1 %.
 Simulate it with `jolty simulate examples/zener_regulator.py`.
 
-[Open in 3D](zener-regulator.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/zener_regulator.py){ .md-button }
+[Open in 3D](zener-regulator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/zener_regulator.py){ .md-button }
 
-4 devices, 4 unknowns, simulated in 1.26 s.
+4 devices, 4 unknowns, simulated in 1.17 s.
 
 ![The schematic](../images/gallery/zener_regulator.schematic.png)
 

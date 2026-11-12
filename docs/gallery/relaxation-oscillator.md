@@ -7,9 +7,9 @@ Each half period lasts RC·ln((1 + β)/(1 - β)) with β = 1/2: with 10 kΩ and 
 The op-amp's 13 V/µs slew rate stretches each edge by 2 µs, and the period by some 1.5 %.
 Simulate it with `jolty simulate examples/relaxation_oscillator.py`.
 
-[Open in 3D](relaxation-oscillator.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/relaxation_oscillator.py){ .md-button }
+[Open in 3D](relaxation-oscillator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/relaxation_oscillator.py){ .md-button }
 
-10 devices, 5 unknowns, simulated in 0.78 s.
+10 devices, 5 unknowns, simulated in 1.23 s.
 
 ![The schematic](../images/gallery/relaxation_oscillator.schematic.png)
 

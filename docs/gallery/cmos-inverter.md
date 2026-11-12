@@ -6,9 +6,9 @@ A p-channel transistor twice as wide as its n-channel partner, which offsets the
 Vm = (VDD - |Vtp| + Vtn·√(βn/βp))/(1 + √(βn/βp)), sits at 1.81 V of 3.3 V. Simulate it
 with `jolty simulate examples/cmos_inverter.py`.
 
-[Open in 3D](cmos-inverter.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/cmos_inverter.py){ .md-button }
+[Open in 3D](cmos-inverter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/cmos_inverter.py){ .md-button }
 
-5 devices, 11 unknowns, simulated in 1.49 s.
+5 devices, 11 unknowns, simulated in 1.43 s.
 
 ![The schematic](../images/gallery/cmos_inverter.schematic.png)
 
