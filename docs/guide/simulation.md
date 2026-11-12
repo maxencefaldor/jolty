@@ -32,7 +32,7 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `OperatingPoints(most=8)` | every DC solution, up to `most`, the operating point first |
 | `DcSweep(source, levels)` | the DC solution at each level of one independent source |
 | `Ac(source, frequencies)` | the small-signal response to a unit excitation of one source, around the operating point |
-| `Transient(stop, max_step=None, method="trapezoidal", times=())` | the response over time, from the operating point until `stop` |
+| `Transient(stop, max_step=None, method="trapezoidal", times=(), periodic=False)` | the response over time, from the operating point until `stop`, or one period of the periodic steady state |
 | `Sensitivity(outputs, of=None)` | the derivative of each output with respect to every number of every device's parameters, at the operating point or at each point of the analysis `of` |
 | `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
 | `Noise(output, frequencies, reference=None, source=None)` | the noise density at an output from every device's noise, at each frequency, and referred to an input source |
@@ -43,6 +43,22 @@ A source is named by its path, such as `V1` or `bias/I1`.
 A transient's method is `"trapezoidal"`, `"gear2"` for stiff circuits that ring, or `"backward_euler"` for the most damping.
 Its longest step defaults to a fiftieth of `stop`.
 It steps onto each of `times` exactly, besides the times it chooses, without restarting its integration there, so every unknown and terminal current has its solved value at those times.
+
+## Periodic steady state
+
+A circuit driven by periodic sources, such as a rectifier, a mixer or a power converter, settles into a steady state that repeats each period, but a transient from the operating point reaches it only after its slowest time constant has died away many times over.
+A periodic transient finds it directly, `stop` the period of every source:
+
+```python
+Plan({"steady": Transient(stop=1 * us, max_step=5 * ns, periodic=True)})
+```
+
+The steady state is a state `x₀` that one period of the circuit's equations carries back to itself, `φ(x₀) = x₀`, and shooting solves it by Newton iteration (Aprille and Trick, *Steady-state analysis of nonlinear circuits with periodic inputs*, Proceedings of the IEEE 60(1), 1972).
+Each period, simulated from the state it starts at, carries the derivatives of its solution with respect to that state along every step, by the direct method of the transient sensitivities, and ends with the monodromy matrix `Φ = ∂φ/∂x₀`; the next period starts at `x₀ − (Φ − I)⁻¹ (φ(x₀) − x₀)`.
+The first starts at the operating point, and the search ends when a period ends within tolerance of every unknown where it started, or fails after 40 periods, naming the unknowns furthest from repeating.
+The steady state of a nearly linear circuit is found in two or three periods however slowly it settles, where a transient would take tens or hundreds.
+The result is the last period's waveforms, and its statistics' `periods` count the periods simulated.
+A circuit with logic, whose state shooting does not carry, has no periodic transient, and a sensitivity analysis differentiates none.
 
 ## Several DC solutions
 
@@ -242,6 +258,7 @@ Every other choice the engine makes is one SPICE simulators make, save those the
 | Small resistors | A resistor, or a device's series resistance, below 1 Ω carries its current as an unknown, held by Ohm's law, so that its conductance cannot swamp a node's picosiemens in floating point. | Modified nodal analysis's second group of elements (Ho, Ruehli and Brennan, 1975); the threshold is jolty's own, where gmin keeps four digits beside the conductance. |
 | Operating point | Newton from zero; then a conductance from every node to the ground, stepped down from 10 mS, ten times at a time when the steps converge quickly and less otherwise; then every source ramped up from zero. | ngspice's dynamic gmin stepping and SPICE's source stepping. |
 | DC sweep | Each level starts from the last solution, and a level Newton cannot reach in one step is approached in steps halved after each failure; a first level no strategy reaches from zero is approached from the circuit's own operating point. | Natural-parameter continuation. |
+| Periodic steady state | Newton iteration on the state each period starts at, with the monodromy matrix carried along the period's steps and solved densely. | Shooting (Aprille and Trick, 1972), as Spectre's periodic steady-state analysis. |
 | Integration | The trapezoidal rule by default, or Gear's second-order formula or backward Euler, as the transient asks. | SPICE. |
 | Truncation error | Each step's error is estimated from divided differences of the charges, against tolerances on the charge and on the current it carries, times `truncation_tolerance`. | SPICE's `CKTterr` and `trtol`. |
 | Step length | At most a fiftieth of the run unless `max_step` says otherwise; a step whose error is too large is retried shorter, the next grows by at most twice, with a safety factor of 0.9; one whose Newton iteration fails is retried an eighth as long. | SPICE. |

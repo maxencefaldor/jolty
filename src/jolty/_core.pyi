@@ -55,6 +55,7 @@ class StatisticsOutcome(TypedDict):
     accepted: int
     rejected: int
     iterations: int
+    periods: int | None
 
 class WaveformsOutcome(Observed):
     kind: Literal["transient"]

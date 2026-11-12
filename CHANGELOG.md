@@ -10,7 +10,7 @@ The first release, 0.1.0.
 ### Added
 
 - Circuits as Python build scripts of reusable components, compiled into a canonical, validated circuit format, with every problem named by instance path and script line.
-- A native engine in Rust: modified nodal analysis with charge-oriented device models, sparse LU, Newton iteration with SPICE's convergence aids, and the operating point, DC sweep, AC, transient, sensitivity, stability, noise and pole-zero analyses, and a search for every DC solution by deflation.
+- A native engine in Rust: modified nodal analysis with charge-oriented device models, sparse LU, Newton iteration with SPICE's convergence aids, and the operating point, DC sweep, AC, transient, periodic steady state, sensitivity, stability, noise and pole-zero analyses, and a search for every DC solution by deflation.
 - Device models: resistors, capacitors and inductors with voltage coefficients, sources and their waveforms, controlled sources, behavioral sources, switches, the diode, the JFET, the Gummel-Poon transistor, level 1 and level 3 MOSFETs, a photocell, and logic devices simulated by an event scheduler beside the analog circuit.
 - Vendors' SPICE macromodels read as components, and any circuit written as a SPICE netlist for ngspice.
 - Structural rules, schematics drawn from the connections alone, plots of every analysis, and a 3D viewer that plays any simulation on the layout.
@@ -18,6 +18,7 @@ The first release, 0.1.0.
 - Fidelity: components characterized into logic cells, run in their place, and spot-checked against their circuits.
 - Exact sensitivities of every unknown to every parameter, at the operating point, along DC sweeps, over frequency and over time.
 - Pole-zero analysis by the QZ algorithm on the linearized circuit's pencils, with specs on the least damping and the dominant pole, agreeing with ngspice.
+- The periodic steady state of a driven circuit, found by shooting with the monodromy matrix carried along each period.
 - Noise analysis by the adjoint method: every device's thermal, shot and flicker noise at an output, each source's share, the noise referred to an input, and specs on noise densities and RMS noise, all agreeing with ngspice.
 - A parts catalog that prices a circuit's bill of materials.
 - A command line, an MCP server and a Python package, every command defined once.

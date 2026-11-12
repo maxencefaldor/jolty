@@ -48,6 +48,7 @@ mod noise;
 mod observe;
 mod operating_point;
 mod options;
+mod periodic;
 mod pole_zero;
 mod sensitivity;
 mod stability;
@@ -335,6 +336,17 @@ pub enum SimulationError {
     /// The QZ iteration of a pole-zero analysis did not converge.
     #[error("the eigenvalues of the linearized circuit did not converge")]
     Unconverged,
+    /// Shooting found no state that a period carries back to itself.
+    #[error(
+        "no periodic steady state found in {periods} periods; furthest from repeating: {}",
+        .worst.join(", ")
+    )]
+    NoSteadyState {
+        /// The periods shooting simulated.
+        periods: usize,
+        /// The unknowns furthest from repeating over the last period, worst first.
+        worst: Vec<String>,
+    },
     /// The options are out of range.
     #[error("invalid options: {0}")]
     InvalidOptions(String),

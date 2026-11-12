@@ -48,13 +48,15 @@ from jolty.units import (
     kHz,
     kohm,
     mA,
+    ms,
     nF,
     ohm,
     uA,
+    uF,
     um,
     us,
 )
-from jolty.waveforms import Piecewise
+from jolty.waveforms import Piecewise, Sine
 
 
 @component
@@ -514,6 +516,31 @@ def test_a_transient_steps_onto_the_times_it_is_given() -> None:
     )
     with pytest.raises(SimulationError, match="after 0 and at most the stop time"):
         simulation.run(Transient(stop=5 * us, times=[6 * us]))
+
+
+@component
+def slow_rc(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    sine = Sine(0 * V, 1 * V, 1 * kHz)
+    source = c.place(devices.voltage_source(sine), id="V1")
+    resistor = c.place(devices.resistor(1 * kohm), id="R1")
+    capacitor = c.place(devices.capacitor(10 * uF), id="C1")
+    c.connect(source.positive, resistor.a, name="in")
+    c.connect(resistor.b, capacitor.a, name="out")
+    c.connect(capacitor.b, source.negative, ground)
+
+
+def test_a_periodic_transient_finds_the_steady_state_at_once() -> None:
+    # The time constant is ten periods; the steady state is the phasor's.
+    steady = Simulation(slow_rc()).run(
+        Transient(stop=1 * ms, max_step=5e-3 * ms, periodic=True)
+    )
+    assert steady.statistics.periods == 2
+    lag = 2 * math.pi * 1e3 * 1e3 * 10e-6
+    expected = np.sin(2 * math.pi * 1e3 * steady.times - math.atan(lag))
+    np.testing.assert_allclose(
+        steady.voltage("out"), expected / math.hypot(1, lag), atol=1e-5
+    )
 
 
 def test_a_dc_sweep_solves_each_level() -> None:

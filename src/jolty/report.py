@@ -202,16 +202,26 @@ class TransientReport(_Model):
         description="Time steps rejected for their error or Newton, or to land on a "
         "logic event."
     )
+    periods: int | None = Field(
+        default=None,
+        description="For a periodic steady state, the periods simulated to find it; "
+        "the steps counted are the last's.",
+    )
     extents: tuple[Extent, ...]
     activities: tuple[Activity, ...] = ()
     unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
 
     def describe(self) -> str:
         """The report as text."""
-        head = (
-            f"{self.name}: transient to {format_si(self.stop, 's')} "
-            f"in {self.accepted} steps, {self.rejected} rejected"
-        )
+        steps = f"in {self.accepted} steps, {self.rejected} rejected"
+        if self.periods is None:
+            head = f"{self.name}: transient to {format_si(self.stop, 's')} {steps}"
+        else:
+            head = (
+                f"{self.name}: periodic steady state of period "
+                f"{format_si(self.stop, 's')}, found in {self.periods} periods, "
+                f"the last {steps}"
+            )
         lines = _extents(self.extents) + _activities(self.activities)
         return _join(head, lines, self.unlisted)
 
@@ -713,6 +723,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 stop=float(result.times[-1]),
                 accepted=result.statistics.accepted,
                 rejected=result.statistics.rejected,
+                periods=result.statistics.periods,
                 extents=_extents_of(unknowns, result.values[:, :listed]),
                 activities=tuple(
                     _activity(net, result.level(net).levels) for net in nets

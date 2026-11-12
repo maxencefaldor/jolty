@@ -101,13 +101,16 @@ class Ac:
 class Transient:
     """The response over time, from the operating point at zero until `stop`.
 
-    The analysis steps onto each of `times` exactly, besides the times it chooses.
+    The analysis steps onto each of `times` exactly, besides the times it chooses. A
+    `periodic` transient simulates instead one period of the periodic steady state,
+    `stop` the period of every source, found by shooting from the operating point.
     """
 
     stop: Quantity
     max_step: Quantity | None = None
     method: Method = "trapezoidal"
     times: Sequence[Quantity] = ()
+    periodic: bool = False
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
@@ -121,6 +124,8 @@ class Transient:
             ]
         if self.max_step is not None:
             transient["max_step"] = self.max_step.to(TIME, "a transient's longest step")
+        if self.periodic:
+            transient["periodic"] = True
         return {"transient": transient}
 
 

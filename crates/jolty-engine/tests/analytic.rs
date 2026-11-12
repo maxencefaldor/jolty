@@ -452,6 +452,7 @@ fn rc_step_error(method: Method, options: &Options) -> (f64, usize) {
         max_step: None,
         method,
         times: Vec::new(),
+        periodic: false,
     };
     let waveforms = simulator
         .transient(&transient, options)
@@ -536,6 +537,7 @@ fn an_lc_tank_rings_at_its_resonant_frequency() {
         max_step: Some(period / 200.0),
         method: Method::Trapezoidal,
         times: Vec::new(),
+        periodic: false,
     };
     let waveforms = simulator
         .transient(&transient, &Options::default())
@@ -588,6 +590,7 @@ fn a_sine_through_an_rc_settles_to_the_ac_amplitude() {
         max_step: Some(1e-5),
         method: Method::Trapezoidal,
         times: Vec::new(),
+        periodic: false,
     };
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
@@ -639,6 +642,7 @@ fn the_trapezoidal_formula_stops_ringing_after_a_corner() {
         max_step: Some(1e-5),
         method: Method::Trapezoidal,
         times: Vec::new(),
+        periodic: false,
     };
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
@@ -763,6 +767,7 @@ fn transient(circuit: &Circuit, stop: f64, options: &Options) -> Result<Outcome,
         max_step: Some(stop / 100.0),
         method: Method::Trapezoidal,
         times: Vec::new(),
+        periodic: false,
     };
     simulator(circuit).run(&Analysis::Transient(transient), options)
 }
@@ -882,6 +887,7 @@ fn a_transient_follows_a_source_that_only_its_transistor_holds() {
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
         times: Vec::new(),
+        periodic: false,
     };
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
@@ -981,6 +987,7 @@ fn a_gate_converges_as_its_supply_powers_up() {
         max_step: Some(1e-9),
         method: Method::Trapezoidal,
         times: Vec::new(),
+        periodic: false,
     };
     let outcome = simulator(&circuit).run(&Analysis::Transient(transient), &Options::default());
     assert!(outcome.is_ok(), "{:?}", outcome.err());

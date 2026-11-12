@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::logic::{Command, Crossing, crossing};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
+use crate::periodic::Monodromy;
 use crate::sensitivity::Forward;
 use crate::{Observation, Observations, Options, Rejection, SimulationError, Simulator, Strategy};
 
@@ -43,6 +44,10 @@ pub struct Transient {
     /// restarting its integration there; none by default.
     #[serde(default)]
     pub times: Vec<f64>,
+    /// Whether to find the periodic steady state instead, `stop` the period of every
+    /// source: one period from the state the circuit repeats, which shooting finds.
+    #[serde(default)]
+    pub periodic: bool,
 }
 
 /// The waveforms of a transient analysis, at every accepted time point.
@@ -74,6 +79,74 @@ pub struct Statistics {
     pub rejected: usize,
     /// The Newton iterations of the accepted steps.
     pub iterations: usize,
+    /// For a periodic steady state, the periods shooting simulated to find it, the last
+    /// the one returned.
+    pub periods: Option<usize>,
+}
+
+/// What a transient carries along its accepted steps besides its solution.
+pub(crate) enum Carried<'a> {
+    /// Nothing.
+    Nothing,
+    /// Each parameter's derivatives, for a sensitivity analysis.
+    Forward(&'a mut Forward),
+    /// The derivatives with respect to the initial state, for a periodic steady state.
+    Monodromy(&'a mut Monodromy),
+}
+
+/// The charges' derivatives with respect to one variable at the points a transient accepted
+/// last, which its integration formula reads: what the direct method carries from step to
+/// step for each variable it differentiates by.
+pub(crate) struct Tangent {
+    /// `dq/dp` at the last point.
+    last: Vec<f64>,
+    /// `dq/dp` at the point before, unless the integration restarted at the last.
+    before: Option<Vec<f64>>,
+    /// `d(dq/dt)/dp` at the last point.
+    rate: Vec<f64>,
+}
+
+impl Tangent {
+    /// Starts at a point where the charges' derivatives are `charge`, at rest.
+    pub(crate) fn new(charge: Vec<f64>) -> Self {
+        let rate = vec![0.0; charge.len()];
+        Self {
+            last: charge,
+            before: None,
+            rate,
+        }
+    }
+
+    /// The derivative of the part of `formula`'s `dq/dt` that the earlier points
+    /// contribute.
+    pub(crate) fn history(&self, formula: &Formula) -> Vec<f64> {
+        let before = self.before.as_ref().unwrap_or(&self.last);
+        self.last
+            .iter()
+            .zip(before)
+            .zip(&self.rate)
+            .map(|((&last, &before), &rate)| formula.history([last, before], rate))
+            .collect()
+    }
+
+    /// Moves on to the point `formula` stepped to, where the charges' derivatives are
+    /// `charge` and `history` is [`Tangent::history`]'s; `restarted` says whether the
+    /// integration restarts there.
+    pub(crate) fn advance(
+        &mut self,
+        charge: Vec<f64>,
+        history: &[f64],
+        formula: &Formula,
+        restarted: bool,
+    ) {
+        self.rate = charge
+            .iter()
+            .zip(history)
+            .map(|(value, term)| formula.alpha * value + term)
+            .collect();
+        let last = std::mem::replace(&mut self.last, charge);
+        self.before = (!restarted).then_some(last);
+    }
 }
 
 /// The charges at the points accepted since the last breakpoint, and their derivative at the
@@ -262,29 +335,30 @@ impl Simulator {
     /// Each step is solved by Newton iteration and accepted when its estimated truncation error
     /// is within tolerance, and the next step grows or shrinks to keep it so. Steps land on
     /// every breakpoint of the sources, and restart with backward Euler after each, as a
-    /// corner in a waveform would make the trapezoidal formula ring.
+    /// corner in a waveform would make the trapezoidal formula ring. A periodic transient
+    /// simulates instead one period of the periodic steady state, found by shooting from
+    /// the operating point.
     ///
     /// # Errors
     ///
     /// Returns [`SimulationError::InvalidAnalysis`] for a stop time or longest step that is
-    /// not positive, [`SimulationError::StepTooSmall`] when no step short enough converges,
-    /// and the errors of [`Simulator::operating_point`].
+    /// not positive, or a periodic transient of a circuit with logic,
+    /// [`SimulationError::StepTooSmall`] when no step short enough converges,
+    /// [`SimulationError::NoSteadyState`] when shooting does not converge, and the errors of
+    /// [`Simulator::operating_point`].
     pub fn transient(
         &mut self,
         transient: &Transient,
         options: &Options,
     ) -> Result<Waveforms, SimulationError> {
-        self.transient_with(transient, options, None)
+        if transient.periodic {
+            return self.periodic_steady_state(transient, options);
+        }
+        self.transient_with(transient, options, None, Carried::Nothing)
     }
 
-    /// Runs `transient`, carrying `forward`'s derivatives along its accepted steps.
-    pub(crate) fn transient_with(
-        &mut self,
-        transient: &Transient,
-        options: &Options,
-        mut forward: Option<&mut Forward>,
-    ) -> Result<Waveforms, SimulationError> {
-        options.check()?;
+    /// The longest step `transient` allows, after checking its times.
+    fn longest_step(&self, transient: &Transient) -> Result<f64, SimulationError> {
         // Without unknowns, nothing analog needs steps, and the logic moves on at once.
         let longest = if self.system.unknowns.is_empty() {
             transient.stop
@@ -306,16 +380,68 @@ impl Simulator {
                 "the times to step onto lie after 0 and at most the stop time, not {time:?}"
             )));
         }
+        Ok(longest)
+    }
+
+    /// Starts carrying `carried` from the state `x` at time zero.
+    fn start_carried(
+        &mut self,
+        carried: &mut Carried<'_>,
+        x: &[f64],
+        options: &Options,
+    ) -> Result<(), SimulationError> {
+        match carried {
+            Carried::Nothing => {}
+            Carried::Forward(forward) => self.start_forward(forward, x, options)?,
+            Carried::Monodromy(monodromy) => self.start_monodromy(monodromy, x, options),
+        }
+        Ok(())
+    }
+
+    /// Carries `carried` over the step accepted at `time`, its solution `x`, by `formula`;
+    /// `restarted` says whether the integration restarts after it.
+    fn advance_carried(
+        &mut self,
+        carried: &mut Carried<'_>,
+        (time, x): (f64, &[f64]),
+        (formula, restarted): (&Formula, bool),
+        options: &Options,
+    ) -> Result<(), SimulationError> {
+        let (at, formula) = ((time, x), (formula, restarted));
+        match carried {
+            Carried::Nothing => Ok(()),
+            Carried::Forward(forward) => self.advance_forward(forward, at, formula, options),
+            Carried::Monodromy(monodromy) => {
+                self.advance_monodromy(monodromy, at, formula, options)
+            }
+        }
+    }
+
+    /// Runs `transient` from `start`, a state of a circuit without logic and how the
+    /// operating point it came from was found, or else from the operating point, carrying
+    /// `carried` along its accepted steps.
+    pub(crate) fn transient_with(
+        &mut self,
+        transient: &Transient,
+        options: &Options,
+        start: Option<(Vec<f64>, Strategy)>,
+        mut carried: Carried<'_>,
+    ) -> Result<Waveforms, SimulationError> {
+        options.check()?;
+        let longest = self.longest_step(transient)?;
         let shortest = longest * SMALLEST_STEP_FRACTION;
         let mut observations = transient.times.clone();
         observations.sort_by(f64::total_cmp);
-        let initial = self.operating_point(options)?;
-        if let Some(forward) = forward.as_deref_mut() {
-            self.start_forward(forward, &initial.values, options)?;
-        }
-        self.evaluate(&initial.values, 0.0, (1.0, options.gmin), true);
+        let (initial, strategy) = if let Some(start) = start {
+            start
+        } else {
+            let point = self.operating_point(options)?;
+            (point.values, point.strategy)
+        };
+        self.start_carried(&mut carried, &initial, options)?;
+        self.evaluate(&initial, 0.0, (1.0, options.gmin), true);
         self.events.start(&self.system.logic, transient.stop);
-        let unknowns = initial.values.len();
+        let unknowns = initial.len();
         let mut breakpoints = Breakpoints {
             times: self.breakpoints(transient.stop, shortest),
             minimum: shortest,
@@ -340,12 +466,13 @@ impl Simulator {
             terms: vec![0.0; unknowns],
             formula: Formula::new(Method::BackwardEuler, first, first),
             statistics: Statistics {
-                initial: initial.strategy,
+                initial: strategy,
                 accepted: 0,
                 rejected: 0,
                 iterations: 0,
+                periods: None,
             },
-            x: initial.values,
+            x: initial,
         };
         let (mut times, mut values) = (vec![0.0], vec![stepper.x.clone()]);
         let mut observed = Observations::default();
@@ -359,11 +486,9 @@ impl Simulator {
             let observation = observations.get(passed).copied().unwrap_or(f64::INFINITY);
             match self.step_toward(&mut stepper, (breakpoint, gap), observation, options)? {
                 Step::Accepted(found, settles) => {
-                    if let Some(forward) = forward.as_deref_mut() {
-                        let at = (stepper.time, stepper.x.as_slice());
-                        let formula = (&stepper.formula, stepper.restart);
-                        self.advance_forward(forward, at, formula, options)?;
-                    }
+                    let at = (stepper.time, stepper.x.as_slice());
+                    let formula = (&stepper.formula, stepper.restart);
+                    self.advance_carried(&mut carried, at, formula, options)?;
                     self.watch_supplies(&stepper.x, stepper.time, options);
                     times.push(stepper.time);
                     values.push(stepper.x.clone());

@@ -116,6 +116,14 @@ impl Pattern {
         })
     }
 
+    /// Adds the product of the matrix whose stored values are `values` and the vector `x`
+    /// to `into`.
+    pub fn add_product(&self, values: &[f64], x: &[f64], into: &mut [f64]) {
+        for ((row, column), value) in self.positions().zip(values) {
+            into[row] += value * x[column];
+        }
+    }
+
     pub(crate) fn structure(&self) -> &SymbolicSparseColMat<usize> {
         &self.structure
     }
@@ -143,6 +151,19 @@ mod tests {
             [pattern.slot(b), pattern.slot(a), pattern.slot(d)],
             [0, 1, 2]
         );
+    }
+
+    #[test]
+    fn adds_its_product_with_a_vector() {
+        let mut builder = PatternBuilder::new();
+        builder.entry(0, 0);
+        builder.entry(1, 0);
+        builder.entry(0, 1);
+        let pattern = builder.finish(2);
+        // [[1, 3], [2, 0]] · [1, 10] = [31, 2], added to [1, 1].
+        let mut into = [1.0, 1.0];
+        pattern.add_product(&[1.0, 2.0, 3.0], &[1.0, 10.0], &mut into);
+        assert!((into[0] - 32.0).abs() < 1e-15 && (into[1] - 3.0).abs() < 1e-15);
     }
 
     #[test]

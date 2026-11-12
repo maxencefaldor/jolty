@@ -13,6 +13,7 @@ A plan can run a component as a logic cell characterized from its own circuit, a
 A sensitivity analysis gives the derivative of any unknown with respect to every parameter of every device, at the operating point, along a DC sweep, over frequency or over time.
 A stability analysis gives a feedback loop's gain through a probe, by Middlebrook's double injection, and specs read its phase and gain margins.
 A noise analysis gives the noise density at any output from every device's thermal, shot and flicker noise, each source's share, and the noise referred to an input, and a pole-zero analysis the circuit's natural frequencies and a transfer function's zeros.
+A periodic transient finds the steady state a driven circuit settles into, such as a rectifier's or a power converter's, in a few periods by shooting, where a transient would run for many.
 Every result holds each device's own state, its terminals' currents and charges, the derivatives of its equations and its model's variables, at every point, and a 3D viewer plays any simulation on the circuit's layout.
 
 The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.

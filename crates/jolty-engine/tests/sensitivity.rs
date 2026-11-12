@@ -290,6 +290,7 @@ fn sensitivities_over_time_match_finite_differences() {
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
         times: Vec::new(),
+        periodic: false,
     });
     assert_matches(&rectifier(), &["a", "out"], &transient, 1e-4);
     let gear = Differentiated::Transient(Transient {
@@ -297,6 +298,7 @@ fn sensitivities_over_time_match_finite_differences() {
         max_step: Some(1e-8),
         method: Method::Gear2,
         times: Vec::new(),
+        periodic: false,
     });
     assert_matches(&rectifier(), &["out"], &gear, 1e-4);
 }
@@ -314,4 +316,28 @@ fn a_sensitivity_names_unknowns_that_exist() {
         .sensitivity(&sensitivity, &Options::default())
         .unwrap_err();
     assert_eq!(error, SimulationError::UnknownOutput("nowhere".to_owned()));
+}
+
+#[test]
+fn a_sensitivity_differentiates_no_periodic_steady_state() {
+    let circuit = circuit_of(&rectifier());
+    let mut simulator =
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default()).unwrap();
+    let sensitivity = Sensitivity {
+        outputs: vec!["out".to_owned()],
+        of: Differentiated::Transient(Transient {
+            stop: 1e-6,
+            max_step: None,
+            method: Method::Trapezoidal,
+            times: Vec::new(),
+            periodic: true,
+        }),
+    };
+    let error = simulator
+        .sensitivity(&sensitivity, &Options::default())
+        .unwrap_err();
+    assert!(
+        matches!(error, SimulationError::InvalidAnalysis(_)),
+        "{error}"
+    );
 }

@@ -182,6 +182,7 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
             max_step: Some(2e-8),
             method,
             times: vec![1.234_567e-7, 1.5e-6],
+            periodic: false,
         };
         let waveforms = simulator.transient(&transient, &tight()).unwrap();
         let out = simulator
@@ -411,6 +412,7 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         max_step: Some(1e-10),
         method: Method::Trapezoidal,
         times: Vec::new(),
+        periodic: false,
     };
     let waveforms = simulator.transient(&transient, &tight()).unwrap();
     let pin = |index: usize, found: Observed<'_>| -> f64 {

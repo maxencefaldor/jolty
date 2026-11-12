@@ -33,6 +33,7 @@ use serde::Deserialize;
 
 use crate::ac::Linearization;
 use crate::elaborate::Origin;
+use crate::transient::{Carried, Tangent};
 use crate::{Ac, DcSweep, Options, Outcome, SimulationError, Simulator, Transient};
 
 /// How far the operating point moves, along its derivative, in the central difference
@@ -152,23 +153,12 @@ fn derivatives(values: &[Gradient]) -> Vec<f64> {
     values.iter().map(|value| value.derivative).collect()
 }
 
-/// The charges' derivatives with respect to one parameter at the points a transient
-/// accepted last, which its integration formula reads.
-struct Carried {
-    /// `dq/dp` at the last point.
-    last: Vec<f64>,
-    /// `dq/dp` at the point before, unless the integration restarted at the last.
-    before: Option<Vec<f64>>,
-    /// `d(dq/dt)/dp` at the last point.
-    rate: Vec<f64>,
-}
-
 /// The direct method's state along a transient: each parameter's derivatives of the
 /// charges, and the outputs' derivatives at every accepted point.
 pub(crate) struct Forward {
     outputs: Vec<Unknown>,
     twins: Vec<Twin>,
-    carried: Vec<Carried>,
+    tangents: Vec<Tangent>,
     found: Vec<Vec<Vec<f64>>>,
 }
 
@@ -183,6 +173,7 @@ impl Simulator {
     /// # Errors
     ///
     /// Returns [`SimulationError::UnknownOutput`] for an output that is no unknown,
+    /// [`SimulationError::InvalidAnalysis`] for a periodic transient,
     /// [`SimulationError::Singular`] when a Jacobian is, and the errors of the analysis
     /// differentiated.
     pub fn sensitivity(
@@ -224,13 +215,21 @@ impl Simulator {
                 (Derivatives::Complex(found), Outcome::Ac(response))
             }
             Differentiated::Transient(transient) => {
+                if transient.periodic {
+                    return Err(SimulationError::InvalidAnalysis(
+                        "a sensitivity differentiates a transient from its operating point, \
+                         not a periodic steady state"
+                            .to_owned(),
+                    ));
+                }
                 let mut forward = Forward {
                     outputs,
                     twins,
-                    carried: Vec::new(),
+                    tangents: Vec::new(),
                     found: Vec::new(),
                 };
-                let waveforms = self.transient_with(transient, options, Some(&mut forward))?;
+                let carried = Carried::Forward(&mut forward);
+                let waveforms = self.transient_with(transient, options, None, carried)?;
                 twins = forward.twins;
                 (
                     Derivatives::Real(forward.found),
@@ -466,7 +465,7 @@ impl Simulator {
             .solver
             .factor(&self.workspace.contributions.conductance)?;
         let mut at = vec![Vec::with_capacity(forward.twins.len()); forward.outputs.len()];
-        forward.carried.clear();
+        forward.tangents.clear();
         for twin in &mut forward.twins {
             twin.evaluate(x, 0.0, options.gmin);
             let mut moved: Vec<f64> = twin.residual().iter().map(|value| -value).collect();
@@ -476,12 +475,10 @@ impl Simulator {
             }
             let mut charge = twin.charge();
             let capacitances = &self.workspace.contributions.capacitance;
-            add_product(&self.system.pattern, capacitances, &moved, &mut charge);
-            forward.carried.push(Carried {
-                last: charge,
-                before: None,
-                rate: vec![0.0; x.len()],
-            });
+            self.system
+                .pattern
+                .add_product(capacitances, &moved, &mut charge);
+            forward.tangents.push(Tangent::new(charge));
         }
         forward.found = vec![at];
         Ok(())
@@ -507,13 +504,10 @@ impl Simulator {
             .collect();
         let mut factors = self.solver.factor(&jacobian)?;
         let mut at = vec![Vec::with_capacity(forward.twins.len()); forward.outputs.len()];
-        for (twin, carried) in forward.twins.iter_mut().zip(&mut forward.carried) {
+        for (twin, tangent) in forward.twins.iter_mut().zip(&mut forward.tangents) {
             twin.evaluate(x, time, options.gmin);
             let partial_charge = twin.charge();
-            let before = carried.before.as_ref().unwrap_or(&carried.last);
-            let history: Vec<f64> = (0..x.len())
-                .map(|row| formula.history([carried.last[row], before[row]], carried.rate[row]))
-                .collect();
+            let history = tangent.history(formula);
             let mut moved: Vec<f64> = twin
                 .residual()
                 .iter()
@@ -527,15 +521,10 @@ impl Simulator {
             }
             let mut charge = partial_charge;
             let capacitances = &self.workspace.contributions.capacitance;
-            add_product(&self.system.pattern, capacitances, &moved, &mut charge);
-            let rate = charge
-                .iter()
-                .zip(&history)
-                .map(|(value, term)| formula.alpha * value + term)
-                .collect();
-            let last = std::mem::replace(&mut carried.last, charge);
-            carried.before = (!restarted).then_some(last);
-            carried.rate = rate;
+            self.system
+                .pattern
+                .add_product(capacitances, &moved, &mut charge);
+            tangent.advance(charge, &history, formula, restarted);
         }
         forward.found.push(at);
         Ok(())
@@ -546,14 +535,6 @@ impl Simulator {
 fn hold(twin: &mut Twin, level: Option<f64>) {
     if let Some(source) = twin.made.as_source() {
         source.hold(level);
-    }
-}
-
-/// Adds the product of the matrix of `values`, by stored position in `pattern`, and `s`
-/// to `into`.
-fn add_product(pattern: &Pattern, values: &[f64], s: &[f64], into: &mut [f64]) {
-    for ((row, column), value) in pattern.positions().zip(values) {
-        into[row] += value * s[column];
     }
 }
 

@@ -420,6 +420,9 @@ class Statistics:
     accepted: int
     rejected: int
     iterations: int
+    periods: int | None = None
+    """For a periodic steady state, the periods simulated to find it, the last the one
+    returned."""
 
 
 @dataclass(frozen=True, slots=True)
