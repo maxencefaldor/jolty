@@ -272,3 +272,5 @@ Every other choice the engine makes is one SPICE simulators make, save those the
 When no step converges, however short, the transient fails and names why: the unknowns furthest from converging, or the equation whose truncation error stayed above its tolerance.
 
 The engine's results agree with ngspice's on a corpus of reference circuits: operating points, sweeps and frequency responses to within a millionth of each signal, and transients to within a thousandth of their swing.
+Random circuits agree too, of every device and up to a hundred unknowns, each operating point within a millionth of the circuit's largest voltage or current; where the two engines rest in different states of a circuit with several, ngspice started from jolty's finds jolty's.
+An operating point ngspice reaches only by its last resort, the end of a transient of fixed length that it does not check to be one, is no reference.

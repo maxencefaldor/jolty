@@ -88,7 +88,7 @@ Each module imports only from the modules listed before it:
   Plots never put two quantities on one axis, and take their colors in a fixed order checked for color-vision deficiencies.
 - **Scripts run in their own process** (`jolty.runner`), never in the command line or the MCP server: their output is captured, a timeout stops them, and a crash ends only the runner.
 - **Numbers in messages** are written in their shortest exact form, such as `-1e-9`; reports write them with SI prefixes, such as `-1 nV`.
-- **Tests:** the engine is checked against closed-form solutions, by property tests of the laws every circuit obeys, such as Kirchhoff's current law, and against ngspice on a corpus of circuits (`tests/test_ngspice.py`) and on vendors' macromodels (`tests/test_vendor.py`), both skipped when ngspice is not installed.
+- **Tests:** the engine is checked against closed-form solutions, by property tests of the laws every circuit obeys, such as Kirchhoff's current law, and against ngspice on a corpus of circuits (`tests/test_ngspice.py`), on vendors' macromodels (`tests/test_vendor.py`) and on random circuits of every device and size, which Hypothesis shrinks to the smallest that disagrees (`tests/test_random_circuits.py`), all skipped when ngspice is not installed.
   The layout is checked by property tests over random circuits: nets never touch, and wires never cross a symbol.
 
 ## Releasing
