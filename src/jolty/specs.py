@@ -568,6 +568,7 @@ def value(
                 | results.LoopGain()
                 | results.NoiseSpectrum()
                 | results.PolesZeros()
+                | results.OperatingPoints()
             ):
                 message = (
                     "a value reads an operating point, a transient or a DC sweep, "
@@ -1117,6 +1118,24 @@ def integrated_noise(
     return Measurement(analysis, described, None, read)
 
 
+def solutions(analysis: str) -> Measurement:
+    """How many DC solutions a search for operating points found, a plain number.
+
+    ``solutions("states") <= 1`` asks for a unique operating point, and a latch's
+    ``solutions("states") >= 3`` for its two states and the balance between them.
+    """
+
+    def read(result: results.Result) -> Reading:
+        if not isinstance(result, results.OperatingPoints):
+            message = (
+                f"solutions reads a search for operating points, not {_kind(result)}"
+            )
+            raise MeasurementError(message)
+        return Reading(float(len(result.points)), "")
+
+    return Measurement(analysis, "DC solutions", "", read)
+
+
 def damping(analysis: str) -> Measurement:
     """The least damping ratio of a pole-zero analysis's poles, a plain number.
 
@@ -1514,6 +1533,7 @@ _KINDS: Final[dict[type, str]] = {
     results.LoopGain: "a loop gain",
     results.NoiseSpectrum: "a noise spectrum",
     results.PolesZeros: "poles and zeros",
+    results.OperatingPoints: "DC solutions",
 }
 """What each kind of result is, as messages name it."""
 

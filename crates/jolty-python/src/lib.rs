@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use jolty_engine::{
     Analysis, Derivatives, NoiseSpectrum, Observation, Observations, OperatingPoint, Options,
-    Outcome, Statistics,
+    Outcome, PolesZeros, Statistics,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library, Quantity};
@@ -314,19 +314,13 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
             result.set_item("kind", "noise")?;
             add_noise(&result, spectrum)?;
         }
+        Outcome::OperatingPoints(points) => {
+            result.set_item("kind", "operating_points")?;
+            add_operating_points(&result, points)?;
+        }
         Outcome::PoleZero(found) => {
             result.set_item("kind", "pole_zero")?;
-            result.set_item("source", found.source)?;
-            result.set_item("output", found.output)?;
-            result.set_item("reference", found.reference)?;
-            result.set_item("poles", PyArray1::from_vec(py, found.poles))?;
-            result.set_item(
-                "zeros",
-                found.zeros.map(|zeros| PyArray1::from_vec(py, zeros)),
-            )?;
-            let operating_point = PyDict::new(py);
-            add_operating_point(&operating_point, found.operating_point)?;
-            result.set_item("operating_point", operating_point)?;
+            add_poles_zeros(&result, found)?;
         }
     }
     Ok(result)
@@ -372,6 +366,34 @@ fn add_noise(result: &Bound<'_, PyDict>, spectrum: NoiseSpectrum) -> PyResult<()
     )?;
     let operating_point = PyDict::new(py);
     add_operating_point(&operating_point, spectrum.operating_point)?;
+    result.set_item("operating_point", operating_point)
+}
+
+/// The DC solutions, each a dictionary of an operating point's own, under `points`.
+fn add_operating_points(result: &Bound<'_, PyDict>, points: Vec<OperatingPoint>) -> PyResult<()> {
+    let solutions = PyList::empty(result.py());
+    for point in points {
+        let solution = PyDict::new(result.py());
+        add_operating_point(&solution, point)?;
+        solutions.append(solution)?;
+    }
+    result.set_item("points", solutions)
+}
+
+/// The poles, and the zeros of the transfer function between the source and the output
+/// echoed, if any, with the operating point the circuit was linearized at.
+fn add_poles_zeros(result: &Bound<'_, PyDict>, found: PolesZeros) -> PyResult<()> {
+    let py = result.py();
+    result.set_item("source", found.source)?;
+    result.set_item("output", found.output)?;
+    result.set_item("reference", found.reference)?;
+    result.set_item("poles", PyArray1::from_vec(py, found.poles))?;
+    result.set_item(
+        "zeros",
+        found.zeros.map(|zeros| PyArray1::from_vec(py, zeros)),
+    )?;
+    let operating_point = PyDict::new(py);
+    add_operating_point(&operating_point, found.operating_point)?;
     result.set_item("operating_point", operating_point)
 }
 

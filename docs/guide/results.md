@@ -7,6 +7,7 @@
 A report states facts, one section per analysis in the plan's order:
 
 - an operating point lists every unknown's value and every logic net's level, and the strategy that found it;
+- a search for operating points lists every unknown's value at each DC solution it found, the operating point first;
 - a sweep, a frequency response or a transient lists each unknown's first, lowest, highest and last value, and each logic net's first and last level and how often it changed;
 - a sensitivity analysis lists, for each output, its value and its derivative with respect to each parameter, in the circuit's order, or, along another analysis, each derivative's largest and where;
 - a stability analysis states the loop gain at its lowest frequency, its crossover frequency and phase margin, and its gain margin;
@@ -20,7 +21,7 @@ With `--output-format json`, the command prints the same report as data.
 
 ## Plots
 
-`jolty simulate` plots every analysis but operating points and sensitivities beside its results, as `<script>.<analysis>.plot.png`, and the MCP server sends the images with its text.
+`jolty simulate` plots every analysis but operating points, searches for them and sensitivities beside its results, as `<script>.<analysis>.plot.png`, and the MCP server sends the images with its text.
 A transient plots over time, a sweep along its source's levels, and a frequency response as a Bode plot, as is a loop gain, against 0 dB and -180°, where its margins are read; a noise analysis plots its output's noise density, with its noisiest sources', and the noise referred to its input on log axes; and a pole-zero analysis plots each pole and zero at its natural frequency and damping ratio, against the line at zero below which a pole grows:
 
 ![The step response of the RC low-pass filter: the input steps to 1 V at 1 µs and the output charges toward it](../images/rc_filter.step.plot.png)
@@ -108,6 +109,11 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 | `Sweep` | `levels`, and the operating point's arrays | one per level |
 | `Response` | `frequencies`, `values`, `currents`, and the `operating_point` | a complex phasor, one per frequency |
 | `Waveforms` | `times`, the operating point's arrays, and the step `statistics` | one per accepted time point |
+| `OperatingPoints` | `points`, an `OperatingPoint` per DC solution | read with `voltages(net)`, one per solution |
+| `Sensitivities` | `parameters`, `derivatives`, and the `result` differentiated | one per output and parameter, at each point |
+| `LoopGain` | `frequencies`, `gains`, and the `operating_point` | a complex loop gain, one per frequency |
+| `NoiseSpectrum` | `frequencies`, `densities`, `contributions` per noise source, and an `input` with its `gains` | a density, one per frequency |
+| `PolesZeros` | `poles`, `zeros`, and the `operating_point` | a complex frequency, one per root |
 
 `voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a terminal's, `conductance`, `capacitance` and `variable` read a device's own model, and `level(net)` reads a logic net's level.
 `terminals` names the columns of `currents` and `charges`, `derivatives` those of `conductances` and `capacitances`, and `variables` those of `readings`.

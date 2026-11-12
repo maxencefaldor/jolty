@@ -36,6 +36,7 @@ from jolty.specs import (
     rise_time,
     rms,
     settling_time,
+    solutions,
     value,
 )
 from jolty.units import (
@@ -620,4 +621,17 @@ def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
     assert unread(damping("pz") >= 0, empty) == "the circuit has no poles"
     assert unread(dominant_pole("pz") >= 1 * Hz, low_pass()) == (
         "a dominant pole reads a pole-zero analysis, not a small-signal response"
+    )
+
+
+def test_solutions_count_a_searchs_dc_solutions() -> None:
+    found = results.OperatingPoints(UNKNOWNS, (point(0.0), point(3.3), point(1.65)))
+    reading = solutions("states").read(found)
+    assert (reading.value, reading.unit) == (3.0, "")
+    assert str(solutions("states") <= 1) == "DC solutions in states ≤ 1"
+    assert unread(solutions("states") <= 1, point(0.0)) == (
+        "solutions reads a search for operating points, not an operating point"
+    )
+    assert unread(value("states", "out") >= 0 * V, found) == (
+        "a value reads an operating point, a transient or a DC sweep, not DC solutions"
     )

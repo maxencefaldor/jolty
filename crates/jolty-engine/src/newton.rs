@@ -1,6 +1,6 @@
 //! Newton iteration on the circuit's equations.
 
-use jolty_models::{Contributions, Input};
+use jolty_models::{Contributions, Input, Quantity};
 
 use crate::elaborate::System;
 use crate::{Options, Simulator};
@@ -15,6 +15,10 @@ const RESIDUAL_ROUNDINGS: f64 = 8.0;
 
 /// How many unknowns a failure to converge names.
 pub(crate) const NAMED_UNKNOWNS: usize = 3;
+
+/// The shift of the deflation `1/‖x − r‖² + SHIFT` of each known root `r`: far from every
+/// root, where the distance in volts grows, the deflated equations become the plain ones.
+const SHIFT: f64 = 1.0;
 
 /// The buffers one evaluation of the circuit fills, allocated once per simulator.
 #[derive(Debug)]
@@ -47,8 +51,13 @@ impl Workspace {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Mode<'a> {
     /// The DC equations `f(x) = 0`, with sources scaled by `source_scale` and a conductance
-    /// `shunt` from every node to the reference.
-    Dc { source_scale: f64, shunt: f64 },
+    /// `shunt` from every node to the reference, deflated by the solutions `deflated`
+    /// already found, whose basins the iteration is pushed out of.
+    Dc {
+        source_scale: f64,
+        shunt: f64,
+        deflated: &'a [Vec<f64>],
+    },
     /// The equations of a time step to `time`, `f(x) + α q(x) + history = 0`.
     Step {
         time: f64,
@@ -123,12 +132,47 @@ impl Simulator {
                 .factor(&workspace.jacobian)
                 .and_then(|mut factors| factors.solve(&mut workspace.step))
                 .map_err(|_| Failure::Singular)?;
-            for (value, step) in x.iter_mut().zip(&workspace.step) {
+            if let Mode::Dc { deflated, .. } = mode {
+                self.deflate(x, deflated);
+            }
+            for (value, step) in x.iter_mut().zip(&self.workspace.step) {
                 *value += step;
             }
             stepped_within_tolerance = self.step_within_tolerance(x, options);
         }
         Err(Failure::Diverged)
+    }
+
+    /// Turns the Newton step of `f(x) = 0` at `x` into that of the deflated equations
+    /// `m(x)·f(x) = 0`, with `m(x) = Π (1/‖x − r‖² + SHIFT)` over the `known` solutions
+    /// `r`, the distance taken over the node voltages: the step scaled by
+    /// `1 / (1 − ∇m·δ / m)`, which is infinite at each known solution, so the iteration
+    /// leaves it for another (Farrell, Birkisson and Funke, "Deflation techniques for
+    /// finding distinct solutions of nonlinear partial differential equations", SIAM
+    /// Journal on Scientific Computing 37(4), 2015).
+    fn deflate(&mut self, x: &[f64], known: &[Vec<f64>]) {
+        let step = &mut self.workspace.step;
+        let mut slope = 0.0;
+        for root in known {
+            let (mut distance, mut along) = (0.0, 0.0);
+            for (index, unknown) in self.system.unknowns.iter().enumerate() {
+                if unknown.quantity == Quantity::Voltage {
+                    let apart = x[index] - root[index];
+                    distance += apart * apart;
+                    along += apart * step[index];
+                }
+            }
+            if distance > 0.0 {
+                // ∇(1/d² + SHIFT)·δ = −2 (x − r)·δ / d⁴.
+                slope += -2.0 * along / (distance * distance) / (distance.recip() + SHIFT);
+            }
+        }
+        let scale = (1.0 - slope).recip();
+        if scale.is_finite() {
+            for value in step.iter_mut() {
+                *value *= scale;
+            }
+        }
     }
 
     /// Turns the evaluated device contributions into the residual and Jacobian of `mode`.

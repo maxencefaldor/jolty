@@ -1,9 +1,11 @@
-//! The DC operating point, with gmin and source stepping when Newton alone fails.
+//! The DC operating point, with gmin and source stepping when Newton alone fails, and
+//! every other DC solution deflation finds.
 
 use std::f64::consts::TAU;
 
-use jolty_models::{Input, Level};
+use jolty_models::{Input, Level, Quantity};
 use jolty_numerics::{Complex64, SparseLu};
+use serde::Deserialize;
 
 use crate::logic::{Bound, Events, detected};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
@@ -23,6 +25,11 @@ const SMALLEST_SOURCE_INCREMENT: f64 = 1e-4;
 /// The frequency, in hertz, at which a logic driver's load is read: low enough that every
 /// capacitance it drives charges fully.
 const LOAD_FREQUENCY: f64 = 1.0;
+/// How many tolerances apart two solutions must lie in some unknown to be distinct.
+const DISTINCT: f64 = 10.0;
+/// How far, in volts, a search moves each node voltage of a solution found, up and down
+/// in turn, to start from beside it.
+const NUDGE: f64 = 0.1;
 /// How many times the logic and the analog circuit settle each other at DC before the
 /// detectors still changing are taken to read unknown levels, as in a loop that oscillates.
 const SETTLE_ROUNDS: usize = 4;
@@ -39,6 +46,15 @@ pub struct OperatingPoint {
     pub logic: Vec<Level>,
     /// The strategy that found the solution.
     pub strategy: Strategy,
+}
+
+/// A search for every DC solution of the circuit, up to `most`: the operating point, then
+/// each solution that the equations deflated by those found so far lead to.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatingPoints {
+    /// The most solutions to find; at least 1.
+    pub most: usize,
 }
 
 /// A DC solution of the analog circuit, with its logic drivers held.
@@ -89,6 +105,131 @@ impl Simulator {
         self.reset_logic();
         let solved = self.solve_dc(vec![0.0; self.system.unknowns.len()], options)?;
         self.settle(solved, options)
+    }
+
+    /// Finds the operating point, then the other DC solutions, up to `search.most` in all,
+    /// in the order found: the equations deflated by the solutions found so far lead
+    /// Newton iteration, gmin stepping or source stepping from zero to another, or else
+    /// Newton iteration from the reflection of a solution found through another, or from
+    /// beside one, its node voltages moved up and down in turn, which breaks the symmetry
+    /// a balanced latch's zero start keeps, until none does. A circuit whose equations
+    /// have one solution has one; one that latches has a solution per state and one
+    /// balanced between them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::InvalidAnalysis`] for a search for no solution, and the
+    /// errors of [`Simulator::operating_point`].
+    pub fn operating_points(
+        &mut self,
+        search: &OperatingPoints,
+        options: &Options,
+    ) -> Result<Vec<OperatingPoint>, SimulationError> {
+        options.check()?;
+        if search.most == 0 {
+            return Err(SimulationError::InvalidAnalysis(
+                "a search for operating points finds one or more".to_owned(),
+            ));
+        }
+        let zero = vec![0.0; self.system.unknowns.len()];
+        self.reset_logic();
+        let mut found = vec![self.solve_dc(zero.clone(), options)?];
+        while found.len() < search.most {
+            let known: Vec<Vec<f64>> = found.iter().map(|solved| solved.values.clone()).collect();
+            let Some(solved) = self.another(&known, options) else {
+                break;
+            };
+            found.push(solved);
+        }
+        found
+            .into_iter()
+            .map(|solved| {
+                self.reset_logic();
+                self.settle(solved, options)
+            })
+            .collect()
+    }
+
+    /// A DC solution distinct from every one `known`, from zero or else from the
+    /// reflection of a known solution through another, or from beside one, on the
+    /// equations they deflate.
+    fn another(&mut self, known: &[Vec<f64>], options: &Options) -> Option<Solved> {
+        let zero = vec![0.0; self.system.unknowns.len()];
+        if let Ok(solved) = self.solve_deflated(zero, options, known)
+            && self.distinct(known, &solved.values, options)
+        {
+            return Some(solved);
+        }
+        let mut starts = Vec::new();
+        for (index, mirror) in known.iter().enumerate().rev() {
+            for (other, through) in known.iter().enumerate().rev() {
+                if other != index {
+                    starts.push(
+                        mirror
+                            .iter()
+                            .zip(through)
+                            .map(|(mirror, through)| 2.0 * through - mirror)
+                            .collect::<Vec<f64>>(),
+                    );
+                }
+            }
+        }
+        for root in known.iter().rev() {
+            for sign in [1.0, -1.0] {
+                let mut beside = root.clone();
+                let voltages = self
+                    .system
+                    .unknowns
+                    .iter()
+                    .zip(&mut beside)
+                    .filter(|(unknown, _)| unknown.quantity == Quantity::Voltage);
+                for (turn, (_, value)) in voltages.enumerate() {
+                    let alternate = if turn % 2 == 0 { 1.0 } else { -1.0 };
+                    *value += sign * alternate * NUDGE;
+                }
+                starts.push(beside);
+            }
+        }
+        let direct = Mode::Dc {
+            source_scale: 1.0,
+            shunt: 0.0,
+            deflated: known,
+        };
+        for mut values in starts {
+            if self
+                .newton(&mut values, direct, options, options.dc_iterations)
+                .is_ok()
+                && self.distinct(known, &values, options)
+            {
+                return Some(Solved {
+                    values,
+                    strategy: Strategy::Direct,
+                });
+            }
+        }
+        None
+    }
+
+    /// Whether `values` lie more than [`DISTINCT`] tolerances from each of `known` in
+    /// some unknown.
+    fn distinct(&self, known: &[Vec<f64>], values: &[f64], options: &Options) -> bool {
+        !known
+            .iter()
+            .any(|root| self.indistinct(root, values, options))
+    }
+
+    /// Whether the solutions `first` and `second` lie within [`DISTINCT`] tolerances of
+    /// each other in every unknown.
+    fn indistinct(&self, first: &[f64], second: &[f64], options: &Options) -> bool {
+        self.system
+            .unknowns
+            .iter()
+            .zip(first.iter().zip(second))
+            .all(|(unknown, (a, b))| {
+                let tolerance = options.relative_tolerance * a.abs().max(b.abs())
+                    + options.value_tolerance(unknown.quantity);
+                (a - b).abs() <= DISTINCT * tolerance
+            })
     }
 
     /// Forgets the logic's state: every net unknown, every driver at once at its unknown
@@ -221,10 +362,22 @@ impl Simulator {
         guess: Vec<f64>,
         options: &Options,
     ) -> Result<Solved, SimulationError> {
+        self.solve_deflated(guess, options, &[])
+    }
+
+    /// As [`Simulator::solve_dc`], on the equations deflated by the solutions `deflated`
+    /// already found, so that it finds another.
+    pub(crate) fn solve_deflated(
+        &mut self,
+        guess: Vec<f64>,
+        options: &Options,
+        deflated: &[Vec<f64>],
+    ) -> Result<Solved, SimulationError> {
         let mut values = guess.clone();
         let direct = Mode::Dc {
             source_scale: 1.0,
             shunt: 0.0,
+            deflated,
         };
         if self
             .newton(&mut values, direct, options, options.dc_iterations)
@@ -236,14 +389,14 @@ impl Simulator {
             });
         }
         let mut values = guess;
-        if self.gmin_stepping(&mut values, options).is_ok() {
+        if self.gmin_stepping(&mut values, options, deflated).is_ok() {
             return Ok(Solved {
                 values,
                 strategy: Strategy::GminStepping,
             });
         }
         let mut values = vec![0.0; values.len()];
-        match self.source_stepping(&mut values, options) {
+        match self.source_stepping(&mut values, options, deflated) {
             Ok(()) => Ok(Solved {
                 values,
                 strategy: Strategy::SourceStepping,
@@ -258,8 +411,14 @@ impl Simulator {
     /// Solves with a conductance from every node to the reference, shrinking it from each
     /// solution to the next, then solves without it, as ngspice's dynamic gmin stepping
     /// does: the divisor grows after a quick success, to at most a decade, and shrinks to
-    /// its fourth root after a failure, which retries from the last solution.
-    fn gmin_stepping(&mut self, values: &mut [f64], options: &Options) -> Result<(), Failure> {
+    /// its fourth root after a failure, which retries from the last solution. Every
+    /// solve is deflated by the solutions `deflated`.
+    fn gmin_stepping(
+        &mut self,
+        values: &mut [f64],
+        options: &Options,
+        deflated: &[Vec<f64>],
+    ) -> Result<(), Failure> {
         let mut divisor = SHUNT_DIVISOR;
         let mut shunt = FIRST_SHUNT;
         let mut last: Option<(f64, Vec<f64>)> = None;
@@ -267,6 +426,7 @@ impl Simulator {
             let mode = Mode::Dc {
                 source_scale: 1.0,
                 shunt,
+                deflated,
             };
             match self.newton(values, mode, options, options.dc_iterations) {
                 Ok(_) if shunt <= options.gmin => break,
@@ -295,14 +455,21 @@ impl Simulator {
         let direct = Mode::Dc {
             source_scale: 1.0,
             shunt: 0.0,
+            deflated,
         };
         self.newton(values, direct, options, options.dc_iterations)
             .map(|_| ())
     }
 
     /// Ramps every source from zero to its level, growing the increment after each success
-    /// and shrinking it after each failure.
-    fn source_stepping(&mut self, values: &mut [f64], options: &Options) -> Result<(), Failure> {
+    /// and shrinking it after each failure; every solve is deflated by the solutions
+    /// `deflated`.
+    fn source_stepping(
+        &mut self,
+        values: &mut [f64],
+        options: &Options,
+        deflated: &[Vec<f64>],
+    ) -> Result<(), Failure> {
         let mut scale = 0.0;
         let mut increment = FIRST_SOURCE_INCREMENT;
         let mut last = values.to_vec();
@@ -313,6 +480,7 @@ impl Simulator {
                 Mode::Dc {
                     source_scale: next,
                     shunt: 0.0,
+                    deflated,
                 },
                 options,
                 options.dc_iterations,

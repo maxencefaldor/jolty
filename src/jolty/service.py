@@ -496,7 +496,7 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
 
     Raises:
         JoltyError: When the file is missing or holds no results, an analysis named is
-            not in it or is taken at one operating point, or a probe names no unknown.
+            not in it or is taken at DC solutions, or a probe names no unknown.
     """
     del settings
     loaded = await asyncio.to_thread(_load, request.results)
@@ -528,8 +528,8 @@ def _plot(
     """Plots the `analyses` of the results `loaded` from `path`, or all, beside it.
 
     Raises:
-        JoltyError: When an analysis named is not in the results or is taken at one
-            operating point, or a probe names no unknown.
+        JoltyError: When an analysis named is not in the results or is taken at DC
+            solutions, or a probe names no unknown.
     """
     missing = [name for name in analyses if name not in loaded]
     if missing:
@@ -539,9 +539,12 @@ def _plot(
     for name, result in loaded.items():
         if analyses and name not in analyses:
             continue
-        if isinstance(result, results.OperatingPoint | results.Sensitivities):
+        if isinstance(
+            result,
+            results.OperatingPoint | results.OperatingPoints | results.Sensitivities,
+        ):
             if analyses:
-                message = f"{name} is taken at one operating point: nothing to plot"
+                message = f"{name} is taken at DC solutions: nothing to plot"
                 raise JoltyError(message)
             continue
         nets = (

@@ -38,6 +38,33 @@ class OperatingPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class OperatingPoints:
+    """Every DC solution the circuit has, up to `most`, the operating point first.
+
+    Once the operating point is found, the circuit's equations deflated by the
+    solutions found so far lead Newton iteration to another, until none does, so a
+    latch has a solution per state and one balanced between them, and a self-biased
+    reference its zero-current state beside its working one.
+    """
+
+    most: int = 8
+
+    def __post_init__(self) -> None:
+        """Checks that the search finds a solution or more.
+
+        Raises:
+            ValueError: When it finds none.
+        """
+        if self.most < 1:
+            message = f"a search for operating points finds 1 or more, not {self.most}"
+            raise ValueError(message)
+
+    def to_json(self) -> JsonValue:
+        """The analysis in the engine's format."""
+        return {"operating_points": {"most": self.most}}
+
+
+@dataclass(frozen=True, slots=True)
 class DcSweep:
     """The operating point at each level of one independent source.
 
@@ -213,6 +240,7 @@ class PoleZero:
 
 type Analysis = (
     OperatingPoint
+    | OperatingPoints
     | DcSweep
     | Ac
     | Transient

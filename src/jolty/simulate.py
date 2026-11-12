@@ -37,6 +37,7 @@ from jolty.plan import (
     DcSweep,
     Noise,
     OperatingPoint,
+    OperatingPoints,
     Options,
     Plan,
     PoleZero,
@@ -179,6 +180,10 @@ class Simulation:
     ) -> results.OperatingPoint: ...
     @overload
     def run(
+        self, analysis: OperatingPoints, options: Options | None = None
+    ) -> results.OperatingPoints: ...
+    @overload
+    def run(
         self, analysis: DcSweep, options: Options | None = None
     ) -> results.Sweep: ...
     @overload
@@ -266,6 +271,9 @@ class Simulation:
         match outcome["kind"]:
             case "operating_point":
                 return self._point(outcome)
+            case "operating_points":
+                points = tuple(self._point(point) for point in outcome["points"])
+                return results.OperatingPoints(unknowns, points)
             case "dc_sweep":
                 return results.Sweep(
                     unknowns,

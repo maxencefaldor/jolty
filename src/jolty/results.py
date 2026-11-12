@@ -274,6 +274,32 @@ class OperatingPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class OperatingPoints:
+    """Every DC solution a search found, the operating point first.
+
+    Examples:
+        >>> unknowns = (Unknown("q", "voltage"),)
+        >>> found = OperatingPoints(
+        ...     unknowns,
+        ...     (
+        ...         OperatingPoint(unknowns, np.array([1.65]), "direct"),
+        ...         OperatingPoint(unknowns, np.array([3.3]), "direct"),
+        ...     ),
+        ... )
+        >>> found.voltages("q").tolist()
+        [1.65, 3.3]
+    """
+
+    unknowns: tuple[Unknown, ...]
+    points: tuple[OperatingPoint, ...]
+
+    def voltages(self, net: str) -> Real:
+        """The voltage of `net` at each solution, in the order found."""
+        index = column(self.unknowns, net)
+        return np.array([float(point.values[index]) for point in self.points])
+
+
+@dataclass(frozen=True, slots=True)
 class Sweep:
     """The operating points of a DC sweep, one row per level of its source."""
 
@@ -830,6 +856,7 @@ def dampings(roots: Complex) -> Real:
 
 type Result = (
     OperatingPoint
+    | OperatingPoints
     | Sweep
     | Response
     | Waveforms

@@ -30,6 +30,10 @@ class SolvedPoint(Observed):
 class OperatingPointOutcome(SolvedPoint):
     kind: Literal["operating_point"]
 
+class OperatingPointsOutcome(TypedDict):
+    kind: Literal["operating_points"]
+    points: list[SolvedPoint]
+
 class SweepOutcome(Observed):
     kind: Literal["dc_sweep"]
     source: str
@@ -109,6 +113,7 @@ type Outcome = (
     | StabilityOutcome
     | NoiseOutcome
     | PoleZeroOutcome
+    | OperatingPointsOutcome
 )
 
 class SourceOutcome(TypedDict):

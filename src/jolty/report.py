@@ -99,6 +99,44 @@ class PointReport(_Model):
         return _join(head, _table(rows), self.unlisted)
 
 
+class Solutions(_Model):
+    """The value of one unknown at each DC solution, in volts or amperes."""
+
+    unknown: str
+    quantity: Quantity
+    values: tuple[float, ...] = Field(description="Its value at each solution.")
+
+
+class PointsReport(_Model):
+    """Every DC solution a search found, the operating point first."""
+
+    kind: Literal["operating_points"] = "operating_points"
+    name: str
+    strategies: tuple[str, ...] = Field(
+        description="How the engine found each solution: direct, gmin_stepping or "
+        "source_stepping, on the equations deflated by those before it."
+    )
+    values: tuple[Solutions, ...]
+    unlisted: int = Field(description="Unknowns left out of the list.")
+
+    def describe(self) -> str:
+        """The report as text."""
+        count = len(self.strategies)
+        found = "solution" if count == 1 else "solutions"
+        head = f"{self.name}: {count} DC {found}, the operating point first"
+        rows = [
+            [
+                solutions.unknown,
+                *(
+                    format_si(value, _SYMBOLS[solutions.quantity])
+                    for value in solutions.values
+                ),
+            ]
+            for solutions in self.values
+        ]
+        return _join(head, _table(rows), self.unlisted)
+
+
 class SweepReport(_Model):
     """A DC sweep."""
 
@@ -605,6 +643,7 @@ class WorstCaseReport(_Model):
 
 type AnalysisReport = Annotated[
     PointReport
+    | PointsReport
     | SweepReport
     | ResponseReport
     | TransientReport
@@ -679,6 +718,22 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                     _activity(net, result.level(net).levels) for net in nets
                 ),
                 unlisted=unlisted,
+            )
+        case results.OperatingPoints():
+            return PointsReport(
+                name=name,
+                strategies=tuple(point.strategy for point in result.points),
+                values=tuple(
+                    Solutions(
+                        unknown=unknown.name,
+                        quantity=unknown.quantity,
+                        values=tuple(
+                            float(point.values[index]) for point in result.points
+                        ),
+                    )
+                    for index, unknown in enumerate(unknowns)
+                ),
+                unlisted=len(result.unknowns) - len(unknowns),
             )
         case _:
             return _linear(name, result, listed)
@@ -905,7 +960,8 @@ def _nets(result: results.Result) -> tuple[str, ...]:
         | results.Sensitivities
         | results.LoopGain
         | results.NoiseSpectrum
-        | results.PolesZeros,
+        | results.PolesZeros
+        | results.OperatingPoints,
     ):
         return ()
     return result.nets

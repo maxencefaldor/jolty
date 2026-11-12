@@ -10,7 +10,7 @@ The first release, 0.1.0.
 ### Added
 
 - Circuits as Python build scripts of reusable components, compiled into a canonical, validated circuit format, with every problem named by instance path and script line.
-- A native engine in Rust: modified nodal analysis with charge-oriented device models, sparse LU, Newton iteration with SPICE's convergence aids, and the operating point, DC sweep, AC, transient, sensitivity, stability, noise and pole-zero analyses.
+- A native engine in Rust: modified nodal analysis with charge-oriented device models, sparse LU, Newton iteration with SPICE's convergence aids, and the operating point, DC sweep, AC, transient, sensitivity, stability, noise and pole-zero analyses, and a search for every DC solution by deflation.
 - Device models: resistors, capacitors and inductors with voltage coefficients, sources and their waveforms, controlled sources, behavioral sources, switches, the diode, the JFET, the Gummel-Poon transistor, level 1 and level 3 MOSFETs, a photocell, and logic devices simulated by an event scheduler beside the analog circuit.
 - Vendors' SPICE macromodels read as components, and any circuit written as a SPICE netlist for ngspice.
 - Structural rules, schematics drawn from the connections alone, plots of every analysis, and a 3D viewer that plays any simulation on the layout.

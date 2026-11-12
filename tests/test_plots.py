@@ -175,7 +175,7 @@ def test_the_plot_command_draws_saved_results(
     assert target.read_bytes().startswith(b"\x89PNG")
     for unplotted in ("op", "sens"):
         assert run("plot", str(path), "--analyses", unplotted) == 2
-        message = f"{unplotted} is taken at one operating point: nothing to plot"
+        message = f"{unplotted} is taken at DC solutions: nothing to plot"
         assert message in capsys.readouterr().err
     assert run("plot", str(path), "--analyses", "ac") == 2
     assert run("plot", str(tmp_path / "missing.results.npz")) == 2

@@ -121,6 +121,7 @@ def every_kind() -> dict[str, results.Result]:
             results.NoiseInput("V1", "voltage", np.array([0.5, 0.25j])),
             point,
         ),
+        "states": results.OperatingPoints(UNKNOWNS, (point, point)),
         "pz": results.PolesZeros(
             UNKNOWNS,
             np.array([-1e3 + 2e3j, -1e3 - 2e3j]),

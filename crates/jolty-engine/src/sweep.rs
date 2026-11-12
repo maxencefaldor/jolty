@@ -155,6 +155,7 @@ impl Simulator {
         let direct = Mode::Dc {
             source_scale: 1.0,
             shunt: 0.0,
+            deflated: &[],
         };
         let span = to - from;
         let (mut level, mut increment) = (from, span);

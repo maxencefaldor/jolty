@@ -51,6 +51,11 @@ class _Point(_Model):
     strategy: str
 
 
+class _Points(_Model):
+    kind: Literal["operating_points"] = "operating_points"
+    strategies: tuple[str, ...]
+
+
 class _Sweep(_Model):
     kind: Literal["dc_sweep"] = "dc_sweep"
     source: str
@@ -106,6 +111,7 @@ class _PolesZeros(_Model):
 
 type _Entry = Annotated[
     _Point
+    | _Points
     | _Sweep
     | _Response
     | _Waveforms
@@ -265,6 +271,10 @@ def _save(name: str, result: results.Result, arrays: dict[str, np.ndarray]) -> _
                 [np.empty(0), *(trace.levels for trace in traces)]
             )
             return _Waveforms(statistics=result.statistics)
+        case results.OperatingPoints():
+            for index, point in enumerate(result.points):
+                arrays.update(_point_arrays(f"{name}.{index}", point))
+            return _Points(strategies=tuple(point.strategy for point in result.points))
         case _:
             return _save_linear(name, result, arrays)
 
@@ -342,6 +352,12 @@ def _load(
     match entry:
         case _Point(strategy=strategy):
             return _point(data, name, strategy, header)
+        case _Points(strategies=strategies):
+            points = tuple(
+                _point(data, f"{name}.{index}", strategy, header)
+                for index, strategy in enumerate(strategies)
+            )
+            return results.OperatingPoints(unknowns, points)
         case _Sweep(source=source, quantity=quantity):
             return results.Sweep(
                 unknowns,
@@ -400,7 +416,8 @@ def _load_linear(
                 results.Sensitivities
                 | results.LoopGain
                 | results.NoiseSpectrum
-                | results.PolesZeros,
+                | results.PolesZeros
+                | results.OperatingPoints,
             ):
                 message = (
                     f"the sensitivities {name} differentiate neither an operating "
@@ -457,6 +474,8 @@ def _names(result: results.Result) -> _Names:
     """The names of the columns of `result`'s circuit."""
     if isinstance(result, results.Sensitivities):
         return _names(result.result)
+    if isinstance(result, results.OperatingPoints):
+        return _names(result.points[0])
     if isinstance(
         result,
         results.Response

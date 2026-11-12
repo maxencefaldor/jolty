@@ -74,7 +74,8 @@ fidelity={"adder/*": Characterized(3.3 * V)}, simulates the component instances 
 matches as logic cells characterized from their circuits, whose ports are Role.INPUT,
 Role.OUTPUT, one supply and one ground, and spot checks hold each cell to its circuit.
 
-Analyses, in jolty.plan: OperatingPoint(), DcSweep(source, levels),
+Analyses, in jolty.plan: OperatingPoint(), OperatingPoints(most=8): every DC solution,
+such as a latch's states, read with jolty.specs.solutions, DcSweep(source, levels),
 Ac(source, frequencies) with decade(start, stop, per_decade), Transient(stop,
 max_step, method), Sensitivity(outputs, of=None): the derivative of each output unknown
 with respect to every number of every device's parameters at the operating point, or

@@ -242,3 +242,20 @@ def test_poles_and_zeros_list_each_pair_once() -> None:
     short = report.report("pz", found, listed=1)
     assert isinstance(short, report.PoleZeroReport)
     assert (len(short.poles), short.zeros, short.unlisted) == (1, (), 2)
+
+
+def test_dc_solutions_list_each_unknown_at_each() -> None:
+    first = results.OperatingPoint(UNKNOWNS, np.array([3.3, 0.0, -1e-3]), "direct")
+    second = results.OperatingPoint(
+        UNKNOWNS, np.array([3.3, 3.3, -2e-3]), "gmin_stepping"
+    )
+    found = results.OperatingPoints(UNKNOWNS, (first, second))
+    summary = report.report("states", found, listed=2)
+    assert isinstance(summary, report.PointsReport)
+    assert summary.strategies == ("direct", "gmin_stepping")
+    assert summary.describe() == (
+        "states: 2 DC solutions, the operating point first\n"
+        "  in   3.3 V  3.3 V\n"
+        "  out  0 V    3.3 V\n"
+        "  ... and 1 more in the results file"
+    )

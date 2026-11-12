@@ -17,6 +17,7 @@ from jolty import (
     ElaborationError,
     Noise,
     OperatingPoint,
+    OperatingPoints,
     Options,
     Plan,
     PoleZero,
@@ -25,6 +26,7 @@ from jolty import (
     Simulation,
     SimulationError,
     Stability,
+    Terminal,
     Transient,
     _core,
     component,
@@ -286,6 +288,53 @@ def test_a_noise_analysis_rejects_what_it_cannot_measure() -> None:
         simulation.run(Noise("out", [1 * kHz], source="R1"))
     with pytest.raises(DimensionError, match="a frequency"):
         simulation.run(Noise("out", [1 * V]))
+
+
+@component
+def latch(c: Builder) -> None:
+    """Two CMOS inverters, each driving the other's input."""
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(3.3 * V), id="VDD")
+    c.connect(supply.negative, ground)
+    nets: dict[str, list[Terminal]] = {"a": [], "b": []}
+    for index, (input_net, output_net) in enumerate((("a", "b"), ("b", "a")), 1):
+        for channel, threshold, rail in (
+            ("p", -0.7, supply.positive),
+            ("n", 0.7, ground),
+        ):
+            transistor = c.place(
+                devices.mosfet(
+                    channel=channel,
+                    threshold_voltage=threshold * V,
+                    transconductance_parameter=100 * uA / V**2,
+                    channel_length_modulation=0.02 / V,
+                    width=10 * um,
+                    length=1 * um,
+                ),
+                id=f"M{channel.upper()}{index}",
+            )
+            c.connect(transistor.source, transistor.bulk, rail)
+            nets[input_net].append(transistor.gate)
+            nets[output_net].append(transistor.drain)
+    for name, terminals in nets.items():
+        c.connect(*terminals, name=name)
+
+
+def test_a_latch_has_two_states_and_a_balance_between_them() -> None:
+    found = Simulation(latch()).run(OperatingPoints())
+    assert len(found.points) == 3
+    assert sorted(found.voltages("a").tolist()) == [
+        pytest.approx(0.0, abs=1e-6),
+        pytest.approx(1.65, abs=1e-6),
+        pytest.approx(3.3, abs=1e-6),
+    ]
+    np.testing.assert_allclose(
+        found.voltages("a") + found.voltages("b"), 3.3, atol=1e-6
+    )
+    single = Simulation(low_pass()).run(OperatingPoints())
+    assert len(single.points) == 1
+    with pytest.raises(ValueError, match="finds 1 or more, not 0"):
+        OperatingPoints(most=0)
 
 
 def test_a_low_pass_has_one_real_pole_and_no_zero() -> None:

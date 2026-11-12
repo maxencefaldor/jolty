@@ -68,7 +68,7 @@ pub use jolty_numerics::integration::Method;
 pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
 pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseSpectrum};
 pub use observe::{Observation, Observations, Observed};
-pub use operating_point::{OperatingPoint, Strategy};
+pub use operating_point::{OperatingPoint, OperatingPoints, Strategy};
 pub use options::Options;
 pub use pole_zero::{PoleZero, PolesZeros};
 pub use sensitivity::{Derivatives, Differentiated, Parameter, Sensitivities, Sensitivity};

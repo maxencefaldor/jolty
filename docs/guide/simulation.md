@@ -29,6 +29,7 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | Analysis | Finds |
 | --- | --- |
 | `OperatingPoint()` | the DC solution, every source at its level at time zero |
+| `OperatingPoints(most=8)` | every DC solution, up to `most`, the operating point first |
 | `DcSweep(source, levels)` | the DC solution at each level of one independent source |
 | `Ac(source, frequencies)` | the small-signal response to a unit excitation of one source, around the operating point |
 | `Transient(stop, max_step=None, method="trapezoidal", times=())` | the response over time, from the operating point until `stop` |
@@ -42,6 +43,19 @@ A source is named by its path, such as `V1` or `bias/I1`.
 A transient's method is `"trapezoidal"`, `"gear2"` for stiff circuits that ring, or `"backward_euler"` for the most damping.
 Its longest step defaults to a fiftieth of `stop`.
 It steps onto each of `times` exactly, besides the times it chooses, without restarting its integration there, so every unknown and terminal current has its solved value at those times.
+
+## Several DC solutions
+
+A circuit with feedback can have several DC solutions: a latch one per state and one balanced between them, and a self-biased reference its zero-current state beside its working one.
+A search for them finds the operating point first, then each other solution its equations lead to once deflated by those found so far:
+
+```python
+Plan({"states": OperatingPoints(most=8)})
+```
+
+The deflated equations are `m(x)·f(x) = 0`, with `m(x) = Π (1/‖x − r‖² + 1)` over the solutions `r` found, the distance taken over the node voltages: each found solution becomes infinitely repelling, so Newton iteration, whose deflated step is the plain step scaled by `1 / (1 − ∇m·δ/m)`, leaves it for another (Farrell, Birkisson and Funke, *Deflation techniques for finding distinct solutions of nonlinear partial differential equations*, SIAM Journal on Scientific Computing 37(4), 2015).
+Each new solution is searched from zero, by Newton iteration, then gmin stepping, then source stepping, and else by Newton iteration from the reflection of a solution found through another, or from beside one, its node voltages moved 0.1 V up and down in turn, which breaks the symmetry a balanced latch's start keeps; the search ends when none leads to a new solution, ten tolerances or more from every one found in some unknown, or at `most`.
+The result's `points` hold an operating point per solution, and `voltages(net)` reads a net's voltage at each; the report lists every unknown's value at each solution, and the specs' `solutions` reads how many there are.
 
 ## Sensitivities
 
