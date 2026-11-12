@@ -904,6 +904,30 @@ def curved(c: Builder) -> None:
 
 
 @component
+def lit(c: Builder) -> None:
+    """A photocell under a divider, its light a pulse, its response lagging it."""
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(5 * V), id="V1")
+    pulse = Pulse(
+        initial=1 * V,
+        pulsed=100 * V,
+        delay=2 * ms,
+        rise=1 * ms,
+        fall=1 * ms,
+        width=10 * ms,
+    )
+    light = c.place(devices.voltage_source(pulse), id="V2")
+    upper = c.place(devices.resistor(10 * kohm), id="R1")
+    cell = c.place(
+        devices.photocell(10 * kohm, gamma=0.8, response_time=3 * ms), id="P1"
+    )
+    c.connect(supply.positive, upper.a, name="in")
+    c.connect(upper.b, cell.a, name="out")
+    c.connect(light.positive, cell.light_positive, name="light")
+    c.connect(supply.negative, light.negative, cell.b, cell.light_negative, ground)
+
+
+@component
 def switched(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     pulse = Pulse(
@@ -964,6 +988,7 @@ def switched(c: Builder) -> None:
         behavioral,
         switched,
         curved,
+        lit,
     ],
 )
 def test_operating_points_agree(top: Callable[[], Component]) -> None:
@@ -1098,6 +1123,7 @@ def test_loop_gains_agree() -> None:
         (behavioral, "V1", linear(-3 * V, 3 * V, 61)),
         (switched, "V1", linear(0 * V, 3 * V, 61)),
         (curved, "V1", linear(-3 * V, 3 * V, 61)),
+        (lit, "V2", linear(-1 * V, 100 * V, 102)),
     ],
 )
 def test_dc_sweeps_agree(
@@ -1167,6 +1193,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
         (behavioral, 300 * us, 0.5 * us),
         (switched, 200 * us, 0.2 * us),
         (curved, 3 * ms, 2 * us),
+        (lit, 30 * ms, 20 * us),
     ],
 )
 def test_transients_agree(

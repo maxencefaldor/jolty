@@ -15,7 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -161,6 +161,7 @@ ELEMENTS = {
     "behavioral_voltage_source": Element("B", ("positive", "negative")),
     "behavioral_current_source": Element("B", ("positive", "negative")),
     "voltage_controlled_switch": Element("A", _CONTROLLED),
+    "photocell": Element("B", ("a", "b", "light_positive", "light_negative")),
 }
 
 
@@ -316,6 +317,11 @@ def netlist(
                     f".model M{instance.id} pswitch({card} r_cntl_in=1e30 log=TRUE)"
                 )
                 value = f"M{instance.id}"
+            case "photocell":
+                a, b, *light = nodes.split()
+                current, lag = _photocell(instance.id, values, light)
+                lines.extend(lag)
+                nodes, value = f"{a} {b}", f"I={{V({a},{b})*{current}}}"
             case "resistor" | "capacitor" | "inductor":
                 value = _passive(model, values, nodes.split())
             case _:
@@ -323,6 +329,43 @@ def netlist(
                 value = repr(number)
         lines.append(f"{element(instance)} {nodes} {value}")
     return lines
+
+
+_PHOTOCELL: Final = {
+    "illuminance": 10.0,
+    "gamma": 0.7,
+    "dark_resistance": 1e6,
+    "response_time": 0.0,
+}
+"""A photocell's parameters, as the engine takes them when left out."""
+
+_DARKNESS: Final = 1e-6
+"""The illuminance, in lux, below which a photocell's response rounds off to dark."""
+
+
+def _photocell(
+    id: str, values: Mapping[str, JsonValue], light: list[str]
+) -> tuple[str, list[str]]:
+    """A photocell's conductance as an ngspice expression, and the lines that lag it.
+
+    Its response to the light between the nodes `light` lags it through 1 Ω and a
+    capacitance of its response time in farads, when it has one.
+    """
+    given = {**_PHOTOCELL, **values}
+    illuminance = f"V({light[0]},{light[1]})"
+    lit = f"(({illuminance})+sqrt(({illuminance})^2+{_DARKNESS!r}^2))/2"
+    settled = f"pow({lit}/{given['illuminance']!r},{given['gamma']!r})"
+    response, lines = settled, list[str]()
+    if given["response_time"] != 0:
+        node = f"_{id}_response"
+        lines = [
+            f"B{id}_settled _{id}_settled 0 V={{{settled}}}",
+            f"R{id}_lag _{id}_settled {node} 1",
+            f"C{id}_lag {node} 0 {given['response_time']!r}",
+        ]
+        response = f"V({node})"
+    conductance = f"(1/{given['dark_resistance']!r}+{response}/{given['resistance']!r})"
+    return conductance, lines
 
 
 def _subcircuit(circuit: ir.Circuit, instance: ir.Instance, ground: str) -> str:

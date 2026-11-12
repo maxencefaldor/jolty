@@ -24,6 +24,7 @@ mod junction;
 mod logic;
 mod mosfet;
 mod passive;
+mod photocell;
 mod real;
 mod sources;
 mod stamp;
@@ -63,6 +64,7 @@ pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
     SMALL_RESISTANCE,
 };
+pub use photocell::{Photocell, PhotocellParameters};
 pub use real::{Gradient, Real};
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
 pub use stamp::TerminalPair;
@@ -98,6 +100,7 @@ impl Library {
         library.add(Native::<Diode>::new());
         library.add(Native::<Jfet>::new());
         library.add(Native::<Mosfet>::new());
+        library.add(Native::<Photocell>::new());
         library.add_logic(NativeLogicModel::<LogicCell>::new());
         library.add_logic(NativeLogicModel::<LogicSource>::new());
         library
@@ -175,6 +178,7 @@ mod tests {
                 "logic_cell",
                 "logic_source",
                 "mosfet",
+                "photocell",
                 "resistor",
                 "voltage_controlled_current_source",
                 "voltage_controlled_switch",

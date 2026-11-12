@@ -347,6 +347,41 @@ def voltage_controlled_switch(
     return device("voltage_controlled_switch", parameters)
 
 
+def photocell(
+    resistance: Quantity,
+    *,
+    illuminance: float | None = None,
+    gamma: float | None = None,
+    dark_resistance: Quantity | None = None,
+    response_time: Quantity | None = None,
+) -> Device:
+    """A photocell, a light-dependent resistor, between ``a`` and ``b``.
+
+    The voltage of ``light_positive`` over ``light_negative`` is the illuminance on the
+    cell, 1 V for each lux, and those terminals draw no current. Its resistance is
+    `resistance` at the reference `illuminance`, in lux, 10 unless given, as datasheets
+    state it, and falls as the illuminance to the power `gamma`, 0.7 unless given, in
+    parallel with its dark resistance, 1 MΩ unless given. With a response time, its
+    conductance follows the light with that time constant, as a cadmium sulphide cell's
+    does, over milliseconds; without one, at once.
+
+    Examples:
+        >>> from jolty.units import kohm, ms
+        >>> cell = photocell(10 * kohm, gamma=0.8, response_time=20 * ms)
+        >>> cell.parameters["response_time"]
+        0.02
+    """
+    parameters = _parameters(
+        {
+            "resistance": (resistance, RESISTANCE),
+            "dark_resistance": (dark_resistance, RESISTANCE),
+            "response_time": (response_time, TIME),
+        },
+        {"illuminance": illuminance, "gamma": gamma},
+    )
+    return device("photocell", parameters)
+
+
 def diode(  # noqa: PLR0913 - the SPICE junction model has fifteen parameters
     *,
     saturation_current: Quantity | None = None,

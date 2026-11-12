@@ -110,6 +110,23 @@ The control terminals draw no current.
 | `on_resistance`, `off_resistance` | `RON`, `ROFF` | Ω | 1 Ω, 1 MΩ |
 | `on_voltage`, `off_voltage` | `VON`, `VOFF` | V | 1 V, 0 V |
 
+## Photocell
+
+`photocell(resistance, ...)` is a light-dependent resistor between `a` and `b`, as its maker's datasheet states one: its resistance at a reference illuminance and how steeply it falls with light.
+The voltage of `light_positive` over `light_negative` is the illuminance on it, 1 V for each lux, and those terminals draw no current, so a source, or a behavioral source that turns a lamp's or an LED's current into light, drives it.
+Its conductance is `1/r_dark + s/r`, where `s = (E/E₀)^γ` at the illuminance `E`, held at zero or above and rounded off over a microlux so its slope stays finite in darkness.
+With a response time `τ`, `s` lags the light, `τ · ds/dt = (E/E₀)^γ − s`, as a cadmium sulphide cell's conductance does over milliseconds, and is an unknown labelled `response`, as `P1:response`.
+
+| Parameter | Unit | Default |
+| --- | --- | --- |
+| `resistance` | Ω, at the reference illuminance | none |
+| `illuminance` | lux, a number | 10 |
+| `gamma` | a number | 0.7 |
+| `dark_resistance` | Ω | 1 MΩ |
+| `response_time` | s | 0: the cell follows the light at once |
+
+SPICE has no photocell; written for ngspice, it is a behavioral current whose response lags through 1 Ω and a capacitance of its response time.
+
 ## Diode
 
 `diode(...)` is a junction diode from `anode` to `cathode`, in the SPICE model.
