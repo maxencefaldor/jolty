@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::{Circuit, Component, Name, Of};
+use crate::{Circuit, Component, Lot, Name, Of};
 
 /// A reason a circuit's structure is invalid.
 ///
@@ -86,6 +86,39 @@ pub enum Problem {
         /// The tolerance, in its shortest exact form.
         relative: String,
     },
+    /// An instance takes a parameter from a lot whose tolerance is not at least 0 and
+    /// below 1.
+    #[error(
+        "instance `{component}/{id}` takes `{parameter}` from lot `{lot}` with a tolerance \
+         of {relative}, which needs to be at least 0 and below 1"
+    )]
+    InvalidLot {
+        /// The component that places the instance.
+        component: Name,
+        /// The instance.
+        id: Name,
+        /// The parameter.
+        parameter: String,
+        /// The lot.
+        lot: Name,
+        /// The lot's tolerance, in its shortest exact form.
+        relative: String,
+    },
+    /// Two instances spread one parameter of one lot differently.
+    #[error(
+        "instances `{first}` and `{second}` spread `{parameter}` of lot `{lot}` differently, \
+         and a lot spreads each parameter one way"
+    )]
+    InconsistentLot {
+        /// The lot.
+        lot: Name,
+        /// The parameter.
+        parameter: String,
+        /// The first instance that spreads it, as `component/id`.
+        first: String,
+        /// An instance that spreads it otherwise, as `component/id`.
+        second: String,
+    },
     /// A component instances itself, directly or through others.
     #[error("component `{}` contains itself: {}", .cycle[0], join(.cycle, " -> "))]
     Recursive {
@@ -154,11 +187,42 @@ impl Circuit {
         for (name, component) in &self.components {
             check_component(name, component, &self.components, &mut problems);
         }
+        check_lots(&self.components, &mut problems);
         find_cycles(&self.components, &mut problems);
         if problems.is_empty() {
             Ok(())
         } else {
             Err(Problems(problems))
+        }
+    }
+}
+
+/// Checks that every instance taking a parameter from a lot spreads it as the first one
+/// does.
+fn check_lots(components: &BTreeMap<Name, Component>, problems: &mut Vec<Problem>) {
+    let mut first: BTreeMap<(&Name, &str), (&Lot, String)> = BTreeMap::new();
+    for (name, component) in components {
+        for instance in &component.instances {
+            for (parameter, tolerance) in &instance.tolerances {
+                let Some(lot) = &tolerance.lot else {
+                    continue;
+                };
+                let at = format!("{name}/{}", instance.id);
+                match first.get(&(&lot.name, parameter.as_str())) {
+                    None => {
+                        first.insert((&lot.name, parameter), (lot, at));
+                    }
+                    Some((spread, before)) if *spread != lot => {
+                        problems.push(Problem::InconsistentLot {
+                            lot: lot.name.clone(),
+                            parameter: parameter.clone(),
+                            first: before.clone(),
+                            second: at,
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
         }
     }
 }
@@ -187,9 +251,7 @@ fn check_component(
             });
         }
         for (parameter, tolerance) in &instance.tolerances {
-            let numeric = instance
-                .parameters
-                .get(parameter)
+            let numeric = crate::parameter(&instance.parameters, parameter)
                 .is_some_and(serde_json::Value::is_number);
             if !numeric || !(0.0..1.0).contains(&tolerance.relative) {
                 problems.push(Problem::InvalidTolerance {
@@ -197,6 +259,17 @@ fn check_component(
                     id: instance.id.clone(),
                     parameter: parameter.clone(),
                     relative: format!("{:?}", tolerance.relative),
+                });
+            }
+            if let Some(lot) = &tolerance.lot
+                && !(0.0..1.0).contains(&lot.relative)
+            {
+                problems.push(Problem::InvalidLot {
+                    component: name.clone(),
+                    id: instance.id.clone(),
+                    parameter: parameter.clone(),
+                    lot: lot.name.clone(),
+                    relative: format!("{:?}", lot.relative),
                 });
             }
         }
@@ -397,11 +470,12 @@ mod tests {
         let tolerance = |relative| crate::Tolerance {
             relative,
             distribution: crate::Distribution::Uniform,
+            lot: None,
         };
         let resistor = Instance {
             id: name("R1"),
             of: Of::Device(name("resistor")),
-            parameters: serde_json::json!({"resistance": 1e3, "label": "a"})
+            parameters: serde_json::json!({"resistance": 1e3, "label": "a", "level": {"dc": 5.0}})
                 .as_object()
                 .cloned()
                 .unwrap(),
@@ -410,6 +484,8 @@ mod tests {
                 ("resistance".to_owned(), tolerance(1.0)),
                 ("label".to_owned(), tolerance(0.1)),
                 ("missing".to_owned(), tolerance(0.1)),
+                ("level.dc".to_owned(), tolerance(0.05)),
+                ("level.ac".to_owned(), tolerance(0.05)),
             ]
             .into(),
             source: None,
@@ -430,7 +506,59 @@ mod tests {
                 other => panic!("{other}"),
             })
             .collect();
-        assert_eq!(parameters, ["label", "missing", "resistance", "resistance"]);
+        assert_eq!(
+            parameters,
+            ["label", "level.ac", "missing", "resistance", "resistance"]
+        );
+    }
+
+    #[test]
+    fn a_lot_spreads_each_parameter_one_way() {
+        let in_lot = |id: &str, relative| {
+            let lot = Lot {
+                name: name("die"),
+                relative,
+                distribution: crate::Distribution::Uniform,
+            };
+            let tolerance = crate::Tolerance {
+                relative: 0.001,
+                distribution: crate::Distribution::Uniform,
+                lot: Some(lot),
+            };
+            Instance {
+                id: name(id),
+                of: Of::Device(name("resistor")),
+                parameters: serde_json::json!({"resistance": 1e3})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+                terminals: BTreeMap::new(),
+                tolerances: [("resistance".to_owned(), tolerance)].into(),
+                source: None,
+            }
+        };
+        let top = Component {
+            instances: vec![
+                in_lot("R1", 0.2),
+                in_lot("R2", 0.2),
+                in_lot("R3", 0.1),
+                in_lot("R4", 1.5),
+            ],
+            ..Component::default()
+        };
+        let problems = circuit(vec![("top", top)]).validate().unwrap_err();
+        let messages: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            [
+                "instance `top/R4` takes `resistance` from lot `die` with a tolerance of 1.5, \
+                 which needs to be at least 0 and below 1",
+                "instances `top/R1` and `top/R3` spread `resistance` of lot `die` differently, \
+                 and a lot spreads each parameter one way",
+                "instances `top/R1` and `top/R4` spread `resistance` of lot `die` differently, \
+                 and a lot spreads each parameter one way",
+            ]
+        );
     }
 
     #[test]

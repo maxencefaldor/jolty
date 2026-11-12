@@ -54,24 +54,33 @@ class Device:
         parameter: str,
         relative: float,
         distribution: Literal["uniform", "normal"] = "uniform",
+        lot: ir.Lot | None = None,
     ) -> Device:
         """The device, `parameter` given a `relative` tolerance, such as 0.01 for 1 %.
 
-        Values spread evenly within a ``uniform`` tolerance, and normally within a
-        ``normal`` one, with the tolerance three standard deviations. Monte Carlo
-        analyses sample them.
+        The parameter is named by [path][jolty.ir.parameter], so ``waveform.dc`` is a
+        source's DC level. Values spread evenly within a ``uniform`` tolerance, and
+        normally within a ``normal`` one, with the tolerance three standard deviations.
+        Monte Carlo analyses sample them, adding the deviation of the `lot` the part
+        comes from, if any, which every part in the lot shares.
+
+        Examples:
+            >>> from jolty.units import V
+            >>> supply = voltage_source(5 * V).toleranced("waveform.dc", 0.05)
+            >>> supply.tolerances["waveform.dc"].relative
+            0.05
 
         Raises:
             ValueError: When the device gives the parameter no number, or the
                 tolerance is not at least 0 and below 1.
         """
-        match self.parameters.get(parameter):
+        match ir.parameter(self.parameters, parameter):
             case float() | int():
                 pass
             case _:
                 message = f"a {self.model} gives {parameter} no number to tolerate"
                 raise ValueError(message)
-        tolerance = ir.Tolerance(relative=relative, distribution=distribution)
+        tolerance = ir.Tolerance(relative=relative, distribution=distribution, lot=lot)
         return replace(self, tolerances={**self.tolerances, parameter: tolerance})
 
 

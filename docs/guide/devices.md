@@ -40,7 +40,7 @@ A resistor's or capacitor's value also bends with the voltage `v` from `a` to `b
 A resistor then carries `v / (r · (1 + vc1 · v + vc2 · v²))`, and a capacitor holds the charge `c · (v + vc1 · v² / 2 + vc2 · v³ / 3)`, whose slope is its bent capacitance.
 The formula holds at every voltage, as in ngspice: where the coefficients bend a value below zero, it is negative there.
 
-A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and `device.toleranced(parameter, relative, distribution)` gives any device's number parameter a `"uniform"` or `"normal"` tolerance; [Monte Carlo analyses](simulation.md#monte-carlo) sample them.
+A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and `device.toleranced(parameter, relative, distribution, lot)` gives any device's number parameter a `"uniform"` or `"normal"` tolerance, by its path, such as `waveform.dc` for a source's DC level, and optionally a lot it shares a spread with; [Monte Carlo analyses](simulation.md#monte-carlo) sample them.
 
 ## Independent sources
 

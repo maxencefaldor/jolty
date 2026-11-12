@@ -4,7 +4,8 @@
 A plan is kept apart from the circuit: the circuit says what exists, the plan how to
 simulate it. A plan runs its analyses at its temperature, then again at each of its
 corners: another temperature, or other arguments to the build script's ``build()``, and
-on Monte Carlo samples of the circuit's tolerances. Its fidelity chooses, for the
+on Monte Carlo samples of the circuit's tolerances, each at its own conditions and at
+every corner. Its fidelity chooses, for the
 component instances its scopes match, logic models characterized from their circuits.
 
 Examples:
@@ -211,7 +212,9 @@ class Corner:
 class MonteCarlo:
     """Samples of the circuit's tolerances, each a run of the plan's analyses.
 
-    Each sample runs at the plan's own temperature, and a `seed` draws the same samples
+    Each sample runs at the plan's own conditions and at each of its corners, on the
+    same parts wherever the corner's circuit holds the same toleranced parameters, and
+    a requirement's verdict on it is its worst there. A `seed` draws the same samples
     from the same circuit.
     """
 

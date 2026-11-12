@@ -4,9 +4,12 @@
 A [`Circuit`][jolty.ir.Circuit] is a set of named components and the name of the top
 one. Build scripts never write this format by hand: [`jolty.builder`][jolty.builder]
 produces it, and the engine validates and elaborates it. Parameter values are numbers in
-SI base units, and a device may give some of them a [`Tolerance`][jolty.ir.Tolerance].
+SI base units, and a device may give some of them a [`Tolerance`][jolty.ir.Tolerance],
+each naming its parameter by [path][jolty.ir.parameter], so that it may reach into an
+object, as ``waveform.dc`` names a source's DC level.
 """
 
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Literal, override
 
@@ -64,15 +67,31 @@ class Source(_Model):
         return f"{self.file}:{self.line} {within}"
 
 
+class Lot(_Model):
+    """A spread that the parts of one lot share.
+
+    As parts from one reel or one die drift together, each parameter of theirs takes
+    one deviation from the lot per sample, which adds to each part's own. A lot is
+    known by its name wherever in the hierarchy a part names it, and spreads each
+    parameter one way.
+    """
+
+    name: str
+    relative: float = Field(ge=0, lt=1)
+    distribution: Literal["uniform", "normal"] = "uniform"
+
+
 class Tolerance(_Model):
     """How far a parameter's value may lie from its nominal one, relative to it.
 
     Values spread evenly within a ``uniform`` tolerance, and normally within a
-    ``normal`` one, with the tolerance three standard deviations.
+    ``normal`` one, with the tolerance three standard deviations. A part's own deviation
+    is drawn apart from every other part's; one in a `lot` adds the lot's.
     """
 
     relative: float = Field(ge=0, lt=1)
     distribution: Literal["uniform", "normal"] = "uniform"
+    lot: Lot | None = Field(default=None, exclude_if=lambda lot: lot is None)
 
 
 class Instance(_Model):
@@ -123,3 +142,32 @@ class Circuit(_Model):
                 else None
             )
         return found
+
+
+def parameter(parameters: Mapping[str, JsonValue], path: str) -> JsonValue | None:
+    """The value at `path` among `parameters`, or None when none is there.
+
+    A path is a parameter's name, or its keys joined by dots within an object and a
+    list's entries keyed by their index from 0, as sensitivities name parameters.
+
+    Examples:
+        >>> parameter({"waveform": {"dc": 5.0}}, "waveform.dc")
+        5.0
+        >>> parameter(
+        ...     {"waveform": {"piecewise": {"points": [[0, 1.5]]}}},
+        ...     "waveform.piecewise.points.0.1",
+        ... )
+        1.5
+        >>> parameter({"waveform": {"dc": 5.0}}, "waveform.sine") is None
+        True
+    """
+    found: JsonValue = dict(parameters)
+    for key in path.split("."):
+        match found:
+            case dict():
+                found = found.get(key)
+            case list() if key.isdecimal() and int(key) < len(found):
+                found = found[int(key)]
+            case _:
+                return None
+    return found

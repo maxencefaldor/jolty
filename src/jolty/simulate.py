@@ -121,10 +121,10 @@ class Simulation:
         """Elaborates a circuit, or the circuit with a component at its top.
 
         Its devices are simulated at `temperature`, 27 °C unless given. `overrides`
-        replaces parameters of devices, by path then by parameter name, in SI base
-        units, as a Monte Carlo sample does. In `substitutes`, a device stands in for
-        each component instance, by path, its terminals the component's ports, as a
-        plan's fidelity chooses.
+        replaces parameters of devices, by instance path then by parameter path, such
+        as ``waveform.dc``, in SI base units, as a Monte Carlo sample does. In
+        `substitutes`, a device stands in for each component instance, by path, its
+        terminals the component's ports, as a plan's fidelity chooses.
 
         Raises:
             ElaborationError: With every problem the engine finds, each naming the

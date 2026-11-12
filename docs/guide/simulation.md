@@ -127,7 +127,8 @@ The report, the results file and the plots hold the plan's own run; a corner's r
 ## Monte Carlo
 
 A device may give its parameters tolerances: a resistor's, capacitor's or inductor's `tolerance=0.01` spreads its value evenly within 1 %, and `device.toleranced(parameter, relative, distribution)` gives any number parameter a `"uniform"` or a `"normal"` tolerance, the tolerance three standard deviations.
-A plan's `monte_carlo=MonteCarlo(samples, seed=0)` runs its analyses again on each sample, at the plan's own temperature:
+The parameter is named by its path, so `devices.voltage_source(5 * V).toleranced("waveform.dc", 0.05)` is a supply within 5 %.
+A plan's `monte_carlo=MonteCarlo(samples, seed=0)` runs its analyses again on each sample, at the plan's own conditions and at each of its corners:
 
 ```python
 def plan() -> Plan:
@@ -135,7 +136,9 @@ def plan() -> Plan:
 ```
 
 Each sample draws every toleranced parameter of every device instance independently, so two placements of one component vary apart, and a seed draws the same samples from the same circuit.
-The report counts the samples on which the circuit did not elaborate or an analysis failed; with [specs](specs.md), it states what each requirement read over the samples and the yield.
+Parts that drift together, as resistors on one die do, share a lot: `toleranced("resistance", 0.001, lot=ir.Lot(name="die", relative=0.2))` adds to the part's own 0.1 % the lot's deviation, drawn once per sample for each parameter and shared by every part that names the lot, wherever it lies in the hierarchy.
+A sample runs on the same parts at every corner whose circuit holds the same toleranced parameters, and each requirement's verdict on it is its worst at any of them.
+The report counts the samples on which the circuit did not elaborate or an analysis failed, at the plan's own conditions or a corner; with [specs](specs.md), it states what each requirement read over the samples and the yield.
 
 ## Options
 

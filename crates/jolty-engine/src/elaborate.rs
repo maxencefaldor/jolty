@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 
-use jolty_ir::{Circuit, Component, Name, Of, Parameters, Problem, Role, Source};
+use jolty_ir::{Circuit, Component, Name, Of, Parameters, Problem, Role, Source, set_parameter};
 use jolty_models::{
     Binding, Branch, Device, Interface, Library, LogicDriver, LogicDriverParameters, LogicModel,
     Model, NativeDevice, Node, Pins, Quantity, ThresholdDetector, ThresholdDetectorParameters,
@@ -880,7 +880,15 @@ impl<'a> Walk<'a> {
                         Some(replaced) => {
                             self.overridden.insert(at.path.clone());
                             let mut merged = instance.parameters.clone();
-                            merged.extend(replaced.clone());
+                            for (path, value) in replaced {
+                                let set = set_parameter(&mut merged, path, value.clone());
+                                if let Err(error) = set {
+                                    self.problems.push(ElaborationProblem::Parameters {
+                                        at: at.clone(),
+                                        message: format!("the override {error}"),
+                                    });
+                                }
+                            }
                             Cow::Owned(merged)
                         }
                         None => Cow::Borrowed(&instance.parameters),
@@ -1160,13 +1168,21 @@ mod tests {
                 .cloned()
                 .unwrap(),
         );
+        conditions.overrides.insert(
+            "X1/R1".to_owned(),
+            serde_json::json!({"resistance.dc": 2})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        );
         conditions
             .overrides
             .insert("X3/R1".to_owned(), Parameters::new());
         let error = elaborate(&circuit, &Library::standard(), &conditions).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "instance `X2/R1`: resistance must be positive, not -1.0\n\
+            "instance `X1/R1`: the override `resistance.dc` has no place among the parameters\n\
+             instance `X2/R1`: resistance must be positive, not -1.0\n\
              the circuit has no device at `X3/R1`, whose parameters are replaced"
         );
     }

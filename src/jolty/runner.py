@@ -9,7 +9,8 @@ conditions then at each of its corners, building the circuit again with a corner
 arguments. Every run takes the models the plan's fidelity chooses, characterized once
 each, and spot checks run again with sampled instances at their circuit's fidelity. It
 evaluates the requirements its ``specs()`` returns, when it defines one, on every run,
-then on each sample of the plan's Monte Carlo analysis. It writes the
+then on each sample of the plan's Monte Carlo analysis, which runs at the plan's own
+conditions and at each corner. It writes the
 [`Outcome`][jolty.runner.Outcome], what was built or why it failed, to
 ``DIRECTORY/outcome.json``, and the results of the analyses at the plan's
 own conditions to ``DIRECTORY/results.npz``.
@@ -19,11 +20,12 @@ standard output may be a protocol channel: what a script prints is captured, a t
 stops a script or an analysis that runs too long, and a crash ends only the runner.
 """
 
+import itertools
 import runpy
 import sys
 import sysconfig
 import traceback
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Final, Literal, override
@@ -198,13 +200,16 @@ def _run(job: Job, directory: Path) -> Built:
         files.save_results(directory / RESULTS, solved)
     corners: list[report.CornerReport] = []
     at_corners: dict[str, dict[str, Result]] = {}
+    chosen_at: dict[str, fidelity.Fidelity | None] = {}
     for name, corner in plan.corners.items():
         rebuilt = (
             _built(job.script, namespaces, corner.arguments)
             if corner.arguments
             else built
         )
-        found, at_corners[name] = _corner(name, corner, rebuilt, plan, cache)
+        found, at_corners[name], chosen_at[name] = _corner(
+            name, corner, rebuilt, plan, cache
+        )
         corners.append(found)
     specs = _specs(job.plan, namespaces)
     verdicts = (
@@ -214,7 +219,7 @@ def _run(job: Job, directory: Path) -> Built:
     monte_carlo = (
         None
         if plan.monte_carlo is None
-        else _monte_carlo(chosen, plan, plan.monte_carlo, specs)
+        else _monte_carlo(chosen, chosen_at, plan, plan.monte_carlo, specs)
     )
     return elaborated.model_copy(
         update={
@@ -267,27 +272,28 @@ def _corner(
     built: ir.Circuit,
     plan: Plan,
     cache: fidelity.Cache,
-) -> tuple[report.CornerReport, dict[str, Result]]:
+) -> tuple[report.CornerReport, dict[str, Result], fidelity.Fidelity | None]:
     """What `plan`'s analyses find on the circuit `built` at `corner`.
 
     The circuit takes the models the plan's fidelity chooses there, characterized
-    unless `cache` holds them. Returns the corner's report, and the results of the
-    analyses that end, by name.
+    unless `cache` holds them. Returns the corner's report, the results of the analyses
+    that end, by name, and the models chosen, none when the circuit does not elaborate.
     """
     temperature = plan.temperature_at(corner)
     try:
-        simulation = fidelity.resolve(built, plan, temperature, cache).simulation()
+        chosen = fidelity.resolve(built, plan, temperature, cache)
+        simulation = chosen.simulation()
     except ElaborationError as error:
         found = report.CornerReport(
             name=name, temperature=kelvins(temperature), problems=error.problems
         )
-        return found, {}
+        return found, {}, None
     solved, reports = _analyses(simulation, plan, 1)
     failures = tuple(r for r in reports if isinstance(r, report.FailureReport))
     found = report.CornerReport(
         name=name, temperature=simulation.temperature, failures=failures
     )
-    return found, solved
+    return found, solved, chosen
 
 
 def _built(
@@ -314,40 +320,69 @@ def _built(
 
 def _monte_carlo(
     chosen: fidelity.Fidelity,
+    chosen_at: Mapping[str, fidelity.Fidelity | None],
     plan: Plan,
     monte_carlo: MonteCarlo,
     specs: Specs | None,
 ) -> report.MonteCarloReport:
     """What `plan`'s analyses find on each sample of `monte_carlo`, against `specs`.
 
-    Each sample draws the circuit's tolerances, at the plan's own temperature, with the
-    models `chosen` holds, which stand for their circuits' nominal parts.
+    Each sample draws the circuit's tolerances and runs at the plan's own conditions,
+    with the models `chosen` holds, and at each corner, with the models `chosen_at`
+    holds there, none where the circuit does not elaborate; the models stand for their
+    circuits' nominal parts. Every run draws its samples from the seed afresh, so a
+    corner whose circuit holds the same toleranced parameters runs each sample on the
+    same parts, and a requirement's verdict on a sample is its worst over the runs.
     """
-    toleranced = variation.toleranced(chosen.built)
-    generator = np.random.default_rng(monte_carlo.seed)
+    runs = zip(
+        _samples(chosen, plan, monte_carlo),
+        *(_samples(at, plan, monte_carlo) for at in chosen_at.values()),
+        strict=True,
+    )
     sampled: list[tuple[Verdict, ...]] = []
     failed = 0
+    for (solved, ended), *there in runs:
+        corners = {
+            name: found for name, (found, _) in zip(chosen_at, there, strict=True)
+        }
+        failed += not (ended and all(ended_there for _, ended_there in there))
+        if specs is not None:
+            sampled.append(evaluate(specs, plan.analyses, solved, corners))
+    spreads, passing = ((), None) if specs is None else spread(specs, sampled)
+    return report.MonteCarloReport(
+        samples=monte_carlo.samples,
+        seed=monte_carlo.seed,
+        toleranced=len(variation.toleranced(chosen.built)),
+        corners=tuple(chosen_at),
+        failed=failed,
+        spreads=spreads,
+        passing=passing,
+    )
+
+
+def _samples(
+    chosen: fidelity.Fidelity | None, plan: Plan, monte_carlo: MonteCarlo
+) -> Iterator[tuple[dict[str, Result], bool]]:
+    """What `plan`'s analyses find on each sample of `monte_carlo`, in turn.
+
+    On each, the results of the analyses that end, by name, and whether all of them do.
+    The samples are drawn from the seed, with the models `chosen` holds; with none, no
+    analysis ends on any.
+    """
+    if chosen is None:
+        yield from itertools.repeat(({}, False), monte_carlo.samples)
+        return
+    toleranced = variation.toleranced(chosen.built)
+    generator = np.random.default_rng(monte_carlo.seed)
     for _ in range(monte_carlo.samples):
         overrides = variation.sample(toleranced, generator)
         try:
             simulation = chosen.simulation(overrides)
         except ElaborationError:
-            solved, ended = {}, False
-        else:
-            solved, reports = _analyses(simulation, plan, 1)
-            ended = not any(isinstance(r, report.FailureReport) for r in reports)
-        failed += not ended
-        if specs is not None:
-            sampled.append(evaluate(specs, plan.analyses, solved))
-    spreads, passing = ((), None) if specs is None else spread(specs, sampled)
-    return report.MonteCarloReport(
-        samples=monte_carlo.samples,
-        seed=monte_carlo.seed,
-        toleranced=len(toleranced),
-        failed=failed,
-        spreads=spreads,
-        passing=passing,
-    )
+            yield {}, False
+            continue
+        solved, reports = _analyses(simulation, plan, 1)
+        yield solved, not any(isinstance(r, report.FailureReport) for r in reports)
 
 
 def _specs(script: Path, namespaces: dict[Path, dict[str, object]]) -> Specs | None:

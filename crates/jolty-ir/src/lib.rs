@@ -5,7 +5,8 @@
 //! component. Every terminal of an instance joins a net by name, and a port is the net of the
 //! same name seen from outside. Parameter values are numbers in SI base units. A device
 //! instance may give some of its parameters a [`Tolerance`]: how far a part's value may lie
-//! from its nominal one, which Monte Carlo analyses sample.
+//! from its nominal one, which Monte Carlo analyses sample. A tolerance names its parameter
+//! by [path](parameter()), so it may reach into an object, as `waveform.dc` does.
 //!
 //! The format is JSON, tagged with [`FORMAT`] and [`VERSION`]:
 //!
@@ -39,6 +40,7 @@
 //! ```
 
 mod name;
+mod parameter;
 mod validate;
 
 use std::collections::BTreeMap;
@@ -46,6 +48,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub use name::{InvalidName, Name};
+pub use parameter::{Unreachable, numbers, parameter, parameter_mut, set_parameter};
 pub use validate::{Problem, Problems};
 
 /// The value of the `format` field of every circuit file.
@@ -117,7 +120,8 @@ pub struct Instance {
     pub parameters: Parameters,
     /// The net each terminal joins, by terminal name.
     pub terminals: BTreeMap<Name, Name>,
-    /// The tolerances of some of a device's parameters, by parameter name.
+    /// The tolerances of some of a device's parameters, by the parameter's
+    /// [path](parameter()).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tolerances: BTreeMap<String, Tolerance>,
     /// The line of source code that placed the instance.
@@ -126,12 +130,36 @@ pub struct Instance {
 }
 
 /// How far a parameter's value may lie from its nominal one, relative to it.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// A part's own deviation is drawn apart from every other part's; one in a [`Lot`] adds
+/// the lot's deviation, which every part in the lot shares.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tolerance {
-    /// The tolerance, at least 0 and below 1, such as `0.01` for 1 %.
+    /// The part's own tolerance, at least 0 and below 1, such as `0.01` for 1 %.
     pub relative: f64,
     /// How values spread within it.
+    #[serde(default)]
+    pub distribution: Distribution,
+    /// The lot the part comes from, if it names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lot: Option<Lot>,
+}
+
+/// A spread that the parts of one lot share, as parts from one reel, or on one die, drift
+/// together: each parameter of theirs takes one deviation from it per sample, which adds
+/// to each part's own.
+///
+/// A lot is known by its name wherever in the hierarchy a part names it, and spreads each
+/// parameter one way.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lot {
+    /// The lot's name.
+    pub name: Name,
+    /// The lot's tolerance, at least 0 and below 1.
+    pub relative: f64,
+    /// How the lot's deviations spread within it.
     #[serde(default)]
     pub distribution: Distribution,
 }

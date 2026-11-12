@@ -379,9 +379,14 @@ class MonteCarloReport(_Model):
     samples: int
     seed: int
     toleranced: int = Field(description="The toleranced parameters each sample draws.")
+    corners: tuple[str, ...] = Field(
+        default=(),
+        description="The corners each sample also ran at, after the plan's own "
+        "conditions.",
+    )
     failed: int = Field(
         description="Samples on which the circuit did not elaborate or an analysis "
-        "failed."
+        "failed, at the plan's own conditions or a corner."
     )
     spreads: tuple[Spread, ...] = Field(
         default=(), description="What each requirement of the specs read."
@@ -393,9 +398,10 @@ class MonteCarloReport(_Model):
 
     def describe(self) -> str:
         """The report as text."""
+        at = "".join(f", at {name}" for name in self.corners)
         head = (
             f"monte carlo: {self.samples} samples of {self.toleranced} toleranced "
-            f"parameters, seed {self.seed}; {self.failed} failed"
+            f"parameters{at}, seed {self.seed}; {self.failed} failed"
         )
         lines = [head]
         lines.extend(f"  {spread.describe(self.samples)}" for spread in self.spreads)

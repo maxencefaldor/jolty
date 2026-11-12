@@ -25,12 +25,11 @@
 //! Each device's `∂F/∂p` is exact: the device made again computing with [`Gradient`], the
 //! parameter differentiated against, and evaluated where the device itself is.
 
-use jolty_ir::Parameters;
+use jolty_ir::{numbers, parameter_mut};
 use jolty_models::{Binding, Contributions, Device, Gradient, Input, Unknown, UnknownInfo};
 use jolty_numerics::integration::Formula;
 use jolty_numerics::{Complex64, Pattern, PatternBuilder};
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::ac::Linearization;
 use crate::elaborate::Origin;
@@ -255,12 +254,12 @@ impl Simulator {
             let Origin::Model(made) = &placed.origin else {
                 continue;
             };
-            for (name, value) in leaves(&made.parameters) {
+            for (name, value) in numbers(&made.parameters) {
                 let mut seeded = made.parameters.clone();
-                let derivative = serde_json::json!({"value": value, "derivative": 1.0});
-                if set_leaf(&mut seeded, &name, derivative).is_none() {
+                let Some(leaf) = parameter_mut(&mut seeded, &name) else {
                     continue;
-                }
+                };
+                *leaf = serde_json::json!({"value": value, "derivative": 1.0});
                 let mut unknowns: Vec<UnknownInfo> =
                     self.system.unknowns[..placed.first_internal].to_vec();
                 let mut builder = PatternBuilder::new();
@@ -561,123 +560,4 @@ fn add_product(pattern: &Pattern, values: &[f64], s: &[f64], into: &mut [f64]) {
 /// The dot product of `a` and `b`.
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-
-/// Every number in `parameters`, with its name: its keys joined by dots, a list's
-/// entries keyed by their index from 0.
-fn leaves(parameters: &Parameters) -> Vec<(String, f64)> {
-    fn walk(prefix: &str, value: &Value, found: &mut Vec<(String, f64)>) {
-        let name = |key: &dyn std::fmt::Display| {
-            if prefix.is_empty() {
-                key.to_string()
-            } else {
-                format!("{prefix}.{key}")
-            }
-        };
-        match value {
-            Value::Number(number) => {
-                if let Some(number) = number.as_f64() {
-                    found.push((prefix.to_owned(), number));
-                }
-            }
-            Value::Object(object) => {
-                for (key, inner) in object {
-                    walk(&name(key), inner, found);
-                }
-            }
-            Value::Array(items) => {
-                for (index, inner) in items.iter().enumerate() {
-                    walk(&name(&index), inner, found);
-                }
-            }
-            Value::Null | Value::Bool(_) | Value::String(_) => {}
-        }
-    }
-    let mut found = Vec::new();
-    for (key, value) in parameters {
-        walk(key, value, &mut found);
-    }
-    found
-}
-
-/// The value named `key` within `value`, to change.
-fn inner_mut<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value> {
-    match value {
-        Value::Array(items) => items.get_mut(key.parse::<usize>().ok()?),
-        _ => value.get_mut(key),
-    }
-}
-
-/// Replaces the number named `name` in `parameters` by `replacement`; `None` when there
-/// is none, or the replacement is not finite.
-fn set_leaf(parameters: &mut Parameters, name: &str, replacement: Value) -> Option<()> {
-    let mut keys = name.split('.');
-    let mut value = parameters.get_mut(keys.next()?)?;
-    for key in keys {
-        value = inner_mut(value, key)?;
-    }
-    if !value.is_number() || replacement.is_null() {
-        return None;
-    }
-    *value = replacement;
-    Some(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn number(parameters: &Parameters, name: &str) -> Option<f64> {
-        leaves(parameters)
-            .into_iter()
-            .find_map(|(found, value)| (found == name).then_some(value))
-    }
-
-    #[test]
-    fn finds_and_sets_every_number_by_its_dotted_name() {
-        let mut parameters = serde_json::json!({
-            "resistance": 1e3, "waveform": {"pulse": {"initial": 0, "pulsed": 5}},
-            "channel": "n", "points": [[0, 1]]
-        })
-        .as_object()
-        .cloned()
-        .unwrap();
-        let names: Vec<String> = leaves(&parameters)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "points.0.0",
-                "points.0.1",
-                "resistance",
-                "waveform.pulse.initial",
-                "waveform.pulse.pulsed"
-            ]
-        );
-        assert_eq!(
-            set_leaf(&mut parameters, "points.0.1", Value::from(2.0)),
-            Some(())
-        );
-        assert_eq!(number(&parameters, "points.0.1"), Some(2.0));
-        assert_eq!(
-            set_leaf(&mut parameters, "points.1.0", Value::from(2.0)),
-            None
-        );
-        assert_eq!(
-            set_leaf(&mut parameters, "waveform.pulse.pulsed", Value::from(3.3)),
-            Some(())
-        );
-        assert_eq!(
-            set_leaf(&mut parameters, "waveform.pulse.width", Value::from(1.0)),
-            None
-        );
-        assert_eq!(
-            set_leaf(&mut parameters, "channel", Value::from(1.0)),
-            None,
-            "only a number is replaced"
-        );
-        assert_eq!(number(&parameters, "waveform.pulse.pulsed"), Some(3.3));
-    }
 }

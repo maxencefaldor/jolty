@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from jolty import Builder, Role, circuit, component, devices
+from jolty import Builder, Role, circuit, component, devices, ir
 from jolty.catalog import Catalog, Part, bill, mantissas, neighbours, values
 from jolty.cli import main
 from jolty.files import save_circuit
@@ -110,6 +110,23 @@ def test_a_bill_prices_each_device_instance_or_says_why_not() -> None:
     )
     with pytest.raises(KeyError, match="no component instance is at 'X1/R1'"):
         bill(built, CATALOG, "X1/R1")
+
+
+def test_a_part_from_a_lot_stays_unpriced() -> None:
+    lot = ir.Lot(name="die", relative=0.2)
+    matched = devices.resistor(1 * kohm).toleranced("resistance", 0.001, lot=lot)
+
+    @component
+    def integrated(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        placed = c.place(matched, id="R1")
+        c.connect(placed.a, placed.b, ground)
+
+    (unpriced,) = bill(circuit(integrated()), CATALOG).unpriced
+    assert unpriced.reason == (
+        "its resistance comes from the lot die, whose shared spread no part of the "
+        "catalog states"
+    )
 
 
 def test_the_cost_command_prices_a_saved_circuit(

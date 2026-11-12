@@ -19,8 +19,8 @@ from jolty import (
 from jolty.plan import MonteCarlo, OperatingPoint
 from jolty.runner import Built, Job, run
 from jolty.specs import Specs, value
-from jolty.units import V, kohm
-from jolty.variation import sample, toleranced
+from jolty.units import V, kohm, nF
+from jolty.variation import Varied, sample, toleranced
 
 
 @component
@@ -181,3 +181,135 @@ def _alone(device: devices.Device) -> ir.Circuit:
 def test_a_monte_carlo_analysis_draws_a_sample_or_more() -> None:
     with pytest.raises(ValueError, match="a sample or more, not 0"):
         MonteCarlo(0)
+
+
+def test_a_supply_takes_a_tolerance_by_its_path() -> None:
+    supply = devices.voltage_source(5 * V).toleranced("waveform.dc", 0.05)
+
+    @component
+    def divider(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(supply, id="V1")
+        upper = c.place(devices.resistor(1 * kohm), id="R1")
+        lower = c.place(devices.resistor(1 * kohm), id="R2")
+        c.connect(source.positive, upper.a)
+        c.connect(upper.b, lower.a, name="out")
+        c.connect(lower.b, source.negative, ground)
+
+    built = circuit(divider())
+    (varied,) = toleranced(built)
+    assert (varied.path, varied.parameter, varied.nominal) == ("V1", "waveform.dc", 5)
+    drawn = sample((varied,), np.random.default_rng(0))
+    level = drawn["V1"]["waveform.dc"]
+    assert 4.75 <= level <= 5.25
+    point = Simulation(built, overrides=drawn).run(OperatingPoint())
+    assert point.voltage("out") == pytest.approx(level / 2)
+    with pytest.raises(ValueError, match=r"gives waveform\.sine no number"):
+        devices.voltage_source(5 * V).toleranced("waveform.sine", 0.05)
+    with pytest.raises(ElaborationError, match=r"`waveform\.sine\.offset` has no"):
+        Simulation(built, overrides={"V1": {"waveform.sine.offset": 1.0}})
+
+
+def test_the_parts_of_a_lot_share_its_deviation() -> None:
+    die = ir.Lot(name="die", relative=0.2)
+
+    @component
+    def integrated(c: Builder, lot: ir.Lot = die) -> None:
+        ground = c.port("ground", Role.GROUND)
+        for id in ("R1", "R2"):
+            matched = devices.resistor(1 * kohm).toleranced(
+                "resistance", 0.001, lot=lot
+            )
+            placed = c.place(matched, id=id)
+            c.connect(placed.a, placed.b, ground)
+        held = devices.capacitor(1 * nF).toleranced("capacitance", 0.001, lot=lot)
+        capacitor = c.place(held, id="C1")
+        c.connect(capacitor.a, capacitor.b, ground)
+
+    varied = toleranced(circuit(integrated()))
+    generator = np.random.default_rng(0)
+    drawn = [sample(varied, generator) for _ in range(2000)]
+    first, second = (
+        np.array([d[id]["resistance"] for d in drawn]) / 1e3 - 1 for id in ("R1", "R2")
+    )
+    capacitance = np.array([d["C1"]["capacitance"] for d in drawn]) / 1e-9 - 1
+    assert np.abs(first - second).max() <= 0.002 + 1e-12
+    assert first.std() == pytest.approx(0.2 / math.sqrt(3), rel=0.05)
+    assert abs(np.corrcoef(first, capacitance)[0, 1]) < 0.1
+    wider = ir.Lot(name="die", relative=0.3)
+
+    @component
+    def mixed(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        for id, lot in (("X1", die), ("X2", wider)):
+            placed = c.place(integrated(lot), id=id)
+            c.connect(placed.ground, ground)
+
+    with pytest.raises(ElaborationError, match="spread `resistance` of lot `die`"):
+        Simulation(mixed())
+
+
+CORNERED = """
+from jolty import Builder, Corner, MonteCarlo, OperatingPoint, Plan, Role, Specs
+from jolty import component, devices
+from jolty.specs import value
+from jolty.units import V, kohm
+
+
+@component
+def divider(c: Builder, supply) -> None:
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(supply), id="V1")
+    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), id="R1")
+    lower = c.place(devices.resistor(1 * kohm, tolerance=0.01), id="R2")
+    c.connect(source.positive, upper.a)
+    c.connect(upper.b, lower.a, name="out")
+    c.connect(lower.b, source.negative, ground)
+
+
+def build(supply=5 * V):
+    return divider(supply)
+
+
+def plan():
+    return Plan(
+        {"op": OperatingPoint()},
+        corners={"low": Corner(supply=4.9 * V)},
+        monte_carlo=MonteCarlo(50, seed=2),
+    )
+
+
+def specs():
+    return Specs([value("op", "out") >= 2.48 * V])
+"""
+
+
+def test_each_sample_runs_on_the_same_parts_at_every_corner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "divider.py"
+    script.write_text(CORNERED, encoding="utf-8")
+    outcome = run(Job(script=script, plan=script, listed=10), tmp_path)
+    assert isinstance(outcome, Built), str(outcome)
+    report = outcome.monte_carlo
+    assert report is not None
+    assert (report.corners, report.failed) == (("low",), 0)
+    assert "at low, seed 2" in report.describe()
+    assert report.passing is not None
+    assert report.passing.passing == 0
+    # Every sample reads worst at the low supply, on the parts the seed draws.
+    (spread,) = report.spreads
+    assert spread.values is not None
+    generator = np.random.default_rng(2)
+    varied = [
+        Varied(path, "resistance", 1e3, ir.Tolerance(relative=0.01))
+        for path in ("R1", "R2")
+    ]
+    drawn = [sample(varied, generator) for _ in range(50)]
+    low = [
+        4.9 * d["R2"]["resistance"] / (d["R1"]["resistance"] + d["R2"]["resistance"])
+        for d in drawn
+    ]
+    assert spread.values.minimum == pytest.approx(min(low), rel=1e-6)
+    assert spread.values.maximum == pytest.approx(max(low), rel=1e-6)

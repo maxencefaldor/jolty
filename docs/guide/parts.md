@@ -30,7 +30,7 @@ jolty cost bench.jolty.json --catalog parts.json --instance X1
 ```
 
 Each resistor, capacitor and inductor takes the cheapest part of its value whose tolerance is within its own, the tolerance its script gives it.
-An instance that states no tolerance, whose value no part has, or that is another device, stays unpriced: the bill says why, the total leaves it out, and the command exits with 1.
+An instance that states no tolerance, that comes from a lot, whose shared spread no part states, whose value no part has, or that is another device, stays unpriced: the bill says why, the total leaves it out, and the command exits with 1.
 The MCP server's `price_circuit` tool does the same, and `jolty.catalog.bill` in Python.
 
 ## Preferred values

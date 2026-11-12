@@ -82,7 +82,8 @@ use observe::Observer;
 pub struct Conditions {
     /// The devices' temperature, in kelvins.
     pub temperature: f64,
-    /// Parameters that replace an instance's own, by the instance's path, such as `X1/R1`.
+    /// Parameters that replace an instance's own, by the instance's path, such as `X1/R1`,
+    /// then by the parameter's [path](jolty_ir::parameter()), such as `waveform.dc`.
     pub overrides: BTreeMap<String, Parameters>,
     /// Models that stand in for component instances, by the instance's path, such as
     /// `adder/U1`.

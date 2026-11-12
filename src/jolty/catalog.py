@@ -6,8 +6,8 @@ resistor, a capacitor or an inductor of one value and tolerance at a unit price.
 catalog file holds one as JSON. A [`Bill`][jolty.catalog.Bill] prices the device
 instances of a circuit, or of one component instance in it: each instance takes the
 cheapest part of its device, of its value, whose tolerance is within its own. An
-instance that states no tolerance, or that no part matches, stays unpriced, and the bill
-says why.
+instance that states no tolerance, that comes from a lot, whose shared spread no part
+states, or that no part matches, stays unpriced, and the bill says why.
 
 The E series of IEC 60063 space preferred values evenly on a log scale: E24 with 24
 values a decade, for tolerances of 5 %, to E192 for 0.5 % and better.
@@ -298,6 +298,11 @@ def _price(catalog: Catalog, device: str, instance: ir.Instance) -> Part | str:
         return f"its {parameter} is not a number"
     if tolerance is None:
         return f"its {parameter} has no tolerance, which a part must meet"
+    if tolerance.lot is not None:
+        return (
+            f"its {parameter} comes from the lot {tolerance.lot.name}, whose shared "
+            "spread no part of the catalog states"
+        )
     part = catalog.cheapest(kind, float(value), tolerance.relative)
     if part is None:
         return (
