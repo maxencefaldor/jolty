@@ -123,13 +123,24 @@ The engine flattens the hierarchy into devices bound to unknowns: the voltage of
 It writes the circuit's equations in charge-oriented modified nodal analysis, `f(x) + d/dt q(x) = 0`, where `f` sums the currents into each node and `q` the charges.
 
 Newton iteration solves them, with one sparse LU factorization whose symbolic analysis every analysis shares.
-An iteration converges when its last step is within tolerance of every unknown and every equation balances within tolerance of the terms it sums.
-When Newton alone fails, the operating point steps the conductance across every node down from 10 mS, then ramps every source up from zero.
+Every other choice the engine makes is one SPICE simulators make, save those the table marks as jolty's own:
 
-A transient integrates with the trapezoidal rule, Gear's second-order formula or backward Euler.
-It estimates each step's truncation error from divided differences, shortens a step whose error is too large, and lengthens the next when the error allows.
-It restarts with backward Euler after each corner of a waveform, and takes one step of it whenever the trapezoidal rule's derivatives ring.
-A step whose Newton iteration runs out of iterations is retried shorter, from the iteration's last iterate, so a slow convergence goes on where it stopped.
+| Choice | What the engine does | Where it comes from |
+| --- | --- | --- |
+| Convergence | An iteration converges when its last step is within tolerance of every unknown, every equation balances within tolerance of the terms it sums, and no device limited a voltage; an equation also balances within the rounding of the unknowns it reads. | SPICE's tests on `reltol`, `vntol` and `abstol`; the rounding floor is jolty's own, so a milliohm between two nodes at hundreds of volts can converge. |
+| Limiting | A junction's voltage steps at most logarithmically above its critical voltage, and a field-effect transistor's gate and drain step a bounded distance around its threshold, each device evaluated at the limited voltage and extended linearly to the applied one. | SPICE's `pnjlim`, `fetlim` and `limvds`. |
+| `gmin` | A conductance of 1e-12 S across every junction. | SPICE. |
+| Operating point | Newton from zero; then a conductance from every node to the ground, stepped down from 10 mS, ten times at a time when the steps converge quickly and less otherwise; then every source ramped up from zero. | ngspice's dynamic gmin stepping and SPICE's source stepping. |
+| DC sweep | Each level starts from the last solution, and a level Newton cannot reach in one step is approached in steps halved after each failure; a first level no strategy reaches from zero is approached from the circuit's own operating point. | Natural-parameter continuation. |
+| Integration | The trapezoidal rule by default, or Gear's second-order formula or backward Euler, as the transient asks. | SPICE. |
+| Truncation error | Each step's error is estimated from divided differences of the charges, against tolerances on the charge and on the current it carries, times `truncation_tolerance`. | SPICE's `CKTterr` and `trtol`. |
+| Step length | At most a fiftieth of the run unless `max_step` says otherwise; a step whose error is too large is retried shorter, the next grows by at most twice, with a safety factor of 0.9; one whose Newton iteration fails is retried an eighth as long. | SPICE. |
+| Corners | Steps land on every corner of every waveform, and on every time asked for; after a corner, the first step is a tenth of the shorter of the last step and the gap to the next corner, and takes backward Euler. | SPICE. |
+| Ringing | Whenever some charge's derivative under the trapezoidal rule turns back and forth twice in a row by more than its tolerance, the next step takes backward Euler. | jolty's own, as simulators that mix the trapezoidal rule with backward Euler do: the trapezoidal rule carries an error in a derivative from step to step undamped. |
+| Slow convergence | A step whose Newton iteration runs out of iterations is retried from its last iterate rather than from the last solution. | jolty's own: an iteration converging slowly, as at a transistor turning off with nothing else to hold its source, goes on where it stopped. |
+| Logic | Detectors' crossings are located by linear interpolation within a step, and a step that crosses early is retried to land on the crossing; at DC the logic and the analog circuit settle each other at most four times before the detectors still changing read unknown levels. | jolty's own event scheduler, after the connect elements of mixed-signal simulators. |
+| Logic loads | Each logic driver's load is the capacitance it drives, read from its small-signal current at 1 Hz at the operating point. | jolty's own. |
+
 When no step converges, however short, the transient fails and names why: the unknowns furthest from converging, or the equation whose truncation error stayed above its tolerance.
 
 The engine's results agree with ngspice's on a corpus of reference circuits: operating points, sweeps and frequency responses to within a millionth of each signal, and transients to within a thousandth of their swing.
