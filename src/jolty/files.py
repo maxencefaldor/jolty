@@ -117,6 +117,17 @@ def plot_path(results: Path, analysis: str) -> Path:
     return results.with_name(f"{stem}.{analysis}.plot.png")
 
 
+def viewer_path(circuit: Path) -> Path:
+    """Where the 3D viewer of a circuit goes beside it: ``<stem>.view.html``.
+
+    Examples:
+        >>> viewer_path(Path("rc.jolty.json")).name
+        'rc.view.html'
+    """
+    stem = circuit.name.removesuffix(CIRCUIT_SUFFIX).removesuffix(".json")
+    return circuit.with_name(f"{stem}.view.html")
+
+
 def schematic_path(circuit: Path, instance: str = "") -> Path:
     """Where the schematic of the component at `instance` goes beside its circuit.
 

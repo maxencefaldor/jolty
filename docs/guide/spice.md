@@ -66,3 +66,22 @@ jolty's tests read vendors' macromodels from ngspice's own examples and compare 
 
 ngspice runs PSpice's switches as XSPICE's, which stamp the negative of their conductance in an AC analysis, so the OPA171's frequency responses, which its ESD switches load, differ from jolty's by that error.
 Every part's operating point also agrees at -40 °C and at 125 °C, but the AD22057's at 125 °C: ngspice scales a transistor's base-collector saturation current by its area twice, and the leakage of the AD22057's large transistors at that temperature makes the error visible.
+
+## Writing SPICE
+
+`jolty.spice.export` writes a circuit the other way, as a SPICE netlist that ngspice reads, to check jolty against the reference simulator:
+
+```python
+from jolty import circuit
+from jolty.spice import export
+
+lines = export.netlist(circuit(bench()), excited="V1")
+raw = export.ngspice(lines, "ac dec 20 10 1meg")
+raw.vectors[export.vector(drawn, unknown)]  # ngspice's values of a jolty unknown
+```
+
+The netlist flattens the hierarchy into devices whose ids and nets join their paths with underscores, as `RX1_R1` and `x1_mid`; components read from SPICE libraries stay instances of their subcircuits, named in `subcircuits`.
+Behavioral sources become ngspice's `B` sources, PSpice's switch becomes the XSPICE `pswitch`, and each model card carries the device's parameters in SPICE's units.
+Logic devices have no SPICE element, so a circuit that holds one cannot be written.
+`ngspice` runs one analysis with tolerances as tight as jolty's, at the temperature where ngspice's thermal voltage is jolty's, and reads the raw file it writes.
+The [gallery](../gallery.md) replicates every example without logic devices this way.

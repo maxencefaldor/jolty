@@ -74,6 +74,7 @@ def test_tools_mirror_the_service_requests() -> None:
         "simulate_circuit",
         "plot_results",
         "draw_schematic",
+        "write_viewer",
         "check_circuit",
         "explain_rule",
         "price_circuit",

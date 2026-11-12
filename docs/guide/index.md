@@ -9,6 +9,7 @@ The guide explains jolty one concept per page.
 - [SPICE models](spice.md): vendors' models, such as an op-amp's macromodel, read from their SPICE files as components.
 - [Checks](checks.md): the structural rules every build checks, their diagnostics and their levels.
 - [Schematics](schematics.md): how jolty draws a circuit from its connections alone, and the facts a schematic carries.
+- [3D viewer](viewer.md): a page that lays a circuit out on a board and plays its simulation on it, every device's state at every point.
 - [Simulation](simulation.md): plans, the five analyses and the numerical options, and how the engine solves a circuit.
 - [Results](results.md): the report, the plots, the results file, and how to read a result by net and by instance.
 - [Specs](specs.md): requirements on measurements of the results, and the verdict on each.

@@ -14,3 +14,11 @@ examples/*.jolty.json
 examples/*.results.npz
 examples/*.png
 site/
+
+# What simulating the discoveries' designs writes
+discovery/*/*.jolty.json
+discovery/*/*.results.npz
+discovery/*/*.png
+
+# The 3D viewers the commands write; the gallery's are pages of the docs
+examples/*.view.html

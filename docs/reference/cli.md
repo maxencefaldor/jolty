@@ -66,6 +66,18 @@ Draw a component of a saved circuit file.
 | `--results` |  | A .results.npz file of the circuit, whose first operating point gives the voltage written on each net. |
 | `--output` |  | Where to save the image; defaults to &lt;stem&gt;.schematic.png beside the circuit, or &lt;stem&gt;.X1.X2.schematic.png for the instance X1/X2. |
 
+## `jolty view`
+
+Write a 3D viewer of a saved circuit and its results.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
+| `CIRCUIT` | required | A .jolty.json circuit file. |
+| `--results` |  | A .results.npz file of the circuit, whose analyses the viewer plays; none shows the circuit alone. |
+| `--output` |  | Where to save the page; defaults to &lt;stem&gt;.view.html beside the circuit. |
+| `--title` |  | The page's title; the top component's name if empty. |
+
 ## `jolty check`
 
 Check the structure of a saved circuit file.

@@ -1,0 +1,72 @@
+# Copyright 2026 Maxence Faldor
+"""A twin-T notch filter: two T networks in parallel that cancel at one frequency.
+
+One T is two resistors R with a capacitor 2C to ground; the other two capacitors C with
+a resistor R/2 to ground. With R = 10 kΩ and C = 10 nF, their outputs cancel exactly at
+f₀ = 1/(2πRC) = 1.592 kHz, and the filter passes the frequencies far from it. Simulate
+it with ``jolty simulate examples/twin_t_notch.py``.
+"""
+
+import math
+
+from jolty import Builder, Component, Plan, Role, Specs, component, devices
+from jolty.plan import Ac, decade
+from jolty.specs import gain
+from jolty.units import Hz, MHz, Mohm, V, kohm, nF
+
+RESISTANCE, CAPACITANCE = 10e3, 10e-9
+NOTCH = 1 / (2 * math.pi * RESISTANCE * CAPACITANCE)
+
+
+@component
+def twin_t(c: Builder) -> None:
+    """The resistive T and the capacitive T, side by side."""
+    source, output = c.port("input"), c.port("output")
+    ground = c.port("ground", Role.GROUND)
+    r1 = c.place(devices.resistor(10 * kohm), id="R1")
+    r2 = c.place(devices.resistor(10 * kohm), id="R2")
+    c3 = c.place(devices.capacitor(20 * nF), id="C3")
+    c1 = c.place(devices.capacitor(10 * nF), id="C1")
+    c2 = c.place(devices.capacitor(10 * nF), id="C2")
+    r3 = c.place(devices.resistor(5 * kohm), id="R3")
+    c.connect(source, r1.a, c1.a)
+    c.connect(r1.b, r2.a, c3.a, name="resistive")
+    c.connect(c1.b, c2.a, r3.a, name="capacitive")
+    c.connect(r2.b, c2.b, output)
+    c.connect(c3.b, r3.b, ground)
+
+
+@component
+def bench(c: Builder) -> None:
+    """The notch, driven by a source and loaded by 10 MΩ."""
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(0 * V), id="V1")
+    notch = c.place(twin_t(), id="X1")
+    load = c.place(devices.resistor(10 * Mohm), id="RL")
+    c.connect(source.positive, notch.input, name="in")
+    c.connect(notch.output, load.a, name="out")
+    c.connect(source.negative, notch.ground, load.b, ground)
+
+
+def build() -> Component:
+    """The notch on its bench."""
+    return bench()
+
+
+def plan() -> Plan:
+    """The frequency response, finely around the notch."""
+    frequencies = sorted(
+        [*decade(10 * Hz, 1 * MHz, 60), NOTCH * Hz],
+        key=lambda frequency: frequency.value,
+    )
+    return Plan({"bode": Ac("V1", frequencies)})
+
+
+def specs() -> Specs:
+    """No gain far from the notch, and the notch deep."""
+    return Specs(
+        [
+            gain("bode", "out", at=10 * Hz).between(-0.03, 0),
+            gain("bode", "out", at=NOTCH * Hz) <= -100,
+        ]
+    )

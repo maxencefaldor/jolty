@@ -1,0 +1,36 @@
+# Long-tailed pair
+
+A long-tailed pair: two 2N3904s sharing a 1 mA tail, steering it between them.
+
+The difference of the bases splits the tail as a hyperbolic tangent: the collector currents' difference is I·tanh(Vd/2Vt), so the outputs' difference swings ±I·Rc = ±10 V and its small-signal gain is gm·Rc = (I/2)/Vt·Rc, some 193.
+Simulate it with `jolty simulate examples/differential_pair.py`.
+
+[Open in 3D](differential-pair.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/differential_pair.py){ .md-button }
+
+8 devices, 13 unknowns, simulated in 1.48 s.
+
+![The schematic](../images/gallery/differential_pair.schematic.png)
+
+## Specs
+
+| Requirement | jolty | ngspice | Difference |
+| --- | --- | --- | --- |
+| left relative to right in op ≥ -1 mV and ≤ 1 mV | 0 V, passed | -10.6581 fV, passed | 1e+02 % |
+| right relative to left at 200 mV in transfer ≥ 9.85 V and ≤ 10.05 V | 9.91669 V, passed | 9.91669 V, passed | 1.0e-08 |
+| right relative to left at -200 mV in transfer ≥ -10.05 V and ≤ -9.85 V | -9.91686 V, passed | -9.91686 V, passed | 1.0e-08 |
+
+## Replicated in ngspice
+
+jolty writes the circuit as a SPICE netlist, ngspice runs every analysis of the plan, and each signal both report is compared, relative to its largest value.
+A transient compares each of ngspice's points with jolty's waveform within one of jolty's steps.
+
+| Analysis | Voltages | Largest deviation | Currents | Largest deviation |
+| --- | --- | --- | --- | --- |
+| `op` | 6 | 1.0e-08 | 3 | 2.6e-08 |
+| `transfer` | 6 | 3.1e-07 | 3 | 4.8e-07 |
+
+![The replication in ngspice](../images/gallery/differential_pair.transfer.replication.png)
+
+## Plots
+
+![A plot](../images/gallery/differential_pair.transfer.plot.png)

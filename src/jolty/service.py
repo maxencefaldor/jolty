@@ -22,7 +22,18 @@ from typing import override
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import CliPositionalArg
 
-from jolty import catalog, checks, files, ir, plots, results, runner, schematic, specs
+from jolty import (
+    catalog,
+    checks,
+    files,
+    ir,
+    plots,
+    results,
+    runner,
+    schematic,
+    specs,
+    viewer,
+)
 from jolty.errors import ElaborationError, JoltyError
 from jolty.fidelity import FidelityReport
 from jolty.report import AnalysisReport, CornerReport, FailureReport, MonteCarloReport
@@ -595,6 +606,69 @@ async def draw(request: DrawRequest, settings: Settings) -> DrawResult:
         _draw, circuit, target, request.instance, point=point
     )
     return DrawResult(schematic=drawn)
+
+
+class ViewRequest(_Model):
+    """Write a 3D viewer of a saved circuit and its results, one HTML page to open.
+
+    The viewer lays each component out on a board, its parts on their pins and its
+    wires as traces, and plays every analysis of the results on it: each trace takes
+    its net's voltage as a color, light runs along each lead as its current flows, and
+    clicking a part shows its parameters and its state at each point. It loads three.js
+    from jsDelivr when opened.
+    """
+
+    circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
+    results: Path | None = Field(
+        default=None,
+        description="A .results.npz file of the circuit, whose analyses the viewer "
+        "plays; none shows the circuit alone.",
+    )
+    output: Path | None = Field(
+        default=None,
+        description="Where to save the page; defaults to <stem>.view.html beside the "
+        "circuit.",
+    )
+    title: str = Field(
+        default="", description="The page's title; the top component's name if empty."
+    )
+
+
+class ViewResult(CommandResult):
+    """The 3D viewer written."""
+
+    viewer: Path = Field(description="The HTML page.")
+
+    @property
+    @override
+    def ok(self) -> bool:
+        """Always: writing the viewer finds nothing wrong."""
+        return True
+
+    @override
+    def describe(self) -> str:
+        """The page, in one line."""
+        return f"wrote the 3D viewer {self.viewer}"
+
+
+async def view(request: ViewRequest, settings: Settings) -> ViewResult:
+    """Writes the 3D viewer of a saved circuit and its results; settings play no part.
+
+    Raises:
+        JoltyError: When a file is missing or holds no circuit or no results.
+    """
+    del settings
+    circuit = await asyncio.to_thread(_load_circuit, request.circuit)
+    analyses = (
+        await asyncio.to_thread(_load, request.results)
+        if request.results is not None
+        else {}
+    )
+    target = request.output or files.viewer_path(request.circuit)
+    await asyncio.to_thread(
+        viewer.write_viewer, target, circuit, analyses, request.title
+    )
+    return ViewResult(viewer=target)
 
 
 class CostRequest(_Model):

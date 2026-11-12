@@ -73,6 +73,14 @@ class DrawCommand(service.DrawRequest, _Output):
         self.emit(await service.draw(self, Settings.load()))
 
 
+class ViewCommand(service.ViewRequest, _Output):
+    """Write a 3D viewer of a saved circuit and its results."""
+
+    async def cli_cmd(self) -> None:
+        """Runs the command."""
+        self.emit(await service.view(self, Settings.load()))
+
+
 class CheckCommand(service.CheckRequest, _Output):
     """Check the structure of a saved circuit file."""
 
@@ -120,6 +128,9 @@ class Jolty(BaseSettings):
     )
     draw: CliSubCommand[DrawCommand] = Field(
         description="Draw a component of a saved circuit file."
+    )
+    view: CliSubCommand[ViewCommand] = Field(
+        description="Write a 3D viewer of a saved circuit and its results."
     )
     check: CliSubCommand[CheckCommand] = Field(
         description="Check the structure of a saved circuit file."

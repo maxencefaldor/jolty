@@ -11,8 +11,10 @@ Every build checks the circuit's structure and draws its schematic, and every si
 Specs state what a circuit must do, and every simulation measures its results against them, at every temperature and corner its plan names, and over Monte Carlo samples of its parts' tolerances.
 A plan can run a component as a logic cell characterized from its own circuit, as the full adder example runs its nine transistor-level NAND gates, and spot checks hold each cell to its circuit.
 A sensitivity analysis gives the derivative of any unknown with respect to every parameter of every device, from one solve per unknown.
+Every result holds each device's own state, its terminals' currents and charges, the derivatives of its equations and its model's variables, at every point, and a 3D viewer plays any simulation on the circuit's layout.
 
 The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.
+Its [gallery](https://maxencefaldor.github.io/jolty/gallery/) shows thirty famous circuits, analog and digital, each simulated by jolty and replicated in ngspice, and its [discovery](https://maxencefaldor.github.io/jolty/discovery/) pages five hard design problems and the circuits an agent found for them with jolty alone.
 
 ## 🚀 Quick start
 

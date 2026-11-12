@@ -24,6 +24,14 @@ Each build checks every device and connection, reports each problem with the scr
 
 <div class="grid cards jolty-links" markdown>
 
+-   🖼️ **[Gallery](gallery.md)**
+
+    Thirty famous circuits, analog and digital, each simulated by jolty, replicated in ngspice and open in a 3D viewer.
+
+-   🔬 **[Discovery](discovery.md)**
+
+    Five hard problems of circuit design, and the circuits an agent found for them with jolty alone.
+
 -   📘 **[Guide](guide/index.md)**
 
     One page per concept: components, units, devices, checks, schematics, simulation and results.

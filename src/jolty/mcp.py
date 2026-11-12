@@ -202,6 +202,13 @@ def create_server(settings: Settings) -> MCPServer:
         WRITES_FILES,
     )
     register(
+        "write_viewer",
+        service.ViewRequest,
+        service.view,
+        service.ViewResult,
+        WRITES_FILES,
+    )
+    register(
         "check_circuit",
         service.CheckRequest,
         service.check,

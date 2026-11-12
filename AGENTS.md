@@ -15,6 +15,7 @@ uv run ty check             # types
 uv run rumdl check .        # Markdown
 uv run python docs/reference.py  # regenerate the reference pages from the code
 uv run python docs/illustrate.py # redraw the docs' schematics and plots from the examples
+uv run python docs/gallery.py    # rebuild the gallery and the discoveries, replicated in ngspice
 cargo fmt --all             # format Rust
 cargo clippy --workspace --all-targets -- -D warnings  # lint Rust
 cargo test --workspace      # Rust tests
@@ -44,10 +45,10 @@ Each module imports only from the modules listed before it:
 1. `errors`, `settings`: the errors front ends show as a message, and configuration.
 1. `units`, `waveforms`, `ir`: dimensioned quantities, the levels of sources over time, and the circuit format.
 1. `devices`, `builder`: the devices a script places, and components written as Python functions.
-1. `spice`: SPICE libraries read into components, and model files downloaded and checked.
+1. `spice`: SPICE libraries read into components, model files downloaded and checked, and circuits written as SPICE netlists for ngspice.
 1. `plan`, `checks`, `results`, `specs`, `simulate`, `variation`, `catalog`, `fidelity`: analyses and their options, the rules and their diagnostics, results, requirements measured on results, the engine's Python face, Monte Carlo samples of tolerances, orderable parts and bills of materials, and logic models characterized from components' circuits.
 1. `files`, `report`, `plots`: circuit and results files, what each analysis found as data and as text, and plots of results.
-1. `layout`, `schematic`: where a schematic places each instance and runs each wire, and the schematic drawn.
+1. `layout`, `schematic`, `viewer`: where a schematic places each instance and runs each wire, the schematic drawn, and the 3D viewer that plays a simulation on the layout.
 1. `runner`, `service`: scripts in child processes, and every command defined once.
 1. `cli`, `mcp`: front ends that only adapt `service`.
 
