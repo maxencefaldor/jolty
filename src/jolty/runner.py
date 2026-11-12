@@ -23,11 +23,14 @@ stops a script or an analysis that runs too long, and a crash ends only the runn
 import functools
 import itertools
 import json
+import os
 import runpy
 import sys
 import sysconfig
 import traceback
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from collections import deque
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Final, Literal, override
@@ -392,15 +395,44 @@ def _samples(
         return
     toleranced = variation.toleranced(chosen.built)
     generator = np.random.default_rng(monte_carlo.seed)
-    for _ in range(monte_carlo.samples):
-        overrides = variation.sample(toleranced, generator)
-        try:
-            simulation = chosen.simulation(overrides)
-        except ElaborationError:
-            yield {}, False
-            continue
-        solved, reports = _analyses(simulation, plan, 1)
-        yield solved, not any(isinstance(r, report.FailureReport) for r in reports)
+    drawn = (
+        variation.sample(toleranced, generator) for _ in range(monte_carlo.samples)
+    )
+    yield from _parallel(functools.partial(_sampled, chosen, plan), drawn)
+
+
+def _sampled(
+    chosen: fidelity.Fidelity, plan: Plan, overrides: dict[str, dict[str, float]]
+) -> tuple[dict[str, Result], bool]:
+    """What `plan`'s analyses find on one sample, its parameters `overrides`.
+
+    The results of the analyses that end, by name, and whether all of them do.
+    """
+    try:
+        simulation = chosen.simulation(overrides)
+    except ElaborationError:
+        return {}, False
+    solved, reports = _analyses(simulation, plan, 1)
+    return solved, not any(isinstance(r, report.FailureReport) for r in reports)
+
+
+def _parallel[T, R](function: Callable[[T], R], items: Iterable[T]) -> Iterator[R]:
+    """`function` of each of `items`, in order, on a thread per core.
+
+    The engine releases the interpreter while it simulates, so the threads simulate at
+    once; each item is drawn here, in turn, so the order is the same however many there
+    are. At most twice as many calls run ahead of the result consumed as there are
+    threads, so results do not pile up.
+    """
+    workers = os.cpu_count() or 1
+    with ThreadPoolExecutor(workers) as pool:
+        pending: deque[Future[R]] = deque()
+        for item in items:
+            pending.append(pool.submit(function, item))
+            if len(pending) >= 2 * workers:
+                yield pending.popleft().result()
+        while pending:
+            yield pending.popleft().result()
 
 
 type _Conditions = tuple[str | None, fidelity.Fidelity | None, Mapping[str, Result]]
@@ -435,32 +467,22 @@ def _worst_case(
         run = functools.partial(_overridden, chosen, plan)
         slopes = _slopes(varied, requirements, nominal, worst_case.step, run)
         runs += len(varied)
-        extremes: dict[str, Mapping[str, Result]] = {}
+        extremes: dict[str, dict[str, dict[str, float]]] = {}
+        wanted: list[list[str]] = []
         for index, requirement in enumerate(requirements):
-            bounds = [
-                direction
-                for direction, bound in (
-                    (-1.0, requirement.minimum),
-                    (1.0, requirement.maximum),
-                )
-                if bound is not None
-            ]
-            for toward in bounds:
-                directions = [toward * slope[index] for slope in slopes]
-                lots: dict[variation.Lot, float] = {}
-                for parameter, direction in zip(varied, directions, strict=True):
-                    if (key := variation.lot(parameter)) is not None:
-                        lots[key] = lots.get(key, 0.0) + direction
-                overrides = variation.extreme(
-                    varied,
-                    [float(np.sign(direction)) for direction in directions],
-                    {key: float(np.sign(direction)) for key, direction in lots.items()},
+            keys = []
+            for toward in _bounds(requirement):
+                overrides = _extreme(
+                    varied, [toward * slope[index] for slope in slopes]
                 )
                 key = json.dumps(overrides, sort_keys=True)
-                if key not in extremes:
-                    extremes[key] = run(overrides)
-                    runs += 1
-                found[index].append((corner, extremes[key]))
+                extremes.setdefault(key, overrides)
+                keys.append(key)
+            wanted.append(keys)
+        solved = dict(zip(extremes, _parallel(run, extremes.values()), strict=True))
+        runs += len(extremes)
+        for at, keys in zip(found, wanted, strict=True):
+            at.extend((corner, solved[key]) for key in keys)
     verdicts = tuple(
         judge(requirement, plan.analyses, at)
         for requirement, at in zip(requirements, found, strict=True)
@@ -507,15 +529,45 @@ def _slopes(
     read.
     """
     base = [reading(requirement, nominal) for requirement in requirements]
+    steps = (variation.moved(varied, index, step) for index in range(len(varied)))
     slopes = []
-    for index in range(len(varied)):
-        moved = run(variation.moved(varied, index, step))
+    for moved in _parallel(run, steps):
         slope = []
         for requirement, before in zip(requirements, base, strict=True):
             after = reading(requirement, moved)
             slope.append(0.0 if before is None or after is None else after - before)
         slopes.append(slope)
     return slopes
+
+
+def _bounds(requirement: Requirement) -> list[float]:
+    """The way toward each of `requirement`'s bounds: -1 down, 1 up."""
+    return [
+        direction
+        for direction, bound in (
+            (-1.0, requirement.minimum),
+            (1.0, requirement.maximum),
+        )
+        if bound is not None
+    ]
+
+
+def _extreme(
+    varied: Sequence[variation.Varied], directions: Sequence[float]
+) -> dict[str, dict[str, float]]:
+    """Each of `varied`, and each lot's spread, at the extreme in its direction.
+
+    A lot's direction is the sum of its parts'.
+    """
+    lots: dict[variation.Lot, float] = {}
+    for parameter, direction in zip(varied, directions, strict=True):
+        if (key := variation.lot(parameter)) is not None:
+            lots[key] = lots.get(key, 0.0) + direction
+    return variation.extreme(
+        varied,
+        [float(np.sign(direction)) for direction in directions],
+        {key: float(np.sign(direction)) for key, direction in lots.items()},
+    )
 
 
 def _specs(script: Path, namespaces: dict[Path, dict[str, object]]) -> Specs | None:

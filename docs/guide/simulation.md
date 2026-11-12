@@ -192,6 +192,7 @@ Each sample draws every toleranced parameter of every device instance independen
 A parameter that sets an exponential's argument spreads in its logarithm: `toleranced("saturation_current", 0.08, "log_uniform")` keeps a transistor's saturation current within a factor of 1.08 either way, its base-emitter voltage within 2 mV, and `"log_normal"` makes that factor three standard deviations.
 Parts that drift together, as resistors on one die do, share a lot: `toleranced("resistance", 0.001, lot=ir.Lot(name="die", relative=0.2))` scales the part's own factor, within 0.1 %, by the lot's, drawn once per sample for each parameter and shared by every part that names the lot, wherever it lies in the hierarchy.
 A sample runs on the same parts at every corner whose circuit holds the same toleranced parameters, and each requirement's verdict on it is its worst at any of them.
+Samples simulate at once, a thread per core, as the engine releases the interpreter while it simulates; each is drawn in turn, so the samples are the same however many cores there are.
 The report counts the samples on which the circuit did not elaborate or an analysis failed, at the plan's own conditions or a corner; with [specs](specs.md), it states what each requirement read over the samples and the yield.
 
 ## Worst case
@@ -206,6 +207,7 @@ def plan() -> Plan:
 At the plan's own conditions and at each corner, a run per toleranced parameter, moved `step` of its tolerance, finds which way each requirement's value moves with it.
 Then, for each bound of each requirement, every parameter goes to the extreme of its tolerance that moves the value toward the bound, and a lot's spread to the extreme its parts move it toward together, so a spread that cancels, as a matched pair's in a ratio, stays at its nominal value; runs at the same extremes are shared.
 A normal tolerance's extreme is its three standard deviations, and a logarithmic one's its factor.
+The runs simulate at once, a thread per core, as a Monte Carlo analysis's samples do.
 The extremes follow each value's first-order slope, as PSpice's do, so a value that bends over a tolerance may be worse inside it; a Monte Carlo analysis samples the inside.
 The report states how many runs it took and each requirement's verdict, its worst over its bounds and conditions, and `jolty simulate` exits with 1 when one fails.
 
