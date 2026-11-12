@@ -29,6 +29,16 @@ Each value drifts with temperature by `1 + tc1 · ΔT + tc2 · ΔT²`, where `Δ
 
 Only a resistor has an exponential coefficient, and a resistance the coefficients scale to zero is a problem.
 
+A resistor's or capacitor's value also bends with the voltage `v` from `a` to `b`, by `1 + vc1 · v + vc2 · v²`, as ngspice's expressions would write it:
+
+| Parameter | SPICE | Unit | Default |
+| --- | --- | --- | --- |
+| `voltage_coefficient` | `VC1` | V⁻¹ | 0 |
+| `quadratic_voltage_coefficient` | `VC2` | V⁻² | 0 |
+
+A resistor then carries `v / (r · (1 + vc1 · v + vc2 · v²))`, and a capacitor holds the charge `c · (v + vc1 · v² / 2 + vc2 · v³ / 3)`, whose slope is its bent capacitance.
+The formula holds at every voltage, as in ngspice: where the coefficients bend a value below zero, it is negative there.
+
 A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and `device.toleranced(parameter, relative, distribution)` gives any device's number parameter a `"uniform"` or `"normal"` tolerance; [Monte Carlo analyses](simulation.md#monte-carlo) sample them.
 
 ## Independent sources

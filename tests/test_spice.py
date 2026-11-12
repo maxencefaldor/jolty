@@ -277,6 +277,30 @@ def test_temperature_parameters_come_in_kelvins() -> None:
     }
 
 
+def test_resistors_and_capacitors_read_voltage_coefficients() -> None:
+    parts = library(
+        ".model CX CAP(VC1=-1m)\n"
+        ".subckt a x\nR1 x 0 1k VC1=2u VC2=3n\nC1 x 0 CX 1n VC2=4u\n.ends"
+    )
+    resistor, capacitor = parts.component("a").definition.instances
+    assert resistor.parameters == pytest.approx(
+        {
+            "resistance": 1e3,
+            "voltage_coefficient": 2e-6,
+            "quadratic_voltage_coefficient": 3e-9,
+        }
+    )
+    assert capacitor.parameters == pytest.approx(
+        {
+            "capacitance": 1e-9,
+            "voltage_coefficient": -1e-3,
+            "quadratic_voltage_coefficient": 4e-6,
+        }
+    )
+    with pytest.raises(SpiceError, match="jolty reads no `VC1` here"):
+        library(".subckt a x\nL1 x 0 1u VC1=1m\n.ends").component("a")
+
+
 def test_a_download_is_checked_and_kept(tmp_path: Path) -> None:
     published = tmp_path / "published" / "part.lib"
     published.parent.mkdir()

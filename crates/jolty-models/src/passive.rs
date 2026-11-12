@@ -12,11 +12,40 @@ fn reference_temperature<R: Real>() -> R {
     R::constant(REFERENCE_TEMPERATURE)
 }
 
-/// A linear resistor between terminals `a` and `b`, whose resistance drifts with temperature.
+/// A resistor between terminals `a` and `b`, whose resistance drifts with temperature and
+/// changes with its voltage.
+///
+/// With `v` from `a` to `b`, its resistance is `r · (1 + vc1 · v + vc2 · v²)`, `r` its
+/// resistance at that temperature; the coefficients must keep it positive over the voltages
+/// it meets.
 #[derive(Debug)]
 pub struct Resistor<R: Real = f64> {
     pair: TerminalPair,
-    conductance: R,
+    resistance: R,
+    coefficients: VoltageCoefficients<R>,
+}
+
+/// How a passive device's value changes with its voltage `v`: by `1 + vc1 · v + vc2 · v²`.
+#[derive(Debug, Clone, Copy)]
+struct VoltageCoefficients<R: Real> {
+    linear: R,
+    quadratic: R,
+}
+
+impl<R: Real> VoltageCoefficients<R> {
+    /// The factor at `voltage`, and its derivative with respect to the voltage.
+    fn factor(self, voltage: f64) -> (R, R) {
+        (
+            self.linear * voltage + self.quadratic * (voltage * voltage) + 1.0,
+            self.linear + self.quadratic * (2.0 * voltage),
+        )
+    }
+
+    /// The integral of the factor from 0 to `voltage`.
+    fn integral(self, voltage: f64) -> R {
+        let squared = voltage * voltage;
+        self.linear * (squared / 2.0) + self.quadratic * (squared * voltage / 3.0) + voltage
+    }
 }
 
 /// The parameters of a [`Resistor`].
@@ -38,6 +67,12 @@ pub struct ResistorParameters<R: Real = f64> {
     /// The temperature the resistance was measured at, in kelvins; default 27 °C.
     #[serde(default = "reference_temperature")]
     pub nominal_temperature: R,
+    /// The linear voltage coefficient `vc1`, per volt; default 0.
+    #[serde(default)]
+    pub voltage_coefficient: R,
+    /// The quadratic voltage coefficient `vc2`, per volt squared; default 0.
+    #[serde(default)]
+    pub quadratic_voltage_coefficient: R,
 }
 
 impl NativeModel for Resistor {
@@ -85,25 +120,37 @@ impl<R: Real> NativeDevice<R> for Resistor<R> {
         let (a, b) = (binding.terminal(0), binding.terminal(1));
         Ok(Self {
             pair: TerminalPair::new(binding, a, b),
-            conductance: (resistance * factor).recip(),
+            resistance: resistance * factor,
+            coefficients: VoltageCoefficients {
+                linear: parameters.voltage_coefficient,
+                quadratic: parameters.quadratic_voltage_coefficient,
+            },
         })
     }
 }
 
 impl<R: Real> Device<R> for Resistor<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
+        let voltage = self.pair.voltage(input);
+        let (factor, slope) = self.coefficients.factor(voltage);
+        // i = v / (r · f(v)), so di/dv = (f − v · f′) / (r · f²).
+        let conductance = (self.resistance * factor).recip();
+        self.pair.add_current(output, conductance * voltage);
         self.pair
-            .add_current(output, self.conductance * self.pair.voltage(input));
-        self.pair.add_conductance(output, self.conductance);
+            .add_conductance(output, conductance * (factor - slope * voltage) / factor);
     }
 }
 
-/// A linear capacitor between terminals `a` and `b`, whose capacitance drifts with
-/// temperature.
+/// A capacitor between terminals `a` and `b`, whose capacitance drifts with temperature
+/// and changes with its voltage.
+///
+/// With `v` from `a` to `b`, its capacitance is `c · (1 + vc1 · v + vc2 · v²)`, `c` its
+/// capacitance at that temperature, and its charge that capacitance's integral from 0 V.
 #[derive(Debug)]
 pub struct Capacitor<R: Real = f64> {
     pair: TerminalPair,
     capacitance: R,
+    coefficients: VoltageCoefficients<R>,
 }
 
 /// The parameters of a [`Capacitor`].
@@ -121,6 +168,12 @@ pub struct CapacitorParameters<R: Real = f64> {
     /// The temperature the capacitance was measured at, in kelvins; default 27 °C.
     #[serde(default = "reference_temperature")]
     pub nominal_temperature: R,
+    /// The linear voltage coefficient `vc1`, per volt; default 0.
+    #[serde(default)]
+    pub voltage_coefficient: R,
+    /// The quadratic voltage coefficient `vc2`, per volt squared; default 0.
+    #[serde(default)]
+    pub quadratic_voltage_coefficient: R,
 }
 
 impl NativeModel for Capacitor {
@@ -148,15 +201,23 @@ impl<R: Real> NativeDevice<R> for Capacitor<R> {
         Ok(Self {
             pair: TerminalPair::new(binding, a, b),
             capacitance,
+            coefficients: VoltageCoefficients {
+                linear: parameters.voltage_coefficient,
+                quadratic: parameters.quadratic_voltage_coefficient,
+            },
         })
     }
 }
 
 impl<R: Real> Device<R> for Capacitor<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        self.pair
-            .add_charge(output, self.capacitance * self.pair.voltage(input));
-        self.pair.add_capacitance(output, self.capacitance);
+        let voltage = self.pair.voltage(input);
+        let (factor, _) = self.coefficients.factor(voltage);
+        self.pair.add_charge(
+            output,
+            self.capacitance * self.coefficients.integral(voltage),
+        );
+        self.pair.add_capacitance(output, self.capacitance * factor);
     }
 }
 
@@ -275,6 +336,20 @@ mod tests {
     }
 
     #[test]
+    fn values_change_with_their_voltage_coefficients() {
+        let coefficients = r#""voltage_coefficient": 0.1, "quadratic_voltage_coefficient": 0.01"#;
+        let mut bench =
+            Bench::new::<Resistor>(&format!(r#"{{"resistance": 1000, {coefficients}}}"#));
+        let current = 2.0 / (1000.0 * (1.0 + 0.1 * 2.0 + 0.01 * 4.0));
+        assert_close(&bench.evaluate(&[3.0, 1.0]).residual, &[current, -current]);
+        let mut bench =
+            Bench::new::<Capacitor>(&format!(r#"{{"capacitance": 1e-6, {coefficients}}}"#));
+        let charge = 1e-6 * (2.0 + 0.1 * 4.0 / 2.0 + 0.01 * 8.0 / 3.0);
+        let output = bench.evaluate(&[2.0, 0.0]);
+        assert_close(&output.charge, &[charge, -charge]);
+    }
+
+    #[test]
     fn an_inductor_adds_its_current_as_an_unknown() {
         let bench = Bench::new::<Inductor>(r#"{"inductance": 1e-3}"#);
         assert_eq!(bench.unknowns(), ["n0", "n1", "device:current"]);
@@ -313,8 +388,17 @@ mod tests {
 
     #[test]
     fn jacobians_match_finite_differences() {
+        let coefficients = r#""voltage_coefficient": -0.05, "quadratic_voltage_coefficient": 0.02"#;
         assert_jacobians_match::<Resistor>(r#"{"resistance": 50}"#, &[1.0, -0.5]);
+        assert_jacobians_match::<Resistor>(
+            &format!(r#"{{"resistance": 50, {coefficients}}}"#),
+            &[1.0, -0.5],
+        );
         assert_jacobians_match::<Capacitor>(r#"{"capacitance": 2e-9}"#, &[1.0, -0.5]);
+        assert_jacobians_match::<Capacitor>(
+            &format!(r#"{{"capacitance": 2e-9, {coefficients}}}"#),
+            &[1.0, -0.5],
+        );
         assert_jacobians_match::<Inductor>(r#"{"inductance": 1e-3}"#, &[1.0, -0.5, 0.25]);
     }
 
@@ -322,8 +406,11 @@ mod tests {
     fn parameter_gradients_are_exact() {
         let drifting = r#""temperature_coefficient": 1e-3,
             "quadratic_temperature_coefficient": 1e-5, "nominal_temperature": 290"#;
+        let nonlinear = format!(
+            r#"{drifting}, "voltage_coefficient": -0.05, "quadratic_voltage_coefficient": 0.02"#
+        );
         assert_parameter_gradients_match::<Resistor>(
-            &format!(r#"{{"resistance": 50, {drifting}}}"#),
+            &format!(r#"{{"resistance": 50, {nonlinear}}}"#),
             &[1.0, -0.5],
         );
         assert_parameter_gradients_match::<Resistor>(
@@ -331,7 +418,7 @@ mod tests {
             &[1.0, -0.5],
         );
         assert_parameter_gradients_match::<Capacitor>(
-            &format!(r#"{{"capacitance": 2e-9, {drifting}}}"#),
+            &format!(r#"{{"capacitance": 2e-9, {nonlinear}}}"#),
             &[1.0, -0.5],
         );
         assert_parameter_gradients_match::<Inductor>(

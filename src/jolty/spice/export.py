@@ -317,11 +317,7 @@ def netlist(
                 )
                 value = f"M{instance.id}"
             case "resistor" | "capacitor" | "inductor":
-                number, *drift = values.items()
-                value = " ".join(
-                    [repr(number[1])]
-                    + [f"{_PASSIVE_DRIFT[key]}={amount!r}" for key, amount in drift]
-                )
+                value = _passive(model, values, nodes.split())
             case _:
                 (number,) = values.values()
                 value = repr(number)
@@ -357,6 +353,38 @@ _PASSIVE_DRIFT = {
     "exponential_temperature_coefficient": "tce",
 }
 """The SPICE name of each temperature coefficient of a passive device."""
+
+_CURVATURE = ("voltage_coefficient", "quadratic_voltage_coefficient")
+"""A resistor's or a capacitor's voltage coefficients, linear then quadratic."""
+
+
+def _passive(model: str, values: dict[str, JsonValue], nodes: list[str]) -> str:
+    """A resistor's, capacitor's or inductor's value and temperature coefficients.
+
+    A value that changes with the voltage is ngspice's expression for the resistance,
+    or for the charge, of the voltage across the device.
+    """
+    number, *rest = values.items()
+    drift = []
+    for key, amount in rest:
+        if key in _CURVATURE:
+            continue
+        if key not in _PASSIVE_DRIFT:
+            message = f"a {model}'s {key} has no ngspice element parameter"
+            raise _unwritable(message)
+        drift.append(f"{_PASSIVE_DRIFT[key]}={amount!r}")
+    linear, quadratic = (values.get(key, 0.0) for key in _CURVATURE)
+    if linear == 0 and quadratic == 0:
+        return " ".join([repr(number[1]), *drift])
+    voltage = f"v({nodes[0]},{nodes[1]})"
+    if model == "resistor":
+        factor = f"1+{linear!r}*{voltage}+{quadratic!r}*{voltage}^2"
+        written = f"R={{{number[1]!r}*({factor})}}"
+    else:
+        integral = f"{voltage}+{linear!r}*{voltage}^2/2+{quadratic!r}*{voltage}^3/3"
+        written = f"Q={{{number[1]!r}*({integral})}}"
+    return " ".join([written, *drift])
+
 
 _SWITCH_PARAMETERS = {
     "on_voltage": "cntl_on",

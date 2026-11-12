@@ -488,6 +488,12 @@ _DRIFT: Final = {
 }
 """The temperature coefficients of a resistor, capacitor or inductor, by SPICE name."""
 
+_CURVATURE: Final = {
+    "vc1": "voltage_coefficient",
+    "vc2": "quadratic_voltage_coefficient",
+}
+"""The voltage coefficients of a resistor or capacitor, by HSPICE's name."""
+
 
 def _passive(
     model: str, parameter: str, kind: str
@@ -497,10 +503,13 @@ def _passive(
     Its model card, of type `kind`, scales its value by the parameter of its letter, and
     gives its temperature coefficients and nominal temperature. The element's own
     coefficients, ``TC=tc1,tc2`` or each by name, override the card's. Only a resistor
-    has an exponential coefficient, ``TCE``.
+    has an exponential coefficient, ``TCE``, and only a resistor and a capacitor voltage
+    coefficients, ``VC1`` and ``VC2``.
     """
     letter = kind[0]
+    curved = frozenset(_CURVATURE) if model != "inductor" else frozenset()
     drifts = frozenset(_DRIFT) if model == "resistor" else frozenset({"tc1", "tc2"})
+    drifts |= curved
 
     def translated(translation: _Translation, statement: Statement) -> None:
         positional, assigned = _keywords(tokens(statement.text))
@@ -537,6 +546,11 @@ def _passive(
         given |= _coefficients(translation, statement, assigned, drifts)
         parameters: dict[str, JsonValue] = {parameter: value}
         parameters |= _temperatures(model, given, statement)
+        parameters |= {
+            _CURVATURE[name]: amount
+            for name, amount in given.items()
+            if name in _CURVATURE
+        }
         translation.add(
             statement,
             model,
@@ -579,7 +593,7 @@ def _coefficients(
     assigned: Mapping[str, list[str]],
     drifts: frozenset[str],
 ) -> dict[str, float]:
-    """The temperature coefficients an element gives, by SPICE name.
+    """The temperature and voltage coefficients an element gives, by SPICE name.
 
     It gives them as ``TC=tc1,tc2``, or each of `drifts` by name.
 

@@ -81,8 +81,14 @@ PER_KELVIN: Final = DIMENSIONLESS / TEMPERATURE
 PER_KELVIN_SQUARED: Final = DIMENSIONLESS / TEMPERATURE**2
 """The dimension of a quadratic temperature coefficient, K⁻²."""
 
+PER_VOLT: Final = DIMENSIONLESS / VOLTAGE
+"""The dimension of a linear voltage coefficient, V⁻¹."""
 
-def resistor(  # noqa: PLR0913 - the value, its tolerance and its drift
+PER_VOLT_SQUARED: Final = DIMENSIONLESS / VOLTAGE**2
+"""The dimension of a quadratic voltage coefficient, V⁻²."""
+
+
+def resistor(  # noqa: PLR0913 - the value, its tolerance, its drift and its curvature
     resistance: Quantity,
     *,
     tolerance: float | None = None,
@@ -90,8 +96,10 @@ def resistor(  # noqa: PLR0913 - the value, its tolerance and its drift
     quadratic_temperature_coefficient: Quantity | None = None,
     exponential_temperature_coefficient: float | None = None,
     nominal_temperature: Quantity | None = None,
+    voltage_coefficient: Quantity | None = None,
+    quadratic_voltage_coefficient: Quantity | None = None,
 ) -> Device:
-    """A linear resistor between terminals ``a`` and ``b``.
+    """A resistor between terminals ``a`` and ``b``.
 
     A tolerance, such as 0.01 for 1 %, spreads its resistance evenly within it, as Monte
     Carlo analyses sample it. Its resistance drifts with temperature, by
@@ -100,10 +108,16 @@ def resistor(  # noqa: PLR0913 - the value, its tolerance and its drift
     An exponential temperature coefficient, in percent per kelvin as SPICE's ``TCE``,
     drifts it by ``1.01^(tce · ΔT)`` instead.
 
+    Its resistance also changes with the voltage ``v`` from ``a`` to ``b``, by
+    ``1 + vc1 · v + vc2 · v²``, with the linear and quadratic voltage coefficients, none
+    unless given; they must keep it positive over the voltages it meets.
+
     Examples:
-        >>> from jolty.units import K, kohm
+        >>> from jolty.units import K, V, kohm
         >>> resistor(1 * kohm, temperature_coefficient=1e-4 / K).parameters
         {'resistance': 1000.0, 'temperature_coefficient': 0.0001}
+        >>> resistor(1 * kohm, voltage_coefficient=-2e-6 / V).parameters
+        {'resistance': 1000.0, 'voltage_coefficient': -2e-06}
     """
     parameters: dict[str, JsonValue] = {
         "resistance": resistance.to(RESISTANCE, "resistance")
@@ -114,22 +128,27 @@ def resistor(  # noqa: PLR0913 - the value, its tolerance and its drift
     parameters |= _parameters(
         {}, {"exponential_temperature_coefficient": exponential_temperature_coefficient}
     )
+    parameters |= _curvature(voltage_coefficient, quadratic_voltage_coefficient)
     made = device("resistor", parameters)
     return made if tolerance is None else made.toleranced("resistance", tolerance)
 
 
-def capacitor(
+def capacitor(  # noqa: PLR0913 - the value, its tolerance, its drift and its curvature
     capacitance: Quantity,
     *,
     tolerance: float | None = None,
     temperature_coefficient: Quantity | None = None,
     quadratic_temperature_coefficient: Quantity | None = None,
     nominal_temperature: Quantity | None = None,
+    voltage_coefficient: Quantity | None = None,
+    quadratic_voltage_coefficient: Quantity | None = None,
 ) -> Device:
-    """A linear capacitor between terminals ``a`` and ``b``.
+    """A capacitor between terminals ``a`` and ``b``.
 
     Its capacitance drifts with temperature, and spreads within its tolerance, as a
-    resistor's resistance does.
+    resistor's resistance does. It also changes with the voltage ``v`` from ``a`` to
+    ``b``, by ``1 + vc1 · v + vc2 · v²``, and its charge is that capacitance's integral
+    from 0 V.
     """
     parameters: dict[str, JsonValue] = {
         "capacitance": capacitance.to(CAPACITANCE, "capacitance")
@@ -137,6 +156,7 @@ def capacitor(
     parameters |= _drift(
         temperature_coefficient, quadratic_temperature_coefficient, nominal_temperature
     )
+    parameters |= _curvature(voltage_coefficient, quadratic_voltage_coefficient)
     made = device("capacitor", parameters)
     return made if tolerance is None else made.toleranced("capacitance", tolerance)
 
@@ -174,6 +194,19 @@ def _drift(
             "temperature_coefficient": (linear, PER_KELVIN),
             "quadratic_temperature_coefficient": (quadratic, PER_KELVIN_SQUARED),
             "nominal_temperature": (nominal, TEMPERATURE),
+        },
+        {},
+    )
+
+
+def _curvature(
+    linear: Quantity | None, quadratic: Quantity | None
+) -> dict[str, JsonValue]:
+    """A passive device's voltage coefficients, as given."""
+    return _parameters(
+        {
+            "voltage_coefficient": (linear, PER_VOLT),
+            "quadratic_voltage_coefficient": (quadratic, PER_VOLT_SQUARED),
         },
         {},
     )

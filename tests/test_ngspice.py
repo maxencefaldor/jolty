@@ -823,6 +823,35 @@ def behavioral(c: Builder) -> None:
 
 
 @component
+def curved(c: Builder) -> None:
+    """Resistors and a capacitor whose values change with their voltages."""
+    ground = c.port("ground", Role.GROUND)
+    sine = Sine(offset=0.5 * V, amplitude=2 * V, frequency=1 * kHz)
+    source = c.place(devices.voltage_source(sine), id="V1")
+    feed = c.place(
+        devices.resistor(
+            1 * kohm,
+            temperature_coefficient=1e-3 / K,
+            voltage_coefficient=0.05 / V,
+            quadratic_voltage_coefficient=0.02 / V**2,
+        ),
+        id="R1",
+    )
+    load = c.place(devices.resistor(2 * kohm, voltage_coefficient=-0.03 / V), id="R2")
+    hold = c.place(
+        devices.capacitor(
+            1 * uF,
+            voltage_coefficient=0.1 / V,
+            quadratic_voltage_coefficient=0.05 / V**2,
+        ),
+        id="C1",
+    )
+    c.connect(source.positive, feed.a, name="in")
+    c.connect(feed.b, load.a, hold.a, name="out")
+    c.connect(source.negative, load.b, hold.b, ground)
+
+
+@component
 def switched(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     pulse = Pulse(
@@ -882,6 +911,7 @@ def switched(c: Builder) -> None:
         cmos_inverter,
         behavioral,
         switched,
+        curved,
     ],
 )
 def test_operating_points_agree(top: Callable[[], Component]) -> None:
@@ -912,6 +942,7 @@ TEMPERATURES = {"cold": celsius(-40), "hot": celsius(125)}
         level_three_stage,
         cmos_inverter,
         drifting,
+        curved,
     ],
 )
 def test_operating_points_agree_across_temperatures(
@@ -998,6 +1029,7 @@ def test_ac_responses_agree_across_temperatures(
         (cmos_inverter, "V1", linear(0 * V, 3.3 * V, 67)),
         (behavioral, "V1", linear(-3 * V, 3 * V, 61)),
         (switched, "V1", linear(0 * V, 3 * V, 61)),
+        (curved, "V1", linear(-3 * V, 3 * V, 61)),
     ],
 )
 def test_dc_sweeps_agree(
@@ -1065,6 +1097,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
         (cmos_inverter, 160 * ns, 0.01 * ns),
         (behavioral, 300 * us, 0.5 * us),
         (switched, 200 * us, 0.2 * us),
+        (curved, 3 * ms, 2 * us),
     ],
 )
 def test_transients_agree(

@@ -48,6 +48,7 @@ A bipolar transistor has a substrate, as in SPICE: the ground unless its instanc
 An element that reads the current through a voltage source reads it through a port placed in series with the source, as the nets `V1.sense1`, `V1.sense2` and so on for a source `V1`.
 
 Temperature parameters become the devices' own: a model's `TNOM`, or PSpice's `T_MEASURED`, is its nominal temperature, and a resistor's, capacitor's or inductor's `TC=tc1,tc2`, `TC1`, `TC2` and `TCE` drift its value.
+A resistor's or capacitor's `VC1` and `VC2`, as HSPICE and Spectre write them, bend its value with its voltage; ngspice has no such parameters, so a netlist written for it gives that resistor or capacitor as an expression.
 PSpice's `T_ABS`, `T_REL_GLOBAL` and `T_REL_LOCAL` set a device's own temperature, which jolty does not model: they change nothing for a resistor, capacitor or inductor that does not drift, and are an error otherwise.
 Expressions read `TEMP` and `VT` at 27 °C, whatever the temperature the circuit is simulated at.
 Parameters that only noise analyses read are left out.
