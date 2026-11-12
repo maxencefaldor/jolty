@@ -191,3 +191,57 @@ def test_the_analogcoder_scorer_says_why_designs_fail(tmp_path: Path) -> None:
         reason.startswith("p18: vout ramps at") and "while vin is above" in reason
         for reason in verdict.reasons
     ), verdict.reasons
+
+
+VOLTAGE_CURRENT = BENCHMARKS / "voltage_current"
+
+
+def converter(work: Path, body: str) -> None:
+    """Writes a voltage-current converter whose placements are `body` into `work`."""
+    (work / "design.py").write_text(
+        "from jolty import Builder, Role, component, devices\n"
+        "from jolty.units import A, V, kohm\n"
+        "@component\n"
+        "def converter(c: Builder) -> None:\n"
+        "    ground = c.port('ground', Role.GROUND)\n"
+        "    c.port('vee', Role.SUPPLY)\n"
+        "    plus, minus, output = c.port('plus'), c.port('minus'), c.port('output')\n"
+        f"{body}"
+        "build = converter\n",
+        encoding="utf-8",
+    )
+
+
+def test_an_ideal_converter_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    converter(
+        tmp_path,
+        "    source = c.place(devices.voltage_controlled_current_source(1e-3 * A / V), "
+        "id='G1')\n"
+        "    c.connect(source.control_positive, plus)\n"
+        "    c.connect(source.control_negative, minus)\n"
+        "    c.connect(source.positive, ground)\n"
+        "    c.connect(source.negative, output)\n",
+    )
+    verdict = score(VOLTAGE_CURRENT, tmp_path)
+    assert verdict.measurements["fitness"] == pytest.approx(0.0, abs=1e-9)
+    assert verdict.reasons == (
+        "G1 is a voltage_controlled_current_source, which the task forbids",
+    )
+
+
+def test_a_converter_blind_to_one_input_falls_short(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    converter(
+        tmp_path,
+        "    resistor = c.place(devices.resistor(1 * kohm), id='R1')\n"
+        "    c.connect(resistor.a, plus)\n"
+        "    c.connect(resistor.b, output)\n",
+    )
+    verdict = score(VOLTAGE_CURRENT, tmp_path)
+    assert not verdict.met
+    (reason,) = verdict.reasons
+    assert reason.startswith("the fitness is ")
+    assert verdict.measurements["devices"] == 1
