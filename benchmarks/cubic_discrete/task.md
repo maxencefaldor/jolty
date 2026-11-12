@@ -4,7 +4,7 @@ Design a circuit whose output current is the cube of its input current, scaled: 
 It must work from a 2 V supply, and it has no reference current: it makes its own scale.
 
 Write `design.py`, a script whose `build()` returns your circuit as a component with four ports: `input`, `output`, `vcc` and `ground`.
-The bench that scores it holds `vcc` at 2 V over `ground`, drives `Iin` from the supply into `input`, and holds `output` at the supply's 2 V through an ammeter: `Iout` is the current into `output`.
+The bench that scores it holds `vcc` at 2 V over `ground`, drives `Iin` from the supply into `input` through 1 µΩ, and holds `output` at the supply's 2 V through an ammeter and 1 µΩ: `Iout` is the current into `output`.
 
 Build it only from the transistors of `parts.py`, `npn()`, a 2N3904, and `pnp()`, a 2N3906, and from resistors and capacitors.
 No other transistor, diode, source or behavioral element may appear in your circuit.

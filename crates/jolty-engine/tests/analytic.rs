@@ -65,6 +65,44 @@ fn dc(level: f64) -> Value {
 }
 
 #[test]
+fn a_micro_ohm_beside_a_node_only_gmin_holds_keeps_it() {
+    // An idle source feeds 1 µΩ into a diode reverse-biased from 2 V: only the diode's gmin
+    // holds the nodes, a millionth of a millionth of the resistor's conductance.
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(2.0),
+            &[("positive", "supply"), ("negative", "0")],
+        ),
+        (
+            "I1",
+            "current_source",
+            dc(0.0),
+            &[("positive", "0"), ("negative", "a")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e-6}),
+            &[("a", "a"), ("b", "b")],
+        ),
+        (
+            "D1",
+            "diode",
+            json!({}),
+            &[("anode", "b"), ("cathode", "supply")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let solution = simulator.operating_point(&Options::default()).unwrap();
+    assert_eq!(solution.strategy, Strategy::Direct);
+    for node in ["a", "b"] {
+        assert_close(solution.values[index(&simulator, node)], 2.0, 1e-9);
+    }
+}
+
+#[test]
 fn a_divider_halves_its_input_and_its_source_delivers_current() {
     let circuit = circuit(&[
         (

@@ -17,6 +17,7 @@ Logic devices, whose pins join logic nets, have a page of their own: [Logic](log
 | `inductor(inductance)` | `a`, `b` | a positive inductance |
 
 An inductor adds its current to the unknowns, as `L1:current` for an inductor `L1`: the current from `a` through the inductor to `b`.
+So does a resistor below 1 Ω, as `R1:current`: beside its conductance, a node's picosiemens, such as gmin's, would round away in floating point, and the current unknown keeps them, as modified nodal analysis does for the elements of its second group.
 
 Each value drifts with temperature by `1 + tc1 · ΔT + tc2 · ΔT²`, where `ΔT` is the temperature less the nominal one, as SPICE's do:
 

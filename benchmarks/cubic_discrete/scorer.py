@@ -21,9 +21,7 @@ and capacitors within 5 %, a margin Koza's circuits, simulated with exact parts,
 not keep.
 
 Koza does not give the sine's phase; it starts at its middle and rises, as SPICE's do.
-His fixture also puts 1 µΩ in series with the input and the output, a convenience of
-his simulator; the bench leaves them out, since 1 µΩ beside a node that only picoamperes
-hold, as the input is at 0 V, rounds the node's own conductances away.
+His fixture also puts 1 µΩ in series with the input and the output, as the bench does.
 """
 
 import runpy
@@ -37,7 +35,7 @@ from verdict import Verdict
 
 from jolty import Builder, Component, Role, Simulation, circuit, component, devices
 from jolty.plan import Transient
-from jolty.units import A, Hz, Quantity, V, ms, s
+from jolty.units import A, Hz, Quantity, V, ms, ohm, s
 from jolty.waveforms import Piecewise, Sine
 
 TRANSCONDUCTANCE = 100e-6
@@ -86,10 +84,12 @@ def bench(c: Builder, made: Component, case: int) -> None:
     c.connect(convert.control_positive, command.positive, name="command")
     c.connect(convert.control_negative, ground)
     c.connect(convert.positive, supply.positive)
-    c.connect(convert.negative, placed.input, name="input")
     meter = c.place(devices.voltage_source(0 * V), id="VMETER")
     c.connect(meter.positive, supply.positive)
-    c.connect(meter.negative, placed.output, name="output")
+    for port, driving in (("input", convert.negative), ("output", meter.negative)):
+        series = c.place(devices.resistor(1e-6 * ohm), id=f"R{port.upper()}")
+        c.connect(driving, series.a)
+        c.connect(series.b, placed[port], name=port)
 
 
 def measure(made: Component, board: Board) -> dict[str, float]:

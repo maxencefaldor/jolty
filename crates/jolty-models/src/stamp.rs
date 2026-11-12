@@ -240,9 +240,22 @@ impl CurrentBranch {
     }
 
     /// Adds the branch's current to its nodes' equations, and `residual` to its own
-    /// equation, with the derivatives of both with respect to the current and the voltage;
-    /// a device adds the derivatives of the rest of its equation itself.
+    /// equation, with the derivatives of both with respect to the current and the voltage,
+    /// the residual's being 1; a device adds the derivatives of the rest of its equation
+    /// itself.
     pub(crate) fn add<R: Real>(&self, input: &Input<'_>, output: &mut Output<'_, R>, residual: R) {
+        self.add_sloped(input, output, residual, R::constant(1.0));
+    }
+
+    /// As [`CurrentBranch::add`], the residual's derivative with respect to the branch's
+    /// voltage being `slope`.
+    pub(crate) fn add_sloped<R: Real>(
+        &self,
+        input: &Input<'_>,
+        output: &mut Output<'_, R>,
+        residual: R,
+        slope: R,
+    ) {
         let [positive, negative] = self.nodes;
         let [
             positive_current,
@@ -256,7 +269,7 @@ impl CurrentBranch {
         output.add_conductance(positive_current, one);
         output.add_conductance(negative_current, -one);
         output.add_residual(Some(self.current), residual);
-        output.add_conductance(current_positive, one);
-        output.add_conductance(current_negative, -one);
+        output.add_conductance(current_positive, slope);
+        output.add_conductance(current_negative, -slope);
     }
 }

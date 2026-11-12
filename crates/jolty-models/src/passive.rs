@@ -13,17 +13,37 @@ fn reference_temperature<R: Real>() -> R {
     R::constant(REFERENCE_TEMPERATURE)
 }
 
+/// The resistance below which a resistor carries its current as an unknown, in ohms.
+///
+/// A conductance stamped beside a far smaller one at a node swamps it in floating point: a
+/// node held only by gmin's picosiemens loses them beside a megasiemens, and its equation
+/// turns singular. A current unknown keeps the two apart, as modified nodal analysis does
+/// for the elements of its second group (Ho, Ruehli and Brennan, 1975); below 1 Ω, gmin
+/// keeps four digits beside the resistor's conductance.
+pub const SMALL_RESISTANCE: f64 = 1.0;
+
 /// A resistor between terminals `a` and `b`, whose resistance drifts with temperature and
 /// changes with its voltage.
 ///
 /// With `v` from `a` to `b`, its resistance is `r · (1 + vc1 · v + vc2 · v²)`, `r` its
 /// resistance at that temperature; where the coefficients bend it below zero, it is
-/// negative there.
+/// negative there. Below [`SMALL_RESISTANCE`], its current is an unknown labelled
+/// `current`.
 #[derive(Debug)]
 pub struct Resistor<R: Real = f64> {
-    pair: TerminalPair,
+    form: Form,
     resistance: R,
     coefficients: VoltageCoefficients<R>,
+}
+
+/// How a resistor adds its current to its nodes' equations.
+#[derive(Debug)]
+enum Form {
+    /// As a conductance between them.
+    Conductance(TerminalPair),
+    /// As an unknown of its own, held by Ohm's law `v − r · f(v) · i = 0`, with the entry
+    /// at (current, current).
+    Current(CurrentBranch, Option<Entry>),
 }
 
 /// How a passive device's value changes with its voltage `v`: by `1 + vc1 · v + vc2 · v²`.
@@ -118,10 +138,19 @@ impl<R: Real> NativeDevice<R> for Resistor<R> {
                 temperatures.actual
             )));
         }
+        let resistance = resistance * factor;
         let (a, b) = (binding.terminal(0), binding.terminal(1));
+        let form = if resistance.value().abs() < SMALL_RESISTANCE {
+            let branch = CurrentBranch::new(binding, "current", [a, b]);
+            let row = Some(branch.unknown());
+            let entry = binding.entry(row, row);
+            Form::Current(branch, entry)
+        } else {
+            Form::Conductance(TerminalPair::new(binding, a, b))
+        };
         Ok(Self {
-            pair: TerminalPair::new(binding, a, b),
-            resistance: resistance * factor,
+            form,
+            resistance,
             coefficients: VoltageCoefficients {
                 linear: parameters.voltage_coefficient,
                 quadratic: parameters.quadratic_voltage_coefficient,
@@ -132,13 +161,25 @@ impl<R: Real> NativeDevice<R> for Resistor<R> {
 
 impl<R: Real> Device<R> for Resistor<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let voltage = self.pair.voltage(input);
-        let (factor, slope) = self.coefficients.factor(voltage);
-        // i = v / (r · f(v)), so di/dv = (f − v · f′) / (r · f²).
-        let conductance = (self.resistance * factor).recip();
-        self.pair.add_current(output, conductance * voltage);
-        self.pair
-            .add_conductance(output, conductance * (factor - slope * voltage) / factor);
+        match &self.form {
+            Form::Conductance(pair) => {
+                let voltage = pair.voltage(input);
+                let (factor, slope) = self.coefficients.factor(voltage);
+                // i = v / (r · f(v)), so di/dv = (f − v · f′) / (r · f²).
+                let conductance = (self.resistance * factor).recip();
+                pair.add_current(output, conductance * voltage);
+                pair.add_conductance(output, conductance * (factor - slope * voltage) / factor);
+            }
+            Form::Current(branch, entry) => {
+                let (voltage, current) = (branch.voltage(input), branch.current(input));
+                let (factor, slope) = self.coefficients.factor(voltage);
+                let resistance = self.resistance * factor;
+                let residual = R::constant(voltage) - resistance * current;
+                let along = R::constant(1.0) - self.resistance * slope * current;
+                branch.add_sloped(input, output, residual, along);
+                output.add_conductance(*entry, -resistance);
+            }
+        }
     }
 }
 
@@ -306,6 +347,26 @@ mod tests {
     fn a_resistor_conducts_by_ohms_law() {
         let mut bench = Bench::new::<Resistor>(r#"{"resistance": 1000}"#);
         assert_close(&bench.evaluate(&[3.0, 1.0]).residual, &[2e-3, -2e-3]);
+    }
+
+    #[test]
+    fn a_small_resistor_carries_its_current_as_an_unknown() {
+        let mut bench = Bench::new::<Resistor>(r#"{"resistance": 1e-6}"#);
+        assert_eq!(bench.unknowns(), ["n0", "n1", "device:current"]);
+        let output = bench.evaluate(&[3.0, 1.0, 2e6]);
+        assert_close(&output.residual, &[2e6, -2e6, 0.0]);
+        assert_jacobians_match::<Resistor>(r#"{"resistance": 0.5}"#, &[1.0, -0.5, 3.0]);
+        let coefficients = r#""voltage_coefficient": -0.05, "quadratic_voltage_coefficient": 0.02"#;
+        assert_jacobians_match::<Resistor>(
+            &format!(r#"{{"resistance": 0.5, {coefficients}}}"#),
+            &[1.0, -0.5, 2.5],
+        );
+        assert_parameter_gradients_match::<Resistor>(
+            &format!(r#"{{"resistance": 0.5, "temperature_coefficient": 1e-3, {coefficients}}}"#),
+            &[1.0, -0.5, 2.5],
+        );
+        let large = Bench::new::<Resistor>(r#"{"resistance": 1}"#);
+        assert_eq!(large.unknowns(), ["n0", "n1"]);
     }
 
     #[test]

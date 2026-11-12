@@ -61,6 +61,7 @@ pub use logic::{
 pub use mosfet::{GateMaterial, Mosfet, MosfetParameters};
 pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
+    SMALL_RESISTANCE,
 };
 pub use real::{Gradient, Real};
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
