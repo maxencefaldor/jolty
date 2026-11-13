@@ -13,7 +13,7 @@ the devices, the waveforms and the numerics against the reference simulator.
 
 import math
 from collections.abc import Callable
-from typing import Literal
+from typing import Final, Literal
 
 import numpy as np
 import pytest
@@ -1076,6 +1076,42 @@ def lit(c: Builder) -> None:
     c.connect(supply.negative, light.negative, cell.b, cell.light_negative, ground)
 
 
+EXPRESSIONS: Final = (
+    "-v(x) ^ 2 ^ 3 + 2 ^ 3 ^ 2 * 1e-3 * v(x)",
+    "pow(v(x), 3) - v(x) ^ 2 + pow(3 + v(x), v(two)) + (1 + v(x) ^ 2) ^ -1",
+    "(2 + v(x)) ^ 1.5 + pow(v(x) - 3, -3) + (v(x) - 3) ^ -2",
+    "pow(abs(v(x)) + 1, 0.5) * u(v(x)) + uramp(v(x)) - sgn(v(x))",
+    "limit(v(x), 1, -0.5) + limit(2 * v(x), -1, 0.25)",
+    "table(v(x), -1, 0, 0, 1, 1, 0.5) + pwl(v(x), -1, 0, 1, 2)",
+    "rounded_table(v(x), 0.3, -1, 0, 0, 1, 1, 0.5, 1.2, 2)",
+    "v(x) > 0 && v(x) < 1 ? 1 : (!(v(x) > -1) || v(x) == 2 ? 2 : 3)",
+    "if(v(x) >= 0.5, floor(v(x)), ceil(v(x))) + log(2 + v(x)) + log10(3 + v(x))",
+    "atan(v(x)) + asinh(v(x)) + tanh(v(x)) + exp(-v(x) ^ 2) / sqrt(2)",
+)
+"""Expressions written for ngspice from their trees: each operator and function whose
+reading differs between the two, from the grouping of `^` and a negative base's power
+to `u(0)`, `limit` and the tables."""
+
+
+@component
+def expressions(c: Builder) -> None:
+    """Each of `EXPRESSIONS` of the voltage `x` and of a constant 2 V, through 1 kΩ."""
+    ground = c.port("ground", Role.GROUND)
+    swept = c.place(devices.voltage_source(0.3 * V), id="V1")
+    two = c.place(devices.voltage_source(2 * V), id="V2")
+    c.connect(swept.positive, name="x")
+    c.connect(two.positive, name="two")
+    for index, expression in enumerate(EXPRESSIONS, start=1):
+        source = c.place(devices.behavioral_voltage_source(expression), id=f"B{index}")
+        load = c.place(devices.resistor(1 * kohm), id=f"R{index}")
+        c.connect(source.positive, load.a, name=f"e{index}")
+        c.connect(source.x, swept.positive)
+        if "two" in expression:
+            c.connect(source.two, two.positive)
+        c.connect(source.negative, load.b, ground)
+    c.connect(swept.negative, two.negative, ground)
+
+
 @component
 def memristive(c: Builder) -> None:
     """VTEAM's memristor under a sine, fed through a resistor.
@@ -1317,6 +1353,7 @@ def flickering(c: Builder) -> None:
         lit,
         memristive,
         ion_drift,
+        expressions,
     ],
 )
 def test_operating_points_agree(top: Callable[[], Component]) -> None:
@@ -1493,6 +1530,7 @@ def test_loop_gains_agree() -> None:
         (switched, "V1", linear(0 * V, 3 * V, 61)),
         (curved, "V1", linear(-3 * V, 3 * V, 61)),
         (lit, "V2", linear(-1 * V, 100 * V, 102)),
+        (expressions, "V1", linear(-1.95 * V, 1.95 * V, 40)),
     ],
 )
 def test_dc_sweeps_agree(
@@ -1528,6 +1566,7 @@ def test_dc_sweeps_agree(
         switched,
         current_switched,
         transformer,
+        expressions,
     ],
 )
 def test_ac_responses_agree(top: Callable[[], Component]) -> None:

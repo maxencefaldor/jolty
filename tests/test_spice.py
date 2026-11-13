@@ -440,6 +440,30 @@ def test_a_netlist_writes_each_devices_own_temperature() -> None:
         netlist(circuit(apart(devices.voltage_controlled_switch().held_at(0 * K))))
 
 
+def test_a_behavioral_expression_is_written_as_jolty_computes_it() -> None:
+    """Each operation in parentheses, a power, a limit and a table as jolty reads them.
+
+    ngspice groups `^` to the left, raises a negative base's magnitude and reads
+    another `limit`, and its behavioral sources hold no table.
+    """
+
+    @component
+    def shaped(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        expression = "limit(v(a) ^ 3, 2 ^ 3 ^ 2, -1) + table(v(a), 0, 1, 1, 3)"
+        source = c.place(devices.behavioral_voltage_source(expression), id="B1")
+        c.connect(source.a, name="a")
+        c.connect(source.positive, name="out")
+        c.connect(source.negative, ground)
+
+    (line,) = [line for line in netlist(circuit(shaped())) if line.startswith("B")]
+    limited = "min(max(pwr(v(a),3.0),min(512.0,(-1.0))),max(512.0,(-1.0)))"
+    held = "(1.0+(v(a)-(-1.0))*0.0)"
+    rising = "(1.0+(v(a)-(0.0))*2.0)"
+    table = f"(v(a)<0.0?{held}:(v(a)<1.0?{rising}:(3.0+(v(a)-(1.0))*0.0)))"
+    assert line == f"BB1 out 0 V={{({limited}+{table})}}"
+
+
 def test_resistors_and_capacitors_read_voltage_coefficients() -> None:
     parts = library(
         ".model CX CAP(VC1=-1m)\n"

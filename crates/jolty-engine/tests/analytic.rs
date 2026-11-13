@@ -1060,6 +1060,47 @@ fn a_transient_names_the_equation_whose_error_it_could_not_bound() {
 }
 
 #[test]
+fn a_transient_whose_results_would_fill_the_memory_fails_at_once() {
+    // A second in picosecond steps: a trillion points, of a few numbers each.
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"dc": 1.0}}),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "in"), ("b", "0")],
+        ),
+    ]);
+    let transient = Transient {
+        stop: 1.0,
+        max_step: Some(1e-12),
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+        periodic: false,
+    };
+    let error = simulator(&circuit)
+        .run(&Analysis::Transient(transient), &Options::default())
+        .unwrap_err();
+    assert_eq!(
+        error,
+        SimulationError::TooManyPoints {
+            time: 0.0,
+            step: 1e-12
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "the transient's results would pass 2 GiB before it stops, its steps 1e-12 s long \
+         at t = 0.0 s"
+    );
+}
+
+#[test]
 fn a_transient_follows_a_source_that_only_its_transistor_holds() {
     // Nothing but the transistor holds its source, so as its gate steps up the source
     // follows to a threshold below it, where the current falls to zero quadratically: a

@@ -666,6 +666,47 @@ fn constant(expression: &str) -> PyResult<f64> {
     Ok(parsed.evaluate(&[], &mut workspace, &mut []))
 }
 
+/// The tree of `expression`, an expression in jolty's language, as JSON: a number, the
+/// text `"time"`, `{"voltage": [a, b]}` with `b` null for the ground, `{"current": p}`,
+/// `{"operation": name, "operands": [...]}`, or `{"table": input, "abscissae": [...],
+/// "ordinates": [...], "rounding": r}`, as [`jolty_expressions::Term`] describes them.
+#[pyfunction]
+fn expression_tree(expression: &str) -> PyResult<String> {
+    let parsed: jolty_expressions::Expression = expression
+        .parse()
+        .map_err(|error| PyValueError::new_err(format!("`{expression}`: {error}")))?;
+    Ok(term_to_json(&parsed.tree()).to_string())
+}
+
+/// A term of an expression's tree as JSON, as [`expression_tree`] writes it.
+fn term_to_json(term: &jolty_expressions::Term) -> serde_json::Value {
+    use jolty_expressions::{Term, Variable};
+    use serde_json::json;
+    match term {
+        Term::Constant(value) => json!(value),
+        Term::Variable(Variable::Time) => json!("time"),
+        Term::Variable(Variable::Voltage(positive, negative)) => {
+            json!({"voltage": [positive, negative]})
+        }
+        Term::Variable(Variable::Current(port)) => json!({"current": port}),
+        Term::Operation(name, operands) => json!({
+            "operation": name,
+            "operands": operands.iter().map(term_to_json).collect::<Vec<_>>(),
+        }),
+        Term::Table {
+            input,
+            abscissae,
+            ordinates,
+            rounding,
+        } => json!({
+            "table": term_to_json(input),
+            "abscissae": abscissae,
+            "ordinates": ordinates,
+            "rounding": rounding,
+        }),
+    }
+}
+
 /// Every rule of the structural checks, in the order a check reports them: its name, its
 /// default level and its condition.
 #[pyfunction]
@@ -691,6 +732,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(rules, module)?)?;
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
     module.add_function(wrap_pyfunction!(constant, module)?)?;
+    module.add_function(wrap_pyfunction!(expression_tree, module)?)?;
     module.add_function(wrap_pyfunction!(mantissas, module)?)?;
     module.add("EXPRESSIONS", jolty_expressions::LANGUAGE)?;
     module.add("BOLTZMANN", jolty_models::BOLTZMANN)?;

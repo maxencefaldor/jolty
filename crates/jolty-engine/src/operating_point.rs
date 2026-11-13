@@ -1,6 +1,6 @@
 //! The DC operating point, with gmin stepping, across the nodes then across the junctions,
-//! and source stepping when Newton alone fails, and every other DC solution deflation
-//! finds.
+//! source stepping, and pseudo-transient continuation when Newton alone fails, and every
+//! other DC solution deflation finds.
 
 use std::f64::consts::TAU;
 
@@ -23,6 +23,14 @@ const SMALLEST_STEPPED_DIVISOR: f64 = 1.00005;
 const FIRST_SOURCE_INCREMENT: f64 = 0.1;
 /// The smallest increment of the source scale before source stepping gives up.
 const SMALLEST_SOURCE_INCREMENT: f64 = 1e-4;
+/// The conductance, in siemens, that first holds each node to its last voltage in
+/// pseudo-transient continuation: a farad's capacitance over a step of a second.
+const FIRST_HELD: f64 = 1.0;
+/// The largest conductance pseudo-transient continuation holds each node with before it
+/// gives up: a farad over a nanosecond, past which the circuit barely moves.
+const LARGEST_HELD: f64 = 1e9;
+/// The most steps pseudo-transient continuation takes before it gives up.
+const MOST_HELD_STEPS: usize = 1000;
 /// The frequency, in hertz, at which a logic driver's load is read: low enough that every
 /// capacitance it drives charges fully.
 const LOAD_FREQUENCY: f64 = 1.0;
@@ -85,6 +93,9 @@ pub enum Strategy {
     JunctionGminStepping,
     /// Newton iteration while every source ramps up from zero.
     SourceStepping,
+    /// Newton iteration on steps of a pseudo-transient, each node held to its last voltage
+    /// by a conductance that shrinks as the circuit settles.
+    PseudoTransient,
 }
 
 impl Strategy {
@@ -96,6 +107,7 @@ impl Strategy {
             Self::GminStepping => "gmin_stepping",
             Self::JunctionGminStepping => "junction_gmin_stepping",
             Self::SourceStepping => "source_stepping",
+            Self::PseudoTransient => "pseudo_transient",
         }
     }
 }
@@ -208,6 +220,7 @@ impl Simulator {
         let direct = Mode::Dc {
             source_scale: 1.0,
             shunt: 0.0,
+            anchor: None,
             deflated: known,
         };
         for mut values in starts {
@@ -392,6 +405,7 @@ impl Simulator {
         let direct = Mode::Dc {
             source_scale: 1.0,
             shunt: 0.0,
+            anchor: None,
             deflated,
         };
         if self
@@ -423,15 +437,32 @@ impl Simulator {
                 strategy: Strategy::JunctionGminStepping,
             });
         }
-        let mut values = vec![0.0; values.len()];
-        match self.source_stepping(&mut values, options, deflated) {
-            Ok(()) => Ok(Solved {
+        let zero = vec![0.0; values.len()];
+        let mut values = zero.clone();
+        let stepping = match self.source_stepping(&mut values, options, deflated) {
+            Ok(()) => {
+                return Ok(Solved {
+                    values,
+                    strategy: Strategy::SourceStepping,
+                });
+            }
+            Err(failure) => failure,
+        };
+        let stepped = values;
+        let mut values = zero;
+        // Equations source stepping found singular are singular as they are, though the
+        // conductances of a pseudo-transient hold them up until it gives up.
+        match (
+            stepping,
+            self.pseudo_transient(&mut values, options, deflated),
+        ) {
+            (_, Ok(())) => Ok(Solved {
                 values,
-                strategy: Strategy::SourceStepping,
+                strategy: Strategy::PseudoTransient,
             }),
-            Err(Failure::Singular) => Err(SimulationError::Singular),
-            Err(Failure::Diverged) => Err(SimulationError::NoOperatingPoint {
-                worst: self.furthest_from_converging(&values, options, NAMED_UNKNOWNS),
+            (Failure::Singular, _) | (_, Err(Failure::Singular)) => Err(SimulationError::Singular),
+            (Failure::Diverged, Err(Failure::Diverged)) => Err(SimulationError::NoOperatingPoint {
+                worst: self.furthest_from_converging(&stepped, options, NAMED_UNKNOWNS),
             }),
         }
     }
@@ -461,6 +492,7 @@ impl Simulator {
             let mode = Mode::Dc {
                 source_scale: 1.0,
                 shunt,
+                anchor: None,
                 deflated,
             };
             let stepping = Options { gmin, ..*options };
@@ -500,12 +532,78 @@ impl Simulator {
                 let direct = Mode::Dc {
                     source_scale: 1.0,
                     shunt: 0.0,
+                    anchor: None,
                     deflated,
                 };
                 self.newton(values, direct, options, options.dc_iterations)
                     .map(|_| ())
             }
         }
+    }
+
+    /// Follows the circuit toward its DC solution as time would, by pseudo-transient
+    /// continuation (Kelley and Keyes, "Convergence analysis of pseudo-transient
+    /// continuation", SIAM Journal on Numerical Analysis 35(2), 1998), where gmin and
+    /// source stepping stall at a fold of the solutions they follow: each step solves the
+    /// circuit with every node held to its last voltage by a conductance, as a farad's
+    /// capacitance over the step would hold it, and the conductance shrinks a decade after
+    /// a quick step and less after a slow one, and grows after a failure, which retries
+    /// from the last step. A step that leaves the circuit where it was is a DC solution,
+    /// on which Newton iteration without the conductance closes; every solve is deflated
+    /// by the solutions `deflated`.
+    fn pseudo_transient(
+        &mut self,
+        values: &mut [f64],
+        options: &Options,
+        deflated: &[Vec<f64>],
+    ) -> Result<(), Failure> {
+        let mut held = FIRST_HELD;
+        let mut last = values.to_vec();
+        for _ in 0..MOST_HELD_STEPS {
+            let mode = Mode::Dc {
+                source_scale: 1.0,
+                shunt: held,
+                anchor: Some(&last),
+                deflated,
+            };
+            match self.newton(values, mode, options, options.dc_iterations) {
+                Ok(iterations) => {
+                    let settled = values.iter().zip(&last).zip(&self.system.unknowns).all(
+                        |((value, before), unknown)| {
+                            let magnitude = value.abs().max(before.abs());
+                            (value - before).abs()
+                                <= options.relative_tolerance * magnitude
+                                    + options.value_tolerance(unknown.quantity)
+                        },
+                    );
+                    last.copy_from_slice(values);
+                    if settled || held <= options.gmin {
+                        let direct = Mode::Dc {
+                            source_scale: 1.0,
+                            shunt: 0.0,
+                            anchor: None,
+                            deflated,
+                        };
+                        return self
+                            .newton(values, direct, options, options.dc_iterations)
+                            .map(|_| ());
+                    }
+                    held /= if iterations < options.dc_iterations / 4 {
+                        STEPPED_DIVISOR
+                    } else {
+                        STEPPED_DIVISOR.sqrt()
+                    };
+                }
+                Err(failure) => {
+                    values.copy_from_slice(&last);
+                    held *= STEPPED_DIVISOR;
+                    if held > LARGEST_HELD {
+                        return Err(failure);
+                    }
+                }
+            }
+        }
+        Err(Failure::Diverged)
     }
 
     /// Ramps every source from zero to its level, growing the increment after each success
@@ -527,6 +625,7 @@ impl Simulator {
                 Mode::Dc {
                     source_scale: next,
                     shunt: 0.0,
+                    anchor: None,
                     deflated,
                 },
                 options,
@@ -547,5 +646,61 @@ impl Simulator {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use jolty_ir::Circuit;
+    use jolty_models::Library;
+    use serde_json::json;
+
+    use super::*;
+    use crate::Conditions;
+
+    /// A node fed from 3 V through 1 kΩ, a negative conductance of 2 mS at it, and a
+    /// diode each way from it to the ground: its current rises with its voltage through
+    /// either diode and falls between them, so the solution from zero folds as the
+    /// source ramps, and the operating point lies on D1's side, past the fold.
+    fn folded() -> Simulator {
+        let document = json!({
+            "format": "jolty-circuit", "version": 1, "top": "test",
+            "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
+                                    "instances": [
+                {"id": "V1", "of": {"device": "voltage_source"},
+                 "parameters": {"waveform": {"dc": 3.0}},
+                 "terminals": {"positive": "in", "negative": "0"}},
+                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+                 "terminals": {"a": "in", "b": "x"}},
+                {"id": "G1", "of": {"device": "voltage_controlled_current_source"},
+                 "parameters": {"transconductance": 2e-3},
+                 "terminals": {"positive": "0", "negative": "x",
+                               "control_positive": "x", "control_negative": "0"}},
+                {"id": "D1", "of": {"device": "diode"}, "parameters": {},
+                 "terminals": {"anode": "x", "cathode": "0"}},
+                {"id": "D2", "of": {"device": "diode"}, "parameters": {},
+                 "terminals": {"anode": "0", "cathode": "x"}},
+            ]}}
+        });
+        let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("the circuit elaborates")
+    }
+
+    #[test]
+    fn pseudo_transient_continuation_follows_a_circuit_past_its_fold() {
+        let mut simulator = folded();
+        let options = Options::default();
+        let mut values = vec![0.0; simulator.system.unknowns.len()];
+        simulator
+            .pseudo_transient(&mut values, &options, &[])
+            .expect("pseudo-transient continuation converges");
+        let x = values[simulator.unknown("x").expect("a node").index()];
+        // Past the fold, the solution lies where D1 conducts: (3 − x)/1 kΩ + 2 mS · x
+        // flows into it.
+        let slope = jolty_models::thermal_voltage(jolty_models::REFERENCE_TEMPERATURE);
+        let diode = 1e-14 * ((x / slope).exp() - 1.0);
+        assert!(x > 0.5, "the node at {x} V");
+        assert!(((3.0 - x) / 1e3 + 2e-3 * x - diode).abs() < 1e-9);
     }
 }

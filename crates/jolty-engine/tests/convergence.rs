@@ -65,3 +65,27 @@ fn gmin_stepping_across_the_junctions_saturates_a_transistor_into_a_negative_loa
         "a saturated transistor's collector junction conducts"
     );
 }
+
+#[test]
+fn pseudo_transient_continuation_finds_the_point_source_stepping_folds_short_of() {
+    // A random circuit of 47 devices, shrunk from one whose operating point every other
+    // strategy missed: source stepping stops at a fold of its solutions, at 51 % of the
+    // sources, as ngspice's does, which finds the point only by its transient instead.
+    let circuit = Circuit::from_json(include_str!("data/folded_sources.json")).expect("a circuit");
+    let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+        .expect("the circuit elaborates");
+    let point = simulator
+        .operating_point(&Options::default())
+        .expect("an operating point");
+    assert_eq!(point.strategy, Strategy::PseudoTransient);
+    let voltage = |name: &str| point.values[simulator.unknown(name).expect("a node").index()];
+    // ngspice's transient operating point, to its printed digits.
+    for (node, expected) in [
+        ("n20", -54.634_247),
+        ("n16", -1.998_355),
+        ("n7", -1.765_709),
+    ] {
+        let found = voltage(node);
+        assert!((found - expected).abs() < 1e-5, "{node} at {found} V");
+    }
+}

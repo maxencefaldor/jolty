@@ -46,6 +46,7 @@ _STRATEGIES = {
     "gmin_stepping": "gmin stepping",
     "junction_gmin_stepping": "junction gmin stepping",
     "source_stepping": "source stepping",
+    "pseudo_transient": "pseudo-transient continuation",
 }
 
 
@@ -99,7 +100,7 @@ class PointReport(_Model):
     name: str
     strategy: str = Field(
         description="How the engine found it: direct, gmin_stepping, "
-        "junction_gmin_stepping or source_stepping."
+        "junction_gmin_stepping, source_stepping or pseudo_transient."
     )
     values: tuple[Value, ...]
     levels: tuple[Level, ...] = ()
@@ -132,8 +133,8 @@ class PointsReport(_Model):
     name: str
     strategies: tuple[str, ...] = Field(
         description="How the engine found each solution: direct, gmin_stepping, "
-        "junction_gmin_stepping or source_stepping, on the equations deflated by those "
-        "before it."
+        "junction_gmin_stepping, source_stepping or pseudo_transient, on the equations "
+        "deflated by those before it."
     )
     values: tuple[Solutions, ...]
     unlisted: int = Field(description="Unknowns left out of the list.")
@@ -492,7 +493,8 @@ class SensitivityReport(_Model):
     strategy: str | None = Field(
         default=None,
         description="How the engine found the operating point: direct, gmin_stepping, "
-        "junction_gmin_stepping or source_stepping; null along a sweep or a transient.",
+        "junction_gmin_stepping, source_stepping or pseudo_transient; null along a "
+        "sweep or a transient.",
     )
     unit: str = Field(
         default="",

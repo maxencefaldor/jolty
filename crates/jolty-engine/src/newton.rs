@@ -51,11 +51,13 @@ impl Workspace {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Mode<'a> {
     /// The DC equations `f(x) = 0`, with sources scaled by `source_scale` and a conductance
-    /// `shunt` from every node to the reference, deflated by the solutions `deflated`
-    /// already found, whose basins the iteration is pushed out of.
+    /// `shunt` from every node to the voltage `anchor` holds it at, or to the reference
+    /// without one, deflated by the solutions `deflated` already found, whose basins the
+    /// iteration is pushed out of.
     Dc {
         source_scale: f64,
         shunt: f64,
+        anchor: Option<&'a [f64]>,
         deflated: &'a [Vec<f64>],
     },
     /// The equations of a time step to `time`, `f(x) + α q(x) + history = 0`.
@@ -193,13 +195,14 @@ impl Simulator {
             ..
         } = &mut self.workspace;
         match mode {
-            Mode::Dc { shunt, .. } => {
+            Mode::Dc { shunt, anchor, .. } => {
                 jacobian.copy_from_slice(&contributions.conductance);
                 if shunt > 0.0 {
                     for &(unknown, entry) in &self.system.node_diagonals {
                         let index = unknown.index();
                         jacobian[self.system.pattern.slot(entry)] += shunt;
-                        let current = shunt * x[index];
+                        let held = anchor.map_or(0.0, |anchor| anchor[index]);
+                        let current = shunt * (x[index] - held);
                         contributions.residual[index] += current;
                         let scale = &mut contributions.scale[index];
                         *scale = scale.max(current.abs());

@@ -16,14 +16,14 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, TypedDict, Unpack
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import JsonValue
+from pydantic import JsonValue, TypeAdapter
 
 from jolty import _core, ir, results
 from jolty.errors import JoltyError
@@ -758,7 +758,9 @@ def _switch(
 def _behavior(instance: ir.Instance, ground: str) -> tuple[str, list[str]]:
     """A behavioral source's expression for ngspice, and its senses.
 
-    ngspice reads a current through a zero-volt source, one per port in its place.
+    jolty reads the expression into its tree, which `_written` writes in ngspice's
+    language. ngspice reads a current through a zero-volt source, one per port in its
+    place.
     """
     expression = instance.parameters["expression"]
     if not isinstance(expression, str):
@@ -769,21 +771,151 @@ def _behavior(instance: ir.Instance, ground: str) -> tuple[str, list[str]]:
         name = instance.terminals[terminal]
         return "0" if name == ground else name
 
-    def voltage(match: re.Match[str]) -> str:
-        return f"v({','.join(net(name) for name in match.groups() if name)})"
-
     senses: dict[str, str] = {}
 
-    def current(match: re.Match[str]) -> str:
-        port = match[1]
-        sense = f"V{element(instance)}{port}"
-        ends = (net(f"{port}_positive"), net(f"{port}_negative"))
-        senses[sense] = f"{sense} {ends[0]} {ends[1]} DC 0"
-        return f"i({sense})"
+    def read(variable: JsonValue) -> str:
+        match variable:
+            case {"voltage": [str(positive), None]}:
+                return f"v({net(positive)})"
+            case {"voltage": [str(positive), str(negative)]}:
+                return f"v({net(positive)},{net(negative)})"
+            case {"current": str(port)}:
+                sense = f"V{element(instance)}{port}"
+                ends = (net(f"{port}_positive"), net(f"{port}_negative"))
+                senses[sense] = f"{sense} {ends[0]} {ends[1]} DC 0"
+                return f"i({sense})"
+        message = f"{instance.id}'s expression reads {variable}, which ngspice cannot"
+        raise _unwritable(message)
 
-    expression = re.sub(r"\bv\((\w+)(?:,\s*(\w+))?\)", voltage, expression)
-    expression = re.sub(r"\bi\((\w+)\)", current, expression)
-    return expression, list(senses.values())
+    try:
+        tree = _TREE.validate_json(_core.expression_tree(expression))
+        written = _written(tree, read)
+    except ValueError as error:
+        message = f"{instance.id}'s expression: {error}"
+        raise _unwritable(message) from None
+    return written, list(senses.values())
+
+
+_TREE: Final = TypeAdapter[JsonValue](JsonValue)
+"""Reads the tree of an expression, as the engine writes it in JSON."""
+
+_INFIX: Final = frozenset(
+    {"+", "-", "*", "/", "<", "<=", ">", ">=", "==", "!=", "&&", "||"}
+)
+"""The operators of two operands that jolty and ngspice write and read alike."""
+
+
+def _written(term: JsonValue, read: Callable[[JsonValue], str]) -> str:
+    """A term of a jolty expression's tree in ngspice's language.
+
+    Every operation is written in parentheses, so ngspice's own precedence and grouping
+    never come into it, and `read` writes each voltage or current the term reads.
+
+    Raises:
+        ValueError: When the term holds what ngspice cannot read, such as a number
+            that is not finite.
+    """
+    match term:
+        case int() | float() if math.isfinite(term):
+            return repr(float(term)) if term >= 0 else f"({float(term)!r})"
+        case "time":
+            return "time"
+        case {"voltage": _} | {"current": _}:
+            return read(term)
+        case {"operation": str(name), "operands": list(operands)}:
+            written = [_written(operand, read) for operand in operands]
+            return _operation(name, written, operands)
+        case {
+            "table": dict() | str() | int() | float() as table,
+            "abscissae": list(abscissae),
+            "ordinates": list(ordinates),
+            "rounding": int() | float() as rounding,
+        }:
+            points = [
+                (float(x), float(y))
+                for x, y in zip(abscissae, ordinates, strict=True)
+                if isinstance(x, int | float) and isinstance(y, int | float)
+            ]
+            return _interpolation(_written(table, read), points, float(rounding))
+    message = f"it holds {term!r}, which ngspice cannot read"
+    raise ValueError(message)
+
+
+def _operation(name: str, written: list[str], operands: list[JsonValue]) -> str:
+    """The operation `name` on its operands, each `written`, as jolty computes it.
+
+    Where ngspice's functions differ from jolty's, it is written as jolty computes it:
+    ngspice's `^` and `pow` raise a negative number's magnitude, and its `limit` is
+    another function.
+    """
+    match name, written:
+        case "^", [base, raised]:
+            return _power(base, operands[1], raised)
+        case "limit", [x, a, b]:
+            return f"min(max({x},min({a},{b})),max({a},{b}))"
+        case "if", [condition, chosen, otherwise]:
+            return f"({condition}?{chosen}:{otherwise})"
+        case "-" | "!", [operand]:
+            return f"({name}{operand})"
+        case _, [left, right] if name in _INFIX:
+            return f"({left}{name}{right})"
+    return f"{name}({','.join(written)})"
+
+
+def _power(base: str, exponent: JsonValue, raised: str) -> str:
+    """`base` to the power `exponent`, `raised` as written, as jolty computes it.
+
+    ngspice raises a negative base's magnitude, where jolty's power of a negative base
+    is real only for a constant integer exponent, `(-1)^n·|a|^n`: an even one is
+    ngspice's `pow`, and an odd one its `pwr`, which keeps the base's sign. Any other
+    power of a negative base fails in jolty, whose derivative by a varying exponent
+    reads the base's logarithm.
+    """
+    match exponent:
+        case int() | float() if float(exponent).is_integer() and int(exponent) % 2:
+            return f"pwr({base},{raised})"
+    return f"pow({base},{raised})"
+
+
+def _interpolation(x: str, points: list[tuple[float, float]], rounding: float) -> str:
+    """The interpolation of `points` at `x`, as jolty's tables compute it, in choices.
+
+    `points` holds the table's own and one beyond each end. Each corner holds the
+    inputs between the midpoints of the segments beside it, and is rounded there by
+    XSPICE's parabola over `rounding` times the shorter of them; below the first
+    segment's midpoint and above the last's, the input follows that segment's line.
+    """
+    xs, ys = [x_ for x_, _ in points], [y for _, y in points]
+    last = len(points) - 1
+
+    def line(start: int) -> str:
+        slope = (ys[start + 1] - ys[start]) / (xs[start + 1] - xs[start])
+        return f"({ys[start]!r}+({x}-({xs[start]!r}))*{slope!r})"
+
+    # Each piece runs up to its bound, the last to no bound; a segment's line runs on
+    # across the corners no parabola rounds.
+    pieces: list[tuple[float, str]] = []
+    for corner in range(1, last):
+        below, above = xs[corner] - xs[corner - 1], xs[corner + 1] - xs[corner]
+        domain = rounding * min(below, above)
+        if domain <= 0:
+            pieces.append((xs[corner], line(corner - 1)))
+            continue
+        lower, upper = (
+            (ys[corner] - ys[corner - 1]) / below,
+            (ys[corner + 1] - ys[corner]) / above,
+        )
+        right = xs[corner] + domain
+        curvature = (upper - lower) / 4.0 * (1.0 / domain)
+        linear = upper - 2.0 * curvature * right
+        constant = ys[corner] + upper * domain - curvature * right * right
+        constant -= linear * right
+        parabola = f"({curvature!r}*{x}*{x}+{linear!r}*{x}+{constant!r})"
+        pieces += [(xs[corner] - domain, line(corner - 1)), (right, parabola)]
+    written = line(last - 1)
+    for bound, piece in reversed(pieces):
+        written = f"({x}<{bound!r}?{piece}:{written})"
+    return written
 
 
 def _sense(instance: ir.Instance) -> str:

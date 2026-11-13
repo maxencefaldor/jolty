@@ -32,6 +32,38 @@ pub(crate) enum Unary {
 }
 
 impl Unary {
+    /// The operation's name in the language: its function's, or its operator's, `-` for
+    /// the sign and `!` for the negation; `ln` for the natural logarithm, which `log`
+    /// names too.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Negate => "-",
+            Self::Not => "!",
+            Self::Abs => "abs",
+            Self::Sqrt => "sqrt",
+            Self::Exp => "exp",
+            Self::Ln => "ln",
+            Self::Log10 => "log10",
+            Self::Sin => "sin",
+            Self::Cos => "cos",
+            Self::Tan => "tan",
+            Self::Asin => "asin",
+            Self::Acos => "acos",
+            Self::Atan => "atan",
+            Self::Sinh => "sinh",
+            Self::Cosh => "cosh",
+            Self::Tanh => "tanh",
+            Self::Asinh => "asinh",
+            Self::Acosh => "acosh",
+            Self::Atanh => "atanh",
+            Self::Floor => "floor",
+            Self::Ceil => "ceil",
+            Self::Sign => "sgn",
+            Self::Step => "u",
+            Self::Ramp => "uramp",
+        }
+    }
+
     /// The function called `name`, if one of one argument is.
     pub(crate) fn named(name: &str) -> Option<Self> {
         Some(match name {
@@ -147,6 +179,28 @@ pub(crate) enum Binary {
 }
 
 impl Binary {
+    /// The operation's name in the language: its operator's, such as `+` or `<=`, or its
+    /// function's, `min` or `max`; `^` for the power, which `pow` names too.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Subtract => "-",
+            Self::Multiply => "*",
+            Self::Divide => "/",
+            Self::Power => "^",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::Less => "<",
+            Self::LessEqual => "<=",
+            Self::Greater => ">",
+            Self::GreaterEqual => ">=",
+            Self::Equal => "==",
+            Self::NotEqual => "!=",
+            Self::And => "&&",
+            Self::Or => "||",
+        }
+    }
+
     /// The function called `name`, if one of two arguments is.
     pub(crate) fn named(name: &str) -> Option<Self> {
         Some(match name {

@@ -265,6 +265,21 @@ impl Points {
         }
     }
 
+    /// The abscissae, with one added before the first point and one after the last.
+    pub(crate) fn abscissae(&self) -> &[f64] {
+        &self.abscissae
+    }
+
+    /// The ordinates, with the added points' holding or extending the ends.
+    pub(crate) fn ordinates(&self) -> &[f64] {
+        &self.ordinates
+    }
+
+    /// The fraction of the shorter segment beside each corner its parabola spans.
+    pub(crate) const fn rounding(&self) -> f64 {
+        self.rounding
+    }
+
     /// The input a Newton step from `last` to `x` may reach, as XSPICE's `pwl` limits it:
     /// no further than 30% of the segment `last` lies in, and not past its ends. Returns
     /// `None` when the step needs no limiting.

@@ -143,6 +143,8 @@ A port, as a current-controlled source's control port, is a short circuit whose 
 A behavioral voltage source adds its own current to the unknowns as a voltage source does.
 The engine takes every derivative of the expression exactly, so Newton's iterations and frequency responses see the expression's true slope.
 
+Written for ngspice, a behavioral source's expression is read into its tree and written in ngspice's language, every operation in parentheses, so ngspice computes what jolty does: ngspice groups `^` to the left and raises a negative number's magnitude, so a power is written with ngspice's `pow`, or `pwr` for an odd constant exponent, which keeps the base's sign; `limit` is written with `min` and `max`, ngspice's own `limit` being another function; and a table, which ngspice's behavioral sources lack, is written as the choice between its segments' lines and its corners' parabolas.
+
 ## Switches
 
 `voltage_controlled_switch(...)` is a resistance between `positive` and `negative` that the voltage of `control_positive` over `control_negative` moves, in PSpice's model, from `off_resistance` to `on_resistance`: logarithmically and smoothly, with zero slope at each end, as the control moves from `off_voltage` to `on_voltage`.

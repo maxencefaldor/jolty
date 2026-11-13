@@ -44,6 +44,35 @@ pub enum Variable {
     Time,
 }
 
+/// A term of an expression's [tree](Expression::tree).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Term {
+    /// A number.
+    Constant(f64),
+    /// A variable the expression reads.
+    Variable(Variable),
+    /// An operation on its operands, named as the language names it: an operator, such as
+    /// `+`, `^` or `<=`, of two operands, `-` or `!` of one, `if` of a condition and the
+    /// two values it chooses between, or a function, such as `sqrt`, `min` or `limit`.
+    Operation(&'static str, Vec<Term>),
+    /// The piecewise-linear interpolation of points at `input`, as `table`, `pwl` and
+    /// `rounded_table` read it: through the points given, with one more before the first
+    /// and one after the last, which hold the ends or extend them. Each corner, the ends'
+    /// included, holds the inputs between the midpoints of the segments beside it, and is
+    /// rounded there by a parabola over `rounding` times the shorter of them; below the
+    /// first segment's midpoint and above the last's, the input follows that segment.
+    Table {
+        /// The interpolation's input.
+        input: Box<Term>,
+        /// The points' abscissae, ascending.
+        abscissae: Vec<f64>,
+        /// The points' ordinates.
+        ordinates: Vec<f64>,
+        /// The fraction of the shorter segment beside each corner its parabola spans.
+        rounding: f64,
+    },
+}
+
 /// A parsed expression, ready to evaluate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
@@ -84,6 +113,41 @@ impl Expression {
             "a workspace made for this expression"
         );
         tape::evaluate(&self.tape, variables, workspace, gradient)
+    }
+
+    /// The expression as a tree of terms, its constant parts folded: what another
+    /// simulator's language needs to write it in its own.
+    #[must_use]
+    pub fn tree(&self) -> Term {
+        let mut terms: Vec<Term> = Vec::with_capacity(self.tape.len());
+        for instruction in &self.tape {
+            let term = match instruction {
+                Instruction::Constant(value) => Term::Constant(*value),
+                Instruction::Variable(index) => Term::Variable(self.variables[*index].clone()),
+                Instruction::Unary(operation, x) => {
+                    Term::Operation(operation.name(), vec![terms[*x].clone()])
+                }
+                Instruction::Binary(operation, a, b) => {
+                    Term::Operation(operation.name(), vec![terms[*a].clone(), terms[*b].clone()])
+                }
+                Instruction::Limit(operands) => Term::Operation(
+                    "limit",
+                    operands.iter().map(|&index| terms[index].clone()).collect(),
+                ),
+                Instruction::Conditional(operands) => Term::Operation(
+                    "if",
+                    operands.iter().map(|&index| terms[index].clone()).collect(),
+                ),
+                Instruction::Table(x, points) => Term::Table {
+                    input: Box::new(terms[*x].clone()),
+                    abscissae: points.abscissae().to_vec(),
+                    ordinates: points.ordinates().to_vec(),
+                    rounding: points.rounding(),
+                },
+            };
+            terms.push(term);
+        }
+        terms.pop().unwrap_or(Term::Constant(f64::NAN))
     }
 
     /// Appends to `found` the choices the expression's value turned on at its last
@@ -242,6 +306,48 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn a_tree_names_each_operation_and_folds_constants() {
+        let expression: Expression = "-v(a) ^ 2 ^ 3 + limit(time, 2 * pi, 0) + log(i(p))"
+            .parse()
+            .expect("valid");
+        let voltage = Term::Variable(Variable::Voltage("a".to_owned(), None));
+        let power = Term::Operation("^", vec![voltage, Term::Constant(8.0)]);
+        let limit = Term::Operation(
+            "limit",
+            vec![
+                Term::Variable(Variable::Time),
+                Term::Constant(2.0 * std::f64::consts::PI),
+                Term::Constant(0.0),
+            ],
+        );
+        let logarithm = Term::Operation(
+            "ln",
+            vec![Term::Variable(Variable::Current("p".to_owned()))],
+        );
+        let sum = Term::Operation("+", vec![Term::Operation("-", vec![power]), limit]);
+        assert_eq!(
+            expression.tree(),
+            Term::Operation("+", vec![sum, logarithm])
+        );
+    }
+
+    #[test]
+    fn a_tables_tree_holds_its_points_with_their_ends() {
+        let expression: Expression = "rounded_table(v(a), 0.25, 0, 1, 2, 3) + if(v(a), 1, 0)"
+            .parse()
+            .expect("valid");
+        let input = Box::new(Term::Variable(Variable::Voltage("a".to_owned(), None)));
+        let table = Term::Table {
+            input: input.clone(),
+            abscissae: vec![-2.0, 0.0, 2.0, 4.0],
+            ordinates: vec![1.0, 1.0, 3.0, 3.0],
+            rounding: 0.25,
+        };
+        let choice = Term::Operation("if", vec![*input, Term::Constant(1.0), Term::Constant(0.0)]);
+        assert_eq!(expression.tree(), Term::Operation("+", vec![table, choice]));
+    }
 
     /// The value and gradient of `text` at `values`.
     fn evaluate(text: &str, values: &[f64]) -> (f64, Vec<f64>) {

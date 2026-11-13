@@ -17,6 +17,12 @@ use crate::{Observation, Observations, Options, Rejection, SimulationError, Simu
 const RESTART_FRACTION: f64 = 0.1;
 /// The smallest step allowed, as a fraction of the longest.
 const SMALLEST_STEP_FRACTION: f64 = 1e-9;
+/// The gibibytes of numbers a transient's results may hold, every unknown's and every
+/// device's at each point, before it stops: a transient whose steps shrink to a crawl
+/// fails instead of filling the memory.
+pub(crate) const MOST_HELD_GIB: u32 = 2;
+/// The numbers [`MOST_HELD_GIB`] holds, each of eight bytes.
+const MOST_HELD: f64 = MOST_HELD_GIB as f64 * 134_217_728.0;
 /// The factor a step shrinks by when Newton iteration fails.
 const FAILURE_SHRINK: f64 = 0.125;
 /// The bounds on the factor the truncation error changes the step by.
@@ -442,6 +448,19 @@ impl Simulator {
         options.check()?;
         let longest = self.longest_step(transient)?;
         let shortest = longest * SMALLEST_STEP_FRACTION;
+        // The numbers each point holds: the unknowns, and every device's currents,
+        // charges, derivatives and variables.
+        let width = self.system.unknowns.len()
+            + 2 * (self.observer.names().len() + self.observer.derivatives().len())
+            + self.observer.variables().len();
+        let width = f64::from(u32::try_from(width).unwrap_or(u32::MAX));
+        if transient.stop / longest * width > MOST_HELD {
+            return Err(SimulationError::TooManyPoints {
+                time: 0.0,
+                step: longest,
+            });
+        }
+        let mut held = width;
         let mut observations = transient.times.clone();
         observations.sort_by(f64::total_cmp);
         let (initial, strategy) = if let Some(start) = start {
@@ -502,6 +521,13 @@ impl Simulator {
                     let formula = (&stepper.formula, stepper.restart);
                     self.advance_carried(&mut carried, at, formula, options)?;
                     self.watch_supplies(&stepper.x, stepper.time, options);
+                    held += width;
+                    if held > MOST_HELD {
+                        return Err(SimulationError::TooManyPoints {
+                            time: stepper.time,
+                            step: stepper.previous,
+                        });
+                    }
                     times.push(stepper.time);
                     values.push(stepper.x.clone());
                     observed.push(&found);
