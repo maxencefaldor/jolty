@@ -16,8 +16,7 @@ Each item leaves this file when it lands on `main`, and its change says so in th
 - Batched variants in Rust: one elaboration for every sample, corner and worst-case point, run in parallel, with a setting for the number of threads and the GIL released in every long call.
 - Spec measurements in Rust, so a batch returns verdicts rather than waveforms.
 - AC, noise, stability and sensitivity solved in parallel across frequencies and columns, and devices evaluated and assembled in parallel, bit for bit the same whatever the number of threads.
-- A schematic router whose search grows with the circuit rather than with the routed tree at each step: its A* reads the whole tree for each node it expands.
-- The docs' schematics and the gallery drawn again, after the schematic layout's new row order.
+- The docs' schematics and the gallery drawn again, after the schematic layout's new row order and routing.
 - A benchmark of what jolty gives an agent: the same tasks done with jolty and with ngspice, compared by success and by iterations.
 - Continuous integration, which waits for GitHub Actions minutes.
 

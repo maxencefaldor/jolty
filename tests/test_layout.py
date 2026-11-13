@@ -272,3 +272,27 @@ def test_an_empty_component_lays_out_as_nothing() -> None:
     drawn = layout(ir.Circuit(top="top", components={"top": ir.Component()}), "top")
     assert drawn.instances == drawn.flags == drawn.nets == ()
     assert drawn.bounds() == ((0, 0), (0, 0))
+
+
+def test_a_net_of_many_pins_is_wired_whole() -> None:
+    loads = tuple(
+        ir.Instance(
+            id=f"R{index}",
+            of=ir.DeviceOf(device="resistor"),
+            terminals={"a": "bus", "b": f"n{index}"},
+        )
+        for index in range(24)
+    )
+    source = ir.Instance(
+        id="V1",
+        of=ir.DeviceOf(device="voltage_source"),
+        terminals={"positive": "bus", "negative": "ground"},
+    )
+    top = ir.Component(
+        ports=(ir.Port(name="ground", role=Role.GROUND),), instances=(source, *loads)
+    )
+    drawn = layout(ir.Circuit(top="top", components={"top": top}), "top")
+    bus = next(net for net in drawn.nets if net.name == "bus")
+    assert len(set(bus.pins)) == 25
+    assert not bus.labeled
+    assert_sound(drawn)

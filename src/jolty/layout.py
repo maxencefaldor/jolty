@@ -696,7 +696,7 @@ class _Router:
         tree = {ordered[0]}
         paths: list[list[Point]] = []
         for pin in ordered[1:]:
-            path = self._search(net.name, pin, tree)
+            path = self._search(net.name, tree, pin)
             if path is None:
                 for done in paths:
                     self._release(net.name, done)
@@ -708,26 +708,30 @@ class _Router:
         net.segments = _segments(paths)
         net.junctions = _junctions(paths, set(net.pins))
 
-    def _search(
-        self, name: str, start: Point, targets: set[Point]
-    ) -> list[Point] | None:
-        """The cheapest path from `start` to any of `targets` for the net `name`."""
+    def _search(self, name: str, tree: set[Point], pin: Point) -> list[Point] | None:
+        """The cheapest path for the net `name` from any point of its `tree` to `pin`.
+
+        The search leaves from the whole tree for the one pin, so its estimate, the
+        distance to the pin, costs the same at each point however large the tree grows.
+        """
 
         def estimate(point: Point) -> int:
-            return min(abs(point[0] - x) + abs(point[1] - y) for x, y in targets)
+            return abs(point[0] - pin[0]) + abs(point[1] - pin[1])
 
         counter = itertools.count()
-        frontier = [(estimate(start), next(counter), (start, None))]
-        costs: dict[_State, int] = {(start, None): 0}
+        starts: list[_State] = [(point, None) for point in sorted(tree)]
+        frontier = [(estimate(state[0]), next(counter), state) for state in starts]
+        heapq.heapify(frontier)
+        costs: dict[_State, int] = dict.fromkeys(starts, 0)
         previous: dict[_State, _State] = {}
         while frontier:
             _, _, state = heapq.heappop(frontier)
             point, heading = state
-            if point in targets:
+            if point == pin:
                 return _path(previous, state)
             for direction in self._directions(name, point, heading):
                 following = (point[0] + direction[0], point[1] + direction[1])
-                if not self._open(name, point, following, direction, targets):
+                if not self._open(name, point, following, direction, pin):
                     continue
                 cost = costs[state] + _STEP
                 if heading is not None and direction != heading:
@@ -760,7 +764,7 @@ class _Router:
         point: Point,
         following: Point,
         direction: tuple[int, int],
-        targets: set[Point],
+        pin: Point,
     ) -> bool:
         """Whether the net `name` may step from `point` to `following`."""
         x, y = following
@@ -770,18 +774,18 @@ class _Router:
             self.steps.get(frozenset((point, following))) in ours
             and self.pins.get(following) in ours
             and self.ends.get(following) in ours
-            and (following not in self.blocked or following in targets)
+            and (following not in self.blocked or following == pin)
         )
-        return inside and free and self._may_cross(name, following, direction, targets)
+        return inside and free and self._may_cross(name, following, direction, pin)
 
     def _may_cross(
-        self, name: str, point: Point, direction: tuple[int, int], targets: set[Point]
+        self, name: str, point: Point, direction: tuple[int, int], pin: Point
     ) -> bool:
         """Whether a step in `direction` onto `point` runs along no other wire."""
         if not self._crosses(name, point):
             return True
         way = "h" if direction[1] == 0 else "v"
-        return self.through[point][1] != way and point not in targets
+        return self.through[point][1] != way and point != pin
 
     def _claim(self, name: str, path: list[Point]) -> None:
         """Claims `path` for the net `name`.
