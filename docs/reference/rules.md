@@ -18,6 +18,8 @@ The default levels below hold until settings or options set others (see [Checks]
 | [`gmin-dependence`](#gmin-dependence) | `warn` |
 | [`multiple-operating-points`](#multiple-operating-points) | `warn` |
 | [`unstable-pole`](#unstable-pole) | `warn` |
+| [`phase-margin`](#phase-margin) | `warn` |
+| [`gain-margin`](#gain-margin) | `warn` |
 
 ## unconnected-terminal
 
@@ -80,3 +82,13 @@ A simulation checks it at its plan's operating point, on circuits of at most 500
 The circuit linearized at its operating point has a pole whose real part is above a millionth of its magnitude: a natural mode grows away from the operating point, as an oscillation that builds up or a latch that tips, so the circuit does not rest there.
 A real pole, or a conjugate pair, raises one diagnostic, naming the nets where its mode's amplitude is at least half its largest.
 A simulation checks it at its plan's operating point, on circuits of at most 500 unknowns.
+
+## phase-margin
+
+A stability analysis's loop gain falls through 0 dB with a phase margin below 45°: the loop's step response overshoots by more than about a fifth and rings, and the margin left for parts and loads that shift the phase is small.
+The diagnostic names the probe, the margin and the crossover frequency.
+
+## gain-margin
+
+A stability analysis's loop gain is above -6 dB where its phase, unwrapped from the lowest frequency, first falls through -180°: less than doubling the loop's gain makes it oscillate.
+The diagnostic names the probe and the margin.

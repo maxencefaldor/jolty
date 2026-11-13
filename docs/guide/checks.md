@@ -47,6 +47,17 @@ warn[unstable-pole]: the operating point is unstable: its poles at 50000.0000000
 An oscillator raises it by design, so it is a warning, which a plan for one can ignore.
 The poles are found by the QZ algorithm on the dense linearized circuit, which takes about a second at 500 unknowns, so a circuit of more unknowns is checked at its operating point for gmin-dependence alone.
 
+## On analyses' results
+
+Once its analyses end, a simulation checks their results too.
+A stability analysis's loop gain raises `phase-margin` when it falls through 0 dB with less than 45° of phase margin, and `gain-margin` when its phase falls through -180° with less than 6 dB of gain margin, each measured as the specs' `phase_margin` and `gain_margin` measure them:
+
+```text
+warn[phase-margin]: the loop broken at `VP` has a phase margin of 41.69037114357252° at its crossover, 1039270.2892072713 Hz
+```
+
+A spec on the margin states a design's own bound; the rules state the usual ones for any loop a plan measures.
+
 ## Diagnostics
 
 Each diagnostic names its level and rule, states the fact, and lists the instances involved with the script line that placed each one:

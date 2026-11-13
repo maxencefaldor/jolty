@@ -45,7 +45,16 @@ from jolty.fidelity import FidelityReport
 from jolty.plan import Corner, MonteCarlo, Plan, WorstCase
 from jolty.results import Result
 from jolty.simulate import Simulation, kelvins
-from jolty.specs import Requirement, Specs, Verdict, evaluate, judge, reading, spread
+from jolty.specs import (
+    Requirement,
+    Specs,
+    Verdict,
+    diagnose,
+    evaluate,
+    judge,
+    reading,
+    spread,
+)
 
 JOB: Final = "job.json"
 """The file in the job's directory that holds the job."""
@@ -210,7 +219,9 @@ def _run(job: Job, directory: Path) -> Built:
             return Built(circuit=built, problems=error.problems)
     outside: list[fidelity.Outside] = []
     solved, reports = _analyses(simulation, plan, job.listed, outside)
-    at_point = _at_operating_point(simulation, plan) if job.check else ()
+    at_point = (
+        _at_operating_point(simulation, plan) + diagnose(solved) if job.check else ()
+    )
     if solved:
         files.save_results(directory / RESULTS, solved)
     corners: list[report.CornerReport] = []

@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from jolty import (
@@ -14,6 +15,7 @@ from jolty import (
     circuit,
     component,
     devices,
+    results,
 )
 from jolty.checks import Diagnostic, Instance, levels, report, rules
 from jolty.cli import main
@@ -21,6 +23,7 @@ from jolty.files import save_circuit
 from jolty.ir import Source
 from jolty.service import SimulateResult
 from jolty.settings import Level
+from jolty.specs import diagnose
 from jolty.units import Mohm, Quantity, S, V, kohm, mA, mH, nA, nF, ns, ps
 
 
@@ -207,6 +210,12 @@ def test_every_rule_has_a_case_that_raises_it() -> None:
         for case in at_points
         for diagnostic in Simulation(case).check_operating_point()
     }
+    frequencies = np.logspace(-3, 3, 601)
+    poor = np.asarray(10 / (1 + 1j * frequencies) ** 3, dtype=np.complex128)
+    unknowns = (results.Unknown("out", "voltage"),)
+    rest = results.OperatingPoint(unknowns, np.zeros(1), "direct")
+    loop = results.LoopGain(unknowns, "VP", frequencies, poor, rest)
+    found |= {diagnostic.rule for diagnostic in diagnose({"loop": loop})}
     assert found == set(rules())
 
 

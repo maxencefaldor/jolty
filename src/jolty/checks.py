@@ -15,7 +15,7 @@ Examples:
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import cache
-from typing import override
+from typing import Final, override
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,13 +33,39 @@ class Rule:
     condition: str
 
 
+PHASE_MARGIN: Final = Rule(
+    "phase-margin",
+    Level.WARN,
+    "A stability analysis's loop gain falls through 0 dB with a phase margin below "
+    "45°: the loop's step response overshoots by more than about a fifth and rings, "
+    "and the margin left for parts and loads that shift the phase is small. The "
+    "diagnostic names the probe, the margin and the crossover frequency.",
+)
+
+GAIN_MARGIN: Final = Rule(
+    "gain-margin",
+    Level.WARN,
+    "A stability analysis's loop gain is above -6 dB where its phase, unwrapped from "
+    "the lowest frequency, first falls through -180°: less than doubling the loop's "
+    "gain makes it oscillate. The diagnostic names the probe and the margin.",
+)
+
+ON_RESULTS: Final = (PHASE_MARGIN, GAIN_MARGIN)
+"""The rules on analyses' results, which a simulation checks once it has them."""
+
+
 @cache
 def rules() -> dict[str, Rule]:
-    """Every rule, by name, in the order a check reports them."""
-    return {
+    """Every rule, by name, in the order a check reports them.
+
+    The engine's come first: on the circuit's structure, and at its operating point.
+    Those on analyses' results follow.
+    """
+    engine = {
         name: Rule(name, Level(level), condition)
         for name, level, condition in _core.rules()
     }
+    return engine | {rule.name: rule for rule in ON_RESULTS}
 
 
 class _Model(BaseModel):

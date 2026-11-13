@@ -19,6 +19,7 @@ from jolty.specs import (
     crossover,
     damping,
     describe,
+    diagnose,
     distortion,
     dominant_pole,
     evaluate,
@@ -218,6 +219,26 @@ def test_a_loop_gains_margins_are_read_without_an_output() -> None:
         assert measured.value == pytest.approx(value_read, rel=1e-6), measurement
     assert str(phase_margin("loop") >= 45) == "phase margin of the loop in loop ≥ 45 °"
     assert str(gain_margin("loop") >= 6) == "gain margin of the loop in loop ≥ 6 dB"
+
+
+def test_a_loop_short_of_its_margins_raises_their_rules() -> None:
+    frequencies = np.logspace(-3, 3, 60_001)
+    # Three poles under a gain of 10: about -7° of phase margin and -1.9 dB of gain.
+    poor = np.asarray(10 / (1 + 1j * frequencies) ** 3, dtype=np.complex128)
+    raised = diagnose({"loop": loop_gain(frequencies, poor)})
+    assert [diagnostic.rule for diagnostic in raised] == ["phase-margin", "gain-margin"]
+    unity = math.sqrt(10 ** (2 / 3) - 1)
+    margin = 180 - 3 * math.degrees(math.atan(unity))
+    assert raised[0].message.startswith("the loop broken at `VP` has a phase margin of")
+    assert float(raised[0].message.split(" of ")[1].split("°")[0]) == pytest.approx(
+        margin, rel=1e-6
+    )
+    assert raised[1].message.startswith(
+        "the loop broken at `VP` has a gain margin of -"
+    )
+    # An integrator crosses unity with 90° to spare and never inverts.
+    sound = np.asarray(1 / (1j * frequencies), dtype=np.complex128)
+    assert diagnose({"loop": loop_gain(frequencies, sound), "ac": low_pass()}) == ()
 
 
 def test_a_loop_gain_is_read_without_an_output_and_a_response_at_one() -> None:

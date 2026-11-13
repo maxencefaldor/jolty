@@ -36,7 +36,7 @@ import numpy as np
 import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict, Field
 
-from jolty import ir, results
+from jolty import checks, ir, results
 from jolty.builder import caller
 from jolty.errors import DimensionError, JoltyError
 from jolty.units import (
@@ -453,6 +453,54 @@ def describe(verdicts: Sequence[Verdict]) -> str:
     )
     return "\n\n".join(
         [*(verdict.describe() for verdict in verdicts), f"specs: {tally}"]
+    )
+
+
+LEAST_PHASE_MARGIN: Final = 45.0
+"""The phase margin, in degrees, below which the rule phase-margin states a loop's."""
+
+LEAST_GAIN_MARGIN: Final = 6.0
+"""The gain margin, in decibels, below which the rule gain-margin states a loop's."""
+
+
+def diagnose(solved: Mapping[str, results.Result]) -> tuple[checks.Diagnostic, ...]:
+    """The diagnostics of the rules on the analyses' results `solved`, by analysis.
+
+    Each stability analysis's loop gain raises phase-margin when it falls through 0 dB
+    with less than 45° of phase margin, and gain-margin when its phase falls through
+    -180° with less than 6 dB of gain margin, each measured as `phase_margin` and
+    `gain_margin` measure them.
+    """
+    found: list[checks.Diagnostic] = []
+    for name, result in solved.items():
+        if not isinstance(result, results.LoopGain):
+            continue
+        loop = f"the loop broken at `{result.probe}`"
+        try:
+            phase = phase_margin(name).read(result).value
+            unity = crossover(name).read(result).value
+        except MeasurementError:
+            pass
+        else:
+            if phase < LEAST_PHASE_MARGIN:
+                message = (
+                    f"{loop} has a phase margin of {phase!r}° at its crossover, "
+                    f"{unity!r} Hz"
+                )
+                found.append(_diagnostic(checks.PHASE_MARGIN, message))
+        try:
+            gain = gain_margin(name).read(result).value
+        except MeasurementError:
+            continue
+        if gain < LEAST_GAIN_MARGIN:
+            message = f"{loop} has a gain margin of {gain!r} dB"
+            found.append(_diagnostic(checks.GAIN_MARGIN, message))
+    return tuple(found)
+
+
+def _diagnostic(rule: checks.Rule, message: str) -> checks.Diagnostic:
+    return checks.Diagnostic(
+        rule=rule.name, level=rule.level, message=message, instances=(), nets=()
     )
 
 
