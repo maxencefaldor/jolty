@@ -23,7 +23,23 @@ from jolty.units import format_si
 
 type Quantity = results.Quantity
 
-_SYMBOLS = {"voltage": "V", "current": "A", "temperature": "K"}
+_SYMBOLS: dict[Quantity, str] = {
+    "voltage": "V",
+    "current": "A",
+    "temperature": "K",
+    "state": "",
+}
+
+
+def _shown(value: float, quantity: Quantity) -> str:
+    """`value`, an unknown's of `quantity`, with an SI prefix to its unit.
+
+    A device's state has no unit, and is written as a plain number.
+    """
+    if quantity == "state":
+        return f"{value:.4g}"
+    return format_si(value, _SYMBOLS[quantity])
+
 
 _STRATEGIES = {
     "direct": "Newton iteration",
@@ -93,7 +109,7 @@ class PointReport(_Model):
         """The report as text."""
         strategy = _STRATEGIES.get(self.strategy, self.strategy)
         rows = [
-            [value.unknown, format_si(value.value, _SYMBOLS[value.quantity])]
+            [value.unknown, _shown(value.value, value.quantity)]
             for value in self.values
         ]
         rows.extend([level.net, _written(level.level)] for level in self.levels)
@@ -130,10 +146,7 @@ class PointsReport(_Model):
         rows = [
             [
                 solutions.unknown,
-                *(
-                    format_si(value, _SYMBOLS[solutions.quantity])
-                    for value in solutions.values
-                ),
+                *(_shown(value, solutions.quantity) for value in solutions.values),
             ]
             for solutions in self.values
         ]
@@ -507,7 +520,7 @@ class SensitivityReport(_Model):
             if output.value is None:
                 lines.append(f"  {output.output}")
             else:
-                value = format_si(output.value, _SYMBOLS[output.quantity])
+                value = _shown(output.value, output.quantity)
                 lines.append(f"  {output.output} = {value}")
             rows = [
                 [
@@ -1057,7 +1070,7 @@ def _extents(extents: tuple[Extent, ...]) -> list[str]:
         return []
 
     def si(value: float, extent: Extent) -> str:
-        return format_si(value, _SYMBOLS[extent.quantity])
+        return _shown(value, extent.quantity)
 
     header = ["", "first", "min", "max", "last"]
     rows = [

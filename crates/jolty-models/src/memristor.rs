@@ -220,7 +220,7 @@ impl<R: Real> Memristor<R> {
             )));
         }
         let nodes = [0, 1].map(|index| binding.terminal(index));
-        let state = binding.internal("state", Quantity::Voltage);
+        let state = binding.internal("state", Quantity::State);
         let columns = [nodes[0], nodes[1], Some(state)];
         Ok(Self {
             nodes,

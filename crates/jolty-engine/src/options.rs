@@ -45,7 +45,8 @@ impl Default for Options {
 
 impl Options {
     /// The absolute tolerance on the value of an unknown of `quantity`: the current
-    /// tolerance for a current, the voltage tolerance for a voltage.
+    /// tolerance for a current, the voltage tolerance for a voltage, a temperature or a
+    /// device's state.
     pub(crate) fn value_tolerance(&self, quantity: Quantity) -> f64 {
         if quantity.is_current() {
             self.current_tolerance
@@ -56,7 +57,7 @@ impl Options {
 
     /// The absolute tolerance on the residual of an unknown of `quantity`'s equation: the
     /// current tolerance for an equation that sums currents, the voltage tolerance for one
-    /// that constrains a voltage.
+    /// that constrains a voltage or moves a device's state.
     pub(crate) fn equation_tolerance(&self, quantity: Quantity) -> f64 {
         if quantity.sums_currents() {
             self.current_tolerance

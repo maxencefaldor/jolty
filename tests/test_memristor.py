@@ -10,6 +10,7 @@ against the voltage is pinched at the origin, and shrinks as the frequency rises
 
 import dataclasses
 import math
+import re
 from collections.abc import Callable
 
 import numpy as np
@@ -26,7 +27,9 @@ from jolty import (
     devices,
     results,
 )
-from jolty.plan import Ac, DcSweep, Sensitivity, Transient
+from jolty.plan import Ac, DcSweep, OperatingPoint, Sensitivity, Transient
+from jolty.plots import plot
+from jolty.report import report
 from jolty.units import C, Hz, V, kohm, ohm, s
 from jolty.waveforms import Sine
 
@@ -157,7 +160,7 @@ def test_vteams_loop_is_the_closed_form_of_its_thresholds(
     waveforms = _run(_vteam(exponent, law))
     times = waveforms.times
     state = _vteam_state(times, exponent)
-    np.testing.assert_allclose(waveforms.voltage("M1:state"), state, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(waveforms.state("M1:state"), state, rtol=0, atol=1e-6)
     voltage = AMPLITUDE * np.sin(2 * math.pi * FREQUENCY * times)
     expected = voltage / _resistance(state, law)
     np.testing.assert_allclose(
@@ -179,7 +182,7 @@ def test_below_its_thresholds_vteams_memristor_is_a_resistor() -> None:
         state=START,
     )
     waveforms = _run(quiet)
-    np.testing.assert_allclose(waveforms.voltage("M1:state"), START, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(waveforms.state("M1:state"), START, rtol=0, atol=1e-9)
     voltage = waveforms.voltage("in")
     np.testing.assert_allclose(
         waveforms.current("M1", "positive"),
@@ -309,7 +312,7 @@ def test_an_operating_point_holds_the_state_and_shows_its_rate() -> None:
     simulation = Simulation(_fed(0.0))
     levels = [-3.0, -0.2, 0.2, 3.0]
     sweep = simulation.run(DcSweep("V1", [level * V for level in levels]))
-    np.testing.assert_allclose(sweep.voltage("M1:state"), START, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(sweep.state("M1:state"), START, rtol=0, atol=1e-12)
     resistance = ON + (OFF - ON) * START
     np.testing.assert_allclose(sweep.variable("M1", "resistance"), resistance)
     cell = np.array(levels) * resistance / (resistance + 1e3)
@@ -324,7 +327,7 @@ def test_held_past_a_threshold_its_state_runs_to_the_bound(
 ) -> None:
     simulation = Simulation(_fed(level))
     waveforms = simulation.run(Transient(1e-3 * s), TIGHT)
-    state = waveforms.voltage("M1:state")
+    state = waveforms.state("M1:state")
     assert state[0] == START
     assert state[-1] == pytest.approx(bound, abs=1e-6)
     assert np.all((state >= -1e-6) & (state <= 1 + 1e-6))
@@ -366,7 +369,7 @@ def test_a_transients_sensitivities_carry_the_state_it_starts_from() -> None:
             parameters=_vteam().parameters | {"state": made, "off_rate": rate},
         )
         waveforms = Simulation(_fed(3.0, cell)).run(transient, TIGHT)
-        return float(waveforms.voltage("M1:state")[-1])
+        return float(waveforms.state("M1:state")[-1])
 
     rate, step = _vteam_rate(1), 1e-5
     differences = {
@@ -378,3 +381,14 @@ def test_a_transients_sensitivities_carry_the_state_it_starts_from() -> None:
         derivatives = np.asarray(found.derivative("M1:state", "M1", name), dtype=float)
         derivative = float(derivatives[-1])
         assert derivative == pytest.approx(difference, rel=1e-5), name
+
+
+def test_a_state_has_a_panel_of_its_own_and_reads_as_a_number() -> None:
+    simulation = Simulation(_driven(_vteam()))
+    waveforms = simulation.run(Transient(1 / FREQUENCY * s))
+    figure = plot("run", waveforms, ["in", "M1:state"])
+    labels = [axes.get_ylabel() for axes in figure.axes]
+    assert labels == ["voltage", "state"]
+    point = simulation.run(OperatingPoint())
+    written = report("point", point, listed=10).describe()
+    assert re.search(r"M1:state\s+0\.3\b", written), written

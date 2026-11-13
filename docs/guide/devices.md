@@ -168,7 +168,7 @@ A netlist written for ngspice gives each switch as a behavioral current of its o
 `photocell(resistance, ...)` is a light-dependent resistor between `a` and `b`, as its maker's datasheet states one: its resistance at a reference illuminance and how steeply it falls with light.
 The voltage of `light_positive` over `light_negative` is the illuminance on it, 1 V for each lux, and those terminals draw no current, so a source, or a behavioral source that turns a lamp's or an LED's current into light, drives it.
 Its conductance is `1/r_dark + s/r`, where `s = (E/E₀)^γ` at the illuminance `E`, held at zero or above and rounded off over a microlux so its slope stays finite in darkness.
-With a response time `τ`, `s` lags the light, `τ · ds/dt = (E/E₀)^γ − s`, as a cadmium sulphide cell's conductance does over milliseconds, and is an unknown labelled `response`, as `P1:response`.
+With a response time `τ`, `s` lags the light, `τ · ds/dt = (E/E₀)^γ − s`, as a cadmium sulphide cell's conductance does over milliseconds, and is a state labelled `response`, as `P1:response`, which results read with `state(name)`.
 
 | Parameter | Unit | Default |
 | --- | --- | --- |
@@ -185,7 +185,7 @@ SPICE has no photocell; written for ngspice, it is a behavioral current whose re
 A memristor is a resistance between `positive` and `negative` that remembers what drove it.
 Its state, from 0, fully on, at `on_resistance`, to 1, fully off, at `off_resistance`, moves only while it is driven, and holds where the drive left it.
 The resistance follows the state by a `law`: `"linear"`, `r_on + (r_off − r_on) · x`, as two resistances in series whose boundary moves, or `"exponential"`, `r_on · (r_off / r_on)^x`, as a tunnel barrier whose width moves.
-The state is an unknown labelled `state`, as `M1:state`, and the resistance and the rate at which the state moves, toward off when positive, in full ranges per second, are the [variables](results.md#devices-own-models) `resistance` and `rate`.
+The state is an unknown labelled `state`, as `M1:state`, which results read with `state(name)`, and the resistance and the rate at which the state moves, toward off when positive, in full ranges per second, are the [variables](results.md#devices-own-models) `resistance` and `rate`.
 A window slows the state as it nears the bound it moves toward, by `1 − e^(−d/w)` at a distance `d` from it, `w` the `window`, so it never passes either bound and leaves either at once when driven away.
 
 Only time moves a state.

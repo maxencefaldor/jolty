@@ -38,6 +38,9 @@ pub enum Quantity {
     /// A thermal net's temperature above the ambient, in kelvins, whose equation sums the
     /// heat flows leaving the net, in watts, as a node's sums currents.
     Temperature,
+    /// A device's dimensionless state, such as a memristor's, whose equation is the
+    /// device's own: how fast the state moves, or what it lags.
+    State,
 }
 
 impl Quantity {

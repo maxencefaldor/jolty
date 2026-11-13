@@ -794,15 +794,20 @@ def _sense(instance: ir.Instance) -> str:
 def vector(
     circuit: ir.Circuit, unknown: results.Unknown, subcircuits: Collection[str] = ()
 ) -> str:
-    """The name of the ngspice vector of a jolty unknown, a voltage or a current.
+    """The name of the ngspice vector of a jolty unknown: a voltage, current or state.
 
     A net within a flattened component, such as ``X1/mid``, is the node ``x1_mid``; a
-    net within a placed subcircuit, such as ``U1/11``, is ngspice's ``xu1.11``.
+    net within a placed subcircuit, such as ``U1/11``, is ngspice's ``xu1.11``. A
+    device's state, such as ``M1:state``, is the voltage of the node the netlist gives
+    it, ``_m1_state``.
 
     Raises:
         JoltyError: When the unknown is a device's internal unknown, which ngspice
             names its own way.
     """
+    if unknown.quantity == "state":
+        path, _, label = unknown.name.rpartition(":")
+        return f"v(_{_node(path)}_{label})".lower()
     flat = flatten(circuit, subcircuits)
     top = flat.components[flat.top]
     if unknown.quantity == "voltage":

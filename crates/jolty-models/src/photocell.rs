@@ -105,7 +105,7 @@ impl<R: Real> NativeDevice<R> for Photocell<R> {
         let entries =
             [nodes[0], nodes[1]].map(|row| nodes.map(|column| binding.entry(row, column)));
         let lag = (time.value() > 0.0).then(|| {
-            let response = binding.internal("response", Quantity::Voltage);
+            let response = binding.internal("response", Quantity::State);
             let row = Some(response);
             Lag {
                 response,

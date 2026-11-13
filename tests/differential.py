@@ -126,14 +126,15 @@ def size(values: Values) -> float:
 def compared(simulation: Simulation) -> list[tuple[int, results.Unknown]]:
     """The unknowns both engines report, with their columns in jolty's results.
 
-    Both report the nets, the top's source currents and the currents sensed. ngspice
-    names a device's internal nodes its own way, and has none of the nets jolty
-    adds in series with a source whose current a subcircuit reads.
+    Both report the nets, the top's source currents, the currents sensed and devices'
+    states, which the netlist gives nodes of their own. ngspice names a device's other
+    internal nodes its own way, and has none of the nets jolty adds in series with a
+    source whose current a subcircuit reads.
     """
     return [
         (column, unknown)
         for column, unknown in enumerate(simulation.unknowns)
-        if _shared(unknown.name)
+        if unknown.quantity == "state" or _shared(unknown.name)
     ]
 
 

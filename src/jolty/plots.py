@@ -5,11 +5,12 @@ A plot draws chosen unknowns and logic nets of one result, or a loop gain alone,
 0 dB and -180°, where its margins are read, or a noise spectrum alone: the output's
 noise density with its noisiest sources', and the noise referred to the input, on log
 axes, or poles and zeros alone, each at its natural frequency and damping ratio.
-Voltages, currents and logic levels never share an axis: each quantity has a panel of
-its own, and a response has two, its magnitude and its phase. Logic nets share a panel
-in lanes of their own, each named on its axis, with unknown levels hatched. Series take
-their colors in a fixed order, checked to stay apart under the common color-vision
-deficiencies; a legend names them, and up to four are also labeled at their end.
+Voltages, currents, temperatures, devices' states and logic levels never share an
+axis: each quantity has a panel of its own, and a response has two, its magnitude and
+its phase. Logic nets share a panel in lanes of their own, each named on its axis, with
+unknown levels hatched. Series take their colors in a fixed order, checked to stay
+apart under the common color-vision deficiencies; a legend names them, and up to four
+are also labeled at their end.
 
 Examples:
     >>> import numpy as np
@@ -59,7 +60,7 @@ _SURFACE: Final = "#fcfcfb"
 _INK: Final = "#0b0b0b"
 _MUTED: Final = "#52514e"
 _GRID: Final = "#e4e3df"
-_UNITS: Final = {"voltage": "V", "current": "A", "temperature": "K"}
+_UNITS: Final = {"voltage": "V", "current": "A", "temperature": "K", "state": ""}
 
 type Plotted = (
     results.Sweep
@@ -71,7 +72,7 @@ type Plotted = (
 )
 """A result a plot draws; an operating point has no axis to draw along."""
 
-type _Quantity = Literal["voltage", "current", "temperature", "logic"]
+type _Quantity = Literal["voltage", "current", "temperature", "state", "logic"]
 
 _LANE: Final = 1.5
 """The height of a logic net's lane, in levels: its level spans 1, and a gap follows."""
@@ -178,6 +179,7 @@ def _grouped(
         "voltage": [],
         "current": [],
         "temperature": [],
+        "state": [],
         "logic": [],
     }
     for probe in probes:
@@ -432,7 +434,8 @@ def _draw(
     for name, color, values in series:
         axes.plot(x, values, color=color, linewidth=1.0, label=name)
     _style(axes, label)
-    axes.yaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
+    if unit:
+        axes.yaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
     if len(series) > 1:
         legend = axes.legend(loc="best", frameon=False, fontsize=8)
         for text in legend.get_texts():

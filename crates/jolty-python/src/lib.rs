@@ -295,10 +295,11 @@ fn unreadable(error: &impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(error.to_string())
 }
 
-/// The name of a quantity: `"voltage"` or `"current"`.
+/// The name of a quantity: `"voltage"`, `"current"`, `"temperature"` or `"state"`.
 fn quantity_name(quantity: Quantity) -> &'static str {
     match quantity {
         Quantity::Temperature => "temperature",
+        Quantity::State => "state",
         _ if quantity.is_current() => "current",
         _ => "voltage",
     }

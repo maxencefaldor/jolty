@@ -40,14 +40,15 @@ def _no_phasors() -> Complex:
     return np.empty((0, 0), dtype=np.complex128)
 
 
-type Quantity = Literal["voltage", "current", "temperature"]
-"""What an unknown is: a node's voltage, a branch's current, or a thermal net's
-temperature above the ambient, in kelvins."""
+type Quantity = Literal["voltage", "current", "temperature", "state"]
+"""What an unknown is: a node's voltage, a branch's current, a thermal net's
+temperature above the ambient, in kelvins, or a device's dimensionless state, such as a
+memristor's."""
 
 
 @dataclass(frozen=True, slots=True)
 class Unknown:
-    """A node voltage, a branch current or a thermal net's temperature, solved for."""
+    """An unknown solved for: a voltage, a current, a temperature or a state."""
 
     name: str
     quantity: Quantity
@@ -250,6 +251,10 @@ class OperatingPoint:
         """The temperature of the thermal net `net` above the ambient, in kelvins."""
         return float(self.values[column(self.unknowns, net, "temperature")])
 
+    def state(self, name: str) -> float:
+        """The device's state `name`, such as a memristor's ``M1:state``."""
+        return float(self.values[column(self.unknowns, name, "state")])
+
     def current(self, instance: str, terminal: str | None = None) -> float:
         """The current into `terminal` of `instance`.
 
@@ -373,6 +378,10 @@ class Sweep:
         """The temperature of the thermal net `net` above the ambient at each level."""
         return self.values[:, column(self.unknowns, net, "temperature")]
 
+    def state(self, name: str) -> Real:
+        """The device's state `name`, such as ``M1:state``, at each level."""
+        return self.values[:, column(self.unknowns, name, "state")]
+
     def current(self, instance: str, terminal: str | None = None) -> Real:
         """The current into `terminal` of `instance` at each level.
 
@@ -434,6 +443,10 @@ class Response:
     def rise(self, net: str) -> Complex:
         """The phasor of the thermal net `net`'s temperature at each frequency."""
         return self.values[:, column(self.unknowns, net, "temperature")]
+
+    def state(self, name: str) -> Complex:
+        """The phasor of the device's state `name` at each frequency."""
+        return self.values[:, column(self.unknowns, name, "state")]
 
     def current(self, instance: str, terminal: str | None = None) -> Complex:
         """The phasor of the current into `terminal` of `instance` at each frequency.
@@ -510,6 +523,10 @@ class Waveforms:
     def rise(self, net: str) -> Real:
         """The temperature of the thermal net `net` above the ambient over time."""
         return self.values[:, column(self.unknowns, net, "temperature")]
+
+    def state(self, name: str) -> Real:
+        """The device's state `name`, such as a memristor's ``M1:state``, over time."""
+        return self.values[:, column(self.unknowns, name, "state")]
 
     def current(self, instance: str, terminal: str | None = None) -> Real:
         """The current into `terminal` of `instance` over time.

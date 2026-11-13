@@ -39,7 +39,7 @@ class OperatingPointsOutcome(TypedDict):
 class SweepOutcome(Observed):
     kind: Literal["dc_sweep"]
     source: str
-    quantity: Literal["voltage", "current", "temperature"]
+    quantity: Literal["voltage", "current", "temperature", "state"]
     levels: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
@@ -83,14 +83,14 @@ class StabilityOutcome(TypedDict):
 
 class NoiseInputOutcome(TypedDict):
     source: str
-    quantity: Literal["voltage", "current", "temperature"]
+    quantity: Literal["voltage", "current", "temperature", "state"]
     gains: npt.NDArray[np.complex128]
 
 class NoiseOutcome(TypedDict):
     kind: Literal["noise"]
     output: str
     reference: str | None
-    quantity: Literal["voltage", "current", "temperature"]
+    quantity: Literal["voltage", "current", "temperature", "state"]
     frequencies: npt.NDArray[np.float64]
     densities: npt.NDArray[np.float64]
     input: NoiseInputOutcome | None

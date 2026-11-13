@@ -76,6 +76,7 @@ _DIMENSIONS: Final[dict[results.Quantity, Dimension]] = {
     "voltage": VOLTAGE,
     "current": CURRENT,
     "temperature": TEMPERATURE,
+    "state": DIMENSIONLESS,
 }
 """The dimension of each quantity an unknown is."""
 
