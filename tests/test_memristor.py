@@ -31,7 +31,7 @@ from jolty.plan import Ac, DcSweep, OperatingPoint, Sensitivity, Transient
 from jolty.plots import plot
 from jolty.report import report
 from jolty.specs import Specs, evaluate, value
-from jolty.units import C, Hz, V, kohm, ohm, s
+from jolty.units import C, Hz, V, kohm, nF, ohm, s
 from jolty.waveforms import Sine
 
 type Real = npt.NDArray[np.float64]
@@ -197,6 +197,46 @@ def test_below_its_thresholds_vteams_memristor_is_a_resistor() -> None:
         rtol=1e-9,
         atol=1e-15,
     )
+
+
+def test_a_periodic_steady_state_keeps_a_state_its_drive_leaves_alone() -> None:
+    """Below its thresholds, every state of VTEAM's memristor repeats each period.
+
+    Its steady state is not unique: shooting keeps the state it starts from, as a
+    transient would, and the capacitor it charges settles as through the resistance
+    that state sets.
+    """
+    quiet = devices.voltage_controlled_memristor(
+        on_resistance=ON * ohm,
+        off_resistance=OFF * ohm,
+        on_voltage=-1.5 * AMPLITUDE * V,
+        off_voltage=1.5 * AMPLITUDE * V,
+        on_rate=1e9 / s,
+        off_rate=1e9 / s,
+        state=START,
+    )
+
+    @component
+    def filtered(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        sine = Sine(0 * V, AMPLITUDE * V, FREQUENCY * Hz)
+        source = c.place(devices.voltage_source(sine), id="V1")
+        cell = c.place(quiet, id="M1")
+        capacitor = c.place(devices.capacitor(100 * nF), id="C1")
+        c.connect(source.positive, cell.positive, name="in")
+        c.connect(cell.negative, capacitor.a, name="out")
+        c.connect(capacitor.b, source.negative, ground)
+
+    period = 1 / FREQUENCY
+    steady = Simulation(filtered()).run(
+        Transient(period * s, max_step=5e-3 * period * s, periodic=True)
+    )
+    assert steady.statistics.periods == 2
+    np.testing.assert_allclose(steady.state("M1:state"), START, rtol=0, atol=1e-15)
+    omega = 2 * math.pi * FREQUENCY
+    lag = omega * float(_resistance(np.array(START), "linear")) * 100e-9
+    expected = np.sin(omega * steady.times - math.atan(lag)) / math.hypot(1, lag)
+    np.testing.assert_allclose(steady.voltage("out"), AMPLITUDE * expected, atol=1e-3)
 
 
 def _lobe_area(waveforms: results.Waveforms, period: float) -> float:

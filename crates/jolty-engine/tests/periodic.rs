@@ -179,6 +179,101 @@ fn a_rectifier_repeats_the_last_period_of_a_long_transient() {
     assert!((start - end).abs() < 1e-6, "{start} against {end}");
 }
 
+/// A sine of `amplitude` and 1 kHz across `memristor` from `in` to `out`, with 100 nF from
+/// `out` to the ground, the memristor's state 0.5.
+fn memristor_into_a_capacitor(memristor: (&str, Value), amplitude: f64) -> Value {
+    let (model, mut parameters) = memristor;
+    parameters["on_resistance"] = json!(1e3);
+    parameters["off_resistance"] = json!(1e4);
+    parameters["state"] = json!(0.5);
+    json!([
+        sine("V1", "in", (0.0, amplitude, 1e3)),
+        {"id": "M1", "of": {"device": model}, "parameters": parameters,
+         "terminals": {"positive": "in", "negative": "out"}},
+        two_terminal("C1", ("capacitor", "capacitance", 1e-7), "out", "0"),
+    ])
+}
+
+#[test]
+fn a_memristor_its_drive_leaves_alone_keeps_its_state() {
+    // The sine stays within the thresholds, so the state never moves, and every state is
+    // as periodic as any other: Φ − I is singular, its row for the state zero. Shooting
+    // keeps the state where it starts, and the capacitor settles through the 5.5 kΩ that
+    // state sets, as an RC of a time constant of 0.55 periods.
+    let memristor = json!({"on_voltage": -1.0, "off_voltage": 1.0,
+                           "on_rate": 1e3, "off_rate": 1e3});
+    let mut simulator = simulator(&memristor_into_a_capacitor(
+        ("voltage_controlled_memristor", memristor),
+        0.5,
+    ));
+    let frequency = 1e3;
+    let waveforms = run(&mut simulator, (1.0 / frequency, 5e-3 / frequency), true);
+    assert_eq!(waveforms.statistics.periods, Some(2));
+    let (state, out) = (index(&simulator, "M1:state"), index(&simulator, "out"));
+    let lag = TAU * frequency * 5.5e3 * 1e-7;
+    let amplitude = 0.5 / lag.hypot(1.0);
+    for (time, values) in waveforms.times.iter().zip(&waveforms.values) {
+        assert!((values[state] - 0.5).abs() < 1e-15, "{}", values[state]);
+        let expected = amplitude * (TAU * frequency * time - lag.atan()).sin();
+        assert!(
+            (values[out] - expected).abs() <= 1e-3 * amplitude,
+            "at {time}: {} against {expected}",
+            values[out]
+        );
+    }
+}
+
+#[test]
+fn a_memristor_and_a_capacitor_keep_the_charge_they_share() {
+    // The charge through the memristor moves its state by q / Q and the capacitor's
+    // voltage by q / C, so Q·x − C·v(out) is as each period found it: every value of it has
+    // a steady state of its own. Shooting keeps the operating point's, and finds the
+    // steady state a long transient from it settles into.
+    let (charge, capacitance, frequency) = (1e-5, 1e-7, 1e3);
+    let memristor = json!({"charge": charge});
+    let instances = memristor_into_a_capacitor(("current_controlled_memristor", memristor), 1.0);
+    let longest = 5e-3 / frequency;
+    let mut shooting = simulator(&instances);
+    let steady = run(&mut shooting, (1.0 / frequency, longest), true);
+    let periods = steady
+        .statistics
+        .periods
+        .expect("shooting counts its periods");
+    assert!(periods <= 4, "{periods} periods");
+    let (state, out) = (index(&shooting, "M1:state"), index(&shooting, "out"));
+    for values in &steady.values {
+        let shared = charge * values[state] - capacitance * values[out];
+        assert!((shared - charge * 0.5).abs() < 1e-12 * charge, "{shared}");
+    }
+    let settled = 20;
+    let mut long = simulator(&instances);
+    let transient = run(&mut long, (f64::from(settled) / frequency, longest), false);
+    let range = |waveforms: &Waveforms, from: f64, unknown: usize| {
+        let values = waveforms
+            .times
+            .iter()
+            .zip(&waveforms.values)
+            .filter(|(time, _)| **time >= from)
+            .map(|(_, values)| values[unknown]);
+        values.fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), value| {
+            (low.min(value), high.max(value))
+        })
+    };
+    for (unknown, tolerance) in [(state, 1e-6), (out, 1e-4)] {
+        let (low, high) = range(&steady, 0.0, unknown);
+        let last = f64::from(settled - 1) / frequency;
+        let (settled_low, settled_high) = range(&transient, last, unknown);
+        assert!(
+            (low - settled_low).abs() < tolerance,
+            "{low} against {settled_low}"
+        );
+        assert!(
+            (high - settled_high).abs() < tolerance,
+            "{high} against {settled_high}"
+        );
+    }
+}
+
 #[test]
 fn a_circuit_with_logic_has_no_periodic_steady_state_here() {
     let mut simulator = simulator(&json!([

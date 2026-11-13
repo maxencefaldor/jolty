@@ -7,13 +7,24 @@
 //! periodic inputs", Proceedings of the IEEE 60(1), 1972): each period simulated from `x₀`
 //! carries, besides the solution, its derivatives with respect to `x₀` along every step by
 //! the direct method, which end as the monodromy matrix `Φ = ∂φ/∂x₀`, and the next start is
-//! `x₀ − (Φ − I)⁻¹ (φ(x₀) − x₀)`. A period starts from its state by a backward Euler step,
-//! which reads only its charges, so the unknowns that hold no charge follow the rest. The
-//! search starts from the operating point; a circuit that settles slowly but nearly
-//! linearly takes a few periods, where a transient would take many.
+//! `x₀ + Δ`, where `(Φ − I) Δ = x₀ − φ(x₀)`. A period starts from its state by a backward
+//! Euler step, which reads only its charges, so the unknowns that hold no charge follow the
+//! rest. The search starts from the operating point; a circuit that settles slowly but
+//! nearly linearly takes a few periods, where a transient would take many.
+//!
+//! A circuit can have a neutral direction, a state that a period neither grows nor decays,
+//! such as a memristor's that its drive leaves alone, or a charge that nothing but a
+//! capacitor holds: a quantity `uᵀ x` that one period carries back as it was, so that
+//! `uᵀ Φ = uᵀ`. Then `Φ − I` is singular and the steady state is not unique: there is one
+//! for each value of the quantity. The step `Δ` is the least-squares solution of least
+//! norm among those in the range of `Φ − I`, which leaves every such quantity as it was:
+//! shooting keeps the start's place along the neutral directions, and finds the steady
+//! state a transient from it would settle into. Where `Φ − I` is regular, `Δ` is Newton's
+//! step. The system is measured in units of each unknown's tolerance, as its mismatches
+//! are, and its singular values within the rounding of the largest are zero.
 
 use jolty_numerics::integration::Formula;
-use jolty_numerics::solve_dense;
+use jolty_numerics::solve_in_range;
 
 use crate::newton::NAMED_UNKNOWNS;
 use crate::transient::{Carried, Tangent};
@@ -52,10 +63,10 @@ impl Simulator {
                 "a periodic steady state is found for circuits without logic".to_owned(),
             ));
         }
+        let unknowns = self.system.unknowns.len();
         let point = self.operating_point(options)?;
         let strategy = point.strategy;
         let mut start = point.values;
-        let unknowns = start.len();
         let mut mismatches = Vec::new();
         for period in 1..=MOST_PERIODS {
             let mut monodromy = Monodromy::default();
@@ -63,20 +74,39 @@ impl Simulator {
             let begun = Some((start.clone(), strategy));
             let mut waveforms = self.transient_with(transient, options, begun, carried)?;
             let end = waveforms.values.last().unwrap_or(&start);
-            mismatches = self.mismatches(&start, end, options);
+            let tolerances = self.tolerances(&start, end, options);
+            mismatches = start
+                .iter()
+                .zip(end)
+                .zip(&tolerances)
+                .map(|((start, end), tolerance)| (start - end).abs() / tolerance)
+                .collect();
             if mismatches.iter().all(|&mismatch| mismatch <= 1.0) {
                 waveforms.statistics.periods = Some(period);
                 return Ok(waveforms);
             }
-            // (Φ − I) Δ = x₀ − φ(x₀), Φ stored by columns.
-            let mut matrix = monodromy.at.concat();
-            for index in 0..unknowns {
-                matrix[index * unknowns + index] -= 1.0;
+            // (Φ − I) Δ = x₀ − φ(x₀), each unknown in units of its tolerance:
+            // S⁻¹ (Φ − I) S · S⁻¹ Δ = S⁻¹ (x₀ − φ(x₀)), Φ stored by columns.
+            let Monodromy { tangents, at } = monodromy;
+            drop(tangents);
+            let mut matrix = Vec::with_capacity(unknowns * unknowns);
+            for (column, (derivatives, scale)) in at.into_iter().zip(&tolerances).enumerate() {
+                for (row, (derivative, tolerance)) in
+                    derivatives.iter().zip(&tolerances).enumerate()
+                {
+                    let identity = if row == column { 1.0 } else { 0.0 };
+                    matrix.push((derivative - identity) * scale / tolerance);
+                }
             }
-            let mut step: Vec<f64> = start.iter().zip(end).map(|(x, y)| x - y).collect();
-            solve_dense(&matrix, &mut step)?;
-            for (value, step) in start.iter_mut().zip(&step) {
-                *value += step;
+            let mut step: Vec<f64> = start
+                .iter()
+                .zip(end)
+                .zip(&tolerances)
+                .map(|((start, end), tolerance)| (start - end) / tolerance)
+                .collect();
+            solve_in_range(&matrix, &mut step, (options.relative_tolerance, 1.0))?;
+            for ((value, step), tolerance) in start.iter_mut().zip(&step).zip(&tolerances) {
+                *value += step * tolerance;
             }
         }
         let mut worst: Vec<usize> = (0..unknowns).collect();
@@ -91,17 +121,16 @@ impl Simulator {
         })
     }
 
-    /// How far each unknown ends a period, started at `start` and ended at `end`, from
-    /// where it started, against its tolerance: at most one where it repeats.
-    fn mismatches(&self, start: &[f64], end: &[f64], options: &Options) -> Vec<f64> {
+    /// The tolerance of each unknown of a period started at `start` and ended at `end`,
+    /// which it ends within of where it started if it repeats.
+    fn tolerances(&self, start: &[f64], end: &[f64], options: &Options) -> Vec<f64> {
         self.system
             .unknowns
             .iter()
             .zip(start.iter().zip(end))
             .map(|(unknown, (start, end))| {
-                let tolerance = options.relative_tolerance * start.abs().max(end.abs())
-                    + options.value_tolerance(unknown.quantity);
-                (start - end).abs() / tolerance
+                options.relative_tolerance * start.abs().max(end.abs())
+                    + options.value_tolerance(unknown.quantity)
             })
             .collect()
     }

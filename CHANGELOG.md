@@ -26,7 +26,7 @@ The first release, 0.1.0.
 - Fidelity: components characterized into logic cells, run in their place, and spot-checked against their circuits.
 - Exact sensitivities of every unknown to every parameter, at the operating point, along DC sweeps, over frequency and over time.
 - Pole-zero analysis by the QZ algorithm on the linearized circuit's pencils, with specs on the least damping and the dominant pole, agreeing with ngspice.
-- The periodic steady state of a driven circuit, found by shooting with the monodromy matrix carried along each period.
+- The periodic steady state of a driven circuit, found by shooting with the monodromy matrix carried along each period, which keeps its start's place along neutral directions, such as a memristor's state its drive leaves alone, as a transient would.
 - Noise analysis by the adjoint method: every device's thermal, shot and flicker noise at an output, each source's share, the noise referred to an input, and specs on noise densities and RMS noise, all agreeing with ngspice.
 - A parts catalog that prices a circuit's bill of materials: by value and tolerance, or by part number for numbered devices and components, in packages, never with an obsolete part.
 - KiCad netlists of a component, for laying out its board: each part of its bill of materials a footprint from its catalog part, its pads on the nets its part's pins name, with every problem that keeps an instance off the board named.

@@ -5,7 +5,7 @@
 //! of that pattern, real or complex, reusing its symbolic analysis across every factorization;
 //! [`integration`] holds the formulas that turn charges into currents over a time step; and
 //! [`generalized_eigenvalues`] finds a dense matrix pencil's eigenvalues by the QZ algorithm,
-//! and [`solve_dense`] solves a small dense system.
+//! and [`solve_in_range`] solves a small dense system, regular or not.
 
 mod dense;
 pub mod integration;
@@ -13,7 +13,7 @@ mod lu;
 mod pattern;
 mod pencil;
 
-pub use dense::solve_dense;
+pub use dense::solve_in_range;
 pub use lu::{Factors, LinearError, Scalar, SparseLu};
 pub use num_complex::Complex64;
 pub use pattern::{Entry, Pattern, PatternBuilder};
