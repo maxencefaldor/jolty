@@ -60,7 +60,7 @@ A spec on the margin states a design's own bound; the rules state the usual ones
 
 The [ratings](devices.md#ratings) of every device and component instance are held to every operating point and transient the plan solves, at the furthest point of each: a stress beyond a rating raises `over-rating`, an error, and one within it but past 80 % of a bound away from zero, a temperature's from 0 °C, raises `derating`, a warning, as derating guidelines keep that margin for heat, ageing and spread.
 A component instance's stresses are at its ports, and its power is all it dissipates; an instance a plan's fidelity replaces by a device is held to its own ratings, not to those of the instances inside it, and a rating of the voltage or the current of a terminal on a logic or a thermal net is not checked, as the terminal has no voltage or current.
-A temperature is the simulation's, raised by the thermal net that an instance's terminal `thermal` joins where it [heats](devices.md#self-heating), and stated in degrees Celsius:
+A temperature is the simulation's, or the device's own where it has one, raised by the thermal net that an instance's terminal `thermal` joins where it [heats](devices.md#self-heating), and stated in degrees Celsius:
 
 ```text
 error[over-rating]: the voltage of `C1` at `a` over `b` reaches 20.0 V at 2e-06 s in `tran`, beyond its rating of 16.0 V

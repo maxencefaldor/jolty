@@ -239,7 +239,7 @@ impl<R: Real> DiodeParameters<R> {
         ParameterError::positive("breakdown_emission_coefficient", breakdown_emission)?;
         ParameterError::non_negative("energy_gap", energy_gap)?;
 
-        let temperatures = Temperatures::new(temperature, nominal_temperature)?;
+        let temperatures = Temperatures::of_junction(temperature, nominal_temperature)?;
         let vt = temperatures.thermal_voltage();
         let saturation_current = saturation_current
             * temperatures.saturation(

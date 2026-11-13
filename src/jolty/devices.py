@@ -161,6 +161,58 @@ class Device:
             raise ValueError(message) from None
         return replace(self, terminals=tuple(terminals), parameters=parameters)
 
+    def held_at(self, temperature: Quantity) -> Device:
+        """The device, held at `temperature` whatever the simulation's.
+
+        Its parameters scale to it as they scale to the simulation's, as SPICE's
+        ``TEMP`` and PSpice's ``T_ABS`` hold a device, and a heated device warms from
+        it: a resistor held at 0 K makes no noise, while a junction needs a temperature
+        above 0 K. It is no parameter that sensitivities differentiate.
+
+        Examples:
+            >>> from jolty.units import celsius, kohm
+            >>> resistor(1 * kohm).held_at(celsius(85)).parameters["temperature"]
+            358.15
+
+        Raises:
+            DimensionError: When `temperature` is not one.
+            ValueError: When it lies below 0 K.
+        """
+        kelvins = temperature.to(TEMPERATURE, "a device's own temperature")
+        if kelvins < 0:
+            message = (
+                f"a device's own temperature lies at 0 K or above, not {kelvins!r} K"
+            )
+            raise ValueError(message)
+        return self._surrounded("temperature", kelvins)
+
+    def warmer_by(self, offset: Quantity) -> Device:
+        """The device, `offset` warmer than the simulation, or cooler where negative.
+
+        It is as [`held_at`][jolty.devices.Device.held_at] holds it, but follows the
+        simulation's temperature, as SPICE's ``DTEMP`` and PSpice's ``T_REL_GLOBAL``
+        do.
+
+        Examples:
+            >>> from jolty.units import K, kohm
+            >>> resistor(1 * kohm).warmer_by(20 * K).parameters["temperature_offset"]
+            20.0
+
+        Raises:
+            DimensionError: When `offset` is not a temperature.
+        """
+        kelvins = offset.to(TEMPERATURE, "a device's temperature offset")
+        return self._surrounded("temperature_offset", finite(kelvins, "offset"))
+
+    def _surrounded(self, key: str, kelvins: float) -> Device:
+        """The device at a temperature of its own, `kelvins` as `key` gives it."""
+        kept = {
+            name: value
+            for name, value in self.parameters.items()
+            if name not in {"temperature", "temperature_offset"}
+        }
+        return replace(self, parameters={**kept, key: kelvins})
+
     def numbered(self, part: str) -> Device:
         """The device, standing for the part its maker numbers `part`.
 
@@ -231,7 +283,7 @@ PER_VOLT_SQUARED: Final = DIMENSIONLESS / VOLTAGE**2
 """The dimension of a quadratic voltage coefficient, V⁻²."""
 
 
-def resistor(  # noqa: PLR0913 - the value, its tolerance, its drift and its curvature
+def resistor(  # noqa: PLR0913 - its value, tolerance, drift, curvature and noise
     resistance: Quantity,
     *,
     tolerance: float | None = None,
@@ -241,6 +293,8 @@ def resistor(  # noqa: PLR0913 - the value, its tolerance, its drift and its cur
     nominal_temperature: Quantity | None = None,
     voltage_coefficient: Quantity | None = None,
     quadratic_voltage_coefficient: Quantity | None = None,
+    flicker_coefficient: float | None = None,
+    flicker_exponent: float | None = None,
 ) -> Device:
     """A resistor between terminals ``a`` and ``b``.
 
@@ -254,6 +308,10 @@ def resistor(  # noqa: PLR0913 - the value, its tolerance, its drift and its cur
     Its resistance also changes with the voltage ``v`` from ``a`` to ``b``, by
     ``1 + vc1 · v + vc2 · v²``, with the linear and quadratic voltage coefficients, none
     unless given; where they bend it below zero, it is negative there, as in ngspice.
+
+    Beside its thermal noise, with a flicker coefficient ``KF``, none unless given, its
+    current ``I`` makes flicker noise of ``KF · |I|^AF / f`` A²/Hz across it, ``AF`` the
+    flicker exponent, 1 unless given, as ngspice's resistor makes it.
 
     Examples:
         >>> from jolty.units import K, V, kohm
@@ -272,6 +330,13 @@ def resistor(  # noqa: PLR0913 - the value, its tolerance, its drift and its cur
         {}, {"exponential_temperature_coefficient": exponential_temperature_coefficient}
     )
     parameters |= _curvature(voltage_coefficient, quadratic_voltage_coefficient)
+    parameters |= _parameters(
+        {},
+        {
+            "flicker_coefficient": flicker_coefficient,
+            "flicker_exponent": flicker_exponent,
+        },
+    )
     made = device("resistor", parameters)
     return made if tolerance is None else made.toleranced("resistance", tolerance)
 
@@ -326,6 +391,52 @@ def inductor(
     )
     made = device("inductor", parameters)
     return made if tolerance is None else made.toleranced("inductance", tolerance)
+
+
+def coupled_inductors(
+    windings: Sequence[Device], couplings: Mapping[tuple[int, int], float]
+) -> Device:
+    """Inductors whose fluxes link, as a transformer's windings or a choke's.
+
+    Each winding is an [`inductor`][jolty.devices.inductor], with its tolerance and
+    drift; winding ``k``, from 1, joins terminals ``a{k}`` and ``b{k}``, and its
+    current, from ``a{k}`` through it to ``b{k}``, is the unknown ``current{k}``.
+    `couplings` gives the coefficient that links two windings, by their numbers, from -1
+    to 1: their mutual inductance is the coefficient times the root of their
+    inductances' product, and currents into both ``a`` terminals add their fluxes where
+    it is positive, as SPICE's ``K`` couples its inductors' first nodes. There are at
+    least two windings, and a pair is coupled once at most.
+
+    Examples:
+        >>> from jolty.units import mH
+        >>> transformer = coupled_inductors(
+        ...     [inductor(1 * mH), inductor(4 * mH)], {(1, 2): 0.99}
+        ... )
+        >>> transformer.terminals
+        ('a1', 'b1', 'a2', 'b2')
+
+    Raises:
+        ValueError: When a winding is no inductor, or states ratings or a part number.
+    """
+    tolerances: dict[str, ir.Tolerance] = {}
+    for number, winding in enumerate(windings, start=1):
+        if winding.model != "inductor" or winding.ratings or winding.part is not None:
+            message = f"winding {number} is an inductor that states no ratings or part"
+            raise ValueError(message)
+        tolerances |= {
+            f"windings.{number - 1}.{path}": tolerance
+            for path, tolerance in winding.tolerances.items()
+        }
+    coupled: list[JsonValue] = [
+        {"windings": [first, second], "coefficient": finite(coefficient, "coupling")}
+        for (first, second), coefficient in couplings.items()
+    ]
+    parameters: dict[str, JsonValue] = {
+        "windings": [dict(winding.parameters) for winding in windings],
+        "couplings": coupled,
+    }
+    made = device("coupled_inductors", parameters)
+    return replace(made, tolerances=tolerances)
 
 
 def _drift(
@@ -528,6 +639,34 @@ def voltage_controlled_switch(
         {},
     )
     return device("voltage_controlled_switch", parameters)
+
+
+def current_controlled_switch(
+    *,
+    on_resistance: Quantity | None = None,
+    off_resistance: Quantity | None = None,
+    on_current: Quantity | None = None,
+    off_current: Quantity | None = None,
+) -> Device:
+    """A switch between ``positive`` and ``negative`` that a current moves, as PSpice's.
+
+    Its control port, from ``control_positive`` to ``control_negative``, is a short
+    circuit whose current, the unknown ``control``, moves the resistance as a
+    [`voltage_controlled_switch`][jolty.devices.voltage_controlled_switch]'s voltage
+    does, from the off resistance at the off current to the on resistance at the on
+    current. Parameters left out take PSpice's defaults: 1 Ω on, 1 MΩ off, on at 1 mA
+    and off at 0 A.
+    """
+    parameters = _parameters(
+        {
+            "on_resistance": (on_resistance, RESISTANCE),
+            "off_resistance": (off_resistance, RESISTANCE),
+            "on_current": (on_current, CURRENT),
+            "off_current": (off_current, CURRENT),
+        },
+        {},
+    )
+    return device("current_controlled_switch", parameters)
 
 
 def photocell(

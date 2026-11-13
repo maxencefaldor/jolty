@@ -39,6 +39,7 @@ from jolty.units import (
     A,
     F,
     GHz,
+    H,
     Hz,
     K,
     MHz,
@@ -49,6 +50,7 @@ from jolty.units import (
     kHz,
     kohm,
     mA,
+    mH,
     ms,
     nF,
     ns,
@@ -634,6 +636,34 @@ def test_a_resistance_drifts_with_its_temperature_coefficients() -> None:
     assert -point.current("V1") == pytest.approx(1e-3 / (1 + 50e-3 + 2.5e-3))
 
 
+def test_a_device_drifts_to_a_temperature_of_its_own() -> None:
+    @component
+    def apart(c: Builder, held: devices.Device, quiet: devices.Device) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V), id="V1")
+        load = c.place(held, id="R1")
+        bleed = c.place(quiet, id="R2")
+        c.connect(source.positive, load.a, name="top")
+        c.connect(load.b, bleed.a, name="out")
+        c.connect(source.negative, bleed.b, ground)
+
+    drifting = devices.resistor(1 * kohm, temperature_coefficient=1e-3 / K)
+    quiet = devices.resistor(1 * kohm).held_at(0 * K)
+    for warmed, temperature in (
+        (drifting.held_at(celsius(77)), celsius(-40)),
+        (drifting.warmer_by(50 * K), celsius(27)),
+    ):
+        simulation = Simulation(apart(warmed, quiet), temperature)
+        point = simulation.run(OperatingPoint())
+        assert point.voltage("out") == pytest.approx(1 / 2.05, rel=1e-12)
+    # Held at 0 K, the lower resistor makes no noise: the upper one's alone reaches out.
+    spectrum = simulation.run(Noise("out", [1 * kHz]))
+    assert spectrum.contribution("R2")[0] == 0
+    assert spectrum.contribution("R1")[0] > 0
+    with pytest.raises(ValueError, match="at 0 K or above"):
+        drifting.held_at(-1 * K)
+
+
 def test_the_ac_response_of_a_low_pass_filter() -> None:
     cutoff = 1 / (2 * math.pi * 1e3 * 1e-9)
     frequencies = [*decade(1 * kHz, 1e5 * kHz, 10), cutoff * kHz / 1e3]
@@ -642,6 +672,53 @@ def test_the_ac_response_of_a_low_pass_filter() -> None:
     np.testing.assert_allclose(response.voltage("out"), expected, rtol=1e-9)
     assert abs(response.voltage("out")[-1]) == pytest.approx(1 / math.sqrt(2))
     assert response.operating_point.voltage("out") == pytest.approx(0.0)
+
+
+def test_a_transformer_steps_its_voltage_by_its_coupled_inductances() -> None:
+    primary, secondary, coupling, load = 1e-3, 4e-3, 0.95, 1e3
+
+    @component
+    def stepped(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(0 * V), id="V1")
+        windings = c.place(
+            devices.coupled_inductors(
+                [devices.inductor(primary * H), devices.inductor(secondary * H)],
+                {(1, 2): coupling},
+            ),
+            id="T1",
+        )
+        feed = c.place(devices.resistor(50 * ohm), id="R1")
+        resistor = c.place(devices.resistor(load * ohm), id="RL")
+        c.connect(source.positive, feed.a, name="in")
+        c.connect(feed.b, windings.a1, name="primary")
+        c.connect(windings.a2, resistor.a, name="out")
+        c.connect(source.negative, windings.b1, windings.b2, resistor.b, ground)
+
+    simulation = Simulation(stepped())
+    assert [unknown.name for unknown in simulation.unknowns][-2:] == [
+        "T1:current1",
+        "T1:current2",
+    ]
+    response = simulation.run(Ac("V1", decade(1 * kHz, 1e4 * kHz, 5)))
+    s = 2j * np.pi * response.frequencies
+    mutual = coupling * math.sqrt(primary * secondary)
+    # v1 = s·L1·i1 + s·M·i2 and out = s·M·i1 + s·L2·i2, with i2 = -out / R.
+    gain = 1 / (primary * (1 + s * secondary / load) / mutual - s * mutual / load)
+    stepped_up = response.voltage("out") / response.voltage("primary")
+    np.testing.assert_allclose(stepped_up, gain, rtol=1e-9)
+
+
+def test_coupled_windings_are_plain_inductors_whose_tolerances_carry_over() -> None:
+    coupled = devices.coupled_inductors(
+        [devices.inductor(1 * mH, tolerance=0.1), devices.inductor(2 * mH)],
+        {(1, 2): 0.5},
+    )
+    assert list(coupled.tolerances) == ["windings.0.inductance"]
+    with pytest.raises(ValueError, match="winding 2 is an inductor"):
+        devices.coupled_inductors(
+            [devices.inductor(1 * mH), devices.resistor(1 * ohm)], {(1, 2): 0.5}
+        )
 
 
 def test_the_step_response_of_a_low_pass_filter() -> None:

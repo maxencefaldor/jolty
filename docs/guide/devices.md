@@ -7,6 +7,10 @@ Devices are simulated at the plan's temperature, 27 °C unless it gives one, and
 Away from it, passive values drift by their temperature coefficients, and semiconductors scale as ngspice scales them, as the sections below say.
 A device that [heats](#self-heating) runs at its own temperature instead, which the power it dissipates raises.
 
+Any device may run at a temperature of its own, as on a hot board: `device.held_at(celsius(85))` holds it there whatever the plan's, as SPICE's `TEMP` and PSpice's `T_ABS` do, and `device.warmer_by(20 * K)` holds it that far above the plan's, below where negative, as SPICE's `DTEMP` and PSpice's `T_REL_GLOBAL` do.
+Its parameters scale to that temperature, its noise is at it, a heated device warms from it, and its temperature rating holds it there, though sensitivities do not differentiate it.
+A resistor held at 0 K makes no noise, while a junction needs a temperature above zero.
+
 Logic devices, whose pins join logic nets, have a page of their own: [Logic](logic.md).
 
 ## Passive devices
@@ -42,8 +46,25 @@ A resistor then carries `v / (r · (1 + vc1 · v + vc2 · v²))`, and a capacito
 The formula holds at every voltage, as in ngspice: where the coefficients bend a value below zero, it is negative there.
 
 In a [noise analysis](simulation.md#noise), a resistor makes thermal noise, `4kT/R` A²/Hz at its resistance there, or a voltage of `4kT·R` V²/Hz in series below 1 Ω, as a switch and a photocell do at theirs; capacitors and inductors make none.
+Given a flicker coefficient `KF`, `flicker_coefficient`, a resistor's current `I` also makes flicker noise of `KF · |I|^AF / f` A²/Hz across it, `AF` its `flicker_exponent`, 1 unless given, as ngspice's resistor does.
 
 A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and `device.toleranced(parameter, relative, distribution, lot)` gives any device's number parameter a `"uniform"`, `"normal"`, `"log_uniform"` or `"log_normal"` tolerance, by its path, such as `waveform.dc` for a source's DC level, and optionally a lot it shares a spread with; [Monte Carlo analyses](simulation.md#monte-carlo) sample them, and [worst-case analyses](simulation.md#worst-case) set them at their extremes.
+
+### Coupled inductors
+
+`coupled_inductors(windings, couplings)` links inductors' fluxes, as a transformer's windings or a common-mode choke's: each winding is an `inductor(...)`, with its tolerance and drift, and winding `k`, from 1, joins terminals `a{k}` and `b{k}`, its current the unknown `current{k}`.
+`couplings` gives the coefficient between pairs of windings, by their numbers, from -1 to 1; their mutual inductance is the coefficient times the root of their inductances' product, and currents into both `a` terminals add their fluxes where it is positive, as SPICE's `K` couples its inductors' first nodes.
+
+```python
+transformer = c.place(
+    devices.coupled_inductors(
+        [devices.inductor(1 * mH), devices.inductor(4 * mH)], {(1, 2): 0.99}
+    ),
+    id="T1",
+)
+```
+
+Each winding is a short at DC, so a winding across a voltage source is a loop the [checks](checks.md) flag.
 
 ## Ratings
 
@@ -122,7 +143,7 @@ A port, as a current-controlled source's control port, is a short circuit whose 
 A behavioral voltage source adds its own current to the unknowns as a voltage source does.
 The engine takes every derivative of the expression exactly, so Newton's iterations and frequency responses see the expression's true slope.
 
-## Switch
+## Switches
 
 `voltage_controlled_switch(...)` is a resistance between `positive` and `negative` that the voltage of `control_positive` over `control_negative` moves, in PSpice's model, from `off_resistance` to `on_resistance`: logarithmically and smoothly, with zero slope at each end, as the control moves from `off_voltage` to `on_voltage`.
 Beyond either voltage, the resistance holds.
@@ -132,6 +153,15 @@ The control terminals draw no current.
 | --- | --- | --- | --- |
 | `on_resistance`, `off_resistance` | `RON`, `ROFF` | Ω | 1 Ω, 1 MΩ |
 | `on_voltage`, `off_voltage` | `VON`, `VOFF` | V | 1 V, 0 V |
+
+`current_controlled_switch(...)` is the same switch moved by a current: its control port, from `control_positive` to `control_negative`, is a short circuit whose current is an unknown labelled `control`, as a current-controlled source's is, and moves the resistance from `off_current` to `on_current`, as PSpice's `ISWITCH` does.
+
+| Parameter | PSpice | Unit | Default |
+| --- | --- | --- | --- |
+| `on_resistance`, `off_resistance` | `RON`, `ROFF` | Ω | 1 Ω, 1 MΩ |
+| `on_current`, `off_current` | `ION`, `IOFF` | A | 1 mA, 0 A |
+
+ngspice runs both as its XSPICE `pswitch`, which reads a voltage: a netlist written for it senses a current-controlled switch's control current with a zero-volt source and gives it to `pswitch` through a transresistance of 1 Ω.
 
 ## Photocell
 

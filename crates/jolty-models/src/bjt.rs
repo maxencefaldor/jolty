@@ -1131,7 +1131,7 @@ impl<R: Real> BipolarTransistorParameters<R> {
     /// What the transistor's `temperature`, in kelvins, sets, once each parameter it
     /// reads is checked.
     fn scaled(&self, temperature: R) -> Result<Scaled<R>, ParameterError> {
-        let temperatures = Temperatures::new(temperature, self.nominal_temperature)?;
+        let temperatures = Temperatures::of_junction(temperature, self.nominal_temperature)?;
         let junctions = self.junctions(temperatures)?;
         let thermal_voltage = temperatures.thermal_voltage().value();
         Ok(Scaled {

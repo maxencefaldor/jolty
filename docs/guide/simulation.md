@@ -33,7 +33,7 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `DcSweep(source, levels)` | the DC solution at each level of one independent source |
 | `Ac(source, frequencies)` | the small-signal response to a unit excitation of one source, around the operating point |
 | `Transient(stop, max_step=None, method="trapezoidal", times=(), periodic=False)` | the response over time, from the operating point until `stop`, or one period of the periodic steady state |
-| `Sensitivity(outputs, of=None)` | the derivative of each output with respect to every number of every device's parameters, at the operating point or at each point of the analysis `of` |
+| `Sensitivity(outputs, of=None)` | the derivative of each output with respect to every number of every device's parameters but a device's [own temperature](devices.md), at the operating point or at each point of the analysis `of` |
 | `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
 | `Noise(output, frequencies, reference=None, source=None)` | the noise density at an output from every device's noise, at each frequency, and referred to an input source |
 | `PoleZero(source=None, output=None, reference=None)` | the poles of the circuit linearized at its operating point, and the zeros of the transfer function from a source to an output |

@@ -257,6 +257,51 @@ def driven_tank(c: Builder) -> None:
     c.connect(source.positive, inductor.b, damping.b, capacitor.b, ground)
 
 
+@component
+def transformer(c: Builder) -> None:
+    """A pulse into three coupled windings, the third wound backward, each loaded."""
+    ground = c.port("ground", Role.GROUND)
+    drive = Pulse(
+        initial=0 * V,
+        pulsed=1 * V,
+        delay=1 * us,
+        rise=1 * us,
+        fall=1 * us,
+        width=20 * us,
+        period=50 * us,
+    )
+    source = c.place(devices.voltage_source(drive), id="V1")
+    feed = c.place(devices.resistor(50 * ohm), id="R1")
+    windings = c.place(
+        devices.coupled_inductors(
+            [
+                devices.inductor(1 * mH),
+                devices.inductor(4 * mH),
+                devices.inductor(0.25 * mH),
+            ],
+            {(1, 2): 0.95, (1, 3): 0.9, (2, 3): 0.85},
+        ),
+        id="K1",
+    )
+    load = c.place(devices.resistor(1 * kohm), id="RL")
+    hold = c.place(devices.capacitor(10 * nF), id="C1")
+    tertiary = c.place(devices.resistor(100 * ohm), id="RT")
+    c.connect(source.positive, feed.a, name="in")
+    c.connect(feed.b, windings.a1, name="primary")
+    c.connect(windings.a2, load.a, hold.a, name="out")
+    c.connect(windings.b3, tertiary.a, name="tertiary")
+    c.connect(
+        source.negative,
+        windings.b1,
+        windings.b2,
+        windings.a3,
+        load.b,
+        hold.b,
+        tertiary.b,
+        ground,
+    )
+
+
 _JFET = devices.jfet(
     threshold_voltage=-1.8 * V,
     transconductance_parameter=1.3 * mA / V**2,
@@ -682,87 +727,114 @@ def level_three_curves(c: Builder) -> None:
 
 
 @component
-def drifting(c: Builder) -> None:
+def drifting(c: Builder, apart: bool = False) -> None:  # noqa: FBT001, FBT002
     """Every temperature coefficient jolty models, on every kind of device.
 
     A zener reference biases a bipolar stage and a MOSFET, beside a JFET current source.
+    `apart`, the drifting devices run at their own temperatures, held or offset.
     """
+
+    def held(device: devices.Device, temperature: Quantity) -> devices.Device:
+        return device.held_at(temperature) if apart else device
+
+    def offset(device: devices.Device, kelvins: float) -> devices.Device:
+        return device.warmer_by(kelvins * K) if apart else device
+
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(12 * V), id="V1")
     feed = c.place(
-        devices.resistor(
-            2 * kohm,
-            temperature_coefficient=3e-3 / K,
-            quadratic_temperature_coefficient=1e-5 / K**2,
+        held(
+            devices.resistor(
+                2 * kohm,
+                temperature_coefficient=3e-3 / K,
+                quadratic_temperature_coefficient=1e-5 / K**2,
+            ),
+            celsius(85),
         ),
         id="R1",
     )
     zener = c.place(
-        devices.diode(
-            saturation_current=1 * nA,
-            emission_coefficient=1.2,
-            junction_capacitance=10 * pF,
-            breakdown_voltage=5.1 * V,
-            breakdown_current=5 * mA,
-            breakdown_temperature_coefficient=2 * mV / K,
-            energy_gap=1.2 * V,
-            saturation_current_temperature_exponent=2.5,
-            nominal_temperature=celsius(50),
+        offset(
+            devices.diode(
+                saturation_current=1 * nA,
+                emission_coefficient=1.2,
+                junction_capacitance=10 * pF,
+                breakdown_voltage=5.1 * V,
+                breakdown_current=5 * mA,
+                breakdown_temperature_coefficient=2 * mV / K,
+                energy_gap=1.2 * V,
+                saturation_current_temperature_exponent=2.5,
+                nominal_temperature=celsius(50),
+            ),
+            30,
         ),
         id="D1",
     )
     hold = c.place(
-        devices.capacitor(100 * pF, temperature_coefficient=-1e-3 / K), id="C1"
+        offset(devices.capacitor(100 * pF, temperature_coefficient=-1e-3 / K), -20),
+        id="C1",
     )
     base = c.place(devices.resistor(47 * kohm), id="RB")
     bipolar = c.place(
-        devices.bipolar_transistor(
-            saturation_current=10 * fA,
-            forward_beta=150,
-            reverse_beta=2,
-            base_emitter_leakage_current=10 * fA,
-            base_collector_leakage_current=5 * fA,
-            base_emitter_capacitance=2 * pF,
-            base_collector_capacitance=1 * pF,
-            substrate="vertical",
-            substrate_saturation_current=1 * fA,
-            substrate_capacitance=1 * pF,
-            energy_gap=1.15 * V,
-            saturation_current_temperature_exponent=3.5,
-            beta_temperature_exponent=1.5,
-            nominal_temperature=celsius(35),
+        held(
+            devices.bipolar_transistor(
+                saturation_current=10 * fA,
+                forward_beta=150,
+                reverse_beta=2,
+                base_emitter_leakage_current=10 * fA,
+                base_collector_leakage_current=5 * fA,
+                base_emitter_capacitance=2 * pF,
+                base_collector_capacitance=1 * pF,
+                substrate="vertical",
+                substrate_saturation_current=1 * fA,
+                substrate_capacitance=1 * pF,
+                energy_gap=1.15 * V,
+                saturation_current_temperature_exponent=3.5,
+                beta_temperature_exponent=1.5,
+                nominal_temperature=celsius(35),
+            ),
+            celsius(-10),
         ),
         id="Q1",
     )
     collector = c.place(
-        devices.resistor(4.7 * kohm, exponential_temperature_coefficient=0.3), id="RC"
+        offset(
+            devices.resistor(4.7 * kohm, exponential_temperature_coefficient=0.3), 15
+        ),
+        id="RC",
     )
     emitter = c.place(devices.resistor(1 * kohm), id="RE")
     unipolar = c.place(
-        devices.jfet(
-            threshold_voltage=-2 * V,
-            transconductance_parameter=1 * mA / V**2,
-            saturation_current=1 * fA,
-            gate_source_capacitance=2 * pF,
-            gate_drain_capacitance=1 * pF,
-            threshold_temperature_coefficient=-2 * mV / K,
-            beta_temperature_exponent=-1.5,
-            energy_gap=1.1 * V,
-            saturation_current_temperature_exponent=2,
+        held(
+            devices.jfet(
+                threshold_voltage=-2 * V,
+                transconductance_parameter=1 * mA / V**2,
+                saturation_current=1 * fA,
+                gate_source_capacitance=2 * pF,
+                gate_drain_capacitance=1 * pF,
+                threshold_temperature_coefficient=-2 * mV / K,
+                beta_temperature_exponent=-1.5,
+                energy_gap=1.1 * V,
+                saturation_current_temperature_exponent=2,
+            ),
+            celsius(60),
         ),
         id="J1",
     )
     sense = c.place(devices.resistor(1 * kohm), id="RS")
     channel = c.place(
-        devices.mosfet(
-            width=20 * um,
-            length=2 * um,
-            oxide_thickness=40 * nm,
-            substrate_doping=1e22 / m**3,
-            bottom_capacitance=0.3 * mF / m**2,
-            drain_area=40 * um**2,
-            source_area=40 * um**2,
-            nominal_temperature=celsius(40),
+        offset(
+            devices.mosfet(
+                width=20 * um,
+                length=2 * um,
+                oxide_thickness=40 * nm,
+                substrate_doping=1e22 / m**3,
+                bottom_capacitance=0.3 * mF / m**2,
+                drain_area=40 * um**2,
+                source_area=40 * um**2,
+                nominal_temperature=celsius(40),
+            ),
+            25,
         ),
         id="M1",
     )
@@ -788,6 +860,11 @@ def drifting(c: Builder) -> None:
         channel.bulk,
         ground,
     )
+
+
+def drifting_apart() -> Component:
+    """`drifting`, each of its drifting devices at a temperature of its own."""
+    return drifting(apart=True)
 
 
 @component
@@ -1037,10 +1114,49 @@ def switched(c: Builder) -> None:
 
 
 @component
-def flickering(c: Builder) -> None:
-    """Four devices with flicker noise, their currents meeting at the output.
+def current_switched(c: Builder) -> None:
+    """A switch the current through its control port moves, its parameters defaulted."""
+    ground = c.port("ground", Role.GROUND)
+    pulse = Pulse(
+        initial=0 * V,
+        pulsed=3 * V,
+        delay=10 * us,
+        rise=5 * us,
+        fall=5 * us,
+        width=30 * us,
+        period=100 * us,
+    )
+    control = c.place(devices.voltage_source(pulse), id="V1")
+    limit = c.place(devices.resistor(1 * kohm), id="R2")
+    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    feed = c.place(devices.resistor(1 * kohm), id="R1")
+    switch = c.place(
+        devices.current_controlled_switch(
+            on_resistance=10 * ohm, on_current=2 * mA, off_current=1 * mA
+        ),
+        id="W1",
+    )
+    hold = c.place(devices.capacitor(10 * nF), id="C1")
+    c.connect(control.positive, limit.a, name="control")
+    c.connect(limit.b, switch.control_positive, name="sensed")
+    c.connect(supply.positive, feed.a, name="supply")
+    c.connect(feed.b, switch.positive, hold.a, name="out")
+    c.connect(
+        control.negative,
+        supply.negative,
+        switch.negative,
+        switch.control_negative,
+        hold.b,
+        ground,
+    )
 
-    They are a diode, a bipolar transistor, a JFET and a MOSFET of two copies.
+
+@component
+def flickering(c: Builder) -> None:
+    """Five devices with flicker noise, their currents meeting at the output.
+
+    They are a diode, a bipolar transistor, a JFET, a MOSFET of two copies and a
+    resistor.
     """
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(15 * V), id="V2")
@@ -1089,7 +1205,10 @@ def flickering(c: Builder) -> None:
         ),
         id="D1",
     )
-    bleed = c.place(devices.resistor(47 * kohm), id="RL")
+    bleed = c.place(
+        devices.resistor(47 * kohm, flicker_coefficient=1e-10, flicker_exponent=1.4),
+        id="RL",
+    )
     c.connect(source.positive, unipolar.gate, name="in")
     c.connect(supply.positive, load.a, base.a, name="supply")
     c.connect(
@@ -1211,6 +1330,7 @@ TEMPERATURES = {"cold": celsius(-40), "hot": celsius(125)}
         level_three_stage,
         cmos_inverter,
         drifting,
+        drifting_apart,
         curved,
     ],
 )
@@ -1235,6 +1355,7 @@ def test_operating_points_agree_across_temperatures(
         (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
         (level_three_curves, "V1", linear(-0.5 * V, 3 * V, 71)),
         (drifting, "V1", linear(0 * V, 15 * V, 76)),
+        (drifting_apart, "V1", linear(0 * V, 15 * V, 76)),
     ],
 )
 def test_dc_sweeps_agree_across_temperatures(
@@ -1257,7 +1378,7 @@ def test_dc_sweeps_agree_across_temperatures(
 
 
 @pytest.mark.parametrize("temperature", TEMPERATURES.values(), ids=TEMPERATURES.keys())
-@pytest.mark.parametrize("top", [bjt_amplifier, nmos_stage, drifting])
+@pytest.mark.parametrize("top", [bjt_amplifier, nmos_stage, drifting, drifting_apart])
 def test_ac_responses_agree_across_temperatures(
     top: Callable[[], Component], temperature: Quantity
 ) -> None:
@@ -1349,6 +1470,8 @@ def test_dc_sweeps_agree(
         cmos_inverter,
         behavioral,
         switched,
+        current_switched,
+        transformer,
     ],
 )
 def test_ac_responses_agree(top: Callable[[], Component]) -> None:
@@ -1443,6 +1566,7 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
         (triangle, 60 * us, 50 * ns),
         (rectifier, 3 * ms, 1 * us),
         (driven_tank, 40 * us, 20 * ns),
+        (transformer, 100 * us, 20 * ns),
         (jfet_stage, 15 * us, 10 * ns),
         (bjt_amplifier, 4 * us, 2 * ns),
         (integrated_stage, 4 * us, 2 * ns),
@@ -1452,6 +1576,7 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
         (cmos_inverter, 160 * ns, 0.01 * ns),
         (behavioral, 300 * us, 0.5 * us),
         (switched, 200 * us, 0.2 * us),
+        (current_switched, 200 * us, 0.2 * us),
         (curved, 3 * ms, 2 * us),
         (lit, 30 * ms, 20 * us),
     ],

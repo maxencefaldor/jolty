@@ -193,14 +193,60 @@ SWITCH: Final[Table] = {
     "von": ("on_voltage", 1.0),
     "voff": ("off_voltage", 1.0),
 }
+"""PSpice's ``VSWITCH`` parameters, as a voltage-controlled switch takes them."""
+
+CURRENT_SWITCH: Final[Table] = {
+    "ron": ("on_resistance", 1.0),
+    "roff": ("off_resistance", 1.0),
+    "ion": ("on_current", 1.0),
+    "ioff": ("off_current", 1.0),
+}
+"""PSpice's ``ISWITCH`` parameters, as a current-controlled switch takes them."""
 
 NOMINAL_TEMPERATURES: Final = frozenset({"tnom", "t_measured"})
 """The parameters that give the temperature, in degrees Celsius, a card was measured at:
 the nominal temperature of the device it makes. ``T_MEASURED`` is PSpice's."""
 
-OWN_TEMPERATURES: Final = frozenset({"t_abs", "t_rel_global", "t_rel_local"})
-"""PSpice's parameters that set a device's own temperature apart from the circuit's,
-which jolty does not model: they change nothing for a device that does not drift."""
+OWN_TEMPERATURES: Final = frozenset(
+    {"t_abs", "t_rel_global", "t_rel_local", "temp", "dtemp"}
+)
+"""The parameters that set a device's own temperature apart from the circuit's: a card's
+``T_ABS``, ``T_REL_GLOBAL`` and ``T_REL_LOCAL``, PSpice's, and an instance's ``TEMP``
+and ``DTEMP``, ngspice's."""
+
+
+def own_temperature(
+    card: Mapping[str, float], instance: Mapping[str, float], statement: Statement
+) -> dict[str, JsonValue]:
+    """The device's own temperature, as a held one or an offset, if it has one.
+
+    A card's ``T_ABS`` and an instance's ``TEMP``, in degrees Celsius, hold the device
+    there; a card's ``T_REL_GLOBAL`` and an instance's ``DTEMP`` raise it above the
+    circuit's.
+
+    Raises:
+        SpiceError: When the device sets it more than once, or by ``T_REL_LOCAL``,
+            relative to the card a card inherits from, which jolty does not read.
+    """
+    given = {
+        name: value
+        for name, value in (*card.items(), *instance.items())
+        if name in OWN_TEMPERATURES
+    }
+    if "t_rel_local" in given:
+        message = "jolty reads no `T_REL_LOCAL`, relative to an inherited card"
+        raise statement.fail(message)
+    if len(given) > 1:
+        names = ", ".join(f"`{name.upper()}`" for name in given)
+        message = f"the device sets its own temperature twice: {names}"
+        raise statement.fail(message)
+    match given:
+        case {"t_abs": value} | {"temp": value}:
+            return {"temperature": celsius(value).value}
+        case {"t_rel_global": value} | {"dtemp": value}:
+            return {"temperature_offset": value}
+    return {}
+
 
 NOISE: Final = frozenset({"nlev", "gdsnoi"})
 """PSpice's choices among a MOSFET's noise equations, which ngspice's level 1 and 3
@@ -301,10 +347,32 @@ def device(
     Raises:
         SpiceError: When the model's type or a parameter has no jolty counterpart.
     """
-    values = {
+    every = {
         name: evaluate(expression, scope)
         for name, expression in card.parameters.items()
     }
+    own = own_temperature(every, instance, statement)
+    values = {
+        name: value for name, value in every.items() if name not in OWN_TEMPERATURES
+    }
+    instance = {
+        name: value for name, value in instance.items() if name not in OWN_TEMPERATURES
+    }
+    made = _device(card, values, instance, statement)
+    return Made(made.model, {**made.parameters, **own})
+
+
+def _device(
+    card: ModelCard,
+    values: dict[str, float],
+    instance: Mapping[str, float],
+    statement: Statement,
+) -> Made:
+    """The device a model card of `values` makes for an instance of `instance`.
+
+    Raises:
+        SpiceError: When the model's type or a parameter has no jolty counterpart.
+    """
     match card.kind:
         case "d":
             area = instance.get("area", 1.0) * instance.get("m", 1.0)
@@ -326,6 +394,11 @@ def device(
         case "vswitch":
             return Made(
                 "voltage_controlled_switch", _mapped(card, values, SWITCH, statement)
+            )
+        case "iswitch":
+            return Made(
+                "current_controlled_switch",
+                _mapped(card, values, CURRENT_SWITCH, statement),
             )
     message = f"jolty has no device for `{card.name}`, a model of type `{card.kind}`"
     raise statement.fail(message)

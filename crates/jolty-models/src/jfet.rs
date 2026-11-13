@@ -351,7 +351,7 @@ impl<R: Real> JfetParameters<R> {
                     .to_owned(),
             ));
         }
-        let temperatures = Temperatures::new(temperature, nominal_temperature)?;
+        let temperatures = Temperatures::of_junction(temperature, nominal_temperature)?;
         let vt = temperatures.thermal_voltage();
         let saturation_current = saturation_current
             * temperatures.saturation(

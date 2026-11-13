@@ -839,7 +839,7 @@ impl<R: Real> MosfetParameters<R> {
     /// What the transistor's `temperature`, in kelvins, sets, once each parameter it
     /// reads is checked.
     fn scaled(&self, temperature: R) -> Result<Scaled<R>, ParameterError> {
-        let temperatures = Temperatures::new(temperature, self.nominal_temperature)?;
+        let temperatures = Temperatures::of_junction(temperature, self.nominal_temperature)?;
         let sign = self.channel.sign();
         let process = self.process()?.at(temperatures, sign)?;
         let geometry = Geometry::new(self)?;

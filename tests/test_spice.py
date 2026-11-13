@@ -9,16 +9,21 @@ from jolty import (
     Builder,
     Component,
     DownloadError,
+    JoltyError,
     OperatingPoint,
     Role,
     Simulation,
     SpiceError,
+    circuit,
+    component,
     devices,
+    ir,
     spice,
 )
+from jolty.spice.export import netlist
 from jolty.spice.expressions import evaluate, number, parse, translate
 from jolty.spice.netlist import statements, tokens
-from jolty.units import V
+from jolty.units import K, V, celsius, kohm
 
 
 def library(text: str) -> spice.Library:
@@ -224,8 +229,12 @@ def test_bipolar_transistors_have_spice_s_substrate() -> None:
         (".model D1 D(IKF=5)\n.subckt a x\nD1 x 0 D1\n.ends", "counterpart to `IKF`"),
         (".model M1 NMOS(LEVEL=2)\n.subckt a x\nM1 x x 0 0 M1\n.ends", "level 2"),
         (
-            ".model RX RES(TC1=1m T_ABS=50)\n.subckt a x\nR1 x 0 RX 1k\n.ends",
-            "not at its own `T_ABS`",
+            ".model RX RES(T_REL_LOCAL=5)\n.subckt a x\nR1 x 0 RX 1k\n.ends",
+            "no `T_REL_LOCAL`",
+        ),
+        (
+            ".model RX RES(T_ABS=50)\n.subckt a x\nR1 x 0 RX 1k DTEMP=5\n.ends",
+            "sets its own temperature twice: `T_ABS`, `DTEMP`",
         ),
         (".subckt a x\nR1 x 0 1k TC=1m,2u,3n\n.ends", "two coefficients at most"),
         (".subckt a x\nF1 x 0 Vmissing 2\n.ends", "`Vmissing` is no source in `a`"),
@@ -239,10 +248,83 @@ def test_what_jolty_cannot_read_is_an_error_where_it_is(
         library(text).component("a")
 
 
+def test_mutual_inductances_couple_their_inductors_into_one_device() -> None:
+    parts = library(
+        ".subckt a p s t\nR1 p 0 1\nL1 p 0 1m\nLS s 0 4m TC1=1m\nK1 L1 LS 0.99\n"
+        "L3 0 t 250u\nK2 l3 ls -0.5\nL4 t 0 1u\n.ends"
+    )
+    resistor, coupled, alone = parts.component("a").definition.instances
+    assert (resistor.id, coupled.id, alone.id) == ("R1", "K1", "L4")
+    assert coupled.of == ir.DeviceOf(device="coupled_inductors")
+    assert coupled.parameters == {
+        "windings": [
+            {"inductance": 1e-3},
+            {"inductance": 4e-3, "temperature_coefficient": 1e-3},
+            {"inductance": 2.5e-4},
+        ],
+        "couplings": [
+            {"windings": [1, 2], "coefficient": 0.99},
+            {"windings": [2, 3], "coefficient": -0.5},
+        ],
+    }
+    assert coupled.terminals == {
+        "a1": "p",
+        "b1": spice.GROUND,
+        "a2": "s",
+        "b2": spice.GROUND,
+        "a3": spice.GROUND,
+        "b3": "t",
+    }
+    # PSpice couples every pair a mutual inductance names.
+    three = library(".subckt a x\nL1 x 0 1m\nL2 x 0 1m\nL3 x 0 1m\nK L1 L2 L3 1\n.ends")
+    (coupled,) = three.component("a").definition.instances
+    assert ir.parameter(coupled.parameters, "couplings.2.windings") == [2, 3]
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("K1 L1 L9 0.5", "`L9` is no inductor in `a`"),
+        ("K1 L1 L2 0.5\nK2 L2 L1 0.4", "`L2` and `L1` are coupled twice"),
+        ("K1 L1 L1 0.5", "`L1` is coupled with itself"),
+        ("K1 L1 L2 0.5 CORE", "jolty has no magnetic core"),
+        ("K1 L1 0.5", "couples two inductors or more"),
+    ],
+)
+def test_a_mutual_inductance_couples_inductors_it_names(
+    text: str, message: str
+) -> None:
+    with pytest.raises(SpiceError, match=message):
+        library(f".subckt a x\nL1 x 0 1m\nL2 x 0 1m\n{text}\n.ends").component("a")
+
+
+def test_a_current_controlled_switch_senses_its_source_in_series() -> None:
+    parts = library(
+        ".model SW ISWITCH(ION=2m IOFF=1m RON=10)\n"
+        ".subckt a x y\nV1 x 0 1\nW1 y 0 V1 SW OFF\n.ends"
+    )
+    source, switch = parts.component("a").definition.instances
+    assert switch.of == ir.DeviceOf(device="current_controlled_switch")
+    assert switch.parameters == {
+        "on_current": 2e-3,
+        "off_current": 1e-3,
+        "on_resistance": 10.0,
+    }
+    assert switch.terminals == {
+        "positive": "y",
+        "negative": spice.GROUND,
+        "control_positive": "x",
+        "control_negative": "V1.sense1",
+    }
+    assert source.terminals["positive"] == "V1.sense1"
+    with pytest.raises(SpiceError, match="names its source and its model"):
+        library(".subckt a x\nV1 x 0 1\nW1 x 0 SW\n.ends").component("a")
+
+
 def test_parameters_that_change_nothing_are_left_out() -> None:
     parts = library(
         ".model NX NMOS(VTO=1 NLEV=2 GDSNOI=1)\n"
-        ".model QUIET RES(T_ABS=-273.15 KF=0 AF=1)\n"
+        ".model QUIET RES(KF=0 AF=1)\n"
         ".subckt a x\nM1 x x 0 0 NX\nR1 x 0 QUIET 1k\n.ends"
     )
     transistor, resistor = parts.component("a").definition.instances
@@ -260,9 +342,12 @@ def test_flicker_noise_parameters_carry_over() -> None:
         "flicker_coefficient": 1e-16,
         "flicker_exponent": 1.2,
     }
+    loud = library(".model LOUD RES(KF=1e-12)\n.subckt a x\nR1 x 0 LOUD 1k\n.ends")
+    (resistor,) = loud.component("a").definition.instances
+    assert resistor.parameters == {"resistance": 1e3, "flicker_coefficient": 1e-12}
     with pytest.raises(SpiceError, match="counterpart to `KF`"):
         library(
-            ".model LOUD RES(KF=1e-12)\n.subckt a x\nR1 x 0 LOUD 1k\n.ends"
+            ".model LOUD CAP(KF=1e-12)\n.subckt a x\nC1 x 0 LOUD 1n\n.ends"
         ).component("a")
 
 
@@ -293,6 +378,51 @@ def test_temperature_parameters_come_in_kelvins() -> None:
         "capacitance": 1e-9,
         "temperature_coefficient": 3e-3,
     }
+
+
+def test_devices_take_their_own_temperatures() -> None:
+    parts = library(
+        ".model QUIET RES(T_ABS=-273.15)\n.model WARM D(T_REL_GLOBAL=15)\n"
+        ".model DX D\n.model NX NMOS(VTO=1)\n"
+        ".subckt a x\nR1 x 0 QUIET 1k\nD1 x 0 WARM\nD2 x 0 DX TEMP=80\n"
+        "C1 x 0 1n DTEMP=-10\nM1 x x 0 0 NX W=2u L=1u TEMP=50\n.ends"
+    )
+    quiet, warm, hot, capacitor, transistor = parts.component("a").definition.instances
+    assert quiet.parameters == {"resistance": 1e3, "temperature": 0.0}
+    assert warm.parameters == {"temperature_offset": 15.0}
+    assert hot.parameters == {"temperature": pytest.approx(353.15)}
+    assert capacitor.parameters == {"capacitance": 1e-9, "temperature_offset": -10.0}
+    assert transistor.parameters["temperature"] == pytest.approx(323.15)
+    assert transistor.parameters["width"] == 2e-6
+
+
+def test_a_netlist_writes_each_devices_own_temperature() -> None:
+    @component
+    def apart(c: Builder, switch: devices.Device) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V).warmer_by(5 * K), id="V1")
+        load = c.place(devices.resistor(1 * kohm).held_at(celsius(85)), id="R1")
+        diode = c.place(devices.diode().warmer_by(10 * K), id="D1")
+        placed = c.place(switch, id="S1")
+        c.connect(source.positive, load.a, placed.control_positive, name="in")
+        c.connect(load.b, diode.anode, placed.positive, name="out")
+        c.connect(
+            source.negative,
+            diode.cathode,
+            placed.negative,
+            placed.control_negative,
+            ground,
+        )
+
+    lines = netlist(circuit(apart(devices.voltage_controlled_switch())))
+    assert lines[1] == "VV1 in 0 DC 1.0"
+    assert lines[2].startswith("RR1 in out 1000.0 temp=85.0")
+    # Each where ngspice's thermal voltage is jolty's.
+    assert lines[4].startswith("DD1 out 0 MD1 dtemp=10.00000")
+    with pytest.raises(
+        JoltyError, match="S1 is a voltage_controlled_switch at its own"
+    ):
+        netlist(circuit(apart(devices.voltage_controlled_switch().held_at(0 * K))))
 
 
 def test_resistors_and_capacitors_read_voltage_coefficients() -> None:

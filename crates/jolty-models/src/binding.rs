@@ -102,6 +102,11 @@ impl<'a> Binding<'a> {
         self.temperature
     }
 
+    /// Simulates the device at `temperature`, in kelvins, its own.
+    pub(crate) const fn set_temperature(&mut self, temperature: f64) {
+        self.temperature = temperature;
+    }
+
     /// The instance's path.
     #[must_use]
     pub const fn path(&self) -> &str {

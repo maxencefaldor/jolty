@@ -22,7 +22,7 @@ from jolty import (
 )
 from jolty.plan import Ac, Sensitivity, Transient
 from jolty.spice.export import netlist
-from jolty.units import A, F, Hz, J, K, V, W, celsius, ohm, s, us
+from jolty.units import A, F, Hz, J, K, V, W, celsius, kohm, ohm, s, us
 from jolty.waveforms import Pulse
 
 RESISTANCE = 100.0
@@ -205,6 +205,39 @@ def test_a_junction_temperature_is_held_to_its_rating() -> None:
         "the temperature of `Q1` falls to -60.0 °C at the operating point of `op`, "
         "below its rating of -55.0 °C"
     )
+
+
+def test_a_part_at_a_temperature_of_its_own_is_held_to_its_rating_there() -> None:
+    @component
+    def clamp(c: Builder, diode: devices.Device) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(5 * V), id="V1")
+        feed = c.place(devices.resistor(1 * kohm), id="R1")
+        placed = c.place(diode, id="D1")
+        c.connect(source.positive, feed.a, name="in")
+        c.connect(feed.b, placed.anode, name="out")
+        c.connect(source.negative, placed.cathode, ground)
+        if "thermal" in diode.terminals:
+            mount = c.place(devices.thermal_resistance(300 * K / W), id="RTH")
+            c.connect(placed.thermal, mount.a, name="junction")
+            c.connect(mount.b, ground)
+
+    def diagnosed(diode: devices.Device) -> list[str]:
+        simulation = Simulation(clamp(diode))
+        point = simulation.run(OperatingPoint())
+        return [
+            each.message
+            for each in simulation.check_results({"op": point})
+            if "temperature" in each.message
+        ]
+
+    (over,) = diagnosed(parts.d1n4148().held_at(celsius(180)))
+    assert over.startswith("the temperature of `D1` reaches 180.0 °C")
+    # Heated, it warms from its own temperature: about 2 mW through 300 K/W, 0.5 K.
+    (warmed,) = diagnosed(parts.d1n4148(heated=True).held_at(celsius(174.9)))
+    reached = float(warmed.split(" reaches ")[1].split(" °C")[0])
+    assert 175.0 < reached < 175.9
+    assert warmed.endswith("beyond its rating of 175.0 °C")
 
 
 def test_a_heated_parts_power_is_what_its_electrical_terminals_take() -> None:

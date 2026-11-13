@@ -297,6 +297,7 @@ class _Translation:
         self.instances: list[tuple[int, ir.Instance]] = []
         self.children: dict[str, Component] = {}
         self.senses: dict[str, _Sense] = {}
+        self.couplings: list[_Coupling] = []
         self.grounded = False
         for pin in subcircuit.pins:
             if pin == "0":
@@ -318,6 +319,7 @@ class _Translation:
                 self._source(statement)
         for statement in elements:
             self._element(statement)
+        self._couple()
         self._join_sensed()
         ports = [
             ir.Port(name=self.nets[pin.casefold()], role=Role.SIGNAL)
@@ -433,6 +435,42 @@ class _Translation:
             for line, instance in self.instances
         ]
 
+    def _couple(self) -> None:
+        """Joins the inductors that mutual inductances couple into coupled inductors.
+
+        The inductors that couplings join, directly or through others, become the
+        windings of one device, in the order the file writes them, which takes the id
+        and the line of the group's first coupling.
+
+        Raises:
+            SpiceError: When a coupling names no inductor of the subcircuit, couples one
+                with itself, or couples a pair twice.
+        """
+        inductors = {
+            instance.id.casefold(): (line, instance)
+            for line, instance in self.instances
+            if instance.of == ir.DeviceOf(device="inductor")
+        }
+        for coupling in self.couplings:
+            for name in coupling.inductors:
+                if name.casefold() not in inductors:
+                    message = f"`{name}` is no inductor in `{self.subcircuit.name}`"
+                    raise coupling.statement.fail(message)
+        coupled: set[str] = set()
+        for group in _groups(self.couplings):
+            names = sorted(
+                {name.casefold() for each in group for name in each.inductors},
+                key=lambda name: inductors[name][0],
+            )
+            windings = [inductors[name][1] for name in names]
+            self.instances.append(_coupled(group, names, windings))
+            coupled |= set(names)
+        self.instances = [
+            (line, instance)
+            for line, instance in self.instances
+            if instance.id.casefold() not in coupled
+        ]
+
     def _source(self, statement: Statement) -> None:
         words = tokens(statement.text)
         if len(words) < 3:  # noqa: PLR2004 - a name and two nodes
@@ -447,6 +485,97 @@ class _Translation:
             message = f"jolty has no element of letter `{letter.upper()}`"
             raise statement.fail(message)
         translate(self, statement)
+
+
+@dataclass(frozen=True, slots=True)
+class _Coupling:
+    """A mutual inductance: the inductors it couples, by name, and its coefficient."""
+
+    statement: Statement
+    inductors: tuple[str, ...]
+    coefficient: float
+
+
+def _groups(couplings: list[_Coupling]) -> list[list[_Coupling]]:
+    """The couplings grouped by the inductors they share, directly or through others.
+
+    Each group is in the order the file writes its couplings.
+    """
+    groups: list[list[_Coupling]] = []
+    for coupling in couplings:
+        names = {name.casefold() for name in coupling.inductors}
+        joined = [
+            group
+            for group in groups
+            if names & {name.casefold() for each in group for name in each.inductors}
+        ]
+        groups = [group for group in groups if group not in joined]
+        groups.append([*(each for group in joined for each in group), coupling])
+    return [sorted(group, key=lambda each: each.statement.line) for group in groups]
+
+
+def _coupled(
+    group: list[_Coupling], names: list[str], windings: list[ir.Instance]
+) -> tuple[int, ir.Instance]:
+    """The coupled inductors of `group`'s couplings, and the line of its first.
+
+    Their windings are `windings`, the inductors named `names`.
+
+    Raises:
+        SpiceError: When a coupling couples an inductor with itself, or a pair twice.
+    """
+    numbers = {name: number for number, name in enumerate(names, start=1)}
+    pairs: dict[frozenset[int], float] = {}
+    for each in group:
+        for a, b in itertools.combinations(each.inductors, 2):
+            pair = frozenset({numbers[a.casefold()], numbers[b.casefold()]})
+            if len(pair) == 1:
+                message = f"`{a}` is coupled with itself"
+                raise each.statement.fail(message)
+            if pair in pairs:
+                message = f"`{a}` and `{b}` are coupled twice"
+                raise each.statement.fail(message)
+            pairs[pair] = each.coefficient
+    couplings: list[JsonValue] = []
+    for pair, coefficient in pairs.items():
+        numbered: list[JsonValue] = [*sorted(pair)]
+        couplings.append({"windings": numbered, "coefficient": coefficient})
+    parameters: dict[str, JsonValue] = {
+        "windings": [dict(winding.parameters) for winding in windings],
+        "couplings": couplings,
+    }
+    first = group[0].statement
+    instance = ir.Instance(
+        id=first.text.split()[0],
+        of=ir.DeviceOf(device="coupled_inductors"),
+        parameters=device("coupled_inductors", parameters).parameters,
+        terminals={
+            f"{end}{number}": winding.terminals[end]
+            for number, winding in enumerate(windings, start=1)
+            for end in ("a", "b")
+        },
+        source=ir.Source(file=first.file, line=first.line),
+    )
+    return first.line, instance
+
+
+def _mutual(translation: _Translation, statement: Statement) -> None:
+    """Reads a mutual inductance, ``K1 L1 L2 0.99``, which couples each pair it names.
+
+    ngspice couples two inductors, PSpice any number; the couplings are joined into
+    coupled inductors once every element is read. A magnetic core's model is an error.
+    """
+    words = tokens(statement.text)
+    if len(words) < 4:  # noqa: PLR2004 - a name, two inductors and a coefficient
+        message = "a mutual inductance couples two inductors or more by a coefficient"
+        raise statement.fail(message)
+    _, *inductors, coefficient = words
+    if not all(name[0].casefold() == "l" for name in inductors):
+        message = "jolty has no magnetic core: a mutual inductance couples inductors"
+        raise statement.fail(message)
+    translation.couplings.append(
+        _Coupling(statement, tuple(inductors), translation.value(coefficient))
+    )
 
 
 def _letter(statement: Statement) -> str:
@@ -510,10 +639,13 @@ def _passive(
     curved = frozenset(_CURVATURE) if model != "inductor" else frozenset()
     drifts = frozenset(_DRIFT) if model == "resistor" else frozenset({"tc1", "tc2"})
     drifts |= curved
+    noisy = frozenset({"kf", "af"}) if model == "resistor" else frozenset()
 
     def translated(translation: _Translation, statement: Statement) -> None:
         positional, assigned = _keywords(tokens(statement.text))
-        _check_keywords(statement, assigned, frozenset({letter, "tc", *drifts}))
+        _check_keywords(
+            statement, assigned, frozenset({letter, "tc", "temp", "dtemp", *drifts})
+        )
         if len(positional) < 3:  # noqa: PLR2004 - a name and two nodes
             message = "an element joins two nodes"
             raise statement.fail(message)
@@ -536,7 +668,9 @@ def _passive(
         if card is not None:
             scale = card.parameters.get(letter, Number(1.0))
             value *= evaluate(scale, translation.scope)
-            read = models.NOMINAL_TEMPERATURES | models.OWN_TEMPERATURES | drifts
+            read = (
+                models.NOMINAL_TEMPERATURES | models.OWN_TEMPERATURES | drifts | noisy
+            )
             _check_model(card, translation.scope, read | {letter}, statement)
             given = {
                 name: evaluate(expression, translation.scope)
@@ -544,13 +678,25 @@ def _passive(
                 if name in read
             }
         given |= _coefficients(translation, statement, assigned, drifts)
+        own = {
+            name: translation.value(words[0])
+            for name, words in assigned.items()
+            if name in {"temp", "dtemp"} and words
+        }
         parameters: dict[str, JsonValue] = {parameter: value}
-        parameters |= _temperatures(model, given, statement)
+        parameters |= _temperatures(given)
+        parameters |= models.own_temperature(given, own, statement)
         parameters |= {
             _CURVATURE[name]: amount
             for name, amount in given.items()
             if name in _CURVATURE
         }
+        if given.get("kf", 0.0) != 0:
+            parameters |= {
+                _FLICKER[name]: amount
+                for name, amount in given.items()
+                if name in _FLICKER
+            }
         translation.add(
             statement,
             model,
@@ -561,15 +707,10 @@ def _passive(
     return translated
 
 
-def _temperatures(
-    model: str, given: Mapping[str, float], statement: Statement
-) -> dict[str, JsonValue]:
-    """A resistor's, capacitor's or inductor's temperature parameters, by jolty name.
+def _temperatures(given: Mapping[str, float]) -> dict[str, JsonValue]:
+    """A resistor's, capacitor's or inductor's drift, by jolty name.
 
-    They come from those `given` by SPICE name.
-
-    Raises:
-        SpiceError: When it drifts and sets a temperature of its own.
+    It comes from the nominal temperature and the coefficients `given` by SPICE name.
     """
     parameters: dict[str, JsonValue] = {}
     for name, amount in given.items():
@@ -577,13 +718,6 @@ def _temperatures(
             parameters["nominal_temperature"] = celsius(amount).value
         elif name in _DRIFT:
             parameters[_DRIFT[name]] = amount
-    own = sorted(name for name in given if name in models.OWN_TEMPERATURES)
-    if own and any(given.get(name) for name in _DRIFT):
-        message = (
-            f"jolty simulates a {model} at the circuit's temperature, not at its own "
-            f"`{own[0].upper()}`"
-        )
-        raise statement.fail(message)
     return parameters
 
 
@@ -625,6 +759,10 @@ def _check_keywords(
             raise statement.fail(message)
 
 
+_FLICKER: Final = {"kf": "flicker_coefficient", "af": "flicker_exponent"}
+"""A resistor's flicker noise parameters, by SPICE name."""
+
+
 def _check_model(
     card: ModelCard,
     scope: Mapping[str, float],
@@ -633,8 +771,8 @@ def _check_model(
 ) -> None:
     """Checks a resistor's, capacitor's or inductor's model card.
 
-    A flicker noise exponent changes nothing, as jolty models no flicker noise of
-    theirs: the coefficient, unless zero, is what fails.
+    A capacitor's or inductor's flicker noise exponent changes nothing, as neither
+    makes flicker noise: the coefficient, unless zero, is what fails.
 
     Raises:
         SpiceError: When a parameter is neither `allowed` nor one that changes nothing.
@@ -986,6 +1124,38 @@ def _switch(translation: _Translation, statement: Statement) -> None:
     )
 
 
+def _current_switch(translation: _Translation, statement: Statement) -> None:
+    """A W switch, controlled by the current through a source of a voltage.
+
+    Its control port is in series with the source, as a current-controlled source's is.
+    """
+    words = [
+        word for word in tokens(statement.text) if word.casefold() not in {"on", "off"}
+    ]
+    if len(words) != 5:  # noqa: PLR2004 - a name, two nodes, a source and a model
+        message = "a current-controlled switch joins two nodes, then names its source "
+        message += "and its model"
+        raise statement.fail(message)
+    _, positive, negative, source, name = words
+    card = translation.library.model(name, translation.models)
+    if card is None:
+        message = f"no model is named `{name}`"
+        raise statement.fail(message)
+    made = models.device(card, translation.scope, {}, statement)
+    control_positive, control_negative = translation.sense(source, statement)
+    translation.add(
+        statement,
+        made.model,
+        made.parameters,
+        {
+            "positive": translation.net(positive),
+            "negative": translation.net(negative),
+            "control_positive": control_positive,
+            "control_negative": control_negative,
+        },
+    )
+
+
 def _instance(translation: _Translation, statement: Statement) -> None:
     """An X instance of a subcircuit, with its parameters."""
     words = tokens(statement.text)
@@ -1055,7 +1225,9 @@ _ELEMENTS: Final[dict[str, Callable[[_Translation, Statement], None]]] = {
     "g": _controlled("current"),
     "h": _controlled("voltage"),
     "b": _arbitrary,
+    "k": _mutual,
     "s": _switch,
+    "w": _current_switch,
     "x": _instance,
 }
 """How each element, by its letter, becomes devices or a placed component."""

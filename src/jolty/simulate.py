@@ -562,6 +562,19 @@ def _instances(
             yield from _instances(circuit, instance.of.component, f"{path}/")
 
 
+def _own(ambient: float, parameters: Mapping[str, JsonValue]) -> float:
+    """The temperature of an instance with `parameters`, the simulation's `ambient`.
+
+    It is the instance's own, held or offset from the simulation's, if it has one.
+    """
+    match parameters:
+        case {"temperature": int() | float() as held}:
+            return float(held)
+        case {"temperature_offset": int() | float() as offset}:
+            return ambient + offset
+    return ambient
+
+
 @dataclass(frozen=True, slots=True)
 class _Terminals:
     """The voltage at and the current into each reached terminal, over a result."""
@@ -571,7 +584,8 @@ class _Terminals:
     thermal: Mapping[str, str | None]
     """The unknown that is each thermal terminal's temperature, None on the ground."""
     ambient: float
-    """The simulation's temperature, in kelvins."""
+    """The simulation's temperature, in kelvins, which instances run at but those with
+    temperatures of their own."""
     columns: Mapping[str, int]
     """The column of each unknown's values, by name."""
     values: results.Real
@@ -589,7 +603,7 @@ class _Terminals:
         result holds no currents and the stress needs them.
         """
         if rating.stress == "temperature":
-            return self.ambient + self._rise(path)
+            return _own(self.ambient, instance.parameters) + self._rise(path)
         named = rating.terminals or tuple(
             terminal
             for terminal in instance.terminals

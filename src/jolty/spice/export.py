@@ -149,6 +149,7 @@ ELEMENTS = {
     "resistor": Element("R", ("a", "b")),
     "capacitor": Element("C", ("a", "b")),
     "inductor": Element("L", ("a", "b")),
+    "coupled_inductors": Element("K", ()),
     "voltage_source": Element("V", ("positive", "negative")),
     "current_source": Element("I", ("positive", "negative")),
     "voltage_controlled_voltage_source": Element("E", _CONTROLLED),
@@ -162,6 +163,7 @@ ELEMENTS = {
     "behavioral_voltage_source": Element("B", ("positive", "negative")),
     "behavioral_current_source": Element("B", ("positive", "negative")),
     "voltage_controlled_switch": Element("A", _CONTROLLED),
+    "current_controlled_switch": Element("A", _CONTROLLED),
     "photocell": Element("B", ("a", "b", "light_positive", "light_negative")),
 }
 
@@ -269,9 +271,70 @@ def element(instance: ir.Instance) -> str:
     return ELEMENTS[instance.of.device].letter + instance.id
 
 
+_SURROUNDINGS: Final = frozenset({"thermal", "temperature", "temperature_offset"})
+"""The parameters of a device's place rather than its model: whether it heats, and its
+own temperature, which SPICE writes apart from its value or its model card."""
+
+
 def _cool(parameters: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
-    """A device's parameters but ``thermal``, which one that does not heat may state."""
-    return {key: value for key, value in parameters.items() if key != "thermal"}
+    """A device's parameters but those of its place, `_SURROUNDINGS`."""
+    return {key: value for key, value in parameters.items() if key not in _SURROUNDINGS}
+
+
+_WARMED: Final = frozenset(
+    {
+        "resistor",
+        "capacitor",
+        "inductor",
+        "coupled_inductors",
+        "diode",
+        "jfet",
+        "bipolar_transistor",
+        "mosfet",
+    }
+)
+"""The devices whose SPICE elements take a temperature of their own."""
+
+_UNMOVED: Final = frozenset(
+    {
+        "voltage_source",
+        "current_source",
+        "voltage_controlled_voltage_source",
+        "voltage_controlled_current_source",
+        "current_controlled_current_source",
+        "current_controlled_voltage_source",
+        "behavioral_voltage_source",
+        "behavioral_current_source",
+    }
+)
+"""The devices whose own temperature changes nothing."""
+
+
+def _own_temperature(instance: ir.Instance, model: str) -> str:
+    """The SPICE instance parameter that sets the device's own temperature, if any.
+
+    A temperature it is held at is ngspice's ``TEMP``, and an offset from the
+    simulation's its ``DTEMP``, each where ngspice's thermal voltage is jolty's.
+
+    Raises:
+        JoltyError: When the device's own temperature moves it, and its SPICE element
+            has none.
+    """
+    match instance.parameters:
+        case {"temperature": int() | float() as held}:
+            written = f" temp={spice_celsius(held)!r}"
+        case {"temperature_offset": int() | float() as offset}:
+            written = f" dtemp={spice_celsius(offset) - spice_celsius(0.0)!r}"
+        case _:
+            return ""
+    if model in _WARMED:
+        return written
+    if model in _UNMOVED:
+        return ""
+    message = (
+        f"{instance.id} is a {model} at its own temperature, which ngspice's has not"
+    )
+    raise _unwritable(message)
 
 
 def netlist(
@@ -295,63 +358,66 @@ def netlist(
     ground = next(port.name for port in top.ports if port.role is Role.GROUND)
     lines = [f"* {circuit.top}"]
     for instance in top.instances:
-        if isinstance(instance.of, ir.ComponentOf):
-            lines.append(_subcircuit(circuit, instance, ground))
-            continue
-        element(instance)
-        model, values = instance.of.device, _cool(instance.parameters)
-        nets = _nets(instance, model)
-        nodes = " ".join("0" if net == ground else net for net in nets)
-        match model:
-            case "voltage_source" | "current_source":
-                ac = " AC 1" if instance.id == excited else ""
-                value = _waveform(values["waveform"]) + ac
-            case (
-                "current_controlled_current_source"
-                | "current_controlled_voltage_source"
-            ):
-                # ngspice senses a current through a voltage source: a zero-volt one in
-                # the control port's place.
-                *output, control_positive, control_negative = nodes.split()
-                sense = _sense(instance)
-                lines.append(f"{sense} {control_positive} {control_negative} DC 0")
-                nodes = " ".join(output)
-                (number,) = values.values()
-                value = f"{sense} {number!r}"
-            case "diode" | "jfet" | "bipolar_transistor" | "mosfet":
-                kind, card, parameters = _model_card(model, values)
-                lines.append(f".model M{instance.id} {kind}({card})")
-                value = f"M{instance.id} {parameters}".rstrip()
-            case "behavioral_voltage_source" | "behavioral_current_source":
-                expression, senses = _behavior(instance, ground)
-                lines.extend(senses)
-                output = "V" if model == "behavioral_voltage_source" else "I"
-                value = f"{output}={{{expression}}}"
-            case "voltage_controlled_switch":
-                # ngspice runs PSpice's switch as the XSPICE model `pswitch`, whose
-                # control port draws current through `r_cntl_in`: made negligible here.
-                positive, negative, control_positive, control_negative = nodes.split()
-                control = f"%gd({control_positive} {control_negative})"
-                nodes = f"{control} %gd({positive} {negative})"
-                card = " ".join(
-                    f"{name}={values[key]!r}"
-                    for key, name in _SWITCH_PARAMETERS.items()
-                )
-                lines.append(
-                    f".model M{instance.id} pswitch({card} r_cntl_in=1e30 log=TRUE)"
-                )
-                value = f"M{instance.id}"
-            case "photocell":
-                a, b, *light = nodes.split()
-                current, lag = _photocell(instance.id, values, light)
-                lines.extend(lag)
-                nodes, value = f"{a} {b}", f"I={{V({a},{b})*{current}}}"
-            case "resistor" | "capacitor" | "inductor":
-                value = _passive(model, values, nodes.split())
-            case _:
-                (number,) = values.values()
-                value = repr(number)
-        lines.append(f"{element(instance)} {nodes} {value}")
+        match instance.of:
+            case ir.ComponentOf():
+                lines.append(_subcircuit(circuit, instance, ground))
+            case ir.DeviceOf(device=model):
+                lines.extend(_device(instance, model, ground, excited))
+    return lines
+
+
+def _device(
+    instance: ir.Instance, model: str, ground: str, excited: str | None
+) -> list[str]:
+    """The SPICE lines of a device of `model`: its element's, after any it needs.
+
+    Raises:
+        JoltyError: When SPICE has no element for the device.
+    """
+    element(instance)
+    values = _cool(instance.parameters)
+    own = _own_temperature(instance, model)
+    if model == "coupled_inductors":
+        coupled = _coupled(instance.id, values, instance.terminals, ground)
+        return [f"{line}{own}" if line.startswith("L") else line for line in coupled]
+    nodes = " ".join("0" if net == ground else net for net in _nets(instance, model))
+    lines: list[str] = []
+    match model:
+        case "voltage_source" | "current_source":
+            ac = " AC 1" if instance.id == excited else ""
+            value = _waveform(values["waveform"]) + ac
+        case "current_controlled_current_source" | "current_controlled_voltage_source":
+            # ngspice senses a current through a voltage source: a zero-volt one in
+            # the control port's place.
+            *output, control_positive, control_negative = nodes.split()
+            sense = _sense(instance)
+            lines.append(f"{sense} {control_positive} {control_negative} DC 0")
+            nodes = " ".join(output)
+            (number,) = values.values()
+            value = f"{sense} {number!r}"
+        case "diode" | "jfet" | "bipolar_transistor" | "mosfet":
+            kind, card, parameters = _model_card(model, values)
+            lines.append(f".model M{instance.id} {kind}({card})")
+            value = f"M{instance.id} {parameters}".rstrip()
+        case "behavioral_voltage_source" | "behavioral_current_source":
+            expression, senses = _behavior(instance, ground)
+            lines.extend(senses)
+            output = "V" if model == "behavioral_voltage_source" else "I"
+            value = f"{output}={{{expression}}}"
+        case "voltage_controlled_switch" | "current_controlled_switch":
+            nodes = _switch(instance, model, values, nodes.split(), lines)
+            value = f"M{instance.id}"
+        case "photocell":
+            a, b, *light = nodes.split()
+            current, lag = _photocell(instance.id, values, light)
+            lines.extend(lag)
+            nodes, value = f"{a} {b}", f"I={{V({a},{b})*{current}}}"
+        case "resistor" | "capacitor" | "inductor":
+            value = _passive(model, values, nodes.split(), (instance.id, lines))
+        case _:
+            (number,) = values.values()
+            value = repr(number)
+    lines.append(f"{element(instance)} {nodes} {value}{own}")
     return lines
 
 
@@ -425,16 +491,39 @@ _CURVATURE = ("voltage_coefficient", "quadratic_voltage_coefficient")
 """A resistor's or a capacitor's voltage coefficients, linear then quadratic."""
 
 
-def _passive(model: str, values: dict[str, JsonValue], nodes: list[str]) -> str:
+_FLICKER: Final = {"flicker_coefficient": "kf", "flicker_exponent": "af"}
+"""A resistor's flicker noise parameters, as ngspice's model card names them."""
+
+
+def _passive(
+    model: str,
+    values: Mapping[str, JsonValue],
+    nodes: list[str],
+    card: tuple[str, list[str]] | None = None,
+) -> str:
     """A resistor's, capacitor's or inductor's value and temperature coefficients.
 
     A value that changes with the voltage is ngspice's expression for the resistance,
-    or for the charge, of the voltage across the device.
+    or for the charge, of the voltage across the device. A resistor's flicker noise is
+    a model card's, which `card`, the device's id and the lines before its element's,
+    takes.
+
+    Raises:
+        JoltyError: When a parameter has no ngspice counterpart, or a resistor whose
+            value bends with its voltage makes flicker noise: ngspice's expression for
+            a resistance makes no noise.
     """
     number, *rest = values.items()
+    flicker = {_FLICKER[key]: amount for key, amount in rest if key in _FLICKER}
+    named = ""
+    if flicker and card is not None:
+        id, lines = card
+        written = " ".join(f"{name}={amount!r}" for name, amount in flicker.items())
+        lines.append(f".model M{id} R({written})")
+        named = f"M{id} "
     drift = []
     for key, amount in rest:
-        if key in _CURVATURE:
+        if key in _CURVATURE or (named and key in _FLICKER):
             continue
         if key not in _PASSIVE_DRIFT:
             message = f"a {model}'s {key} has no ngspice element parameter"
@@ -442,7 +531,10 @@ def _passive(model: str, values: dict[str, JsonValue], nodes: list[str]) -> str:
         drift.append(f"{_PASSIVE_DRIFT[key]}={amount!r}")
     linear, quadratic = (values.get(key, 0.0) for key in _CURVATURE)
     if linear == 0 and quadratic == 0:
-        return " ".join([repr(number[1]), *drift])
+        return named + " ".join([repr(number[1]), *drift])
+    if named:
+        message = "a resistor whose value bends with its voltage makes no flicker noise"
+        raise _unwritable(message + " in ngspice")
     voltage = f"v({nodes[0]},{nodes[1]})"
     if model == "resistor":
         factor = f"1+{linear!r}*{voltage}+{quadratic!r}*{voltage}^2"
@@ -453,12 +545,90 @@ def _passive(model: str, values: dict[str, JsonValue], nodes: list[str]) -> str:
     return " ".join([written, *drift])
 
 
-_SWITCH_PARAMETERS = {
-    "on_voltage": "cntl_on",
-    "off_voltage": "cntl_off",
-    "on_resistance": "r_on",
-    "off_resistance": "r_off",
+def _coupled(
+    id: str,
+    values: Mapping[str, JsonValue],
+    terminals: Mapping[str, str],
+    ground: str,
+) -> list[str]:
+    """Coupled inductors as SPICE writes them.
+
+    Each winding is an inductor ``L{id}_{k}``, and each coupling a mutual inductance
+    ``K{id}_{j}_{k}``.
+    """
+    lines = []
+    match values:
+        case {"windings": list(windings), "couplings": list(couplings)}:
+            pass
+        case _:
+            message = f"{id} is coupled inductors without windings and couplings"
+            raise _unwritable(message)
+    for number, winding in enumerate(windings, start=1):
+        if not isinstance(winding, dict):
+            message = f"winding {number} of {id} is no inductor"
+            raise _unwritable(message)
+        nodes = [
+            "0" if net == ground else net
+            for net in (terminals[f"a{number}"], terminals[f"b{number}"])
+        ]
+        written = _passive("inductor", winding, nodes)
+        lines.append(f"L{id}_{number} {' '.join(nodes)} {written}")
+    for coupling in couplings:
+        match coupling:
+            case {"windings": [int(first), int(second)], "coefficient": float(value)}:
+                lines.append(
+                    f"K{id}_{first}_{second} L{id}_{first} L{id}_{second} {value!r}"
+                )
+            case _:
+                message = f"{id} has a coupling SPICE cannot write: {coupling}"
+                raise _unwritable(message)
+    return lines
+
+
+_SWITCHES: Final = {
+    "voltage_controlled_switch": {
+        "on_voltage": ("cntl_on", 1.0),
+        "off_voltage": ("cntl_off", 0.0),
+        "on_resistance": ("r_on", 1.0),
+        "off_resistance": ("r_off", 1e6),
+    },
+    "current_controlled_switch": {
+        "on_current": ("cntl_on", 1e-3),
+        "off_current": ("cntl_off", 0.0),
+        "on_resistance": ("r_on", 1.0),
+        "off_resistance": ("r_off", 1e6),
+    },
 }
+"""Each switch's parameters as ngspice's ``pswitch`` names them, with the defaults
+jolty's switches take, PSpice's."""
+
+
+def _switch(
+    instance: ir.Instance,
+    model: str,
+    values: Mapping[str, JsonValue],
+    nodes: list[str],
+    lines: list[str],
+) -> str:
+    """A switch's nodes as ngspice's XSPICE ``pswitch`` reads them, after its lines.
+
+    ngspice runs PSpice's switches as ``pswitch``, whose control port draws current
+    through ``r_cntl_in``: made negligible here. ``pswitch`` reads no current, so a
+    current-controlled switch's control current flows through a zero-volt source, and
+    a transresistance of 1 Ω gives it as the voltage of a node of its own.
+    """
+    positive, negative, control_positive, control_negative = nodes
+    if model == "current_controlled_switch":
+        sense = _sense(instance)
+        lines.append(f"{sense} {control_positive} {control_negative} DC 0")
+        control_positive, control_negative = f"{instance.id}.control", "0"
+        lines.append(f"H{instance.id}CONTROL {control_positive} 0 {sense} 1")
+    card = " ".join(
+        f"{name}={values.get(key, default)!r}"
+        for key, (name, default) in _SWITCHES[model].items()
+    )
+    lines.append(f".model M{instance.id} pswitch({card} r_cntl_in=1e30 log=TRUE)")
+    return f"%gd({control_positive} {control_negative}) %gd({positive} {negative})"
 
 
 def _behavior(instance: ir.Instance, ground: str) -> tuple[str, list[str]]:
@@ -524,6 +694,8 @@ def vector(
         message = f"ngspice names the internal unknown {unknown.name} its own way"
         raise _unwritable(message)
     (instance,) = found
+    if instance.of == ir.DeviceOf(device="coupled_inductors"):
+        return f"i(l{id.lower()}_{label.removeprefix('current')})"
     source = _sense(instance) if label == "control" else element(instance)
     return f"i({source.lower()})"
 

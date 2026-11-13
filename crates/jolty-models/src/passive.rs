@@ -2,10 +2,12 @@ use jolty_numerics::Entry;
 use serde::Deserialize;
 
 use crate::junction::Temperatures;
+use crate::noise::Flicker;
 use crate::stamp::{CurrentBranch, SMALL_RESISTANCE};
 use crate::{
     Binding, Branch, BranchKind, Device, Heatable, HeatableModel, Input, Interface, NativeDevice,
-    NativeModel, NoiseSource, Output, ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
+    NativeModel, Node, NoiseSource, Output, ParameterError, REFERENCE_TEMPERATURE, Real,
+    TerminalPair,
 };
 
 /// The default nominal temperature, at which a passive device's value was measured.
@@ -19,12 +21,15 @@ fn reference_temperature<R: Real>() -> R {
 /// With `v` from `a` to `b`, its resistance is `r · (1 + vc1 · v + vc2 · v²)`, `r` its
 /// resistance at that temperature; where the coefficients bend it below zero, it is
 /// negative there. Below [`SMALL_RESISTANCE`], its current is an unknown labelled
-/// `current`.
+/// `current`. Beside its thermal noise, its current `I` makes flicker noise of
+/// `KF · |I|^AF / f` A²/Hz across it, as ngspice's resistor does.
 #[derive(Debug)]
 pub struct Resistor<R: Real = f64> {
     form: Form,
+    terminals: [Node; 2],
     resistance: R,
     coefficients: VoltageCoefficients<R>,
+    flicker: Flicker,
     temperature: f64,
 }
 
@@ -86,6 +91,17 @@ pub struct ResistorParameters<R: Real = f64> {
     /// The quadratic voltage coefficient `vc2`, per volt squared; default 0.
     #[serde(default)]
     pub quadratic_voltage_coefficient: R,
+    /// The flicker noise coefficient, `KF`; default 0, no flicker noise.
+    #[serde(default)]
+    pub flicker_coefficient: R,
+    /// The power of the current in the flicker noise, `AF`; default 1.
+    #[serde(default = "one")]
+    pub flicker_exponent: R,
+}
+
+/// The default of an exponent that leaves its base as it is.
+fn one<R: Real>() -> R {
+    R::constant(1.0)
 }
 
 impl NativeModel for Resistor {
@@ -106,6 +122,7 @@ impl<R: Real> NativeDevice<R> for Resistor<R> {
     ) -> Result<Self, ParameterError> {
         let temperature = binding.temperature();
         let resistance = parameters.resistance_at(R::constant(temperature))?;
+        let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?;
         let (a, b) = (binding.terminal(0), binding.terminal(1));
         let form = if resistance.value().abs() < SMALL_RESISTANCE {
             let branch = CurrentBranch::new(binding, "current", [a, b]);
@@ -117,7 +134,9 @@ impl<R: Real> NativeDevice<R> for Resistor<R> {
         };
         Ok(Self {
             form,
+            terminals: [a, b],
             resistance,
+            flicker,
             coefficients: VoltageCoefficients {
                 linear: parameters.voltage_coefficient,
                 quadratic: parameters.quadratic_voltage_coefficient,
@@ -203,21 +222,35 @@ impl<R: Real> Device<R> for Resistor<R> {
 
     /// The thermal noise of the resistance at its voltage, `r · f(v)`: a current of
     /// `4kT / (r · f(v))` across it, or a voltage of `4kT · r · f(v)` in series with it
-    /// where its current is an unknown.
+    /// where its current is an unknown; and the flicker noise of its current, across it.
     fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
         let temperature = self.temperature;
-        sources.push(match &self.form {
+        let (thermal, current) = match &self.form {
             Form::Conductance(pair) => {
-                let (factor, _) = self.coefficients.factor(pair.voltage(input));
+                let voltage = pair.voltage(input);
+                let (factor, _) = self.coefficients.factor(voltage);
                 let conductance = (self.resistance * factor).value().recip();
-                NoiseSource::thermal("thermal", pair.nodes(), conductance, temperature)
+                (
+                    NoiseSource::thermal("thermal", pair.nodes(), conductance, temperature),
+                    conductance * voltage,
+                )
             }
             Form::Current(branch, _) => {
                 let (factor, _) = self.coefficients.factor(branch.voltage(input));
                 let resistance = (self.resistance * factor).value();
-                NoiseSource::thermal_in_series("thermal", branch.unknown(), resistance, temperature)
+                (
+                    NoiseSource::thermal_in_series(
+                        "thermal",
+                        branch.unknown(),
+                        resistance,
+                        temperature,
+                    ),
+                    branch.current(input),
+                )
             }
-        });
+        };
+        sources.push(thermal);
+        self.flicker.add(self.terminals, current, sources);
     }
 }
 
@@ -351,15 +384,7 @@ impl<R: Real> NativeDevice<R> for Inductor<R> {
         parameters: InductorParameters<R>,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let inductance = ParameterError::positive("inductance", parameters.inductance)?
-            * Temperatures::new(
-                R::constant(binding.temperature()),
-                parameters.nominal_temperature,
-            )?
-            .polynomial(
-                parameters.temperature_coefficient,
-                parameters.quadratic_temperature_coefficient,
-            );
+        let inductance = parameters.inductance_at(binding.temperature())?;
         let terminals = [binding.terminal(0), binding.terminal(1)];
         let branch = CurrentBranch::new(binding, "current", terminals);
         let row = Some(branch.unknown());
@@ -379,6 +404,177 @@ impl<R: Real> Device<R> for Inductor<R> {
         let row = Some(self.branch.unknown());
         output.add_charge(row, -self.inductance * self.branch.current(input));
         output.add_capacitance(self.entry, -self.inductance);
+    }
+}
+
+/// Inductors whose fluxes link, as a transformer's windings or a choke's.
+///
+/// Winding `k`, from 1, joins terminals `a{k}` and `b{k}`, its current, flowing from
+/// `a{k}` through it to `b{k}`, an unknown labelled `current{k}`. The flux through it is
+/// `Σ M_kj · i_j`, where `M_kk` is its own inductance and `M_kj = c · √(L_k · L_j)` for a
+/// coupling `c` between windings `k` and `j`, none unless given; its equation is
+/// `v_a{k} − v_b{k} − d/dt Σ M_kj · i_j = 0`. A current into `a{k}` and one into `a{j}`
+/// add their fluxes when `c` is positive, as SPICE's mutual inductance couples the
+/// inductors' first nodes.
+#[derive(Debug)]
+pub struct CoupledInductors<R: Real = f64> {
+    branches: Vec<CurrentBranch>,
+    /// The inductance matrix, row by row.
+    inductances: Vec<Vec<R>>,
+    /// The entry at (current k, current j), row by row.
+    entries: Vec<Vec<Option<Entry>>>,
+}
+
+/// The parameters of [`CoupledInductors`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, bound = "")]
+pub struct CoupledInductorsParameters<R: Real = f64> {
+    /// Each winding, as an inductor's parameters; at least two.
+    pub windings: Vec<InductorParameters<R>>,
+    /// The couplings between pairs of windings.
+    #[serde(default)]
+    pub couplings: Vec<Coupling<R>>,
+}
+
+/// How closely two windings' fluxes link.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, bound = "")]
+pub struct Coupling<R: Real = f64> {
+    /// The two windings, by their numbers from 1.
+    pub windings: [usize; 2],
+    /// The coupling coefficient, from -1 to 1.
+    pub coefficient: R,
+}
+
+impl NativeModel for CoupledInductors {
+    type Device<R: Real> = CoupledInductors<R>;
+}
+
+impl<R: Real> NativeDevice<R> for CoupledInductors<R> {
+    const NAME: &'static str = "coupled_inductors";
+    type Parameters = CoupledInductorsParameters<R>;
+
+    fn interface(parameters: &CoupledInductorsParameters<R>) -> Interface {
+        let terminals: Vec<String> = (1..=parameters.windings.len())
+            .flat_map(|winding| [format!("a{winding}"), format!("b{winding}")])
+            .collect();
+        let borrowed: Vec<&str> = terminals.iter().map(String::as_str).collect();
+        let branches: Vec<Branch> = (0..parameters.windings.len())
+            .map(|winding| Branch::new(2 * winding, 2 * winding + 1, BranchKind::Inductive))
+            .collect();
+        Interface::new(&borrowed, &branches)
+    }
+
+    fn new(
+        parameters: CoupledInductorsParameters<R>,
+        binding: &mut Binding<'_>,
+    ) -> Result<Self, ParameterError> {
+        let count = parameters.windings.len();
+        if count < 2 {
+            return Err(ParameterError(format!(
+                "coupled inductors have at least two windings, not {count}"
+            )));
+        }
+        let own = parameters
+            .windings
+            .iter()
+            .map(|winding| winding.inductance_at(binding.temperature()))
+            .collect::<Result<Vec<R>, _>>()?;
+        let mut inductances: Vec<Vec<R>> = (0..count)
+            .map(|row| {
+                (0..count)
+                    .map(|column| {
+                        if row == column {
+                            own[row]
+                        } else {
+                            R::constant(0.0)
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut coupled = vec![vec![false; count]; count];
+        for coupling in &parameters.couplings {
+            let [first, second] = coupling.windings;
+            let numbered = |winding: usize| (1..=count).contains(&winding);
+            if !numbered(first) || !numbered(second) || first == second {
+                return Err(ParameterError(format!(
+                    "a coupling joins two distinct windings from 1 to {count}, not {first} \
+                     and {second}"
+                )));
+            }
+            let (row, column) = (first - 1, second - 1);
+            if coupled[row][column] {
+                return Err(ParameterError(format!(
+                    "windings {first} and {second} are coupled twice"
+                )));
+            }
+            let coefficient = coupling.coefficient;
+            if !(-1.0..=1.0).contains(&coefficient.value()) {
+                return Err(ParameterError(format!(
+                    "a coupling coefficient lies from -1 to 1, not {:?}",
+                    coefficient.value()
+                )));
+            }
+            let mutual = coefficient * (own[row] * own[column]).sqrt();
+            inductances[row][column] = mutual;
+            inductances[column][row] = mutual;
+            coupled[row][column] = true;
+            coupled[column][row] = true;
+        }
+        let branches: Vec<CurrentBranch> = (0..count)
+            .map(|winding| {
+                let terminals = [
+                    binding.terminal(2 * winding),
+                    binding.terminal(2 * winding + 1),
+                ];
+                CurrentBranch::new(binding, &format!("current{}", winding + 1), terminals)
+            })
+            .collect();
+        let entries = branches
+            .iter()
+            .map(|row| {
+                branches
+                    .iter()
+                    .map(|column| binding.entry(Some(row.unknown()), Some(column.unknown())))
+                    .collect()
+            })
+            .collect();
+        Ok(Self {
+            branches,
+            inductances,
+            entries,
+        })
+    }
+}
+
+impl<R: Real> InductorParameters<R> {
+    /// The inductance at `temperature`, in kelvins, once each parameter it reads is
+    /// checked.
+    fn inductance_at(&self, temperature: f64) -> Result<R, ParameterError> {
+        Ok(ParameterError::positive("inductance", self.inductance)?
+            * Temperatures::new(R::constant(temperature), self.nominal_temperature)?.polynomial(
+                self.temperature_coefficient,
+                self.quadratic_temperature_coefficient,
+            ))
+    }
+}
+
+impl<R: Real> Device<R> for CoupledInductors<R> {
+    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
+        // v_k = d/dt Σ M_kj i_j: each winding's voltage, and its flux as its equation's
+        // charge, negated.
+        for (row, branch) in self.branches.iter().enumerate() {
+            let voltage = branch.voltage(input);
+            branch.add(input, output, R::constant(voltage));
+            let mut flux = R::constant(0.0);
+            for (column, other) in self.branches.iter().enumerate() {
+                let inductance = self.inductances[row][column];
+                flux += inductance * other.current(input);
+                output.add_capacitance(self.entries[row][column], -inductance);
+            }
+            output.add_charge(Some(branch.unknown()), -flux);
+        }
     }
 }
 
@@ -479,6 +675,73 @@ mod tests {
     fn an_inductor_adds_its_current_as_an_unknown() {
         let bench = Bench::new::<Inductor>(r#"{"inductance": 1e-3}"#);
         assert_eq!(bench.unknowns(), ["n0", "n1", "device:current"]);
+    }
+
+    /// A transformer of 1 mH and 4 mH, coupled by 0.9, the primary drifting.
+    const TRANSFORMER: &str = r#"{"windings": [
+            {"inductance": 1e-3, "temperature_coefficient": 1e-3, "nominal_temperature": 290},
+            {"inductance": 4e-3}],
+        "couplings": [{"windings": [1, 2], "coefficient": 0.9}]}"#;
+
+    #[test]
+    fn coupled_windings_share_their_flux() {
+        let mut bench = Bench::new::<CoupledInductors>(TRANSFORMER);
+        assert_eq!(
+            bench.unknowns(),
+            ["n0", "n1", "n2", "n3", "device:current1", "device:current2"]
+        );
+        let primary = 1e-3 * (1.0 + 1e-3 * (REFERENCE_TEMPERATURE - 290.0));
+        let mutual = 0.9 * (primary * 4e-3_f64).sqrt();
+        let output = bench.evaluate(&[1.0, 0.5, -2.0, 0.0, 0.3, -0.1]);
+        // Each winding's current into its `a` and out of its `b`, and its voltage.
+        assert_close(&output.residual, &[0.3, -0.3, -0.1, 0.1, 0.5, -2.0]);
+        let fluxes = [primary * 0.3 + mutual * -0.1, mutual * 0.3 + 4e-3 * -0.1];
+        assert_close(
+            &output.charge,
+            &[0.0, 0.0, 0.0, 0.0, -fluxes[0], -fluxes[1]],
+        );
+        assert_jacobians_match::<CoupledInductors>(TRANSFORMER, &[1.0, 0.5, -2.0, 0.0, 0.3, -0.1]);
+        assert_parameter_gradients_match::<CoupledInductors>(
+            TRANSFORMER,
+            &[1.0, 0.5, -2.0, 0.0, 0.3, -0.1],
+        );
+        let interface = CoupledInductors::<f64>::interface(
+            &serde_json::from_str(TRANSFORMER).expect("parameters"),
+        );
+        assert_eq!(interface.terminals, ["a1", "b1", "a2", "b2"]);
+    }
+
+    #[test]
+    fn coupled_inductors_reject_couplings_they_cannot_make() {
+        let error = |parameters: &str| {
+            Bench::try_new::<CoupledInductors>(parameters)
+                .unwrap_err()
+                .to_string()
+        };
+        let windings = r#""windings": [{"inductance": 1e-3}, {"inductance": 2e-3}]"#;
+        assert_eq!(
+            error(r#"{"windings": [{"inductance": 1e-3}]}"#),
+            "coupled inductors have at least two windings, not 1"
+        );
+        assert_eq!(
+            error(&format!(
+                r#"{{{windings}, "couplings": [{{"windings": [1, 3], "coefficient": 0.5}}]}}"#
+            )),
+            "a coupling joins two distinct windings from 1 to 2, not 1 and 3"
+        );
+        assert_eq!(
+            error(&format!(
+                r#"{{{windings}, "couplings": [{{"windings": [1, 2], "coefficient": 0.5}},
+                    {{"windings": [2, 1], "coefficient": 0.4}}]}}"#
+            )),
+            "windings 2 and 1 are coupled twice"
+        );
+        assert_eq!(
+            error(&format!(
+                r#"{{{windings}, "couplings": [{{"windings": [1, 2], "coefficient": 1.5}}]}}"#
+            )),
+            "a coupling coefficient lies from -1 to 1, not 1.5"
+        );
     }
 
     #[test]
@@ -585,6 +848,34 @@ mod tests {
         assert_close(
             &[source(&sources, "thermal").density(1.0)],
             &[thermal(1.0 / 1200.0)],
+        );
+    }
+
+    #[test]
+    fn a_resistors_current_makes_flicker_noise_across_it() {
+        let flickering = r#"{"resistance": 1000, "flicker_coefficient": 1e-12,
+            "flicker_exponent": 2}"#;
+        let sources = Bench::new::<Resistor>(flickering).noise(&[3.0, 1.0]);
+        let flicker = source(&sources, "flicker");
+        assert_eq!(
+            flicker.equations,
+            [Some(Unknown::new(0)), Some(Unknown::new(1))]
+        );
+        assert_close(&[flicker.density(10.0)], &[1e-12 * 4e-6 / 10.0]);
+        // A small one's current is its own unknown, and its flicker noise still across it.
+        let small = r#"{"resistance": 0.5, "flicker_coefficient": 1e-12}"#;
+        let sources = Bench::new::<Resistor>(small).noise(&[1.0, 0.0, 2.0]);
+        let flicker = source(&sources, "flicker");
+        assert_eq!(
+            flicker.equations,
+            [Some(Unknown::new(0)), Some(Unknown::new(1))]
+        );
+        assert_close(&[flicker.density(1.0)], &[2e-12]);
+        assert!(
+            Bench::new::<Resistor>(r#"{"resistance": 1}"#)
+                .noise(&[1.0, 0.0])
+                .iter()
+                .all(|noise| noise.name != "flicker")
         );
     }
 }

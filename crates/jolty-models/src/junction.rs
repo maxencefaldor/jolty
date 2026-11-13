@@ -53,6 +53,22 @@ impl<R: Real> Temperatures<R> {
         Ok(Self { actual, nominal })
     }
 
+    /// A junction's temperatures, `actual` and `nominal`, both in kelvins, as
+    /// [`Temperatures::new`] makes them: a junction at 0 K has no thermal voltage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either temperature is not positive.
+    pub(crate) fn of_junction(actual: R, nominal: R) -> Result<Self, ParameterError> {
+        if actual.value() <= 0.0 {
+            return Err(ParameterError(format!(
+                "a junction's temperature lies above 0 K, not at {:?} K",
+                actual.value()
+            )));
+        }
+        Self::new(actual, nominal)
+    }
+
     /// The device's temperature less the nominal temperature.
     pub(crate) fn difference(self) -> R {
         -(self.nominal - self.actual)

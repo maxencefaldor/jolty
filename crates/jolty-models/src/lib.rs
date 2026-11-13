@@ -30,6 +30,7 @@ mod photocell;
 mod real;
 mod sources;
 mod stamp;
+mod surroundings;
 mod switch;
 #[cfg(test)]
 mod testing;
@@ -67,13 +68,18 @@ pub use logic::{
 pub use mosfet::{GateMaterial, Mosfet, MosfetParameters};
 pub use noise::NoiseSource;
 pub use passive::{
-    Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
+    Capacitor, CapacitorParameters, CoupledInductors, CoupledInductorsParameters, Coupling,
+    Inductor, InductorParameters, Resistor, ResistorParameters,
 };
 pub use photocell::{Photocell, PhotocellParameters};
 pub use real::{Gradient, Hyper, Real};
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
 pub use stamp::{SMALL_RESISTANCE, TerminalPair};
-pub use switch::{VoltageControlledSwitch, VoltageControlledSwitchParameters};
+pub use surroundings::Surrounded;
+pub use switch::{
+    CurrentControlledSwitch, CurrentControlledSwitchParameters, VoltageControlledSwitch,
+    VoltageControlledSwitchParameters,
+};
 pub use thermal::{
     HeatSource, HeatSourceParameters, ThermalCapacitance, ThermalCapacitanceParameters,
     ThermalResistance, ThermalResistanceParameters,
@@ -99,6 +105,7 @@ impl Library {
         library.add(Thermal::<Resistor>::new());
         library.add(Native::<Capacitor>::new());
         library.add(Native::<Inductor>::new());
+        library.add(Native::<CoupledInductors>::new());
         library.add(Native::<VoltageSource>::new());
         library.add(Native::<CurrentSource>::new());
         library.add(Native::<CurrentControlledCurrentSource>::new());
@@ -106,6 +113,7 @@ impl Library {
         library.add(Native::<VoltageControlledVoltageSource>::new());
         library.add(Native::<VoltageControlledCurrentSource>::new());
         library.add(Native::<VoltageControlledSwitch>::new());
+        library.add(Native::<CurrentControlledSwitch>::new());
         library.add(Thermal::<Diode>::new());
         library.add(Thermal::<Jfet>::new());
         library.add(Thermal::<Mosfet>::new());
@@ -118,10 +126,12 @@ impl Library {
         library
     }
 
-    /// Adds `model`, replacing any model of the same name.
+    /// Adds `model`, replacing any model of the same name; each of its devices may run at
+    /// a temperature of its own, as [`Surrounded`] describes.
     pub fn add(&mut self, model: impl Model + 'static) {
         self.logic.remove(model.name());
-        self.models.insert(model.name(), Arc::new(model));
+        self.models
+            .insert(model.name(), Arc::new(Surrounded::new(model)));
     }
 
     /// Adds the logic model `model`, replacing any model of the same name.
@@ -181,7 +191,9 @@ mod tests {
                 "behavioral_voltage_source",
                 "bipolar_transistor",
                 "capacitor",
+                "coupled_inductors",
                 "current_controlled_current_source",
+                "current_controlled_switch",
                 "current_controlled_voltage_source",
                 "current_source",
                 "diode",
