@@ -95,10 +95,10 @@ Plan(..., options=Options(record=["X1/R1", "X2"])) does, or every instance, as
 Options(record=["**"]) does: the current into each terminal and the charge it holds,
 read with current(instance, terminal) and charge(instance, terminal), such as
 current("X1/R1", "a"), a component instance's terminals summing the devices' behind
-them, and each device's conductances and variables. By default it records the
-instances rated for a current or a power. Transient(stop, times=[...]) steps onto the
-given times exactly, and Transient(period, periodic=True) simulates one period of the
-periodic steady state, found by shooting.
+them, and each device's conductances and variables. An operating point and a transient
+also record the instances rated for a current or a power. Transient(stop, times=[...])
+steps onto the given times exactly, and Transient(period, periodic=True) simulates one
+period of the periodic steady state, found by shooting.
 """
 
 READS_FILES: Final = ToolAnnotations(read_only_hint=True, open_world_hint=False)

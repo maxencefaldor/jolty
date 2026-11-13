@@ -61,7 +61,7 @@ Beside the unknowns, a result records what its options' `record` names of the ci
 Options(record=["M1", "X1"])  # the transistor M1, and the ports of the instance X1
 Options(record=["X1/**"])  # every device and component instance inside X1
 Options(record=["**"])  # every instance
-Options(record=[])  # nothing beyond the unknowns
+Options(record=[])  # nothing beyond the unknowns and what the checks read
 ```
 
 Each entry is an instance's path, or a pattern of paths as a plan's [fidelity](fidelity.md) scopes are written, where `*` matches within a level of the hierarchy and `**` across levels.
@@ -69,8 +69,8 @@ A device recorded keeps its terminals' currents and charges, its own small-signa
 A component instance or a logic device recorded keeps its terminals' currents and charges, each summed by the engine from the device terminals behind it, which it keeps no further.
 An analysis fails when its record names a path the circuit does not have, saying the closest paths it has, or holds a pattern that matches no instance.
 
-By default, an operating point and a transient record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read, and every other analysis records nothing beyond the unknowns: specs, plots, schematics and the operating point's rules read the unknowns alone.
-A plan's corners, Monte Carlo samples, worst-case runs and spot checks record nothing beyond the unknowns, since only specs read their results.
+Whatever the record names, an operating point and a transient also record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read; specs, plots, schematics and the operating point's rules read the unknowns alone.
+A plan's corners, Monte Carlo samples, worst-case runs and spot checks record no more than that, since only specs read their results.
 
 Recording costs memory at every point: a transistor recorded keeps 45 numbers, or 111 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and a transient's `transient_memory` bounds them all (see [Options](simulation.md#options)).
 Reading what a result did not record raises a `KeyError` that suggests the closest names it holds and how to record the instance:

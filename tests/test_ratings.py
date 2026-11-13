@@ -170,9 +170,10 @@ def test_by_default_results_record_the_instances_rated_for_a_current_or_power() 
     assert step.recording.terminals == ("R1.a", "R1.b")
     sweep = simulation.run(DcSweep("V1", [0 * V, 10 * V]))
     assert sweep.recording == results.Recording()
-    # Without its currents, R1's power goes unjudged.
+    # A record that names nothing still records what the checks read.
     bare = simulation.run(OperatingPoint(), Options(record=[]))
-    assert simulation.check_results({"op": bare}) == ()
+    assert bare.recording.terminals == ("R1.a", "R1.b")
+    assert [d.rule for d in simulation.check_results({"op": bare})] == ["over-rating"]
 
 
 @component

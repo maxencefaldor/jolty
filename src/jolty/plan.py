@@ -271,9 +271,8 @@ class Options:
     ``[]`` none. A device recorded keeps the current into each of its terminals and the
     charge each holds, its derivatives and its variables; a component instance or a
     logic device recorded keeps its terminals' currents and charges, each the sum of the
-    device terminals behind it. By default, an operating point and a transient record
-    the instances rated for a current or a power, whose ratings the checks hold them to,
-    and other analyses record nothing beyond the unknowns.
+    device terminals behind it. An operating point and a transient record the instances
+    rated for a current or a power besides, whose ratings the checks hold them to.
 
     Examples:
         >>> Options(record=["M1", "X1/**"]).record

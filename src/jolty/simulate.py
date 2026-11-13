@@ -173,7 +173,7 @@ class Simulation:
         )
         self._substituted = frozenset(substitutes or {})
         self._recordings: dict[str, results.Recording] = {}
-        self._records: dict[tuple[str, ...], JsonValue] = {}
+        self._records: dict[tuple[str, ...], frozenset[str] | None] = {}
         try:
             stand_ins = {
                 path: {"model": device.model, "parameters": device.parameters}
@@ -392,34 +392,34 @@ class Simulation:
     def _record(self, analysis: Analysis, record: Sequence[str] | None) -> JsonValue:
         """What `analysis` records, in the engine's format.
 
-        It records what `record` names or, by default, at an operating point and in a
-        transient, the instances rated for a current or a power, whose currents the
-        checks of ratings read.
+        An operating point and a transient record the instances rated for a current or
+        a power, whose currents the checks of ratings read, and every analysis records
+        what `record` names besides.
 
         Raises:
             SimulationError: When the record names an instance the circuit does not
                 have, or holds a pattern that matches none.
         """
-        if record is None:
-            reads = isinstance(analysis, OperatingPoint | Transient)
-            rated: list[JsonValue] = list(self._rated) if reads else []
-            return {"instances": rated}
-        named = tuple(record)
-        found = self._records.get(named)
+        named = tuple(record or ())
+        if named not in self._records:
+            self._records[named] = self._resolve(named)
+        found = self._records[named]
         if found is None:
-            found = self._resolve(named)
-            self._records[named] = found
-        return found
+            return "all"
+        if isinstance(analysis, OperatingPoint | Transient):
+            found |= frozenset(self._rated)
+        instances: list[JsonValue] = [*sorted(found)]
+        return {"instances": instances}
 
-    def _resolve(self, record: tuple[str, ...]) -> JsonValue:
-        """The instances `record` names, in the engine's format.
+    def _resolve(self, record: tuple[str, ...]) -> frozenset[str] | None:
+        """The paths of the instances `record` names, or None when it names them all.
 
         Raises:
             SimulationError: When the record names an instance the circuit does not
                 have, or holds a pattern that matches none.
         """
         if "**" in record:
-            return "all"
+            return None
         named: set[str] = set()
         for pattern in record:
             if _WILDCARDS.isdisjoint(pattern):
@@ -440,8 +440,7 @@ class Simulation:
                 message = f"the record's pattern {pattern!r} matches no instance"
                 raise SimulationError(message)
             named |= matched
-        paths: list[JsonValue] = [*sorted(named)]
-        return {"instances": paths}
+        return frozenset(named)
 
     @functools.cached_property
     def _known(self) -> frozenset[str]:
