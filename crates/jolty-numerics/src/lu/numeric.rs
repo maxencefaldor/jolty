@@ -19,10 +19,13 @@ const NONE: usize = usize::MAX;
 /// fraction, and else the largest, and a refactorization keeps each pivot while it reaches
 /// it. It bounds every entry of `L` by its inverse, ten, against a thousand for the
 /// thousandth that KLU and SPICE take, which keeps the rounding of the solutions close to
-/// that of strict partial pivoting: the backward errors of the tests' random circuits stay
-/// below 1e-12 with a tenth, and reach 5e-12 with a thousandth. On the matrices of the
-/// example circuits, meshes and inverter chains measured, the factors fill alike with
-/// either, but for one entry of one.
+/// that of strict partial pivoting: over 20,000 of the tests' random circuits, the largest
+/// backward error of a solution is 4.5e-15 with a tenth, against 7.7e-9 with a thousandth.
+/// On the matrices of the example circuits, meshes and inverter chains measured, the
+/// factors fill alike with either, but for one entry of one. The price is that a
+/// refactorization keeps its pivots less often: in the transients of the examples' buck and
+/// boost converters, one or two factorizations in a hundred search afresh, where with a
+/// thousandth almost none does.
 const PIVOT_TOLERANCE: f64 = 0.1;
 
 /// A triangular factor stored by columns.
@@ -399,5 +402,76 @@ impl<T: Scalar> Numeric<T> {
         for (&row, &value) in ordering.rows().iter().zip(by_row.iter()) {
             rhs[row] = value;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::PatternBuilder;
+
+    /// The values by slot of `ordering`'s dense 3 × 3 pattern that make its ordered matrix
+    /// `matrix`.
+    fn ordered(ordering: &Ordering, matrix: [[f64; 3]; 3]) -> Vec<f64> {
+        let at = |order: &[usize], wanted: usize| {
+            order
+                .iter()
+                .position(|&index| index == wanted)
+                .expect("a permutation")
+        };
+        ordering
+            .pattern()
+            .positions()
+            .map(|(row, column)| matrix[at(ordering.rows(), row)][at(ordering.columns(), column)])
+            .collect()
+    }
+
+    #[test]
+    fn a_refactorization_keeps_the_columns_before_a_pivot_too_small() {
+        let mut builder = PatternBuilder::new();
+        for row in 0..3 {
+            for column in 0..3 {
+                builder.entry(row, column);
+            }
+        }
+        let ordering = Ordering::new(Arc::new(builder.finish(3))).expect("fits");
+        assert_eq!(ordering.blocks(), 1);
+        let first = ordered(
+            &ordering,
+            [[4.0, 1.0, 1.0], [1.0, 4.0, 1.0], [1.0, 1.0, 4.0]],
+        );
+        // The first pivot of the second matrix still holds, and its second, 10⁻¹⁴, is far
+        // below the entry under it.
+        let second = ordered(
+            &ordering,
+            [[4.0, 0.0, 0.0], [0.0, 1e-14, 1.0], [0.0, 1.0, 1e-14]],
+        );
+        let mut numeric = Numeric::new(3);
+        assert_eq!(numeric.factor(&ordering, &first), Ok(true));
+        assert_eq!(numeric.pivot_rows, [0, 1, 2]);
+        assert_eq!(numeric.refactor(&ordering, &first), None);
+        assert_eq!(numeric.refactor(&ordering, &second), Some(1));
+        assert_eq!(numeric.factor(&ordering, &second), Ok(true));
+        assert_eq!(numeric.pivot_rows, [0, 2, 1]);
+        // The factors solve the second matrix's system: its residual is a rounding.
+        let wanted = [1.0, -2.0, 3.0];
+        let mut x = wanted;
+        let mut workspace = ([0.0; 3], [0.0; 3]);
+        numeric.solve(
+            &ordering,
+            &second,
+            &mut x,
+            (&mut workspace.0, &mut workspace.1),
+        );
+        let mut residual = wanted;
+        for ((row, column), value) in ordering.pattern().positions().zip(&second) {
+            residual[row] -= value * x[column];
+        }
+        assert!(
+            residual.iter().all(|value| value.abs() < 1e-15),
+            "{residual:?}"
+        );
     }
 }
