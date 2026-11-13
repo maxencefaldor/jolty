@@ -39,7 +39,7 @@ pub(super) struct Semiempirical<R: Real> {
     /// The surface mobility, in square meters per volt-second.
     pub(super) mobility: R,
     /// The thermal voltage at the transistor's temperature.
-    pub(super) thermal_voltage: f64,
+    pub(super) thermal_voltage: R,
     /// The fast surface states' capacitance relative to the oxide's, zero for none,
     /// which turns on weak inversion.
     pub(super) surface_states: R,
@@ -68,7 +68,7 @@ impl<R: Real> Semiempirical<R> {
         let vth = (-vds).scale(self.static_feedback).plus(self.built_in) + charge;
         let weak = (self.surface_states.value() != 0.0)
             .then(|| (charge / (phibs * 2.0)).plus(self.surface_states + 1.0));
-        let von = weak.map_or(vth, |xn| vth + xn * self.thermal_voltage);
+        let von = weak.map_or(vth, |xn| vth + xn.scale(self.thermal_voltage));
         let off = Conduction {
             current: Dual::number(0.0),
             threshold: von,
@@ -107,7 +107,7 @@ impl<R: Real> Semiempirical<R> {
         if let Some(xn) = weak
             && vgs.value.value() < von.value.value()
         {
-            current = current * ((vgs - von) / (xn * self.thermal_voltage)).exp();
+            current = current * ((vgs - von) / xn.scale(self.thermal_voltage)).exp();
         }
         Conduction {
             current: if forward { current } else { -current },

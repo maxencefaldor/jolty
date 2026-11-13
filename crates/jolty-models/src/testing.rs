@@ -48,6 +48,31 @@ impl Bench {
         let parameters = serde_json::from_str(parameters).expect("a JSON object");
         let typed = crate::device::read::<f64, D>(&parameters)?;
         let terminals = D::interface(&typed).terminals.len();
+        Self::made(terminals, temperature, |binding| {
+            Ok(Box::new(D::new(typed, binding)?))
+        })
+    }
+
+    /// A bench for a device of `model` with `parameters`, a JSON object, at `temperature`.
+    pub(crate) fn of(
+        model: &dyn Model,
+        parameters: &str,
+        temperature: f64,
+    ) -> Result<Self, ParameterError> {
+        let parameters = serde_json::from_str(parameters).expect("a JSON object");
+        let terminals = model.interface(&parameters)?.terminals.len();
+        Self::made(terminals, temperature, |binding| {
+            model.instantiate(&parameters, binding)
+        })
+    }
+
+    /// A bench for the device `make` makes through a binding of `terminals`, each on an
+    /// unknown of its own, at `temperature`.
+    fn made(
+        terminals: usize,
+        temperature: f64,
+        make: impl FnOnce(&mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError>,
+    ) -> Result<Self, ParameterError> {
         let nodes: Vec<Node> = (0..terminals)
             .map(|index| Some(Unknown::new(index)))
             .collect();
@@ -58,10 +83,13 @@ impl Bench {
             })
             .collect();
         let mut builder = PatternBuilder::new();
-        let device: Box<dyn Device> = Box::new(D::new(
-            typed,
-            &mut Binding::new("device", &nodes, &mut unknowns, &mut builder, temperature),
-        )?);
+        let device = make(&mut Binding::new(
+            "device",
+            &nodes,
+            &mut unknowns,
+            &mut builder,
+            temperature,
+        ))?;
         let pattern = builder.finish(unknowns.len());
         Ok(Self {
             device,
@@ -159,7 +187,18 @@ pub(crate) fn thermal(value: f64) -> f64 {
 /// Checks that a device's conductances and capacitances are the derivatives of its residuals
 /// and charges at `x`, by central differences.
 pub(crate) fn assert_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64]) {
-    let mut bench = Bench::new::<D>(parameters);
+    assert_bench_jacobians_match(&mut Bench::new::<D>(parameters), D::NAME, x);
+}
+
+/// As [`assert_jacobians_match`], for a device of any `model`.
+pub(crate) fn assert_model_jacobians_match(model: &dyn Model, parameters: &str, x: &[f64]) {
+    let mut bench = Bench::of(model, parameters, REFERENCE_TEMPERATURE).expect("valid");
+    assert_bench_jacobians_match(&mut bench, model.name(), x);
+}
+
+/// Checks that the conductances and capacitances of the device `name` on `bench` are the
+/// derivatives of its residuals and charges at `x`, by central differences.
+fn assert_bench_jacobians_match(bench: &mut Bench, name: &str, x: &[f64]) {
     assert_eq!(bench.unknowns.len(), x.len(), "one value per unknown");
     let exact = bench.settle(x);
     for column in 0..x.len() {
@@ -175,17 +214,15 @@ pub(crate) fn assert_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64
                 (
                     "conductance",
                     &exact.conductance[row],
-                    plus.residual[row],
-                    minus.residual[row],
+                    [minus.residual[row], exact.residual[row], plus.residual[row]],
                 ),
                 (
                     "capacitance",
                     &exact.capacitance[row],
-                    plus.charge[row],
-                    minus.charge[row],
+                    [minus.charge[row], exact.charge[row], plus.charge[row]],
                 ),
             ];
-            for (name, derivatives, above, below) in pairs {
+            for (kind, derivatives, [below, at, above]) in pairs {
                 let analytic = derivatives[column];
                 let numeric = (above - below) / (2.0 * step);
                 // Differencing loses the precision of the values differenced, and of the
@@ -199,37 +236,48 @@ pub(crate) fn assert_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64
                 let magnitude = above.abs().max(below.abs()) + resolution;
                 let rounding = 16.0 * f64::EPSILON * magnitude / step;
                 let tolerance = 1e-5 * analytic.abs().max(numeric.abs()) + rounding + 1e-20;
+                // Within a step of a point where a model changes regions, its curvature
+                // jumps and the central difference errs by the step times it; the
+                // derivative then lies between the one-sided differences on each side.
+                let sides = [(at - below) / step, (above - at) / step];
+                let between = (sides[0].min(sides[1]) - tolerance
+                    ..=sides[0].max(sides[1]) + tolerance)
+                    .contains(&analytic);
                 assert!(
-                    (analytic - numeric).abs() <= tolerance,
-                    "{} {name} at ({row}, {column}): analytic {analytic}, numeric {numeric}",
-                    D::NAME
+                    (analytic - numeric).abs() <= tolerance || between,
+                    "{name} {kind} at ({row}, {column}): analytic {analytic}, numeric {numeric}"
                 );
             }
         }
     }
 }
 
-/// Evaluates `device`, bound to `pattern`, at `x`: its residuals and charges.
+/// Evaluates `device`, bound to `pattern`, at `x`: its residuals, charges and
+/// conductances.
 fn residuals_and_charges<R: Real>(
     device: &mut dyn Device<R>,
     pattern: &Pattern,
     (x, time): (&[f64], f64),
-) -> (Vec<R>, Vec<R>) {
+) -> [Vec<R>; 3] {
     let mut contributions = Contributions::new(pattern);
     let mut input = Input::new(x, time, 1e-12);
     input.limiting = false;
     device.evaluate(&input, &mut contributions.output(pattern));
-    (contributions.residual, contributions.charge)
+    [
+        contributions.residual,
+        contributions.charge,
+        contributions.conductance,
+    ]
 }
 
-/// A device of `M` made from parameters, each of its terminals on an unknown of its own,
-/// at 30 kelvins above the reference temperature.
-struct Rig<M: NativeModel> {
-    model: Native<M>,
+/// A device of a model made from parameters, each of its terminals on an unknown of its
+/// own, at 30 kelvins above the reference temperature.
+struct Rig<'m> {
+    model: &'m dyn Model,
     nodes: Vec<Node>,
 }
 
-impl<M: NativeModel> Rig<M> {
+impl Rig<'_> {
     fn binding<'a>(
         &'a self,
         unknowns: &'a mut Vec<UnknownInfo>,
@@ -248,8 +296,9 @@ impl<M: NativeModel> Rig<M> {
         )
     }
 
-    /// The residuals and charges at `x` of the device made with `parameters`.
-    fn plain(&self, parameters: &jolty_ir::Parameters, x: (&[f64], f64)) -> (Vec<f64>, Vec<f64>) {
+    /// The residuals, charges and conductances at `x` of the device made with
+    /// `parameters`.
+    fn plain(&self, parameters: &jolty_ir::Parameters, x: (&[f64], f64)) -> [Vec<f64>; 3] {
         let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
         let mut binding = self.binding(&mut unknowns, &mut builder);
         let mut device = self
@@ -259,13 +308,13 @@ impl<M: NativeModel> Rig<M> {
         residuals_and_charges(device.as_mut(), &builder.finish(x.0.len()), x)
     }
 
-    /// The residuals and charges at `x`, with their gradients, of the device made with
-    /// `parameters`, one number of which is seeded.
+    /// The residuals, charges and conductances at `x`, with their gradients, of the
+    /// device made with `parameters`, one number of which is seeded.
     fn exact(
         &self,
         parameters: &jolty_ir::Parameters,
         x: (&[f64], f64),
-    ) -> Option<(Vec<Gradient>, Vec<Gradient>)> {
+    ) -> Option<[Vec<Gradient>; 3]> {
         let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
         let mut binding = self.binding(&mut unknowns, &mut builder);
         let mut device = self
@@ -324,11 +373,21 @@ pub(crate) fn assert_parameter_gradients_match_at<M: NativeModel>(
     x: &[f64],
     time: f64,
 ) {
+    assert_model_parameter_gradients_match(&Native::<M>::new(), parameters, x, time);
+}
+
+/// As [`assert_parameter_gradients_match_at`], for a device of any `model`, whose
+/// conductances' derivatives are checked too.
+pub(crate) fn assert_model_parameter_gradients_match(
+    model: &dyn Model,
+    parameters: &str,
+    x: &[f64],
+    time: f64,
+) {
     let parameters: serde_json::Value = serde_json::from_str(parameters).expect("JSON");
     let object = |value: &serde_json::Value| -> jolty_ir::Parameters {
         value.as_object().cloned().expect("a JSON object")
     };
-    let model = Native::<M>::new();
     let terminals = model
         .interface(&object(&parameters))
         .expect("valid")
@@ -340,7 +399,7 @@ pub(crate) fn assert_parameter_gradients_match_at<M: NativeModel>(
             .map(|index| Some(Unknown::new(index)))
             .collect(),
     };
-    let (plain, plain_charge) = rig.plain(&object(&parameters), (x, time));
+    let plain = rig.plain(&object(&parameters), (x, time));
     let mut paths = Vec::new();
     numbers(&parameters, &mut Vec::new(), &mut paths);
     for path in paths {
@@ -349,7 +408,7 @@ pub(crate) fn assert_parameter_gradients_match_at<M: NativeModel>(
         let value = at(&mut changed, &path).as_f64().expect("a number");
         *at(&mut changed, &path) = serde_json::json!({"value": value, "derivative": 1.0});
         // A number the model reads as a choice, such as a level, is no real parameter.
-        let Some((exact, exact_charge)) = rig.exact(&object(&changed), (x, time)) else {
+        let Some(exact) = rig.exact(&object(&changed), (x, time)) else {
             assert!(value.fract() == 0.0, "{name} is a real parameter");
             continue;
         };
@@ -366,43 +425,33 @@ pub(crate) fn assert_parameter_gradients_match_at<M: NativeModel>(
             let above = rig.plain(&object(&changed), (x, time));
             *at(&mut changed, &path) = serde_json::json!(value - step);
             let below = rig.plain(&object(&changed), (x, time));
-            let difference = |above: &[f64], below: &[f64]| -> Vec<(f64, f64)> {
-                above
+            [0, 1, 2].map(|kind| -> Vec<(f64, f64)> {
+                above[kind]
                     .iter()
-                    .zip(below)
+                    .zip(&below[kind])
                     .map(|(above, below)| ((above - below) / (2.0 * step), above.abs()))
                     .collect()
-            };
-            (
-                difference(&above.0, &below.0),
-                difference(&above.1, &below.1),
-            )
+            })
         };
         let (wide, narrow) = (central(step), central(step / 2.0));
-        let rows = [
-            ("residual", exact, plain.clone(), wide.0, narrow.0),
-            (
-                "charge",
-                exact_charge,
-                plain_charge.clone(),
-                wide.1,
-                narrow.1,
-            ),
-        ];
-        for (kind, exact, plain, wide, narrow) in rows {
-            for (row, exact) in exact.iter().enumerate() {
+        for (kind, name_of) in ["residual", "charge", "conductance"]
+            .into_iter()
+            .enumerate()
+        {
+            for (row, exact) in exact[kind].iter().enumerate() {
+                let (wide, narrow, plain) = (&wide[kind], &narrow[kind], &plain[kind]);
                 let numeric = (4.0 * narrow[row].0 - wide[row].0) / 3.0;
                 let rounding = 64.0 * f64::EPSILON * wide[row].1 / step;
                 let tolerance = 1e-6 * exact.derivative.abs().max(numeric.abs()) + rounding;
                 assert!(
                     (exact.derivative - numeric).abs() <= tolerance + 1e-30,
-                    "{} d{kind}[{row}]/d{name} at {x:?}: exact {}, numeric {numeric}",
-                    <M::Device<f64> as NativeDevice>::NAME,
+                    "{} d{name_of}[{row}]/d{name} at {x:?}: exact {}, numeric {numeric}",
+                    model.name(),
                     exact.derivative
                 );
                 assert!(
                     (exact.value - plain[row]).abs() <= 1e-12 * plain[row].abs(),
-                    "{kind}[{row}]: {} with its gradient, {} without",
+                    "{name_of}[{row}]: {} with its gradient, {} without",
                     exact.value,
                     plain[row]
                 );

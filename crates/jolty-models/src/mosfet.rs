@@ -13,8 +13,9 @@ use crate::junction::{
 use crate::noise::Flicker;
 use crate::stamp::{self, Series, Stamp};
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
-    NoiseSource, Output, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown,
+    Binding, Branch, BranchKind, Device, Heatable, HeatableModel, Input, Interface, NativeDevice,
+    NativeModel, Node, NoiseSource, Output, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real,
+    Unknown,
 };
 
 /// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,
@@ -361,7 +362,7 @@ impl<R: Real> Process<R> {
             let potential = potential.value();
             return Err(ParameterError(format!(
                 "the surface potential falls to {potential:?} at {:?} K",
-                temperatures.actual
+                temperatures.actual.value()
             )));
         }
         let gap_shift = (band_gap(temperatures.nominal) - band_gap(temperatures.actual)) * 0.5;
@@ -555,7 +556,7 @@ impl<R: Real> Law<R> {
 struct BulkJunction<R: Real> {
     saturation_current: R,
     /// The thermal voltage at the transistor's temperature.
-    thermal_voltage: f64,
+    thermal_voltage: R,
     critical_voltage: f64,
     bottom: Option<Depletion<R>>,
     sidewall: Option<Depletion<R>>,
@@ -568,7 +569,7 @@ impl<R: Real> BulkJunction<R> {
         let current = voltage.chain(junction_current(
             at,
             self.saturation_current,
-            R::constant(self.thermal_voltage),
+            self.thermal_voltage,
         )) + voltage * gmin;
         let charge = voltage.chain(depletion_charge(self.bottom.as_ref(), at))
             + voltage.chain(depletion_charge(self.sidewall.as_ref(), at));
@@ -705,6 +706,10 @@ impl NativeModel for Mosfet {
     type Device<R: Real> = Mosfet<R>;
 }
 
+impl HeatableModel for Mosfet {
+    type Device<R: Real> = Mosfet<R>;
+}
+
 impl<R: Real> NativeDevice<R> for Mosfet<R> {
     const NAME: &'static str = "mosfet";
     type Parameters = MosfetParameters<R>;
@@ -727,15 +732,16 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
         parameters: MosfetParameters<R>,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let temperatures =
-            Temperatures::new(binding.temperature(), parameters.nominal_temperature)?;
-        let process = parameters
-            .process()?
-            .at(temperatures, parameters.channel.sign())?;
+        let Scaled {
+            channel,
+            junctions,
+            surface_potential,
+            threshold,
+            temperature,
+        } = parameters.scaled(R::constant(binding.temperature()))?;
+        let process = parameters.process()?;
         let geometry = Geometry::new(&parameters)?;
-        let junctions = parameters.junctions(&geometry, temperatures)?;
         let [drain_resistance, source_resistance] = parameters.series_resistances()?;
-        let channel = parameters.law(&process, &geometry, temperatures)?;
         let mut overlaps = [R::constant(0.0); 3];
         for (overlap, (name, per_length, extent)) in overlaps.iter_mut().zip([
             (
@@ -766,7 +772,7 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
             let mut displacement = |label, node| Displacement::new(binding, label, gate, node);
             Oxide {
                 capacitance: per_area * geometry.area,
-                surface_potential: process.surface_potential,
+                surface_potential,
                 displacements: [
                     displacement("gate_source_displacement", (INNER_SOURCE, inner_source)),
                     displacement("gate_drain_displacement", (INNER_DRAIN, inner_drain)),
@@ -792,10 +798,57 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
             overlaps,
             oxide,
             last: [0.0; 3],
-            threshold: sign * process.threshold.value(),
+            threshold,
             variables: [0.0; 5],
-            temperature: temperatures.actual,
+            temperature,
             flicker,
+        })
+    }
+}
+
+impl<R: Real> Heatable<R> for Mosfet<R> {
+    fn heat(
+        &mut self,
+        parameters: &MosfetParameters<R>,
+        temperature: R,
+    ) -> Result<(), ParameterError> {
+        let scaled = parameters.scaled(temperature)?;
+        self.channel = scaled.channel;
+        self.junctions = scaled.junctions;
+        if let Some(oxide) = &mut self.oxide {
+            oxide.surface_potential = scaled.surface_potential;
+        }
+        self.threshold = scaled.threshold;
+        self.temperature = scaled.temperature;
+        Ok(())
+    }
+}
+
+/// What a transistor's temperature sets.
+struct Scaled<R: Real> {
+    channel: Law<R>,
+    junctions: [BulkJunction<R>; 2],
+    /// The surface potential, which Meyer's capacitances read.
+    surface_potential: R,
+    /// The threshold, signed as the channel conducts, from which steps are limited.
+    threshold: f64,
+    temperature: f64,
+}
+
+impl<R: Real> MosfetParameters<R> {
+    /// What the transistor's `temperature`, in kelvins, sets, once each parameter it
+    /// reads is checked.
+    fn scaled(&self, temperature: R) -> Result<Scaled<R>, ParameterError> {
+        let temperatures = Temperatures::new(temperature, self.nominal_temperature)?;
+        let sign = self.channel.sign();
+        let process = self.process()?.at(temperatures, sign)?;
+        let geometry = Geometry::new(self)?;
+        Ok(Scaled {
+            channel: self.law(&process, &geometry, temperatures)?,
+            junctions: self.junctions(&geometry, temperatures)?,
+            surface_potential: process.surface_potential,
+            threshold: sign * process.threshold.value(),
+            temperature: temperatures.actual.value(),
         })
     }
 }
@@ -912,7 +965,7 @@ impl<R: Real> MosfetParameters<R> {
             Ok(BulkJunction {
                 saturation_current,
                 thermal_voltage: vt,
-                critical_voltage: critical_voltage(saturation_current.value(), vt),
+                critical_voltage: critical_voltage(saturation_current.value(), vt.value()),
                 bottom: Depletion::new(
                     multiplier * bottom * bottom_scaling,
                     scaled_potential,
@@ -1100,7 +1153,7 @@ impl<R: Real> Mosfet<R> {
             let limit = limit_junction(
                 applied_vbs,
                 previous_bulk,
-                source.thermal_voltage,
+                source.thermal_voltage.value(),
                 source.critical_voltage,
             );
             apply(applied_vbs, limit)
@@ -1110,7 +1163,7 @@ impl<R: Real> Mosfet<R> {
             let limit = limit_junction(
                 vbd,
                 previous_junction,
-                drain.thermal_voltage,
+                drain.thermal_voltage.value(),
                 drain.critical_voltage,
             );
             apply(vbd, limit) + vds
@@ -1458,6 +1511,45 @@ mod tests {
             assert_parameter_gradients_match::<Mosfet>(derived, &inner);
             assert_parameter_gradients_match::<Mosfet>(level_three, &x);
             assert_parameter_gradients_match::<Mosfet>(&resistive, &inner);
+        }
+    }
+
+    #[test]
+    fn a_heated_transistor_is_the_transistor_at_its_temperature() {
+        let model = crate::Thermal::<Mosfet>::new();
+        let level_one = CHARGED.replace(
+            '{',
+            r#"{"nominal_temperature": 290, "saturation_current": 2e-14, "#,
+        );
+        let derived = r#"{"substrate_doping": 1e22, "oxide_thickness": 2e-8,
+            "surface_state_density": 1e14, "surface_mobility": 0.05, "width": 10e-6,
+            "length": 2e-6, "saturation_current_density": 1e-4, "drain_area": 2e-11,
+            "source_area": 3e-11, "nominal_temperature": 290}"#;
+        let level_three = r#"{"level": 3, "threshold_voltage": 0.7, "body_effect": 0.4,
+            "width": 20e-6, "length": 2e-6, "oxide_thickness": 3e-8,
+            "substrate_doping": 1e22, "junction_depth": 3e-7, "static_feedback": 0.5,
+            "mobility_modulation": 0.1, "max_drift_velocity": 1.5e5}"#;
+        for every in [level_one.as_str(), derived, level_three] {
+            for every in [every.to_owned(), p_channel(every)] {
+                let sign = if every.contains(r#""p""#) { -1.0 } else { 1.0 };
+                let heated = every.replace('{', r#"{"thermal": true, "#);
+                let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
+                for rise in [0.0, 40.0] {
+                    let mut plain = Bench::at::<Mosfet>(&every, REFERENCE_TEMPERATURE + rise);
+                    let [d, g, b] = [3.0, 2.0, -0.5].map(|v| sign * v);
+                    let hot = bench.settle(&[d, g, 0.0, b, rise, 1e-4, 2e-4, -1e-4]);
+                    let reference = plain.settle(&[d, g, 0.0, b, 1e-4, 2e-4, -1e-4]);
+                    let electrical = [0, 1, 2, 3, 5, 6, 7].map(|row| hot.residual[row]);
+                    assert_close(&electrical, &reference.residual);
+                }
+                for [d, g, b, rise] in [[3.0, 2.0, -0.5, 20.0], [0.3, 2.5, -0.2, 60.0]] {
+                    let x = [sign * d, sign * g, 0.0, sign * b, rise, 1e-4, 2e-4, -1e-4];
+                    crate::testing::assert_model_jacobians_match(&model, &heated, &x);
+                    crate::testing::assert_model_parameter_gradients_match(
+                        &model, &heated, &x, 0.0,
+                    );
+                }
+            }
         }
     }
 

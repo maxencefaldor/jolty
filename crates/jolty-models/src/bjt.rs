@@ -9,8 +9,9 @@ use jolty_numerics::Entry;
 use crate::noise::Flicker;
 use crate::stamp::{self, CurrentBranch, SMALL_RESISTANCE, Series, Stamp};
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
-    NoiseSource, Output, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown,
+    Binding, Branch, BranchKind, Device, Heatable, HeatableModel, Input, Interface, NativeDevice,
+    NativeModel, Node, NoiseSource, Output, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real,
+    Unknown,
 };
 
 /// The doping order of a bipolar transistor.
@@ -302,6 +303,9 @@ struct State<R: Real> {
     transport: (R, [R; 2]),
     /// Its forward part, `Ibe / qb`, which an excess phase delays, and its derivatives.
     forward_transport: (R, [R; 2]),
+    /// Its reverse part, `Ibc / qb`, which it leaves, and its derivatives: computed apart,
+    /// not as the difference of the two above, which cancel.
+    reverse_transport: (R, [R; 2]),
     /// The normalized base charge, `qb`, and its derivatives.
     charge: (R, [R; 2]),
 }
@@ -370,11 +374,19 @@ impl<R: Real> Junctions<R> {
                 -forward.0 * dqb[1] / (qb * qb),
             ],
         );
+        let reverse_transport = (
+            reverse.0 / qb,
+            [
+                -reverse.0 * dqb[0] / (qb * qb),
+                (reverse.1 - reverse.0 * dqb[1] / qb) / qb,
+            ],
+        );
         State {
             ideal: [forward, reverse],
             base,
             transport,
             forward_transport,
+            reverse_transport,
             charge: (qb, dqb),
         }
     }
@@ -961,9 +973,9 @@ impl<R: Real> BipolarTransistorParameters<R> {
             construction,
             sign: self.polarity.sign() * orientation,
             diode,
-            thermal_voltage: vt,
+            thermal_voltage: vt.value(),
             critical_voltage: diode.map_or(DIODELESS_CRITICAL_VOLTAGE, |(current, _)| {
-                critical_voltage(current.value(), vt)
+                critical_voltage(current.value(), vt.value())
             }),
             depletion: Depletion::new(capacitance, potential, grading, R::constant(0.0)),
         }))
@@ -978,6 +990,10 @@ fn inverse<R: Real>(name: &str, value: Option<R>) -> Result<R, ParameterError> {
 }
 
 impl NativeModel for BipolarTransistor {
+    type Device<R: Real> = BipolarTransistor<R>;
+}
+
+impl HeatableModel for BipolarTransistor {
     type Device<R: Real> = BipolarTransistor<R>;
 }
 
@@ -1007,14 +1023,17 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
         parameters: BipolarTransistorParameters<R>,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let temperatures =
-            Temperatures::new(binding.temperature(), parameters.nominal_temperature)?;
+        let Scaled {
+            junctions,
+            charges,
+            substrate: substrate_junction,
+            thermal_voltage,
+            critical_voltage,
+            temperature,
+        } = parameters.scaled(R::constant(binding.temperature()))?;
         let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?;
-        let junctions = parameters.junctions(temperatures)?;
         let base_resistance = parameters.base_resistance()?;
-        let charges = parameters.charges(temperatures)?;
         let excess_phase = ParameterError::non_negative("excess_phase", parameters.excess_phase)?;
-        let substrate_junction = parameters.substrate_junction(temperatures)?;
         let non_negative = ParameterError::non_negative;
         let collector_resistance =
             non_negative("collector_resistance", parameters.collector_resistance)?;
@@ -1066,18 +1085,65 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
             collector_series,
             emitter_series,
             base,
-            thermal_voltage: temperatures.thermal_voltage(),
-            critical_voltage: critical_voltage(
-                junctions.saturation_current.value(),
-                temperatures.thermal_voltage(),
-            ),
+            thermal_voltage,
+            critical_voltage,
             junctions,
             charges,
             excess,
             substrate,
             last: [0.0; 2],
-            temperature: temperatures.actual,
+            temperature,
             flicker,
+        })
+    }
+}
+
+impl<R: Real> Heatable<R> for BipolarTransistor<R> {
+    fn heat(
+        &mut self,
+        parameters: &BipolarTransistorParameters<R>,
+        temperature: R,
+    ) -> Result<(), ParameterError> {
+        let scaled = parameters.scaled(temperature)?;
+        self.junctions = scaled.junctions;
+        self.charges = scaled.charges;
+        if let (Some(substrate), Some(junction)) = (&mut self.substrate, scaled.substrate) {
+            substrate.junction = junction;
+        }
+        self.thermal_voltage = scaled.thermal_voltage;
+        self.critical_voltage = scaled.critical_voltage;
+        self.temperature = scaled.temperature;
+        Ok(())
+    }
+}
+
+/// What a transistor's temperature sets.
+struct Scaled<R: Real> {
+    junctions: Junctions<R>,
+    charges: Option<Charges<R>>,
+    substrate: Option<SubstrateJunction<R>>,
+    thermal_voltage: f64,
+    critical_voltage: f64,
+    temperature: f64,
+}
+
+impl<R: Real> BipolarTransistorParameters<R> {
+    /// What the transistor's `temperature`, in kelvins, sets, once each parameter it
+    /// reads is checked.
+    fn scaled(&self, temperature: R) -> Result<Scaled<R>, ParameterError> {
+        let temperatures = Temperatures::new(temperature, self.nominal_temperature)?;
+        let junctions = self.junctions(temperatures)?;
+        let thermal_voltage = temperatures.thermal_voltage().value();
+        Ok(Scaled {
+            critical_voltage: critical_voltage(
+                junctions.saturation_current.value(),
+                thermal_voltage,
+            ),
+            junctions,
+            charges: self.charges(temperatures)?,
+            substrate: self.substrate_junction(temperatures)?,
+            thermal_voltage,
+            temperature: temperatures.actual.value(),
         })
     }
 }
@@ -1126,9 +1192,9 @@ impl<R: Real> BipolarTransistor<R> {
         let (stamp, sign) = (&self.stamp, self.sign);
         let (mut transport, mut slopes) = state.transport;
         if let Some(excess) = &self.excess {
-            let (forward, forward_slopes) = state.forward_transport;
-            transport = transport - forward + excess.delayed(input);
-            slopes = [0, 1].map(|index| slopes[index] - forward_slopes[index]);
+            let (reverse, reverse_slopes) = state.reverse_transport;
+            transport = R::constant(excess.delayed(input)) - reverse;
+            slopes = reverse_slopes.map(|slope| -slope);
             let [at_collector, at_emitter] = excess.delivered;
             output.add_conductance(at_collector, R::constant(sign));
             output.add_conductance(at_emitter, R::constant(-sign));
@@ -1500,6 +1566,25 @@ mod tests {
             error.to_string(),
             "excess_phase must be at least 0, not -1.0"
         );
+    }
+
+    #[test]
+    fn a_heated_transistor_is_the_transistor_at_its_temperature() {
+        let model = crate::Thermal::<BipolarTransistor>::new();
+        let heated = FULL.replace('{', r#"{"thermal": true, "base_resistance": 50, "#);
+        let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
+        let cool = FULL.replace('{', r#"{"base_resistance": 50, "#);
+        for rise in [0.0, 35.0] {
+            let mut plain = Bench::at::<BipolarTransistor>(&cool, REFERENCE_TEMPERATURE + rise);
+            let hot = bench.settle(&[3.0, 0.7, 0.0, rise, 0.69]);
+            let reference = plain.settle(&[3.0, 0.7, 0.0, 0.69]);
+            let electrical = [0, 1, 2, 4].map(|row| hot.residual[row]);
+            assert_close(&electrical, &reference.residual);
+        }
+        for x in [[3.0, 0.7, 0.0, 20.0, 0.69], [0.3, 0.75, 0.0, 70.0, 0.74]] {
+            crate::testing::assert_model_jacobians_match(&model, &heated, &x);
+            crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, 0.0);
+        }
     }
 
     #[test]

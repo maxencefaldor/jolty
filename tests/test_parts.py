@@ -19,7 +19,7 @@ from jolty import (
     ir,
     parts,
 )
-from jolty.units import CURRENT, A, MHz, Quantity, V, W, fF, ohm, ps
+from jolty.units import CURRENT, A, MHz, Quantity, V, W, celsius, fF, ohm, ps
 
 
 def test_small_signal_parts_carry_their_numbers_and_ratings() -> None:
@@ -34,6 +34,21 @@ def test_small_signal_parts_carry_their_numbers_and_ratings() -> None:
     assert diode.ratings[0] == ir.Rating(
         stress="voltage", terminals=("anode", "cathode"), minimum=-100.0
     )
+    junctions = [part.ratings[-1] for part in (npn, pnp, diode)]
+    assert [(rating.stress, rating.maximum) for rating in junctions] == [
+        ("temperature", celsius(150).value),
+        ("temperature", celsius(150).value),
+        ("temperature", celsius(175).value),
+    ]
+    assert all(rating.minimum == celsius(-55).value for rating in junctions)
+
+
+def test_a_heated_part_joins_its_junction_to_a_thermal_net() -> None:
+    assert parts.q2n3904(heated=True).terminals[-1] == "thermal"
+    assert parts.q2n3906(heated=True).ratings == parts.q2n3906().ratings
+    heated = parts.irfz44(heated=True)
+    assert heated.ports == ("drain", "gate", "source", "thermal")
+    assert heated.ratings == parts.irfz44().ratings
 
 
 @pytest.mark.parametrize("make", [parts.irf511, parts.irf9230])
@@ -43,7 +58,7 @@ def test_a_power_mosfet_is_rated_as_its_channel_conducts(
     built = make()
     sheet = getattr(parts, built.part or "")
     assert built.ports == ("drain", "gate", "source")
-    drain_source, gate_source, drain, power = built.ratings
+    drain_source, gate_source, drain, power, junction = built.ratings
     sign = 1.0 if sheet.channel == "n" else -1.0
     bound = sign * sheet.drain_source_voltage
     assert (drain_source.maximum, drain_source.minimum) == (
@@ -52,6 +67,7 @@ def test_a_power_mosfet_is_rated_as_its_channel_conducts(
     assert (gate_source.minimum, gate_source.maximum) == (-20.0, 20.0)
     assert drain.terminals == ("drain",)
     assert power.maximum == sheet.power
+    assert junction.maximum == celsius(sheet.junction_temperature).value
 
 
 @pytest.mark.parametrize("name", ["IRF511", "IRF9230", "IRFZ44", "MTP50P03HDL"])

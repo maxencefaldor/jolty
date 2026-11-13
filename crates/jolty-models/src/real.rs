@@ -37,42 +37,54 @@ pub trait Real:
     /// The number's value.
     fn value(self) -> f64;
 
-    /// `f(self)`, given `f`'s value and slope at `self`.
+    /// `f(self)`, given `f`'s value, slope and curvature at `self`: a number carrying
+    /// derivatives of the second order, such as [`Hyper`], reads the curvature.
     #[must_use]
-    fn chain(self, value: f64, slope: f64) -> Self;
+    fn chain(self, value: f64, slope: f64, curvature: f64) -> Self;
 
     /// `e` raised to the number.
     #[must_use]
     fn exp(self) -> Self {
         let exponential = self.value().exp();
-        self.chain(exponential, exponential)
+        self.chain(exponential, exponential, exponential)
     }
 
     /// The natural logarithm.
     #[must_use]
     fn ln(self) -> Self {
-        self.chain(self.value().ln(), self.value().recip())
+        let value = self.value();
+        self.chain(value.ln(), value.recip(), -(value * value).recip())
     }
 
     /// The square root.
     #[must_use]
     fn sqrt(self) -> Self {
-        let root = self.value().sqrt();
-        self.chain(root, 0.5 / root)
+        let value = self.value();
+        let root = value.sqrt();
+        self.chain(root, 0.5 / root, -0.25 / (root * value))
     }
 
     /// The reciprocal.
     #[must_use]
     fn recip(self) -> Self {
         let value = self.value();
-        self.chain(value.recip(), -(value * value).recip())
+        let reciprocal = value.recip();
+        self.chain(
+            reciprocal,
+            -(value * value).recip(),
+            2.0 * reciprocal * reciprocal * reciprocal,
+        )
     }
 
     /// The number raised to the constant `exponent`.
     #[must_use]
     fn powf(self, exponent: f64) -> Self {
         let value = self.value();
-        self.chain(value.powf(exponent), exponent * value.powf(exponent - 1.0))
+        self.chain(
+            value.powf(exponent),
+            exponent * value.powf(exponent - 1.0),
+            exponent * (exponent - 1.0) * value.powf(exponent - 2.0),
+        )
     }
 
     /// The number raised to `exponent`, itself a number with a derivative.
@@ -90,14 +102,16 @@ pub trait Real:
     /// The sine, of an angle in radians.
     #[must_use]
     fn sin(self) -> Self {
-        self.chain(self.value().sin(), self.value().cos())
+        let sine = self.value().sin();
+        self.chain(sine, self.value().cos(), -sine)
     }
 
     /// The tangent, of an angle in radians.
     #[must_use]
     fn tan(self) -> Self {
         let tangent = self.value().tan();
-        self.chain(tangent, tangent.mul_add(tangent, 1.0))
+        let slope = tangent.mul_add(tangent, 1.0);
+        self.chain(tangent, slope, 2.0 * tangent * slope)
     }
 
     /// The least non-negative remainder of division by `divisor`: the number less
@@ -138,7 +152,7 @@ impl Real for f64 {
         self
     }
 
-    fn chain(self, value: f64, _: f64) -> Self {
+    fn chain(self, value: f64, _: f64, _: f64) -> Self {
         value
     }
 
@@ -233,7 +247,7 @@ impl Real for Gradient {
         self.value
     }
 
-    fn chain(self, value: f64, slope: f64) -> Self {
+    fn chain(self, value: f64, slope: f64, _: f64) -> Self {
         Self {
             value,
             derivative: slope * self.derivative,
@@ -348,6 +362,188 @@ impl AddAssign for Gradient {
 }
 
 impl SubAssign for Gradient {
+    fn sub_assign(&mut self, other: Self) {
+        *self = *self - other;
+    }
+}
+
+/// A number, its derivatives with respect to two variables, and its derivative with
+/// respect to both: second-order forward-mode differentiation, as a device that heats
+/// computes when its derivatives with respect to a parameter are asked for, the second
+/// variable its temperature.
+///
+/// In a parameter file it reads as a [`Gradient`] does, the derivative with respect to the
+/// first variable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[serde(from = "Written")]
+pub struct Hyper {
+    /// The number.
+    pub value: f64,
+    /// Its derivative with respect to the first variable.
+    pub first: f64,
+    /// Its derivative with respect to the second variable.
+    pub second: f64,
+    /// Its derivative with respect to both.
+    pub both: f64,
+}
+
+impl From<Written> for Hyper {
+    fn from(written: Written) -> Self {
+        let Gradient { value, derivative } = Gradient::from(written);
+        Self {
+            value,
+            first: derivative,
+            second: 0.0,
+            both: 0.0,
+        }
+    }
+}
+
+impl Real for Hyper {
+    fn constant(value: f64) -> Self {
+        Self {
+            value,
+            ..Self::default()
+        }
+    }
+
+    fn value(self) -> f64 {
+        self.value
+    }
+
+    fn chain(self, value: f64, slope: f64, curvature: f64) -> Self {
+        Self {
+            value,
+            first: slope * self.first,
+            second: slope * self.second,
+            both: slope * self.both + curvature * self.first * self.second,
+        }
+    }
+}
+
+impl Add for Hyper {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            value: self.value + other.value,
+            first: self.first + other.first,
+            second: self.second + other.second,
+            both: self.both + other.both,
+        }
+    }
+}
+
+impl Sub for Hyper {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self {
+        self + -other
+    }
+}
+
+impl Mul for Hyper {
+    type Output = Self;
+
+    fn mul(self, other: Self) -> Self {
+        Self {
+            value: self.value * other.value,
+            first: self.first * other.value + self.value * other.first,
+            second: self.second * other.value + self.value * other.second,
+            both: self.both * other.value
+                + self.first * other.second
+                + self.second * other.first
+                + self.value * other.both,
+        }
+    }
+}
+
+impl Div for Hyper {
+    type Output = Self;
+
+    /// The quotient `q = a / b`, its derivatives those of `a = q · b` solved for `q`'s.
+    fn div(self, other: Self) -> Self {
+        let value = self.value / other.value;
+        let first = (self.first - value * other.first) / other.value;
+        let second = (self.second - value * other.second) / other.value;
+        Self {
+            value,
+            first,
+            second,
+            both: (self.both - first * other.second - second * other.first - value * other.both)
+                / other.value,
+        }
+    }
+}
+
+impl Neg for Hyper {
+    type Output = Self;
+
+    fn neg(self) -> Self {
+        Self {
+            value: -self.value,
+            first: -self.first,
+            second: -self.second,
+            both: -self.both,
+        }
+    }
+}
+
+impl Add<f64> for Hyper {
+    type Output = Self;
+
+    fn add(self, other: f64) -> Self {
+        Self {
+            value: self.value + other,
+            ..self
+        }
+    }
+}
+
+impl Sub<f64> for Hyper {
+    type Output = Self;
+
+    fn sub(self, other: f64) -> Self {
+        Self {
+            value: self.value - other,
+            ..self
+        }
+    }
+}
+
+impl Mul<f64> for Hyper {
+    type Output = Self;
+
+    fn mul(self, other: f64) -> Self {
+        Self {
+            value: self.value * other,
+            first: self.first * other,
+            second: self.second * other,
+            both: self.both * other,
+        }
+    }
+}
+
+impl Div<f64> for Hyper {
+    type Output = Self;
+
+    fn div(self, other: f64) -> Self {
+        Self {
+            value: self.value / other,
+            first: self.first / other,
+            second: self.second / other,
+            both: self.both / other,
+        }
+    }
+}
+
+impl AddAssign for Hyper {
+    fn add_assign(&mut self, other: Self) {
+        *self = *self + other;
+    }
+}
+
+impl SubAssign for Hyper {
     fn sub_assign(&mut self, other: Self) {
         *self = *self - other;
     }

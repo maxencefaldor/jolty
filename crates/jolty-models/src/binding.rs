@@ -102,6 +102,18 @@ impl<'a> Binding<'a> {
         self.temperature
     }
 
+    /// The instance's path.
+    #[must_use]
+    pub const fn path(&self) -> &str {
+        self.path
+    }
+
+    /// The node of every terminal, in the model's terminal order.
+    #[must_use]
+    pub const fn terminals(&self) -> &[Node] {
+        self.terminals
+    }
+
     /// The node of the terminal at `index` in the model's terminal order.
     ///
     /// # Panics

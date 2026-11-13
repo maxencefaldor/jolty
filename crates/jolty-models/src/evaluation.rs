@@ -122,6 +122,17 @@ impl<R: Real> Output<'_, R> {
         }
     }
 
+    /// Adds `value` to the residual of `row`'s equation, `scale` the largest magnitude of
+    /// the terms it sums, as a device that sums them itself reports them.
+    pub fn add_residual_scaled(&mut self, row: Node, value: R, scale: R) {
+        if let Some(row) = row {
+            let contributions = &mut *self.contributions;
+            contributions.residual[row.index()] += value;
+            let largest = &mut contributions.scale[row.index()];
+            *largest = largest.max(scale.abs());
+        }
+    }
+
     /// Adds `value` to the charge of `row`'s equation.
     pub fn add_charge(&mut self, row: Node, value: R) {
         if let Some(row) = row {

@@ -8,16 +8,17 @@ Real parts carry their makers' numbers and ratings, a catalog lists the parts a 
 
 | Function | Part | Ratings |
 | --- | --- | --- |
-| `q2n3904()` | 2N3904, NPN transistor | 40 V collector to emitter, 60 V collector to base, 6 V emitter to base, 200 mA, 625 mW |
-| `q2n3906()` | 2N3906, PNP transistor | 40 V emitter to collector and base to collector, 5 V base to emitter, 200 mA, 625 mW |
-| `d1n4148()` | 1N4148, signal diode | 100 V reverse, 300 mA forward, 500 mW |
-| `irf511()` | IRF511, n-channel power MOSFET | 80 V drain to source, ±20 V gate to source, 5.6 A, 43 W |
-| `irf9230()` | IRF9230, p-channel power MOSFET | 200 V source to drain, ±20 V gate to source, 6.5 A, 75 W |
-| `irfz44()` | IRFZ44, n-channel power MOSFET | 60 V drain to source, ±20 V gate to source, 50 A, 150 W |
-| `mtp50p03hdl()` | MTP50P03HDL, logic-level p-channel power MOSFET | 30 V source to drain, ±15 V gate to source, 50 A, 125 W |
+| `q2n3904()` | 2N3904, NPN transistor | 40 V collector to emitter, 60 V collector to base, 6 V emitter to base, 200 mA, 625 mW, -55 °C to 150 °C |
+| `q2n3906()` | 2N3906, PNP transistor | 40 V emitter to collector and base to collector, 5 V base to emitter, 200 mA, 625 mW, -55 °C to 150 °C |
+| `d1n4148()` | 1N4148, signal diode | 100 V reverse, 300 mA forward, 500 mW, -55 °C to 175 °C |
+| `irf511()` | IRF511, n-channel power MOSFET | 80 V drain to source, ±20 V gate to source, 5.6 A, 43 W, -55 °C to 175 °C |
+| `irf9230()` | IRF9230, p-channel power MOSFET | 200 V source to drain, ±20 V gate to source, 6.5 A, 75 W, -55 °C to 150 °C |
+| `irfz44()` | IRFZ44, n-channel power MOSFET | 60 V drain to source, ±20 V gate to source, 50 A, 150 W, -55 °C to 175 °C |
+| `mtp50p03hdl()` | MTP50P03HDL, logic-level p-channel power MOSFET | 30 V source to drain, ±15 V gate to source, 50 A, 125 W, -55 °C to 150 °C |
 
 The transistors and the diode take the SPICE parameters their makers publish.
 The power MOSFETs' SPICE models may not be redistributed, so `power_mosfet(sheet)` fits each, by one stated recipe, to the figures its `Datasheet` states, and fits any other from its own; the power ratings are at a case of 25 °C, which only a heat sink holds.
+The temperature ratings bound each junction's.
 
 ```python
 from jolty import parts
@@ -27,6 +28,18 @@ switch = c.place(parts.irf511(), id="X1")
 ```
 
 A simulation holds each part to its ratings, as the [checks](checks.md#on-analyses-results) describe.
+
+Each part takes `heated=True` to [heat](devices.md#self-heating) by what it dissipates: a terminal or port `thermal` joins its junction to a thermal net, which a thermal resistance holds to the ambient, as its datasheet's junction-to-ambient one, 200 K/W for the 2N3904 in its TO-92, or a network of them for its case and heat sink.
+A power MOSFET's channel and body diode share its junction.
+
+```python
+amplifier = c.place(parts.q2n3904(heated=True), id="Q1")
+mount = c.place(devices.thermal_resistance(200 * K / W), id="RTH")
+c.connect(amplifier.thermal, mount.a, name="junction")
+c.connect(mount.b, ground)
+```
+
+Its junction's temperature is then held to its rating as it heats, and an unheated part's is the simulation's.
 
 ## Catalogs
 

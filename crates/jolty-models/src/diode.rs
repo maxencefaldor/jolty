@@ -7,8 +7,8 @@ use crate::junction::{
 use crate::noise::Flicker;
 use crate::stamp::Series;
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, NoiseSource,
-    Output, ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
+    Binding, Branch, BranchKind, Device, Heatable, HeatableModel, Input, Interface, NativeDevice,
+    NativeModel, NoiseSource, Output, ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
 };
 
 /// A junction diode from terminal `anode` to terminal `cathode`, in the SPICE model.
@@ -29,18 +29,24 @@ use crate::{
 pub struct Diode<R: Real = f64> {
     series: Series<R>,
     junction: TerminalPair,
+    scaled: Scaled<R>,
+    transit_time: R,
+    /// The junction voltage of the last evaluation, from which the next step is limited.
+    last_voltage: f64,
+    flicker: Flicker,
+}
+
+/// What a diode's temperature sets.
+#[derive(Debug, Clone, Copy)]
+struct Scaled<R: Real> {
     saturation_current: R,
     /// The emission coefficient times the thermal voltage.
     slope: R,
     /// The voltage above which steps are limited: where the current's curvature takes over.
     critical_voltage: f64,
     depletion: Option<Depletion<R>>,
-    transit_time: R,
     breakdown: Option<Breakdown<R>>,
-    /// The junction voltage of the last evaluation, from which the next step is limited.
-    last_voltage: f64,
     temperature: f64,
-    flicker: Flicker,
 }
 
 /// A diode's reverse breakdown.
@@ -59,7 +65,7 @@ impl<R: Real> Breakdown<R> {
     /// ngspice moves the breakdown voltage so the current there is the breakdown current,
     /// by a fixed-point iteration, and leaves it where a breakdown current too small for
     /// the saturation current cannot be met.
-    fn new(voltage: R, current: R, saturation: R, slope: R, vt: f64) -> Self {
+    fn new(voltage: R, current: R, saturation: R, slope: R, vt: R) -> Self {
         /// How closely the current at the matched voltage meets the breakdown current.
         const MATCH: f64 = 1e-12;
         if current.value() < (saturation * voltage / vt).value() {
@@ -153,6 +159,10 @@ impl NativeModel for Diode {
     type Device<R: Real> = Diode<R>;
 }
 
+impl HeatableModel for Diode {
+    type Device<R: Real> = Diode<R>;
+}
+
 impl<R: Real> NativeDevice<R> for Diode<R> {
     const NAME: &'static str = "diode";
     type Parameters = DiodeParameters<R>;
@@ -168,15 +178,47 @@ impl<R: Real> NativeDevice<R> for Diode<R> {
         parameters: DiodeParameters<R>,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let DiodeParameters {
+        let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?;
+        let series_resistance =
+            ParameterError::non_negative("series_resistance", parameters.series_resistance)?;
+        let transit_time = ParameterError::non_negative("transit_time", parameters.transit_time)?;
+        let scaled = parameters.scaled(R::constant(binding.temperature()))?;
+        let (anode, cathode) = (binding.terminal(0), binding.terminal(1));
+        let (series, inner) = Series::behind(binding, anode, series_resistance, "junction");
+        let junction = TerminalPair::new(binding, inner, cathode);
+        Ok(Self {
+            series,
+            junction,
+            scaled,
+            transit_time,
+            last_voltage: 0.0,
+            flicker,
+        })
+    }
+}
+
+impl<R: Real> Heatable<R> for Diode<R> {
+    fn heat(
+        &mut self,
+        parameters: &DiodeParameters<R>,
+        temperature: R,
+    ) -> Result<(), ParameterError> {
+        self.scaled = parameters.scaled(temperature)?;
+        Ok(())
+    }
+}
+
+impl<R: Real> DiodeParameters<R> {
+    /// What the diode's `temperature`, in kelvins, sets, once each parameter it reads is
+    /// checked.
+    fn scaled(&self, temperature: R) -> Result<Scaled<R>, ParameterError> {
+        let &Self {
             saturation_current,
             emission_coefficient,
-            series_resistance,
             junction_capacitance,
             junction_potential,
             grading_coefficient,
             depletion_coefficient,
-            transit_time,
             breakdown_voltage,
             breakdown_current,
             breakdown_emission_coefficient,
@@ -184,24 +226,20 @@ impl<R: Real> NativeDevice<R> for Diode<R> {
             energy_gap,
             saturation_current_temperature_exponent,
             nominal_temperature,
-            flicker_coefficient,
-            flicker_exponent,
-        } = parameters;
-        let flicker = Flicker::new(flicker_coefficient, flicker_exponent)?;
+            ..
+        } = self;
         ParameterError::positive("saturation_current", saturation_current)?;
         ParameterError::positive("emission_coefficient", emission_coefficient)?;
-        ParameterError::non_negative("series_resistance", series_resistance)?;
         ParameterError::non_negative("junction_capacitance", junction_capacitance)?;
         ParameterError::positive("junction_potential", junction_potential)?;
         below_one("grading_coefficient", grading_coefficient)?;
         below_one("depletion_coefficient", depletion_coefficient)?;
-        ParameterError::non_negative("transit_time", transit_time)?;
         ParameterError::positive("breakdown_current", breakdown_current)?;
         let breakdown_emission = breakdown_emission_coefficient.unwrap_or(emission_coefficient);
         ParameterError::positive("breakdown_emission_coefficient", breakdown_emission)?;
         ParameterError::non_negative("energy_gap", energy_gap)?;
 
-        let temperatures = Temperatures::new(binding.temperature(), nominal_temperature)?;
+        let temperatures = Temperatures::new(temperature, nominal_temperature)?;
         let vt = temperatures.thermal_voltage();
         let saturation_current = saturation_current
             * temperatures.saturation(
@@ -229,14 +267,8 @@ impl<R: Real> NativeDevice<R> for Diode<R> {
                 })
             })
             .transpose()?;
-
-        let (anode, cathode) = (binding.terminal(0), binding.terminal(1));
-        let (series, inner) = Series::behind(binding, anode, series_resistance, "junction");
-        let junction = TerminalPair::new(binding, inner, cathode);
         let slope = emission_coefficient * vt;
-        Ok(Self {
-            series,
-            junction,
+        Ok(Scaled {
             saturation_current,
             slope,
             critical_voltage: critical_voltage(saturation_current.value(), slope.value()),
@@ -246,11 +278,8 @@ impl<R: Real> NativeDevice<R> for Diode<R> {
                 grading_coefficient,
                 depletion_coefficient,
             ),
-            transit_time,
             breakdown,
-            last_voltage: 0.0,
-            temperature: temperatures.actual,
-            flicker,
+            temperature: temperatures.actual.value(),
         })
     }
 }
@@ -259,7 +288,7 @@ impl<R: Real> Diode<R> {
     /// The junction's step to `applied` limited from the last evaluation's, as ngspice
     /// limits it: about the breakdown voltage when the junction nears it.
     fn limit(&self, applied: f64) -> Option<f64> {
-        match self.breakdown {
+        match self.scaled.breakdown {
             Some(breakdown)
                 if applied
                     < (10.0 * breakdown.slope.value() - breakdown.voltage.value()).min(0.0) =>
@@ -269,32 +298,33 @@ impl<R: Real> Diode<R> {
                     -(applied + voltage),
                     -(self.last_voltage + voltage),
                     slope,
-                    self.critical_voltage,
+                    self.scaled.critical_voltage,
                 )
                 .map(|limited| -(limited + voltage))
             }
             _ => limit_junction(
                 applied,
                 self.last_voltage,
-                self.slope.value(),
-                self.critical_voltage,
+                self.scaled.slope.value(),
+                self.scaled.critical_voltage,
             ),
         }
     }
 
     /// The junction's current at `voltage`, and its derivative.
     fn current(&self, voltage: f64) -> (R, R) {
-        match self.breakdown {
+        match self.scaled.breakdown {
             Some(breakdown)
-                if voltage < -3.0 * self.slope.value() && voltage < -breakdown.voltage.value() =>
+                if voltage < -3.0 * self.scaled.slope.value()
+                    && voltage < -breakdown.voltage.value() =>
             {
                 let exponential = (-(breakdown.voltage + voltage) / breakdown.slope).exp();
                 (
-                    -self.saturation_current * exponential,
-                    self.saturation_current * exponential / breakdown.slope,
+                    -self.scaled.saturation_current * exponential,
+                    self.scaled.saturation_current * exponential / breakdown.slope,
                 )
             }
-            _ => junction_current(voltage, self.saturation_current, self.slope),
+            _ => junction_current(voltage, self.scaled.saturation_current, self.scaled.slope),
         }
     }
 }
@@ -325,7 +355,7 @@ impl<R: Real> Device<R> for Diode<R> {
         self.junction.add_conductance(output, total_conductance);
 
         let (depletion_charge, depletion_capacitance) =
-            depletion_charge(self.depletion.as_ref(), voltage);
+            depletion_charge(self.scaled.depletion.as_ref(), voltage);
         let charge = depletion_charge + self.transit_time * current;
         let capacitance = depletion_capacitance + self.transit_time * conductance;
         self.junction
@@ -337,7 +367,7 @@ impl<R: Real> Device<R> for Diode<R> {
     /// noise.
     fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
         self.series
-            .noise("series thermal", self.temperature, sources);
+            .noise("series thermal", self.scaled.temperature, sources);
         let (current, _) = self.current(self.junction.voltage(input));
         let nodes = self.junction.nodes();
         sources.push(NoiseSource::shot("shot", nodes, current.value()));

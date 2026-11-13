@@ -4,7 +4,14 @@
 Each function returns a device or a component that stands for one part: its model, the
 maker's part number, which a bill of materials prices it by, and the absolute maximum
 ratings of its datasheet, which a simulation holds every operating point and transient
-to. A rating of the power is at a case or an ambient of 25 °C, as its datasheet states.
+to. A rating of the power is at a case or an ambient of 25 °C, as its datasheet states,
+and the rating of the temperature bounds its junction's.
+
+Each part takes ``heated``: heated, it runs at its junction's temperature, which a
+terminal or port ``thermal`` joins to a thermal net, and heats the net by the power it
+dissipates; see [`Device.heated`][jolty.devices.Device.heated]. A thermal resistance
+from that net to the ground, the ambient, then stands for its datasheet's junction to
+ambient, or a network of them for its case and heatsink.
 
 The small-signal parts take the SPICE parameters their makers publish:
 
@@ -25,7 +32,7 @@ is instead fitted, by one stated recipe, to the figures its
 Examples:
     >>> transistor = q2n3904()
     >>> transistor.part, [rating.stress for rating in transistor.ratings][-1]
-    ('2N3904', 'power')
+    ('2N3904', 'temperature')
 """
 
 import math
@@ -34,41 +41,45 @@ from typing import Final, Literal
 
 from jolty import devices
 from jolty.builder import Builder, Component, component
-from jolty.units import A, F, V, W, m, nA, ns, ohm, pF, ps
+from jolty.units import A, F, V, W, celsius, m, nA, ns, ohm, pF, ps
 
 # The small-signal parts.
 
 
-def q2n3904() -> devices.Device:
+def q2n3904(*, heated: bool = False) -> devices.Device:
     """A 2N3904, the small-signal NPN transistor, with its maker's SPICE parameters.
 
     Rated as onsemi's datasheet states: 40 V from collector to emitter, 60 V from
-    collector to base and 6 V from emitter to base, 200 mA into the collector, and
-    625 mW at an ambient of 25 °C.
+    collector to base and 6 V from emitter to base, 200 mA into the collector, 625 mW
+    at an ambient of 25 °C, and a junction from -55 °C to 150 °C, which 200 K/W join
+    to the ambient.
     """
     return (
-        devices.bipolar_transistor(
-            saturation_current=6.734e-15 * A,
-            forward_beta=416.4,
-            reverse_beta=0.7371,
-            forward_emission_coefficient=1.0,
-            forward_early_voltage=74.03 * V,
-            forward_knee_current=66.78e-3 * A,
-            base_emitter_leakage_current=6.734e-15 * A,
-            base_emitter_leakage_emission_coefficient=1.259,
-            base_collector_leakage_emission_coefficient=2.0,
-            base_resistance=10 * ohm,
-            collector_resistance=1 * ohm,
-            base_emitter_capacitance=4.493 * pF,
-            base_emitter_grading=0.2593,
-            base_collector_capacitance=3.638 * pF,
-            base_collector_grading=0.3085,
-            forward_transit_time=301.2 * ps,
-            transit_time_bias_coefficient=2.0,
-            transit_time_voltage=4 * V,
-            transit_time_current=0.4 * A,
-            reverse_transit_time=239.5 * ns,
-            beta_temperature_exponent=1.5,
+        _heated(
+            devices.bipolar_transistor(
+                saturation_current=6.734e-15 * A,
+                forward_beta=416.4,
+                reverse_beta=0.7371,
+                forward_emission_coefficient=1.0,
+                forward_early_voltage=74.03 * V,
+                forward_knee_current=66.78e-3 * A,
+                base_emitter_leakage_current=6.734e-15 * A,
+                base_emitter_leakage_emission_coefficient=1.259,
+                base_collector_leakage_emission_coefficient=2.0,
+                base_resistance=10 * ohm,
+                collector_resistance=1 * ohm,
+                base_emitter_capacitance=4.493 * pF,
+                base_emitter_grading=0.2593,
+                base_collector_capacitance=3.638 * pF,
+                base_collector_grading=0.3085,
+                forward_transit_time=301.2 * ps,
+                transit_time_bias_coefficient=2.0,
+                transit_time_voltage=4 * V,
+                transit_time_current=0.4 * A,
+                reverse_transit_time=239.5 * ns,
+                beta_temperature_exponent=1.5,
+            ),
+            heated,
         )
         .numbered("2N3904")
         .rated("voltage", 40 * V, terminals=("collector", "emitter"))
@@ -76,38 +87,43 @@ def q2n3904() -> devices.Device:
         .rated("voltage", 6 * V, terminals=("emitter", "base"))
         .rated("current", 0.2 * A, terminals=("collector",))
         .rated("power", 0.625 * W)
+        .rated("temperature", celsius(150), minimum=celsius(-55))
     )
 
 
-def q2n3906() -> devices.Device:
+def q2n3906(*, heated: bool = False) -> devices.Device:
     """A 2N3906, the small-signal PNP transistor, with its maker's SPICE parameters.
 
     Rated as onsemi's datasheet states: 40 V from emitter to collector and from base
-    to collector, 5 V from base to emitter, 200 mA out of the collector, and 625 mW at
-    an ambient of 25 °C.
+    to collector, 5 V from base to emitter, 200 mA out of the collector, 625 mW at an
+    ambient of 25 °C, and a junction from -55 °C to 150 °C, which 200 K/W join to the
+    ambient.
     """
     return (
-        devices.bipolar_transistor(
-            polarity="pnp",
-            saturation_current=1.41e-15 * A,
-            forward_beta=180.7,
-            reverse_beta=4.977,
-            forward_early_voltage=18.7 * V,
-            forward_knee_current=80e-3 * A,
-            base_emitter_leakage_emission_coefficient=1.5,
-            base_collector_leakage_emission_coefficient=2.0,
-            base_resistance=10 * ohm,
-            collector_resistance=2.5 * ohm,
-            base_emitter_capacitance=8.063 * pF,
-            base_emitter_grading=0.3677,
-            base_collector_capacitance=9.728 * pF,
-            base_collector_grading=0.5776,
-            forward_transit_time=179.3 * ps,
-            transit_time_bias_coefficient=6.0,
-            transit_time_voltage=4 * V,
-            transit_time_current=0.4 * A,
-            reverse_transit_time=33.42 * ns,
-            beta_temperature_exponent=1.5,
+        _heated(
+            devices.bipolar_transistor(
+                polarity="pnp",
+                saturation_current=1.41e-15 * A,
+                forward_beta=180.7,
+                reverse_beta=4.977,
+                forward_early_voltage=18.7 * V,
+                forward_knee_current=80e-3 * A,
+                base_emitter_leakage_emission_coefficient=1.5,
+                base_collector_leakage_emission_coefficient=2.0,
+                base_resistance=10 * ohm,
+                collector_resistance=2.5 * ohm,
+                base_emitter_capacitance=8.063 * pF,
+                base_emitter_grading=0.3677,
+                base_collector_capacitance=9.728 * pF,
+                base_collector_grading=0.5776,
+                forward_transit_time=179.3 * ps,
+                transit_time_bias_coefficient=6.0,
+                transit_time_voltage=4 * V,
+                transit_time_current=0.4 * A,
+                reverse_transit_time=33.42 * ns,
+                beta_temperature_exponent=1.5,
+            ),
+            heated,
         )
         .numbered("2N3906")
         .rated("voltage", minimum=-40 * V, terminals=("collector", "emitter"))
@@ -115,29 +131,40 @@ def q2n3906() -> devices.Device:
         .rated("voltage", minimum=-5 * V, terminals=("emitter", "base"))
         .rated("current", minimum=-0.2 * A, terminals=("collector",))
         .rated("power", 0.625 * W)
+        .rated("temperature", celsius(150), minimum=celsius(-55))
     )
 
 
-def d1n4148() -> devices.Device:
+def d1n4148(*, heated: bool = False) -> devices.Device:
     """A 1N4148, the small-signal silicon diode, with its maker's SPICE parameters.
 
     Rated as onsemi's datasheet states: 100 V of repetitive reverse voltage, 300 mA of
-    forward current, and 500 mW at an ambient of 25 °C.
+    forward current, 500 mW at an ambient of 25 °C, and a junction from -55 °C to
+    175 °C, which 300 K/W join to the ambient.
     """
     return (
-        devices.diode(
-            saturation_current=2.52 * nA,
-            emission_coefficient=1.752,
-            series_resistance=0.568 * ohm,
-            junction_capacitance=4 * pF,
-            grading_coefficient=0.4,
-            transit_time=20 * ns,
+        _heated(
+            devices.diode(
+                saturation_current=2.52 * nA,
+                emission_coefficient=1.752,
+                series_resistance=0.568 * ohm,
+                junction_capacitance=4 * pF,
+                grading_coefficient=0.4,
+                transit_time=20 * ns,
+            ),
+            heated,
         )
         .numbered("1N4148")
         .rated("voltage", minimum=-100 * V)
         .rated("current", 0.3 * A)
         .rated("power", 0.5 * W)
+        .rated("temperature", celsius(175), minimum=celsius(-55))
     )
+
+
+def _heated(device: devices.Device, heated: bool) -> devices.Device:  # noqa: FBT001
+    """`device`, [heated][jolty.devices.Device.heated] if `heated`."""
+    return device.heated() if heated else device
 
 
 # The power MOSFETs.
@@ -152,16 +179,18 @@ THERMAL_VOLTAGE: Final = 1.380649e-23 * 300.15 / 1.602176634e-19
 JUNCTION_POTENTIAL: Final = 0.7
 """A fitted body diode's junction potential, in volts, with a grading coefficient of
 0.5."""
+LEAST_JUNCTION_TEMPERATURE: Final = -55.0
+"""The least junction temperature every sheet here states, in degrees Celsius."""
 
 
 @dataclass(frozen=True, slots=True)
 class Datasheet:
-    """What a power MOSFET's datasheet states, at 25 °C, every value positive.
+    """What a power MOSFET's datasheet states at 25 °C, its electrical values positive.
 
     Voltages and currents are magnitudes, whichever the channel. The absolute maximum
     ratings bound the drain over the source, the gate over the source either way, the
-    current through the drain as the channel conducts it, and the power at a case of
-    25 °C.
+    current through the drain as the channel conducts it, the power at a case of
+    25 °C, and the junction's temperature.
     """
 
     number: str
@@ -199,6 +228,8 @@ class Datasheet:
     """ID, the most continuous drain current at a case of 25 °C, in amperes."""
     power: float
     """PD, the most power at a case of 25 °C, in watts."""
+    junction_temperature: float
+    """TJ's most, in degrees Celsius; its least is -55 °C for each sheet here."""
 
 
 IRF511: Final = Datasheet(
@@ -220,6 +251,7 @@ IRF511: Final = Datasheet(
     gate_source_voltage=20.0,
     drain_current=5.6,
     power=43.0,
+    junction_temperature=175.0,
 )
 """80 V, 5.6 A, n-channel: Harris's IRF510-IRF513 datasheet, gfs Vishay's IRF510's."""
 
@@ -242,6 +274,7 @@ IRF9230: Final = Datasheet(
     gate_source_voltage=20.0,
     drain_current=6.5,
     power=75.0,
+    junction_temperature=150.0,
 )
 """200 V, 6.5 A, p-channel: Intersil's IRF9230-IRF9233 datasheet; diode drop its max."""
 
@@ -264,6 +297,7 @@ IRFZ44: Final = Datasheet(
     gate_source_voltage=20.0,
     drain_current=50.0,
     power=150.0,
+    junction_temperature=175.0,
 )
 """60 V, 50 A, n-channel: Vishay's IRFZ44 datasheet; on-resistance and drop its max."""
 
@@ -286,34 +320,36 @@ MTP50P03HDL: Final = Datasheet(
     gate_source_voltage=15.0,
     drain_current=50.0,
     power=125.0,
+    junction_temperature=150.0,
 )
 """30 V, 50 A, logic-level p-channel: onsemi's MTP50P03HDL datasheet."""
 
 
-def irf511() -> Component:
+def irf511(*, heated: bool = False) -> Component:
     """An IRF511, fitted to [its datasheet][jolty.parts.IRF511]."""
-    return power_mosfet(IRF511)
+    return power_mosfet(IRF511, heated=heated)
 
 
-def irf9230() -> Component:
+def irf9230(*, heated: bool = False) -> Component:
     """An IRF9230, fitted to [its datasheet][jolty.parts.IRF9230]."""
-    return power_mosfet(IRF9230)
+    return power_mosfet(IRF9230, heated=heated)
 
 
-def irfz44() -> Component:
+def irfz44(*, heated: bool = False) -> Component:
     """An IRFZ44, fitted to [its datasheet][jolty.parts.IRFZ44]."""
-    return power_mosfet(IRFZ44)
+    return power_mosfet(IRFZ44, heated=heated)
 
 
-def mtp50p03hdl() -> Component:
+def mtp50p03hdl(*, heated: bool = False) -> Component:
     """An MTP50P03HDL, fitted to [its datasheet][jolty.parts.MTP50P03HDL]."""
-    return power_mosfet(MTP50P03HDL)
+    return power_mosfet(MTP50P03HDL, heated=heated)
 
 
-def power_mosfet(sheet: Datasheet) -> Component:
+def power_mosfet(sheet: Datasheet, *, heated: bool = False) -> Component:
     """The power MOSFET `sheet` states: fitted to it, numbered, and rated as it states.
 
-    Its ports are ``drain``, ``gate`` and ``source``, and its model is fitted to the
+    Its ports are ``drain``, ``gate`` and ``source``, and ``thermal`` where `heated`,
+    the junction both its channel and its body diode heat. Its model is fitted to the
     sheet by one recipe:
 
     - the channel is SPICE's level 1 square law, its threshold the sheet's, and its
@@ -347,7 +383,7 @@ def power_mosfet(sheet: Datasheet) -> Component:
     drain = sheet.drain_current * A
     gate_source = sheet.gate_source_voltage * V
     return (
-        fitted_mosfet(sheet)
+        fitted_mosfet(sheet, heated=heated)
         .numbered(sheet.number)
         .rated(
             "voltage",
@@ -365,6 +401,11 @@ def power_mosfet(sheet: Datasheet) -> Component:
             terminals=("drain",),
         )
         .rated("power", sheet.power * W)
+        .rated(
+            "temperature",
+            celsius(sheet.junction_temperature),
+            minimum=celsius(LEAST_JUNCTION_TEMPERATURE),
+        )
     )
 
 
@@ -412,24 +453,29 @@ def _least(sheet: Datasheet) -> float:
 
 
 @component
-def fitted_mosfet(c: Builder, sheet: Datasheet) -> None:
+def fitted_mosfet(c: Builder, sheet: Datasheet, *, heated: bool = False) -> None:
     """The model [`power_mosfet`][jolty.parts.power_mosfet] fits to `sheet`, unrated."""
     drain, gate, source = (c.port(name) for name in ("drain", "gate", "source"))
     sign = 1.0 if sheet.channel == "n" else -1.0
     resistance = drain_resistance(sheet)
     channel = c.place(
-        devices.mosfet(
-            channel=sheet.channel,
-            width=1 * m,
-            length=1 * m,
-            threshold_voltage=sign * sheet.threshold * V,
-            transconductance_parameter=transconductance_parameter(sheet) * A / V**2,
-            drain_resistance=resistance * ohm if resistance > 0 else None,
-            saturation_current=CHANNEL_JUNCTIONS * A,
-            gate_drain_overlap=sheet.reverse_capacitance * F / m,
-            gate_source_overlap=(sheet.input_capacitance - sheet.reverse_capacitance)
-            * F
-            / m,
+        _heated(
+            devices.mosfet(
+                channel=sheet.channel,
+                width=1 * m,
+                length=1 * m,
+                threshold_voltage=sign * sheet.threshold * V,
+                transconductance_parameter=transconductance_parameter(sheet) * A / V**2,
+                drain_resistance=resistance * ohm if resistance > 0 else None,
+                saturation_current=CHANNEL_JUNCTIONS * A,
+                gate_drain_overlap=sheet.reverse_capacitance * F / m,
+                gate_source_overlap=(
+                    sheet.input_capacitance - sheet.reverse_capacitance
+                )
+                * F
+                / m,
+            ),
+            heated,
         ),
         id="M1",
     )
@@ -438,12 +484,15 @@ def fitted_mosfet(c: Builder, sheet: Datasheet) -> None:
         drain_source * (1 + sheet.capacitance_voltage / JUNCTION_POTENTIAL) ** 0.5
     )
     body = c.place(
-        devices.diode(
-            saturation_current=SATURATION_CURRENT * A,
-            series_resistance=diode_resistance(sheet) * ohm,
-            junction_capacitance=zero_bias * F,
-            junction_potential=JUNCTION_POTENTIAL * V,
-            grading_coefficient=0.5,
+        _heated(
+            devices.diode(
+                saturation_current=SATURATION_CURRENT * A,
+                series_resistance=diode_resistance(sheet) * ohm,
+                junction_capacitance=zero_bias * F,
+                junction_potential=JUNCTION_POTENTIAL * V,
+                grading_coefficient=0.5,
+            ),
+            heated,
         ),
         id="D1",
     )
@@ -453,3 +502,5 @@ def fitted_mosfet(c: Builder, sheet: Datasheet) -> None:
     c.connect(channel.source, channel.bulk, source)
     c.connect(body.anode, anode)
     c.connect(body.cathode, cathode)
+    if heated:
+        c.connect(channel.thermal, body.thermal, c.port("thermal"))

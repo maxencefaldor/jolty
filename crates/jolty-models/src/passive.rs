@@ -4,8 +4,8 @@ use serde::Deserialize;
 use crate::junction::Temperatures;
 use crate::stamp::{CurrentBranch, SMALL_RESISTANCE};
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, NoiseSource,
-    Output, ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
+    Binding, Branch, BranchKind, Device, Heatable, HeatableModel, Input, Interface, NativeDevice,
+    NativeModel, NoiseSource, Output, ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
 };
 
 /// The default nominal temperature, at which a passive device's value was measured.
@@ -104,33 +104,8 @@ impl<R: Real> NativeDevice<R> for Resistor<R> {
         parameters: ResistorParameters<R>,
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
-        let resistance = ParameterError::positive("resistance", parameters.resistance)?;
-        let temperatures =
-            Temperatures::new(binding.temperature(), parameters.nominal_temperature)?;
-        let (linear, quadratic) = (
-            parameters.temperature_coefficient,
-            parameters.quadratic_temperature_coefficient,
-        );
-        let factor = match parameters.exponential_temperature_coefficient {
-            None => temperatures.polynomial(linear, quadratic),
-            Some(exponential) if linear.value() == 0.0 && quadratic.value() == 0.0 => {
-                R::constant(1.01).pow(exponential * temperatures.difference())
-            }
-            Some(_) => {
-                return Err(ParameterError(
-                    "an exponential temperature coefficient excludes the linear and \
-                     quadratic ones"
-                        .to_owned(),
-                ));
-            }
-        };
-        if factor.value() == 0.0 {
-            return Err(ParameterError(format!(
-                "the temperature coefficients scale the resistance to zero at {:?} K",
-                temperatures.actual
-            )));
-        }
-        let resistance = resistance * factor;
+        let temperature = binding.temperature();
+        let resistance = parameters.resistance_at(R::constant(temperature))?;
         let (a, b) = (binding.terminal(0), binding.terminal(1));
         let form = if resistance.value().abs() < SMALL_RESISTANCE {
             let branch = CurrentBranch::new(binding, "current", [a, b]);
@@ -147,9 +122,60 @@ impl<R: Real> NativeDevice<R> for Resistor<R> {
                 linear: parameters.voltage_coefficient,
                 quadratic: parameters.quadratic_voltage_coefficient,
             },
-            temperature: temperatures.actual,
+            temperature,
         })
     }
+}
+
+impl<R: Real> ResistorParameters<R> {
+    /// The resistance at `temperature`, in kelvins, once each parameter it reads is
+    /// checked.
+    fn resistance_at(&self, temperature: R) -> Result<R, ParameterError> {
+        let resistance = ParameterError::positive("resistance", self.resistance)?;
+        let temperatures = Temperatures::new(temperature, self.nominal_temperature)?;
+        let (linear, quadratic) = (
+            self.temperature_coefficient,
+            self.quadratic_temperature_coefficient,
+        );
+        let factor = match self.exponential_temperature_coefficient {
+            None => temperatures.polynomial(linear, quadratic),
+            Some(exponential) if linear.value() == 0.0 && quadratic.value() == 0.0 => {
+                R::constant(1.01).pow(exponential * temperatures.difference())
+            }
+            Some(_) => {
+                return Err(ParameterError(
+                    "an exponential temperature coefficient excludes the linear and \
+                     quadratic ones"
+                        .to_owned(),
+                ));
+            }
+        };
+        if factor.value() == 0.0 {
+            return Err(ParameterError(format!(
+                "the temperature coefficients scale the resistance to zero at {:?} K",
+                temperatures.actual.value()
+            )));
+        }
+        Ok(resistance * factor)
+    }
+}
+
+/// A heated resistor keeps the form its resistance at the ambient chose: a current of its
+/// own stays one however hot it runs.
+impl<R: Real> Heatable<R> for Resistor<R> {
+    fn heat(
+        &mut self,
+        parameters: &ResistorParameters<R>,
+        temperature: R,
+    ) -> Result<(), ParameterError> {
+        self.resistance = parameters.resistance_at(temperature)?;
+        self.temperature = temperature.value();
+        Ok(())
+    }
+}
+
+impl HeatableModel for Resistor {
+    type Device<R: Real> = Resistor<R>;
 }
 
 impl<R: Real> Device<R> for Resistor<R> {
@@ -247,7 +273,11 @@ impl<R: Real> NativeDevice<R> for Capacitor<R> {
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
         let capacitance = ParameterError::non_negative("capacitance", parameters.capacitance)?
-            * Temperatures::new(binding.temperature(), parameters.nominal_temperature)?.polynomial(
+            * Temperatures::new(
+                R::constant(binding.temperature()),
+                parameters.nominal_temperature,
+            )?
+            .polynomial(
                 parameters.temperature_coefficient,
                 parameters.quadratic_temperature_coefficient,
             );
@@ -322,7 +352,11 @@ impl<R: Real> NativeDevice<R> for Inductor<R> {
         binding: &mut Binding<'_>,
     ) -> Result<Self, ParameterError> {
         let inductance = ParameterError::positive("inductance", parameters.inductance)?
-            * Temperatures::new(binding.temperature(), parameters.nominal_temperature)?.polynomial(
+            * Temperatures::new(
+                R::constant(binding.temperature()),
+                parameters.nominal_temperature,
+            )?
+            .polynomial(
                 parameters.temperature_coefficient,
                 parameters.quadratic_temperature_coefficient,
             );
@@ -361,6 +395,42 @@ mod tests {
     fn a_resistor_conducts_by_ohms_law() {
         let mut bench = Bench::new::<Resistor>(r#"{"resistance": 1000}"#);
         assert_close(&bench.evaluate(&[3.0, 1.0]).residual, &[2e-3, -2e-3]);
+    }
+
+    #[test]
+    fn a_heated_resistor_is_the_resistor_at_its_temperature() {
+        let model = crate::Thermal::<Resistor>::new();
+        let coefficients = r#""temperature_coefficient": 4e-3,
+            "quadratic_temperature_coefficient": 1e-5, "voltage_coefficient": -0.05"#;
+        for resistance in [1000.0, 1e-4] {
+            let every = format!(r#"{{"resistance": {resistance}, {coefficients}}}"#);
+            let heated = every.replace('{', r#"{"thermal": true, "#);
+            let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
+            // A current of its own, where it has one, follows the thermal terminal.
+            let current = (resistance < 1.0).then_some(2.0 / resistance);
+            for rise in [0.0, 50.0] {
+                let mut plain = Bench::at::<Resistor>(&every, REFERENCE_TEMPERATURE + rise);
+                let hot = bench.settle(
+                    &[3.0, 1.0, rise]
+                        .into_iter()
+                        .chain(current)
+                        .collect::<Vec<_>>(),
+                );
+                let reference =
+                    plain.settle(&[3.0, 1.0].into_iter().chain(current).collect::<Vec<_>>());
+                let mut electrical = vec![hot.residual[0], hot.residual[1]];
+                electrical.extend(current.map(|_| hot.residual[3]));
+                assert_close(&electrical, &reference.residual);
+                // It dissipates `v · i`, its current leaving `a` and entering `b`.
+                let power = 3.0 * hot.residual[0] + 1.0 * hot.residual[1];
+                assert_close(&[-hot.residual[2]], &[power]);
+            }
+            for rise in [10.0, 80.0] {
+                let x: Vec<f64> = [2.5, -0.5, rise].into_iter().chain(current).collect();
+                crate::testing::assert_model_jacobians_match(&model, &heated, &x);
+                crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, 0.0);
+            }
+        }
     }
 
     #[test]

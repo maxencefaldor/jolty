@@ -47,7 +47,14 @@ from jolty.plan import (
     Stability,
     Transient,
 )
-from jolty.units import CURRENT, TEMPERATURE, VOLTAGE, Dimension, Quantity
+from jolty.units import (
+    CURRENT,
+    TEMPERATURE,
+    VOLTAGE,
+    ZERO_CELSIUS,
+    Dimension,
+    Quantity,
+)
 
 
 def kelvins(temperature: Quantity | None) -> float:
@@ -98,6 +105,11 @@ class Simulation:
     terminal_nodes: tuple[str | None, ...]
     """The unknown that is each terminal's voltage, by name, in the order of
     `terminals`, or None for a terminal on the ground."""
+
+    thermal: frozenset[str]
+    """The thermal terminals of devices, component instances and logic devices, such
+    as ``Q1.thermal``: each one's voltage is a temperature above the ambient, and its
+    current the heat flowing into it."""
 
     composites: results.Composites
     """Each terminal of a component instance or a logic device, such as ``X1.vdd``, with
@@ -174,6 +186,11 @@ class Simulation:
             (name, tuple(members)) for name, members in self._core.composites
         )
         self.composite_nodes = tuple(self._core.composite_nodes)
+        named = (*self.terminals, *(name for name, _ in self.composites))
+        heats = (*self._core.thermal_terminals, *self._core.thermal_composites)
+        self.thermal = frozenset(
+            name for name, thermal in zip(named, heats, strict=True) if thermal
+        )
         self.derivatives = tuple(
             (equation, unknown) for equation, unknown in self._core.derivatives
         )
@@ -227,6 +244,12 @@ class Simulation:
             if any(f"{path}.{terminal}" in reached for terminal in instance.terminals)
             for rating in instance.ratings
         ]
+        electrical = {
+            terminal: reached[terminal]
+            for terminal in reached
+            if terminal not in self.thermal
+        }
+        thermal = {terminal: reached[terminal][0] for terminal in self.thermal}
         for name, result in solved.items():
             match result:
                 case results.OperatingPoint():
@@ -241,7 +264,15 @@ class Simulation:
                     )
                 case _:
                     continue
-            at = _Terminals(reached, columns, values, currents, len(self.terminals))
+            at = _Terminals(
+                electrical,
+                thermal,
+                self.temperature,
+                columns,
+                values,
+                currents,
+                len(self.terminals),
+            )
             for path, instance, rating in rated:
                 stress = at.stress(path, instance, rating)
                 if stress is not None:
@@ -250,7 +281,7 @@ class Simulation:
         return tuple(found)
 
     def _reached(self) -> dict[str, tuple[str | None, tuple[int, ...]]]:
-        """Each terminal on an electrical net, such as ``X1/R1.a`` or ``X1.vdd``.
+        """Each terminal on an electrical or a thermal net, such as ``X1.vdd``.
 
         A terminal is of a device, a component instance or a logic device, and maps to
         the unknown that is its voltage, None on the ground, and the columns of the
@@ -389,6 +420,7 @@ class Simulation:
                     terminals=self.terminals,
                     currents=outcome["currents"],
                     composites=self.composites,
+                    thermal=self.thermal,
                 )
             case "transient":
                 statistics = results.Statistics(**outcome["statistics"])
@@ -502,6 +534,7 @@ class Simulation:
             "currents": outcome["currents"],
             "charges": outcome["charges"],
             "composites": self.composites,
+            "thermal": self.thermal,
             "derivatives": self.derivatives,
             "conductances": outcome["conductances"],
             "capacitances": outcome["capacitances"],
@@ -510,7 +543,12 @@ class Simulation:
         }
 
 
-_UNITS: dict[ir.Stress, str] = {"voltage": "V", "current": "A", "power": "W"}
+_UNITS: dict[ir.Stress, str] = {
+    "voltage": "V",
+    "current": "A",
+    "power": "W",
+    "temperature": "°C",
+}
 
 
 def _instances(
@@ -529,6 +567,11 @@ class _Terminals:
     """The voltage at and the current into each reached terminal, over a result."""
 
     reached: Mapping[str, tuple[str | None, tuple[int, ...]]]
+    """Each terminal on an electrical net, as `Simulation._reached` maps it."""
+    thermal: Mapping[str, str | None]
+    """The unknown that is each thermal terminal's temperature, None on the ground."""
+    ambient: float
+    """The simulation's temperature, in kelvins."""
     columns: Mapping[str, int]
     """The column of each unknown's values, by name."""
     values: results.Real
@@ -542,9 +585,11 @@ class _Terminals:
     ) -> results.Real | None:
         """The stress `rating` limits on the instance at `path`, at each point.
 
-        There is none when a rated terminal is on a logic net, or the result holds no
-        currents and the stress needs them.
+        There is none when a rated terminal is on a logic or a thermal net, or the
+        result holds no currents and the stress needs them.
         """
+        if rating.stress == "temperature":
+            return self.ambient + self._rise(path)
         named = rating.terminals or tuple(
             terminal
             for terminal in instance.terminals
@@ -567,6 +612,17 @@ class _Terminals:
             ),
             start=np.zeros(self.values.shape[0]),
         )
+
+    def _rise(self, path: str) -> results.Real:
+        """The temperature above the ambient of the instance at `path`.
+
+        It is that of the thermal net its terminal ``thermal`` joins, or none where it
+        has no such terminal or the terminal is on the ground.
+        """
+        node = self.thermal.get(f"{path}.thermal")
+        if node is None:
+            return np.zeros(self.values.shape[0])
+        return self.values[:, self.columns[node]]
 
     def _voltage(self, path: str, terminal: str) -> results.Real:
         node, _ = self.reached[f"{path}.{terminal}"]
@@ -596,6 +652,8 @@ class Stressed:
         found = []
         high = int(np.argmax(self.stress))
         low = int(np.argmin(self.stress))
+        # Derating keeps its margin from zero, a temperature's from 0 °C.
+        origin = ZERO_CELSIUS if self.rating.stress == "temperature" else 0.0
         for point, bound, sign in (
             (high, self.rating.maximum, 1),
             (low, self.rating.minimum, -1),
@@ -603,9 +661,10 @@ class Stressed:
             if bound is None:
                 continue
             value = float(self.stress[point])
+            reach = sign * (bound - origin)
             if sign * value > sign * bound:
                 found.append(self._diagnostic(checks.OVER_RATING, point, bound, value))
-            elif sign * bound > 0 and sign * value > checks.DERATED * sign * bound:
+            elif reach > 0 and sign * (value - origin) > checks.DERATED * reach:
                 found.append(self._diagnostic(checks.DERATING, point, bound, value))
         return found
 
@@ -618,7 +677,12 @@ class Stressed:
             "voltage": f"the voltage of `{self.path}` at {' over '.join(terminals)}",
             "current": f"the current into `{self.path}` at {''.join(terminals)}",
             "power": f"the power `{self.path}` dissipates",
+            "temperature": f"the temperature of `{self.path}`",
         }[self.rating.stress]
+        if self.rating.stress == "temperature":
+            # In degrees Celsius, as datasheets state them, rounded past the
+            # conversion's own error.
+            bound, value = (round(each - ZERO_CELSIUS, 9) for each in (bound, value))
         where = (
             f"at the operating point of `{self.analysis}`"
             if self.times is None

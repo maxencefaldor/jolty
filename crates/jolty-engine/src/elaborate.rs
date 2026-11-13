@@ -44,12 +44,18 @@ pub(crate) struct System {
 /// of device terminals summed: a port's are those of every device terminal inside its
 /// instance that joins the port's net there, and a logic pin's those of its connect
 /// element's terminal on the pin's electrical net.
+///
+/// A port on a thermal net is thermal, its current the heat flowing into it. The reference
+/// is the ambient as well as the ground, so a port on it sums its electrical terminals
+/// only: heat into the ambient is no current.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Composite {
     /// Its instance's path and its own name, such as `X1.vdd`.
     pub(crate) name: String,
     /// The node it joins, or `None` for the reference.
     pub(crate) node: Node,
+    /// Whether it is on a thermal net.
+    pub(crate) thermal: bool,
     /// Each device terminal summed, by the device's index and the terminal's.
     pub(crate) members: Vec<(usize, usize)>,
 }
@@ -118,6 +124,12 @@ impl Placed {
     #[must_use]
     pub fn terminals(&self) -> &[String] {
         &self.interface.terminals
+    }
+
+    /// The device's thermal terminals, by index among [`Placed::terminals`].
+    #[must_use]
+    pub fn thermal(&self) -> &[usize] {
+        &self.interface.thermal
     }
 
     /// The device's branches between its terminals.
@@ -431,7 +443,7 @@ pub(crate) fn elaborate(
         return Err(ElaborationError(problems));
     };
     let pattern = Arc::new(builder.finish(unknowns.len()));
-    let composites = composites(&ports, &pins, &classes);
+    let composites = composites(&ports, &pins, &classes, &placed);
     Ok(System {
         unknowns,
         devices: placed,
@@ -448,22 +460,36 @@ pub(crate) fn elaborate(
 /// thermal, each with the device terminals it sums: the ports, in the order the walk met
 /// them, then the logic devices' pins and terminals. The analog devices were placed in the
 /// order the walk found them, so the walk's index of each is its index among the devices.
-fn composites(ports: &[PortRecord], pins: &[LogicPins], classes: &Classes<'_>) -> Vec<Composite> {
+fn composites(
+    ports: &[PortRecord],
+    pins: &[LogicPins],
+    classes: &Classes<'_>,
+    placed: &[Placed],
+) -> Vec<Composite> {
     let ports = ports
         .iter()
         .filter(|port| port.net.is_none_or(|net| classes.nodes[net].is_some()))
         .map(|port| {
+            let thermal = port.net.is_some_and(|net| !classes.nets[net].electrical);
             let members = port
                 .members
                 .iter()
                 .flat_map(|&member| match member {
-                    Member::Analog { device, terminal } => vec![(device, terminal)],
+                    Member::Analog { device, terminal } => {
+                        let heat = placed[device].interface.thermal.contains(&terminal);
+                        if heat == thermal {
+                            vec![(device, terminal)]
+                        } else {
+                            Vec::new()
+                        }
+                    }
                     Member::Logic { device, pin } => pins[device].members(pin),
                 })
                 .collect();
             Composite {
                 name: port.name.clone(),
                 node: classes.node(port.net),
+                thermal,
                 members,
             }
         });
@@ -473,6 +499,7 @@ fn composites(ports: &[PortRecord], pins: &[LogicPins], classes: &Classes<'_>) -
             on_electrical.then(|| Composite {
                 name: format!("{}.{}", device.path, device.names[pin]),
                 node: classes.node(device.nets[pin]),
+                thermal: false,
                 members: device.members(pin),
             })
         })

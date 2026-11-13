@@ -111,14 +111,14 @@ pub enum Problem {
     #[error(
         "instance `{component}/{id}` states a rating of its {stress} {at}from {minimum} to \
          {maximum}, which needs {needed} and finite bounds, at least one and in order, a \
-         power only a positive maximum"
+         power only a positive maximum and a temperature positive bounds"
     )]
     InvalidRating {
         /// The component that places the instance.
         component: Name,
         /// The instance.
         id: Name,
-        /// The stress rated: `voltage`, `current` or `power`.
+        /// The stress rated: `voltage`, `current`, `power` or `temperature`.
         stress: String,
         /// Where, as the terminals named, such as `at `collector`, `emitter` `.
         at: String,
@@ -286,7 +286,12 @@ fn check_ratings(name: &Name, instance: &crate::Instance, problems: &mut Vec<Pro
         };
         let powered = rating.stress != Stress::Power
             || (rating.minimum.is_none() && rating.maximum.is_some_and(|maximum| maximum > 0.0));
-        let bounded = finite && ordered && powered;
+        let absolute = rating.stress != Stress::Temperature
+            || [rating.minimum, rating.maximum]
+                .iter()
+                .flatten()
+                .all(|bound| *bound > 0.0);
+        let bounded = finite && ordered && powered && absolute;
         if rating.terminals.len() != needed || !own || !distinct || !bounded {
             let at = if rating.terminals.is_empty() {
                 String::new()
@@ -591,6 +596,9 @@ mod tests {
             rating(Stress::Current, &["base"], Some(0.2), Some(0.1)),
             rating(Stress::Current, &["base"], None, Some(f64::INFINITY)),
             rating(Stress::Current, &["base"], None, None),
+            rating(Stress::Temperature, &[], Some(218.15), Some(423.15)),
+            rating(Stress::Temperature, &[], Some(0.0), Some(423.15)),
+            rating(Stress::Temperature, &["thermal"], None, Some(423.15)),
         ];
         let top = Component {
             instances: vec![transistor],
@@ -598,16 +606,18 @@ mod tests {
         };
         let problems = circuit(vec![("top", top)]).validate().unwrap_err();
         let messages: Vec<String> = problems.0.iter().map(ToString::to_string).collect();
-        assert_eq!(messages.len(), 8, "{messages:?}");
+        assert_eq!(messages.len(), 10, "{messages:?}");
         assert_eq!(
             messages[0],
             "instance `top/Q1` states a rating of its voltage at `collector` from none to 40.0, \
              which needs two distinct terminals of its own and finite bounds, at least one \
-             and in order, a power only a positive maximum"
+             and in order, a power only a positive maximum and a temperature positive bounds"
         );
         assert!(messages[1].contains("its voltage at `collector` over `emitter` from none"));
         assert!(messages[3].contains("its power from none to 0.0, which needs no terminals"));
         assert!(messages[7].contains("its current at `base` from none to none"));
+        assert!(messages[8].contains("its temperature from 0.0 to 423.15"));
+        assert!(messages[9].contains("its temperature at `thermal` from none"));
     }
 
     #[test]

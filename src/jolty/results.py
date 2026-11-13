@@ -83,6 +83,7 @@ class Observed(TypedDict):
     currents: Real
     charges: Real
     composites: Composites
+    thermal: frozenset[str]
     derivatives: tuple[tuple[str, str], ...]
     conductances: Real
     capacitances: Real
@@ -221,6 +222,9 @@ class OperatingPoint:
     composites: Composites = ()
     """Each terminal of a component instance or a logic device, such as ``X1.vdd``, with
     the indices of the device terminals whose currents and charges sum to its own."""
+    thermal: frozenset[str] = frozenset()
+    """The thermal terminals among the devices' and the composites': each one's
+    current is the heat flowing into it, in watts."""
     derivatives: tuple[tuple[str, str], ...] = ()
     """For each device, every pair of its terminals and internal unknowns, its equation
     then its unknown, in `conductances`' order."""
@@ -249,7 +253,8 @@ class OperatingPoint:
     def current(self, instance: str, terminal: str | None = None) -> float:
         """The current into `terminal` of `instance`.
 
-        The instance is a device, a component instance or a logic device. Without a
+        The instance is a device, a component instance or a logic device; into a
+        thermal terminal, the current is the heat flowing in, in watts. Without a
         terminal, the current through `instance`, a source or an inductor, in its
         direction.
         """
@@ -340,6 +345,9 @@ class Sweep:
     composites: Composites = ()
     """Each terminal of a component instance or a logic device, with the indices of the
     device terminals whose currents and charges sum to its own."""
+    thermal: frozenset[str] = frozenset()
+    """The thermal terminals among the devices' and the composites': each one's
+    current is the heat flowing into it, in watts."""
     derivatives: tuple[tuple[str, str], ...] = ()
     """For each device, every pair of its terminals and internal unknowns, in the order
     of `conductances`' columns."""
@@ -414,6 +422,9 @@ class Response:
     composites: Composites = ()
     """Each terminal of a component instance or a logic device, with the indices of the
     device terminals whose currents sum to its own."""
+    thermal: frozenset[str] = frozenset()
+    """The thermal terminals among the devices' and the composites': each one's
+    current is the heat flowing into it, in watts."""
 
     def voltage(self, net: str, reference: str | None = None) -> Complex:
         """The phasor of `net` at each frequency, relative to `reference` or ground."""
@@ -472,6 +483,9 @@ class Waveforms:
     composites: Composites = ()
     """Each terminal of a component instance or a logic device, with the indices of the
     device terminals whose currents and charges sum to its own."""
+    thermal: frozenset[str] = frozenset()
+    """The thermal terminals among the devices' and the composites': each one's
+    current is the heat flowing into it, in watts."""
     derivatives: tuple[tuple[str, str], ...] = ()
     """For each device, every pair of its terminals and internal unknowns, in the order
     of `conductances`' columns."""

@@ -146,12 +146,13 @@ class Component:
         """The component, with a rating its maker states on one of its `stress`es.
 
         The rating is of its ports, as [`Device.rated`][jolty.devices.Device.rated]
-        describes, and its power is what it dissipates, all its ports' currents times
-        their voltages.
+        describes: its power is what it dissipates, all its electrical ports' currents
+        times their voltages, and its temperature the simulation's, raised by the
+        thermal net its port ``thermal`` joins, if it has one.
 
         Raises:
-            DimensionError: When a bound is not a voltage, a current or a power as the
-                stress is.
+            DimensionError: When a bound is not a voltage, a current, a power or a
+                temperature as the stress is.
             ValueError: When the terminals are not its ports, or not as many as the
                 stress needs, or the bounds are none or out of order.
         """

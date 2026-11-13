@@ -137,19 +137,19 @@ pub struct Instance {
 }
 
 /// A limit a part's maker states on one of its stresses, which a simulation checks: the
-/// voltage of one of its terminals over another, the current into one, or the power it
-/// dissipates.
+/// voltage of one of its terminals over another, the current into one, the power it
+/// dissipates, or its temperature.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rating {
     /// What the rating limits.
     pub stress: Stress,
     /// The terminals the stress is at: two for a voltage, the first's over the second's,
-    /// one for a current, into it, and none for the power.
+    /// one for a current, into it, and none for the power or the temperature.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminals: Vec<Name>,
     /// The largest value the stress may take, in SI base units, if the rating states one;
-    /// a power's rating does.
+    /// a power's rating does, and a temperature's is in kelvins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maximum: Option<f64>,
     /// The smallest value the stress may take, if the rating states one; a power's states
@@ -166,9 +166,12 @@ pub enum Stress {
     Voltage,
     /// The current into a terminal.
     Current,
-    /// The power the part dissipates: the sum over its terminals of each one's voltage
-    /// times the current into it.
+    /// The power the part dissipates: the sum over its electrical terminals of each one's
+    /// voltage times the current into it.
     Power,
+    /// The part's temperature: the simulation's, raised by its thermal net's where it
+    /// heats, the net its terminal `thermal` joins.
+    Temperature,
 }
 
 impl Stress {
@@ -178,7 +181,7 @@ impl Stress {
         match self {
             Self::Voltage => 2,
             Self::Current => 1,
-            Self::Power => 0,
+            Self::Power | Self::Temperature => 0,
         }
     }
 }

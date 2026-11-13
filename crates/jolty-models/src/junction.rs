@@ -31,11 +31,13 @@ pub(crate) fn band_gap<R: Real>(temperature: R) -> R {
 ///
 /// It scales parameters from the nominal temperature as ngspice does: saturation currents
 /// with the energy gap, built-in potentials and depletion capacitances with silicon's band
-/// gap, and other parameters by their own coefficients.
+/// gap, and other parameters by their own coefficients. The device's temperature is a
+/// number like any parameter, so a device that heats carries every scaled parameter's
+/// derivative with respect to it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Temperatures<R: Real = f64> {
     /// The temperature the device is evaluated at.
-    pub(crate) actual: f64,
+    pub(crate) actual: R,
     /// The temperature its parameters were measured at.
     pub(crate) nominal: R,
 }
@@ -46,7 +48,7 @@ impl<R: Real> Temperatures<R> {
     /// # Errors
     ///
     /// Returns an error when the nominal temperature is not positive.
-    pub(crate) fn new(actual: f64, nominal: R) -> Result<Self, ParameterError> {
+    pub(crate) fn new(actual: R, nominal: R) -> Result<Self, ParameterError> {
         ParameterError::positive("nominal_temperature", nominal)?;
         Ok(Self { actual, nominal })
     }
@@ -66,13 +68,13 @@ impl<R: Real> Temperatures<R> {
 
 impl<R: Real> Temperatures<R> {
     /// The thermal voltage at the device's temperature.
-    pub(crate) const fn thermal_voltage(self) -> f64 {
-        thermal_voltage(self.actual)
+    pub(crate) fn thermal_voltage(self) -> R {
+        self.actual * BOLTZMANN / ELEMENTARY_CHARGE
     }
 
     /// The device's temperature over the nominal temperature.
     pub(crate) fn ratio(self) -> R {
-        R::constant(self.actual) / self.nominal
+        self.actual / self.nominal
     }
 
     /// The factor that scales a saturation current with `emission` coefficient, given the
@@ -89,8 +91,8 @@ impl<R: Real> Temperatures<R> {
     pub(crate) fn junction(self, potential: R, capacitance: R, grading: R) -> (R, R) {
         let nominal = self.nominal / REFERENCE_TEMPERATURE;
         let intrinsic = (potential - potential_shift(self.nominal)) / nominal;
-        let scaled = intrinsic * (self.actual / REFERENCE_TEMPERATURE)
-            + potential_shift(R::constant(self.actual));
+        let scaled =
+            intrinsic * (self.actual / REFERENCE_TEMPERATURE) + potential_shift(self.actual);
         let stretch = |temperature: R, potential: R| {
             grading
                 * ((temperature - REFERENCE_TEMPERATURE) * 4e-4
@@ -99,8 +101,7 @@ impl<R: Real> Temperatures<R> {
         };
         (
             scaled,
-            capacitance * stretch(R::constant(self.actual), scaled)
-                / stretch(self.nominal, potential),
+            capacitance * stretch(self.actual, scaled) / stretch(self.nominal, potential),
         )
     }
 }

@@ -130,6 +130,7 @@ class _Names(_Model):
     nets: tuple[str, ...] = ()
     terminals: tuple[str, ...] = ()
     composites: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    thermal: tuple[str, ...] = ()
     derivatives: tuple[tuple[str, str], ...] = ()
     variables: tuple[tuple[str, str], ...] = ()
 
@@ -379,6 +380,7 @@ def _load(
                 terminals=header.terminals,
                 currents=data[f"{name}.currents"],
                 composites=header.composites,
+                thermal=frozenset(header.thermal),
             )
         case _Waveforms(statistics=statistics):
             return results.Waveforms(
@@ -489,6 +491,7 @@ def _names(result: results.Result) -> _Names:
         nets=result.nets,
         terminals=result.terminals,
         composites=result.composites,
+        thermal=tuple(sorted(result.thermal)),
         derivatives=result.derivatives,
         variables=result.variables,
     )
@@ -523,6 +526,7 @@ def _observed(
         "currents": data[f"{name}.currents"],
         "charges": data[f"{name}.charges"],
         "composites": header.composites,
+        "thermal": frozenset(header.thermal),
         "derivatives": header.derivatives,
         "conductances": data[f"{name}.conductances"],
         "capacitances": data[f"{name}.capacitances"],

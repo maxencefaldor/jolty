@@ -16,8 +16,8 @@ use crate::{Observation, Options, SimulationError, Simulator};
 const FIRST_STEPPED: f64 = 1e-2;
 /// The largest factor gmin stepping divides the conductance by from one stage to the next.
 const STEPPED_DIVISOR: f64 = 10.0;
-/// The factor below which gmin stepping, having shrunk its divisor after each failure,
-/// gives up.
+/// The factor below which gmin stepping, having shrunk its divisor after each failure or
+/// each stage that barely converged, gives up.
 const SMALLEST_STEPPED_DIVISOR: f64 = 1.00005;
 /// The first increment of the source scale in source stepping.
 const FIRST_SOURCE_INCREMENT: f64 = 0.1;
@@ -437,9 +437,10 @@ impl Simulator {
     /// Solves with the conductance `stepped` large, shrinking it from each solution to the
     /// next to gmin, until the circuit is solved as it is, without the shunt or with gmin
     /// across its junctions, as ngspice's dynamic and true gmin stepping do: the divisor
-    /// grows after a quick success, to at most a decade, and shrinks to its fourth root
-    /// after a failure, which retries from the last solution. Every solve is deflated by
-    /// the solutions `deflated`.
+    /// grows after a quick success, to at most a decade, shrinks to its square root after a
+    /// stage that barely converged and to its fourth root after a failure, which retries
+    /// from the last solution, and gives up below [`SMALLEST_STEPPED_DIVISOR`]. Every solve
+    /// is deflated by the solutions `deflated`.
     fn gmin_stepping(
         &mut self,
         values: &mut [f64],
@@ -469,6 +470,11 @@ impl Simulator {
                         divisor = (divisor * divisor.sqrt()).min(STEPPED_DIVISOR);
                     } else if iterations > 3 * options.dc_iterations / 4 {
                         divisor = divisor.sqrt();
+                        // Stage after stage barely converging, the conductance would creep
+                        // toward gmin without end: the stepping has stalled.
+                        if divisor < SMALLEST_STEPPED_DIVISOR {
+                            return Err(Failure::Diverged);
+                        }
                     }
                     conductance = (conductance / divisor).max(options.gmin);
                 }

@@ -102,22 +102,27 @@ class Device:
         """The device, with a rating its maker states on one of its `stress`es.
 
         A voltage is of the first of its two `terminals` over the second, a current is
-        into its one terminal, and the power names none; a voltage is of the device's
-        first two terminals by default, in order, and a current into its first. A
-        rating bounds its stress from above, from below or both: a capacitor rated 50 V
-        either way takes ``maximum=50 * V, minimum=-50 * V``. A simulation checks every
-        rating at the operating point and over a transient.
+        into its one terminal, and the power and the temperature name none; a voltage
+        is of the device's first two terminals by default, in order, and a current into
+        its first. The power is what its electrical terminals take, and the temperature
+        the simulation's, raised by its thermal net's where it is
+        [heated][jolty.devices.Device.heated]. A rating bounds its stress from above,
+        from below or both: a capacitor rated 50 V either way takes
+        ``maximum=50 * V, minimum=-50 * V``. A simulation checks every rating at the
+        operating point and over a transient.
 
         Examples:
-            >>> from jolty.units import V, W, kohm, uF
+            >>> from jolty.units import V, W, celsius, kohm, uF
             >>> resistor(1 * kohm).rated("power", 0.25 * W).ratings[0].maximum
             0.25
             >>> capacitor(1 * uF).rated("voltage", 50 * V).ratings[0].terminals
             ('a', 'b')
+            >>> diode().rated("temperature", celsius(175)).ratings[0].maximum
+            448.15
 
         Raises:
-            DimensionError: When a bound is not a voltage, a current or a power as the
-                stress is.
+            DimensionError: When a bound is not a voltage, a current, a power or a
+                temperature as the stress is.
             ValueError: When the terminals are not the device's, or not as many as the
                 stress needs, or the bounds are none or out of order.
         """
@@ -129,6 +134,32 @@ class Device:
             terminals=terminals,
         )
         return replace(self, ratings=(*self.ratings, rating))
+
+    def heated(self) -> Device:
+        """The device, heated by the power it dissipates.
+
+        A terminal ``thermal`` joins it to a thermal net, or to the ground, the ambient.
+        The device runs at the simulation's temperature raised by that net's, and the
+        power its electrical terminals take, each one's voltage times the current into
+        it, flows into the net as heat. A resistor, a diode, a JFET, a bipolar
+        transistor and a MOSFET heat.
+
+        Examples:
+            >>> diode().heated().terminals
+            ('anode', 'cathode', 'thermal')
+
+        Raises:
+            ValueError: When the device's model does not heat, or the engine cannot
+                read its parameters.
+        """
+        _core.terminals(self.model, json.dumps(self.parameters))
+        parameters: dict[str, JsonValue] = {**self.parameters, "thermal": True}
+        try:
+            terminals = _core.terminals(self.model, json.dumps(parameters))
+        except ValueError:
+            message = f"a {self.model} does not heat"
+            raise ValueError(message) from None
+        return replace(self, terminals=tuple(terminals), parameters=parameters)
 
     def numbered(self, part: str) -> Device:
         """The device, standing for the part its maker numbers `part`.
@@ -156,8 +187,8 @@ def rate(
     It is as [`Device.rated`][jolty.devices.Device.rated] describes.
 
     Raises:
-        DimensionError: When a bound is not a voltage, a current or a power as the
-            stress is.
+        DimensionError: When a bound is not a voltage, a current, a power or a
+            temperature as the stress is.
         ValueError: When the terminals are not `own`, or not as many as the stress
             needs, or the bounds are none or out of order.
     """
@@ -165,6 +196,7 @@ def rate(
         "voltage": (VOLTAGE, own[:2]),
         "current": (CURRENT, own[:1]),
         "power": (POWER, ()),
+        "temperature": (TEMPERATURE, ()),
     }[stress]
     named = tuple(defaults if terminals is None else terminals)
     unknown = [terminal for terminal in named if terminal not in own]

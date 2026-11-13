@@ -7,7 +7,8 @@ flattened into devices whose ids and nets join their paths with underscores, suc
 subcircuits. [`ngspice`][jolty.spice.export.ngspice] runs one analysis of those lines in
 ngspice, with tolerances as tight as jolty's, and reads the raw file it writes;
 [`vector`][jolty.spice.export.vector] names the ngspice vector of a jolty unknown.
-Logic devices have no SPICE element, so a circuit that holds one cannot be written.
+Logic devices and thermal networks have no SPICE element, and ngspice heats no device by
+what it dissipates, so a circuit that holds one cannot be written.
 """
 
 import math
@@ -260,7 +261,17 @@ def element(instance: ir.Instance) -> str:
     if instance.of.device not in ELEMENTS:
         message = f"a {instance.of.device} has no SPICE element"
         raise _unwritable(message)
+    if instance.parameters.get("thermal") is True:
+        message = (
+            f"{instance.id} is a heated {instance.of.device}, which ngspice has not"
+        )
+        raise _unwritable(message)
     return ELEMENTS[instance.of.device].letter + instance.id
+
+
+def _cool(parameters: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """A device's parameters but ``thermal``, which one that does not heat may state."""
+    return {key: value for key, value in parameters.items() if key != "thermal"}
 
 
 def netlist(
@@ -277,7 +288,7 @@ def netlist(
 
     Raises:
         JoltyError: When the circuit holds a device SPICE has no element for, such as
-            a logic device.
+            a logic device or a heated one.
     """
     circuit = flatten(circuit, subcircuits)
     top = circuit.components[circuit.top]
@@ -288,7 +299,7 @@ def netlist(
             lines.append(_subcircuit(circuit, instance, ground))
             continue
         element(instance)
-        model, values = instance.of.device, instance.parameters
+        model, values = instance.of.device, _cool(instance.parameters)
         nets = _nets(instance, model)
         nodes = " ".join("0" if net == ground else net for net in nets)
         match model:

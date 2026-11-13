@@ -35,10 +35,12 @@ struct Simulator {
     nets: Vec<String>,
     terminals: Vec<String>,
     terminal_nodes: Vec<Option<String>>,
+    thermal_terminals: Vec<bool>,
     derivatives: Vec<(String, String)>,
     variables: Vec<(String, &'static str)>,
     composites: Vec<(String, Vec<usize>)>,
     composite_nodes: Vec<Option<String>>,
+    thermal_composites: Vec<bool>,
     devices: usize,
 }
 
@@ -88,6 +90,7 @@ impl Simulator {
             .into_iter()
             .map(|node| node.map(str::to_owned))
             .collect();
+        let thermal_terminals = inner.thermal_terminals();
         let derivatives = inner.derivatives().to_vec();
         let variables = inner.variables().to_vec();
         let composites = inner.composites().to_vec();
@@ -96,16 +99,19 @@ impl Simulator {
             .into_iter()
             .map(|node| node.map(str::to_owned))
             .collect();
+        let thermal_composites = inner.thermal_composites();
         Ok(Self {
             inner: Mutex::new(inner),
             unknowns,
             nets,
             terminals,
             terminal_nodes,
+            thermal_terminals,
             derivatives,
             variables,
             composites,
             composite_nodes,
+            thermal_composites,
             devices,
         })
     }
@@ -137,6 +143,13 @@ impl Simulator {
         self.terminal_nodes.clone()
     }
 
+    /// Whether each terminal is thermal, its voltage a temperature above the ambient and
+    /// its current the heat flowing into it, in the order of `terminals`.
+    #[getter]
+    fn thermal_terminals(&self) -> Vec<bool> {
+        self.thermal_terminals.clone()
+    }
+
     /// The equation and the unknown of every derivative of every device, each a terminal
     /// such as `M1.drain` or an internal unknown such as `M1:drain`, in the order of every
     /// result's conductances and capacitances.
@@ -152,9 +165,10 @@ impl Simulator {
         self.variables.clone()
     }
 
-    /// Every terminal of every component instance and logic device on an electrical net,
-    /// such as `X1.vdd`, with the indices among the terminals of those whose currents and
-    /// charges sum to its own.
+    /// Every terminal of every component instance and logic device on an electrical or a
+    /// thermal net, such as `X1.vdd`, with the indices among the terminals of those whose
+    /// currents and charges sum to its own. One on the ground, which is the ambient as
+    /// well, sums its electrical terminals only.
     #[getter]
     fn composites(&self) -> Vec<(String, Vec<usize>)> {
         self.composites.clone()
@@ -165,6 +179,12 @@ impl Simulator {
     #[getter]
     fn composite_nodes(&self) -> Vec<Option<String>> {
         self.composite_nodes.clone()
+    }
+
+    /// Whether each composite terminal is on a thermal net, in the order of `composites`.
+    #[getter]
+    fn thermal_composites(&self) -> Vec<bool> {
+        self.thermal_composites.clone()
     }
 
     /// The number of devices, analog and logic, with every component instance unfolded.

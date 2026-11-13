@@ -19,6 +19,7 @@ mod device;
 mod diode;
 mod dual;
 mod evaluation;
+mod heat;
 mod jfet;
 mod junction;
 mod logic;
@@ -53,6 +54,7 @@ pub use controlled::{
 pub use device::{Device, Model, Native, NativeDevice, NativeModel, ParameterError, Source};
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Contributions, Input, Output};
+pub use heat::{Heatable, HeatableModel, Heated, Heating, Thermal};
 pub use jfet::{Channel, Jfet, JfetParameters};
 pub use jolty_expressions::Choice;
 pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
@@ -68,7 +70,7 @@ pub use passive::{
     Capacitor, CapacitorParameters, Inductor, InductorParameters, Resistor, ResistorParameters,
 };
 pub use photocell::{Photocell, PhotocellParameters};
-pub use real::{Gradient, Real};
+pub use real::{Gradient, Hyper, Real};
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
 pub use stamp::{SMALL_RESISTANCE, TerminalPair};
 pub use switch::{VoltageControlledSwitch, VoltageControlledSwitchParameters};
@@ -93,8 +95,8 @@ impl Library {
         let mut library = Self::default();
         library.add(Native::<BehavioralCurrentSource>::new());
         library.add(Native::<BehavioralVoltageSource>::new());
-        library.add(Native::<BipolarTransistor>::new());
-        library.add(Native::<Resistor>::new());
+        library.add(Thermal::<BipolarTransistor>::new());
+        library.add(Thermal::<Resistor>::new());
         library.add(Native::<Capacitor>::new());
         library.add(Native::<Inductor>::new());
         library.add(Native::<VoltageSource>::new());
@@ -104,9 +106,9 @@ impl Library {
         library.add(Native::<VoltageControlledVoltageSource>::new());
         library.add(Native::<VoltageControlledCurrentSource>::new());
         library.add(Native::<VoltageControlledSwitch>::new());
-        library.add(Native::<Diode>::new());
-        library.add(Native::<Jfet>::new());
-        library.add(Native::<Mosfet>::new());
+        library.add(Thermal::<Diode>::new());
+        library.add(Thermal::<Jfet>::new());
+        library.add(Thermal::<Mosfet>::new());
         library.add(Native::<Photocell>::new());
         library.add(Native::<ThermalResistance>::new());
         library.add(Native::<ThermalCapacitance>::new());

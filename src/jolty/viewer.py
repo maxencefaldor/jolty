@@ -221,15 +221,20 @@ def _levels(result: results.Result, axis: np.ndarray) -> dict[str, np.ndarray]:
 def _currents(
     result: _Observed, frames: np.ndarray, currents: np.ndarray
 ) -> dict[str, JsonValue]:
-    """The current into every terminal, the composites' summed, at the points."""
+    """The current into every electrical terminal, the composites' summed, at `frames`.
+
+    The heat into a thermal terminal is no current: no light moves along its lead.
+    """
     terminals: dict[str, JsonValue] = {}
     if not currents.size:
         return terminals
     sampled = currents[frames]
     for index, terminal in enumerate(result.terminals):
-        terminals[terminal] = _series(sampled[:, index])
+        if terminal not in result.thermal:
+            terminals[terminal] = _series(sampled[:, index])
     for composite, members in result.composites:
-        terminals[composite] = _series(sampled[:, list(members)].sum(axis=1))
+        if composite not in result.thermal:
+            terminals[composite] = _series(sampled[:, list(members)].sum(axis=1))
     return terminals
 
 

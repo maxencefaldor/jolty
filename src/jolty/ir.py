@@ -143,20 +143,22 @@ type PartNumber = Annotated[str, AfterValidator(part_number)]
 """A maker's part number, such as ``2N3904``."""
 
 
-type Stress = Literal["voltage", "current", "power"]
+type Stress = Literal["voltage", "current", "power", "temperature"]
 """What a rating limits: the voltage of one terminal over another, the current into a
-terminal, or the power a part dissipates, the sum over its terminals of each one's
-voltage times the current into it."""
+terminal, the power a part dissipates, the sum over its electrical terminals of each
+one's voltage times the current into it, or the part's temperature, the simulation's
+raised by its thermal net's where it heats, the net its terminal ``thermal`` joins."""
 
-_TERMINALS: dict[str, int] = {"voltage": 2, "current": 1, "power": 0}
+_TERMINALS: dict[str, int] = {"voltage": 2, "current": 1, "power": 0, "temperature": 0}
 
 
 class Rating(_Model):
     """A limit a part's maker states on one of its stresses, which a simulation checks.
 
     The terminals are two for a voltage, the first's over the second's, one for a
-    current, into it, and none for the power. A rating bounds its stress from above,
-    from below or both, in SI base units; a power's only from above, and above 0.
+    current, into it, and none for the power or the temperature. A rating bounds its
+    stress from above, from below or both, in SI base units; a power's only from above,
+    and above 0, and a temperature's in kelvins, above 0.
     """
 
     stress: Stress
@@ -187,6 +189,11 @@ class Rating(_Model):
             self.minimum is not None or self.maximum is None or self.maximum <= 0
         ):
             message = "a power rating states only a maximum, above 0"
+            raise ValueError(message)
+        if self.stress == "temperature" and any(
+            bound is not None and bound <= 0 for bound in (self.minimum, self.maximum)
+        ):
+            message = "a temperature rating's bounds are above 0 K"
             raise ValueError(message)
         if (
             self.minimum is not None

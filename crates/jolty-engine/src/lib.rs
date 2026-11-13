@@ -191,6 +191,20 @@ impl Simulator {
             .collect()
     }
 
+    /// Whether each terminal, in the order of [`Simulator::terminals`], is thermal: its
+    /// voltage a temperature above the ambient, and its current the heat flowing into it.
+    #[must_use]
+    pub fn thermal_terminals(&self) -> Vec<bool> {
+        self.system
+            .devices
+            .iter()
+            .flat_map(|device| {
+                let thermal = device.thermal();
+                (0..device.nodes().len()).map(move |terminal| thermal.contains(&terminal))
+            })
+            .collect()
+    }
+
     /// The equation and the unknown of every derivative of every device, in the order of
     /// every [`Observation`]'s conductances and capacitances: for each device, every pair
     /// of its terminals and internal unknowns, row by row. Each is named as a terminal, for
@@ -208,12 +222,25 @@ impl Simulator {
         self.observer.variables()
     }
 
-    /// Every terminal of every component instance and logic device on an electrical net,
-    /// such as `X1.vdd`, with the indices among [`Simulator::terminals`] of the device
-    /// terminals whose currents and charges sum to its own.
+    /// Every terminal of every component instance and logic device on an electrical or a
+    /// thermal net, such as `X1.vdd`, with the indices among [`Simulator::terminals`] of
+    /// the device terminals whose currents and charges sum to its own. One on the
+    /// reference, which is the ambient as well as the ground, sums its electrical
+    /// terminals only.
     #[must_use]
     pub fn composites(&self) -> &[(String, Vec<usize>)] {
         self.observer.composites()
+    }
+
+    /// Whether each composite terminal, in the order of [`Simulator::composites`], is on a
+    /// thermal net.
+    #[must_use]
+    pub fn thermal_composites(&self) -> Vec<bool> {
+        self.system
+            .composites
+            .iter()
+            .map(|composite| composite.thermal)
+            .collect()
     }
 
     /// The unknown that is each composite terminal's voltage, by name, in the order of

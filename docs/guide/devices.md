@@ -5,6 +5,7 @@ Each function checks its parameters' units and returns a device ready to place; 
 
 Devices are simulated at the plan's temperature, 27 °C unless it gives one, and each device's parameters were measured at its `nominal_temperature`, 27 °C unless given.
 Away from it, passive values drift by their temperature coefficients, and semiconductors scale as ngspice scales them, as the sections below say.
+A device that [heats](#self-heating) runs at its own temperature instead, which the power it dissipates raises.
 
 Logic devices, whose pins join logic nets, have a page of their own: [Logic](logic.md).
 
@@ -46,9 +47,9 @@ A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and 
 
 ## Ratings
 
-Any device may state the limits its maker warrants it within, as `device.rated(stress, maximum, minimum=..., terminals=...)`: a `"voltage"` of one of its terminals over another, a `"current"` into one, or the `"power"` it dissipates.
-A voltage is of the device's first two terminals by default, in order, and a current into its first.
-A rating bounds its stress from above, from below or both, as its maker states it; a power's only from above.
+Any device may state the limits its maker warrants it within, as `device.rated(stress, maximum, minimum=..., terminals=...)`: a `"voltage"` of one of its terminals over another, a `"current"` into one, the `"power"` it dissipates, or its `"temperature"`.
+A voltage is of the device's first two terminals by default, in order, and a current into its first; the power is what its electrical terminals take, and the temperature the simulation's, raised by its thermal net's where it [heats](#self-heating).
+A rating bounds its stress from above, from below or both, as its maker states it; a power's only from above, and a temperature's in kelvins, as `celsius(150)`.
 
 ```python
 devices.resistor(100 * ohm).rated("power", 0.25 * W)
@@ -57,7 +58,7 @@ devices.diode().rated("voltage", minimum=-100 * V)
 switch = devices.bipolar_transistor().rated(
     "voltage", 40 * V, terminals=("collector", "emitter")
 )
-switch.rated("power", 0.625 * W)
+switch.rated("power", 0.625 * W).rated("temperature", celsius(150))
 ```
 
 A component rates its ports the same way, `component.rated(...)`, and its power is all it dissipates.
@@ -168,6 +169,24 @@ c.connect(heat.a, sink.b, ground)
 ```
 
 A thermal net's unknown is its temperature above the ambient, which results read with `rise(net)`: 50 K here.
+Results read the heat flowing into a thermal terminal as its current, `current(instance, terminal)`, in watts.
+
+### Self-heating
+
+`device.heated()` heats a resistor, a diode, a JFET, a bipolar transistor or a MOSFET by the power it dissipates: a terminal `thermal` joins it to a thermal net, or to the ground, the ambient.
+The device runs at the simulation's temperature raised by that net's, every parameter scaled to it as the sections below say, and the power its electrical terminals take, each one's voltage times the current into it, flows into the net as heat.
+So a transistor whose junction a thermal resistance holds to the ambient settles where the heat it makes flows away, and a thermal capacitance beside it sets how fast it gets there:
+
+```python
+transistor = c.place(devices.bipolar_transistor().heated(), id="Q1")
+mount = c.place(devices.thermal_resistance(200 * K / W), id="RTH")
+c.connect(transistor.thermal, mount.a, name="junction")
+c.connect(mount.b, ground)
+```
+
+Every analysis sees the heating: an operating point balances it, a transient follows it, and a small-signal response carries its thermal poles, below which a resistor with a temperature coefficient takes a resistance of its own.
+A heated device keeps the form its value took at the simulation's temperature: a resistor below 1 Ω there carries its current as an unknown however hot it runs.
+ngspice heats no such device, so a circuit that holds one is not written as a SPICE netlist.
 
 ## Diode
 

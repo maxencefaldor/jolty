@@ -1278,3 +1278,36 @@ fn a_gate_converges_as_its_supply_powers_up() {
     let outcome = simulator(&circuit).run(&Analysis::Transient(transient), &Options::default());
     assert!(outcome.is_ok(), "{:?}", outcome.err());
 }
+
+#[test]
+fn a_heated_resistor_settles_where_its_power_flows_through_its_sink() {
+    // 10 V across 100 Ω with tc1 = 4e-3 /K, held to the ambient by 50 K/W: the rise solves
+    // `tc · ΔT² + ΔT − 50 · v² / r = 0`.
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(10.0),
+            &[("positive", "top"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 100.0, "temperature_coefficient": 4e-3, "thermal": true}),
+            &[("a", "top"), ("b", "0"), ("thermal", "junction")],
+        ),
+        (
+            "RTH",
+            "thermal_resistance",
+            json!({"resistance": 50.0}),
+            &[("a", "junction"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let solution = simulator.operating_point(&Options::default()).unwrap();
+    let heat: f64 = 50.0 * 100.0 / 100.0;
+    let rise = ((1.0 + 4.0 * 4e-3 * heat).sqrt() - 1.0) / (2.0 * 4e-3);
+    assert_close(solution.values[index(&simulator, "junction")], rise, 1e-9);
+    let current = solution.values[index(&simulator, "V1:current")];
+    assert_close(-current, 10.0 / (100.0 * (1.0 + 4e-3 * rise)), 1e-9);
+}

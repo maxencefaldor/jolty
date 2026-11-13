@@ -116,7 +116,7 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 | `NoiseSpectrum` | `frequencies`, `densities`, `contributions` per noise source, and an `input` with its `gains` | a density, one per frequency |
 | `PolesZeros` | `poles`, `zeros`, and the `operating_point` | a complex frequency, one per root |
 
-`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `rise(net)` a thermal net's temperature above the ambient, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a terminal's, `conductance`, `capacitance` and `variable` read a device's own model, and `level(net)` reads a logic net's level.
+`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `rise(net)` a thermal net's temperature above the ambient, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a terminal's, the current into a thermal terminal being the heat that flows in, in watts, `conductance`, `capacitance` and `variable` read a device's own model, and `level(net)` reads a logic net's level.
 `terminals` names the columns of `currents` and `charges`, `derivatives` those of `conductances` and `capacitances`, and `variables` those of `readings`.
 A name that is not an unknown, a terminal, a derivative, a variable or a logic net raises a `KeyError` that suggests the closest names.
 
