@@ -28,6 +28,7 @@ _SYMBOLS = {"voltage": "V", "current": "A"}
 _STRATEGIES = {
     "direct": "Newton iteration",
     "gmin_stepping": "gmin stepping",
+    "junction_gmin_stepping": "junction gmin stepping",
     "source_stepping": "source stepping",
 }
 
@@ -81,7 +82,8 @@ class PointReport(_Model):
     kind: Literal["operating_point"] = "operating_point"
     name: str
     strategy: str = Field(
-        description="How the engine found it: direct, gmin_stepping or source_stepping."
+        description="How the engine found it: direct, gmin_stepping, "
+        "junction_gmin_stepping or source_stepping."
     )
     values: tuple[Value, ...]
     levels: tuple[Level, ...] = ()
@@ -113,8 +115,9 @@ class PointsReport(_Model):
     kind: Literal["operating_points"] = "operating_points"
     name: str
     strategies: tuple[str, ...] = Field(
-        description="How the engine found each solution: direct, gmin_stepping or "
-        "source_stepping, on the equations deflated by those before it."
+        description="How the engine found each solution: direct, gmin_stepping, "
+        "junction_gmin_stepping or source_stepping, on the equations deflated by those "
+        "before it."
     )
     values: tuple[Solutions, ...]
     unlisted: int = Field(description="Unknowns left out of the list.")
@@ -475,8 +478,8 @@ class SensitivityReport(_Model):
     points: int = Field(description="The points the derivatives are taken at.")
     strategy: str | None = Field(
         default=None,
-        description="How the engine found the operating point: direct, gmin_stepping "
-        "or source_stepping; null along a sweep or a transient.",
+        description="How the engine found the operating point: direct, gmin_stepping, "
+        "junction_gmin_stepping or source_stepping; null along a sweep or a transient.",
     )
     unit: str = Field(
         default="",

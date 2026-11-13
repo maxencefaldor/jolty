@@ -513,6 +513,45 @@ def current_controlled(c: Builder) -> None:
     )
 
 
+@component
+def negative_load(c: Builder) -> None:
+    """A transistor saturated into a negative resistance at its emitter.
+
+    A transconductance from its emitter to itself pushes 97 µA per volt into it, and
+    another feeds back its collector's voltage; a diode keeps the emitter above the
+    ground. Newton iteration and gmin stepping from every node fail, in ngspice as in
+    jolty, and gmin stepping across the junctions finds it.
+    """
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(4.8 * V), id="V1")
+    bias = c.place(devices.resistor(230 * kohm), id="R1")
+    sink = c.place(devices.current_source(0.2 * mA), id="I1")
+    feedback = c.place(devices.voltage_controlled_current_source(1.75 * uS), id="G1")
+    clamp = c.place(devices.diode(), id="D1")
+    transistor = c.place(devices.bipolar_transistor(polarity="pnp"), id="Q1")
+    negative = c.place(devices.voltage_controlled_current_source(97 * uS), id="G2")
+    c.connect(supply.positive, bias.b, transistor.base, name="base")
+    c.connect(bias.a, sink.positive, feedback.control_negative, name="low")
+    c.connect(transistor.collector, feedback.control_positive, name="collector")
+    c.connect(
+        transistor.emitter,
+        feedback.negative,
+        clamp.cathode,
+        negative.negative,
+        negative.control_positive,
+        name="emitter",
+    )
+    c.connect(
+        supply.negative,
+        sink.negative,
+        feedback.positive,
+        clamp.anode,
+        negative.positive,
+        negative.control_negative,
+        ground,
+    )
+
+
 _NMOS = devices.mosfet(
     width=100 * um,
     length=2 * um,
@@ -1063,6 +1102,7 @@ def flickering(c: Builder) -> None:
         integrated_stage,
         pnp_mirror,
         current_controlled,
+        negative_load,
         nmos_stage,
         mosfet_curves,
         level_three_stage,
