@@ -30,6 +30,7 @@ pub enum PencilError {
 
 /// The generalized eigenvalues of the pencil `(a, b)`, the `λ` for which `a v = λ b v` with
 /// `v` nonzero, of two dense square matrices of `dimension` rows, in column-major order.
+/// An entry below `ε` times the largest of its matrix is taken as zero.
 ///
 /// # Errors
 ///
@@ -50,13 +51,60 @@ pub fn generalized_eigenvalues(
     if n == 0 {
         return Ok(Vec::new());
     }
-    // The complex QZ iteration, which gives each eigenvalue of a conjugate pair its own
-    // numerator and denominator.
-    let entry =
-        |matrix: &[f64], row: usize, column: usize| Complex64::new(matrix[column * n + row], 0.0);
-    let mut a = Mat::from_fn(n, n, |row, column| entry(a, row, column));
-    let mut b = Mat::from_fn(n, n, |row, column| entry(b, row, column));
+    let (a, b) = (flushed(a), flushed(b));
+    // faer 0.24's QZ iteration stops after 30 sweeps per row without saying so, and leaves
+    // the eigenvalues it has not found where they were: begun from NaN, they tell. The
+    // pencil reversed, `(P a P, P b P)` with `P` the exchange matrix, has the same
+    // eigenvalues, and its iteration takes another path, which converges where the first
+    // did not on pencils met so far.
+    if let Some(found) = complex_qz(n, |row, column| (a[column * n + row], b[column * n + row]))? {
+        return Ok(found);
+    }
+    let last = n - 1;
+    complex_qz(n, |row, column| {
+        let index = (last - column) * n + (last - row);
+        (a[index], b[index])
+    })?
+    .ok_or(PencilError::Unconverged)
+}
+
+/// `matrix` with its entries below `ε` times its largest made zero.
+///
+/// The QZ iteration's own tests take an entry that small as zero, as it is within the
+/// iteration's rounding. Left in, it breeds products that underflow, and
+/// faer 0.24's rotations, which divide by the magnitude of the pair they rotate, turn a
+/// pair of subnormal entries into NaN, which spreads through both matrices.
+fn flushed(matrix: &[f64]) -> Vec<f64> {
+    let largest = matrix
+        .iter()
+        .fold(0.0_f64, |largest, value| largest.max(value.abs()));
+    let least = f64::EPSILON * largest;
+    matrix
+        .iter()
+        .map(|&value| if value.abs() < least { 0.0 } else { value })
+        .collect()
+}
+
+/// The eigenvalues of the pencil whose entries `entry` gives, as `(a, b)` at a row and a
+/// column, by the complex QZ iteration, which gives each eigenvalue of a conjugate pair its
+/// own numerator and denominator; `None` when the iteration stopped before finding them
+/// all.
+fn complex_qz(
+    n: usize,
+    entry: impl Fn(usize, usize) -> (f64, f64),
+) -> Result<Option<Vec<Eigenvalue>>, PencilError> {
+    let mut a = Mat::from_fn(n, n, |row, column| {
+        Complex64::new(entry(row, column).0, 0.0)
+    });
+    let mut b = Mat::from_fn(n, n, |row, column| {
+        Complex64::new(entry(row, column).1, 0.0)
+    });
+    let unfound = Complex64::new(f64::NAN, f64::NAN);
     let (mut alpha, mut beta) = (Diag::zeros(n), Diag::zeros(n));
+    for index in 0..n {
+        alpha[index] = unfound;
+        beta[index] = unfound;
+    }
     // faer 0.24's blocked reduction to Hessenberg-triangular form returns zeros past its
     // first block of 32 columns, and its blocked QZ sweeps stall on pencils of 75 to about
     // 150 rows; the unblocked reduction and sweeps are exact, and as fast to 500 rows.
@@ -84,12 +132,16 @@ pub fn generalized_eigenvalues(
         spec,
     )
     .map_err(|_| PencilError::Unconverged)?;
-    Ok((0..n)
+    let found: Vec<Eigenvalue> = (0..n)
         .map(|index| Eigenvalue {
             alpha: alpha[index],
             beta: beta[index],
         })
-        .collect())
+        .collect();
+    Ok(found
+        .iter()
+        .all(|eigenvalue| !eigenvalue.alpha.is_nan() && !eigenvalue.beta.is_nan())
+        .then_some(found))
 }
 
 #[cfg(test)]
@@ -204,5 +256,18 @@ mod tests {
                 "{found:?}"
             );
         }
+    }
+
+    #[test]
+    fn takes_entries_far_below_the_largest_as_zero() {
+        // a = diag(1, 2, 3) but for four subnormal entries, which faer 0.24 rotates in
+        // pairs into NaN, the pencil reversed as well; b = I.
+        let tiny = 1e-310;
+        let a = [1.0, tiny, tiny, 0.0, 2.0, 0.0, tiny, tiny, 3.0];
+        let b = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let found = finite(&generalized_eigenvalues(3, &a, &b).expect("converges"));
+        let mut eigenvalues: Vec<f64> = found.iter().map(|eigenvalue| eigenvalue.re).collect();
+        eigenvalues.sort_by(f64::total_cmp);
+        assert_eq!(eigenvalues, [1.0, 2.0, 3.0], "{found:?}");
     }
 }

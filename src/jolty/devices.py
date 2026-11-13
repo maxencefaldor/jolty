@@ -176,7 +176,8 @@ class Device:
 
         Raises:
             DimensionError: When `temperature` is not one.
-            ValueError: When it lies below 0 K.
+            ValueError: When it lies below 0 K, or the device is a logic device, whose
+                timing holds whatever its temperature.
         """
         kelvins = temperature.to(TEMPERATURE, "a device's own temperature")
         if kelvins < 0:
@@ -200,18 +201,31 @@ class Device:
 
         Raises:
             DimensionError: When `offset` is not a temperature.
+            ValueError: When the device is a logic device, whose timing holds whatever
+                its temperature.
         """
         kelvins = offset.to(TEMPERATURE, "a device's temperature offset")
         return self._surrounded("temperature_offset", finite(kelvins, "offset"))
 
     def _surrounded(self, key: str, kelvins: float) -> Device:
-        """The device at a temperature of its own, `kelvins` as `key` gives it."""
+        """The device at a temperature of its own, `kelvins` as `key` gives it.
+
+        Raises:
+            ValueError: When the device's model takes no temperature of its own.
+        """
         kept = {
             name: value
             for name, value in self.parameters.items()
             if name not in {"temperature", "temperature_offset"}
         }
-        return replace(self, parameters={**kept, key: kelvins})
+        parameters: dict[str, JsonValue] = {**kept, key: kelvins}
+        _core.terminals(self.model, json.dumps(kept))
+        try:
+            _core.terminals(self.model, json.dumps(parameters))
+        except ValueError:
+            message = f"a {self.model} runs at no temperature of its own"
+            raise ValueError(message) from None
+        return replace(self, parameters=parameters)
 
     def numbered(self, part: str) -> Device:
         """The device, standing for the part its maker numbers `part`.
@@ -416,12 +430,20 @@ def coupled_inductors(
         ('a1', 'b1', 'a2', 'b2')
 
     Raises:
-        ValueError: When a winding is no inductor, or states ratings or a part number.
+        ValueError: When a winding is no inductor, states ratings or a part number, or
+            runs at a temperature of its own, which the coupled inductors take as a
+            whole, as [`held_at`][jolty.devices.Device.held_at] sets it.
     """
     tolerances: dict[str, ir.Tolerance] = {}
     for number, winding in enumerate(windings, start=1):
         if winding.model != "inductor" or winding.ratings or winding.part is not None:
             message = f"winding {number} is an inductor that states no ratings or part"
+            raise ValueError(message)
+        if {"temperature", "temperature_offset"} & winding.parameters.keys():
+            message = (
+                f"winding {number} runs at a temperature of its own, which the coupled "
+                "inductors take as a whole"
+            )
             raise ValueError(message)
         tolerances |= {
             f"windings.{number - 1}.{path}": tolerance

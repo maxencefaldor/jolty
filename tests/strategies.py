@@ -2,11 +2,13 @@
 """Random circuits drawn by Hypothesis, for the tests that simulate them.
 
 Each circuit joins every node to the ground through a tree of resistors, so it always
-has a DC path, then places sources and devices at random: capacitors, inductors in
-series with a resistor, so that no loop of inductors and voltage sources forms, diodes,
-bipolar and MOS transistors with series resistances that bound their currents, each
-MOSFET's body on its source, and transconductances. Sizes run past the 32 unknowns
-where hand-written circuits stop.
+has a DC path, then places sources and devices at random: capacitors, inductors and
+pairs of coupled windings each in series with a resistor, so that no loop of inductors
+and voltage sources forms, diodes, bipolar and MOS transistors with series resistances
+that bound their currents, each MOSFET's body on its source, some of them at
+temperatures of their own, transconductances, and current-controlled switches whose
+control port is in series with a resistor too. Sizes run past the 32 unknowns where
+hand-written circuits stop.
 """
 
 import os
@@ -19,7 +21,7 @@ from hypothesis import strategies as st
 
 from jolty import Simulation, devices, ir
 from jolty.settings import Level
-from jolty.units import A, F, H, S, V, m, ohm, us
+from jolty.units import A, F, H, K, S, V, m, ohm, us
 from jolty.waveforms import Pulse
 
 __all__ = ["PARASITIC", "SETTINGS", "STEP", "STOP", "circuits", "parasitic", "pulsed"]
@@ -54,10 +56,20 @@ def _current(draw: st.DrawFn) -> devices.Device:
     return devices.current_source(draw(_decades(1e-6, 1e-3)) * A)
 
 
+def _apart(draw: st.DrawFn, device: devices.Device) -> devices.Device:
+    """`device`, or the same at a temperature of its own, offset from the circuit's."""
+    if draw(st.booleans()):
+        return device
+    return device.warmer_by(draw(st.floats(-40, 80)) * K)
+
+
 def _diode(draw: st.DrawFn) -> devices.Device:
-    return devices.diode(
-        saturation_current=draw(_decades(1e-16, 1e-12)) * A,
-        series_resistance=draw(_decades(1, 100)) * ohm,
+    return _apart(
+        draw,
+        devices.diode(
+            saturation_current=draw(_decades(1e-16, 1e-12)) * A,
+            series_resistance=draw(_decades(1, 100)) * ohm,
+        ),
     )
 
 
@@ -65,32 +77,53 @@ POLARITIES: Final[tuple[Literal["npn", "pnp"], ...]] = ("npn", "pnp")
 
 
 def _bipolar(draw: st.DrawFn) -> devices.Device:
-    return devices.bipolar_transistor(
-        polarity=draw(st.sampled_from(POLARITIES)),
-        saturation_current=draw(_decades(1e-16, 1e-14)) * A,
-        forward_beta=draw(st.floats(20, 400)),
-        base_resistance=draw(_decades(10, 1e3)) * ohm,
-        emitter_resistance=draw(_decades(1, 100)) * ohm,
-        collector_resistance=draw(_decades(1, 100)) * ohm,
+    return _apart(
+        draw,
+        devices.bipolar_transistor(
+            polarity=draw(st.sampled_from(POLARITIES)),
+            saturation_current=draw(_decades(1e-16, 1e-14)) * A,
+            forward_beta=draw(st.floats(20, 400)),
+            base_resistance=draw(_decades(10, 1e3)) * ohm,
+            emitter_resistance=draw(_decades(1, 100)) * ohm,
+            collector_resistance=draw(_decades(1, 100)) * ohm,
+        ),
     )
 
 
 def _mosfet(draw: st.DrawFn) -> devices.Device:
     channel: Literal["n", "p"] = draw(st.sampled_from(["n", "p"]))
     threshold = draw(st.floats(0.3, 1.5)) * (V if channel == "n" else -V)
-    return devices.mosfet(
-        level=1,
-        channel=channel,
-        width=draw(_decades(1e-6, 1e-4)) * m,
-        length=draw(_decades(1e-6, 1e-5)) * m,
-        threshold_voltage=threshold,
-        drain_resistance=draw(_decades(1, 100)) * ohm,
-        source_resistance=draw(_decades(1, 100)) * ohm,
+    return _apart(
+        draw,
+        devices.mosfet(
+            level=1,
+            channel=channel,
+            width=draw(_decades(1e-6, 1e-4)) * m,
+            length=draw(_decades(1e-6, 1e-5)) * m,
+            threshold_voltage=threshold,
+            drain_resistance=draw(_decades(1, 100)) * ohm,
+            source_resistance=draw(_decades(1, 100)) * ohm,
+        ),
     )
 
 
 def _transconductance(draw: st.DrawFn) -> devices.Device:
     return devices.voltage_controlled_current_source(draw(_decades(1e-6, 1e-3)) * S)
+
+
+def _coupled(draw: st.DrawFn) -> devices.Device:
+    windings = [devices.inductor(draw(_decades(1e-9, 1e-3)) * H) for _ in range(2)]
+    return devices.coupled_inductors(windings, {(1, 2): draw(st.floats(-0.99, 0.99))})
+
+
+def _switch(draw: st.DrawFn) -> devices.Device:
+    on = draw(_decades(1e-6, 1e-3))
+    return devices.current_controlled_switch(
+        on_resistance=draw(_decades(1, 1e3)) * ohm,
+        off_resistance=draw(_decades(1e5, 1e7)) * ohm,
+        on_current=on * A,
+        off_current=draw(st.floats(-1, 0.5)) * on * A,
+    )
 
 
 DEVICES: Final = {
@@ -103,7 +136,42 @@ DEVICES: Final = {
     "G": _transconductance,
 }
 """What each device placed at random between existing nodes is, by its prefix; an
-inductor goes in series with a resistor besides."""
+inductor, a pair of coupled windings and a switch's control port go in series with a
+resistor besides."""
+
+
+def _placements(
+    draw: st.DrawFn, prefix: str, ends: list[str], fresh: str
+) -> list[tuple[str, devices.Device, list[str]]]:
+    """What a device of `prefix` placed between `ends` places.
+
+    Each is a prefix, a device and its nets: the device, and a resistor in series where
+    it needs one, `fresh` naming a net of its own.
+    """
+    match prefix:
+        case "L":
+            inductance = draw(_decades(1e-9, 1e-3)) * H
+            return [
+                ("L", devices.inductor(inductance), [ends[0], fresh]),
+                ("R", _resistor(draw, 1, 1e3), [fresh, ends[1]]),
+            ]
+        case "K":
+            second = f"{fresh}b"
+            return [
+                ("K", _coupled(draw), [ends[0], fresh, ends[2], second]),
+                ("R", _resistor(draw, 1, 1e3), [fresh, ends[1]]),
+                ("R", _resistor(draw, 1, 1e3), [second, ends[3]]),
+            ]
+        case "W":
+            return [
+                ("W", _switch(draw), [ends[0], ends[1], ends[2], fresh]),
+                ("R", _resistor(draw, 10, 1e5), [fresh, ends[3]]),
+            ]
+        case "M":
+            # Its body on its source, as a discrete MOSFET's is, so that no junction to
+            # it lies across a source with nothing to bound its current.
+            return [("M", _mosfet(draw), [*ends[:3], ends[2]])]
+    return [(prefix, DEVICES[prefix](draw), ends)]
 
 
 @st.composite
@@ -139,18 +207,9 @@ def circuits(draw: st.DrawFn) -> ir.Circuit:
             *draw(st.lists(node, min_size=2, max_size=2, unique=True)),
             *draw(st.lists(node, min_size=2, max_size=2)),
         ]
-        prefix = draw(st.sampled_from([*DEVICES, "L"]))
-        if prefix == "L":
-            middle = f"m{len(instances)}"
-            inductance = draw(_decades(1e-9, 1e-3)) * H
-            place("L", devices.inductor(inductance), [ends[0], middle])
-            place("R", _resistor(draw, 1, 1e3), [middle, ends[1]])
-        else:
-            if prefix == "M":
-                # Its body on its source, as a discrete MOSFET's is, so that no junction
-                # to it lies across a source with nothing to bound its current.
-                ends[3] = ends[2]
-            place(prefix, DEVICES[prefix](draw), ends)
+        prefix = draw(st.sampled_from([*DEVICES, "L", "K", "W"]))
+        for placed in _placements(draw, prefix, ends, f"m{len(instances)}"):
+            place(*placed)
     # A node that only the tree's resistor reaches would dangle: tie it to another.
     joined = Counter(
         net for instance in instances for net in instance.terminals.values()

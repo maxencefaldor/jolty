@@ -321,10 +321,15 @@ mod tests {
         assert_eq!(raised[0].nets, ["n"]);
         // C s² − 1e-4 s + 1/L = 0: s = 5e4 ± 998749.2j.
         let message = &raised[0].message;
+        let pole = message
+            .strip_prefix("the operating point is unstable: its poles at ")
+            .and_then(|rest| rest.split_once(" ± "))
+            .and_then(|(real, rest)| Some((real.parse::<f64>().ok()?, rest.split_once('j')?)))
+            .and_then(|(real, (imaginary, _))| Some((real, imaginary.parse::<f64>().ok()?)));
+        let (real, imaginary) = pole.unwrap_or_else(|| panic!("{message}"));
+        assert!((real - 5e4).abs() < 1e-6 && (imaginary - 998_749.217_771_9).abs() < 1e-4);
         assert!(
-            message.starts_with("the operating point is unstable: its poles at 50000.0")
-                && message.contains(" ± 998749.21")
-                && message.ends_with("Hz grows from it, largest at `n`"),
+            message.ends_with("Hz grows from it, largest at `n`"),
             "{message}"
         );
         // Less feedback than loss: it dies away.

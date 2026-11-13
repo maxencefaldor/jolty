@@ -519,10 +519,12 @@ def _coupled(
 ) -> tuple[int, ir.Instance]:
     """The coupled inductors of `group`'s couplings, and the line of its first.
 
-    Their windings are `windings`, the inductors named `names`.
+    Their windings are `windings`, the inductors named `names`, and they run at the
+    windings' own temperature, which every winding shares.
 
     Raises:
-        SpiceError: When a coupling couples an inductor with itself, or a pair twice.
+        SpiceError: When a coupling couples an inductor with itself, or a pair twice, or
+            the windings run at different temperatures of their own.
     """
     numbers = {name: number for number, name in enumerate(names, start=1)}
     pairs: dict[frozenset[int], float] = {}
@@ -540,11 +542,30 @@ def _coupled(
     for pair, coefficient in pairs.items():
         numbered: list[JsonValue] = [*sorted(pair)]
         couplings.append({"windings": numbered, "coefficient": coefficient})
-    parameters: dict[str, JsonValue] = {
-        "windings": [dict(winding.parameters) for winding in windings],
-        "couplings": couplings,
-    }
     first = group[0].statement
+    owns = [
+        {
+            key: value
+            for key, value in winding.parameters.items()
+            if key in {"temperature", "temperature_offset"}
+        }
+        for winding in windings
+    ]
+    if any(own != owns[0] for own in owns):
+        message = "the inductors it couples run at different temperatures of their own"
+        raise first.fail(message)
+    parameters: dict[str, JsonValue] = {
+        "windings": [
+            {
+                key: value
+                for key, value in winding.parameters.items()
+                if key not in owns[0]
+            }
+            for winding in windings
+        ],
+        "couplings": couplings,
+        **owns[0],
+    }
     instance = ir.Instance(
         id=first.text.split()[0],
         of=ir.DeviceOf(device="coupled_inductors"),

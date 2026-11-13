@@ -41,7 +41,7 @@ A pole of the linearized circuit with a positive real part is a natural mode tha
 The rule `unstable-pole` states it, with the nets where the growing mode is largest, though the plan asks for no stability or pole-zero analysis:
 
 ```text
-warn[unstable-pole]: the operating point is unstable: its poles at 50000.000000000015 ± 998749.2177719092j rad/s have a positive real part, so an oscillation near 158955.8749175632 Hz grows from it, largest at `n`
+warn[unstable-pole]: the operating point is unstable: its poles at 49999.999999999985 ± 998749.2177719085j rad/s have a positive real part, so an oscillation near 158955.87491756308 Hz grows from it, largest at `n`
 ```
 
 An oscillator raises it by design, so it is a warning, which a plan for one can ignore.

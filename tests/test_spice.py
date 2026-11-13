@@ -281,6 +281,21 @@ def test_mutual_inductances_couple_their_inductors_into_one_device() -> None:
     assert ir.parameter(coupled.parameters, "couplings.2.windings") == [2, 3]
 
 
+def test_coupled_inductors_run_at_their_windings_shared_temperature() -> None:
+    shared = library(
+        ".subckt a x\nL1 x 0 1m DTEMP=5\nL2 x 0 2m DTEMP=5\nK1 L1 L2 0.5\n.ends"
+    )
+    (coupled,) = shared.component("a").definition.instances
+    assert coupled.parameters["temperature_offset"] == 5.0
+    assert coupled.parameters["windings"] == [
+        {"inductance": 1e-3},
+        {"inductance": 2e-3},
+    ]
+    apart = library(".subckt a x\nL1 x 0 1m DTEMP=5\nL2 x 0 2m\nK1 L1 L2 0.5\n.ends")
+    with pytest.raises(SpiceError, match="run at different temperatures of their own"):
+        apart.component("a")
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [

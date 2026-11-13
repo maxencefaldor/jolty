@@ -85,7 +85,7 @@ raw.vectors[export.vector(drawn, unknown)]  # ngspice's values of a jolty unknow
 ```
 
 The netlist flattens the hierarchy into devices whose ids and nets join their paths with underscores, as `RX1_R1` and `x1_mid`; components read from SPICE libraries stay instances of their subcircuits, named in `subcircuits`.
-Behavioral sources become ngspice's `B` sources, PSpice's switch becomes the XSPICE `pswitch`, and each model card carries the device's parameters in SPICE's units.
+Behavioral sources become ngspice's `B` sources, and so do switches, each a current of its own law; coupled inductors become inductors and their `K` elements, and each model card carries the device's parameters in SPICE's units.
 ngspice reads a pulse's width of 0 as the transient's stop time, so a pulse with no width is written with a width of 1e-40 s, which vanishes beside its rise.
 Logic devices have no SPICE element, so a circuit that holds one cannot be written.
 `ngspice` runs one analysis with tolerances as tight as jolty's, at the temperature where ngspice's thermal voltage is jolty's, and reads the raw file it writes.

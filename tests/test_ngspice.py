@@ -1024,9 +1024,9 @@ def behavioral(c: Builder) -> None:
 
 @component
 def curved(c: Builder) -> None:
-    """Resistors and a capacitor whose values change with their voltages."""
+    """Resistors and a capacitor whose values change with their voltages, either way."""
     ground = c.port("ground", Role.GROUND)
-    sine = Sine(offset=0.5 * V, amplitude=2 * V, frequency=1 * kHz)
+    sine = Sine(offset=0 * V, amplitude=2 * V, frequency=1 * kHz)
     source = c.place(devices.voltage_source(sine), id="V1")
     feed = c.place(
         devices.resistor(

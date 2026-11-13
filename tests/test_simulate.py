@@ -662,6 +662,9 @@ def test_a_device_drifts_to_a_temperature_of_its_own() -> None:
     assert spectrum.contribution("R1")[0] > 0
     with pytest.raises(ValueError, match="at 0 K or above"):
         drifting.held_at(-1 * K)
+    gate = devices.logic_gate("nand", rise=1 * ns, transition=1 * ns)
+    with pytest.raises(ValueError, match="a logic_cell runs at no temperature of its"):
+        gate.warmer_by(10 * K)
 
 
 def test_the_ac_response_of_a_low_pass_filter() -> None:
@@ -674,28 +677,29 @@ def test_the_ac_response_of_a_low_pass_filter() -> None:
     assert response.operating_point.voltage("out") == pytest.approx(0.0)
 
 
+@component
+def stepped(c: Builder, primary: float, secondary: float, coupling: float) -> None:
+    """A transformer of `primary` and `secondary` henries, fed by 50 Ω, into 1 kΩ."""
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(0 * V), id="V1")
+    windings = c.place(
+        devices.coupled_inductors(
+            [devices.inductor(primary * H), devices.inductor(secondary * H)],
+            {(1, 2): coupling},
+        ),
+        id="T1",
+    )
+    feed = c.place(devices.resistor(50 * ohm), id="R1")
+    resistor = c.place(devices.resistor(1 * kohm), id="RL")
+    c.connect(source.positive, feed.a, name="in")
+    c.connect(feed.b, windings.a1, name="primary")
+    c.connect(windings.a2, resistor.a, name="out")
+    c.connect(source.negative, windings.b1, windings.b2, resistor.b, ground)
+
+
 def test_a_transformer_steps_its_voltage_by_its_coupled_inductances() -> None:
     primary, secondary, coupling, load = 1e-3, 4e-3, 0.95, 1e3
-
-    @component
-    def stepped(c: Builder) -> None:
-        ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(0 * V), id="V1")
-        windings = c.place(
-            devices.coupled_inductors(
-                [devices.inductor(primary * H), devices.inductor(secondary * H)],
-                {(1, 2): coupling},
-            ),
-            id="T1",
-        )
-        feed = c.place(devices.resistor(50 * ohm), id="R1")
-        resistor = c.place(devices.resistor(load * ohm), id="RL")
-        c.connect(source.positive, feed.a, name="in")
-        c.connect(feed.b, windings.a1, name="primary")
-        c.connect(windings.a2, resistor.a, name="out")
-        c.connect(source.negative, windings.b1, windings.b2, resistor.b, ground)
-
-    simulation = Simulation(stepped())
+    simulation = Simulation(stepped(primary, secondary, coupling))
     assert [unknown.name for unknown in simulation.unknowns][-2:] == [
         "T1:current1",
         "T1:current2",
@@ -709,6 +713,29 @@ def test_a_transformer_steps_its_voltage_by_its_coupled_inductances() -> None:
     np.testing.assert_allclose(stepped_up, gain, rtol=1e-9)
 
 
+def test_coupled_inductances_take_overrides_and_sensitivities_by_path() -> None:
+    frequencies = decade(10 * kHz, 1e3 * kHz, 2)
+    nominal = Simulation(stepped(1e-3, 4e-3, 0.95))
+    replaced = {"T1": {"windings.0.inductance": 1.2e-3, "couplings.0.coefficient": 0.9}}
+    overridden = Simulation(stepped(1e-3, 4e-3, 0.95), overrides=replaced)
+    rebuilt = Simulation(stepped(1.2e-3, 4e-3, 0.9))
+    np.testing.assert_allclose(
+        overridden.run(Ac("V1", frequencies)).voltage("out"),
+        rebuilt.run(Ac("V1", frequencies)).voltage("out"),
+        rtol=1e-12,
+    )
+    found = nominal.run(Sensitivity(["out"], of=Ac("V1", frequencies)))
+    step = 1e-6
+
+    def out(coupling: float) -> results.Complex:
+        response = Simulation(stepped(1e-3, 4e-3, coupling)).run(Ac("V1", frequencies))
+        return response.voltage("out")
+
+    expected = (out(0.95 + step) - out(0.95 - step)) / (2 * step)
+    exact = found.derivative("out", "T1", "couplings.0.coefficient")
+    np.testing.assert_allclose(exact, expected, rtol=1e-6)
+
+
 def test_coupled_windings_are_plain_inductors_whose_tolerances_carry_over() -> None:
     coupled = devices.coupled_inductors(
         [devices.inductor(1 * mH, tolerance=0.1), devices.inductor(2 * mH)],
@@ -719,6 +746,13 @@ def test_coupled_windings_are_plain_inductors_whose_tolerances_carry_over() -> N
         devices.coupled_inductors(
             [devices.inductor(1 * mH), devices.resistor(1 * ohm)], {(1, 2): 0.5}
         )
+    with pytest.raises(ValueError, match="which the coupled inductors take as a whole"):
+        devices.coupled_inductors(
+            [devices.inductor(1 * mH).held_at(celsius(85)), devices.inductor(2 * mH)],
+            {(1, 2): 0.5},
+        )
+    held = coupled.warmer_by(15 * K)
+    assert held.parameters["temperature_offset"] == 15.0
 
 
 def test_the_step_response_of_a_low_pass_filter() -> None:

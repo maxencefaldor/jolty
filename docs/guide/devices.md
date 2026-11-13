@@ -161,7 +161,7 @@ The control terminals draw no current.
 | `on_resistance`, `off_resistance` | `RON`, `ROFF` | Ω | 1 Ω, 1 MΩ |
 | `on_current`, `off_current` | `ION`, `IOFF` | A | 1 mA, 0 A |
 
-ngspice runs both as its XSPICE `pswitch`, which reads a voltage: a netlist written for it senses a current-controlled switch's control current with a zero-volt source and gives it to `pswitch` through a transresistance of 1 Ω.
+A netlist written for ngspice gives each switch as a behavioral current of its own law, reading a current-controlled switch's control through a zero-volt source: ngspice's XSPICE switches follow the same law, but ngspice 42 gives their small-signal conductance the opposite sign of their DC one.
 
 ## Photocell
 

@@ -133,6 +133,9 @@ class Simulation:
     temperature: float
     """The temperature the devices are simulated at, in kelvins."""
 
+    overrides: Mapping[str, Mapping[str, float]]
+    """The parameters that replace the circuit's, by instance path then by path."""
+
     excursions: tuple[Excursion, ...]
     """Where the last analysis used logic devices outside their domains."""
 
@@ -162,6 +165,9 @@ class Simulation:
             else circuit(circuit_or_top)
         )
         self.temperature = kelvins(temperature)
+        self.overrides = {
+            path: dict(replaced) for path, replaced in (overrides or {}).items()
+        }
         try:
             stand_ins = {
                 path: {"model": device.model, "parameters": device.parameters}
@@ -268,6 +274,7 @@ class Simulation:
                 electrical,
                 thermal,
                 self.temperature,
+                self.overrides,
                 columns,
                 values,
                 currents,
@@ -586,6 +593,8 @@ class _Terminals:
     ambient: float
     """The simulation's temperature, in kelvins, which instances run at but those with
     temperatures of their own."""
+    overrides: Mapping[str, Mapping[str, float]]
+    """The parameters that replace the circuit's, by instance path then by path."""
     columns: Mapping[str, int]
     """The column of each unknown's values, by name."""
     values: results.Real
@@ -603,7 +612,8 @@ class _Terminals:
         result holds no currents and the stress needs them.
         """
         if rating.stress == "temperature":
-            return _own(self.ambient, instance.parameters) + self._rise(path)
+            replaced = {**instance.parameters, **self.overrides.get(path, {})}
+            return _own(self.ambient, replaced) + self._rise(path)
         named = rating.terminals or tuple(
             terminal
             for terminal in instance.terminals

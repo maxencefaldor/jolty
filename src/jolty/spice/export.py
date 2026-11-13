@@ -162,8 +162,8 @@ ELEMENTS = {
     "mosfet": Element("M", ("drain", "gate", "source", "bulk")),
     "behavioral_voltage_source": Element("B", ("positive", "negative")),
     "behavioral_current_source": Element("B", ("positive", "negative")),
-    "voltage_controlled_switch": Element("A", _CONTROLLED),
-    "current_controlled_switch": Element("A", _CONTROLLED),
+    "voltage_controlled_switch": Element("B", _CONTROLLED),
+    "current_controlled_switch": Element("B", _CONTROLLED),
     "photocell": Element("B", ("a", "b", "light_positive", "light_negative")),
 }
 
@@ -405,8 +405,7 @@ def _device(
             output = "V" if model == "behavioral_voltage_source" else "I"
             value = f"{output}={{{expression}}}"
         case "voltage_controlled_switch" | "current_controlled_switch":
-            nodes = _switch(instance, model, values, nodes.split(), lines)
-            value = f"M{instance.id}"
+            nodes, value = _switch(instance, model, values, nodes.split(), lines)
         case "photocell":
             a, b, *light = nodes.split()
             current, lag = _photocell(instance.id, values, light)
@@ -537,10 +536,14 @@ def _passive(
         raise _unwritable(message + " in ngspice")
     voltage = f"v({nodes[0]},{nodes[1]})"
     if model == "resistor":
-        factor = f"1+{linear!r}*{voltage}+{quadratic!r}*{voltage}^2"
+        factor = f"1+{linear!r}*{voltage}+{quadratic!r}*{voltage}*{voltage}"
         written = f"R={{{number[1]!r}*({factor})}}"
     else:
-        integral = f"{voltage}+{linear!r}*{voltage}^2/2+{quadratic!r}*{voltage}^3/3"
+        # Products, not powers: ngspice's `^` raises the magnitude of a negative base.
+        squared = f"{voltage}*{voltage}"
+        integral = (
+            f"{voltage}+{linear!r}*{squared}/2+{quadratic!r}*{squared}*{voltage}/3"
+        )
         written = f"Q={{{number[1]!r}*({integral})}}"
     return " ".join([written, *drift])
 
@@ -586,21 +589,11 @@ def _coupled(
 
 
 _SWITCHES: Final = {
-    "voltage_controlled_switch": {
-        "on_voltage": ("cntl_on", 1.0),
-        "off_voltage": ("cntl_off", 0.0),
-        "on_resistance": ("r_on", 1.0),
-        "off_resistance": ("r_off", 1e6),
-    },
-    "current_controlled_switch": {
-        "on_current": ("cntl_on", 1e-3),
-        "off_current": ("cntl_off", 0.0),
-        "on_resistance": ("r_on", 1.0),
-        "off_resistance": ("r_off", 1e6),
-    },
+    "voltage_controlled_switch": (("on_voltage", 1.0), ("off_voltage", 0.0)),
+    "current_controlled_switch": (("on_current", 1e-3), ("off_current", 0.0)),
 }
-"""Each switch's parameters as ngspice's ``pswitch`` names them, with the defaults
-jolty's switches take, PSpice's."""
+"""Each switch's controls at which it is on and off, with the defaults jolty's switches
+take, PSpice's; both take PSpice's resistances, 1 Ω on and 1 MΩ off, unless given."""
 
 
 def _switch(
@@ -609,26 +602,41 @@ def _switch(
     values: Mapping[str, JsonValue],
     nodes: list[str],
     lines: list[str],
-) -> str:
-    """A switch's nodes as ngspice's XSPICE ``pswitch`` reads them, after its lines.
+) -> tuple[str, str]:
+    """A switch's nodes and value as a behavioral current, after the lines it needs.
 
-    ngspice runs PSpice's switches as ``pswitch``, whose control port draws current
-    through ``r_cntl_in``: made negligible here. ``pswitch`` reads no current, so a
-    current-controlled switch's control current flows through a zero-volt source, and
-    a transresistance of 1 Ω gives it as the voltage of a node of its own.
+    The current is the switch's own law, PSpice's: the logarithm of its resistance a
+    cubic in the control's fraction of the way from off to on, held beyond either.
+    ngspice's XSPICE switches, ``pswitch`` and ``aswitch``, follow the same law, but
+    ngspice 42 gives their small-signal conductance the opposite sign of their DC one,
+    which its behavioral sources do not. A current-controlled switch's control current
+    flows through a zero-volt source, which the expression reads.
     """
     positive, negative, control_positive, control_negative = nodes
     if model == "current_controlled_switch":
         sense = _sense(instance)
         lines.append(f"{sense} {control_positive} {control_negative} DC 0")
-        control_positive, control_negative = f"{instance.id}.control", "0"
-        lines.append(f"H{instance.id}CONTROL {control_positive} 0 {sense} 1")
-    card = " ".join(
-        f"{name}={values.get(key, default)!r}"
-        for key, (name, default) in _SWITCHES[model].items()
-    )
-    lines.append(f".model M{instance.id} pswitch({card} r_cntl_in=1e30 log=TRUE)")
-    return f"%gd({control_positive} {control_negative}) %gd({positive} {negative})"
+        control = f"i({sense})"
+    else:
+        control = f"v({control_positive},{control_negative})"
+    (on_name, on_default), (off_name, off_default) = _SWITCHES[model]
+
+    def number(key: str, default: float) -> float:
+        match values.get(key, default):
+            case int() | float() as found:
+                return float(found)
+        message = f"{instance.id}'s {key} is no number"
+        raise _unwritable(message)
+
+    on, off = number(on_name, on_default), number(off_name, off_default)
+    on_resistance = number("on_resistance", 1.0)
+    off_resistance = number("off_resistance", 1e6)
+    mean = math.log(math.sqrt(on_resistance * off_resistance))
+    ratio = math.log(on_resistance / off_resistance)
+    m = f"(min(max(({control}-({off!r}))/({on!r}-({off!r})),0),1)-0.5)"
+    # A product, not a power: ngspice's `^` raises the magnitude of a negative base.
+    resistance = f"exp({mean!r}+{ratio!r}*(1.5*{m}-2*{m}*{m}*{m}))"
+    return f"{positive} {negative}", f"I={{v({positive},{negative})/{resistance}}}"
 
 
 def _behavior(instance: ir.Instance, ground: str) -> tuple[str, list[str]]:

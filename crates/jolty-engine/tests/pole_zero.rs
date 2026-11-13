@@ -257,3 +257,28 @@ fn rejects_what_it_cannot_measure() {
         SimulationError::UnknownOutput("nowhere".to_owned())
     );
 }
+
+#[test]
+fn a_qz_iteration_that_stalls_is_taken_again_on_the_reversed_pencil() {
+    // A random circuit of 73 unknowns, of coupled windings among its devices, on whose
+    // pencil faer 0.24's QZ iteration stops before its eigenvalues converge, without an
+    // error; reversed, the pencil's iteration converges, as LAPACK's does on it.
+    let circuit = Circuit::from_json(include_str!("data/stalled_qz.json")).expect("a circuit");
+    let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+        .expect("the circuit elaborates");
+    assert_eq!(simulator.unknowns().len(), 73);
+    // As tight as ngspice's, at whose operating point the iteration stalls.
+    let tight = Options {
+        relative_tolerance: 1e-6,
+        voltage_tolerance: 1e-9,
+        current_tolerance: 1e-14,
+        charge_tolerance: 1e-18,
+        ..Options::default()
+    };
+    assert!(
+        simulator
+            .growing_modes(&tight)
+            .expect("the modes")
+            .is_empty()
+    );
+}

@@ -233,6 +233,17 @@ def test_a_part_at_a_temperature_of_its_own_is_held_to_its_rating_there() -> Non
 
     (over,) = diagnosed(parts.d1n4148().held_at(celsius(180)))
     assert over.startswith("the temperature of `D1` reaches 180.0 °C")
+    # An override of its own temperature, as a Monte Carlo sample's, holds too.
+    simulation = Simulation(
+        clamp(parts.d1n4148().held_at(celsius(180))),
+        overrides={"D1": {"temperature": celsius(20).value}},
+    )
+    point = simulation.run(OperatingPoint())
+    assert [
+        each.message
+        for each in simulation.check_results({"op": point})
+        if "temperature" in each.message
+    ] == []
     # Heated, it warms from its own temperature: about 2 mW through 300 K/W, 0.5 K.
     (warmed,) = diagnosed(parts.d1n4148(heated=True).held_at(celsius(174.9)))
     reached = float(warmed.split(" reaches ")[1].split(" °C")[0])
