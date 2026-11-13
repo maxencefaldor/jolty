@@ -49,7 +49,10 @@ START = 0.3
 SWING = 0.4
 """How far each lobe of the sine moves a state."""
 
-TIGHT = Options(relative_tolerance=1e-7, record=["M1"])
+MEMRISTOR = ("M1",)
+"""The memristor, recorded, whose current, charge and variables the tests read."""
+
+TIGHT = Options(relative_tolerance=1e-7)
 """Options under which the integration's error is far below the comparisons', which
 record the memristor ``M1`` the tests read."""
 
@@ -78,7 +81,9 @@ def _run(memristor: devices.Device, periods: float = 2) -> results.Waveforms:
     """
     simulation = Simulation(_driven(memristor))
     stop, step = periods / FREQUENCY, 1e-4 / FREQUENCY
-    return simulation.run(Transient(stop * s, max_step=step * s), TIGHT)
+    return simulation.run(
+        Transient(stop * s, max_step=step * s, record=MEMRISTOR), TIGHT
+    )
 
 
 def _resistance(state: Real, law: str, on: float = ON, off: float = OFF) -> Real:
@@ -219,7 +224,9 @@ def test_a_pinched_loop_shrinks_as_the_frequency_rises() -> None:
         for factor in [1, 4, 16, 64]:
             simulation = Simulation(_driven(cell, FREQUENCY * factor))
             period = 1 / (FREQUENCY * factor)
-            transient = Transient(2 * period * s, max_step=period / 2000 * s)
+            transient = Transient(
+                2 * period * s, max_step=period / 2000 * s, record=MEMRISTOR
+            )
             waveforms = simulation.run(transient, TIGHT)
             voltage = waveforms.voltage("in")
             current = waveforms.current("M1", "positive")
@@ -314,7 +321,7 @@ def test_an_operating_point_holds_the_state_and_shows_its_rate() -> None:
     simulation = Simulation(_fed(0.0))
     levels = [-3.0, -0.2, 0.2, 3.0]
     sweep = simulation.run(
-        DcSweep("V1", [level * V for level in levels]), Options(record=["M1"])
+        DcSweep("V1", [level * V for level in levels], record=MEMRISTOR)
     )
     np.testing.assert_allclose(sweep.state("M1:state"), START, rtol=0, atol=1e-12)
     resistance = ON + (OFF - ON) * START
@@ -330,7 +337,7 @@ def test_held_past_a_threshold_its_state_runs_to_the_bound(
     level: float, bound: float
 ) -> None:
     simulation = Simulation(_fed(level))
-    waveforms = simulation.run(Transient(1e-3 * s), TIGHT)
+    waveforms = simulation.run(Transient(1e-3 * s, record=MEMRISTOR), TIGHT)
     state = waveforms.state("M1:state")
     assert state[0] == START
     assert state[-1] == pytest.approx(bound, abs=1e-6)
@@ -363,7 +370,7 @@ def test_a_transients_sensitivities_carry_the_state_it_starts_from() -> None:
     derivative of the switched state with respect to the state the memristor was made
     in is carried from the operating point into the transient.
     """
-    transient = Transient(20e-6 * s, max_step=0.1e-6 * s)
+    transient = Transient(20e-6 * s, max_step=0.1e-6 * s, record=MEMRISTOR)
     simulation = Simulation(_fed(3.0))
     found = simulation.run(Sensitivity(["M1:state"], of=transient), TIGHT)
 
@@ -389,7 +396,7 @@ def test_a_transients_sensitivities_carry_the_state_it_starts_from() -> None:
 
 def test_a_state_has_a_panel_of_its_own_and_reads_as_a_number() -> None:
     simulation = Simulation(_driven(_vteam()))
-    waveforms = simulation.run(Transient(1 / FREQUENCY * s))
+    waveforms = simulation.run(Transient(1 / FREQUENCY * s, record=MEMRISTOR))
     figure = plot("run", waveforms, ["in", "M1:state"])
     labels = [axes.get_ylabel() for axes in figure.axes]
     assert labels == ["voltage", "state"]

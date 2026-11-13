@@ -94,6 +94,7 @@ def test_tools_mirror_the_service_requests() -> None:
         "schematic",
         "plot",
         "probes",
+        "record",
     }
     assert simulate.input_schema["required"] == ["script"]
     assert simulate.description is not None

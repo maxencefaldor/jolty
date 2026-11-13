@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from jolty import report
+from jolty import report, results
 from jolty.files import load_results
 from jolty.runner import RESULTS, Built, Failure, Job, Outcome, run
 
@@ -86,6 +86,39 @@ def test_a_plan_runs_its_analyses_and_saves_their_results(tmp_path: Path) -> Non
     assert isinstance(step, report.TransientReport)
     assert step.stop == 1e-6
     assert set(load_results(tmp_path / RESULTS)) == {"op", "step"}
+
+
+def test_an_analysis_records_its_own_record_or_else_the_plan_s(
+    tmp_path: Path,
+) -> None:
+    recording = (
+        "def plan():\n"
+        "    return Plan(\n"
+        "        {\n"
+        "            'op': OperatingPoint(),\n"
+        "            'step': Transient(stop=1 * us, record=['R2']),\n"
+        "        },\n"
+        "        record=['**', '!R2'],\n"
+        "    )"
+    )
+    script = write(tmp_path, f"{DIVIDER}\n\n{recording}\n")
+    built(run(Job(script=script, plan=script, listed=10), tmp_path))
+    expected = [("V1.positive", "V1.negative", "R1.a", "R1.b"), ("R2.a", "R2.b")]
+    assert _recorded(tmp_path) == expected
+    # A job's record, as the command line's --record gives it, replaces the plan's.
+    job = Job(script=script, plan=script, listed=10, record=["R1"])
+    built(run(job, tmp_path))
+    assert _recorded(tmp_path) == [("R1.a", "R1.b"), ("R2.a", "R2.b")]
+
+
+def _recorded(directory: Path) -> list[tuple[str, ...]]:
+    """The terminals each saved result in `directory` recorded."""
+    found = load_results(directory / RESULTS).values()
+    return [
+        result.recording.terminals
+        for result in found
+        if isinstance(result, results.OperatingPoint | results.Waveforms)
+    ]
 
 
 def test_a_plan_runs_at_its_temperature(tmp_path: Path) -> None:

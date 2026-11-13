@@ -76,6 +76,11 @@ _ANNOTATED_DESCRIPTION = (
     "listed diagnostics name and writing the voltages of the plan's first operating "
     "point."
 )
+_RECORD_DESCRIPTION = (
+    "Instances whose currents, charges, derivatives and variables the results keep "
+    "beside the unknowns, by path or pattern, such as 'M1', 'X1/**' or '!X1/bias/**', "
+    "a pattern after ! taking back what earlier ones named; replaces the plan's record."
+)
 _PROBES_DESCRIPTION = (
     "Unknowns to plot, such as 'out', 'X1/mid' or 'V1:current'; defaults to the "
     "nets the top component names, up to eight."
@@ -266,6 +271,7 @@ class SimulateRequest(_Model):
         "beside the results.",
     )
     probes: list[str] = Field(default_factory=list, description=_PROBES_DESCRIPTION)
+    record: list[str] | None = Field(default=None, description=_RECORD_DESCRIPTION)
 
 
 class SimulateResult(CommandResult):
@@ -423,6 +429,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         plan=plan,
         listed=settings.listed_unknowns,
         check=request.check,
+        record=request.record,
     )
     path = request.output or files.circuit_path(request.script)
     target = request.results or files.results_path(request.script)

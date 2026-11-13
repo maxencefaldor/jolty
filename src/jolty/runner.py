@@ -43,7 +43,7 @@ from jolty import checks, fidelity, files, ir, report, variation
 from jolty.builder import Component, circuit
 from jolty.errors import ElaborationError, JoltyError, ScriptError, SimulationError
 from jolty.fidelity import FidelityReport
-from jolty.plan import Corner, MonteCarlo, Plan, WorstCase
+from jolty.plan import Analysis, Corner, MonteCarlo, Plan, Recorded, WorstCase
 from jolty.results import Result
 from jolty.simulate import Simulation, kelvins
 from jolty.specs import (
@@ -91,6 +91,11 @@ class Job(BaseModel):
     check: bool = Field(
         default=True,
         description="Whether to check the rules at the plan's operating point.",
+    )
+    record: list[str] | None = Field(
+        default=None,
+        description="The instances the results record, in the plan's place; null "
+        "for the plan's own record.",
     )
 
 
@@ -210,6 +215,8 @@ def _run(job: Job, directory: Path) -> Built:
     if not isinstance(plan, Plan):
         message = f"plan() returned {type(plan).__name__}, not a Plan"
         raise ScriptError(message)
+    if job.record is not None:
+        plan = replace(plan, record=job.record)
     cache: fidelity.Cache = {}
     chosen = fidelity.resolve(built, plan, plan.temperature, cache, plan.process)
     if plan.temperature is not None or plan.process is not None or chosen.matched:
@@ -658,16 +665,17 @@ def _analyses(
     """The results of the analyses of `plan` that end, by name, and a report on each.
 
     Each analysis's excursions outside its logic devices' domains join `outside`. The
-    results keep what the plan's options record when they are `recorded`, as the plan's
-    own run's are, which are saved and checked, and the unknowns alone otherwise, as a
-    corner's, a sample's and a spot check's are, which only specs and contracts read.
+    results keep what the plan and each analysis record when they are `recorded`, as
+    the plan's own run's are, which are saved and checked, and nothing more than the
+    checks read otherwise, as a corner's, a sample's and a spot check's are, which only
+    specs and contracts read.
     """
-    options = plan.options if recorded else replace(plan.options, record=())
     solved: dict[str, Result] = {}
     reports: list[report.AnalysisReport] = []
     for name, analysis in plan.analyses.items():
         try:
-            result = simulation.run(analysis, options)
+            chosen = _recording(analysis, plan, recorded=recorded)
+            result = simulation.run(chosen, plan.options)
         except JoltyError as error:
             reports.append(report.FailureReport(name=name, error=str(error)))
         else:
@@ -679,6 +687,20 @@ def _analyses(
                 for excursion in simulation.excursions
             )
     return solved, tuple(reports)
+
+
+def _recording(analysis: Analysis, plan: Plan, *, recorded: bool) -> Analysis:
+    """`analysis` recording what it names, or else the `plan`'s record, when `recorded`.
+
+    Otherwise it records nothing, beyond what the checks read.
+    """
+    if not isinstance(analysis, Recorded):
+        return analysis
+    if not recorded:
+        return replace(analysis, record=())
+    if analysis.record is None:
+        return replace(analysis, record=plan.record)
+    return analysis
 
 
 def _call(

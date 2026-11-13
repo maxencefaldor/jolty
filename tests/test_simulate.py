@@ -446,13 +446,13 @@ def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
     )
 
 
-EVERYTHING = Options(record=["**"])
+EVERYTHING = ("**",)
 """Options that record every instance."""
 
 
 def test_results_read_the_current_into_every_terminal() -> None:
     simulation = Simulation(divider(5 * V, 1 * kohm, 4 * kohm))
-    point = simulation.run(OperatingPoint(), EVERYTHING)
+    point = simulation.run(OperatingPoint(record=EVERYTHING))
     assert point.recording.terminals == (
         "V1.positive",
         "V1.negative",
@@ -471,7 +471,7 @@ def test_results_read_the_current_into_every_terminal() -> None:
         r"close names: R1\.a, R2\.a, R1\.b\"$",
     ):
         point.current("R1", "aa")
-    sweep = simulation.run(DcSweep("V1", linear(0 * V, 5 * V, 3)), EVERYTHING)
+    sweep = simulation.run(DcSweep("V1", linear(0 * V, 5 * V, 3), record=EVERYTHING))
     np.testing.assert_allclose(sweep.current("R2", "a"), [0, 5e-4, 1e-3], atol=1e-15)
 
 
@@ -500,8 +500,8 @@ def common_source(c: Builder) -> None:
 
 def test_results_read_each_device_s_small_signal_model_and_variables() -> None:
     simulation = Simulation(common_source())
-    recorded = Options(record=["M1", "RD"])
-    point = simulation.run(OperatingPoint(), recorded)
+    recorded = ["M1", "RD"]
+    point = simulation.run(OperatingPoint(record=recorded))
     beta = 2e-4 * 4 / 2
     assert point.conductance("M1.drain", "M1.gate") == pytest.approx(beta * 0.6)
     assert point.conductance("RD.a", "RD.b") == pytest.approx(-1e-4)
@@ -519,11 +519,11 @@ def test_results_read_each_device_s_small_signal_model_and_variables() -> None:
         point.conductance("M1.drian", "M1.gate")
     with pytest.raises(
         KeyError,
-        match=r"no device unknown named 'VDD\.positive'.*; record its instance, as "
-        r"Options\(record=\['VDD'\]\) does",
+        match=r"no device unknown named 'VDD\.positive'.*; record its instance, as an "
+        r"analysis's or a plan's record=\['VDD'\] does",
     ):
         point.conductance("VDD.positive", "VDD.negative")
-    sweep = simulation.run(DcSweep("VG", linear(0 * V, 1 * V, 3)), recorded)
+    sweep = simulation.run(DcSweep("VG", linear(0 * V, 1 * V, 3), record=recorded))
     np.testing.assert_allclose(
         sweep.variable("M1", "saturation_voltage"), [0, 0.1, 0.6], atol=1e-12
     )
@@ -555,7 +555,7 @@ def divider_cell(c: Builder) -> None:
 
 def test_a_component_instance_s_terminals_sum_the_currents_inside_it() -> None:
     simulation = Simulation(two_dividers())
-    point = simulation.run(OperatingPoint(), Options(record=["X1", "X2"]))
+    point = simulation.run(OperatingPoint(record=["X1", "X2"]))
     assert point.recording.composites == ("X1.top", "X1.bottom", "X2.top", "X2.bottom")
     assert point.recording.devices == ()
     assert point.current("X1", "top") == pytest.approx(2e-3)
@@ -568,17 +568,17 @@ def test_a_component_instance_s_terminals_sum_the_currents_inside_it() -> None:
 
 def test_a_result_records_nothing_beyond_the_unknowns_by_default() -> None:
     simulation = Simulation(divider(5 * V, 1 * kohm, 4 * kohm))
-    for options in (None, Options(record=[])):
-        point = simulation.run(OperatingPoint(), options)
+    for record in (None, []):
+        point = simulation.run(OperatingPoint(record=record))
         assert point.recording == results.Recording()
         assert point.currents.size == point.conductances.size == 0
         assert point.current("V1") == pytest.approx(-1e-3)
         with pytest.raises(
             KeyError,
             match=(
-                r"recorded no terminal named 'R1\.a'; record its instance, as "
-                r"Options\(record=\['R1'\]\) does, or every instance, as "
-                r"Options\(record=\['\*\*'\]\) does"
+                r"recorded no terminal named 'R1\.a'; record its instance, as an "
+                r"analysis's or a plan's record=\['R1'\] does, or every instance, "
+                r"as record=\['\*\*'\] does"
             ),
         ):
             point.current("R1", "a")
@@ -601,28 +601,38 @@ def test_a_record_names_instances_and_patterns_of_their_paths() -> None:
         "X1",
         "X2",
     )
-    point = simulation.run(OperatingPoint(), Options(record=["X1/**", "X2"]))
+    point = simulation.run(OperatingPoint(record=["X1/**", "X2"]))
     assert [device.path for device in point.recording.devices] == ["X1/R1", "X1/R2"]
     assert point.recording.composites == ("X2.top", "X2.bottom")
     assert point.current("X1/R1", "a") == pytest.approx(2e-3)
     assert point.current("X2", "top") == pytest.approx(2e-3)
-    starred = simulation.run(OperatingPoint(), Options(record=["X?/R1"]))
+    starred = simulation.run(OperatingPoint(record=["X?/R1"]))
     assert [device.path for device in starred.recording.devices] == ["X1/R1", "X2/R1"]
+    # A pattern after ! takes back what the patterns before it named, the last to match
+    # an instance deciding.
+    excluded = simulation.run(OperatingPoint(record=["**", "!X1/**", "X1/R2"]))
+    assert [device.path for device in excluded.recording.devices] == [
+        "V1",
+        "X1/R2",
+        "X2/R1",
+        "X2/R2",
+    ]
+    with pytest.raises(SimulationError, match=r"pattern 'X3/\*\*' matches no instance"):
+        simulation.run(OperatingPoint(record=["**", "!X3/**"]))
     with pytest.raises(
         SimulationError, match=r"no instance named 'X1/R3' to record; close names"
     ):
-        simulation.run(OperatingPoint(), Options(record=["X1/R3"]))
+        simulation.run(OperatingPoint(record=["X1/R3"]))
     with pytest.raises(SimulationError, match=r"pattern 'X3/\*' matches no instance"):
-        simulation.run(OperatingPoint(), Options(record=["X3/*"]))
+        simulation.run(OperatingPoint(record=["X3/*"]))
     with pytest.raises(TypeError, match="not the string 'X1'"):
-        Options(record="X1")
+        OperatingPoint(record="X1")
 
 
 def test_what_a_result_records_reads_as_it_does_among_everything() -> None:
     simulation = Simulation(low_pass())
-    step = Transient(stop=5 * us)
-    everything = simulation.run(step, EVERYTHING)
-    alone = Simulation(low_pass()).run(step, Options(record=["C1"]))
+    everything = simulation.run(Transient(stop=5 * us, record=EVERYTHING))
+    alone = Simulation(low_pass()).run(Transient(stop=5 * us, record=["C1"]))
     assert alone.recording.terminals == ("C1.a", "C1.b")
     np.testing.assert_array_equal(alone.times, everything.times)
     np.testing.assert_array_equal(alone.values, everything.values)
@@ -642,7 +652,8 @@ def test_a_transient_holds_only_what_it_records_against_its_memory() -> None:
     memory = 1000 / 2**27
     with pytest.raises(SimulationError, match="the transient's results would pass"):
         simulation.run(
-            Transient(stop=5 * us), Options(transient_memory=memory, record=["**"])
+            Transient(stop=5 * us, record=EVERYTHING),
+            Options(transient_memory=memory),
         )
     waveforms = simulation.run(Transient(stop=5 * us), Options(transient_memory=memory))
     assert waveforms.currents.shape == (len(waveforms.times), 0)
@@ -660,8 +671,7 @@ def test_a_simulation_finds_where_each_terminal_joins() -> None:
 def test_a_transient_steps_onto_the_times_it_is_given() -> None:
     simulation = Simulation(low_pass())
     times = [1.2345 * us, 3 * us]
-    recorded = Options(record=["C1", "R1"])
-    waveforms = simulation.run(Transient(stop=5 * us, times=times), recorded)
+    waveforms = simulation.run(Transient(stop=5 * us, times=times, record=["C1", "R1"]))
     for time in times:
         assert time.value in waveforms.times
     capacitor = waveforms.current("C1", "a")

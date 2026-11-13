@@ -16,7 +16,6 @@ another.
 """
 
 from collections.abc import Callable, Iterable
-from dataclasses import replace
 
 import numpy as np
 from hypothesis import event, given
@@ -273,7 +272,7 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
     found = _assert_same(original, written)
     if not found:
         return
-    point = Simulation(written).run(OperatingPoint(), replace(TIGHT, record=["**"]))
+    point = Simulation(written).run(OperatingPoint(record=["**"]), TIGHT)
     reading = point.current("ammeter")
     into = point.current(probed.id, terminal)
     scale = max(abs(current) for current in _currents(point)) or 1.0

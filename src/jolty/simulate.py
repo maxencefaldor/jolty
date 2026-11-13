@@ -23,7 +23,7 @@ Examples:
 
 import functools
 import json
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Final, Literal, overload
@@ -46,6 +46,7 @@ from jolty.plan import (
     Options,
     Plan,
     PoleZero,
+    Recorded,
     Sensitivity,
     Stability,
     Transient,
@@ -107,8 +108,8 @@ class Excursion(BaseModel):
 class Simulation:
     """A circuit elaborated once, ready to run any number of analyses.
 
-    Each result holds the circuit's unknowns, and what the analysis's options record of
-    its devices and component instances: their names are made only for what a result
+    Each result holds the circuit's unknowns, and what the analysis records of its
+    devices and component instances: their names are made only for what a result
     records, and its devices are made again to be read only once a result records them.
 
     The engine solves no foundry's device, such as a SKY130 transistor, so ngspice runs
@@ -173,7 +174,7 @@ class Simulation:
         )
         self._substituted = frozenset(substitutes or {})
         self._recordings: dict[str, results.Recording] = {}
-        self._records: dict[tuple[str, ...], frozenset[str] | None] = {}
+        self._records: dict[tuple[str, ...], frozenset[str]] = {}
         try:
             stand_ins = {
                 path: {"model": device.model, "parameters": device.parameters}
@@ -342,8 +343,9 @@ class Simulation:
     def run(self, analysis: Analysis, options: Options | None = None) -> results.Result:
         """Runs `analysis` with `options`, or with the engine's defaults.
 
-        The result records the instances the options' ``record`` names, or by default
-        those its ratings read (see [`Options`][jolty.plan.Options]).
+        The result records the instances the analysis's ``record`` names, and at an
+        operating point and in a transient those its ratings read besides (see
+        [`Plan`][jolty.plan.Plan]).
 
         Raises:
             SimulationError: When the analysis fails, saying why, or the record names
@@ -356,7 +358,7 @@ class Simulation:
                 self.circuit, analysis, chosen, self.conditions, self.unknowns
             )
         encoded = json.dumps(self._encode(analysis), allow_nan=False)
-        record = self._record(analysis, chosen.record)
+        record = self._record(analysis)
         settings = json.dumps({**chosen.to_json(), "record": record}, allow_nan=False)
         recording = self._recording(json.dumps(record))
         try:
@@ -389,57 +391,63 @@ class Simulation:
             for name, analysis in plan.analyses.items()
         }
 
-    def _record(self, analysis: Analysis, record: Sequence[str] | None) -> JsonValue:
+    def _record(self, analysis: Analysis) -> JsonValue:
         """What `analysis` records, in the engine's format.
 
         An operating point and a transient record the instances rated for a current or
-        a power, whose currents the checks of ratings read, and every analysis records
-        what `record` names besides.
+        a power, whose currents the checks of ratings read, and every analysis that
+        records ([`Recorded`][jolty.plan.Recorded]) the instances its record names
+        besides.
 
         Raises:
             SimulationError: When the record names an instance the circuit does not
                 have, or holds a pattern that matches none.
         """
-        named = tuple(record or ())
+        named = tuple(analysis.record or ()) if isinstance(analysis, Recorded) else ()
         if named not in self._records:
             self._records[named] = self._resolve(named)
         found = self._records[named]
-        if found is None:
-            return "all"
         if isinstance(analysis, OperatingPoint | Transient):
             found |= frozenset(self._rated)
+        if found == self._known:
+            return "all"
         instances: list[JsonValue] = [*sorted(found)]
         return {"instances": instances}
 
-    def _resolve(self, record: tuple[str, ...]) -> frozenset[str] | None:
-        """The paths of the instances `record` names, or None when it names them all.
+    def _resolve(self, record: tuple[str, ...]) -> frozenset[str]:
+        """The paths of the instances `record` names.
+
+        Each pattern names the instances it matches, and one after ``!`` takes them
+        back, the last pattern that matches an instance deciding.
 
         Raises:
             SimulationError: When the record names an instance the circuit does not
                 have, or holds a pattern that matches none.
         """
-        if "**" in record:
-            return None
         named: set[str] = set()
         for pattern in record:
-            if _WILDCARDS.isdisjoint(pattern):
-                if pattern not in self._known:
-                    hint = results.close_names(self.instances, pattern)
+            body = pattern.removeprefix("!")
+            if _WILDCARDS.isdisjoint(body):
+                if body not in self._known:
+                    hint = results.close_names(self.instances, body)
                     message = (
-                        f"the circuit has no instance named {pattern!r} to record{hint}"
+                        f"the circuit has no instance named {body!r} to record{hint}"
                     )
                     raise SimulationError(message)
-                named.add(pattern)
-                continue
-            matched = {
-                path
-                for path in self.instances
-                if PurePosixPath(path).full_match(pattern)
-            }
-            if not matched:
-                message = f"the record's pattern {pattern!r} matches no instance"
-                raise SimulationError(message)
-            named |= matched
+                matched = {body}
+            else:
+                matched = {
+                    path
+                    for path in self.instances
+                    if PurePosixPath(path).full_match(body)
+                }
+                if not matched:
+                    message = f"the record's pattern {body!r} matches no instance"
+                    raise SimulationError(message)
+            if pattern.startswith("!"):
+                named -= matched
+            else:
+                named |= matched
         return frozenset(named)
 
     @functools.cached_property

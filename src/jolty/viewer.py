@@ -9,7 +9,7 @@ it takes. A timeline scrubs through every point of each analysis; clicking a par
 its parameters and its state at that point, the voltage, current and charge of each
 terminal, its variables and its small-signal conductances; double-clicking a component
 instance opens it. Currents, charges, variables and conductances are those the results
-recorded: a simulation records every instance with ``Options(record=["**"])``.
+recorded: a plan records every instance with ``record=["**"]``.
 
 The page holds the circuit, the layouts and the results as JSON, and the viewer's
 script and styles, and loads three.js from jsDelivr, so it needs a network connection

@@ -55,16 +55,20 @@ Every result holds the circuit's unknowns, named by path:
 
 ## What a result records
 
-Beside the unknowns, a result records what its options' `record` names of the circuit's devices and component instances, at every point it solved:
+Beside the unknowns, a result records what its plan's `record`, or its analysis's own, names of the circuit's devices and component instances, at every point it solved:
 
 ```python
-Options(record=["M1", "X1"])  # the transistor M1, and the ports of the instance X1
-Options(record=["X1/**"])  # every device and component instance inside X1
-Options(record=["**"])  # every instance
-Options(record=[])  # nothing beyond the unknowns and what the checks read
+Plan({...}, record=["M1", "X1"])  # the transistor M1, and the ports of the instance X1
+Plan(
+    {...}, record=["X1/**", "!X1/bias/**"]
+)  # everything inside X1 but its bias network
+Plan({...}, record=["**"])  # every instance
+Transient(stop=1 * ms, record=["D1"])  # this analysis records D1, whatever the plan's
 ```
 
 Each entry is an instance's path, or a pattern of paths as a plan's [fidelity](fidelity.md) scopes are written, where `*` matches within a level of the hierarchy and `**` across levels.
+An entry after `!` takes back what the entries before it named, and the last entry that matches an instance decides, as in a `.gitignore`.
+The plan's record holds for each of its analyses that records, an operating point, a sweep, a small-signal response or a transient, unless the analysis names its own; left out, it records nothing.
 A device recorded keeps its terminals' currents and charges, its own small-signal model and its variables.
 A component instance or a logic device recorded keeps its terminals' currents and charges, each summed by the engine from the device terminals behind it, which it keeps no further.
 An analysis fails when its record names a path the circuit does not have, saying the closest paths it has, or holds a pattern that matches no instance.
@@ -76,7 +80,7 @@ Recording costs memory at every point: a transistor recorded keeps 45 numbers, o
 Reading what a result did not record raises a `KeyError` that suggests the closest names it holds and how to record the instance:
 
 ```text
-KeyError: the result recorded no terminal named 'R1.a'; close names: R2.a; record its instance, as Options(record=['R1']) does, or every instance, as Options(record=['**']) does
+KeyError: the result recorded no terminal named 'R1.a'; close names: R2.a; record its instance, as an analysis's or a plan's record=['R1'] does, or every instance, as record=['**'] does
 ```
 
 A name mistaken for one of a recorded instance's says so, and suggests the closest names alone, such as `'R1', which the result recorded, has no terminal named 'R1.aa'; close names: R1.a`.
@@ -112,7 +116,7 @@ A device's variables are the quantities it computes on its way to its currents t
 | `voltage_controlled_memristor`, `current_controlled_memristor` | `resistance`, the one its state sets, and `rate`, how fast its state moves, toward off when positive, in full ranges per second |
 
 ```python
-point = simulation.run(OperatingPoint(), Options(record=["M1"]))
+point = simulation.run(OperatingPoint(record=["M1"]))
 point.conductance("M1.drain", "M1.gate")  # gm, in siemens
 point.variable("M1", "threshold_voltage")  # von, with the body effect, in volts
 results["step"].variable("M1", "saturation_voltage")  # one per time point

@@ -79,7 +79,7 @@ _ENTRY = runpy.run_path({script!r}, run_name="__gallery__")
 
 def plan():
     found = _ENTRY["plan"]()
-    return replace(found, options=replace(found.options, record=["**"]))
+    return replace(found, record=["**"])
 
 
 def specs():

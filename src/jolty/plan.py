@@ -28,8 +28,48 @@ type Method = Literal["trapezoidal", "gear2", "backward_euler"]
 backward Euler for the most damping."""
 
 
+def recorded(record: Sequence[str] | None) -> tuple[str, ...] | None:
+    """`record` as a tuple of patterns, or None when it is left out.
+
+    Raises:
+        TypeError: When the record is a string, or holds anything but strings.
+    """
+    if record is None:
+        return None
+    if isinstance(record, str):
+        message = (
+            "a record is a sequence of instance paths, such as "
+            f"[{record!r}], not the string {record!r}"
+        )
+        raise TypeError(message)
+    patterns = tuple(record)
+    if not all(isinstance(pattern, str) for pattern in patterns):
+        message = f"a record is a sequence of instance paths, not {patterns!r}"
+        raise TypeError(message)
+    return patterns
+
+
 @dataclass(frozen=True, slots=True)
-class OperatingPoint:
+class Recorded:
+    """An analysis whose results can keep the devices' detail beside the unknowns.
+
+    Its `record` names the instances whose detail its results keep, as a plan's does,
+    and replaces the plan's when given (see [`Plan`][jolty.plan.Plan]).
+    """
+
+    record: Sequence[str] | None = field(default=None, kw_only=True)
+
+    def __post_init__(self) -> None:
+        """Keeps the record as a tuple.
+
+        Raises:
+            TypeError: When the record is a string, or holds anything but strings.
+        """
+        object.__setattr__(self, "record", recorded(self.record))
+
+
+@dataclass(frozen=True, slots=True)
+class OperatingPoint(Recorded):
     """The DC operating point, with every source at its level at time zero."""
 
     def to_json(self) -> JsonValue:
@@ -38,7 +78,7 @@ class OperatingPoint:
 
 
 @dataclass(frozen=True, slots=True)
-class OperatingPoints:
+class OperatingPoints(Recorded):
     """Every DC solution the circuit has, up to `most`, the operating point first.
 
     Once the operating point is found, the circuit's equations deflated by the
@@ -54,7 +94,9 @@ class OperatingPoints:
 
         Raises:
             ValueError: When it finds none.
+            TypeError: When the record is a string, or holds anything but strings.
         """
+        Recorded.__post_init__(self)
         if self.most < 1:
             message = f"a search for operating points finds 1 or more, not {self.most}"
             raise ValueError(message)
@@ -65,7 +107,7 @@ class OperatingPoints:
 
 
 @dataclass(frozen=True, slots=True)
-class DcSweep:
+class DcSweep(Recorded):
     """The operating point at each level of one independent source.
 
     The source is named by its path, such as ``V1`` or ``bias/I1``.
@@ -83,7 +125,7 @@ class DcSweep:
 
 
 @dataclass(frozen=True, slots=True)
-class Ac:
+class Ac(Recorded):
     """The small-signal response to a unit excitation of a source, at each frequency."""
 
     source: str
@@ -98,7 +140,7 @@ class Ac:
 
 
 @dataclass(frozen=True, slots=True)
-class Transient:
+class Transient(Recorded):
     """The response over time, from the operating point at zero until `stop`.
 
     The analysis steps onto each of `times` exactly, besides the times it chooses. A
@@ -259,24 +301,11 @@ type Analysis = (
 
 @dataclass(frozen=True, slots=True)
 class Options:
-    """Numerical settings, and what results record; each one left out takes its default.
+    """Numerical settings; each one left out takes the engine's default, SPICE's own.
 
-    Tolerances are in SI base units: volts, amperes and coulombs, and default to
-    SPICE's own.
-
-    Every result holds the circuit's unknowns. `record` chooses what it keeps of the
-    devices beside them: the instances at these paths, or the patterns of paths that
-    match them, as a plan's fidelity scopes do, where ``*`` matches within a level of
-    the hierarchy and ``**`` across levels, so ``["**"]`` records every instance and
-    ``[]`` none. A device recorded keeps the current into each of its terminals and the
-    charge each holds, its derivatives and its variables; a component instance or a
-    logic device recorded keeps its terminals' currents and charges, each the sum of the
-    device terminals behind it. An operating point and a transient record the instances
-    rated for a current or a power besides, whose ratings the checks hold them to.
+    Tolerances are in SI base units: volts, amperes and coulombs.
 
     Examples:
-        >>> Options(record=["M1", "X1/**"]).record
-        ('M1', 'X1/**')
         >>> Options(gmin=1e-15).to_json()
         {'gmin': 1e-15}
     """
@@ -290,38 +319,10 @@ class Options:
     transient_iterations: int | None = None
     truncation_tolerance: float | None = None
     transient_memory: float | None = None
-    record: Sequence[str] | None = None
-
-    def __post_init__(self) -> None:
-        """Keeps the record as a tuple.
-
-        Raises:
-            TypeError: When the record is a string, or holds anything but strings.
-        """
-        if self.record is None:
-            return
-        if isinstance(self.record, str):
-            message = (
-                "a record is a sequence of instance paths, such as "
-                f"[{self.record!r}], not the string {self.record!r}"
-            )
-            raise TypeError(message)
-        recorded = tuple(self.record)
-        if not all(isinstance(path, str) for path in recorded):
-            message = f"a record is a sequence of instance paths, not {recorded!r}"
-            raise TypeError(message)
-        object.__setattr__(self, "record", recorded)
 
     def to_json(self) -> dict[str, JsonValue]:
-        """The numerical options in the engine's format, without those left to defaults.
-
-        The record is not among them: a simulation finds the instances it names.
-        """
-        values = {
-            setting.name: getattr(self, setting.name)
-            for setting in fields(self)
-            if setting.name != "record"
-        }
+        """The options in the engine's format, without those left to defaults."""
+        values = {setting.name: getattr(self, setting.name) for setting in fields(self)}
         return {name: value for name, value in values.items() if value is not None}
 
 
@@ -507,6 +508,19 @@ class Plan:
     ``*`` matches within a level of the hierarchy and ``**`` across levels, to the
     logic models characterized for the component instances they match; an instance
     within another that a scope matches takes the outer one's model.
+
+    Every result holds the circuit's unknowns. Its `record` names the instances whose
+    detail the results keep besides, by path or by patterns written as scopes are, where
+    a pattern after ``!`` takes back what the patterns before it named, the last that
+    matches an instance deciding, as in a ``.gitignore``: ``["X1/**", "!X1/bias/**"]``
+    records every instance within ``X1`` but its bias network, ``["**"]`` every
+    instance, and ``[]``, as when the record is left out, none. A device recorded keeps
+    its terminals' currents and charges, its derivatives and its variables; a component
+    instance or a logic device recorded keeps its terminals' currents and charges, each
+    the sum of the device terminals behind it. An analysis that records
+    ([`Recorded`][jolty.plan.Recorded]) and names a record of its own keeps that one
+    instead, and an operating point and a transient also record the instances rated for
+    a current or a power, whose ratings the checks hold them to.
     """
 
     analyses: Mapping[str, Analysis]
@@ -517,15 +531,18 @@ class Plan:
     worst_case: WorstCase | None = None
     fidelity: Mapping[str, Characterized] = field(default_factory=dict)
     process: str | None = None
+    record: Sequence[str] | None = None
 
     def __post_init__(self) -> None:
         """Checks that the plan runs an analysis or more, all named by identifiers.
 
         Raises:
             ValueError: When the plan runs no analysis, or a name is not an identifier.
-            TypeError: When a corner is not one.
+            TypeError: When a corner is not one, or the record is a string or holds
+                anything but strings.
             DimensionError: When the temperature is not one.
         """
+        object.__setattr__(self, "record", recorded(self.record))
         if self.temperature is not None:
             self.temperature.to(TEMPERATURE, "a plan's temperature")
         if not self.analyses:

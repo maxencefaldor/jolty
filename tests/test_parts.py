@@ -12,7 +12,6 @@ from jolty import (
     Builder,
     Component,
     OperatingPoint,
-    Options,
     Role,
     Simulation,
     component,
@@ -150,7 +149,7 @@ def switched(c: Builder, *, rated_power: float) -> None:
 
 def test_a_component_is_held_to_its_ratings_at_its_ports() -> None:
     simulation = Simulation(switched(rated_power=10))
-    point = simulation.run(OperatingPoint(), Options(record=["X1", "X1/*"]))
+    point = simulation.run(OperatingPoint(record=["X1", "X1/*"]))
     found = simulation.check_results({"op": point})
     assert [(d.rule, d.instances[0].path) for d in found] == [
         ("over-rating", "X1"),

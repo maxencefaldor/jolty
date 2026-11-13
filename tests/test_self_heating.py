@@ -11,7 +11,6 @@ from jolty import (
     Component,
     JoltyError,
     OperatingPoint,
-    Options,
     Role,
     Simulation,
     SimulationError,
@@ -72,7 +71,7 @@ def _rise(voltage: float, coefficient: float = COEFFICIENT) -> float:
 
 def test_a_resistor_heats_itself_to_where_its_power_balances_the_sink() -> None:
     simulation = Simulation(_warmed(devices.voltage_source(10 * V)))
-    point = simulation.run(OperatingPoint(), Options(record=["**"]))
+    point = simulation.run(OperatingPoint(record=["**"]))
     rise = _rise(10.0)
     assert point.rise("junction") == pytest.approx(rise, rel=1e-9)
     hot = RESISTANCE * (1 + COEFFICIENT * rise)
@@ -313,7 +312,7 @@ def test_a_port_on_the_ground_sums_its_electrical_terminals_only() -> None:
         c.connect(source.positive, inner.top, name="top")
         c.connect(source.negative, inner.ground, ground)
 
-    point = Simulation(board()).run(OperatingPoint(), Options(record=["X1"]))
+    point = Simulation(board()).run(OperatingPoint(record=["X1"]))
     # 0.1 A in at the top and out at the ground, whatever heat flows to the ambient.
     assert point.current("X1", "ground") == pytest.approx(-0.1, rel=1e-9)
     assert point.rise("X1/junction") == pytest.approx(2.0, rel=1e-9)

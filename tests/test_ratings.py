@@ -13,7 +13,6 @@ from jolty import (
     Component,
     DcSweep,
     OperatingPoint,
-    Options,
     Role,
     Simulation,
     Transient,
@@ -171,7 +170,7 @@ def test_by_default_results_record_the_instances_rated_for_a_current_or_power() 
     sweep = simulation.run(DcSweep("V1", [0 * V, 10 * V]))
     assert sweep.recording == results.Recording()
     # A record that names nothing still records what the checks read.
-    bare = simulation.run(OperatingPoint(), Options(record=[]))
+    bare = simulation.run(OperatingPoint(record=[]))
     assert bare.recording.terminals == ("R1.a", "R1.b")
     assert [d.rule for d in simulation.check_results({"op": bare})] == ["over-rating"]
 

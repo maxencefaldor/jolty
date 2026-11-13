@@ -7,6 +7,8 @@ A simulation runs a plan's analyses on a circuit, its results read by net and by
 ::: jolty.foundry
 
 ::: jolty.plan
+    options:
+      inherited_members: true
 
 ::: jolty.results
     options:

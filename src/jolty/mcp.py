@@ -90,9 +90,11 @@ integrated_noise, and PoleZero(source=None, output=None, reference=None): the po
 the linearized circuit, and the zeros of the transfer function from source to output,
 read with jolty.specs.damping and dominant_pole. Unknowns
 are named by path: a net such as out or stage/mid, and the current through a source or
-inductor such as V1:current. A result records the instances its options name, as
-Plan(..., options=Options(record=["X1/R1", "X2"])) does, or every instance, as
-Options(record=["**"]) does: the current into each terminal and the charge it holds,
+inductor such as V1:current. A result records the instances its plan's or its
+analysis's record names, as Plan(..., record=["X1/**", "!X1/bias/**"]) or
+OperatingPoint(record=["X1/R1"]) does, or every instance, as record=["**"] does, a
+pattern after ! taking back what earlier ones named: the current into each terminal
+and the charge it holds,
 read with current(instance, terminal) and charge(instance, terminal), such as
 current("X1/R1", "a"), a component instance's terminals summing the devices' behind
 them, and each device's conductances and variables. An operating point and a transient

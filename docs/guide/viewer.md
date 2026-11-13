@@ -11,7 +11,7 @@ The page, `<script>.view.html` beside the circuit, opens in any browser and load
 Every example of the [gallery](../gallery.md) opens in one.
 
 The viewer plays what the results [recorded](results.md#what-a-result-records): every net's voltage, and the currents, charges, variables and conductances of the instances the plan records, by default those rated for a current or a power.
-A plan that records every instance, with `options=Options(record=["**"])`, lights every lead, as the gallery's do.
+A plan that records every instance, with `record=["**"]`, lights every lead, as the gallery's do.
 
 ## The board
 

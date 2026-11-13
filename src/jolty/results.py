@@ -8,14 +8,14 @@ name. It holds the levels of the circuit's logic nets too, which ``level`` reads
 name: 0, 1, or NaN for an unknown level.
 
 It holds what its [`Recording`][jolty.results.Recording] says of the instances its
-options' ``record`` names. For a device: the current into each terminal, and the charge
-the terminal holds, which ``current`` and ``charge`` read by instance and terminal, such
-as ``X1/R1`` and ``a``; its own small-signal model, the derivative of each of its
-equations with respect to each of its unknowns, which ``conductance`` and
+plan's or its analysis's ``record`` names. For a device: the current into each terminal,
+and the charge the terminal holds, which ``current`` and ``charge`` read by instance and
+terminal, such as ``X1/R1`` and ``a``; its own small-signal model, the derivative of
+each of its equations with respect to each of its unknowns, which ``conductance`` and
 ``capacitance`` read; and the variables it computes on its way, such as a transistor's
-threshold voltage, which ``variable`` reads. For a component instance or a logic
-device: its terminals' currents and charges, such as ``X1`` and ``vdd``, each the sum of
-the device terminals behind it.
+threshold voltage, which ``variable`` reads. For a component instance or a logic device:
+its terminals' currents and charges, such as ``X1`` and ``vdd``, each the sum of the
+device terminals behind it.
 """
 
 import difflib
@@ -196,8 +196,8 @@ class Recording:
     terminals behind it; its `conductances` and `capacitances` have one for each pair of
     each device's unknowns, its terminals then its internal unknowns, row by row; and
     its `readings` one for each of each device's variables. Each is found by name in a
-    dictionary, made the first time one is read. A simulation records what its options'
-    ``record`` names (see [`Options`][jolty.plan.Options]).
+    dictionary, made the first time one is read. A simulation records what the plan's or
+    the analysis's ``record`` names (see [`Plan`][jolty.plan.Plan]).
 
     Examples:
         >>> recording = Recording((RecordedDevice("R1", ("a", "b")),), ("X1.p",))
@@ -322,9 +322,9 @@ def _unrecorded(
         message = f"{instance!r}, which the result recorded, has no {what}{close}"
     else:
         message = (
-            f"the result recorded no {what}{close}; record its instance, as "
-            f"Options(record=[{instance!r}]) does, or every instance, as "
-            "Options(record=['**']) does"
+            f"the result recorded no {what}{close}; record its instance, as an "
+            f"analysis's or a plan's record=[{instance!r}] does, or every instance, "
+            "as record=['**'] does"
         )
     raise KeyError(message)
 

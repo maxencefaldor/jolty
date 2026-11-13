@@ -7,7 +7,6 @@ from pathlib import Path
 
 from jolty import (
     Builder,
-    Options,
     Role,
     Simulation,
     Transient,
@@ -48,7 +47,7 @@ def bench(c: Builder) -> None:
 def test_a_scene_names_each_view_s_nets_and_samples_the_analysis() -> None:
     drawn = circuit(bench())
     waveforms = Simulation(drawn).run(
-        Transient(stop=20 * us, max_step=0.01 * us), Options(record=["**"])
+        Transient(stop=20 * us, max_step=0.01 * us, record=["**"])
     )
     found = scene(drawn, {"step": waveforms}, title="RC")
     assert found["views"] == {
@@ -85,14 +84,14 @@ _STAGE = ("X1/R1.a", "X1/R1.b", "X1/C1.a", "X1/C1.b")
 
 def test_a_scene_plays_only_what_the_results_recorded() -> None:
     drawn = circuit(bench())
-    step = Transient(stop=5 * us)
     simulation = Simulation(drawn)
-    for options, terminals in (
+    for record, terminals in (
         (None, set()),
-        (Options(record=["X1"]), {"X1.input", "X1.output", "X1.ground"}),
-        (Options(record=["X1/R1"]), {"X1/R1.a", "X1/R1.b"}),
+        (["X1"], {"X1.input", "X1.output", "X1.ground"}),
+        (["X1/R1"], {"X1/R1.a", "X1/R1.b"}),
     ):
-        analyses = scene(drawn, {"step": simulation.run(step, options)})["analyses"]
+        step = simulation.run(Transient(stop=5 * us, record=record))
+        analyses = scene(drawn, {"step": step})["analyses"]
         assert isinstance(analyses, list)
         (played,) = analyses
         assert isinstance(played, dict)
