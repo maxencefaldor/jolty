@@ -503,6 +503,142 @@ fn an_rc_charges_exponentially_with_every_method() {
     }
 }
 
+/// Each integration method's order, the power of the step its global error falls with.
+const ORDERS: [(Method, f64); 3] = [
+    (Method::BackwardEuler, 1.0),
+    (Method::Trapezoidal, 2.0),
+    (Method::Gear2, 2.0),
+];
+
+/// The steps each method takes in turn, each half the last.
+const HALVED: [f64; 5] = [1e-7, 5e-8, 2.5e-8, 1.25e-8, 6.25e-9];
+
+/// Options under which no step is shortened for its error: each is the longest allowed
+/// once the steps after the start have grown to it, so that only the step sets the error.
+fn uniform_steps() -> Options {
+    Options {
+        truncation_tolerance: 1e12,
+        relative_tolerance: 1e-9,
+        voltage_tolerance: 1e-12,
+        current_tolerance: 1e-15,
+        ..Options::default()
+    }
+}
+
+/// `out` at every time of a transient of `circuit` to `end` with `method`, every step at
+/// most `step` long and none shortened for its error.
+fn stepped(circuit: &Circuit, method: Method, step: f64, end: f64) -> (Vec<f64>, Vec<f64>) {
+    let mut simulator = simulator(circuit);
+    let transient = Transient {
+        stop: end,
+        max_step: Some(step),
+        method,
+        times: Vec::new(),
+        periodic: false,
+    };
+    let waveforms = simulator
+        .transient(&transient, &uniform_steps())
+        .expect("a transient analysis");
+    let out = index(&simulator, "out");
+    let values = waveforms.values.iter().map(|values| values[out]).collect();
+    (waveforms.times, values)
+}
+
+/// An RC low-pass of 1 µs driven by a sine of 100 kHz and `amplitude`, a diode across its
+/// capacitor if `clamped`.
+fn sine_low_pass(amplitude: f64, clamped: bool) -> Circuit {
+    let mut devices: Vec<Device<'_>> = vec![
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"sine": {"offset": 0, "amplitude": amplitude, "frequency": 1e5}}}),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "in"), ("b", "out")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": 1e-9}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ];
+    if clamped {
+        devices.push((
+            "D1",
+            "diode",
+            json!({}),
+            &[("anode", "0"), ("cathode", "out")],
+        ));
+    }
+    circuit(&devices)
+}
+
+/// The order each halving of the step shows, from errors in the order of `HALVED`.
+fn observed_orders(errors: &[f64]) -> Vec<f64> {
+    errors
+        .windows(2)
+        .map(|pair| (pair[0] / pair[1]).abs().log2())
+        .collect()
+}
+
+#[test]
+fn each_method_converges_at_its_order_as_the_step_halves() {
+    // An RC low-pass's response to a sine starting at zero, `out` from rest:
+    // (sin ωt − ωτ cos ωt + ωτ e^(−t/τ)) / (1 + (ωτ)²).
+    let circuit = sine_low_pass(1.0, false);
+    let (omega, tau) = (TAU * 1e5, 1e-6);
+    let exact = |time: f64| {
+        ((omega * time).sin() - omega * tau * (omega * time).cos()
+            + omega * tau * (-time / tau).exp())
+            / (1.0 + (omega * tau).powi(2))
+    };
+    for (method, order) in ORDERS {
+        let errors: Vec<f64> = HALVED
+            .iter()
+            .map(|&step| {
+                let (times, values) = stepped(&circuit, method, step, 2e-5);
+                times
+                    .iter()
+                    .zip(values)
+                    .map(|(&time, value)| (value - exact(time)).abs())
+                    .fold(0.0, f64::max)
+            })
+            .collect();
+        for observed in observed_orders(&errors) {
+            assert!(
+                (observed - order).abs() < 0.1,
+                "{method:?} converges at order {observed}, not {order}: errors {errors:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn each_method_converges_at_its_order_after_a_diode_clamps() {
+    // A diode clamps the sine's first negative half; at 13 µs it is off again, and the
+    // differences between successive halvings shrink by the order's power of two
+    // (Richardson), with no closed form to measure the error against.
+    let circuit = sine_low_pass(2.0, true);
+    for (method, order) in ORDERS {
+        let ends: Vec<f64> = HALVED
+            .iter()
+            .map(|&step| *stepped(&circuit, method, step, 1.3e-5).1.last().unwrap())
+            .collect();
+        let differences: Vec<f64> = ends.windows(2).map(|pair| pair[0] - pair[1]).collect();
+        for observed in observed_orders(&differences) {
+            assert!(
+                (observed - order).abs() < 0.1,
+                "{method:?} converges at order {observed}, not {order}: ends {ends:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn an_lc_tank_rings_at_its_resonant_frequency() {
     let (inductance, capacitance) = (1e-3, 1e-6);

@@ -278,3 +278,4 @@ Where two transients differ, both run again with steps a quarter as long, then a
 Where jolty stops short of ngspice, the same circuit with 10 fF from every net to the ground, as real nets have, must finish: without capacitance, the equations of a net that only resistive devices hold can fold into a point past which no solution continues, which ngspice may leap past.
 An operating point ngspice reaches only by its last resort, the end of a transient of fixed length that it does not check to be one, is no reference either.
 The same random circuits, written differently, simulate the same: with their nets renamed, their instances reordered, a resistor split in two in series, or a source of 0 V in series with a terminal, which reads the current into it.
+Each integration method converges at its order: halving the step halves backward Euler's error and quarters the trapezoidal rule's and Gear's, against a low-pass's closed form and after a diode clamps.
