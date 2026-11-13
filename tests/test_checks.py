@@ -193,7 +193,7 @@ def test_every_rule_has_a_case_that_raises_it() -> None:
         latch(sources=0),
     ]
     found = {rule for case in cases for rule in raised(case)}
-    at_points = (tank(0.2e-3 * S), leaking(None))
+    at_points = (tank(0.2e-3 * S), leaking(None), cubic())
     found |= {
         diagnostic.rule
         for case in at_points
@@ -362,6 +362,37 @@ def test_gmin_dependence() -> None:
         "the operating point depends on gmin: doubling it moves `n` from 999.98"
     )
     # A megohm holds it at 1 mV instead.
+    assert Simulation(leaking(1 * Mohm)).check_operating_point() == ()
+
+
+@component
+def cubic(c: Builder) -> None:
+    """1 V through 10 kΩ into a load drawing 1 mA/V³ · v (v - 1)(v - 2).
+
+    Its load line crosses three times: at 1 V and at 1 ± √0.9 V.
+    """
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(1 * V), id="V1")
+    resistor = c.place(devices.resistor(10 * kohm), id="R1")
+    load = c.place(
+        devices.behavioral_current_source("1e-3 * v(c) * (v(c) - 1) * (v(c) - 2)"),
+        id="B1",
+    )
+    c.connect(supply.positive, resistor.a)
+    c.connect(resistor.b, load.positive, load.c, name="x")
+    c.connect(supply.negative, load.negative, ground)
+
+
+def test_multiple_operating_points() -> None:
+    rules_ = [found.rule for found in Simulation(cubic()).check_operating_point()]
+    assert "multiple-operating-points" in rules_
+    (other,) = (
+        found
+        for found in Simulation(cubic()).check_operating_point()
+        if found.rule == "multiple-operating-points"
+    )
+    assert other.nets == ("x",)
+    assert other.message.startswith("the circuit has another DC solution, where `x` at")
     assert Simulation(leaking(1 * Mohm)).check_operating_point() == ()
 
 

@@ -15,6 +15,7 @@ The default levels below hold until settings or options set others (see [Checks]
 | [`driver-conflict`](#driver-conflict) | `error` |
 | [`floating-input`](#floating-input) | `error` |
 | [`gmin-dependence`](#gmin-dependence) | `warn` |
+| [`multiple-operating-points`](#multiple-operating-points) | `warn` |
 | [`unstable-pole`](#unstable-pole) | `warn` |
 
 ## unconnected-terminal
@@ -62,6 +63,12 @@ A net that a single input joins is left to unconnected-terminal.
 Doubling gmin, the conductance the engine places across every junction to help Newton iteration converge, would move a net's voltage at the operating point, to first order, by more than a hundredth of the larger of that voltage and 1 V: little but gmin holds the net, as between reverse-biased junctions, so its voltage comes from the simulator rather than the circuit.
 One diagnostic names every such net, by decreasing move.
 A simulation checks it at its plan's operating point.
+
+## multiple-operating-points
+
+The circuit's DC equations have a solution besides its operating point, as an operating-points analysis finds them: the circuit can rest in more than one state, as a latch does, or a bias circuit that can also rest with no current, and which it rests in depends on how it starts.
+The diagnostic names the nets whose voltages differ between the two by at least half the largest difference.
+A simulation checks it at its plan's operating point, on circuits of at most 500 unknowns.
 
 ## unstable-pole
 

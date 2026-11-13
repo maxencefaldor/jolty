@@ -23,6 +23,13 @@ The rule `gmin-dependence` names every net whose voltage doubling gmin would mov
 warn[gmin-dependence]: the operating point depends on gmin: doubling it moves `n` from 999.9899999999999 V by -999.9899999999998 V
 ```
 
+A circuit whose DC equations have more than one solution can rest in more than one state: a latch in either of its own, a bias circuit that can also rest with no current, which never starts.
+The rule `multiple-operating-points` states it when an operating-points analysis would find a solution besides the operating point, naming the nets that differ most between the two:
+
+```text
+warn[multiple-operating-points]: the circuit has another DC solution, where `x` at 1.948683389235564 V rather than 0.0513167012238326 V
+```
+
 A pole of the linearized circuit with a positive real part is a natural mode that grows away from the operating point, so the circuit does not rest there: an amplifier whose feedback makes it oscillate, or a latch balanced between its states.
 The rule `unstable-pole` states it, with the nets where the growing mode is largest, though the plan asks for no stability or pole-zero analysis:
 
@@ -31,7 +38,7 @@ warn[unstable-pole]: the operating point is unstable: its poles at 50000.0000000
 ```
 
 An oscillator raises it by design, so it is a warning, which a plan for one can ignore.
-The poles are found by the QZ algorithm on the dense linearized circuit, which takes about a second at 500 unknowns, so a circuit of more unknowns is not checked at its operating point.
+The poles are found by the QZ algorithm on the dense linearized circuit, which takes about a second at 500 unknowns, so a circuit of more unknowns is checked at its operating point for gmin-dependence alone.
 
 ## Diagnostics
 

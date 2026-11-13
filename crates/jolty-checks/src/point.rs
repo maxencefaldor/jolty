@@ -2,7 +2,7 @@
 
 use std::f64::consts::TAU;
 
-use jolty_engine::{Mode, Options, SimulationError, Simulator};
+use jolty_engine::{Mode, OperatingPoint, OperatingPoints, Options, SimulationError, Simulator};
 use jolty_models::Quantity;
 
 use crate::structure::{list, prose};
@@ -12,8 +12,8 @@ use crate::{Diagnostic, Level, Rule};
 /// takes the QZ algorithm about a second.
 pub const MOST_LINEARIZED: usize = 500;
 
-/// The fraction of a mode's largest net amplitude above which a net is named as where the
-/// mode is largest.
+/// The fraction of a mode's largest net amplitude, or of the largest difference between two
+/// DC solutions, from which a net is named.
 const LARGEST: f64 = 0.5;
 
 /// The most nets a diagnostic names before it counts the rest.
@@ -38,6 +38,18 @@ pub(crate) const GMIN_DEPENDENCE: Rule = Rule {
                 checks it at its plan's operating point.",
 };
 
+pub(crate) const MULTIPLE_OPERATING_POINTS: Rule = Rule {
+    name: "multiple-operating-points",
+    level: Level::Warn,
+    condition: "The circuit's DC equations have a solution besides its operating point, as \
+                an operating-points analysis finds them: the circuit can rest in more than \
+                one state, as a latch does, or a bias circuit that can also rest with no \
+                current, and which it rests in depends on how it starts. The diagnostic \
+                names the nets whose voltages differ between the two by at least half the \
+                largest difference. A simulation checks it at its plan's operating point, \
+                on circuits of at most 500 unknowns.",
+};
+
 pub(crate) const UNSTABLE_POLE: Rule = Rule {
     name: "unstable-pole",
     level: Level::Warn,
@@ -51,13 +63,14 @@ pub(crate) const UNSTABLE_POLE: Rule = Rule {
 };
 
 /// Every diagnostic of the rules on the circuit `simulator` elaborated, at its operating
-/// point under `options` and linearized there, rule by rule: the nets gmin holds, then the
-/// modes that grow, by decreasing growth, on circuits of at most [`MOST_LINEARIZED`]
-/// unknowns.
+/// point under `options` and linearized there, rule by rule: the nets gmin holds, then, on
+/// circuits of at most [`MOST_LINEARIZED`] unknowns, another DC solution and the modes
+/// that grow, by decreasing growth.
 ///
 /// # Errors
 ///
-/// Returns the errors of [`Simulator::gmin_dependence`] and [`Simulator::growing_modes`].
+/// Returns the errors of [`Simulator::gmin_dependence`], [`Simulator::operating_points`]
+/// and [`Simulator::growing_modes`].
 pub fn check_operating_point(
     simulator: &mut Simulator,
     options: &Options,
@@ -67,6 +80,10 @@ pub fn check_operating_point(
         .into_iter()
         .collect();
     if simulator.unknowns().len() <= MOST_LINEARIZED {
+        let points = simulator.operating_points(&OperatingPoints { most: 2 }, options)?;
+        if let [point, other] = points.as_slice() {
+            diagnostics.push(multiple_operating_points(simulator, point, other));
+        }
         let growing = simulator.growing_modes(options)?;
         diagnostics.extend(growing.iter().map(|mode| unstable_pole(simulator, mode)));
     }
@@ -101,6 +118,42 @@ fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Opti
         instances: Vec::new(),
         nets: nets.iter().map(|&(net, ..)| net.to_owned()).collect(),
     })
+}
+
+/// The diagnostic of the DC solution `other` besides the operating point `point`.
+fn multiple_operating_points(
+    simulator: &Simulator,
+    point: &OperatingPoint,
+    other: &OperatingPoint,
+) -> Diagnostic {
+    let mut nets: Vec<(&str, f64, f64)> = simulator
+        .unknowns()
+        .iter()
+        .zip(point.values.iter().zip(&other.values))
+        .filter(|(unknown, _)| unknown.quantity == Quantity::Voltage && !unknown.name.contains(':'))
+        .map(|(unknown, (&value, &another))| (unknown.name.as_str(), value, another))
+        .collect();
+    let difference = |&(_, value, another): &(&str, f64, f64)| (another - value).abs();
+    let largest = nets.iter().map(difference).fold(0.0, f64::max);
+    nets.retain(|net| difference(net) >= LARGEST * largest);
+    nets.sort_by(|a, b| difference(b).total_cmp(&difference(a)));
+    let named = prose(
+        nets.iter().map(|(net, value, another)| {
+            format!("`{net}` at {another:?} V rather than {value:?} V")
+        }),
+        NAMED,
+    );
+    let place = if named.is_empty() {
+        String::new()
+    } else {
+        format!(", where {named}")
+    };
+    Diagnostic {
+        rule: MULTIPLE_OPERATING_POINTS.name,
+        message: format!("the circuit has another DC solution{place}"),
+        instances: Vec::new(),
+        nets: nets.iter().map(|&(net, ..)| net.to_owned()).collect(),
+    }
 }
 
 /// The diagnostic of the growing `mode`.
@@ -225,6 +278,37 @@ mod tests {
             "{message}"
         );
         // A megohm holds it at 1 mV, which doubling gmin moves by a picovolt.
+        assert!(diagnostics(&leaking(1e-9, Some(1e6))).is_empty());
+    }
+
+    #[test]
+    fn multiple_operating_points() {
+        // 1 mA/V³ · v (v − 1)(v − 2) = (1 V − v) / 10 kΩ at `x`: v = 1 or 1 ± √0.9.
+        let cubic = json!([
+            {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
+             "terminals": {"positive": "in", "negative": "0"}},
+            {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e4},
+             "terminals": {"a": "in", "b": "x"}},
+            {"id": "B1", "of": {"device": "behavioral_current_source"},
+             "parameters": {"expression": "1e-3 * v(x) * (v(x) - 1) * (v(x) - 2)"},
+             "terminals": {"positive": "x", "negative": "0", "x": "x"}},
+        ]);
+        let raised = diagnostics(&cubic);
+        let found: Vec<&str> = raised.iter().map(|diagnostic| diagnostic.rule).collect();
+        assert!(found.contains(&"multiple-operating-points"), "{raised:?}");
+        let diagnostic = &raised[found
+            .iter()
+            .position(|&rule| rule == "multiple-operating-points")
+            .unwrap()];
+        assert_eq!(diagnostic.nets, ["x"]);
+        assert!(
+            diagnostic
+                .message
+                .starts_with("the circuit has another DC solution, where `x` at "),
+            "{}",
+            diagnostic.message
+        );
+        // A megohm across the leaking diode's net leaves it one.
         assert!(diagnostics(&leaking(1e-9, Some(1e6))).is_empty());
     }
 
