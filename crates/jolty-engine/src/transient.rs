@@ -451,7 +451,7 @@ impl Simulator {
             (point.values, point.strategy)
         };
         self.start_carried(&mut carried, &initial, options)?;
-        self.evaluate(&initial, 0.0, (1.0, options.gmin), true);
+        self.evaluate(&initial, Some(0.0), (1.0, options.gmin), true);
         self.events.start(&self.system.logic, transient.stop);
         let unknowns = initial.len();
         let mut breakpoints = Breakpoints {
@@ -711,14 +711,12 @@ impl Simulator {
             before.clear();
             placed
                 .device
-                .choices(&Input::new(&stepper.x, start, 0.0), &mut before);
+                .choices(&stepping(&stepper.x, start), &mut before);
             if before.is_empty() {
                 continue;
             }
             later.clear();
-            placed
-                .device
-                .choices(&Input::new(after, end, 0.0), &mut later);
+            placed.device.choices(&stepping(after, end), &mut later);
             if let Some(fraction) = Choice::first_jump(&before, &later) {
                 let time = start + (end - start) * fraction;
                 first = Some(first.map_or(time, |earlier| earlier.min(time)));
@@ -868,4 +866,11 @@ impl Simulator {
         }
         Some(worst)
     }
+}
+
+/// The input of the state `x` at `time` of a transient analysis, with no gmin.
+fn stepping(x: &[f64], time: f64) -> Input<'_> {
+    let mut input = Input::new(x, time, 0.0);
+    input.transient = true;
+    input
 }

@@ -1546,7 +1546,7 @@ mod tests {
                     let x = [sign * d, sign * g, 0.0, sign * b, rise, 1e-4, 2e-4, -1e-4];
                     crate::testing::assert_model_jacobians_match(&model, &heated, &x);
                     crate::testing::assert_model_parameter_gradients_match(
-                        &model, &heated, &x, 0.0,
+                        &model, &heated, &x, None,
                     );
                 }
             }

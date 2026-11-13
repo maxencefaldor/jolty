@@ -114,7 +114,7 @@ impl Simulator {
         x: &[f64],
         options: &Options,
     ) {
-        self.evaluate(x, 0.0, (1.0, options.gmin), false);
+        self.evaluate(x, Some(0.0), (1.0, options.gmin), false);
         let unknowns = x.len();
         let mut charges = vec![vec![0.0; unknowns]; unknowns];
         let capacitances = &self.workspace.contributions.capacitance;
@@ -143,7 +143,7 @@ impl Simulator {
         (formula, restarted): (&Formula, bool),
         options: &Options,
     ) -> Result<(), SimulationError> {
-        self.evaluate(x, time, (1.0, options.gmin), false);
+        self.evaluate(x, Some(time), (1.0, options.gmin), false);
         let contributions = &self.workspace.contributions;
         let jacobian: Vec<f64> = contributions
             .conductance

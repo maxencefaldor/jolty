@@ -8,6 +8,10 @@ pub struct Input<'a> {
     x: &'a [f64],
     /// The time, in seconds; zero in every analysis but a transient one.
     pub time: f64,
+    /// Whether time passes: true while a transient analysis steps through it, and false at
+    /// an operating point and in the analyses about one, in which a state that only time
+    /// moves, such as a memristor's, holds the value it starts from.
+    pub transient: bool,
     /// The factor every independent source is scaled by: 1, except while an operating point is
     /// found by ramping the sources up from zero.
     pub source_scale: f64,
@@ -20,16 +24,31 @@ pub struct Input<'a> {
 }
 
 impl<'a> Input<'a> {
-    /// The state `x` at `time`, with sources at full scale, `gmin` across junctions, and
-    /// steps limited.
+    /// The state `x` at `time`, outside a transient analysis, with sources at full scale,
+    /// `gmin` across junctions, and steps limited.
     #[must_use]
     pub fn new(x: &'a [f64], time: f64, gmin: f64) -> Self {
         Self {
             x,
             time,
+            transient: false,
             source_scale: 1.0,
             gmin,
             limiting: true,
+        }
+    }
+
+    /// The same time, scale, gmin and limiting, at the unknowns `x`: the input of a device
+    /// that another evaluates within itself, on unknowns of its own.
+    #[must_use]
+    pub const fn with_values<'b>(&self, x: &'b [f64]) -> Input<'b> {
+        Input {
+            x,
+            time: self.time,
+            transient: self.transient,
+            source_scale: self.source_scale,
+            gmin: self.gmin,
+            limiting: self.limiting,
         }
     }
 

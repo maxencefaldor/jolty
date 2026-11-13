@@ -166,6 +166,8 @@ ELEMENTS = {
     "voltage_controlled_switch": Element("B", _CONTROLLED),
     "current_controlled_switch": Element("B", _CONTROLLED),
     "photocell": Element("B", ("a", "b", "light_positive", "light_negative")),
+    "voltage_controlled_memristor": Element("B", ("positive", "negative")),
+    "current_controlled_memristor": Element("B", ("positive", "negative")),
 }
 
 
@@ -423,11 +425,12 @@ def _device(
             value = f"{output}={{{expression}}}"
         case "voltage_controlled_switch" | "current_controlled_switch":
             nodes, value = _switch(instance, model, values, nodes.split(), lines)
-        case "photocell":
-            a, b, *light = nodes.split()
-            current, lag = _photocell(instance.id, values, light)
-            lines.extend(lag)
-            nodes, value = f"{a} {b}", f"I={{V({a},{b})*{current}}}"
+        case (
+            "photocell"
+            | "voltage_controlled_memristor"
+            | "current_controlled_memristor"
+        ):
+            nodes, value = _varying(instance.id, model, values, nodes.split(), lines)
         case "resistor" | "capacitor" | "inductor":
             value = _passive(model, values, nodes.split(), (instance.id, lines))
         case "foundry_mosfet":
@@ -440,6 +443,27 @@ def _device(
             value = repr(number)
     lines.append(f"{element(instance)} {nodes} {value}{own}")
     return lines
+
+
+def _varying(
+    id: str,
+    model: str,
+    values: Mapping[str, JsonValue],
+    nodes: list[str],
+    lines: list[str],
+) -> tuple[str, str]:
+    """The nodes and the value of a resistance an expression varies, after its lines.
+
+    A photocell's conductance follows its light, and a memristor's its state; `lines`
+    gains those that lag the one and move the other.
+    """
+    a, b, *light = nodes
+    if model == "photocell":
+        conductance, moving = _photocell(id, values, light)
+    else:
+        conductance, moving = _memristor(id, model, values, [a, b])
+    lines.extend(moving)
+    return f"{a} {b}", f"I={{V({a},{b})*{conductance}}}"
 
 
 _PHOTOCELL: Final = {
@@ -477,6 +501,80 @@ def _photocell(
         response = f"V({node})"
     conductance = f"(1/{given['dark_resistance']!r}+{response}/{given['resistance']!r})"
     return conductance, lines
+
+
+_MEMRISTOR: Final = {
+    "on_exponent": 1.0,
+    "off_exponent": 1.0,
+    "law": "linear",
+    "state": 1.0,
+    "window": 0.01,
+}
+"""A memristor's parameters, as the engine takes them when left out."""
+
+_HOLD: Final = 1e-12
+"""The rate, per second, at which a memristor's state returns in ngspice to the state it
+was made in: slower than any transient sees, it pins the state at an operating point,
+which in ngspice holds no initial condition."""
+
+
+def _memristor(
+    id: str, model: str, values: Mapping[str, JsonValue], terminals: list[str]
+) -> tuple[str, list[str]]:
+    """A memristor's conductance as an ngspice expression, and the lines that move it.
+
+    Its state is the voltage of a node of its own over 1 F, which a behavioral current
+    charges at the rate the state moves, and which a transient starts from the state it
+    was made in, as jolty's does. ngspice's own operating point, which holds no initial
+    condition, finds the state of a memristor that nothing drives where it was made,
+    held there by `_HOLD`, but that of one driven past a threshold at the bound it is
+    driven to, where jolty holds the state it was made in.
+    """
+    given = {**_MEMRISTOR, **values}
+    node = f"_{id}_state"
+    state = f"V({node})"
+    held = f"min(max({state},0),1)"
+    on, off = (_number(id, given, key) for key in ("on_resistance", "off_resistance"))
+    conductance = (
+        f"(1/({on!r}+{off - on!r}*{held}))"
+        if given["law"] == "linear"
+        else f"(exp({-math.log(off / on)!r}*{held})/{on!r})"
+    )
+    voltage = f"V({terminals[0]},{terminals[1]})"
+    if model == "voltage_controlled_memristor":
+        drive = (
+            f"{given['off_rate']!r}"
+            f"*pow(max({voltage}/{given['off_voltage']!r}-1,0),{given['off_exponent']!r})"
+            f"-{given['on_rate']!r}"
+            f"*pow(max({voltage}/({given['on_voltage']!r})-1,0),{given['on_exponent']!r})"
+        )
+    else:
+        drive = f"{voltage}*{conductance}/{given['charge']!r}"
+    window = given["window"]
+    off_distance, on_distance = f"(1-{state})/{window!r}", f"{state}/{window!r}"
+    toward_off = f"(1-exp(-max({off_distance},0))+min({off_distance},0))"
+    toward_on = f"(1-exp(-max({on_distance},0))+min({on_distance},0))"
+    rate = f"max({drive},0)*{toward_off}+min({drive},0)*{toward_on}"
+    hold = f"{_HOLD!r}*({state}-{given['state']!r})"
+    lines = [
+        f"B{id}_state 0 {node} I={{{rate}-{hold}}}",
+        f"C{id}_state {node} 0 1",
+        f".ic {state}={given['state']!r}",
+    ]
+    return conductance, lines
+
+
+def _number(id: str, values: Mapping[str, JsonValue], key: str) -> float:
+    """The number `key` among the parameters `values` of the device `id`.
+
+    Raises:
+        JoltyError: When it is no number.
+    """
+    match values.get(key):
+        case int() | float() as found:
+            return float(found)
+    message = f"{id}'s {key} is no number"
+    raise _unwritable(message)
 
 
 def _subcircuit(circuit: ir.Circuit, instance: ir.Instance, ground: str) -> str:
@@ -644,11 +742,7 @@ def _switch(
     (on_name, on_default), (off_name, off_default) = _SWITCHES[model]
 
     def number(key: str, default: float) -> float:
-        match values.get(key, default):
-            case int() | float() as found:
-                return float(found)
-        message = f"{instance.id}'s {key} is no number"
-        raise _unwritable(message)
+        return _number(instance.id, {key: default, **values}, key)
 
     on, off = number(on_name, on_default), number(off_name, off_default)
     on_resistance = number("on_resistance", 1.0)

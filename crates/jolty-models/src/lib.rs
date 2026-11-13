@@ -24,6 +24,7 @@ mod heat;
 mod jfet;
 mod junction;
 mod logic;
+mod memristor;
 mod mosfet;
 mod noise;
 mod passive;
@@ -66,6 +67,10 @@ pub use logic::{
     LogicCell, LogicCellParameters, LogicDriver, LogicDriverParameters, LogicModel, LogicSource,
     LogicSourceParameters, MAX_INPUTS, NativeLogic, NativeLogicModel, OutputParameters, Pins,
     Stimulus, ThresholdDetector, ThresholdDetectorParameters, Timing, TimingParameters,
+};
+pub use memristor::{
+    CurrentControlledMemristor, CurrentControlledMemristorParameters, MemristorLaw,
+    VoltageControlledMemristor, VoltageControlledMemristorParameters,
 };
 pub use mosfet::{GateMaterial, Mosfet, MosfetParameters};
 pub use noise::NoiseSource;
@@ -121,6 +126,8 @@ impl Library {
         library.add(Thermal::<Jfet>::new());
         library.add(Thermal::<Mosfet>::new());
         library.add(Native::<Photocell>::new());
+        library.add(Native::<VoltageControlledMemristor>::new());
+        library.add(Native::<CurrentControlledMemristor>::new());
         library.add(Native::<ThermalResistance>::new());
         library.add(Native::<ThermalCapacitance>::new());
         library.add(Native::<HeatSource>::new());
@@ -196,6 +203,7 @@ mod tests {
                 "capacitor",
                 "coupled_inductors",
                 "current_controlled_current_source",
+                "current_controlled_memristor",
                 "current_controlled_switch",
                 "current_controlled_voltage_source",
                 "current_source",
@@ -212,6 +220,7 @@ mod tests {
                 "thermal_capacitance",
                 "thermal_resistance",
                 "voltage_controlled_current_source",
+                "voltage_controlled_memristor",
                 "voltage_controlled_switch",
                 "voltage_controlled_voltage_source",
                 "voltage_source"

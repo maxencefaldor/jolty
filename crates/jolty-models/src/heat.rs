@@ -325,9 +325,7 @@ impl<M: HeatableModel, R: Heating> Device<R> for Heated<M, R> {
             output.mark_limited();
         }
         let beyond = applied - self.last;
-        let mut local = Input::new(&self.values, input.time, input.gmin);
-        local.source_scale = input.source_scale;
-        local.limiting = input.limiting;
+        let local = input.with_values(&self.values);
         let mut own = self.contributions.output(&self.pattern);
         self.device.evaluate(&local, &mut own);
         if own.is_limited() {
@@ -385,7 +383,7 @@ impl<M: HeatableModel, R: Heating> Device<R> for Heated<M, R> {
 
     fn choices(&mut self, input: &Input<'_>, found: &mut Vec<Choice>) {
         self.gather(input);
-        let local = Input::new(&self.values, input.time, input.gmin);
+        let local = input.with_values(&self.values);
         self.device.choices(&local, found);
     }
 
@@ -405,7 +403,7 @@ impl<M: HeatableModel, R: Heating> Device<R> for Heated<M, R> {
             .iter()
             .map(|&(node, _)| input.value(node))
             .collect();
-        let local = Input::new(&values, input.time, input.gmin);
+        let local = input.with_values(&values);
         let start = sources.len();
         self.device.noise(&local, sources);
         for source in &mut sources[start..] {
@@ -452,7 +450,7 @@ mod tests {
         let model = Thermal::<Diode>::new();
         for x in [[0.72, 0.0, 15.0, 0.7], [-3.0, 0.0, 60.0, -2.9]] {
             assert_model_jacobians_match(&model, DIODE, &x);
-            assert_model_parameter_gradients_match(&model, DIODE, &x, 0.0);
+            assert_model_parameter_gradients_match(&model, DIODE, &x, None);
         }
     }
 

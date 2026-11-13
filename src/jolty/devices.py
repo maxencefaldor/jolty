@@ -21,9 +21,11 @@ from pydantic import JsonValue
 from jolty import _core, ir
 from jolty.units import (
     CAPACITANCE,
+    CHARGE,
     CONDUCTANCE,
     CURRENT,
     DIMENSIONLESS,
+    FREQUENCY,
     HEAT_CAPACITY,
     INDUCTANCE,
     LENGTH,
@@ -724,6 +726,106 @@ def photocell(
         {"illuminance": illuminance, "gamma": gamma},
     )
     return device("photocell", parameters)
+
+
+def voltage_controlled_memristor(  # noqa: PLR0913 - VTEAM's thresholds, rates and exponents
+    *,
+    on_resistance: Quantity,
+    off_resistance: Quantity,
+    on_voltage: Quantity,
+    off_voltage: Quantity,
+    on_rate: Quantity,
+    off_rate: Quantity,
+    on_exponent: float | None = None,
+    off_exponent: float | None = None,
+    law: Literal["linear", "exponential"] | None = None,
+    state: float | None = None,
+    window: float | None = None,
+) -> Device:
+    """A voltage-controlled memristor between ``positive`` and ``negative``, VTEAM's.
+
+    Its resistance follows its state by its `law`, linear unless given, from
+    `on_resistance` at a state of 0 to `off_resistance` at 1. A voltage of ``positive``
+    over ``negative`` above `off_voltage` moves the state toward off at `off_rate` times
+    ``(v/v_off - 1)`` to the power `off_exponent`, and one below `on_voltage`, a
+    negative voltage, toward on at `on_rate` times ``(v/v_on - 1)`` to the power
+    `on_exponent`, each exponent 1 unless given; between them, the state holds. Each
+    rate is the state's speed at twice its threshold, in full ranges per second. A
+    `window`, 0.01 of the range unless given, slows the state at either bound, which it
+    never passes. It is made in `state`, 1, fully off, unless given.
+
+    Examples:
+        >>> from jolty.units import V, kohm, s
+        >>> cell = voltage_controlled_memristor(
+        ...     on_resistance=1 * kohm,
+        ...     off_resistance=100 * kohm,
+        ...     on_voltage=-1 * V,
+        ...     off_voltage=0.5 * V,
+        ...     on_rate=1e6 / s,
+        ...     off_rate=1e5 / s,
+        ... )
+        >>> cell.parameters["off_rate"]
+        100000.0
+    """
+    parameters = _parameters(
+        {
+            "on_resistance": (on_resistance, RESISTANCE),
+            "off_resistance": (off_resistance, RESISTANCE),
+            "on_voltage": (on_voltage, VOLTAGE),
+            "off_voltage": (off_voltage, VOLTAGE),
+            "on_rate": (on_rate, FREQUENCY),
+            "off_rate": (off_rate, FREQUENCY),
+        },
+        {
+            "on_exponent": on_exponent,
+            "off_exponent": off_exponent,
+            "state": state,
+            "window": window,
+        },
+    )
+    if law is not None:
+        parameters["law"] = law
+    return device("voltage_controlled_memristor", parameters)
+
+
+def current_controlled_memristor(  # noqa: PLR0913 - its resistances, charge, law and state
+    *,
+    on_resistance: Quantity,
+    off_resistance: Quantity,
+    charge: Quantity,
+    law: Literal["linear", "exponential"] | None = None,
+    state: float | None = None,
+    window: float | None = None,
+) -> Device:
+    """A current-controlled memristor between ``positive`` and ``negative``, HP's.
+
+    Its resistance follows its state by its `law`, linear unless given, from
+    `on_resistance` at a state of 0 to `off_resistance` at 1. The state moves with the
+    charge through it, from ``positive`` to ``negative`` toward off, by the charge over
+    `charge`, the charge that carries it across its whole range, as the dopants of HP's
+    titanium dioxide cell drift. A `window`, 0.01 of the range unless given, slows the
+    state at either bound, which it never passes. It is made in `state`, 1, fully off,
+    unless given.
+
+    Examples:
+        >>> from jolty.units import kohm, ohm, uC
+        >>> cell = current_controlled_memristor(
+        ...     on_resistance=100 * ohm, off_resistance=16 * kohm, charge=2 * uC
+        ... )
+        >>> cell.parameters["charge"]
+        2e-06
+    """
+    parameters = _parameters(
+        {
+            "on_resistance": (on_resistance, RESISTANCE),
+            "off_resistance": (off_resistance, RESISTANCE),
+            "charge": (charge, CHARGE),
+        },
+        {"state": state, "window": window},
+    )
+    if law is not None:
+        parameters["law"] = law
+    return device("current_controlled_memristor", parameters)
 
 
 def diode(  # noqa: PLR0913 - the SPICE junction model has fifteen parameters

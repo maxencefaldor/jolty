@@ -14,6 +14,8 @@ pub(crate) struct Bench {
     device: Box<dyn Device>,
     pattern: Pattern,
     unknowns: Vec<UnknownInfo>,
+    /// Whether the device is evaluated as a transient analysis steps through time.
+    transient: bool,
 }
 
 /// What one evaluation of a bench's device produced, with dense matrices.
@@ -95,7 +97,14 @@ impl Bench {
             device,
             pattern,
             unknowns,
+            transient: false,
         })
+    }
+
+    /// The bench, evaluating its device as a transient analysis does, while time passes.
+    pub(crate) const fn stepping(mut self) -> Self {
+        self.transient = true;
+        self
     }
 
     pub(crate) fn unknowns(&self) -> Vec<&str> {
@@ -106,7 +115,9 @@ impl Bench {
     }
 
     pub(crate) fn evaluate(&mut self, x: &[f64]) -> Evaluation {
-        self.evaluate_with(&Input::new(x, 0.0, 0.0))
+        let mut input = Input::new(x, 0.0, 0.0);
+        input.transient = self.transient;
+        self.evaluate_with(&input)
     }
 
     /// Evaluates at `x` until no voltage is limited any more, as Newton's iterations would
@@ -190,6 +201,13 @@ pub(crate) fn assert_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64
     assert_bench_jacobians_match(&mut Bench::new::<D>(parameters), D::NAME, x);
 }
 
+/// As [`assert_jacobians_match`], with the device evaluated as a transient analysis
+/// steps through time.
+pub(crate) fn assert_stepping_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64]) {
+    let mut bench = Bench::new::<D>(parameters).stepping();
+    assert_bench_jacobians_match(&mut bench, D::NAME, x);
+}
+
 /// As [`assert_jacobians_match`], for a device of any `model`.
 pub(crate) fn assert_model_jacobians_match(model: &dyn Model, parameters: &str, x: &[f64]) {
     let mut bench = Bench::of(model, parameters, REFERENCE_TEMPERATURE).expect("valid");
@@ -252,15 +270,16 @@ fn assert_bench_jacobians_match(bench: &mut Bench, name: &str, x: &[f64]) {
     }
 }
 
-/// Evaluates `device`, bound to `pattern`, at `x`: its residuals, charges and
-/// conductances.
+/// Evaluates `device`, bound to `pattern`, at `x`, at `time` in a transient analysis or,
+/// with `None`, at an operating point: its residuals, charges and conductances.
 fn residuals_and_charges<R: Real>(
     device: &mut dyn Device<R>,
     pattern: &Pattern,
-    (x, time): (&[f64], f64),
+    (x, time): (&[f64], Option<f64>),
 ) -> [Vec<R>; 3] {
     let mut contributions = Contributions::new(pattern);
-    let mut input = Input::new(x, time, 1e-12);
+    let mut input = Input::new(x, time.unwrap_or(0.0), 1e-12);
+    input.transient = time.is_some();
     input.limiting = false;
     device.evaluate(&input, &mut contributions.output(pattern));
     [
@@ -298,7 +317,7 @@ impl Rig<'_> {
 
     /// The residuals, charges and conductances at `x` of the device made with
     /// `parameters`.
-    fn plain(&self, parameters: &jolty_ir::Parameters, x: (&[f64], f64)) -> [Vec<f64>; 3] {
+    fn plain(&self, parameters: &jolty_ir::Parameters, x: (&[f64], Option<f64>)) -> [Vec<f64>; 3] {
         let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
         let mut binding = self.binding(&mut unknowns, &mut builder);
         let mut device = self
@@ -313,7 +332,7 @@ impl Rig<'_> {
     fn exact(
         &self,
         parameters: &jolty_ir::Parameters,
-        x: (&[f64], f64),
+        x: (&[f64], Option<f64>),
     ) -> Option<[Vec<Gradient>; 3]> {
         let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
         let mut binding = self.binding(&mut unknowns, &mut builder);
@@ -364,25 +383,26 @@ fn at<'a>(value: &'a mut serde_json::Value, path: &[String]) -> &'a mut serde_js
 /// the device made again with the number a little above and below, and that their values
 /// are the device's own.
 pub(crate) fn assert_parameter_gradients_match<M: NativeModel>(parameters: &str, x: &[f64]) {
-    assert_parameter_gradients_match_at::<M>(parameters, x, 0.0);
+    assert_model_parameter_gradients_match(&Native::<M>::new(), parameters, x, None);
 }
 
-/// As [`assert_parameter_gradients_match`], at `time`.
+/// As [`assert_parameter_gradients_match`], in a transient analysis at `time`.
 pub(crate) fn assert_parameter_gradients_match_at<M: NativeModel>(
     parameters: &str,
     x: &[f64],
     time: f64,
 ) {
-    assert_model_parameter_gradients_match(&Native::<M>::new(), parameters, x, time);
+    assert_model_parameter_gradients_match(&Native::<M>::new(), parameters, x, Some(time));
 }
 
-/// As [`assert_parameter_gradients_match_at`], for a device of any `model`, whose
-/// conductances' derivatives are checked too.
+/// As [`assert_parameter_gradients_match`], for a device of any `model`, at `time` in a
+/// transient analysis or, with `None`, at an operating point, its conductances'
+/// derivatives checked too.
 pub(crate) fn assert_model_parameter_gradients_match(
     model: &dyn Model,
     parameters: &str,
     x: &[f64],
-    time: f64,
+    time: Option<f64>,
 ) {
     let parameters: serde_json::Value = serde_json::from_str(parameters).expect("JSON");
     let object = |value: &serde_json::Value| -> jolty_ir::Parameters {

@@ -76,18 +76,20 @@ pub(crate) enum Failure {
 }
 
 impl Simulator {
-    /// Evaluates every device at `x`, filling the workspace's residuals, charges and their
-    /// derivatives, with their steps limited if `limiting`. Returns whether a device limited
-    /// its voltage.
+    /// Evaluates every device at `x`, at `time` in a transient analysis or, with `None`, at
+    /// an operating point or about one, filling the workspace's residuals, charges and
+    /// their derivatives, with their steps limited if `limiting`. Returns whether a device
+    /// limited its voltage.
     pub(crate) fn evaluate(
         &mut self,
         x: &[f64],
-        time: f64,
+        time: Option<f64>,
         (source_scale, gmin): (f64, f64),
         limiting: bool,
     ) -> bool {
         let mut output = self.workspace.contributions.output(&self.system.pattern);
-        let mut input = Input::new(x, time, gmin);
+        let mut input = Input::new(x, time.unwrap_or(0.0), gmin);
+        input.transient = time.is_some();
         input.source_scale = source_scale;
         input.limiting = limiting;
         for placed in &mut self.system.devices {
@@ -110,8 +112,8 @@ impl Simulator {
         limit: usize,
     ) -> Result<usize, Failure> {
         let (time, source_scale) = match mode {
-            Mode::Dc { source_scale, .. } => (0.0, source_scale),
-            Mode::Step { time, .. } => (time, 1.0),
+            Mode::Dc { source_scale, .. } => (None, source_scale),
+            Mode::Step { time, .. } => (Some(time), 1.0),
         };
         // A DC solution starts afresh from its guess; a time step goes on from the last.
         let afresh = matches!(mode, Mode::Dc { .. });

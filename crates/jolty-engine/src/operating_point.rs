@@ -265,7 +265,7 @@ impl Simulator {
         if self.system.logic.drivers.is_empty() {
             return;
         }
-        self.evaluate(values, 0.0, (1.0, options.gmin), true);
+        self.evaluate(values, None, (1.0, options.gmin), true);
         let omega = TAU * LOAD_FREQUENCY;
         let contributions = &self.workspace.contributions;
         let matrix: Vec<Complex64> = contributions

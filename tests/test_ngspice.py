@@ -75,6 +75,7 @@ from jolty.units import (
     pF,
     s,
     uA,
+    uC,
     uF,
     um,
     uS,
@@ -1076,6 +1077,59 @@ def lit(c: Builder) -> None:
 
 
 @component
+def memristive(c: Builder) -> None:
+    """VTEAM's memristor under a sine, fed through a resistor.
+
+    Its state moves the voltage across it, and its thresholds, rates and exponents
+    differ in each direction.
+    """
+    ground = c.port("ground", Role.GROUND)
+    sine = Sine(0 * V, 2 * V, 1 * kHz)
+    source = c.place(devices.voltage_source(sine), id="V1")
+    feed = c.place(devices.resistor(1 * kohm), id="R1")
+    cell = c.place(
+        devices.voltage_controlled_memristor(
+            on_resistance=1 * kohm,
+            off_resistance=20 * kohm,
+            on_voltage=-0.8 * V,
+            off_voltage=0.4 * V,
+            on_rate=4e3 / s,
+            off_rate=1.5e3 / s,
+            on_exponent=2,
+            off_exponent=1.5,
+            law="exponential",
+            state=0.6,
+        ),
+        id="M1",
+    )
+    c.connect(source.positive, feed.a, name="in")
+    c.connect(feed.b, cell.positive, name="cell")
+    c.connect(source.negative, cell.negative, ground)
+
+
+@component
+def ion_drift(c: Builder) -> None:
+    """HP's memristor under a sine, fed through a resistor, driven into its window."""
+    ground = c.port("ground", Role.GROUND)
+    sine = Sine(0 * V, 1.5 * V, 1 * Hz)
+    source = c.place(devices.voltage_source(sine), id="V1")
+    feed = c.place(devices.resistor(1 * kohm), id="R1")
+    cell = c.place(
+        devices.current_controlled_memristor(
+            on_resistance=100 * ohm,
+            off_resistance=16 * kohm,
+            charge=60 * uC,
+            state=0.5,
+            window=0.05,
+        ),
+        id="M1",
+    )
+    c.connect(source.positive, feed.a, name="in")
+    c.connect(feed.b, cell.positive, name="cell")
+    c.connect(source.negative, cell.negative, ground)
+
+
+@component
 def switched(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     pulse = Pulse(
@@ -1261,6 +1315,8 @@ def flickering(c: Builder) -> None:
         switched,
         curved,
         lit,
+        memristive,
+        ion_drift,
     ],
 )
 def test_operating_points_agree(top: Callable[[], Component]) -> None:
@@ -1579,6 +1635,8 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
         (current_switched, 200 * us, 0.2 * us),
         (curved, 3 * ms, 2 * us),
         (lit, 30 * ms, 20 * us),
+        (memristive, 3 * ms, 1 * us),
+        (ion_drift, 2 * s, 1 * ms),
     ],
 )
 def test_transients_agree(

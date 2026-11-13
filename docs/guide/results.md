@@ -80,6 +80,7 @@ A device's variables are the quantities it computes on its way to its currents t
 | Model | Variables |
 | --- | --- |
 | `mosfet` | `threshold_voltage` and `saturation_voltage`, in the transistor's own polarity; Meyer's `gate_source_capacitance`, `gate_drain_capacitance` and `gate_bulk_capacitance` |
+| `voltage_controlled_memristor`, `current_controlled_memristor` | `resistance`, the one its state sets, and `rate`, how fast its state moves, toward off when positive, in full ranges per second |
 
 ```python
 point.conductance("M1.drain", "M1.gate")  # gm, in siemens

@@ -553,7 +553,7 @@ mod tests {
         }
         for x in [[5.0, -0.5, 0.0, 20.0, 4.9], [0.3, -1.0, 0.0, 55.0, 0.29]] {
             crate::testing::assert_model_jacobians_match(&model, &heated, &x);
-            crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, 0.0);
+            crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, None);
         }
     }
 

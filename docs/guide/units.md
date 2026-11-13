@@ -27,6 +27,7 @@ The module `jolty.units` defines the units below; the micro prefix is written `u
 | Frequency | `Hz`, `kHz`, `MHz`, `GHz` |
 | Voltage | `V`, `kV`, `mV`, `uV`, `nV` |
 | Current | `A`, `mA`, `uA`, `nA`, `pA`, `fA` |
+| Charge | `C`, `mC`, `uC`, `nC`, `pC` |
 | Resistance | `ohm`, `kohm`, `Mohm` |
 | Conductance | `S`, `mS`, `uS` |
 | Capacitance | `F`, `mF`, `uF`, `nF`, `pF`, `fF` |

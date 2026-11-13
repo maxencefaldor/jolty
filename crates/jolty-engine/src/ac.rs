@@ -106,7 +106,7 @@ impl Simulator {
         options: &Options,
     ) -> Result<OperatingPoint, SimulationError> {
         let operating_point = self.operating_point(options)?;
-        self.evaluate(&operating_point.values, 0.0, (1.0, options.gmin), true);
+        self.evaluate(&operating_point.values, None, (1.0, options.gmin), true);
         Ok(operating_point)
     }
 

@@ -624,7 +624,7 @@ mod tests {
             for rise in [10.0, 80.0] {
                 let x: Vec<f64> = [2.5, -0.5, rise].into_iter().chain(current).collect();
                 crate::testing::assert_model_jacobians_match(&model, &heated, &x);
-                crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, 0.0);
+                crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, None);
             }
         }
     }

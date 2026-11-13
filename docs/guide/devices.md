@@ -45,7 +45,7 @@ A resistor's or capacitor's value also bends with the voltage `v` from `a` to `b
 A resistor then carries `v / (r · (1 + vc1 · v + vc2 · v²))`, and a capacitor holds the charge `c · (v + vc1 · v² / 2 + vc2 · v³ / 3)`, whose slope is its bent capacitance.
 The formula holds at every voltage, as in ngspice: where the coefficients bend a value below zero, it is negative there.
 
-In a [noise analysis](simulation.md#noise), a resistor makes thermal noise, `4kT/R` A²/Hz at its resistance there, or a voltage of `4kT·R` V²/Hz in series below 1 Ω, as a switch and a photocell do at theirs; capacitors and inductors make none.
+In a [noise analysis](simulation.md#noise), a resistor makes thermal noise, `4kT/R` A²/Hz at its resistance there, or a voltage of `4kT·R` V²/Hz in series below 1 Ω, as a switch, a photocell and a memristor do at theirs; capacitors and inductors make none.
 Given a flicker coefficient `KF`, `flicker_coefficient`, a resistor's current `I` also makes flicker noise of `KF · |I|^AF / f` A²/Hz across it, `AF` its `flicker_exponent`, 1 unless given, as ngspice's resistor does.
 
 A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and `device.toleranced(parameter, relative, distribution, lot)` gives any device's number parameter a `"uniform"`, `"normal"`, `"log_uniform"` or `"log_normal"` tolerance, by its path, such as `waveform.dc` for a source's DC level, and optionally a lot it shares a spread with; [Monte Carlo analyses](simulation.md#monte-carlo) sample them, and [worst-case analyses](simulation.md#worst-case) set them at their extremes.
@@ -179,6 +179,40 @@ With a response time `τ`, `s` lags the light, `τ · ds/dt = (E/E₀)^γ − s`
 | `response_time` | s | 0: the cell follows the light at once |
 
 SPICE has no photocell; written for ngspice, it is a behavioral current whose response lags through 1 Ω and a capacitance of its response time.
+
+## Memristors
+
+A memristor is a resistance between `positive` and `negative` that remembers what drove it.
+Its state, from 0, fully on, at `on_resistance`, to 1, fully off, at `off_resistance`, moves only while it is driven, and holds where the drive left it.
+The resistance follows the state by a `law`: `"linear"`, `r_on + (r_off − r_on) · x`, as two resistances in series whose boundary moves, or `"exponential"`, `r_on · (r_off / r_on)^x`, as a tunnel barrier whose width moves.
+The state is an unknown labelled `state`, as `M1:state`, and the resistance and the rate at which the state moves, toward off when positive, in full ranges per second, are the [variables](results.md#devices-own-models) `resistance` and `rate`.
+A window slows the state as it nears the bound it moves toward, by `1 − e^(−d/w)` at a distance `d` from it, `w` the `window`, so it never passes either bound and leaves either at once when driven away.
+
+Only time moves a state.
+At an operating point, and in the DC sweeps, small-signal responses and noise about one, a memristor's state is the one it was made in, its `state`, as SPICE's initial conditions hold a node: the memristor is a resistor there, and its `rate` says how fast a transient would move it.
+A transient starts from that state.
+A [periodic](simulation.md#periodic-steady-state) transient finds one periodic steady state: when the drive returns a memristor's state each period, as a symmetric one does, any state it starts from repeats, and the one found need not be the state it was made in.
+
+`voltage_controlled_memristor(...)` is VTEAM's memristor (Kvatinsky, Ramadan, Friedman and Kolodny, 2015), whose state a voltage moves only past a threshold, as a memory's cell holds under the voltage that reads it.
+A voltage `v` of `positive` over `negative` above `off_voltage` moves the state toward off at `off_rate · (v/v_off − 1)^α_off`, and one below `on_voltage`, a negative voltage, toward on at `on_rate · (v/v_on − 1)^α_on`; between them, the state holds.
+Each rate is the state's speed at twice its threshold, in full ranges per second: VTEAM's `k_off`, or `−k_on`, over the range of its state variable, `w_off − w_on`.
+
+| Parameter | VTEAM | Unit | Default |
+| --- | --- | --- | --- |
+| `on_resistance`, `off_resistance` | `R_ON`, `R_OFF` | Ω | none |
+| `on_voltage`, `off_voltage` | `v_on`, `v_off` | V | none |
+| `on_rate`, `off_rate` | `−k_on`, `k_off` over `w_off − w_on` | 1/s | none |
+| `on_exponent`, `off_exponent` | `α_on`, `α_off` | a number, at least 1 | 1 |
+| `law` | linear or exponential | | `"linear"` |
+| `state` | `(w − w_on) / (w_off − w_on)` | from 0 to 1 | 1, off |
+| `window` | | a fraction of the state's range | 0.01 |
+
+`current_controlled_memristor(...)` is the linear ion drift memristor of HP's titanium dioxide cell (Strukov, Snider, Stewart and Williams, 2008), whose state the charge through it moves, as its dopants drift.
+A charge `q` from `positive` to `negative` moves the state toward off by `q/Q`, where `Q`, its `charge`, carries it across its whole range; with a linear law, it is Chua's ideal memristor, whose flux is a function of its charge alone.
+Its `on_resistance`, `off_resistance`, `law`, `state` and `window` are as above.
+
+Written for ngspice, a memristor is a behavioral current whose state is the voltage of a node of its own over 1 F, charged by a behavioral current at the state's rate, with an initial condition that starts a transient from the state it was made in.
+ngspice's own operating point holds no initial condition, so the state returns to the one it was made in at a part in 10¹² of its range a second, which no transient sees: there, a memristor that nothing drives is at that state, but one driven past a threshold is at the bound it is driven to.
 
 ## Thermal networks
 

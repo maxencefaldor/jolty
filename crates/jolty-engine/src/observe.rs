@@ -141,12 +141,14 @@ struct Probe {
 }
 
 impl Probe {
-    /// Evaluates the copy at the solution `x`, at `time`.
-    fn evaluate(&mut self, x: &[f64], time: f64, gmin: f64) {
+    /// Evaluates the copy at the solution `x`, at `time` in a transient analysis or, with
+    /// `None`, at an operating point or about one.
+    fn evaluate(&mut self, x: &[f64], time: Option<f64>, gmin: f64) {
         for (value, source) in self.x.iter_mut().zip(&self.sources) {
             *value = source.map_or(0.0, |unknown| x[unknown.index()]);
         }
-        let mut input = Input::new(&self.x, time, gmin);
+        let mut input = Input::new(&self.x, time.unwrap_or(0.0), gmin);
+        input.transient = time.is_some();
         input.limiting = false;
         self.device
             .evaluate(&input, &mut self.contributions.output(&self.pattern));
@@ -338,13 +340,13 @@ impl Observer {
     /// What every device does at the DC solution `x`: each current without a charge's
     /// derivative.
     pub(crate) fn dc(&mut self, x: &[f64], gmin: f64) -> Observation {
-        self.at(x, 0.0, gmin)
+        self.at(x, None, gmin)
     }
 
     /// What every device does at the DC solution `x` that begins a transient, whose charges
     /// stand still.
     pub(crate) fn start(&mut self, x: &[f64], gmin: f64) -> Observation {
-        let found = self.dc(x, gmin);
+        let found = self.at(x, Some(0.0), gmin);
         self.history = History {
             last: found.charges.clone(),
             before: found.charges.clone(),
@@ -363,7 +365,7 @@ impl Observer {
         gmin: f64,
         (formula, restart): (&Formula, bool),
     ) -> Observation {
-        let mut found = self.at(x, time, gmin);
+        let mut found = self.at(x, Some(time), gmin);
         let history = &mut self.history;
         let derivative: Vec<f64> = found
             .charges
@@ -388,8 +390,9 @@ impl Observer {
         found
     }
 
-    /// What every device does at `x` at `time`, without a charge's derivative.
-    fn at(&mut self, x: &[f64], time: f64, gmin: f64) -> Observation {
+    /// What every device does at `x`, at `time` in a transient analysis or, with `None`,
+    /// at an operating point, without a charge's derivative.
+    fn at(&mut self, x: &[f64], time: Option<f64>, gmin: f64) -> Observation {
         let derivatives = self.derivatives.len();
         let mut found = Observation {
             currents: vec![0.0; self.names.len()],
@@ -427,7 +430,7 @@ impl Observer {
     /// Readies the small-signal currents around the DC solution `x`.
     pub(crate) fn linearize(&mut self, x: &[f64], gmin: f64) {
         for probe in &mut self.probes {
-            probe.evaluate(x, 0.0, gmin);
+            probe.evaluate(x, None, gmin);
         }
     }
 
