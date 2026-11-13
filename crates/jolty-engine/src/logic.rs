@@ -401,6 +401,11 @@ impl Events {
         &self.levels
     }
 
+    /// The level each logic driver was last told to follow.
+    pub(crate) fn driven(&self) -> &[Level] {
+        &self.driven
+    }
+
     /// Each detector's level.
     pub(crate) fn detector_levels(&self, logic: &LogicSystem) -> Vec<Level> {
         self.drives[logic.first_detector..]

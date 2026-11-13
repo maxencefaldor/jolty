@@ -102,16 +102,23 @@ impl Simulator {
                 Solved {
                     values: std::mem::take(&mut values),
                     strategy: Strategy::Direct,
+                    iterations: None,
                 }
             } else {
                 self.hold_source(index, Some(level));
-                match self.solve_dc(values.clone(), options) {
+                let found = if previous.is_none() {
+                    self.solve_from_zero(options)
+                } else {
+                    self.solve_dc(values.clone(), options)
+                };
+                match found {
                     Ok(solved) => solved,
                     // The first level may lie where no strategy finds the solution from
                     // scratch: there, continue to it from the circuit's own operating point.
                     Err(error) if previous.is_none() => Solved {
                         values: self.reach_first_level(index, level, options).ok_or(error)?,
                         strategy: Strategy::Direct,
+                        iterations: None,
                     },
                     Err(error) => return Err(error),
                 }
@@ -134,10 +141,7 @@ impl Simulator {
     ) -> Option<Vec<f64>> {
         let own = self.system.devices[index].device.as_source()?.level();
         self.hold_source(index, Some(own));
-        let mut values = self
-            .solve_dc(vec![0.0; self.system.unknowns.len()], options)
-            .ok()?
-            .values;
+        let mut values = self.solve_from_zero(options).ok()?.values;
         self.continue_level(index, (own, level), &mut values, options)
             .then_some(values)
     }
@@ -216,9 +220,18 @@ impl Simulator {
         }
     }
 
+    /// Holds the source of the device at `index` at `level`, or releases it to its
+    /// waveform with `None`, and its copy that the observer reads.
     pub(crate) fn hold_source(&mut self, index: usize, level: Option<f64>) {
         if let Some(source) = self.system.devices[index].device.as_source() {
             source.hold(level);
+            // At its own level, the level at time zero, a source held leaves the DC
+            // equations as they are.
+            let own = source.level();
+            match level.filter(|level| level.total_cmp(&own).is_ne()) {
+                Some(level) => self.held.insert(index, level),
+                None => self.held.remove(&index),
+            };
         }
         self.observer.hold(index, level);
     }

@@ -8,7 +8,8 @@
 //! probe, the [noise](Simulator::noise) at an output, and the [poles and
 //! zeros](Simulator::pole_zero).
 //! Every analysis solves the charge-oriented equations `f(x) + d/dt q(x) = 0` by Newton
-//! iteration with one sparse LU solver, whose symbolic analysis is shared by all of them.
+//! iteration with one sparse LU solver, whose symbolic analysis is shared by all of them,
+//! and every analysis about the operating point takes the one the simulator solved last.
 //! Logic devices join logic nets, which an event scheduler simulates beside the analog
 //! circuit, joined to it by connect elements where a logic pin meets an electrical net.
 //!
@@ -82,6 +83,7 @@ use elaborate::System;
 use logic::Events;
 use newton::Workspace;
 use observe::Observer;
+use operating_point::Remembered;
 
 /// What a circuit is simulated in, apart from its analyses: its devices' temperature,
 /// parameters that replace the circuit's own for some device instances, as a Monte Carlo
@@ -146,6 +148,19 @@ pub struct Simulator {
     /// The devices and the composite terminals in the order of their paths, made the first
     /// time a terminal is looked up.
     index: OnceLock<Index>,
+    /// The last operating point solved, what it was solved under and the state it left,
+    /// which an analysis about the same operating point takes instead of solving it again.
+    /// Once the devices are made, only holding a source and driving the logic change their
+    /// DC equations: the sources held are part of what it was solved under, and an
+    /// operating point starts from the logic reset and leaves the logic and its drivers
+    /// as the one remembered left them.
+    remembered: Option<Remembered>,
+    /// The sources held away from their own levels, at the level each is held at, by the
+    /// index of its device.
+    held: BTreeMap<usize, f64>,
+    /// How many times the simulator has solved for an operating point, or a DC sweep's
+    /// first level, rather than taken the last one's.
+    solves: usize,
 }
 
 /// The devices and the composite terminals of a circuit, each by index, sorted by path and
@@ -196,7 +211,20 @@ impl Simulator {
             events,
             observer,
             index: OnceLock::new(),
+            remembered: None,
+            held: BTreeMap::new(),
+            solves: 0,
         })
+    }
+
+    /// How many times the simulator has solved for an operating point, or for a DC sweep's
+    /// first level, since it was made. An analysis about the operating point the circuit
+    /// was last solved at, with the same sources held and under the same options, save
+    /// those only a transient reads, takes that solution again instead, and solves for
+    /// none.
+    #[must_use]
+    pub fn operating_point_solves(&self) -> usize {
+        self.solves
     }
 
     /// The terminals of every component instance and logic device on an electrical or a

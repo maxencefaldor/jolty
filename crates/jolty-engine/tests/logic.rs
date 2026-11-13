@@ -628,3 +628,53 @@ fn a_cell_used_outside_its_domain_says_where() {
     assert_eq!((found[2].0, found[2].2), (Bound::Supply, 0.0));
     assert!((found[2].1 - 1.2).abs() < 1e-12);
 }
+
+#[test]
+fn the_logic_returns_to_its_operating_point_after_a_transient() {
+    // The transient moves the logic on and its drivers with it; the next analysis about the
+    // operating point takes it again, and the logic and the drivers as it left them.
+    let supply = 2.0;
+    let circuit = circuit(&[
+        (
+            "VDD",
+            "voltage_source",
+            json!({"waveform": {"dc": supply}}),
+            &[("positive", "vdd"), ("negative", "0")],
+        ),
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"pulse": {"initial": 0, "pulsed": supply, "delay": 1e-9,
+                "rise": 2e-9, "fall": 2e-9, "width": 1}}}),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "U1",
+            "logic_cell",
+            cell(&["a"], "10", (3e-9, 3e-9), true),
+            &[
+                ("a", "in"),
+                ("y", "out"),
+                ("supply", "vdd"),
+                ("ground", "0"),
+            ],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": 1e-15}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let options = Options::default();
+    let mut simulator = simulator(&circuit);
+    let point = simulator.operating_point(&options).unwrap();
+    let first = simulator.transient(&transient(10e-9), &options).unwrap();
+    assert_eq!(simulator.operating_point(&options).unwrap(), point);
+    let second = simulator.transient(&transient(10e-9), &options).unwrap();
+    assert_eq!(second, first);
+    assert_eq!(simulator.operating_point_solves(), 1);
+    let mut fresh = self::simulator(&circuit);
+    assert_eq!(fresh.transient(&transient(10e-9), &options).unwrap(), first);
+    assert_eq!(simulator.excursions(), fresh.excursions());
+}

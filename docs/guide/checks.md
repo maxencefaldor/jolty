@@ -21,6 +21,7 @@ warn[non-standard-value]: the resistance of `R1`, 4800.0 Ω, is in no E series f
 ## At the operating point
 
 A simulation also checks the circuit at its plan's operating point, solved with the plan's options, and linearized there, before reading any analysis.
+The checks take the operating point the analyses solved, which the simulation remembers, so they solve it themselves only when no analysis did.
 
 The engine places gmin, a conductance of 1e-12 S, across every junction, so that Newton iteration has a slope to follow where a junction is off.
 A net that little else holds, such as one between reverse-biased junctions, takes whatever voltage gmin's picoamperes set, which is the simulator's, not the circuit's.

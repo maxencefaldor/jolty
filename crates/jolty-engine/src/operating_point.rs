@@ -1,7 +1,17 @@
 //! The DC operating point, with gmin stepping, across the nodes then across the junctions,
 //! source stepping, and pseudo-transient continuation when Newton alone fails, and every
 //! other DC solution deflation finds.
+//!
+//! The simulator remembers the last operating point it solved, and every analysis about an
+//! operating point takes it again while the sources held and the options it was solved
+//! under stay as they were, save the options only a transient reads, so a plan of analyses
+//! and the checks at its operating point solve it once. Every option counts unless it is
+//! known to leave a DC solution alone, so an option added later counts until it is shown
+//! to. Where only Newton iteration's tolerances or its limit differ, a solution Newton
+//! iteration found from zero goes on from where it stopped: from zero, it takes the same
+//! iterates under any tolerances.
 
+use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 use jolty_models::{Input, Level, Quantity};
@@ -71,6 +81,66 @@ pub struct OperatingPoints {
 pub(crate) struct Solved {
     pub(crate) values: Vec<f64>,
     pub(crate) strategy: Strategy,
+    /// The Newton iterations that found it, when Newton iteration alone found it from the
+    /// guess it started from.
+    pub(crate) iterations: Option<usize>,
+}
+
+/// The last operating point the simulator solved, what it solved it under, and the state
+/// it left the logic in.
+#[derive(Debug, Clone)]
+pub(crate) struct Remembered {
+    /// The sources held away from their own levels, at the level each was held at, by the
+    /// index of its device.
+    held: BTreeMap<usize, f64>,
+    /// The options it was solved under, as a DC solution reads them.
+    options: Options,
+    /// The DC solution from zero, before the logic settled with it.
+    solved: Solved,
+    point: OperatingPoint,
+    events: Events,
+}
+
+impl Remembered {
+    /// Whether it was solved with the sources `held` under `options`, so that solving
+    /// again would find it again.
+    fn solved_under(&self, held: &BTreeMap<usize, f64>, options: &Options) -> bool {
+        self.held == *held && self.options == read_at_dc(options)
+    }
+
+    /// Whether it solves the DC equations of the sources `held` and of `options`, which
+    /// may differ from those it was solved under only in where Newton iteration stops.
+    fn solves_alike(&self, held: &BTreeMap<usize, f64>, options: &Options) -> bool {
+        self.held == *held && read_by_equations(&self.options) == read_by_equations(options)
+    }
+}
+
+/// `options` as a DC solution reads them: those only a transient reads take their
+/// defaults, so that options alike in every other find the same DC solution and the same
+/// operating point.
+fn read_at_dc(options: &Options) -> Options {
+    let unread = Options::default();
+    Options {
+        charge_tolerance: unread.charge_tolerance,
+        transient_iterations: unread.transient_iterations,
+        truncation_tolerance: unread.truncation_tolerance,
+        transient_memory: unread.transient_memory,
+        ..options.clone()
+    }
+}
+
+/// `options` as the DC equations read them: as a DC solution does, save where Newton
+/// iteration stops along its iterates, its tolerances and its limit, which take their
+/// defaults.
+fn read_by_equations(options: &Options) -> Options {
+    let unread = Options::default();
+    Options {
+        relative_tolerance: unread.relative_tolerance,
+        voltage_tolerance: unread.voltage_tolerance,
+        current_tolerance: unread.current_tolerance,
+        dc_iterations: unread.dc_iterations,
+        ..read_at_dc(options)
+    }
 }
 
 /// The conductance gmin stepping shrinks.
@@ -118,6 +188,12 @@ impl Simulator {
     /// The logic settles with the levels its threshold detectors read, its drivers hold the
     /// levels it settles at, and the two settle each other until they agree.
     ///
+    /// The simulator remembers the last operating point it found, and takes it again, with
+    /// the logic as it left it, while no source is held elsewhere and the options stay as
+    /// they were, save those only a transient reads; under other tolerances or another
+    /// iteration limit alone, Newton iteration goes on from it as from zero it would.
+    /// [`Simulator::operating_point_solves`] counts the times it solves.
+    ///
     /// # Errors
     ///
     /// Returns [`SimulationError::NoOperatingPoint`] or [`SimulationError::Singular`] when no
@@ -128,9 +204,103 @@ impl Simulator {
     ) -> Result<OperatingPoint, SimulationError> {
         self.solvable()?;
         self.prepare(options)?;
+        Ok(self.settled_from_zero(options)?.1)
+    }
+
+    /// The DC solution from zero and the operating point the logic settled at from it: the
+    /// last ones, if they were solved with the same sources held and under the same
+    /// options, as a DC solution reads them, with the logic and the devices left as solving
+    /// them would leave them; or else solved, and remembered.
+    fn settled_from_zero(
+        &mut self,
+        options: &Options,
+    ) -> Result<(Solved, OperatingPoint), SimulationError> {
+        if let Some(remembered) = &self.remembered
+            && remembered.solved_under(&self.held, options)
+        {
+            let found = (remembered.solved.clone(), remembered.point.clone());
+            self.restore(options);
+            return Ok(found);
+        }
         self.reset_logic();
-        let solved = self.solve_dc(vec![0.0; self.system.unknowns.len()], options)?;
-        self.settle(solved, options)
+        let solved = self.solve_from_zero(options)?;
+        let point = self.settle(solved.clone(), options)?;
+        self.remembered = Some(Remembered {
+            held: self.held.clone(),
+            options: read_at_dc(options),
+            solved: solved.clone(),
+            point: point.clone(),
+            events: self.events.clone(),
+        });
+        Ok((solved, point))
+    }
+
+    /// Leaves the logic and the devices as solving the remembered operating point left
+    /// them: the logic nets in the state it settled them in, each logic driver at the level
+    /// it was told, and every device evaluated there, so a device that limits its steps
+    /// does so from there, as from the last iteration that solved it.
+    fn restore(&mut self, options: &Options) {
+        let Some(remembered) = &self.remembered else {
+            return;
+        };
+        let values = remembered.point.values.clone();
+        self.events = remembered.events.clone();
+        for driver in 0..self.system.logic.drivers.len() {
+            let (element, level) = (
+                self.system.logic.drivers[driver].0,
+                self.events.driven()[driver],
+            );
+            self.drive(element, (0.0, level, 0.0));
+        }
+        self.evaluate(&values, None, (1.0, options.gmin), false);
+    }
+
+    /// The DC solution from zero, with every logic driver at its unknown level, that an
+    /// operating point and a DC sweep start from, with every device evaluated there.
+    ///
+    /// The remembered one is it when it was solved with the same sources held and under
+    /// the same options, as a DC solution reads them. When only Newton iteration's
+    /// tolerances or its limit differ, and Newton iteration alone found it, Newton
+    /// iteration goes on from it with the iterations the limit leaves: from zero, Newton
+    /// iteration takes the same iterates under any tolerances, so it goes on as from zero
+    /// it would, to a solution within the tolerances of the one from zero. Failing that,
+    /// it is solved anew.
+    pub(crate) fn solve_from_zero(&mut self, options: &Options) -> Result<Solved, SimulationError> {
+        let start = self
+            .remembered
+            .as_ref()
+            .filter(|remembered| remembered.solves_alike(&self.held, options))
+            .map(|remembered| {
+                let same = remembered.solved_under(&self.held, options);
+                (same, remembered.solved.clone())
+            });
+        if let Some((true, solved)) = &start {
+            // As the last iteration that solved it left them, a device that limits its
+            // steps does so from there.
+            self.evaluate(&solved.values, None, (1.0, options.gmin), false);
+            return Ok(solved.clone());
+        }
+        self.solves += 1;
+        if let Some((_, solved)) = start
+            && let Some(taken) = solved.iterations
+            && let Some(left) = options.dc_iterations.checked_sub(taken)
+        {
+            let mut values = solved.values;
+            let direct = Mode::Dc {
+                source_scale: 1.0,
+                shunt: 0.0,
+                anchor: None,
+                deflated: &[],
+            };
+            if let Ok(more) = self.newton(&mut values, direct, options, left) {
+                return Ok(Solved {
+                    values,
+                    strategy: Strategy::Direct,
+                    iterations: Some(taken + more),
+                });
+            }
+        }
+        self.solve_dc(vec![0.0; self.system.unknowns.len()], options)
     }
 
     /// Finds the operating point, then the other DC solutions, up to `search.most` in all,
@@ -158,23 +328,31 @@ impl Simulator {
                 "a search for operating points finds one or more".to_owned(),
             ));
         }
-        let zero = vec![0.0; self.system.unknowns.len()];
+        let (first, point) = self.settled_from_zero(options)?;
+        if search.most == 1 {
+            return Ok(vec![point]);
+        }
+        // The search starts with every logic driver at its unknown level, as the operating
+        // point did, and the logic settles with each solution afresh.
         self.reset_logic();
-        let mut found = vec![self.solve_dc(zero.clone(), options)?];
-        while found.len() < search.most {
-            let known: Vec<Vec<f64>> = found.iter().map(|solved| solved.values.clone()).collect();
+        let mut known = vec![first.values];
+        let mut others = Vec::new();
+        while known.len() < search.most {
             let Some(solved) = self.another(&known, options) else {
                 break;
             };
-            found.push(solved);
+            known.push(solved.values.clone());
+            others.push(solved);
         }
-        found
-            .into_iter()
-            .map(|solved| {
-                self.reset_logic();
-                self.settle(solved, options)
-            })
-            .collect()
+        if others.is_empty() {
+            self.restore(options);
+        }
+        let mut points = vec![point];
+        for solved in others {
+            self.reset_logic();
+            points.push(self.settle(solved, options)?);
+        }
+        Ok(points)
     }
 
     /// A DC solution distinct from every one `known`, from zero or else from the
@@ -224,14 +402,13 @@ impl Simulator {
             deflated: known,
         };
         for mut values in starts {
-            if self
-                .newton(&mut values, direct, options, options.dc_iterations)
-                .is_ok()
+            if let Ok(iterations) = self.newton(&mut values, direct, options, options.dc_iterations)
                 && self.distinct(known, &values, options)
             {
                 return Some(Solved {
                     values,
                     strategy: Strategy::Direct,
+                    iterations: Some(iterations),
                 });
             }
         }
@@ -408,13 +585,11 @@ impl Simulator {
             anchor: None,
             deflated,
         };
-        if self
-            .newton(&mut values, direct, options, options.dc_iterations)
-            .is_ok()
-        {
+        if let Ok(iterations) = self.newton(&mut values, direct, options, options.dc_iterations) {
             return Ok(Solved {
                 values,
                 strategy: Strategy::Direct,
+                iterations: Some(iterations),
             });
         }
         let mut values = guess.clone();
@@ -425,6 +600,7 @@ impl Simulator {
             return Ok(Solved {
                 values,
                 strategy: Strategy::GminStepping,
+                iterations: None,
             });
         }
         let mut values = guess;
@@ -435,6 +611,7 @@ impl Simulator {
             return Ok(Solved {
                 values,
                 strategy: Strategy::JunctionGminStepping,
+                iterations: None,
             });
         }
         let zero = vec![0.0; values.len()];
@@ -444,6 +621,7 @@ impl Simulator {
                 return Ok(Solved {
                     values,
                     strategy: Strategy::SourceStepping,
+                    iterations: None,
                 });
             }
             Err(failure) => failure,
@@ -459,6 +637,7 @@ impl Simulator {
             (_, Ok(())) => Ok(Solved {
                 values,
                 strategy: Strategy::PseudoTransient,
+                iterations: None,
             }),
             (Failure::Singular, _) | (_, Err(Failure::Singular)) => Err(SimulationError::Singular),
             (Failure::Diverged, Err(Failure::Diverged)) => Err(SimulationError::NoOperatingPoint {

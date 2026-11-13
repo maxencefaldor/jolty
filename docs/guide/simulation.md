@@ -44,6 +44,9 @@ A transient's method is `"trapezoidal"`, `"gear2"` for stiff circuits that ring,
 Its longest step defaults to a fiftieth of `stop`.
 It steps onto each of `times` exactly, besides the times it chooses, without restarting its integration there, so every unknown and terminal current has its solved value at those times.
 
+A simulation solves its operating point once: it remembers the last one it solved, and every analysis about the operating point, a DC sweep that starts at its source's own level, and the checks at the operating point take it again, as long as the options stay the same, save `charge_tolerance`, `transient_iterations`, `truncation_tolerance` and `transient_memory`, which a DC solution does not read.
+Under other tolerances or another `dc_iterations` alone, Newton iteration goes on from where it stopped, as from zero it would, since it takes the same iterates from zero under any tolerances.
+
 ## Periodic steady state
 
 A circuit driven by periodic sources, such as a rectifier, a mixer or a power converter, settles into a steady state that repeats each period, but a transient from the operating point reaches it only after its slowest time constant has died away many times over.

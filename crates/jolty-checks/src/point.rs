@@ -67,6 +67,9 @@ pub(crate) const UNSTABLE_POLE: Rule = Rule {
 /// circuits of at most [`MOST_LINEARIZED`] unknowns, another DC solution and the modes
 /// that grow, by decreasing growth.
 ///
+/// The operating point is the one the simulator remembers, if an analysis solved it under
+/// the same options, or else solved once for every rule.
+///
 /// # Errors
 ///
 /// Returns the errors of [`Simulator::gmin_dependence`], [`Simulator::operating_points`]
@@ -209,18 +212,47 @@ mod tests {
 
     use super::*;
 
-    /// The diagnostics at the operating point of a circuit whose top component has a ground
-    /// port `0` and places `instances`.
-    fn diagnostics(instances: &Value) -> Vec<Diagnostic> {
+    /// A simulator of a circuit whose top component has a ground port `0` and places
+    /// `instances`.
+    fn simulator(instances: &Value) -> Simulator {
         let document = json!({
             "format": "jolty-circuit", "version": 1, "top": "test",
             "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                     "instances": instances}}
         });
         let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("an elaborated circuit");
-        check_operating_point(&mut simulator, &Options::default()).expect("an operating point")
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("an elaborated circuit")
+    }
+
+    /// The diagnostics at the operating point of a circuit whose top component has a ground
+    /// port `0` and places `instances`.
+    fn diagnostics(instances: &Value) -> Vec<Diagnostic> {
+        check_operating_point(&mut simulator(instances), &Options::default())
+            .expect("an operating point")
+    }
+
+    #[test]
+    fn the_checks_solve_the_operating_point_once() {
+        // Gmin-dependence, the search for another DC solution and the modes that grow each
+        // solved the operating point from zero, three times in all. The simulator
+        // remembers it now: the checks solve it once, and none after an analysis that did.
+        let options = Options::default();
+        let mut checked = simulator(&tank(5e-5));
+        assert!(
+            check_operating_point(&mut checked, &options)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(checked.operating_point_solves(), 1);
+        let mut analyzed = simulator(&tank(5e-5));
+        analyzed.operating_point(&options).unwrap();
+        assert!(
+            check_operating_point(&mut analyzed, &options)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(analyzed.operating_point_solves(), 1);
     }
 
     fn two_terminal(id: &str, (device, parameter, value): (&str, &str, f64), a: &str) -> Value {
