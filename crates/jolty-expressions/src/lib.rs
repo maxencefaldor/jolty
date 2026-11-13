@@ -85,6 +85,79 @@ impl Expression {
         );
         tape::evaluate(&self.tape, variables, workspace, gradient)
     }
+
+    /// Appends to `found` the choices the expression's value turned on at its last
+    /// evaluation in `workspace`: each comparison, step, sign, floor and ceiling that the
+    /// value read, through the branches it took. The value jumps where one of them changes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `workspace` was made for another expression.
+    pub fn choices(&self, workspace: &Workspace, found: &mut Vec<Choice>) {
+        assert_eq!(
+            workspace.values.len(),
+            self.tape.len(),
+            "a workspace made for this expression"
+        );
+        tape::choices(&self.tape, &workspace.values, found);
+    }
+}
+
+/// A choice an expression's value turned on at one evaluation: a comparison of its
+/// operands, or a step, a sign, a floor or a ceiling of its argument. The value jumps
+/// where the choice changes, its input crossing a threshold.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Choice {
+    /// The instruction that makes it, which names it within its expression.
+    instruction: usize,
+    /// What it reads: a comparison's left operand less its right, or the argument.
+    input: f64,
+    /// What it chose: the comparison's truth, or the function's value.
+    chosen: f64,
+    kind: tape::Kind,
+}
+
+impl Choice {
+    /// Where between two evaluations of one expression its value first jumps: the
+    /// fraction of the way from the first evaluation's variables to the second's at which
+    /// the earliest of the choices both took, and that changed, changes, interpolating its
+    /// input linearly to the threshold between them. `None` if no choice both took
+    /// changed.
+    ///
+    /// A comparison, a step and a sign change where their input crosses zero; a floor or a
+    /// ceiling where its argument crosses the integer next to the first value towards the
+    /// second.
+    #[must_use]
+    pub fn first_jump(before: &[Self], after: &[Self]) -> Option<f64> {
+        before
+            .iter()
+            .filter_map(|first| {
+                let last = after
+                    .iter()
+                    .find(|choice| choice.instruction == first.instruction)?;
+                (first.chosen.to_bits() != last.chosen.to_bits()).then(|| first.crossing(last))
+            })
+            .min_by(f64::total_cmp)
+    }
+
+    /// The fraction of the way from `self` to `later`, a change of the same choice, at
+    /// which its input crosses the threshold between the two.
+    fn crossing(&self, later: &Self) -> f64 {
+        let rising = later.chosen > self.chosen;
+        let threshold = match self.kind {
+            tape::Kind::Crossing => 0.0,
+            tape::Kind::Floor if rising => self.chosen + 1.0,
+            tape::Kind::Floor => self.chosen,
+            tape::Kind::Ceil if rising => self.chosen,
+            tape::Kind::Ceil => self.chosen - 1.0,
+        };
+        let fraction = (threshold - self.input) / (later.input - self.input);
+        if fraction.is_finite() {
+            fraction.clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }
 }
 
 impl FromStr for Expression {
@@ -274,6 +347,51 @@ mod tests {
             let error = text.parse::<Expression>().expect_err(text);
             assert_eq!(error.to_string(), message);
         }
+    }
+
+    /// The choices `expression` turns on at `values`.
+    fn chosen(expression: &Expression, values: &[f64]) -> Vec<Choice> {
+        let mut workspace = Workspace::new(expression);
+        let mut gradient = vec![0.0; values.len()];
+        expression.evaluate(values, &mut workspace, &mut gradient);
+        let mut found = Vec::new();
+        expression.choices(&workspace, &mut found);
+        found
+    }
+
+    #[test]
+    fn choices_are_those_the_branches_taken_read() {
+        let expression: Expression = "v(x) > 0 ? sqrt(v(x)) : u(v(y)) + sgn(v(y))"
+            .parse()
+            .expect("valid");
+        let taken = chosen(&expression, &[1.0, 2.0]);
+        assert_eq!(taken.len(), 1);
+        assert!(close(taken[0].input, 1.0) && close(taken[0].chosen, 1.0));
+        assert_eq!(chosen(&expression, &[-1.0, 2.0]).len(), 3);
+        let smooth: Expression = "min(v(x), 1) + limit(v(x), 0, 2) + abs(v(x))"
+            .parse()
+            .expect("valid");
+        assert!(chosen(&smooth, &[0.5]).is_empty());
+    }
+
+    #[test]
+    fn the_first_jump_is_where_the_earliest_choice_changes() {
+        let compared: Expression = "v(x) > 0 ? 5 : v(y) > 1".parse().expect("valid");
+        let jump = |expression: &Expression, before: &[f64], after: &[f64]| {
+            Choice::first_jump(&chosen(expression, before), &chosen(expression, after))
+        };
+        assert_eq!(jump(&compared, &[-1.0, 0.0], &[3.0, 0.0]), Some(0.25));
+        assert_eq!(jump(&compared, &[-1.0, 0.0], &[-0.5, 0.5]), None);
+        // The second comparison is read at both ends, and changes earlier.
+        assert_eq!(jump(&compared, &[-1.0, 0.0], &[-0.5, 4.0]), Some(0.25));
+        let floor: Expression = "floor(v(x))".parse().expect("valid");
+        let ceiling: Expression = "ceil(v(x))".parse().expect("valid");
+        for expression in [&floor, &ceiling] {
+            let rising = jump(expression, &[0.5], &[2.7]).expect("a jump");
+            let falling = jump(expression, &[2.7], &[0.5]).expect("a jump");
+            assert!(close(rising, 0.5 / 2.2) && close(falling, 0.7 / 2.2));
+        }
+        assert_eq!(jump(&floor, &[0.5], &[0.9]), None);
     }
 
     proptest! {

@@ -6,8 +6,8 @@ use serde::Deserialize;
 
 use crate::stamp::CurrentBranch;
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Real, Unknown,
+    Binding, Branch, BranchKind, Choice, Device, Input, Interface, NativeDevice, NativeModel, Node,
+    Output, ParameterError, Real, Unknown,
 };
 
 /// An expression a behavioral source follows: an [expression](jolty_expressions) of the
@@ -123,6 +123,8 @@ pub struct BehavioralParameters {
 struct Formula {
     expression: Expression,
     workspace: Workspace,
+    /// The workspace in which the choices are found, apart from the iterations' own.
+    choosing: Workspace,
     /// What each variable reads: the difference of two nodes, a port's current, or time.
     reads: Vec<Read>,
     /// The sensing ports: short circuits whose currents are unknowns.
@@ -190,6 +192,7 @@ impl Formula {
         let count = reads.len();
         Self {
             workspace: Workspace::new(&expression),
+            choosing: Workspace::new(&expression),
             expression,
             reads,
             ports,
@@ -200,9 +203,8 @@ impl Formula {
         }
     }
 
-    /// Adds the expression's value to its rows, with its derivatives, and the ports'
-    /// equations.
-    fn add<R: Real>(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
+    /// Reads the expression's variables at `input` into `values`.
+    fn read(&mut self, input: &Input<'_>) {
         for (value, read) in self.values.iter_mut().zip(&self.reads) {
             *value = match *read {
                 Read::Voltage(positive, negative) => input.value(positive) - input.value(negative),
@@ -210,6 +212,22 @@ impl Formula {
                 Read::Time => input.time,
             };
         }
+    }
+
+    /// Appends the choices the expression turns on at `input` to `found`, evaluating it
+    /// afresh, its tables' inputs unlimited.
+    fn choices(&mut self, input: &Input<'_>, found: &mut Vec<Choice>) {
+        self.read(input);
+        self.choosing.forget();
+        self.expression
+            .evaluate(&self.values, &mut self.choosing, &mut self.gradient);
+        self.expression.choices(&self.choosing, found);
+    }
+
+    /// Adds the expression's value to its rows, with its derivatives, and the ports'
+    /// equations.
+    fn add<R: Real>(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
+        self.read(input);
         if !input.limiting {
             self.workspace.forget();
         }
@@ -272,6 +290,10 @@ impl<R: Real> Device<R> for BehavioralCurrentSource<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
         self.formula.add(input, output);
     }
+
+    fn choices(&mut self, input: &Input<'_>, found: &mut Vec<Choice>) {
+        self.formula.choices(input, found);
+    }
 }
 
 /// A voltage source whose voltage follows an expression of the voltages and currents it
@@ -319,6 +341,10 @@ impl<R: Real> Device<R> for BehavioralVoltageSource<R> {
         let voltage = self.branch.voltage(input);
         self.branch.add(input, output, R::constant(voltage));
         self.formula.add(input, output);
+    }
+
+    fn choices(&mut self, input: &Input<'_>, found: &mut Vec<Choice>) {
+        self.formula.choices(input, found);
     }
 }
 

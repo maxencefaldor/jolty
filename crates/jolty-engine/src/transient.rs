@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use jolty_models::Level;
+use jolty_models::{Choice, Input, Level};
 use jolty_numerics::integration::{Formula, Method, divided_difference};
 use serde::Deserialize;
 
@@ -264,8 +264,8 @@ enum Step {
     Accepted(Observation, Vec<f64>),
     /// The step was rejected, to be tried again shorter.
     Rejected,
-    /// The step was rejected because a detector crosses or a logic driver changes within
-    /// it, at this time, which the step must land on.
+    /// The step was rejected because a detector crosses, a logic driver changes or a
+    /// device's contribution jumps within it, at this time, which the step must land on.
     Land(f64),
 }
 
@@ -305,6 +305,17 @@ struct Stepper {
 
 impl Stepper {
     /// Records a rejected step, and shortens the next one to `next`.
+    /// Whether an event at `time`, within a step from the last point to `end`, comes
+    /// before `end` by more than the relative tolerance of the step, and after the last
+    /// point by the shortest step at least, so the step should land on it instead: an
+    /// event located by interpolating across a step is accurate only within a short one.
+    fn lands_before(&self, time: f64, end: f64, options: &Options) -> bool {
+        let tolerance = self
+            .shortest
+            .max(options.relative_tolerance * (end - self.time));
+        time < end - tolerance && time - self.time >= self.shortest
+    }
+
     fn shorten(&mut self, next: f64) {
         self.statistics.rejected += 1;
         self.next = next;
@@ -515,8 +526,9 @@ impl Simulator {
     /// comes first, without restarting the integration there.
     ///
     /// An accepted step moves the logic on to its end, with the detectors' crossings within
-    /// it. A step in which a detector crosses, or a logic driver changes, before its end is
-    /// rejected to land on the crossing or the change.
+    /// it. A step in which a detector crosses, a logic driver changes or a device's
+    /// contribution jumps, before its end, is rejected to land there; the integration
+    /// restarts after a step in which a device's contribution jumps.
     fn step_toward(
         &mut self,
         stepper: &mut Stepper,
@@ -590,10 +602,10 @@ impl Simulator {
             let name = &self.system.unknowns[worst].name;
             return stepper.reject(length * factor, || Rejection::Inaccurate(name.clone()));
         }
-        let commands = match self.advance_logic(stepper, (end, &candidate), options) {
-            Ok(commands) => commands,
+        let (commands, jumped) = match self.events_within(stepper, (end, &candidate), options) {
+            Ok(found) => found,
             Err(early) => {
-                // `advance_logic` lands no closer than the shortest step allowed.
+                // An event lands no closer than the shortest step allowed.
                 stepper.shorten(early - stepper.time);
                 return Ok(Step::Land(early));
             }
@@ -605,12 +617,13 @@ impl Simulator {
         stepper.x = candidate;
         stepper.previous = length;
         let settles = self.follow(&commands);
-        let restart = corner || !commands.is_empty();
+        let restart = corner || !commands.is_empty() || jumped;
         let found = self
             .observer
             .step(&stepper.x, end, options.gmin, (&formula, restart));
         if restart {
-            // A breakpoint, or a driver's ramp starting, is a corner in the waveforms.
+            // A breakpoint, a driver's ramp starting or a device's jump is a corner in the
+            // waveforms.
             let gap = if corner { gap } else { breakpoint - end };
             stepper.time = end;
             stepper.history.restart(end, charge, derivative);
@@ -665,13 +678,60 @@ impl Simulator {
             })
     }
 
+    /// The events of a step from the stepper's last point to `end`, where the solution is
+    /// `after`: the changes the logic drivers must follow, and whether a device's
+    /// contribution jumps. An event early enough that the step should land on it returns
+    /// its time instead, leaving the logic where it was.
+    fn events_within(
+        &mut self,
+        stepper: &Stepper,
+        (end, after): (f64, &[f64]),
+        options: &Options,
+    ) -> Result<(Vec<Command>, bool), f64> {
+        let jump = self.first_jump(stepper, (end, after));
+        if let Some(time) = jump
+            && stepper.lands_before(time, end, options)
+        {
+            return Err(time);
+        }
+        let commands = self.advance_logic(stepper, (end, after), options)?;
+        Ok((commands, jump.is_some()))
+    }
+
+    /// The first time between the stepper's last point and `end`, where the solution is
+    /// `after`, at which a device's contribution jumps, if one does: where the earliest of
+    /// its choices that changed between the two points changes, located by linear
+    /// interpolation.
+    fn first_jump(&mut self, stepper: &Stepper, (end, after): (f64, &[f64])) -> Option<f64> {
+        let (mut before, mut later) = (Vec::new(), Vec::new());
+        let start = stepper.time;
+        let mut first: Option<f64> = None;
+        for placed in &mut self.system.devices {
+            before.clear();
+            placed
+                .device
+                .choices(&Input::new(&stepper.x, start, 0.0), &mut before);
+            if before.is_empty() {
+                continue;
+            }
+            later.clear();
+            placed
+                .device
+                .choices(&Input::new(after, end, 0.0), &mut later);
+            if let Some(fraction) = Choice::first_jump(&before, &later) {
+                let time = start + (end - start) * fraction;
+                first = Some(first.map_or(time, |earlier| earlier.min(time)));
+            }
+        }
+        first
+    }
+
     /// Moves the logic from the stepper's last point to `end`, where the solution is
     /// `after`, and returns the changes the logic drivers must follow.
     ///
-    /// A detector's crossing, located between the two points by linear interpolation, is
-    /// accurate only within a short step. So a crossing earlier than the end by more than the
-    /// relative tolerance of the step returns its time instead, for the step to land on it.
-    /// So does a change of a logic driver that early, leaving the logic where it was.
+    /// A detector's crossing earlier than the end, so that the step should land on it,
+    /// returns its time instead; so does a change of a logic driver that early, leaving
+    /// the logic where it was.
     fn advance_logic(
         &mut self,
         stepper: &Stepper,
@@ -680,10 +740,7 @@ impl Simulator {
     ) -> Result<Vec<Command>, f64> {
         let Self { system, events, .. } = self;
         let logic = &system.logic;
-        let tolerance = stepper
-            .shortest
-            .max(options.relative_tolerance * (end - stepper.time));
-        let early = |time: f64| time < end - tolerance && time - stepper.time >= stepper.shortest;
+        let early = |time: f64| stepper.lands_before(time, end, options);
         let held = events.detector_levels(logic);
         let crossings: Vec<Crossing> = logic
             .detectors

@@ -802,6 +802,80 @@ fn the_trapezoidal_formula_stops_ringing_after_a_corner() {
     }
 }
 
+/// A behavioral source steps from 0 to 5 V as `condition` turns true, through 1 kΩ into
+/// 1 nF, a time constant of 1 µs; a ramp of 5 V over 2 ms is at `ramp`, which the source
+/// reads if the condition does.
+fn jumping(condition: &str) -> Circuit {
+    circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 0, "rise": 2e-3,
+                "fall": 1e-3, "width": 1e-3}}}),
+            &[("positive", "ramp"), ("negative", "0")],
+        ),
+        (
+            "B1",
+            "behavioral_voltage_source",
+            json!({"expression": format!("{condition} ? 5 : 0")}),
+            if condition.contains("v(ramp)") {
+                &[("positive", "out"), ("negative", "0"), ("ramp", "ramp")]
+            } else {
+                &[("positive", "out"), ("negative", "0")]
+            },
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "out"), ("b", "cap")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": 1e-9}),
+            &[("a", "cap"), ("b", "0")],
+        ),
+    ])
+}
+
+#[test]
+fn a_behavioral_jump_is_stepped_onto_and_followed() {
+    // Whether in time or in a voltage, the step at 1.0003 ms falls within a step of 40 µs;
+    // located, it starts the capacitor's exponential there, with no overshoot.
+    let jump = 1.0003e-3;
+    for condition in ["time > 1.0003e-3", "v(ramp) > 2.50075"] {
+        let circuit = jumping(condition);
+        let mut simulator = simulator(&circuit);
+        let transient = Transient {
+            stop: 2e-3,
+            max_step: None,
+            method: Method::Trapezoidal,
+            times: Vec::new(),
+            periodic: false,
+        };
+        let outcome = simulator
+            .run(&Analysis::Transient(transient), &Options::default())
+            .unwrap();
+        let Outcome::Transient(waveforms) = outcome else {
+            panic!("a transient outcome")
+        };
+        let cap = index(&simulator, "cap");
+        for (time, values) in waveforms.times.iter().zip(&waveforms.values) {
+            let expected = if *time > jump {
+                5.0 * (1.0 - (-(time - jump) / 1e-6).exp())
+            } else {
+                0.0
+            };
+            assert!(
+                (values[cap] - expected).abs() < 2e-2,
+                "{condition}: at {time} s the capacitor holds {} V, not {expected} V",
+                values[cap]
+            );
+        }
+    }
+}
+
 #[test]
 fn hierarchy_gives_the_flat_answer() {
     let document = json!({

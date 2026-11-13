@@ -53,6 +53,7 @@ pub use device::{Device, Model, Native, NativeDevice, NativeModel, ParameterErro
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Contributions, Input, Output};
 pub use jfet::{Channel, Jfet, JfetParameters};
+pub use jolty_expressions::Choice;
 pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
 pub use logic::{
     Change, Detect, Domain, Drive, Electrical, ElectricalParameters, FixedTiming, Level, Logic,

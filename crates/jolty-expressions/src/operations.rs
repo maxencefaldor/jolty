@@ -157,6 +157,19 @@ impl Binary {
         })
     }
 
+    /// Whether the operation compares its operands: its value is their order's truth.
+    pub(crate) const fn compares(self) -> bool {
+        matches!(
+            self,
+            Self::Less
+                | Self::LessEqual
+                | Self::Greater
+                | Self::GreaterEqual
+                | Self::Equal
+                | Self::NotEqual
+        )
+    }
+
     /// The operation's value at `a` and `b`.
     pub(crate) fn value(self, a: f64, b: f64) -> f64 {
         match self {

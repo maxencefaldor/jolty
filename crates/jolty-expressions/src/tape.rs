@@ -1,9 +1,9 @@
 //! An expression as a list of instructions, each reading earlier ones: evaluated forwards
 //! for its value, then backwards for its gradient.
 
-use crate::Workspace;
 use crate::operations::{Binary, Unary};
 use crate::parser::Node;
+use crate::{Choice, Workspace};
 
 /// One instruction, whose operands are the indices of earlier instructions.
 #[derive(Debug, Clone, PartialEq)]
@@ -130,6 +130,67 @@ pub(crate) fn evaluate(
         }
     }
     values[root]
+}
+
+/// How a choice's value turns on its input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// A comparison, a step or a sign: it changes where its input crosses zero.
+    Crossing,
+    /// A floor: it changes where its input crosses an integer, which it then becomes.
+    Floor,
+    /// A ceiling: it changes where its input crosses an integer, which it was before.
+    Ceil,
+}
+
+/// Appends to `found` the choices of `tape` whose `values` its root read, through the
+/// branches its conditionals took: comparisons, steps, signs, floors and ceilings.
+pub(crate) fn choices(tape: &[Instruction], values: &[f64], found: &mut Vec<Choice>) {
+    let mut read = vec![false; tape.len()];
+    if let Some(root) = read.last_mut() {
+        *root = true;
+    }
+    for (index, instruction) in tape.iter().enumerate().rev() {
+        if !read[index] {
+            continue;
+        }
+        let made = |input: f64, kind: Kind| Choice {
+            instruction: index,
+            input,
+            chosen: values[index],
+            kind,
+        };
+        match instruction {
+            Instruction::Constant(_) | Instruction::Variable(_) => {}
+            Instruction::Unary(operation, x) => {
+                read[*x] = true;
+                let kind = match operation {
+                    Unary::Step | Unary::Sign => Some(Kind::Crossing),
+                    Unary::Floor => Some(Kind::Floor),
+                    Unary::Ceil => Some(Kind::Ceil),
+                    _ => None,
+                };
+                found.extend(kind.map(|kind| made(values[*x], kind)));
+            }
+            Instruction::Binary(operation, a, b) => {
+                read[*a] = true;
+                read[*b] = true;
+                if operation.compares() {
+                    found.push(made(values[*a] - values[*b], Kind::Crossing));
+                }
+            }
+            Instruction::Limit(arguments) => arguments.iter().for_each(|&x| read[x] = true),
+            Instruction::Conditional([condition, then, otherwise]) => {
+                read[*condition] = true;
+                read[if values[*condition] == 0.0 {
+                    *otherwise
+                } else {
+                    *then
+                }] = true;
+            }
+            Instruction::Table(x, _) => read[*x] = true,
+        }
+    }
 }
 
 /// `x` held between `a` and `b`, in either order, as SPICE's `limit` holds it, and which of

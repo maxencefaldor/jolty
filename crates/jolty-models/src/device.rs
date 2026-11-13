@@ -4,7 +4,9 @@ use std::marker::PhantomData;
 use jolty_ir::Parameters;
 use serde::de::DeserializeOwned;
 
-use crate::{Binding, Detect, Drive, Gradient, Input, Interface, NoiseSource, Output, Real};
+use crate::{
+    Binding, Choice, Detect, Drive, Gradient, Input, Interface, NoiseSource, Output, Real,
+};
 
 /// One placed device, bound to its unknowns, computing with plain numbers or with their
 /// exact derivatives with respect to a parameter.
@@ -16,6 +18,13 @@ pub trait Device<R: Real = f64>: fmt::Debug + Send {
     /// transient analysis steps onto them exactly.
     fn breakpoints(&self, start: f64, stop: f64, times: &mut Vec<f64>) {
         let _ = (start, stop, times);
+    }
+
+    /// Appends to `found` the choices the device's behavior turns on at `input`, where its
+    /// contribution jumps when one changes, so a transient analysis can step onto each
+    /// change: none for a device whose contribution is continuous.
+    fn choices(&mut self, input: &Input<'_>, found: &mut Vec<Choice>) {
+        let _ = (input, found);
     }
 
     /// The device as an independent source, if it is one.

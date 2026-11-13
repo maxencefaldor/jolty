@@ -58,3 +58,8 @@ A function outside its domain, such as `sqrt(-1)`, is not a number, and the anal
 
 The simulator takes every derivative exactly.
 Where an expression branches, through a conditional, `min`, `max`, `limit` or a table, the derivative follows the branch taken.
+
+## Jumps
+
+An expression's value jumps where a comparison, `u`, `sgn`, `floor` or `ceil` that it reads, through the branches it takes, changes.
+A transient analysis locates each such change between two of its points, steps onto it, and restarts its integration there, as at a corner of a source's waveform.
