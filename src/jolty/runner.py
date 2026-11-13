@@ -210,8 +210,8 @@ def _run(job: Job, directory: Path) -> Built:
         message = f"plan() returned {type(plan).__name__}, not a Plan"
         raise ScriptError(message)
     cache: fidelity.Cache = {}
-    chosen = fidelity.resolve(built, plan, plan.temperature, cache)
-    if plan.temperature is not None or chosen.matched:
+    chosen = fidelity.resolve(built, plan, plan.temperature, cache, plan.process)
+    if plan.temperature is not None or plan.process is not None or chosen.matched:
         try:
             simulation = chosen.simulation()
         except ElaborationError as error:
@@ -332,19 +332,25 @@ def _corner(
     unless `cache` holds them. Returns the corner's report, the results of the analyses
     that end, by name, and the models chosen, none when the circuit does not elaborate.
     """
-    temperature = plan.temperature_at(corner)
+    temperature, process = plan.temperature_at(corner), plan.process_at(corner)
     try:
-        chosen = fidelity.resolve(built, plan, temperature, cache)
+        chosen = fidelity.resolve(built, plan, temperature, cache, process)
         simulation = chosen.simulation()
     except ElaborationError as error:
         found = report.CornerReport(
-            name=name, temperature=kelvins(temperature), problems=error.problems
+            name=name,
+            temperature=kelvins(temperature),
+            process=process,
+            problems=error.problems,
         )
         return found, {}, None
     solved, reports = _analyses(simulation, plan, 1)
     failures = tuple(r for r in reports if isinstance(r, report.FailureReport))
     found = report.CornerReport(
-        name=name, temperature=simulation.temperature, failures=failures
+        name=name,
+        temperature=simulation.temperature,
+        process=process,
+        failures=failures,
     )
     return found, solved, chosen
 

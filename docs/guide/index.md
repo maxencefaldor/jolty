@@ -7,6 +7,7 @@ The guide explains jolty one concept per page.
 - [Devices](devices.md): every device a script can place, its terminals and its parameters, and the waveforms of sources.
 - [Logic](logic.md): logic devices, the event scheduler that simulates them, and how logic and analog circuits join.
 - [SPICE models](spice.md): vendors' models, such as an op-amp's macromodel, read from their SPICE files as components.
+- [Foundry processes](foundry.md): SKY130's transistors, which ngspice simulates with the process design kit's models, at its process corners.
 - [Checks](checks.md): the structural rules every build checks, their diagnostics and their levels.
 - [Schematics](schematics.md): how jolty draws a circuit from its connections alone, and the facts a schematic carries.
 - [3D viewer](viewer.md): a page that lays a circuit out on a board and plays its simulation on it, every device's state at every point.

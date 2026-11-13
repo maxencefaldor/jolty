@@ -69,6 +69,7 @@ impl Simulator {
         stability: &Stability,
         options: &Options,
     ) -> Result<LoopGain, SimulationError> {
+        self.solvable()?;
         let not_a_probe = || SimulationError::NotAProbe(stability.probe.clone());
         let index = self
             .source_index(&stability.probe)

@@ -126,6 +126,7 @@ impl Simulator {
         analysis: &PoleZero,
         options: &Options,
     ) -> Result<PolesZeros, SimulationError> {
+        self.solvable()?;
         let transfer = match (&analysis.source, &analysis.output) {
             (Some(source), Some(output)) => {
                 let index = self.source_index(source)?;
@@ -201,6 +202,7 @@ impl Simulator {
     ///
     /// Returns the errors of [`Simulator::pole_zero`] without a source.
     pub fn growing_modes(&mut self, options: &Options) -> Result<Vec<Mode>, SimulationError> {
+        self.solvable()?;
         self.linearized(options)?;
         let n = self.system.unknowns.len();
         let (conductance, capacitance) = self.dense_pencil();

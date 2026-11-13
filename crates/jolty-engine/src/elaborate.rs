@@ -144,6 +144,15 @@ impl Placed {
         &self.nodes
     }
 
+    /// Whether the device is a foundry's, which no analysis solves.
+    #[must_use]
+    pub fn foundry(&self) -> bool {
+        match &self.origin {
+            Origin::Model(made) => made.model.foundry(),
+            Origin::Detector(_) | Origin::Driver => false,
+        }
+    }
+
     /// The parameters a model made the device from, or `None` for a connect element.
     #[must_use]
     pub fn parameters(&self) -> Option<&Parameters> {

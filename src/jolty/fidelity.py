@@ -647,6 +647,8 @@ class Fidelity:
     """Each instance's scope and component, by path."""
     models: dict[str, Characterization]
     """Each component's characterization, by name."""
+    process: str | None = None
+    """The process corner of a foundry's devices, its kit's typical unless given."""
 
     def substitutes(self, opened: str | None = None) -> dict[str, devices.Device]:
         """The models that stand in for the instances, but for `opened`."""
@@ -677,6 +679,7 @@ class Fidelity:
             self.temperature,
             overrides and self.overrides(overrides),
             self.substitutes(opened),
+            self.process,
         )
 
 
@@ -685,8 +688,9 @@ def resolve(
     plan: Plan,
     temperature: Quantity | None,
     cache: Cache,
+    process: str | None = None,
 ) -> Fidelity:
-    """The fidelity `plan` chooses for `built` at `temperature`.
+    """The fidelity `plan` chooses for `built` at `temperature` and `process`.
 
     Each component its scopes match is characterized, unless `cache` holds it.
 
@@ -702,7 +706,7 @@ def resolve(
         if key not in cache:
             cache[key] = characterize(built, component, settings, temperature)
         models[component] = cache[key]
-    return Fidelity(built, temperature, matched, models)
+    return Fidelity(built, temperature, matched, models, process)
 
 
 class Model(BaseModel):

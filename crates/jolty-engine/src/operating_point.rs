@@ -114,6 +114,7 @@ impl Simulator {
         &mut self,
         options: &Options,
     ) -> Result<OperatingPoint, SimulationError> {
+        self.solvable()?;
         options.check()?;
         self.reset_logic();
         let solved = self.solve_dc(vec![0.0; self.system.unknowns.len()], options)?;
@@ -138,6 +139,7 @@ impl Simulator {
         search: &OperatingPoints,
         options: &Options,
     ) -> Result<Vec<OperatingPoint>, SimulationError> {
+        self.solvable()?;
         options.check()?;
         if search.most == 0 {
             return Err(SimulationError::InvalidAnalysis(

@@ -172,7 +172,7 @@ Away from each device's nominal temperature, its parameters scale as [Devices](d
 
 ## Corners
 
-A plan's corners run its analyses again in other conditions: another temperature, or other arguments to the build script's `build()`, which builds the circuit again with them:
+A plan's corners run its analyses again in other conditions: another temperature, another [process corner](foundry.md#process-corners) of a foundry's devices, or other arguments to the build script's `build()`, which builds the circuit again with them:
 
 ```python
 def build(supply: Quantity = 3.3 * V) -> Component:
@@ -189,7 +189,7 @@ def plan() -> Plan:
     )
 ```
 
-Each corner is named by a Python identifier, and runs at the plan's temperature unless it gives its own.
+Each corner is named by a Python identifier, and runs at the plan's temperature and process corner unless it gives its own.
 The report, the results file and the plots hold the plan's own run; a corner's report says whether the circuit elaborates there and which analyses failed.
 [Specs](specs.md) hold at every corner.
 

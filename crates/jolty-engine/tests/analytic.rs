@@ -1311,3 +1311,52 @@ fn a_heated_resistor_settles_where_its_power_flows_through_its_sink() {
     let current = solution.values[index(&simulator, "V1:current")];
     assert_close(-current, 10.0 / (100.0 * (1.0 + 4e-3 * rise)), 1e-9);
 }
+
+#[test]
+fn a_circuit_of_a_foundrys_device_elaborates_but_no_analysis_solves_it() {
+    let transistor = json!({
+        "pdk": "sky130", "model": "sky130_fd_pr__nfet_01v8", "width": 1e-6, "length": 1.5e-7,
+    });
+    let terminals = [
+        ("drain", "d"),
+        ("gate", "d"),
+        ("source", "0"),
+        ("bulk", "0"),
+    ];
+    let mut simulator = simulator(&circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(1.8),
+            &[("positive", "vdd"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e4}),
+            &[("a", "vdd"), ("b", "d")],
+        ),
+        ("M1", "foundry_mosfet", transistor, &terminals),
+    ]));
+    assert_eq!(simulator.foundry_devices(), ["M1"]);
+    let refused = SimulationError::Foundry(vec!["M1".to_owned()]);
+    let options = Options::default();
+    for analysis in [
+        Analysis::OperatingPoint,
+        Analysis::DcSweep(DcSweep {
+            source: "V1".to_owned(),
+            levels: vec![0.0, 1.8],
+        }),
+        Analysis::Ac(Ac {
+            source: "V1".to_owned(),
+            frequencies: vec![1e3],
+        }),
+    ] {
+        assert_eq!(simulator.run(&analysis, &options), Err(refused.clone()));
+    }
+    assert_eq!(
+        refused.to_string(),
+        "the engine solves no foundry's device, which ngspice simulates with its foundry's \
+         models: M1"
+    );
+}

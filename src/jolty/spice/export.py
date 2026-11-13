@@ -16,10 +16,10 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal, TypedDict, Unpack
 
 import numpy as np
 import numpy.typing as npt
@@ -28,7 +28,7 @@ from pydantic import JsonValue
 from jolty import _core, ir, results
 from jolty.errors import JoltyError
 from jolty.ir import Role
-from jolty.spice import models
+from jolty.spice import models, sky130
 
 NGSPICE: Final = shutil.which("ngspice")
 """The ngspice executable on the path, or None when it is not installed."""
@@ -160,6 +160,7 @@ ELEMENTS = {
     "jfet": Element("J", ("drain", "gate", "source")),
     "bipolar_transistor": Element("Q", ("collector", "base", "emitter", "substrate")),
     "mosfet": Element("M", ("drain", "gate", "source", "bulk")),
+    "foundry_mosfet": Element("X", ("drain", "gate", "source", "bulk")),
     "behavioral_voltage_source": Element("B", ("positive", "negative")),
     "behavioral_current_source": Element("B", ("positive", "negative")),
     "voltage_controlled_switch": Element("B", _CONTROLLED),
@@ -356,11 +357,30 @@ def netlist(
     circuit = flatten(circuit, subcircuits)
     top = circuit.components[circuit.top]
     ground = next(port.name for port in top.ports if port.role is Role.GROUND)
+    placed = {
+        instance.of.device
+        for instance in top.instances
+        if isinstance(instance.of, ir.DeviceOf)
+    }
+    if {"mosfet", "foundry_mosfet"} <= placed:
+        message = (
+            "a level-1 or level-3 MOSFET stands beside a foundry's, whose kit scales "
+            "the sizes of every MOSFET"
+        )
+        raise _unwritable(message)
     lines = [f"* {circuit.top}"]
     for instance in top.instances:
         match instance.of:
             case ir.ComponentOf():
                 lines.append(_subcircuit(circuit, instance, ground))
+            case ir.DeviceOf(device="coupled_inductors"):
+                own = _own_temperature(instance, "coupled_inductors")
+                coupled = _coupled(
+                    instance.id, _cool(instance.parameters), instance.terminals, ground
+                )
+                lines.extend(
+                    f"{line}{own}" if line.startswith("L") else line for line in coupled
+                )
             case ir.DeviceOf(device=model):
                 lines.extend(_device(instance, model, ground, excited))
     return lines
@@ -377,9 +397,6 @@ def _device(
     element(instance)
     values = _cool(instance.parameters)
     own = _own_temperature(instance, model)
-    if model == "coupled_inductors":
-        coupled = _coupled(instance.id, values, instance.terminals, ground)
-        return [f"{line}{own}" if line.startswith("L") else line for line in coupled]
     nodes = " ".join("0" if net == ground else net for net in _nets(instance, model))
     lines: list[str] = []
     match model:
@@ -413,6 +430,11 @@ def _device(
             nodes, value = f"{a} {b}", f"I={{V({a},{b})*{current}}}"
         case "resistor" | "capacitor" | "inductor":
             value = _passive(model, values, nodes.split(), (instance.id, lines))
+        case "foundry_mosfet":
+            try:
+                value = sky130.written(values)
+            except ValueError as error:
+                raise _unwritable(str(error)) from None
         case _:
             (number,) = values.values()
             value = repr(number)
@@ -760,10 +782,14 @@ def _function(name: str, numbers: list[JsonValue] | list[float]) -> str:
 
 @dataclass(frozen=True)
 class Raw:
-    """The vectors of one ngspice analysis, by lowercase name."""
+    """The vectors of one ngspice analysis, by lowercase name.
+
+    It keeps what ngspice printed while it ran the deck the analysis is of.
+    """
 
     plot: str
     vectors: dict[str, npt.NDArray[np.complex128]]
+    printed: str
 
     def real(self, name: str) -> Real:
         """The real part of the vector `name`."""
@@ -788,49 +814,90 @@ TIMEOUT: Final = 300
 """The seconds ngspice may run an analysis."""
 
 
-def ngspice(  # noqa: PLR0913 - a deck, its analysis, and how ngspice runs it
+type Compatibility = Literal["ps", "hsa"]
+"""A compatibility mode of ngspice's: PSpice's, ``ps``, or HSPICE's, ``hsa``, which
+foundries' process design kits ask for."""
+
+
+class Running(TypedDict, total=False):
+    """How ngspice runs a deck."""
+
+    libraries: tuple[Path, ...]
+    """The files it includes."""
+    sections: tuple[tuple[Path, str], ...]
+    """The sections of libraries it reads, each a file and a section's name, such as a
+    foundry's model library at a process corner."""
+    compatibility: Compatibility | None
+    """The mode it reads the deck and the files in, its own unless given."""
+    options: str
+    """The options line, as tight as jolty's tightest unless given."""
+    temperature: float
+    """jolty's temperature, in kelvins, 27 °C unless given."""
+
+
+def ngspice(
     lines: list[str],
     analysis: str,
-    *,
-    libraries: tuple[Path, ...] = (),
-    pspice: bool = False,
-    options: str = SPICE_OPTIONS,
-    temperature: float = _core.REFERENCE_TEMPERATURE,
+    **running: Unpack[Running],
 ) -> Raw:
     """Runs one analysis command in ngspice and reads the raw file it writes.
 
-    ngspice includes `libraries`, and reads them as PSpice writes them, in its PSpice
-    compatibility mode, if `pspice`. `options` replaces the tight options. It runs at
-    jolty's `temperature`, in kelvins, its models' nominal temperature at jolty's 27 °C.
+    ngspice runs as [`ngspice_runs`][jolty.spice.export.ngspice_runs] says.
 
     Raises:
-        JoltyError: When ngspice runs out of time, writes no results, runs no
-            analysis, aborts it, or finds its operating point only as the end of a
-            transient of fixed length, which it does not check to be one.
+        JoltyError: As `ngspice_runs` does.
     """
-    nominal = spice_celsius(_core.REFERENCE_TEMPERATURE)
-    deck = [
-        lines[0],
-        *(f".include {library.resolve()}" for library in libraries),
-        *lines[1:],
-        options,
-        f".options temp={spice_celsius(temperature)!r} tnom={nominal!r}",
-        ".control",
-        "set filetype=ascii",
-        _SHORTEST_TRANSIENT_OPERATING_POINT,
-        analysis,
-        "write result.raw all",
-        ".endc",
-        ".end",
-    ]
+    (result,) = ngspice_runs(lines, (analysis,), **running)
+    return result
+
+
+def ngspice_runs(
+    lines: list[str],
+    analyses: Sequence[str],
+    **running: Unpack[Running],
+) -> tuple[Raw, ...]:
+    """Runs analysis commands in turn in one ngspice, and reads the plot each writes.
+
+    ngspice includes the `libraries`, reads the `sections` of others, and reads them
+    and the deck in its `compatibility` mode. `options` replaces the tight options. It
+    runs at jolty's `temperature`, in kelvins, its models' nominal temperature at
+    jolty's 27 °C. Each command may run several analyses, and a result is read from the
+    plot of each.
+
+    Raises:
+        JoltyError: When ngspice is not installed, runs out of time, writes no results,
+            runs no analysis, aborts one, or finds an operating point only as the end
+            of a transient of fixed length, which it does not check to be one.
+    """
     if NGSPICE is None:
         message = "ngspice is not installed"
         raise JoltyError(message)
+    nominal = spice_celsius(_core.REFERENCE_TEMPERATURE)
+    temperature = running.get("temperature", _core.REFERENCE_TEMPERATURE)
+    deck = [
+        lines[0],
+        *(f".include {library.resolve()}" for library in running.get("libraries", ())),
+        *(
+            f'.lib "{library.resolve()}" {section}'
+            for library, section in running.get("sections", ())
+        ),
+        *lines[1:],
+        running.get("options", SPICE_OPTIONS),
+        f".options temp={spice_celsius(temperature)!r} tnom={nominal!r}",
+        ".control",
+        "set filetype=ascii",
+        "set appendwrite",
+        _SHORTEST_TRANSIENT_OPERATING_POINT,
+        *(f"{analysis}\nwrite result.raw all" for analysis in analyses),
+        ".endc",
+        ".end",
+    ]
     with tempfile.TemporaryDirectory() as name:
         directory = Path(name)
-        if pspice:
+        compatibility = running.get("compatibility")
+        if compatibility is not None:
             settings = directory / ".spiceinit"
-            settings.write_text("set ngbehavior=ps\n", encoding="utf-8")
+            settings.write_text(f"set ngbehavior={compatibility}\n", encoding="utf-8")
         (directory / "circuit.cir").write_text("\n".join(deck) + "\n", encoding="utf-8")
         try:
             done = subprocess.run(  # noqa: S603 - ngspice runs the deck written here
@@ -845,27 +912,35 @@ def ngspice(  # noqa: PLR0913 - a deck, its analysis, and how ngspice runs it
             message = f"ngspice ran for more than {TIMEOUT} s"
             raise JoltyError(message) from None
         raw = directory / "result.raw"
+        printed = done.stdout + done.stderr
         if not raw.is_file():
-            message = f"ngspice wrote no results:\n{done.stdout}{done.stderr}"
+            message = f"ngspice wrote no results:\n{printed}"
             raise JoltyError(message)
-        result = _read_raw(raw.read_text(encoding="utf-8"))
-    if result.plot == "Constant values":
-        message = f"ngspice ran no analysis:\n{done.stdout}{done.stderr}"
+        found = _read_raws(raw.read_text(encoding="utf-8"), printed)
+    if len(found) != len(analyses) or any(
+        result.plot == "Constant values" for result in found
+    ):
+        message = f"ngspice ran no analysis:\n{printed}"
         raise JoltyError(message)
-    printed = done.stdout + done.stderr
     if _ABORTED in printed:
         message = f"ngspice aborted the analysis:\n{printed}"
         raise JoltyError(message)
     if _TRANSIENT_OPERATING_POINT in printed:
         message = (
             "ngspice found no operating point but by a transient of fixed length, "
-            f"whose end it does not check to be one:\n{done.stdout}{done.stderr}"
+            f"whose end it does not check to be one:\n{printed}"
         )
         raise JoltyError(message)
-    return result
+    return found
 
 
-def _read_raw(text: str) -> Raw:
+def _read_raws(text: str, printed: str) -> tuple[Raw, ...]:
+    """Each plot of a raw file, which begins at its title, with what ngspice printed."""
+    plots = re.split(r"^(?=Title:)", text, flags=re.MULTILINE)
+    return tuple(_read_raw(plot, printed) for plot in plots if plot.strip())
+
+
+def _read_raw(text: str, printed: str) -> Raw:
     header, values = text.split("Values:\n")
     names = []
     plot = ""
@@ -884,7 +959,11 @@ def _read_raw(text: str) -> Raw:
         if not token.isdigit()
     ]
     table = np.array(numbers).reshape(-1, len(names))
-    return Raw(plot, {name: table[:, column] for column, name in enumerate(names)})
+    return Raw(
+        plot,
+        {name: table[:, column] for column, name in enumerate(names)},
+        printed,
+    )
 
 
 _SCALES: Final = frozenset({"time", "frequency", "onoise_spectrum", "inoise_spectrum"})

@@ -46,6 +46,7 @@ impl Simulator {
     /// for no frequency or a negative one, [`SimulationError::Singular`] when the linearized
     /// circuit is singular at a frequency, and the errors of [`Simulator::operating_point`].
     pub fn ac(&mut self, ac: &Ac, options: &Options) -> Result<Response, SimulationError> {
+        self.solvable()?;
         let index = self.source_index(&ac.source)?;
         let operating_point = self.linearize(&ac.frequencies, options)?;
         let mut excitation = vec![0.0; self.system.unknowns.len()];

@@ -112,12 +112,21 @@ pub trait Model: Send + Sync {
         parameters: &Parameters,
         binding: &mut Binding<'_>,
     ) -> Result<Box<dyn Device<Gradient>>, ParameterError>;
+
+    /// Whether its devices are a foundry's, which ngspice simulates with the foundry's
+    /// models: they elaborate, so the structural checks read their branches, but no
+    /// analysis runs on a circuit that holds one.
+    fn foundry(&self) -> bool {
+        false
+    }
 }
 
 /// A device implemented in Rust, whose parameters deserialize into a typed struct.
 pub trait NativeDevice<R: Real = f64>: Device<R> + Sized + 'static {
     /// The model's name.
     const NAME: &'static str;
+    /// Whether the device is a foundry's, as [`Model::foundry`] says.
+    const FOUNDRY: bool = false;
     /// The parameters, deserialized from the instance's parameter map.
     type Parameters: DeserializeOwned;
 
@@ -190,6 +199,10 @@ impl<M: NativeModel> Model for Native<M> {
     ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
         let parameters = read::<Gradient, M::Device<Gradient>>(parameters)?;
         Ok(Box::new(M::Device::<Gradient>::new(parameters, binding)?))
+    }
+
+    fn foundry(&self) -> bool {
+        <M::Device<f64> as NativeDevice<f64>>::FOUNDRY
     }
 }
 

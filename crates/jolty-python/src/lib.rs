@@ -42,6 +42,7 @@ struct Simulator {
     composite_nodes: Vec<Option<String>>,
     thermal_composites: Vec<bool>,
     devices: usize,
+    foundry_devices: Vec<String>,
 }
 
 #[pymethods]
@@ -100,6 +101,11 @@ impl Simulator {
             .map(|node| node.map(str::to_owned))
             .collect();
         let thermal_composites = inner.thermal_composites();
+        let foundry_devices = inner
+            .foundry_devices()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
         Ok(Self {
             inner: Mutex::new(inner),
             unknowns,
@@ -113,6 +119,7 @@ impl Simulator {
             composite_nodes,
             thermal_composites,
             devices,
+            foundry_devices,
         })
     }
 
@@ -185,6 +192,13 @@ impl Simulator {
     #[getter]
     fn thermal_composites(&self) -> Vec<bool> {
         self.thermal_composites.clone()
+    }
+
+    /// The paths of the foundry's devices, which ngspice simulates in the engine's place,
+    /// in the order they were placed.
+    #[getter]
+    fn foundry_devices(&self) -> Vec<String> {
+        self.foundry_devices.clone()
     }
 
     /// The number of devices, analog and logic, with every component instance unfolded.

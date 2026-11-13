@@ -115,6 +115,7 @@ impl Simulator {
         noise: &Noise,
         options: &Options,
     ) -> Result<NoiseSpectrum, SimulationError> {
+        self.solvable()?;
         let (output, reference, quantity) =
             self.measured(&noise.output, noise.reference.as_deref())?;
         let unknowns = self.system.unknowns.len();

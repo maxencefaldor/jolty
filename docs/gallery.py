@@ -290,7 +290,9 @@ def _run(
     order = np.argsort(merged[axis].real)
     return (
         export.Raw(
-            raws[0].plot, {name: values[order] for name, values in merged.items()}
+            raws[0].plot,
+            {name: values[order] for name, values in merged.items()},
+            "".join(raw.printed for raw in raws),
         ),
         loosened,
     )

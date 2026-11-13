@@ -15,6 +15,7 @@ A stability analysis gives a feedback loop's gain through a probe, by Middlebroo
 A noise analysis gives the noise density at any output from every device's thermal, shot and flicker noise, each source's share, and the noise referred to an input, and a pole-zero analysis the circuit's natural frequencies and a transfer function's zeros.
 A periodic transient finds the steady state a driven circuit settles into, such as a rectifier's or a power converter's, in a few periods by shooting, where a transient would run for many.
 Every result holds each device's own state, its terminals' currents and charges, the derivatives of its equations and its model's variables, at every point, and a 3D viewer plays any simulation on the circuit's layout.
+A circuit of SKY130 transistors runs its plans in ngspice with the foundry's own models, at its process corners, and its results read as the engine's.
 jolty stops at the circuit: it writes SPICE netlists for ngspice and KiCad netlists for boards, and leaves laying out boards and chips to the tools made for them.
 
 The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.

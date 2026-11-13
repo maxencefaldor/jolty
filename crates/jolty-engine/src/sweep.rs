@@ -52,6 +52,7 @@ impl Simulator {
         sweep: &DcSweep,
         options: &Options,
     ) -> Result<Sweep, SimulationError> {
+        self.solvable()?;
         options.check()?;
         if sweep.levels.is_empty() {
             return Err(SimulationError::InvalidAnalysis(

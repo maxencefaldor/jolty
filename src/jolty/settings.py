@@ -78,6 +78,12 @@ class Settings(BaseSettings):
         description="Directory that keeps what jolty downloads, such as the model "
         "files of parts; by default, jolty's own in the user's cache.",
     )
+    pdk_root: Path | None = Field(
+        default=None,
+        description="Directory that holds the SKY130 PDK as open_pdks installs it, "
+        "sky130A within it; by default, jolty's pinned release, fetched into the "
+        "cache.",
+    )
     rules: dict[RuleKey, Level] = Field(
         default_factory=dict,
         description="Level of each rule by name, or of every rule with 'all': error, "

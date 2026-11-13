@@ -283,24 +283,31 @@ class Options:
 class Corner:
     """Conditions a plan also runs its analyses at.
 
-    A corner gives a temperature, the plan's unless given, and arguments to the build
-    script's ``build()``, which builds the circuit again with them, such as a lower
-    supply voltage.
+    A corner gives a temperature and a foundry's process corner, the plan's unless
+    given, and arguments to the build script's ``build()``, which builds the circuit
+    again with them, such as a lower supply voltage.
 
     Examples:
         >>> from jolty.units import V, celsius
         >>> corner = Corner(temperature=celsius(-40), supply=3 * V)
         >>> str(corner.arguments["supply"])
         '3 V'
+        >>> Corner(process="ss").process
+        'ss'
     """
 
     temperature: Quantity | None
+    process: str | None
     arguments: Mapping[str, object]
 
     def __init__(
-        self, *, temperature: Quantity | None = None, **arguments: object
+        self,
+        *,
+        temperature: Quantity | None = None,
+        process: str | None = None,
+        **arguments: object,
     ) -> None:
-        """A corner at `temperature`, building the circuit with `arguments`.
+        """A corner at `temperature` and `process`, building with `arguments`.
 
         Raises:
             DimensionError: When the temperature is not one.
@@ -308,6 +315,7 @@ class Corner:
         if temperature is not None:
             temperature.to(TEMPERATURE, "a corner's temperature")
         object.__setattr__(self, "temperature", temperature)
+        object.__setattr__(self, "process", process)
         object.__setattr__(self, "arguments", arguments)
 
 
@@ -425,8 +433,9 @@ class Plan:
 
     Each analysis is named by a Python identifier, such as ``step`` or ``bode``, which
     names its results too. The circuit's devices are simulated at `temperature`, 27 °C
-    unless given, then at each of the `corners`, each named by an identifier too, on
-    the samples of a `monte_carlo` analysis, and at the extremes of a `worst_case`
+    unless given, a foundry's devices at its `process` corner, its kit's typical unless
+    given, then at each of the `corners`, each named by an identifier too, on the
+    samples of a `monte_carlo` analysis, and at the extremes of a `worst_case`
     analysis.
 
     Its `fidelity` maps scopes, patterns of instance paths such as ``adder/*``, where
@@ -442,6 +451,7 @@ class Plan:
     monte_carlo: MonteCarlo | None = None
     worst_case: WorstCase | None = None
     fidelity: Mapping[str, Characterized] = field(default_factory=dict)
+    process: str | None = None
 
     def __post_init__(self) -> None:
         """Checks that the plan runs an analysis or more, all named by identifiers.
@@ -473,6 +483,15 @@ class Plan:
                     f"the scope {scope} takes {model!r}, not a Characterized model"
                 )
                 raise TypeError(message)
+
+    def process_at(self, corner: Corner | None = None) -> str | None:
+        """The process corner of the plan's own run, or of `corner`'s.
+
+        None stands for the typical corner of the kit of each foundry's device.
+        """
+        if corner is not None and corner.process is not None:
+            return corner.process
+        return self.process
 
     def temperature_at(self, corner: Corner | None = None) -> Quantity | None:
         """The temperature of the plan's own run, or of `corner`'s; None for 27 °C."""

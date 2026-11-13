@@ -10,6 +10,7 @@ Each setting comes from the first source that sets it: a `JOLTY_*` environment v
 | `listed_unknowns` | `JOLTY_LISTED_UNKNOWNS` | `40` | Unknowns a report lists for each analysis; the results file holds every one. |
 | `max_diagnostics` | `JOLTY_MAX_DIAGNOSTICS` | `20` | Diagnostics a check report lists; it counts the rest. |
 | `cache` | `JOLTY_CACHE` | `/root/.cache/jolty` | Directory that keeps what jolty downloads, such as the model files of parts; by default, jolty's own in the user's cache. |
+| `pdk_root` | `JOLTY_PDK_ROOT` | unset | Directory that holds the SKY130 PDK as open_pdks installs it, sky130A within it; by default, jolty's pinned release, fetched into the cache. |
 | `rules` | `JOLTY_RULES` | unset | Level of each rule by name, or of every rule with 'all': error, warn or ignore. A rule's own entry overrides 'all', and rules left out keep their default level. |
 
 A project whose transients run long might raise the time limit, and one that couples stages through capacitors on purpose might report floating nodes as warnings:

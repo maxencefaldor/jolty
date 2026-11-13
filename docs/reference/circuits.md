@@ -14,9 +14,11 @@ Scripts write circuits with the builder, from devices whose values carry units a
     options:
       members: [load, Library, fetch, GROUND]
 
+::: jolty.spice.sky130
+
 ::: jolty.spice.export
     options:
-      members: [netlist, flatten, ngspice, vector, element, Raw, spice_celsius]
+      members: [netlist, flatten, ngspice, ngspice_runs, Running, Compatibility, vector, element, Raw, spice_celsius]
 
 ::: jolty.waveforms
 

@@ -42,6 +42,7 @@ from jolty import (
     spice,
 )
 from jolty.plan import decade, linear
+from jolty.spice.export import Compatibility
 from jolty.units import Hz, MHz, Quantity, V, celsius, kHz, kohm, ms, us
 from jolty.waveforms import Sine
 
@@ -212,7 +213,7 @@ class Bench:
     ac: bool = True
     options: Options = TIGHT
     spice_options: str = SPICE_OPTIONS
-    pspice: bool = True
+    compatibility: Compatibility | None = "ps"
 
     def runs(self, analysis: str) -> bool:
         """Whether both engines run `analysis`, ``op``, ``dc``, ``ac`` or ``tran``."""
@@ -229,7 +230,7 @@ class Bench:
 BENCHES = {
     # SPICE2's syntax, which ngspice reads without PSpice's mode, in which it would give
     # each diode without a series resistance one of 100 µΩ.
-    "tl072": Bench(_tl072, (-10, 10, 81), (300 * us, 0.2 * us), pspice=False),
+    "tl072": Bench(_tl072, (-10, 10, 81), (300 * us, 0.2 * us), compatibility=None),
     "mcp6041": Bench(_mcp6041, (1.5, 3.5, 81), (6 * ms, 2 * us)),
     # The amplifier's gains of a million leave its currents' last digits unresolved
     # below the default absolute tolerance, in both engines.
@@ -266,7 +267,7 @@ def test_operating_points_agree(name: str, downloads: Path) -> None:
         netlist(simulation.circuit),
         "op",
         libraries=(file,),
-        pspice=bench.pspice,
+        compatibility=bench.compatibility,
         options=bench.spice_options,
     )
     for column, unknown in compared(simulation):
@@ -304,7 +305,7 @@ def test_operating_points_agree_across_temperatures(
         netlist(simulation.circuit),
         "op",
         libraries=(file,),
-        pspice=bench.pspice,
+        compatibility=bench.compatibility,
         options=bench.spice_options,
         temperature=temperature.value,
     )
@@ -334,7 +335,7 @@ def test_dc_sweeps_agree(name: str, downloads: Path) -> None:
         netlist(simulation.circuit),
         f"dc VV1 {first!r} {last!r} {step!r}",
         libraries=(file,),
-        pspice=bench.pspice,
+        compatibility=bench.compatibility,
         options=bench.spice_options,
     )
     for column, unknown in compared(simulation):
@@ -358,7 +359,7 @@ def test_ac_responses_agree(name: str, downloads: Path) -> None:
         netlist(simulation.circuit, excited="V1"),
         "ac dec 20 10 10meg",
         libraries=(file,),
-        pspice=bench.pspice,
+        compatibility=bench.compatibility,
         options=bench.spice_options,
     )
     for column, unknown in compared(simulation):
@@ -387,7 +388,7 @@ def test_transients_agree(name: str, downloads: Path) -> None:
         netlist(simulation.circuit),
         f"tran {step!r} {stop!r} 0 {step!r}",
         libraries=(file,),
-        pspice=bench.pspice,
+        compatibility=bench.compatibility,
         options=bench.spice_options,
     )
     times = raw.real("time")

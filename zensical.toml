@@ -21,6 +21,7 @@ nav = [
     { "Devices" = "guide/devices.md" },
     { "Logic" = "guide/logic.md" },
     { "SPICE models" = "guide/spice.md" },
+    { "Foundry processes" = "guide/foundry.md" },
     { "Checks" = "guide/checks.md" },
     { "Schematics" = "guide/schematics.md" },
     { "3D viewer" = "guide/viewer.md" },

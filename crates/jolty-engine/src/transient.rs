@@ -362,6 +362,7 @@ impl Simulator {
         transient: &Transient,
         options: &Options,
     ) -> Result<Waveforms, SimulationError> {
+        self.solvable()?;
         if transient.periodic {
             return self.periodic_steady_state(transient, options);
         }

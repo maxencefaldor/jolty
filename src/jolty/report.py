@@ -550,6 +550,11 @@ class CornerReport(_Model):
 
     name: str
     temperature: float = Field(description="The corner's temperature, in kelvins.")
+    process: str | None = Field(
+        default=None,
+        description="The corner's process corner of a foundry's devices, if it names "
+        "one.",
+    )
     problems: tuple[str, ...] = Field(
         default=(), description="Why the circuit does not elaborate at the corner."
     )
@@ -565,6 +570,8 @@ class CornerReport(_Model):
     def describe(self) -> str:
         """The report as text."""
         head = f"corner {self.name}, at {self.temperature - 273.15:.4g} °C"
+        if self.process is not None:
+            head += f", process {self.process}"
         if self.problems:
             listed = "".join(f"\n{_indented(problem)}" for problem in self.problems)
             return f"{head}: the circuit does not elaborate:{listed}"

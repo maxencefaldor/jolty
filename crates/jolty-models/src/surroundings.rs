@@ -114,6 +114,10 @@ impl<M: Model> Model for Surrounded<M> {
         binding.set_temperature(found.temperature(binding.temperature())?);
         self.inner.instantiate_gradient(&own, binding)
     }
+
+    fn foundry(&self) -> bool {
+        self.inner.foundry()
+    }
 }
 
 #[cfg(test)]

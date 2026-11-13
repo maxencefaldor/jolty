@@ -19,6 +19,7 @@ mod device;
 mod diode;
 mod dual;
 mod evaluation;
+mod foundry;
 mod heat;
 mod jfet;
 mod junction;
@@ -55,6 +56,7 @@ pub use controlled::{
 pub use device::{Device, Model, Native, NativeDevice, NativeModel, ParameterError, Source};
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Contributions, Input, Output};
+pub use foundry::{FoundryMosfet, FoundryMosfetParameters};
 pub use heat::{Heatable, HeatableModel, Heated, Heating, Thermal};
 pub use jfet::{Channel, Jfet, JfetParameters};
 pub use jolty_expressions::Choice;
@@ -113,6 +115,7 @@ impl Library {
         library.add(Native::<VoltageControlledVoltageSource>::new());
         library.add(Native::<VoltageControlledCurrentSource>::new());
         library.add(Native::<VoltageControlledSwitch>::new());
+        library.add(Native::<FoundryMosfet>::new());
         library.add(Native::<CurrentControlledSwitch>::new());
         library.add(Thermal::<Diode>::new());
         library.add(Thermal::<Jfet>::new());
@@ -197,6 +200,7 @@ mod tests {
                 "current_controlled_voltage_source",
                 "current_source",
                 "diode",
+                "foundry_mosfet",
                 "heat_source",
                 "inductor",
                 "jfet",

@@ -29,7 +29,7 @@ from typing import Literal, overload
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from jolty import _core, checks, ir, results, specs
+from jolty import _core, checks, foundry, ir, results, specs
 from jolty.builder import Component, circuit
 from jolty.devices import Device
 from jolty.errors import ElaborationError, SimulationError
@@ -87,7 +87,12 @@ class Excursion(BaseModel):
 
 
 class Simulation:
-    """A circuit elaborated once, ready to run any number of analyses."""
+    """A circuit elaborated once, ready to run any number of analyses.
+
+    The engine solves no foundry's device, such as a SKY130 transistor, so ngspice runs
+    the analyses of a circuit that holds one, with its kit's models, as
+    [`foundry`][jolty.foundry] describes.
+    """
 
     circuit: ir.Circuit
     """The circuit, in the canonical format."""
@@ -139,12 +144,20 @@ class Simulation:
     excursions: tuple[Excursion, ...]
     """Where the last analysis used logic devices outside their domains."""
 
+    foundry: tuple[str, ...]
+    """The paths of the foundry's devices, which ngspice simulates in the engine's
+    place."""
+
+    process: str | None
+    """The process corner of the foundry's devices, the kit's typical unless given."""
+
     def __init__(
         self,
         circuit_or_top: ir.Circuit | Component,
         temperature: Quantity | None = None,
         overrides: Mapping[str, Mapping[str, float]] | None = None,
         substitutes: Mapping[str, Device] | None = None,
+        process: str | None = None,
     ) -> None:
         """Elaborates a circuit, or the circuit with a component at its top.
 
@@ -152,12 +165,15 @@ class Simulation:
         replaces parameters of devices, by instance path then by parameter path, such
         as ``waveform.dc``, in SI base units, as a Monte Carlo sample does. In
         `substitutes`, a device stands in for each component instance, by path, its
-        terminals the component's ports, as a plan's fidelity chooses.
+        terminals the component's ports, as a plan's fidelity chooses. A foundry's
+        devices run at the `process` corner, such as ``ss``.
 
         Raises:
             ElaborationError: With every problem the engine finds, each naming the
                 instance and the line of the build script that placed it.
             DimensionError: When the temperature is not one.
+            ValueError: When a process corner is given for a circuit that holds no
+                foundry's device.
         """
         self.circuit = (
             circuit_or_top
@@ -205,6 +221,14 @@ class Simulation:
         )
         self.devices = self._core.devices
         self.excursions = ()
+        self.foundry = tuple(self._core.foundry_devices)
+        if process is not None and not self.foundry:
+            message = (
+                f"the process corner {process} sets a foundry's devices, and the "
+                "circuit holds none"
+            )
+            raise ValueError(message)
+        self.process = process
 
     def check(self) -> tuple[checks.Diagnostic, ...]:
         """Every diagnostic the structural checks find, at its rule's default level."""
@@ -243,7 +267,6 @@ class Simulation:
         """
         found = list(specs.diagnose(solved))
         reached = self._reached()
-        columns = {unknown.name: column for column, unknown in enumerate(self.unknowns)}
         rated = [
             (path, instance, rating)
             for path, instance in _instances(self.circuit, self.circuit.top, "")
@@ -270,6 +293,9 @@ class Simulation:
                     )
                 case _:
                     continue
+            columns = {
+                unknown.name: column for column, unknown in enumerate(result.unknowns)
+            }
             at = _Terminals(
                 electrical,
                 thermal,
@@ -346,8 +372,18 @@ class Simulation:
         Raises:
             SimulationError: When the analysis fails, saying why.
         """
-        encoded = json.dumps(self._encode(analysis), allow_nan=False)
         chosen = Options() if options is None else options
+        if self.foundry:
+            self.excursions = ()
+            return foundry.run(
+                foundry.overridden(self.circuit, self.overrides),
+                analysis,
+                chosen,
+                temperature=self.temperature,
+                process=self.process,
+                unknowns=self.unknowns,
+            )
+        encoded = json.dumps(self._encode(analysis), allow_nan=False)
         settings = json.dumps(chosen.to_json(), allow_nan=False)
         try:
             outcome = self._core.run(encoded, settings)

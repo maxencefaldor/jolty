@@ -130,6 +130,9 @@ impl Default for Conditions {
 }
 
 /// A circuit elaborated for simulation, ready to run analyses.
+///
+/// Every analysis returns [`SimulationError::Foundry`] for a circuit that holds a foundry's
+/// device, which ngspice simulates in the engine's place.
 #[derive(Debug)]
 pub struct Simulator {
     system: System,
@@ -286,6 +289,34 @@ impl Simulator {
         &self.system.devices
     }
 
+    /// The paths of the foundry's devices the circuit holds, which no analysis solves, in
+    /// the order they were placed.
+    #[must_use]
+    pub fn foundry_devices(&self) -> Vec<&str> {
+        self.system
+            .devices
+            .iter()
+            .filter(|placed| placed.foundry())
+            .map(Placed::path)
+            .collect()
+    }
+
+    /// Checks that the engine solves every device of the circuit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::Foundry`] naming the foundry's devices it holds.
+    pub(crate) fn solvable(&self) -> Result<(), SimulationError> {
+        let foundry = self.foundry_devices();
+        if foundry.is_empty() {
+            Ok(())
+        } else {
+            Err(SimulationError::Foundry(
+                foundry.into_iter().map(str::to_owned).collect(),
+            ))
+        }
+    }
+
     /// Where the last analysis used logic devices outside their domains: each device and
     /// bound once, with the value furthest outside and when it first left.
     #[must_use]
@@ -407,6 +438,14 @@ pub enum SimulationError {
     /// The options are out of range.
     #[error("invalid options: {0}")]
     InvalidOptions(String),
+    /// The circuit holds a foundry's devices, which ngspice simulates with the foundry's
+    /// models, and which the engine does not solve.
+    #[error(
+        "the engine solves no foundry's device, which ngspice simulates with its foundry's \
+         models: {}",
+        .0.join(", ")
+    )]
+    Foundry(Vec<String>),
 }
 
 impl From<LinearError> for SimulationError {

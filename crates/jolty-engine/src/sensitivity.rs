@@ -181,6 +181,7 @@ impl Simulator {
         sensitivity: &Sensitivity,
         options: &Options,
     ) -> Result<Sensitivities, SimulationError> {
+        self.solvable()?;
         let outputs = sensitivity
             .outputs
             .iter()
@@ -259,6 +260,7 @@ impl Simulator {
         &mut self,
         options: &Options,
     ) -> Result<(OperatingPoint, Vec<f64>), SimulationError> {
+        self.solvable()?;
         let point = self.operating_point(options)?;
         self.evaluate(&point.values, 0.0, (1.0, 2.0 * options.gmin), false);
         let doubled = self.workspace.contributions.residual.clone();
