@@ -1,6 +1,6 @@
 //! The transient analysis: the circuit's response over time.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use jolty_models::{Choice, Input, Level};
 use jolty_numerics::integration::{Formula, Method, divided_difference};
@@ -219,43 +219,62 @@ impl History {
 
 /// The times a transient analysis steps onto exactly, after the current time.
 struct Breakpoints {
-    /// The breakpoints, sorted, the last the stop time.
-    times: Vec<f64>,
+    /// The breakpoints, the last the stop time, each by the bits of its time: times
+    /// are zero or more, whose bits order as the times do, so the set finds the next
+    /// breakpoint, and the neighbors of a new one, in logarithmic time.
+    times: BTreeSet<u64>,
     /// How close two breakpoints may be before one is dropped.
     minimum: f64,
 }
 
 impl Breakpoints {
+    /// The breakpoints at `times`, sorted, the last the stop time.
+    fn new(times: &[f64], minimum: f64) -> Self {
+        Self {
+            times: times.iter().map(|&time| Self::key(time)).collect(),
+            minimum,
+        }
+    }
+
+    /// The key of `time`, zero or more: the bits of positive zero for a negative zero.
+    fn key(time: f64) -> u64 {
+        (time + 0.0).to_bits()
+    }
+
+    /// The earliest breakpoint.
+    fn first(&self) -> f64 {
+        self.times
+            .first()
+            .map_or(f64::INFINITY, |&key| f64::from_bits(key))
+    }
+
     /// Adds `time`, unless it lies past the stop or within the minimum of another.
     fn insert(&mut self, time: f64) {
-        let stop = self.times.last().copied().unwrap_or(f64::INFINITY);
+        let stop = self
+            .times
+            .last()
+            .map_or(f64::INFINITY, |&key| f64::from_bits(key));
         if time >= stop {
             return;
         }
-        let index = self.times.partition_point(|&other| other < time);
-        let near =
-            |other: Option<&f64>| other.is_some_and(|&other| (other - time).abs() < self.minimum);
-        if !near(self.times.get(index))
-            && !near(
-                index
-                    .checked_sub(1)
-                    .and_then(|before| self.times.get(before)),
-            )
-        {
-            self.times.insert(index, time);
+        let key = Self::key(time);
+        let near = |other: Option<&u64>| {
+            other.is_some_and(|&other| (f64::from_bits(other) - time).abs() < self.minimum)
+        };
+        if !near(self.times.range(..key).next_back()) && !near(self.times.range(key..).next()) {
+            self.times.insert(key);
         }
     }
 
     /// The first breakpoint after `time`, and the gap from it to the one after.
     fn after(&mut self, time: f64) -> (f64, f64) {
-        let passed = self.times.partition_point(|&other| other <= time);
-        let kept = passed.min(self.times.len() - 1);
-        self.times.drain(..kept);
-        let next = self.times[0];
-        let gap = self
-            .times
-            .get(1)
-            .map_or(f64::INFINITY, |after| after - next);
+        let passed = Self::key(time);
+        while self.times.len() > 1 && self.times.first().is_some_and(|&key| key <= passed) {
+            self.times.pop_first();
+        }
+        let mut ahead = self.times.iter().map(|&key| f64::from_bits(key));
+        let next = ahead.next().unwrap_or(f64::INFINITY);
+        let gap = ahead.next().map_or(f64::INFINITY, |after| after - next);
         (next, gap)
     }
 }
@@ -475,11 +494,9 @@ impl Simulator {
         self.evaluate(&initial, Some(0.0), (1.0, options.gmin), true);
         self.events.start(&self.system.logic, transient.stop);
         let unknowns = initial.len();
-        let mut breakpoints = Breakpoints {
-            times: self.breakpoints(transient.stop, shortest),
-            minimum: shortest,
-        };
-        let first = RESTART_FRACTION * longest.min(breakpoints.times[0]);
+        let mut breakpoints =
+            Breakpoints::new(&self.breakpoints(transient.stop, shortest), shortest);
+        let first = RESTART_FRACTION * longest.min(breakpoints.first());
         let mut stepper = Stepper {
             method: transient.method,
             longest,
@@ -895,5 +912,33 @@ impl Simulator {
             }
         }
         Some(worst)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Breakpoints;
+
+    /// The bits of a breakpoint and of the gap after it, to compare them exactly.
+    fn bits((next, gap): (f64, f64)) -> (u64, u64) {
+        (next.to_bits(), gap.to_bits())
+    }
+
+    #[test]
+    fn breakpoints_come_in_order_without_near_twins_and_keep_the_stop() {
+        let mut breakpoints = Breakpoints::new(&[1.0, 3.0, 10.0], 0.1);
+        breakpoints.insert(2.0);
+        // Within the minimum of 2 and of 3, so dropped; past the stop, so dropped.
+        breakpoints.insert(2.05);
+        breakpoints.insert(2.95);
+        breakpoints.insert(11.0);
+        assert_eq!(bits(breakpoints.after(0.5)), bits((1.0, 1.0)));
+        assert_eq!(bits(breakpoints.after(1.0)), bits((2.0, 1.0)));
+        assert_eq!(bits(breakpoints.after(2.5)), bits((3.0, 7.0)));
+        // The stop stays, however far past it the time asked for.
+        assert_eq!(bits(breakpoints.after(20.0)), bits((10.0, f64::INFINITY)));
+        // A negative zero orders as zero, before every positive time.
+        breakpoints.insert(-0.0);
+        assert_eq!(breakpoints.first().to_bits(), 0.0_f64.to_bits());
     }
 }
