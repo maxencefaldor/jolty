@@ -22,6 +22,7 @@ from differential import (
     nearest,
     netlist,
     ngspice,
+    unstable,
     vector,
 )
 from jolty import (
@@ -229,7 +230,7 @@ def test_transients_agree(circuit: ir.Circuit) -> None:
     simulation = Simulation(pulsed(circuit))
     if _resting(simulation) is None:
         return
-    if simulation.check_operating_point(TIGHT):
+    if unstable(simulation):
         # A mode that grows away from rest makes no waveform to agree on.
         event("an unstable operating point")
         return

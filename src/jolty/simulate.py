@@ -181,8 +181,9 @@ class Simulation:
         """Every diagnostic of the rules at the circuit's operating point.
 
         The operating point is solved with `options`, and each diagnostic is at its
-        rule's default level, such as a mode that grows away from the operating point;
-        a circuit of more than 500 unknowns has none.
+        rule's default level, such as a net only gmin holds, or a mode that grows away
+        from the operating point, which a circuit of more than 500 unknowns is not
+        checked for.
 
         Raises:
             SimulationError: When the circuit has no operating point.

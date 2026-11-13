@@ -1,11 +1,11 @@
-//! The rules on the circuit linearized at its operating point.
+//! The rules on the circuit at its operating point, and linearized there.
 
 use std::f64::consts::TAU;
 
 use jolty_engine::{Mode, Options, SimulationError, Simulator};
 use jolty_models::Quantity;
 
-use crate::structure::list;
+use crate::structure::{list, prose};
 use crate::{Diagnostic, Level, Rule};
 
 /// The most unknowns of a circuit the checks linearize: the dense pencil of 500 unknowns
@@ -19,6 +19,25 @@ const LARGEST: f64 = 0.5;
 /// The most nets a diagnostic names before it counts the rest.
 const NAMED: usize = 5;
 
+/// The fraction of the larger of a node's voltage and [`VOLT`] that doubling gmin may move
+/// it by before gmin-dependence names it.
+const GMIN_MOVE: f64 = 1e-2;
+
+/// One volt, below which gmin-dependence measures a node's move against it instead.
+const VOLT: f64 = 1.0;
+
+pub(crate) const GMIN_DEPENDENCE: Rule = Rule {
+    name: "gmin-dependence",
+    level: Level::Warn,
+    condition: "Doubling gmin, the conductance the engine places across every junction to \
+                help Newton iteration converge, would move a net's voltage at the operating \
+                point, to first order, by more than a hundredth of the larger of that \
+                voltage and 1 V: little but gmin holds the net, as between reverse-biased \
+                junctions, so its voltage comes from the simulator rather than the circuit. \
+                One diagnostic names every such net, by decreasing move. A simulation \
+                checks it at its plan's operating point.",
+};
+
 pub(crate) const UNSTABLE_POLE: Rule = Rule {
     name: "unstable-pole",
     level: Level::Warn,
@@ -31,25 +50,57 @@ pub(crate) const UNSTABLE_POLE: Rule = Rule {
                 of at most 500 unknowns.",
 };
 
-/// Every diagnostic of the rules on the circuit `simulator` elaborated, linearized at its
-/// operating point under `options`, by decreasing growth; none for a circuit of more than
-/// [`MOST_LINEARIZED`] unknowns.
+/// Every diagnostic of the rules on the circuit `simulator` elaborated, at its operating
+/// point under `options` and linearized there, rule by rule: the nets gmin holds, then the
+/// modes that grow, by decreasing growth, on circuits of at most [`MOST_LINEARIZED`]
+/// unknowns.
 ///
 /// # Errors
 ///
-/// Returns the errors of [`Simulator::growing_modes`].
+/// Returns the errors of [`Simulator::gmin_dependence`] and [`Simulator::growing_modes`].
 pub fn check_operating_point(
     simulator: &mut Simulator,
     options: &Options,
 ) -> Result<Vec<Diagnostic>, SimulationError> {
-    if simulator.unknowns().len() > MOST_LINEARIZED {
-        return Ok(Vec::new());
+    let (point, moves) = simulator.gmin_dependence(options)?;
+    let mut diagnostics: Vec<Diagnostic> = gmin_dependence(simulator, &point.values, &moves)
+        .into_iter()
+        .collect();
+    if simulator.unknowns().len() <= MOST_LINEARIZED {
+        let growing = simulator.growing_modes(options)?;
+        diagnostics.extend(growing.iter().map(|mode| unstable_pole(simulator, mode)));
     }
-    let modes = simulator.growing_modes(options)?;
-    Ok(modes
+    Ok(diagnostics)
+}
+
+/// The diagnostic of the nets at `values` that doubling gmin `moves` too far, if any.
+fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Option<Diagnostic> {
+    let mut nets: Vec<(&str, f64, f64)> = simulator
+        .unknowns()
         .iter()
-        .map(|mode| unstable_pole(simulator, mode))
-        .collect())
+        .zip(values.iter().zip(moves))
+        .filter(|(unknown, (value, moved))| {
+            unknown.quantity == Quantity::Voltage
+                && !unknown.name.contains(':')
+                && moved.abs() > GMIN_MOVE * value.abs().max(VOLT)
+        })
+        .map(|(unknown, (&value, &moved))| (unknown.name.as_str(), value, moved))
+        .collect();
+    if nets.is_empty() {
+        return None;
+    }
+    nets.sort_by(|a, b| b.2.abs().total_cmp(&a.2.abs()));
+    let named = prose(
+        nets.iter()
+            .map(|(net, value, moved)| format!("`{net}` from {value:?} V by {moved:?} V")),
+        NAMED,
+    );
+    Some(Diagnostic {
+        rule: GMIN_DEPENDENCE.name,
+        message: format!("the operating point depends on gmin: doubling it moves {named}"),
+        instances: Vec::new(),
+        nets: nets.iter().map(|&(net, ..)| net.to_owned()).collect(),
+    })
 }
 
 /// The diagnostic of the growing `mode`.
@@ -136,6 +187,45 @@ mod tests {
              "terminals": {"positive": "0", "negative": "n",
                            "control_positive": "n", "control_negative": "0"}},
         ])
+    }
+
+    /// A current source of `current` into `n`, across a reverse-biased diode, with `load`
+    /// from `n` to the ground, if any.
+    fn leaking(current: f64, load: Option<f64>) -> Value {
+        let mut instances = vec![
+            json!({"id": "I1", "of": {"device": "current_source"},
+                   "parameters": {"waveform": {"dc": current}},
+                   "terminals": {"positive": "0", "negative": "n"}}),
+            json!({"id": "D1", "of": {"device": "diode"}, "parameters": {},
+                   "terminals": {"anode": "0", "cathode": "n"}}),
+        ];
+        if let Some(resistance) = load {
+            instances.push(two_terminal(
+                "R1",
+                ("resistor", "resistance", resistance),
+                "n",
+            ));
+        }
+        Value::Array(instances)
+    }
+
+    #[test]
+    fn gmin_dependence() {
+        // Only the diode's gmin holds `n`: 1 nA, less the diode's 10 fA, lifts it to
+        // 999.99 V. Doubling gmin halves that, which to first order moves it by all of it.
+        let raised = diagnostics(&leaking(1e-9, None));
+        assert_eq!(raised.len(), 1, "{raised:?}");
+        assert_eq!(raised[0].rule, "gmin-dependence");
+        assert_eq!(raised[0].nets, ["n"]);
+        let message = &raised[0].message;
+        assert!(
+            message.starts_with(
+                "the operating point depends on gmin: doubling it moves `n` from 999.98"
+            ) && message.contains(" V by -999.98"),
+            "{message}"
+        );
+        // A megohm holds it at 1 mV, which doubling gmin moves by a picovolt.
+        assert!(diagnostics(&leaking(1e-9, Some(1e6))).is_empty());
     }
 
     #[test]

@@ -14,6 +14,7 @@ The default levels below hold until settings or options set others (see [Checks]
 | [`current-cutset`](#current-cutset) | `error` |
 | [`driver-conflict`](#driver-conflict) | `error` |
 | [`floating-input`](#floating-input) | `error` |
+| [`gmin-dependence`](#gmin-dependence) | `warn` |
 | [`unstable-pole`](#unstable-pole) | `warn` |
 
 ## unconnected-terminal
@@ -55,6 +56,12 @@ Wherever they drive different levels, the net's level is unknown.
 
 Logic inputs read a logic net that no output drives, so its level is always unknown.
 A net that a single input joins is left to unconnected-terminal.
+
+## gmin-dependence
+
+Doubling gmin, the conductance the engine places across every junction to help Newton iteration converge, would move a net's voltage at the operating point, to first order, by more than a hundredth of the larger of that voltage and 1 V: little but gmin holds the net, as between reverse-biased junctions, so its voltage comes from the simulator rather than the circuit.
+One diagnostic names every such net, by decreasing move.
+A simulation checks it at its plan's operating point.
 
 ## unstable-pole
 

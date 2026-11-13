@@ -13,7 +13,16 @@ The [rules reference](../reference/rules.md) gives each rule's exact condition.
 
 ## At the operating point
 
-A simulation also checks the circuit linearized at its plan's operating point, solved with the plan's options, before reading any analysis.
+A simulation also checks the circuit at its plan's operating point, solved with the plan's options, and linearized there, before reading any analysis.
+
+The engine places gmin, a conductance of 1e-12 S, across every junction, so that Newton iteration has a slope to follow where a junction is off.
+A net that little else holds, such as one between reverse-biased junctions, takes whatever voltage gmin's picoamperes set, which is the simulator's, not the circuit's.
+The rule `gmin-dependence` names every net whose voltage doubling gmin would move, to first order, by more than a hundredth of the larger of that voltage and 1 V:
+
+```text
+warn[gmin-dependence]: the operating point depends on gmin: doubling it moves `n` from 999.9899999999999 V by -999.9899999999998 V
+```
+
 A pole of the linearized circuit with a positive real part is a natural mode that grows away from the operating point, so the circuit does not rest there: an amplifier whose feedback makes it oscillate, or a latch balanced between its states.
 The rule `unstable-pole` states it, with the nets where the growing mode is largest, though the plan asks for no stability or pole-zero analysis:
 

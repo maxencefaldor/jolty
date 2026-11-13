@@ -39,6 +39,7 @@ __all__ = [
     "ngspice",
     "size",
     "spice_celsius",
+    "unstable",
     "vector",
 ]
 
@@ -183,3 +184,15 @@ def nearest(times: Real, targets: Real) -> npt.NDArray[np.intp]:
     after = np.clip(np.searchsorted(times, targets), 1, len(times) - 1)
     before = after - 1
     return np.where(targets - times[before] <= times[after] - targets, before, after)
+
+
+def unstable(simulation: Simulation) -> bool:
+    """Whether a mode of the circuit grows away from its operating point, under `TIGHT`.
+
+    A transient from there amplifies rounding, so two simulations of it, by two engines
+    or of two ways of writing it, part however accurate each is.
+    """
+    return any(
+        diagnostic.rule == "unstable-pole"
+        for diagnostic in simulation.check_operating_point(TIGHT)
+    )

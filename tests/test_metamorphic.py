@@ -15,7 +15,7 @@ import numpy as np
 from hypothesis import event, given
 from hypothesis import strategies as st
 
-from differential import TIGHT, Values, differing, nearest
+from differential import TIGHT, Values, differing, nearest, unstable
 from jolty import (
     Ac,
     OperatingPoint,
@@ -91,7 +91,7 @@ def _simulated(circuit: ir.Circuit, source: str) -> Simulated:
             for column, unknown in enumerate(response.unknowns)
         },
     }
-    if not simulation.check_operating_point(TIGHT):
+    if not unstable(simulation):
         found["transient"] = _transient(simulation, STEP)
     return found
 

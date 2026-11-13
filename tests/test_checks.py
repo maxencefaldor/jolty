@@ -21,7 +21,7 @@ from jolty.files import save_circuit
 from jolty.ir import Source
 from jolty.service import SimulateResult
 from jolty.settings import Level
-from jolty.units import Quantity, S, V, kohm, mA, mH, nF, ns, ps
+from jolty.units import Mohm, Quantity, S, V, kohm, mA, mH, nA, nF, ns, ps
 
 
 def raised(top: Component) -> list[str]:
@@ -193,8 +193,13 @@ def test_every_rule_has_a_case_that_raises_it() -> None:
         latch(sources=0),
     ]
     found = {rule for case in cases for rule in raised(case)}
-    at_point = Simulation(tank(0.2e-3 * S)).check_operating_point()
-    assert found | {diagnostic.rule for diagnostic in at_point} == set(rules())
+    at_points = (tank(0.2e-3 * S), leaking(None))
+    found |= {
+        diagnostic.rule
+        for case in at_points
+        for diagnostic in Simulation(case).check_operating_point()
+    }
+    assert found == set(rules())
 
 
 def test_levels_apply_settings_then_options() -> None:
@@ -333,6 +338,31 @@ def test_unstable_pole() -> None:
     assert growing.message.startswith("the operating point is unstable: its poles at")
     # Less feedback than loss: it dies away.
     assert Simulation(tank(0.05e-3 * S)).check_operating_point() == ()
+
+
+@component
+def leaking(c: Builder, load: Quantity | None) -> None:
+    """1 nA into `n` across a reverse-biased diode; `load` to the ground, if any."""
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.current_source(1 * nA), id="I1")
+    diode = c.place(devices.diode(), id="D1")
+    c.connect(source.negative, diode.cathode, name="n")
+    c.connect(source.positive, diode.anode, ground)
+    if load is not None:
+        resistor = c.place(devices.resistor(load), id="R1")
+        c.connect(resistor.a, diode.cathode)
+        c.connect(resistor.b, ground)
+
+
+def test_gmin_dependence() -> None:
+    # Only gmin holds `n`, at 1 nA / 1 pS: doubling gmin moves it by all of it.
+    (held,) = Simulation(leaking(None)).check_operating_point()
+    assert (held.rule, held.level, held.nets) == ("gmin-dependence", Level.WARN, ("n",))
+    assert held.message.startswith(
+        "the operating point depends on gmin: doubling it moves `n` from 999.98"
+    )
+    # A megohm holds it at 1 mV instead.
+    assert Simulation(leaking(1 * Mohm)).check_operating_point() == ()
 
 
 TIPPING = """

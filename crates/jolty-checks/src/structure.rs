@@ -138,13 +138,14 @@ impl Partition {
 /// Names in backticks, joined as prose: `` `a` ``, `` `a` and `b` ``, `` `a`, `b` and `c` ``;
 /// past `limit` names, the rest are counted.
 pub(crate) fn list<'s>(names: impl IntoIterator<Item = &'s str>, limit: usize) -> String {
-    let names: Vec<&str> = names.into_iter().collect();
-    let shown: Vec<String> = names
-        .iter()
-        .take(limit)
-        .map(|name| format!("`{name}`"))
-        .collect();
-    let hidden = names.len() - shown.len();
+    prose(names.into_iter().map(|name| format!("`{name}`")), limit)
+}
+
+/// `phrases` joined as prose, the first `limit` of them, then a count of the rest.
+pub(crate) fn prose(phrases: impl IntoIterator<Item = String>, limit: usize) -> String {
+    let mut shown: Vec<String> = phrases.into_iter().collect();
+    let hidden = shown.len().saturating_sub(limit);
+    shown.truncate(limit);
     match (shown.as_slice(), hidden) {
         ([], _) => String::new(),
         ([only], 0) => only.clone(),

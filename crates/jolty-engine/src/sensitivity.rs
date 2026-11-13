@@ -34,7 +34,7 @@ use serde::Deserialize;
 use crate::ac::Linearization;
 use crate::elaborate::Origin;
 use crate::transient::{Carried, Tangent};
-use crate::{Ac, DcSweep, Options, Outcome, SimulationError, Simulator, Transient};
+use crate::{Ac, DcSweep, OperatingPoint, Options, Outcome, SimulationError, Simulator, Transient};
 
 /// How far the operating point moves, along its derivative, in the central difference
 /// of `G` and `C`: its largest voltage moves this many volts either way.
@@ -243,6 +243,38 @@ impl Simulator {
             derivatives,
             result: Box::new(result),
         })
+    }
+
+    /// The operating point, and how far each of its unknowns moves, to first order, as
+    /// gmin doubles: `gmin ∂x/∂gmin`, which is `−x` for a node only gmin holds.
+    ///
+    /// Every device's residual is linear in gmin, so doubling it changes the residuals by
+    /// `gmin ∂f/∂gmin` exactly, and the solution by that change through the Jacobian.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::Singular`] when the Jacobian is, and the errors of
+    /// [`Simulator::operating_point`].
+    pub fn gmin_dependence(
+        &mut self,
+        options: &Options,
+    ) -> Result<(OperatingPoint, Vec<f64>), SimulationError> {
+        let point = self.operating_point(options)?;
+        self.evaluate(&point.values, 0.0, (1.0, 2.0 * options.gmin), false);
+        let doubled = self.workspace.contributions.residual.clone();
+        self.evaluate(&point.values, 0.0, (1.0, options.gmin), false);
+        let mut moves: Vec<f64> = self
+            .workspace
+            .contributions
+            .residual
+            .iter()
+            .zip(&doubled)
+            .map(|(residual, doubled)| residual - doubled)
+            .collect();
+        self.solver
+            .factor(&self.workspace.contributions.conductance)?
+            .solve(&mut moves)?;
+        Ok((point, moves))
     }
 
     /// A twin of every device, for each number of its parameters its model reads as a

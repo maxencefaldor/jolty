@@ -5,7 +5,7 @@ use std::collections::{HashMap, VecDeque};
 use jolty_engine::{Endpoint, Location, LogicNet, Placed, Simulator};
 use jolty_models::BranchKind;
 
-use crate::point::UNSTABLE_POLE;
+use crate::point::{GMIN_DEPENDENCE, UNSTABLE_POLE};
 use crate::structure::{Partition, REFERENCE, Structure, ends, index, list};
 use crate::{Diagnostic, Level, Rule};
 
@@ -89,6 +89,7 @@ pub const RULES: &[Rule] = &[
     CURRENT_CUTSET,
     DRIVER_CONFLICT,
     FLOATING_INPUT,
+    GMIN_DEPENDENCE,
     UNSTABLE_POLE,
 ];
 
