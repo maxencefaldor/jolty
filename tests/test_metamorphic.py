@@ -15,6 +15,7 @@ transient stops, or leaps by chance to another solution, in one spelling and not
 another.
 """
 
+import math
 from collections.abc import Callable, Iterable
 
 import numpy as np
@@ -112,6 +113,32 @@ def _settled(circuit: ir.Circuit, simulated: Simulated) -> bool:
     return not differing(shorter, waveforms, _quantities(circuit), 1e-3)
 
 
+def _rounded_up(instance: ir.Instance) -> ir.Instance:
+    """The instance, a resistor's resistance the next floating-point number up."""
+    resistor = instance.of == ir.DeviceOf(device="resistor")
+    resistance = instance.parameters.get("resistance")
+    if not resistor or not isinstance(resistance, float):
+        return instance
+    parameters = {
+        **instance.parameters,
+        "resistance": math.nextafter(resistance, math.inf),
+    }
+    return instance.model_copy(update={"parameters": parameters})
+
+
+def _determined(circuit: ir.Circuit, simulated: Simulated) -> bool:
+    """Whether the transient jolty found does not move as each resistance rounds up.
+
+    Where a rounding decides the steps a transient takes, and those steps move the
+    waveform by more than its tolerance, two spellings, which round differently, find
+    different waveforms however alike they are.
+    """
+    waveforms = simulated["transient"]
+    rounded = placing(circuit, map(_rounded_up, _instances(circuit)))
+    moved = _transient(Simulation(rounded), STEP)
+    return not differing(moved, waveforms, _quantities(circuit), 1e-3)
+
+
 def _quantities(circuit: ir.Circuit) -> dict[str, str]:
     return {unknown.name: unknown.quantity for unknown in Simulation(circuit).unknowns}
 
@@ -133,7 +160,9 @@ def _assert_same(
     transients are those of both with capacitance at each net of `original` and at its
     namesake in `written`, so that a net the writing adds, such as an ammeter's, holds
     none, and both remain one circuit. A transient that jolty's own shorter steps still
-    move, as a chaotic one's, has not settled at these steps, and is left out too.
+    move, as a chaotic one's, has not settled at these steps, and is left out too, as is
+    one that differs but moves as each resistance rounds up: how the circuit rounds
+    decides it, and two spellings round differently.
     """
     source = _source(original)
     nets = capacitive(original)
@@ -151,9 +180,11 @@ def _assert_same(
     for analysis, values in expected.items():
         assert analysis in found, f"no {analysis} of the circuit as written"
         renamed = {unknown: found[analysis][name(unknown)] for unknown in values}
-        assert not differing(renamed, values, quantities, TOLERANCES[analysis]), (
-            f"the {analysis} differs"
-        )
+        differs = differing(renamed, values, quantities, TOLERANCES[analysis])
+        if differs and analysis == "transient" and not _determined(loaded, expected):
+            event("a waveform that a rounding moves")
+            continue
+        assert not differs, f"the {analysis} differs"
     return found
 
 
