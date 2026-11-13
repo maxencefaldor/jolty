@@ -58,7 +58,8 @@ warn[phase-margin]: the loop broken at `VP` has a phase margin of 41.69037114357
 
 A spec on the margin states a design's own bound; the rules state the usual ones for any loop a plan measures.
 
-A device's [ratings](devices.md#ratings) are held to every operating point and transient the plan solves, at the furthest point of each: a stress beyond a rating raises `over-rating`, an error, and one within it but past 80 % of a bound away from zero raises `derating`, a warning, as derating guidelines keep that margin for heat, ageing and spread:
+The [ratings](devices.md#ratings) of every device and component instance are held to every operating point and transient the plan solves, at the furthest point of each: a stress beyond a rating raises `over-rating`, an error, and one within it but past 80 % of a bound away from zero raises `derating`, a warning, as derating guidelines keep that margin for heat, ageing and spread.
+A component instance's stresses are at its ports, and its power is all it dissipates; an instance a plan's fidelity replaces by a device is held to its own ratings, not to those of the instances inside it, and a rating of a terminal on a logic net is not checked, as the terminal has no voltage:
 
 ```text
 error[over-rating]: the voltage of `C1` at `a` over `b` reaches 20.0 V at 2e-06 s in `tran`, beyond its rating of 16.0 V

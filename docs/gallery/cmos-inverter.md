@@ -8,7 +8,7 @@ with `jolty simulate examples/cmos_inverter.py`.
 
 [Open in 3D](cmos-inverter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/cmos_inverter.py){ .md-button }
 
-5 devices, 11 unknowns, simulated in 2.52 s.
+5 devices, 11 unknowns, simulated in 1.68 s.
 
 ![The schematic](../images/gallery/cmos_inverter.schematic.png)
 
@@ -18,7 +18,7 @@ with `jolty simulate examples/cmos_inverter.py`.
 | --- | --- | --- | --- |
 | out at 0 V in transfer ≥ 3.299 V and ≤ 3.301 V | 3.3 V, passed | 3.3 V, passed | 4.8e-12 |
 | out at 3.3 V in transfer ≥ -1 mV and ≤ 1 mV | 12.2891 nV, passed | 12.2891 nV, passed | 2.0e-09 |
-| out at 1.813 V in transfer ≥ 1.6 V and ≤ 1.7 V | 1.64982 V, passed | 1.64982 V, passed | 8.1e-15 |
+| out at 1.813 V in transfer ≥ 1.6 V and ≤ 1.7 V | 1.64982 V, passed | 1.64982 V, passed | 8.6e-15 |
 
 ## Replicated in ngspice
 

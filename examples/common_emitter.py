@@ -8,9 +8,8 @@ inverted. Coupling capacitors pass the band from tens of hertz up. Simulate it w
 ``jolty simulate examples/common_emitter.py``.
 """
 
-from common import npn
-
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
+from jolty.parts import q2n3904
 from jolty.plan import Ac, OperatingPoint, Transient, decade
 from jolty.specs import gain, value
 from jolty.units import Hz, MHz, V, kHz, kohm, ms, mV, ohm, uF, us
@@ -22,7 +21,7 @@ def amplifier(c: Builder) -> None:
     """The transistor, its bias divider, its loads, and its coupling capacitors."""
     source, output = c.port("input"), c.port("output")
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
-    transistor = c.place(npn(), id="Q1")
+    transistor = c.place(q2n3904(), id="Q1")
     upper = c.place(devices.resistor(56 * kohm), id="R1")
     lower = c.place(devices.resistor(10 * kohm), id="R2")
     collector = c.place(devices.resistor(4.7 * kohm), id="RC")

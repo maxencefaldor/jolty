@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/ripple_counter.py`.
 
 [Open in 3D](ripple-counter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ripple_counter.py){ .md-button }
 
-11 devices, 6 unknowns, simulated in 0.81 s.
+11 devices, 6 unknowns, simulated in 2.14 s.
 
 ![The schematic](../images/gallery/ripple_counter.schematic.png)
 

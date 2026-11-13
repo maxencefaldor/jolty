@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from jolty import Builder, Role, circuit, component, devices, ir
+from jolty import Builder, Role, circuit, component, devices, ir, parts
 from jolty.catalog import Catalog, Part, bill, mantissas, neighbours, values
 from jolty.cli import main
 from jolty.files import save_circuit
@@ -106,7 +106,7 @@ def test_a_bill_prices_each_device_instance_or_says_why_not() -> None:
     ]
     whole = bill(built, CATALOG)
     assert whole.unpriced[0].reason == (
-        "the catalog prices resistors, capacitors and inductors, not voltage_sources"
+        "a voltage_source is priced by its part number alone, and it states none"
     )
     with pytest.raises(KeyError, match="no component instance is at 'X1/R1'"):
         bill(built, CATALOG, "X1/R1")
@@ -127,6 +127,126 @@ def test_a_part_from_a_lot_stays_unpriced() -> None:
         "its resistance comes from the lot die, whose shared spread no part of the "
         "catalog states"
     )
+
+
+NUMBERED = Catalog(
+    currency="USD",
+    parts=(
+        Part(number="2N3904", price=0.12, package="TO-92"),
+        Part(number="2N3904", price=0.02, package="TO-92", lifecycle="obsolete"),
+        Part(number="IRF511", price=1.1, package="TO-220AB"),
+        Part(number="1N4148", price=0.01, lifecycle="obsolete"),
+        Part(
+            device="resistor",
+            value=1e3,
+            tolerance=0.01,
+            price=0.003,
+            number="RC0603FR-071KL",
+            package="0603",
+            lifecycle="not-recommended",
+        ),
+        Part(device="resistor", value=4.7e3, tolerance=0.01, price=0.001),
+        Part(
+            device="resistor",
+            value=4.7e3,
+            tolerance=0.01,
+            price=0.0005,
+            lifecycle="obsolete",
+        ),
+    ),
+)
+
+
+@component
+def switched(c: Builder) -> None:
+    """Numbered parts: a transistor, a power MOSFET, a diode and resistors."""
+    ground = c.port("ground", Role.GROUND)
+    transistor = c.place(parts.q2n3904(), id="Q1")
+    switch = c.place(parts.irf511(), id="X1")
+    diode = c.place(parts.d1n4148(), id="D1")
+    chip = c.place(
+        devices.resistor(1 * kohm, tolerance=0.01).numbered("RC0603FR-071KL"),
+        id="R1",
+    )
+    wrong = c.place(
+        devices.resistor(2 * kohm, tolerance=0.01).numbered("RC0603FR-071KL"),
+        id="R2",
+    )
+    plain = c.place(devices.resistor(4.7 * kohm, tolerance=0.01), id="R3")
+    unknown = c.place(devices.diode().numbered("BAT54"), id="D2")
+    c.connect(
+        transistor.collector,
+        transistor.base,
+        transistor.emitter,
+        switch.drain,
+        switch.gate,
+        switch.source,
+        diode.anode,
+        diode.cathode,
+        chip.a,
+        chip.b,
+        wrong.a,
+        wrong.b,
+        plain.a,
+        plain.b,
+        unknown.anode,
+        unknown.cathode,
+        ground,
+    )
+
+
+def test_a_numbered_instance_takes_the_cheapest_orderable_part_of_its_number() -> None:
+    found = bill(circuit(switched()), NUMBERED)
+    assert [(line.instance, line.part.price) for line in found.lines] == [
+        ("Q1", 0.12),
+        ("X1", 1.1),
+        ("R1", 0.003),
+        ("R3", 0.001),
+    ]
+    assert [(each.instance, each.reason) for each in found.unpriced] == [
+        ("D1", "every part numbered 1N4148 in the catalog is obsolete"),
+        (
+            "R2",
+            (
+                "the catalog's parts numbered RC0603FR-071KL are not its device, of "
+                "its value within its tolerance"
+            ),
+        ),
+        ("D2", "no part numbered BAT54 is in the catalog"),
+    ]
+    text = found.describe()
+    assert "  Q1: 2N3904, in TO-92, 0.12 USD" in text
+    assert (
+        "  R1: resistor of 1 kΩ within 0.01, RC0603FR-071KL, in 0603, not recommended "
+        "for new designs, 0.003 USD"
+    ) in text
+    assert NUMBERED.values("resistor", 0.01) == (1e3, 4.7e3)
+
+
+def test_an_obsolete_part_of_a_value_is_no_part_of_it() -> None:
+    lone = Catalog(currency="USD", parts=(NUMBERED.parts[-1],))
+    (unpriced,) = bill(circuit(stage()), lone).unpriced[:1]
+    assert unpriced.reason == "no resistor of 1 kΩ within 0.01 is in the catalog"
+    obsolete = bill(circuit(switched()), lone).unpriced
+    assert (
+        "R3",
+        "every resistor of 4.7 kΩ within 0.01 in the catalog is obsolete",
+    ) in [(each.instance, each.reason) for each in obsolete]
+    assert lone.values("resistor", 0.01) == ()
+
+
+def test_a_part_states_a_value_or_a_number() -> None:
+    with pytest.raises(ValueError, match="device, value and tolerance together"):
+        Part(device="resistor", value=1e3, price=0.01)
+    with pytest.raises(ValueError, match="or a number"):
+        Part(price=0.01)
+    with pytest.raises(ValueError, match="neither empty nor spaced"):
+        Part(number=" 2N3904", price=0.01)
+    assert json.loads(NUMBERED.parts[0].model_dump_json()) == {
+        "price": 0.12,
+        "number": "2N3904",
+        "package": "TO-92",
+    }
 
 
 def test_the_cost_command_prices_a_saved_circuit(

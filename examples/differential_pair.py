@@ -7,9 +7,8 @@ currents' difference is I·tanh(Vd/2Vt), so the outputs' difference swings ±I·
 ``jolty simulate examples/differential_pair.py``.
 """
 
-from common import npn
-
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
+from jolty.parts import q2n3904
 from jolty.plan import DcSweep, OperatingPoint, linear
 from jolty.specs import value
 from jolty.units import V, kohm, mA, mV
@@ -21,7 +20,7 @@ def pair(c: Builder) -> None:
     plus, minus = c.port("plus", Role.INPUT), c.port("minus", Role.INPUT)
     left, right = c.port("left", Role.OUTPUT), c.port("right", Role.OUTPUT)
     supply, tail = c.port("vcc", Role.SUPPLY), c.port("tail")
-    first, second = c.place(npn(), id="Q1"), c.place(npn(), id="Q2")
+    first, second = c.place(q2n3904(), id="Q1"), c.place(q2n3904(), id="Q2")
     load_left = c.place(devices.resistor(10 * kohm), id="RC1")
     load_right = c.place(devices.resistor(10 * kohm), id="RC2")
     c.connect(plus, first.base)

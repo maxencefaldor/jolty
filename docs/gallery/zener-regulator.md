@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/zener_regulator.py`.
 
 [Open in 3D](zener-regulator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/zener_regulator.py){ .md-button }
 
-4 devices, 4 unknowns, simulated in 2.52 s.
+4 devices, 4 unknowns, simulated in 2.05 s.
 
 ![The schematic](../images/gallery/zener_regulator.schematic.png)
 

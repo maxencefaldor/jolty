@@ -48,6 +48,8 @@ pub(crate) struct System {
 pub(crate) struct Composite {
     /// Its instance's path and its own name, such as `X1.vdd`.
     pub(crate) name: String,
+    /// The node it joins, or `None` for the reference.
+    pub(crate) node: Node,
     /// Each device terminal summed, by the device's index and the terminal's.
     pub(crate) members: Vec<(usize, usize)>,
 }
@@ -427,7 +429,7 @@ pub(crate) fn elaborate(
         return Err(ElaborationError(problems));
     };
     let pattern = Arc::new(builder.finish(unknowns.len()));
-    let composites = composites(&ports, &pins, &nets);
+    let composites = composites(&ports, &pins, &classes);
     Ok(System {
         unknowns,
         devices: placed,
@@ -444,8 +446,8 @@ pub(crate) fn elaborate(
 /// with the device terminals it sums: the ports, in the order the walk met them, then the
 /// logic devices' pins and terminals. The analog devices were placed in the order the walk
 /// found them, so the walk's index of each is its index among the devices.
-fn composites(ports: &[PortRecord], pins: &[LogicPins], nets: &[NetRecord]) -> Vec<Composite> {
-    let electrical = |net: NetRef| net.is_none_or(|net| nets[net].electrical);
+fn composites(ports: &[PortRecord], pins: &[LogicPins], classes: &Classes<'_>) -> Vec<Composite> {
+    let electrical = |net: NetRef| net.is_none_or(|net| classes.nets[net].electrical);
     let ports = ports
         .iter()
         .filter(|port| electrical(port.net))
@@ -460,6 +462,7 @@ fn composites(ports: &[PortRecord], pins: &[LogicPins], nets: &[NetRecord]) -> V
                 .collect();
             Composite {
                 name: port.name.clone(),
+                node: classes.node(port.net),
                 members,
             }
         });
@@ -468,6 +471,7 @@ fn composites(ports: &[PortRecord], pins: &[LogicPins], nets: &[NetRecord]) -> V
             let on_electrical = pin >= device.elements.len() || device.elements[pin].is_some();
             on_electrical.then(|| Composite {
                 name: format!("{}.{}", device.path, device.names[pin]),
+                node: classes.node(device.nets[pin]),
                 members: device.members(pin),
             })
         })
@@ -482,6 +486,8 @@ struct LogicPins {
     path: String,
     /// Its pins' and terminals' names, in the order of [`Pins::names`].
     names: Vec<String>,
+    /// The net of each pin and terminal, in the same order.
+    nets: Vec<NetRef>,
     /// The connect element of each pin, inputs then outputs, on an electrical net.
     elements: Vec<Option<usize>>,
 }
@@ -651,6 +657,7 @@ impl Elements<'_> {
         self.pins.push(LogicPins {
             path: pending.at.path.clone(),
             names: pending.pins.names(),
+            nets: pending.nets.clone(),
             elements: vec![None; signals],
         });
         let device = match pending.model.instantiate(&pending.parameters) {

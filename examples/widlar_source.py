@@ -8,9 +8,8 @@ and stays there as its collector's voltage moves. Simulate it with
 ``jolty simulate examples/widlar_source.py``.
 """
 
-from common import npn
-
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
+from jolty.parts import q2n3904
 from jolty.plan import DcSweep, OperatingPoint, linear
 from jolty.specs import value
 from jolty.units import V, kohm, uA
@@ -21,8 +20,8 @@ def widlar(c: Builder) -> None:
     """The diode-connected reference, and the output transistor over its resistor."""
     output = c.port("output", Role.OUTPUT)
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
-    reference = c.place(npn(), id="Q1")
-    mirror = c.place(npn(), id="Q2")
+    reference = c.place(q2n3904(), id="Q1")
+    mirror = c.place(q2n3904(), id="Q2")
     feed = c.place(devices.resistor(11.3 * kohm), id="R1")
     emitter = c.place(devices.resistor(1.55 * kohm), id="RE")
     c.connect(supply, feed.a)

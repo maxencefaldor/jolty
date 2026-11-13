@@ -146,7 +146,10 @@ def test_names_ids_and_terminals_are_checked() -> None:
 
 
 def test_two_different_components_cannot_share_a_name() -> None:
-    first, second = Builder("twin").finish(), Builder("twin").finish()
+    first = Builder("twin").finish()
+    built = Builder("twin")
+    built.port("p")
+    second = built.finish()
     parent = Builder("parent")
     parent.place(first, id="A")
     with pytest.raises(BuildError, match="two different components are named 'twin'"):
@@ -159,3 +162,26 @@ def test_two_different_components_cannot_share_a_name() -> None:
     top.place(right.finish(), id="R")
     with pytest.raises(BuildError, match="two different components are named 'twin'"):
         circuit(top.finish())
+
+
+def test_a_component_states_ratings_and_a_part_number_each_instance_carries() -> None:
+    built = Builder("pair")
+    built.port("p")
+    built.port("n")
+    plain = built.finish()
+    rated = plain.rated("voltage", 5 * V).numbered("PAIR-1")
+    assert rated.built_as(plain)
+    assert plain.ports == ("p", "n")
+    top = Builder("top")
+    top.place(plain, id="A")
+    top.place(rated, id="B")
+    found = circuit(top.finish())
+    assert sorted(found.components) == ["pair", "top"]
+    first, second = found.components["top"].instances
+    assert (first.ratings, first.part) == ((), None)
+    assert second.ratings == (
+        ir.Rating(stress="voltage", terminals=("p", "n"), maximum=5.0),
+    )
+    assert second.part == "PAIR-1"
+    with pytest.raises(ValueError, match="neither empty nor spaced at either end"):
+        plain.numbered(" PAIR-1")

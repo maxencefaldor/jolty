@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/rectifier.py`.
 
 [Open in 3D](rectifier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rectifier.py){ .md-button }
 
-4 devices, 4 unknowns, simulated in 1.29 s.
+4 devices, 5 unknowns, simulated in 1.74 s.
 
 ![The schematic](../images/gallery/rectifier.schematic.png)
 

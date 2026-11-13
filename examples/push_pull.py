@@ -7,9 +7,8 @@ signal crosses zero, and the output follows the input without the dead band of a
 class B stage. Simulate it with ``jolty simulate examples/push_pull.py``.
 """
 
-from common import npn, pnp, signal_diode
-
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
+from jolty.parts import d1n4148, q2n3904, q2n3906
 from jolty.plan import DcSweep, Transient, linear
 from jolty.specs import value
 from jolty.units import V, kHz, kohm, ms, mV, ohm, us
@@ -21,10 +20,10 @@ def stage(c: Builder) -> None:
     """The two followers, their bias diodes and resistors, and emitter resistors."""
     source, output = c.port("input"), c.port("output")
     positive, negative = c.port("vcc", Role.SUPPLY), c.port("vee", Role.SUPPLY)
-    upper, lower = c.place(npn(), id="Q1"), c.place(pnp(), id="Q2")
+    upper, lower = c.place(q2n3904(), id="Q1"), c.place(q2n3906(), id="Q2")
     feed_up = c.place(devices.resistor(4.7 * kohm), id="RB1")
     feed_down = c.place(devices.resistor(4.7 * kohm), id="RB2")
-    top, bottom = c.place(signal_diode(), id="D1"), c.place(signal_diode(), id="D2")
+    top, bottom = c.place(d1n4148(), id="D1"), c.place(d1n4148(), id="D2")
     emitter_up = c.place(devices.resistor(2.2 * ohm), id="RE1")
     emitter_down = c.place(devices.resistor(2.2 * ohm), id="RE2")
     c.connect(positive, feed_up.a, upper.collector)

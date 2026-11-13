@@ -1,14 +1,8 @@
 # Copyright 2026 Maxence Faldor
 """References without an op-amp, each a component of ports vcc, out and ground."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
-
-from common import npn, signal_diode
-
 from jolty import Builder, Component, Role, component, devices
+from jolty.parts import d1n4148, q2n3904
 from jolty.units import A, K, V, ohm, pF
 
 
@@ -18,7 +12,7 @@ def diode(c: Builder, bias: float = 4.3e3) -> None:
     vcc, out = c.port("vcc", Role.SUPPLY), c.port("out", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
     feed = c.place(devices.resistor(bias * ohm), id="R1")
-    junction = c.place(signal_diode(), id="D1")
+    junction = c.place(d1n4148(), id="D1")
     c.connect(vcc, feed.a)
     c.connect(feed.b, junction.anode, out)
     c.connect(junction.cathode, ground)
@@ -36,7 +30,7 @@ def widlar(
     """
     vcc, out = c.port("vcc", Role.SUPPLY), c.port("out", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
-    first, second, third = (c.place(npn(), id=f"Q{n}") for n in (1, 2, 3))
+    first, second, third = (c.place(q2n3904(), id=f"Q{n}") for n in (1, 2, 3))
     feed = c.place(devices.resistor(1e3 * ohm), id="RB")
     r1 = c.place(devices.resistor(top * ohm), id="R1")
     r2 = c.place(devices.resistor(widlar_r * ohm), id="R2")
@@ -87,7 +81,7 @@ def widlar_jfet(
     """
     vcc, out = c.port("vcc", Role.SUPPLY), c.port("out", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
-    first, second, third = (c.place(npn(), id=f"Q{n}") for n in (1, 2, 3))
+    first, second, third = (c.place(q2n3904(), id=f"Q{n}") for n in (1, 2, 3))
     feed = c.place(jfet_source(), id="J1")
     r1 = c.place(devices.resistor(top * ohm), id="R1")
     r2 = c.place(devices.resistor(widlar_r * ohm), id="R2")

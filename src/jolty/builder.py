@@ -29,15 +29,15 @@ import functools
 import hashlib
 import inspect
 import re
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final, Protocol, override
 
 from pydantic import JsonValue
 
 from jolty import ir
-from jolty.devices import Device
+from jolty.devices import Device, rate
 from jolty.errors import BuildError
 from jolty.ir import Role
 from jolty.units import Quantity
@@ -117,11 +117,64 @@ class Placed:
 
 @dataclass(frozen=True, eq=False)
 class Component:
-    """A built component: its name, its definition, and the components it places."""
+    """A built component: its name, its definition, and the components it places.
+
+    Like a device, it may state ratings, which a simulation checks at its ports, and
+    the number of the part it stands for, which a bill of materials prices as one part.
+    Each instance placed of it carries them.
+    """
 
     name: str
     definition: ir.Component
     children: tuple[Component, ...]
+    ratings: tuple[ir.Rating, ...] = ()
+    part: str | None = None
+
+    @property
+    def ports(self) -> tuple[str, ...]:
+        """Its ports' names, in the order it declares them."""
+        return tuple(port.name for port in self.definition.ports)
+
+    def rated(
+        self,
+        stress: ir.Stress,
+        maximum: Quantity | None = None,
+        *,
+        minimum: Quantity | None = None,
+        terminals: Sequence[str] | None = None,
+    ) -> Component:
+        """The component, with a rating its maker states on one of its `stress`es.
+
+        The rating is of its ports, as [`Device.rated`][jolty.devices.Device.rated]
+        describes, and its power is what it dissipates, all its ports' currents times
+        their voltages.
+
+        Raises:
+            DimensionError: When a bound is not a voltage, a current or a power as the
+                stress is.
+            ValueError: When the terminals are not its ports, or not as many as the
+                stress needs, or the bounds are none or out of order.
+        """
+        rating = rate(
+            self.ports, stress, maximum=maximum, minimum=minimum, terminals=terminals
+        )
+        return replace(self, ratings=(*self.ratings, rating))
+
+    def numbered(self, part: str) -> Component:
+        """The component, standing for the one part its maker numbers `part`.
+
+        Raises:
+            ValueError: When the number is empty or spaced at either end.
+        """
+        return replace(self, part=ir.part_number(part))
+
+    def built_as(self, other: Component) -> bool:
+        """Whether `other` is this component, but for its ratings and its number."""
+        return other is self or (
+            other.name == self.name
+            and other.definition == self.definition
+            and other.children == self.children
+        )
 
 
 @dataclass(slots=True)
@@ -132,6 +185,7 @@ class _Placement:
     source: ir.Source | None
     tolerances: dict[str, ir.Tolerance] = field(default_factory=dict)
     ratings: tuple[ir.Rating, ...] = ()
+    part: str | None = None
 
 
 class Builder:
@@ -180,14 +234,16 @@ class Builder:
             message = f"{self._name} already places an instance named {id!r}"
             raise BuildError(message)
         if isinstance(item, Component):
-            if self._children.setdefault(item.name, item) is not item:
+            if not self._children.setdefault(item.name, item).built_as(item):
                 message = f"two different components are named {item.name!r}"
                 raise BuildError(message)
             placement = _Placement(
                 ir.ComponentOf(component=item.name),
                 {},
-                tuple(port.name for port in item.definition.ports),
+                item.ports,
                 caller(),
+                ratings=item.ratings,
+                part=item.part,
             )
         else:
             placement = _Placement(
@@ -197,6 +253,7 @@ class Builder:
                 caller(),
                 item.tolerances,
                 item.ratings,
+                item.part,
             )
         self._placements[id] = placement
         return Placed(id, placement.terminals)
@@ -237,6 +294,7 @@ class Builder:
                     terminals=terminals,
                     tolerances=placement.tolerances,
                     ratings=placement.ratings,
+                    part=placement.part,
                     source=placement.source,
                 )
             )
@@ -334,13 +392,11 @@ def circuit(top: Component) -> ir.Circuit:
         current = pending.pop()
         existing = components.setdefault(current.name, current)
         if existing is not current:
-            message = f"two different components are named {current.name!r}"
-            raise BuildError(message)
-        pending.extend(
-            child
-            for child in current.children
-            if components.get(child.name) is not child
-        )
+            if not existing.built_as(current):
+                message = f"two different components are named {current.name!r}"
+                raise BuildError(message)
+            continue
+        pending.extend(current.children)
     definitions = {name: built.definition for name, built in components.items()}
     return ir.Circuit(top=top.name, components=definitions)
 
@@ -364,7 +420,7 @@ def _format(value: object) -> str:
         ('1.00001kΩ', '0.5', "'fast'")
         >>> from jolty.devices import resistor
         >>> _format(resistor(1 * kohm))
-        'resistor~1c2dea91'
+        'resistor~40390410'
     """
     match value:
         case Quantity():

@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/widlar_source.py`.
 
 [Open in 3D](widlar-source.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/widlar_source.py){ .md-button }
 
-6 devices, 10 unknowns, simulated in 1.01 s.
+6 devices, 10 unknowns, simulated in 1.32 s.
 
 ![The schematic](../images/gallery/widlar_source.schematic.png)
 
@@ -15,9 +15,9 @@ Simulate it with `jolty simulate examples/widlar_source.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| VOUT:current in op ≥ -55 µA and ≤ -45 µA | -50.4293 µA, passed | -50.4294 µA, passed | 1.1e-07 |
-| VOUT:current at 1 V in compliance ≥ -55 µA and ≤ -45 µA | -49.7588 µA, passed | -49.7588 µA, passed | 2.0e-08 |
-| VOUT:current at 12 V in compliance ≥ -55 µA and ≤ -45 µA | -51.5282 µA, passed | -51.5282 µA, passed | 2.3e-07 |
+| VOUT:current in op ≥ -55 µA and ≤ -45 µA | -50.4293 µA, passed | -50.4293 µA, passed | 1.2e-08 |
+| VOUT:current at 1 V in compliance ≥ -55 µA and ≤ -45 µA | -49.7588 µA, passed | -49.7588 µA, passed | 4.6e-12 |
+| VOUT:current at 12 V in compliance ≥ -55 µA and ≤ -45 µA | -51.5282 µA, passed | -51.5282 µA, passed | 3.4e-11 |
 
 ## Replicated in ngspice
 
@@ -26,8 +26,8 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `op` | 4 | 1.2e-08 | 2 | 1.1e-07 |
-| `compliance` | 4 | 2.0e-07 | 2 | 2.3e-08 |
+| `op` | 4 | 1.2e-08 | 2 | 1.2e-08 |
+| `compliance` | 4 | 2.0e-07 | 2 | 1.9e-08 |
 
 ![The replication in ngspice](../images/gallery/widlar_source.compliance.replication.png)
 

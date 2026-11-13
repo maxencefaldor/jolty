@@ -127,6 +127,10 @@ pub struct Instance {
     /// The limits the part's maker states on its stresses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ratings: Vec<Rating>,
+    /// The maker's number of the part the instance stands for, if it stands for one: a
+    /// component instance so numbered is that one part, whatever it places.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
     /// The line of source code that placed the instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
@@ -144,10 +148,12 @@ pub struct Rating {
     /// one for a current, into it, and none for the power.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminals: Vec<Name>,
-    /// The largest value the stress may take, in SI base units.
-    pub maximum: f64,
-    /// The smallest value the stress may take, if the rating states one; a voltage or a
-    /// current that states none may take down to minus its maximum, and a power any.
+    /// The largest value the stress may take, in SI base units, if the rating states one;
+    /// a power's rating does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum: Option<f64>,
+    /// The smallest value the stress may take, if the rating states one; a power's states
+    /// none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimum: Option<f64>,
 }

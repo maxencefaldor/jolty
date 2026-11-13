@@ -10,7 +10,7 @@ Simulate it with `jolty simulate examples/bandgap_reference.py`.
 
 [Open in 3D](bandgap-reference.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/bandgap_reference.py){ .md-button }
 
-19 devices, 26 unknowns, simulated in 0.78 s.
+19 devices, 26 unknowns, simulated in 1.24 s.
 
 ![The schematic](../images/gallery/bandgap_reference.schematic.png)
 
@@ -18,7 +18,7 @@ Simulate it with `jolty simulate examples/bandgap_reference.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| vref in op ≥ 1.165 V and ≤ 1.171 V | 1.16692 V at cold, passed | 1.16692 V at cold, passed | 2.1e-08 |
+| vref in op ≥ 1.165 V and ≤ 1.171 V | 1.16692 V at cold, passed | 1.16692 V at cold, passed | 5.5e-12 |
 
 ## Replicated in ngspice
 
@@ -27,4 +27,4 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `op` | 6 | 1.7e-08 | 2 | 3.3e-08 |
+| `op` | 6 | 1.5e-11 | 2 | 2.9e-11 |

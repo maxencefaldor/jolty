@@ -31,9 +31,19 @@ def test_a_device_states_its_ratings() -> None:
     assert resistor.ratings == (ir.Rating(stress="power", maximum=0.25),)
     capacitor = devices.capacitor(1 * uF).rated("voltage", 16 * V, minimum=-1 * V)
     (rating,) = capacitor.ratings
-    assert (rating.terminals, rating.maximum, rating.least) == (("a", "b"), 16.0, -1.0)
-    symmetric = devices.resistor(1 * ohm).rated("current", 10 * mA).ratings[0]
-    assert (symmetric.terminals, symmetric.least) == (("a",), -0.01)
+    assert (rating.terminals, rating.minimum, rating.maximum) == (
+        ("a", "b"),
+        -1.0,
+        16.0,
+    )
+    forward = devices.resistor(1 * ohm).rated("current", 10 * mA).ratings[0]
+    assert (forward.terminals, forward.minimum, forward.maximum) == (("a",), None, 0.01)
+    reverse = devices.diode().rated("voltage", minimum=-100 * V).ratings[0]
+    assert (reverse.terminals, reverse.minimum, reverse.maximum) == (
+        ("anode", "cathode"),
+        -100.0,
+        None,
+    )
     transistor = devices.bipolar_transistor(polarity="npn").rated(
         "voltage", 40 * V, terminals=("collector", "emitter")
     )
@@ -42,14 +52,20 @@ def test_a_device_states_its_ratings() -> None:
 
 def test_a_rating_names_the_devices_terminals_in_its_unit() -> None:
     resistor = devices.resistor(100 * ohm)
-    with pytest.raises(ValueError, match="a resistor has no terminal collector"):
+    with pytest.raises(
+        ValueError, match="names collector, which is not among the terminals a, b"
+    ):
         resistor.rated("voltage", 1 * V, terminals=("collector", "a"))
     with pytest.raises(ValueError, match="names 2 distinct terminals, not"):
         resistor.rated("voltage", 1 * V, terminals=("a",))
     with pytest.raises(DimensionError):
         resistor.rated("power", 1 * V)
-    with pytest.raises(ValueError, match="a power rating is above 0"):
+    with pytest.raises(ValueError, match="a power rating states only a maximum"):
         resistor.rated("power", 0 * W)
+    with pytest.raises(ValueError, match="a power rating states only a maximum"):
+        resistor.rated("power", 1 * W, minimum=0 * W)
+    with pytest.raises(ValueError, match="states a maximum, a minimum or both"):
+        resistor.rated("voltage")
     with pytest.raises(ValueError, match="exceeds its maximum"):
         resistor.rated("voltage", 1 * V, minimum=2 * V)
 

@@ -9,9 +9,8 @@ with ``jolty simulate examples/colpitts_oscillator.py``.
 
 import math
 
-from common import npn
-
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
+from jolty.parts import q2n3904
 from jolty.plan import Transient
 from jolty.specs import frequency, peak_to_peak
 from jolty.units import Hz, V, kohm, nF, ns, uF, uH, us
@@ -25,7 +24,7 @@ def colpitts(c: Builder) -> None:
     """The transistor, its bias, and the tank between collector, emitter and ground."""
     output = c.port("output", Role.OUTPUT)
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
-    transistor = c.place(npn(), id="Q1")
+    transistor = c.place(q2n3904(), id="Q1")
     upper = c.place(devices.resistor(22 * kohm), id="R1")
     lower = c.place(devices.resistor(10 * kohm), id="R2")
     emitter = c.place(devices.resistor(1 * kohm), id="RE")

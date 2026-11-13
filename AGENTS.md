@@ -51,7 +51,7 @@ Each module imports only from the modules listed before it:
 
 1. `errors`, `settings`: the errors front ends show as a message, and configuration.
 1. `units`, `waveforms`, `ir`: dimensioned quantities, the levels of sources over time, and the circuit format.
-1. `devices`, `builder`: the devices a script places, and components written as Python functions.
+1. `devices`, `builder`, `parts`: the devices a script places, components written as Python functions, and real parts, each a model with its maker's number and ratings.
 1. `spice`: SPICE libraries read into components, model files downloaded and checked, and circuits written as SPICE netlists for ngspice.
 1. `plan`, `checks`, `results`, `specs`, `simulate`, `variation`, `catalog`, `fidelity`: analyses and their options, the rules and their diagnostics, results, requirements measured on results, the engine's Python face, Monte Carlo samples of tolerances, orderable parts and bills of materials, and logic models characterized from components' circuits.
 1. `files`, `report`, `plots`: circuit and results files, what each analysis found as data and as text, and plots of results.

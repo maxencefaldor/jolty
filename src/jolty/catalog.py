@@ -1,13 +1,16 @@
 # Copyright 2026 Maxence Faldor
 """Orderable parts, preferred values, and bills of materials.
 
-A [`Catalog`][jolty.catalog.Catalog] lists parts a circuit can be built from, each a
-resistor, a capacitor or an inductor of one value and tolerance at a unit price. A
-catalog file holds one as JSON. A [`Bill`][jolty.catalog.Bill] prices the device
-instances of a circuit, or of one component instance in it: each instance takes the
-cheapest part of its device, of its value, whose tolerance is within its own. An
-instance that states no tolerance, that comes from a lot, whose shared spread no part
-states, or that no part matches, stays unpriced, and the bill says why.
+A [`Catalog`][jolty.catalog.Catalog] lists parts a circuit can be built from, each at a
+unit price: a resistor, a capacitor or an inductor of one value and tolerance, a part
+its maker numbers, or both, in a package, at a stage of its lifecycle. A catalog file
+holds one as JSON. A [`Bill`][jolty.catalog.Bill] prices the instances of a circuit, or
+of one component instance in it. An instance that stands for a numbered part, a device
+or a whole component instance, takes the cheapest part of that number; any other device
+instance takes the cheapest part of its device, of its value, whose tolerance is within
+its own. No instance takes an obsolete part. An instance that states no tolerance, that
+comes from a lot, whose shared spread no part states, or that no part matches, stays
+unpriced, and the bill says why.
 
 The E series of IEC 60063 space preferred values evenly on a log scale: E24 with 24
 values a decade, for tolerances of 5 %, to E192 for 0.5 % and better.
@@ -21,12 +24,12 @@ Examples:
 
 import bisect
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from functools import cache
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from jolty import _core, ir
 from jolty.units import format_si
@@ -36,6 +39,10 @@ type Device = Literal["resistor", "capacitor", "inductor"]
 
 type Series = Literal["E3", "E6", "E12", "E24", "E48", "E96", "E192"]
 """An E series of preferred values."""
+
+type Lifecycle = Literal["active", "not-recommended", "obsolete"]
+"""Where a part stands in its maker's lifecycle: made, made but not recommended for new
+designs, or no longer made."""
 
 VALUED: Final[dict[Device, str]] = {
     "resistor": "resistance",
@@ -119,17 +126,77 @@ class _Model(BaseModel):
 
 
 class Part(_Model):
-    """An orderable part: a device of one value and tolerance, at a unit price."""
+    """A part at a unit price: a device of one value and tolerance, numbered, or both.
 
-    device: Device
-    value: float = Field(gt=0, description="Its value, in SI base units.")
-    tolerance: float = Field(
-        gt=0, lt=1, description="Its relative tolerance, such as 0.01 for 1 %."
+    A part that states no device is any device or component its number names.
+    """
+
+    device: Device | None = Field(
+        default=None, exclude_if=lambda device: device is None
+    )
+    value: float | None = Field(
+        default=None,
+        gt=0,
+        exclude_if=lambda value: value is None,
+        description="Its value, in SI base units.",
+    )
+    tolerance: float | None = Field(
+        default=None,
+        gt=0,
+        lt=1,
+        exclude_if=lambda tolerance: tolerance is None,
+        description="Its relative tolerance, such as 0.01 for 1 %.",
     )
     price: float = Field(ge=0, description="Its unit price, in the catalog's currency.")
-    number: str | None = Field(
-        default=None, description="Its manufacturer's part number."
+    number: ir.PartNumber | None = Field(
+        default=None,
+        exclude_if=lambda number: number is None,
+        description="Its maker's part number.",
     )
+    package: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda package: package is None,
+        description="Its package, such as 0603 or TO-92.",
+    )
+    lifecycle: Lifecycle = Field(
+        default="active", exclude_if=lambda lifecycle: lifecycle == "active"
+    )
+
+    @model_validator(mode="after")
+    def _identified(self) -> Self:
+        """Holds a part to a device, a value and a tolerance together, or a number."""
+        valued = (self.device, self.value, self.tolerance)
+        if any(each is None for each in valued) and any(
+            each is not None for each in valued
+        ):
+            message = "a part states its device, value and tolerance together"
+            raise ValueError(message)
+        if self.device is None and self.number is None:
+            message = "a part states a device, value and tolerance, or a number"
+            raise ValueError(message)
+        return self
+
+    @property
+    def orderable(self) -> bool:
+        """Whether its maker still makes it."""
+        return self.lifecycle != "obsolete"
+
+    def describe(self) -> str:
+        """The part as text, its price aside."""
+        said = []
+        if self.device is not None and self.value is not None:
+            said.append(
+                f"{self.device} of {format_si(self.value, _SYMBOLS[self.device])} "
+                f"within {self.tolerance:.6g}"
+            )
+        if self.number is not None:
+            said.append(self.number)
+        if self.package is not None:
+            said.append(f"in {self.package}")
+        if self.lifecycle == "not-recommended":
+            said.append("not recommended for new designs")
+        return ", ".join(said)
 
 
 class Catalog(_Model):
@@ -150,25 +217,26 @@ class Catalog(_Model):
         path.write_text(self.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
     def cheapest(self, device: Device, value: float, tolerance: float) -> Part | None:
-        """The cheapest part of `device` of `value`, its tolerance within `tolerance`.
+        """The cheapest orderable part of `device` of `value`, within `tolerance`.
 
         Of parts at one price, the first listed. None when no part matches.
         """
-        matching = [
-            part
-            for part in self.parts
-            if part.device == device
-            and _same(part.value, value)
-            and part.tolerance <= tolerance * (1 + 1e-9)
-        ]
-        return min(matching, key=lambda part: part.price, default=None)
+        return _cheapest(
+            part for part in self.matching(device, value, tolerance) if part.orderable
+        )
+
+    def matching(
+        self, device: Device, value: float, tolerance: float
+    ) -> tuple[Part, ...]:
+        """Every part of `device` of `value` within `tolerance`, orderable or not."""
+        return tuple(
+            part for part, held in self._valued(device, tolerance) if _same(held, value)
+        )
 
     def values(self, device: Device, tolerance: float) -> tuple[float, ...]:
-        """Every value of `device` that a part within `tolerance` has, increasing."""
+        """Each value of `device` an orderable part within `tolerance` has, in order."""
         found = sorted(
-            part.value
-            for part in self.parts
-            if part.device == device and part.tolerance <= tolerance * (1 + 1e-9)
+            held for part, held in self._valued(device, tolerance) if part.orderable
         )
         distinct: list[float] = []
         for value in found:
@@ -176,28 +244,43 @@ class Catalog(_Model):
                 distinct.append(value)
         return tuple(distinct)
 
+    def _valued(self, device: Device, tolerance: float) -> Iterator[tuple[Part, float]]:
+        """Each part of `device` within `tolerance`, orderable or not, and its value."""
+        for part in self.parts:
+            if (
+                part.device == device
+                and part.value is not None
+                and part.tolerance is not None
+                and part.tolerance <= tolerance * (1 + 1e-9)
+            ):
+                yield part, part.value
+
 
 class Line(_Model):
-    """A device instance, and the part that builds it."""
+    """An instance, and the part that builds it."""
 
     instance: str = Field(description="The instance's path.")
     part: Part
 
 
 class Unpriced(_Model):
-    """A device instance that no part of the catalog builds."""
+    """An instance that no part of the catalog builds."""
 
     instance: str = Field(description="The instance's path.")
     reason: str = Field(description="Why no part builds it.")
 
 
 class Bill(_Model):
-    """The parts that build the device instances of a circuit, and what they cost."""
+    """The parts that build the instances of a circuit, and what they cost.
+
+    Its instances are the numbered ones, devices or component instances, and the other
+    device instances outside them.
+    """
 
     currency: str
     lines: tuple[Line, ...]
     unpriced: tuple[Unpriced, ...] = Field(
-        description="Device instances no part builds, which the total leaves out."
+        description="Instances no part builds, which the total leaves out."
     )
 
     @property
@@ -212,9 +295,8 @@ class Bill(_Model):
             f"{len(self.unpriced)} instances unpriced"
         )
         rows = [
-            f"  {line.instance}: {line.part.device} of "
-            f"{format_si(line.part.value, _SYMBOLS[line.part.device])} within "
-            f"{line.part.tolerance:.6g}, {line.part.price:.6g} {self.currency}"
+            f"  {line.instance}: {line.part.describe()}, {line.part.price:.6g} "
+            f"{self.currency}"
             for line in self.lines
         ]
         rows.extend(
@@ -243,8 +325,8 @@ def bill(circuit: ir.Circuit, catalog: Catalog, instance: str = "") -> Bill:
     prefix = f"{instance}/" if instance else ""
     lines: list[Line] = []
     unpriced: list[Unpriced] = []
-    for path, device, placed in _devices(circuit, component, prefix):
-        found = _price(catalog, device, placed)
+    for path, placed in _priced(circuit, component, prefix):
+        found = _price(catalog, placed)
         if isinstance(found, Part):
             lines.append(Line(instance=path, part=found))
         else:
@@ -252,28 +334,55 @@ def bill(circuit: ir.Circuit, catalog: Catalog, instance: str = "") -> Bill:
     return Bill(currency=catalog.currency, lines=tuple(lines), unpriced=tuple(unpriced))
 
 
-def _devices(
+def _priced(
     circuit: ir.Circuit, component: str, prefix: str
-) -> Iterable[tuple[str, str, ir.Instance]]:
-    """Every device instance within `component`: its path, its device and itself."""
+) -> Iterator[tuple[str, ir.Instance]]:
+    """Each instance within `component` a part builds, by path.
+
+    They are the numbered instances, and the device instances outside them.
+    """
     for instance in circuit.components[component].instances:
         path = f"{prefix}{instance.id}"
-        match instance.of:
-            case ir.ComponentOf(component=inner):
-                yield from _devices(circuit, inner, f"{path}/")
-            case ir.DeviceOf(device=device):
-                yield path, device, instance
+        match instance:
+            case ir.Instance(part=None, of=ir.ComponentOf(component=inner)):
+                yield from _priced(circuit, inner, f"{path}/")
+            case _:
+                yield path, instance
 
 
-def _price(catalog: Catalog, device: str, instance: ir.Instance) -> Part | str:
-    """The cheapest part that builds the instance of `device`, or why none does."""
-    match device:
+def _price(catalog: Catalog, instance: ir.Instance) -> Part | str:
+    """The cheapest part that builds `instance`, or why none does.
+
+    The instance is numbered, or a device instance.
+    """
+    if instance.part is not None:
+        return _numbered(catalog, instance, instance.part)
+    model = (
+        instance.of.device
+        if isinstance(instance.of, ir.DeviceOf)
+        else instance.of.component
+    )
+    match model:
         case "resistor" | "capacitor" | "inductor":
-            kind: Device = device
+            kind: Device = model
         case _:
-            return (
-                f"the catalog prices resistors, capacitors and inductors, not {device}s"
-            )
+            return f"a {model} is priced by its part number alone, and it states none"
+    found = _valued(instance, kind)
+    if isinstance(found, str):
+        return found
+    value, tolerance = found
+    matching = catalog.matching(kind, value, tolerance)
+    part = _cheapest(part for part in matching if part.orderable)
+    if part is not None:
+        return part
+    described = f"{kind} of {format_si(value, _SYMBOLS[kind])} within {tolerance:.6g}"
+    if matching:
+        return f"every {described} in the catalog is obsolete"
+    return f"no {described} is in the catalog"
+
+
+def _valued(instance: ir.Instance, kind: Device) -> tuple[float, float] | str:
+    """The value and the tolerance a part of `instance` must have, or why none has."""
     parameter = VALUED[kind]
     value = instance.parameters.get(parameter)
     tolerance = instance.tolerances.get(parameter)
@@ -286,10 +395,44 @@ def _price(catalog: Catalog, device: str, instance: ir.Instance) -> Part | str:
             f"its {parameter} comes from the lot {tolerance.lot.name}, whose shared "
             "spread no part of the catalog states"
         )
-    part = catalog.cheapest(kind, float(value), tolerance.relative)
-    if part is None:
+    return float(value), tolerance.relative
+
+
+def _numbered(catalog: Catalog, instance: ir.Instance, number: str) -> Part | str:
+    """The cheapest part numbered `number` that builds `instance`, or why none does.
+
+    A part that states a device builds only an instance of that device, of its value,
+    and within the instance's tolerance if it states one.
+    """
+    numbered = [part for part in catalog.parts if part.number == number]
+    if not numbered:
+        return f"no part numbered {number} is in the catalog"
+    fitting = [part for part in numbered if _fits(part, instance)]
+    if not fitting:
         return (
-            f"no {device} of {format_si(float(value), _SYMBOLS[kind])} within "
-            f"{tolerance.relative:.6g} is in the catalog"
+            f"the catalog's parts numbered {number} are not its device, of its value "
+            "within its tolerance"
         )
+    part = _cheapest(part for part in fitting if part.orderable)
+    if part is None:
+        return f"every part numbered {number} in the catalog is obsolete"
     return part
+
+
+def _fits(part: Part, instance: ir.Instance) -> bool:
+    """Whether `part`, numbered as `instance` is, builds it as a device would."""
+    if part.device is None or part.value is None or part.tolerance is None:
+        return True
+    if instance.of != ir.DeviceOf(device=part.device):
+        return False
+    found = _valued(instance, part.device)
+    if isinstance(found, tuple):
+        value, tolerance = found
+        return _same(part.value, value) and part.tolerance <= tolerance * (1 + 1e-9)
+    value = instance.parameters.get(VALUED[part.device])
+    return isinstance(value, float | int) and _same(part.value, float(value))
+
+
+def _cheapest(parts: Iterable[Part]) -> Part | None:
+    """The cheapest of `parts`, the first listed of those at one price, if any."""
+    return min(parts, key=lambda part: part.price, default=None)

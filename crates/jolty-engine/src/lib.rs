@@ -216,6 +216,21 @@ impl Simulator {
         self.observer.composites()
     }
 
+    /// The unknown that is each composite terminal's voltage, by name, in the order of
+    /// [`Simulator::composites`], or `None` for one on the reference.
+    #[must_use]
+    pub fn composite_nodes(&self) -> Vec<Option<&str>> {
+        self.system
+            .composites
+            .iter()
+            .map(|composite| {
+                composite
+                    .node
+                    .map(|unknown| self.system.unknowns[unknown.index()].name.as_str())
+            })
+            .collect()
+    }
+
     /// Starts the logic driver at `element` among the devices on a `(time, level,
     /// transition)` ramp, and its copy that the observer reads; returns when the ramp
     /// ends.

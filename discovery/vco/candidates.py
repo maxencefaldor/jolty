@@ -6,9 +6,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
 
-from common import mos, npn, opamp, signal_diode
+from common import mos, opamp
 
 from jolty import Builder, Component, Role, component, devices
+from jolty.parts import d1n4148, q2n3904
 from jolty.units import F, V, ohm, uA, us
 from jolty.waveforms import Pulse
 
@@ -37,9 +38,9 @@ def integrator_schmitt(
     r3 = c.place(devices.resistor(50e3 * ohm), id="R3")
     r4 = c.place(devices.resistor(timing / 2 * ohm), id="R4")
     cap = c.place(devices.capacitor(capacitance * F), id="C1")
-    switch = c.place(npn(), id="Q1")
+    switch = c.place(q2n3904(), id="Q1")
     base = c.place(devices.resistor(10e3 * ohm), id="RB")
-    clamp = c.place(signal_diode(), id="D1")
+    clamp = c.place(d1n4148(), id="D1")
     rin = c.place(devices.resistor(10e3 * threshold / (1 - threshold) * ohm), id="R5")
     # R5 from the Schmitt trigger's non-inverting input to ground, R6 from its output.
     rf = c.place(devices.resistor(10e3 * ohm), id="R6")

@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/colpitts_oscillator.py`.
 
 [Open in 3D](colpitts-oscillator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/colpitts_oscillator.py){ .md-button }
 
-9 devices, 8 unknowns, simulated in 1.93 s.
+9 devices, 8 unknowns, simulated in 2.01 s.
 
 ![The schematic](../images/gallery/colpitts_oscillator.schematic.png)
 
@@ -17,7 +17,7 @@ Simulate it with `jolty simulate examples/colpitts_oscillator.py`.
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
 | frequency of out from 80 µs in run ≥ 512 kHz and ≤ 543.7 kHz | 527.297 kHz, passed | 527.299 kHz, passed | 3.8e-06 |
-| peak-to-peak of out from 80 µs in run ≥ 2 V | 7.53666 V, passed | 7.53669 V, passed | 3.1e-06 |
+| peak-to-peak of out from 80 µs in run ≥ 2 V | 7.53666 V, passed | 7.53669 V, passed | 3.2e-06 |
 
 ## Replicated in ngspice
 

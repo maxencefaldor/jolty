@@ -38,6 +38,7 @@ struct Simulator {
     derivatives: Vec<(String, String)>,
     variables: Vec<(String, &'static str)>,
     composites: Vec<(String, Vec<usize>)>,
+    composite_nodes: Vec<Option<String>>,
     devices: usize,
 }
 
@@ -90,6 +91,11 @@ impl Simulator {
         let derivatives = inner.derivatives().to_vec();
         let variables = inner.variables().to_vec();
         let composites = inner.composites().to_vec();
+        let composite_nodes = inner
+            .composite_nodes()
+            .into_iter()
+            .map(|node| node.map(str::to_owned))
+            .collect();
         Ok(Self {
             inner: Mutex::new(inner),
             unknowns,
@@ -99,6 +105,7 @@ impl Simulator {
             derivatives,
             variables,
             composites,
+            composite_nodes,
             devices,
         })
     }
@@ -151,6 +158,13 @@ impl Simulator {
     #[getter]
     fn composites(&self) -> Vec<(String, Vec<usize>)> {
         self.composites.clone()
+    }
+
+    /// The unknown that is each composite terminal's voltage, by name, in the order of
+    /// `composites`, or `None` for one on the reference.
+    #[getter]
+    fn composite_nodes(&self) -> Vec<Option<String>> {
+        self.composite_nodes.clone()
     }
 
     /// The number of devices, analog and logic, with every component instance unfolded.

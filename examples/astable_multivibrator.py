@@ -1,20 +1,20 @@
 # Copyright 2026 Maxence Faldor
 """The astable multivibrator: two cross-coupled 2N3904s flipping each other in turn.
 
-Each transistor's collector couples to the other's base through a capacitor. When one
-turns on, its collector falls by nearly the supply and drives the other's base that far
-below zero; that base recovers through its 47 kΩ toward the supply, turning its
-transistor on at half way. Each half period is RC·ln 2 = 0.326 ms with 10 nF: a period
-of 0.652 ms, 1.53 kHz. Slightly unequal capacitors break the symmetry that would hold
-the circuit balanced. Simulate it with
+Each transistor's collector couples to the other's base through a capacitor and a
+1N4148. When one turns on, its collector falls by nearly the supply and drives the
+other's timing node that far below zero, which the diode keeps from the base: the
+2N3904's emitter junction takes only 6 V in reverse. The node recovers through its
+47 kΩ toward the supply, turning its transistor on near half way. Each half period is
+about RC·ln 2 = 0.326 ms with 10 nF: a period of 0.652 ms, 1.53 kHz. Slightly unequal
+capacitors break the symmetry that would hold the circuit balanced. Simulate it with
 ``jolty simulate examples/astable_multivibrator.py``.
 """
 
 import math
 
-from common import npn
-
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
+from jolty.parts import d1n4148, q2n3904
 from jolty.plan import Transient
 from jolty.specs import frequency, maximum, minimum
 from jolty.units import Hz, V, kohm, ms, nF, us
@@ -25,21 +25,24 @@ IDEAL = 1 / (2 * 47e3 * 10e-9 * math.log(2))
 
 @component
 def multivibrator(c: Builder) -> None:
-    """Two switches, each one's collector holding the other's base off for a while."""
+    """Two switches, each one's collector holding the other off for a while."""
     left, right = c.port("left", Role.OUTPUT), c.port("right", Role.OUTPUT)
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
-    first, second = c.place(npn(), id="Q1"), c.place(npn(), id="Q2")
+    first, second = c.place(q2n3904(), id="Q1"), c.place(q2n3904(), id="Q2")
     load_1 = c.place(devices.resistor(1 * kohm), id="RC1")
     load_2 = c.place(devices.resistor(1 * kohm), id="RC2")
     bias_1 = c.place(devices.resistor(47 * kohm), id="RB1")
     bias_2 = c.place(devices.resistor(47 * kohm), id="RB2")
     cross_1 = c.place(devices.capacitor(10 * nF), id="C1")
     cross_2 = c.place(devices.capacitor(10.1 * nF), id="C2")
+    block_1, block_2 = c.place(d1n4148(), id="D1"), c.place(d1n4148(), id="D2")
     c.connect(supply, load_1.a, load_2.a, bias_1.a, bias_2.a)
     c.connect(load_1.b, first.collector, cross_1.a, left)
     c.connect(load_2.b, second.collector, cross_2.a, right)
-    c.connect(cross_1.b, bias_2.b, second.base, name="base2")
-    c.connect(cross_2.b, bias_1.b, first.base, name="base1")
+    c.connect(cross_1.b, bias_2.b, block_2.anode, name="timing2")
+    c.connect(cross_2.b, bias_1.b, block_1.anode, name="timing1")
+    c.connect(block_1.cathode, first.base)
+    c.connect(block_2.cathode, second.base)
     c.connect(first.emitter, second.emitter, ground)
 
 

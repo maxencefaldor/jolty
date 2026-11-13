@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/voltage_multiplier.py`.
 
 [Open in 3D](voltage-multiplier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/voltage_multiplier.py){ .md-button }
 
-14 devices, 14 unknowns, simulated in 3.60 s.
+14 devices, 20 unknowns, simulated in 5.15 s.
 
 ![The schematic](../images/gallery/voltage_multiplier.schematic.png)
 
@@ -16,7 +16,7 @@ Simulate it with `jolty simulate examples/voltage_multiplier.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| out at 200 ms in charge ≥ 50 V and ≤ 60 V | 56.8871 V, passed | 56.8849 V, passed | 3.8e-05 |
+| out at 200 ms in charge ≥ 50 V and ≤ 60 V | 56.8871 V, passed | 56.8849 V, passed | 3.9e-05 |
 
 ## Replicated in ngspice
 
@@ -25,7 +25,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `charge` | 7 | 1.6e-04 | 1 | 0.34 % |
+| `charge` | 7 | 1.5e-04 | 1 | 0.36 % |
 
 ![The replication in ngspice](../images/gallery/voltage_multiplier.charge.replication.png)
 

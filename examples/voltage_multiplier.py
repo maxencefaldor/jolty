@@ -7,9 +7,8 @@ little each cycle, so the output climbs over tens of cycles. Simulate it with
 ``jolty simulate examples/voltage_multiplier.py``.
 """
 
-from common import signal_diode
-
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
+from jolty.parts import d1n4148
 from jolty.plan import Transient
 from jolty.specs import value
 from jolty.units import Mohm, V, kHz, ms, uF, us
@@ -28,8 +27,8 @@ def multiplier(c: Builder) -> None:
     for stage in range(1, STAGES + 1):
         push = c.place(devices.capacitor(1 * uF), id=f"C{2 * stage - 1}")
         hold = c.place(devices.capacitor(1 * uF), id=f"C{2 * stage}")
-        up = c.place(signal_diode(), id=f"D{2 * stage - 1}")
-        over = c.place(signal_diode(), id=f"D{2 * stage}")
+        up = c.place(d1n4148(), id=f"D{2 * stage - 1}")
+        over = c.place(d1n4148(), id=f"D{2 * stage}")
         swing = c.net(f"swing{stage}")
         level = output if stage == STAGES else c.net(f"level{stage}")
         c.connect(push.a, pushed)

@@ -22,7 +22,7 @@ Examples:
 """
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal, overload
 
@@ -103,6 +103,10 @@ class Simulation:
     """Each terminal of a component instance or a logic device, such as ``X1.vdd``, with
     the indices of the device terminals whose currents and charges sum to its own."""
 
+    composite_nodes: tuple[str | None, ...]
+    """The unknown that is each composite terminal's voltage, by name, in the order of
+    `composites`, or None for one on the ground."""
+
     derivatives: tuple[tuple[str, str], ...]
     """For each device, every pair of its terminals and internal unknowns, its equation
     then its unknown, in the order of every result's conductances and capacitances."""
@@ -169,6 +173,7 @@ class Simulation:
         self.composites = tuple(
             (name, tuple(members)) for name, members in self._core.composites
         )
+        self.composite_nodes = tuple(self._core.composite_nodes)
         self.derivatives = tuple(
             (equation, unknown) for equation, unknown in self._core.derivatives
         )
@@ -209,15 +214,19 @@ class Simulation:
         """Every diagnostic of the rules on the analyses' results `solved`.
 
         Each stability analysis's loop is held to its usual margins, as
-        [`specs.diagnose`][jolty.specs.diagnose] holds it, and each device's ratings to
-        every operating point and transient, at the furthest point of each.
+        [`specs.diagnose`][jolty.specs.diagnose] holds it, and the ratings of each
+        device and component instance to every operating point and transient, at the
+        furthest point of each.
         """
+        found = list(specs.diagnose(solved))
+        reached = self._reached()
+        columns = {unknown.name: column for column, unknown in enumerate(self.unknowns)}
         rated = [
             (path, instance, rating)
-            for path, instance in self._devices()
+            for path, instance in _instances(self.circuit, self.circuit.top, "")
+            if any(f"{path}.{terminal}" in reached for terminal in instance.terminals)
             for rating in instance.ratings
         ]
-        found = list(specs.diagnose(solved))
         for name, result in solved.items():
             match result:
                 case results.OperatingPoint():
@@ -232,66 +241,32 @@ class Simulation:
                     )
                 case _:
                     continue
+            at = _Terminals(reached, columns, values, currents, len(self.terminals))
             for path, instance, rating in rated:
-                stress = self._stress(path, rating, values, currents)
+                stress = at.stress(path, instance, rating)
                 if stress is not None:
-                    at = Stressed(name, path, instance, rating, stress, times)
-                    found.extend(at.diagnostics())
+                    judged = Stressed(name, path, instance, rating, stress, times)
+                    found.extend(judged.diagnostics())
         return tuple(found)
 
-    def _devices(self) -> list[tuple[str, ir.Instance]]:
-        """Every device instance of the circuit, by path, that some terminal names."""
-        paths = dict.fromkeys(
-            terminal.rpartition(".")[0] for terminal in self.terminals
-        )
-        found = []
-        for path in paths:
-            instance = self.circuit.find(path)
-            if instance is not None:
-                found.append((path, instance))
-        return found
+    def _reached(self) -> dict[str, tuple[str | None, tuple[int, ...]]]:
+        """Each terminal on an electrical net, such as ``X1/R1.a`` or ``X1.vdd``.
 
-    def _stress(
-        self,
-        path: str,
-        rating: ir.Rating,
-        values: results.Real,
-        currents: results.Real,
-    ) -> results.Real | None:
-        """The stress `rating` limits on the device at `path`, at each row of a result.
-
-        The rows are of `values` and `currents`; there is none when the result holds no
-        currents and the stress needs them.
+        A terminal is of a device, a component instance or a logic device, and maps to
+        the unknown that is its voltage, None on the ground, and the columns of the
+        currents that sum to its own.
         """
-        index = {terminal: column for column, terminal in enumerate(self.terminals)}
-        columns = {unknown.name: column for column, unknown in enumerate(self.unknowns)}
-
-        def voltage(terminal: str) -> results.Real:
-            node = self.terminal_nodes[index[f"{path}.{terminal}"]]
-            if node is None:
-                return np.zeros(values.shape[0])
-            return values[:, columns[node]]
-
-        if rating.stress == "voltage":
-            first, second = rating.terminals
-            return voltage(first) - voltage(second)
-        if currents.shape[1] != len(self.terminals):
-            return None
-        if rating.stress == "current":
-            (terminal,) = rating.terminals
-            return currents[:, index[f"{path}.{terminal}"]]
-        own = [
-            terminal.rpartition(".")[2]
-            for terminal in self.terminals
-            if terminal.rpartition(".")[0] == path
-        ]
-        return sum(
-            (
-                voltage(terminal) * currents[:, index[f"{path}.{terminal}"]]
-                for terminal in own
-            ),
-            start=np.zeros(values.shape[0]),
-        )
+        reached: dict[str, tuple[str | None, tuple[int, ...]]] = {
+            terminal: (node, (column,))
+            for column, (terminal, node) in enumerate(
+                zip(self.terminals, self.terminal_nodes, strict=True)
+            )
+        }
+        for (composite, members), node in zip(
+            self.composites, self.composite_nodes, strict=True
+        ):
+            reached[composite] = (node, members)
+        return reached
 
     @overload
     def run(
@@ -538,6 +513,72 @@ class Simulation:
 _UNITS: dict[ir.Stress, str] = {"voltage": "V", "current": "A", "power": "W"}
 
 
+def _instances(
+    circuit: ir.Circuit, component: str, prefix: str
+) -> Iterator[tuple[str, ir.Instance]]:
+    """Every instance within `component`, by path, each before those it places."""
+    for instance in circuit.components[component].instances:
+        path = f"{prefix}{instance.id}"
+        yield path, instance
+        if isinstance(instance.of, ir.ComponentOf):
+            yield from _instances(circuit, instance.of.component, f"{path}/")
+
+
+@dataclass(frozen=True, slots=True)
+class _Terminals:
+    """The voltage at and the current into each reached terminal, over a result."""
+
+    reached: Mapping[str, tuple[str | None, tuple[int, ...]]]
+    columns: Mapping[str, int]
+    """The column of each unknown's values, by name."""
+    values: results.Real
+    currents: results.Real
+    terminals: int
+    """The number of device terminals, which the currents have a column each for, if
+    the result holds them."""
+
+    def stress(
+        self, path: str, instance: ir.Instance, rating: ir.Rating
+    ) -> results.Real | None:
+        """The stress `rating` limits on the instance at `path`, at each point.
+
+        There is none when a rated terminal is on a logic net, or the result holds no
+        currents and the stress needs them.
+        """
+        named = rating.terminals or tuple(
+            terminal
+            for terminal in instance.terminals
+            if f"{path}.{terminal}" in self.reached
+        )
+        if any(f"{path}.{terminal}" not in self.reached for terminal in named):
+            return None
+        if rating.stress == "voltage":
+            first, second = named
+            return self._voltage(path, first) - self._voltage(path, second)
+        if self.currents.shape[1] != self.terminals:
+            return None
+        if rating.stress == "current":
+            (terminal,) = named
+            return self._current(path, terminal)
+        return sum(
+            (
+                self._voltage(path, terminal) * self._current(path, terminal)
+                for terminal in named
+            ),
+            start=np.zeros(self.values.shape[0]),
+        )
+
+    def _voltage(self, path: str, terminal: str) -> results.Real:
+        node, _ = self.reached[f"{path}.{terminal}"]
+        if node is None:
+            return np.zeros(self.values.shape[0])
+        return self.values[:, self.columns[node]]
+
+    def _current(self, path: str, terminal: str) -> results.Real:
+        _, columns = self.reached[f"{path}.{terminal}"]
+        return self.currents[:, list(columns)].sum(axis=1)
+
+
 @dataclass(frozen=True, slots=True)
 class Stressed:
     """A rated stress of a device over one analysis's points, judged by its rating."""
@@ -555,16 +596,16 @@ class Stressed:
         found = []
         high = int(np.argmax(self.stress))
         low = int(np.argmin(self.stress))
-        for point, bound, beyond in (
-            (high, self.rating.maximum, self.stress[high] > self.rating.maximum),
-            (low, self.rating.least, self.stress[low] < self.rating.least),
+        for point, bound, sign in (
+            (high, self.rating.maximum, 1),
+            (low, self.rating.minimum, -1),
         ):
+            if bound is None:
+                continue
             value = float(self.stress[point])
-            derated = bound != 0 and abs(value) > checks.DERATED * abs(bound)
-            same_side = value * bound > 0
-            if beyond:
+            if sign * value > sign * bound:
                 found.append(self._diagnostic(checks.OVER_RATING, point, bound, value))
-            elif derated and same_side:
+            elif sign * bound > 0 and sign * value > checks.DERATED * sign * bound:
                 found.append(self._diagnostic(checks.DERATING, point, bound, value))
         return found
 
@@ -585,7 +626,7 @@ class Stressed:
         )
         moves = "reaches" if value >= 0 else "falls to"
         if rule is checks.OVER_RATING:
-            beyond = "beyond" if bound == self.rating.maximum else "below"
+            beyond = "beyond" if value > bound else "below"
             judged = f"{beyond} its rating of {bound!r} {unit}"
         else:
             judged = f"past {checks.DERATED:.0%} of its rating of {bound!r} {unit}"

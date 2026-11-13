@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/boost_converter.py`.
 
 [Open in 3D](boost-converter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/boost_converter.py){ .md-button }
 
-7 devices, 8 unknowns, simulated in 5.89 s.
+7 devices, 9 unknowns, simulated in 4.95 s.
 
 ![The schematic](../images/gallery/boost_converter.schematic.png)
 

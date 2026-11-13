@@ -9,7 +9,7 @@ Simulate it with `jolty simulate discovery/sine_oscillator/design.py`.
 
 [Open in 3D](sine-oscillator.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/sine_oscillator/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/sine_oscillator){ .md-button }
 
-18 devices, 12 unknowns, simulated in 16.08 s.
+18 devices, 13 unknowns, simulated in 15.41 s.
 
 ![The schematic](../images/gallery/sine_oscillator.inside.schematic.png)
 
@@ -72,7 +72,7 @@ Its distortion comes from nominal models: the resistors' and capacitors' own non
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of out from 110 ms in run ≥ 990 Hz and ≤ 1.01 kHz | 995.541 Hz at cold, passed | 995.541 Hz at cold, passed | 3.8e-12 |
+| frequency of out from 110 ms in run ≥ 990 Hz and ≤ 1.01 kHz | 995.541 Hz at cold, passed | 995.541 Hz at cold, passed | 3.7e-12 |
 | peak-to-peak of out from 110 ms in run ≥ 3.8 V and ≤ 4.2 V | 4.68202 V at cold, failed | 4.68203 V at cold, failed | 2.4e-06 |
 
 ## Replicated in ngspice

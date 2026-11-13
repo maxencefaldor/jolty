@@ -7,10 +7,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
 
-from common import opamp, signal_diode
+from common import opamp
 
 from jolty import Builder, Component, Role, component, devices
 from jolty.builder import Point
+from jolty.parts import d1n4148
 from jolty.units import A, F, K, V, ohm, pF, uA, us
 from jolty.waveforms import Pulse
 
@@ -67,8 +68,8 @@ def diodes(c: Builder, fixed: float = 12e3, limited: float = 10e3) -> None:
     across = c.place(devices.resistor(limited * ohm), id="R4")
     gain = c.place(devices.resistor(10e3 * ohm), id="R5")
     forward, backward = (
-        c.place(signal_diode(), id="D1"),
-        c.place(signal_diode(), id="D2"),
+        c.place(d1n4148(), id="D1"),
+        c.place(d1n4148(), id="D2"),
     )
     c.connect(amplifier.out, feedback.a, output)
     c.connect(feedback.b, across.a, forward.anode, backward.cathode, name="tap")
@@ -99,7 +100,7 @@ def agc(
     feedback = c.place(devices.resistor(20e3 * ohm), id="RF")
     series = c.place(devices.resistor(fixed * ohm), id="RG")
     channel = c.place(jfet(), id="J1")
-    detector = c.place(signal_diode(), id="D1")
+    detector = c.place(d1n4148(), id="D1")
     hold = c.place(devices.capacitor(1e-6 * F), id="CH")
     upper = c.place(devices.resistor(1e6 * (1 - divider) / divider * ohm), id="RD1")
     lower = c.place(devices.resistor(1e6 * ohm), id="RD2")
@@ -150,7 +151,7 @@ def sensed_agc(
     channel = c.place(jfet(), id="J1")
     upper = c.place(devices.resistor(10e3 * (1 - sense) / sense * ohm), id="RS1")
     lower = c.place(devices.resistor(10e3 * ohm), id="RS2")
-    detector = c.place(signal_diode(), id="D1")
+    detector = c.place(d1n4148(), id="D1")
     capacitor = c.place(devices.capacitor(hold * F), id="CH")
     leak = c.place(devices.resistor(1e6 * ohm), id="RH")
     c.connect(amplifier.out, feedback.a, upper.a, output)

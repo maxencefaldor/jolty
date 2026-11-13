@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/sram_cell.py`.
 
 [Open in 3D](sram-cell.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sram_cell.py){ .md-button }
 
-8 devices, 28 unknowns, simulated in 1.31 s.
+8 devices, 28 unknowns, simulated in 1.72 s.
 
 ![The schematic](../images/gallery/sram_cell.schematic.png)
 
@@ -17,10 +17,10 @@ Simulate it with `jolty simulate examples/sram_cell.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| X1/q at 9 ns in write ≥ 3.29 V and ≤ 3.31 V | 3.3 V, passed | 3.3 V, passed | 0 |
-| X1/q_bar at 9 ns in write ≥ -10 mV and ≤ 10 mV | 12.2891 nV, passed | 12.2891 nV, passed | 5.1e-08 |
-| X1/q at 19 ns in write ≥ -10 mV and ≤ 10 mV | 12.2891 nV, passed | 12.2891 nV, passed | 3.1e-08 |
-| X1/q_bar at 19 ns in write ≥ 3.29 V and ≤ 3.31 V | 3.3 V, passed | 3.3 V, passed | 4.0e-16 |
+| X1/q at 9 ns in write ≥ 3.29 V and ≤ 3.31 V | 3.3 V, passed | 3.3 V, passed | 5.0e-15 |
+| X1/q_bar at 9 ns in write ≥ -10 mV and ≤ 10 mV | 12.2891 nV, passed | 12.2891 nV, passed | 5.2e-08 |
+| X1/q at 19 ns in write ≥ -10 mV and ≤ 10 mV | 12.2891 nV, passed | 12.2891 nV, passed | 7.8e-07 |
+| X1/q_bar at 19 ns in write ≥ 3.29 V and ≤ 3.31 V | 3.3 V, passed | 3.3 V, passed | 2.8e-15 |
 
 ## Replicated in ngspice
 

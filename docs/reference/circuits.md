@@ -8,6 +8,8 @@ Scripts write circuits with the builder, from devices whose values carry units a
 
 ::: jolty.devices
 
+::: jolty.parts
+
 ::: jolty.spice
     options:
       members: [load, Library, fetch, GROUND]

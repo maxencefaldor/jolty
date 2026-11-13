@@ -12,10 +12,9 @@ the 10 kΩ alone discharges it to one third. The output is high for
 
 import math
 
-from common import npn
-
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
 from jolty.devices import Gate
+from jolty.parts import q2n3904
 from jolty.plan import Transient
 from jolty.specs import frequency, maximum
 from jolty.units import Hz, V, fF, kohm, ms, nF, ns, us
@@ -72,7 +71,7 @@ def timer(c: Builder) -> None:
     c.connect(set_.y, reset.b, sink.a, name="q_bar")
     c.connect(drive.y, output)
     base = c.place(devices.resistor(10 * kohm), id="RB")
-    switch = c.place(npn(), id="Q1")
+    switch = c.place(q2n3904(), id="Q1")
     c.connect(sink.y, base.a, name="discharging")
     c.connect(base.b, switch.base, name="base")
     c.connect(switch.collector, discharge)

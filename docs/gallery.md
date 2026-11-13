@@ -69,7 +69,7 @@ Transistors and op-amps, biased and amplifying.
 
 -   ![Instrumentation amplifier, its schematic](images/gallery/instrumentation_amplifier.schematic.png)
 
-    **[Instrumentation amplifier](gallery/instrumentation-amplifier.md)** · 4/4 specs · ngspice within 2.5e-13
+    **[Instrumentation amplifier](gallery/instrumentation-amplifier.md)** · 4/4 specs · ngspice within 2.6e-13
 
     A three-op-amp instrumentation amplifier: a gain of 10.09 that rejects common mode.
 
@@ -109,7 +109,7 @@ Transistors and op-amps, biased and amplifying.
 
 -   ![Bandgap reference, its schematic](images/gallery/bandgap_reference.schematic.png)
 
-    **[Bandgap reference](gallery/bandgap-reference.md)** · 1/1 specs · ngspice within 1.7e-08
+    **[Bandgap reference](gallery/bandgap-reference.md)** · 1/1 specs · ngspice within 1.5e-11
 
     A bandgap voltage reference: two transistors' base-emitter voltages cancelling drift.
 
@@ -197,7 +197,7 @@ Rectifiers, regulators and switching converters.
 
 -   ![Cockcroft-Walton multiplier, its schematic](images/gallery/voltage_multiplier.schematic.png)
 
-    **[Cockcroft-Walton multiplier](gallery/voltage-multiplier.md)** · 1/1 specs · ngspice within 1.6e-04
+    **[Cockcroft-Walton multiplier](gallery/voltage-multiplier.md)** · 1/1 specs · ngspice within 1.5e-04
 
     A three-stage Cockcroft-Walton multiplier: six diodes and six capacitors.
 

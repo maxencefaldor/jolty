@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/differential_pair.py`.
 
 [Open in 3D](differential-pair.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/differential_pair.py){ .md-button }
 
-8 devices, 13 unknowns, simulated in 1.29 s.
+8 devices, 13 unknowns, simulated in 1.65 s.
 
 ![The schematic](../images/gallery/differential_pair.schematic.png)
 
@@ -15,9 +15,9 @@ Simulate it with `jolty simulate examples/differential_pair.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| left relative to right in op ≥ -1 mV and ≤ 1 mV | 0 V, passed | -10.6581 fV, passed | 1e+02 % |
-| right relative to left at 200 mV in transfer ≥ 9.85 V and ≤ 10.05 V | 9.91669 V, passed | 9.91669 V, passed | 1.0e-08 |
-| right relative to left at -200 mV in transfer ≥ -10.05 V and ≤ -9.85 V | -9.91686 V, passed | -9.91686 V, passed | 1.0e-08 |
+| left relative to right in op ≥ -1 mV and ≤ 1 mV | 1.67066 pV, passed | -888.178 aV, passed | 1e+02 % |
+| right relative to left at 200 mV in transfer ≥ 9.85 V and ≤ 10.05 V | 9.91669 V, passed | 9.91669 V, passed | 4.0e-12 |
+| right relative to left at -200 mV in transfer ≥ -10.05 V and ≤ -9.85 V | -9.91686 V, passed | -9.91686 V, passed | 2.8e-11 |
 
 ## Replicated in ngspice
 

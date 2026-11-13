@@ -1,82 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""The parts the examples share: an op-amp, transistors, diodes and a CMOS process.
+"""What the examples share beyond `jolty.parts`: zeners, an op-amp and a CMOS process.
 
-The bipolar transistors and the diodes take the SPICE parameters their makers publish
-for the 2N3904, the 2N3906 and the 1N4148. The op-amp is a macromodel of three
-behavioral elements, written so ngspice reads it as jolty does: its input stage's
-current saturates, which sets its slew rate, and its output clamps at its rails. The
-CMOS transistors are level 1 MOSFETs of a 1 µm process.
+The op-amp is a macromodel of three behavioral elements, written so ngspice reads it as
+jolty does: its input stage's current saturates, which sets its slew rate, and its
+output clamps at its rails. The CMOS transistors are level 1 MOSFETs of a 1 µm process.
 """
 
 from jolty import Builder, Role, component, devices
-from jolty.units import A, V, fF, nA, nm, ns, ohm, pF, ps, um
+from jolty.units import A, V, fF, nm, ohm, pF, um
 
-# Bipolar transistors and diodes.
-
-
-def npn() -> devices.Device:
-    """A 2N3904, the small-signal NPN transistor, with its maker's SPICE parameters."""
-    return devices.bipolar_transistor(
-        saturation_current=6.734e-15 * A,
-        forward_beta=416.4,
-        reverse_beta=0.7371,
-        forward_emission_coefficient=1.0,
-        forward_early_voltage=74.03 * V,
-        forward_knee_current=66.78e-3 * A,
-        base_emitter_leakage_current=6.734e-15 * A,
-        base_emitter_leakage_emission_coefficient=1.259,
-        base_collector_leakage_emission_coefficient=2.0,
-        base_resistance=10 * ohm,
-        collector_resistance=1 * ohm,
-        base_emitter_capacitance=4.493 * pF,
-        base_emitter_grading=0.2593,
-        base_collector_capacitance=3.638 * pF,
-        base_collector_grading=0.3085,
-        forward_transit_time=301.2 * ps,
-        transit_time_bias_coefficient=2.0,
-        transit_time_voltage=4 * V,
-        transit_time_current=0.4 * A,
-        reverse_transit_time=239.5 * ns,
-        beta_temperature_exponent=1.5,
-    )
-
-
-def pnp() -> devices.Device:
-    """A 2N3906, the small-signal PNP transistor, with its maker's SPICE parameters."""
-    return devices.bipolar_transistor(
-        polarity="pnp",
-        saturation_current=1.41e-15 * A,
-        forward_beta=180.7,
-        reverse_beta=4.977,
-        forward_early_voltage=18.7 * V,
-        forward_knee_current=80e-3 * A,
-        base_emitter_leakage_emission_coefficient=1.5,
-        base_collector_leakage_emission_coefficient=2.0,
-        base_resistance=10 * ohm,
-        collector_resistance=2.5 * ohm,
-        base_emitter_capacitance=8.063 * pF,
-        base_emitter_grading=0.3677,
-        base_collector_capacitance=9.728 * pF,
-        base_collector_grading=0.5776,
-        forward_transit_time=179.3 * ps,
-        transit_time_bias_coefficient=6.0,
-        transit_time_voltage=4 * V,
-        transit_time_current=0.4 * A,
-        reverse_transit_time=33.42 * ns,
-        beta_temperature_exponent=1.5,
-    )
-
-
-def signal_diode() -> devices.Device:
-    """A 1N4148, the small-signal silicon diode, with its maker's SPICE parameters."""
-    return devices.diode(
-        saturation_current=2.52 * nA,
-        emission_coefficient=1.752,
-        series_resistance=0.568 * ohm,
-        junction_capacitance=4 * pF,
-        grading_coefficient=0.4,
-        transit_time=20 * ns,
-    )
+# Zener diodes.
 
 
 def zener(voltage: float) -> devices.Device:

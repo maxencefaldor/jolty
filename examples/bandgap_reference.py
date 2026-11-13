@@ -11,9 +11,10 @@ megohms from a 5 V supply start it. Simulate it with
 ``jolty simulate examples/bandgap_reference.py``.
 """
 
-from common import npn, opamp
+from common import opamp
 
 from jolty import Builder, Component, Corner, Plan, Role, Specs, component, devices
+from jolty.parts import q2n3904
 from jolty.plan import OperatingPoint
 from jolty.specs import value
 from jolty.units import Mohm, V, celsius, kohm, mV
@@ -27,8 +28,8 @@ def bandgap(c: Builder) -> None:
     output = c.port("output", Role.OUTPUT)
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
     amplifier = c.place(opamp(), id="U1")
-    single = c.place(npn(), id="Q1")
-    wide = [c.place(npn(), id=f"Q{index}") for index in range(2, 10)]
+    single = c.place(q2n3904(), id="Q1")
+    wide = [c.place(q2n3904(), id=f"Q{index}") for index in range(2, 10)]
     left = c.place(devices.resistor(RATIO * kohm), id="R1")
     right = c.place(devices.resistor(RATIO * kohm), id="R2")
     ptat = c.place(devices.resistor(1 * kohm), id="R3")

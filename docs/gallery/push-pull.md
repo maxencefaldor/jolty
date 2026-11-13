@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/push_pull.py`.
 
 [Open in 3D](push-pull.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/push_pull.py){ .md-button }
 
-12 devices, 17 unknowns, simulated in 1.33 s.
+12 devices, 19 unknowns, simulated in 1.97 s.
 
 ![The schematic](../images/gallery/push_pull.schematic.png)
 
@@ -16,10 +16,10 @@ Simulate it with `jolty simulate examples/push_pull.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| out at 0 V in transfer ≥ -100 mV and ≤ 100 mV | 8.09978 mV, passed | 8.09978 mV, passed | 1.0e-10 |
+| out at 0 V in transfer ≥ -100 mV and ≤ 100 mV | 8.09978 mV, passed | 8.09978 mV, passed | 3.1e-10 |
 | out at 100 mV in transfer ≥ 0 V and ≤ 200 mV | 70.0639 mV, passed | 70.0639 mV, passed | 2.5e-07 |
 | out at 4 V in transfer ≥ 3.6 V and ≤ 4 V | 3.74629 V, passed | 3.74629 V, passed | 3.5e-10 |
-| out at -4 V in transfer ≥ -4 V and ≤ -3.6 V | -3.71769 V, passed | -3.71769 V, passed | 7.2e-10 |
+| out at -4 V in transfer ≥ -4 V and ≤ -3.6 V | -3.71769 V, passed | -3.71769 V, passed | 7.7e-10 |
 
 ## Replicated in ngspice
 

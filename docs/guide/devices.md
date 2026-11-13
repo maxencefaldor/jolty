@@ -46,16 +46,22 @@ A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and 
 
 ## Ratings
 
-Any device may state the limits its maker warrants it within, as `device.rated(stress, maximum, terminals=..., minimum=...)`: a `"voltage"` of one of its terminals over another, a `"current"` into one, or the `"power"` it dissipates.
-A two-terminal device's voltage is of its own terminals by default, in order, and its current into its first; a voltage or a current without a minimum may swing as far negative as positive.
+Any device may state the limits its maker warrants it within, as `device.rated(stress, maximum, minimum=..., terminals=...)`: a `"voltage"` of one of its terminals over another, a `"current"` into one, or the `"power"` it dissipates.
+A voltage is of the device's first two terminals by default, in order, and a current into its first.
+A rating bounds its stress from above, from below or both, as its maker states it; a power's only from above.
 
 ```python
 devices.resistor(100 * ohm).rated("power", 0.25 * W)
-devices.capacitor(10 * uF).rated("voltage", 25 * V, minimum=-1 * V)
-switch = npn().rated("voltage", 40 * V, terminals=("collector", "emitter"))
+devices.capacitor(10 * uF).rated("voltage", 25 * V, minimum=-25 * V)
+devices.diode().rated("voltage", minimum=-100 * V)
+switch = devices.bipolar_transistor().rated(
+    "voltage", 40 * V, terminals=("collector", "emitter")
+)
 switch.rated("power", 0.625 * W)
 ```
 
+A component rates its ports the same way, `component.rated(...)`, and its power is all it dissipates.
+`device.numbered("2N3904")` and `component.numbered(...)` name the part an instance stands for, which a [bill of materials](parts.md#bills-of-materials) prices it by; [`jolty.parts`](parts.md#real-parts) holds real parts, each with its model, its number and its ratings.
 A simulation holds every rating to every operating point and transient its plan solves, as the [checks](checks.md#on-analyses-results) describe.
 
 ## Independent sources

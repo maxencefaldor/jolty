@@ -2,15 +2,16 @@
 
 The astable multivibrator: two cross-coupled 2N3904s flipping each other in turn.
 
-Each transistor's collector couples to the other's base through a capacitor.
-When one turns on, its collector falls by nearly the supply and drives the other's base that far below zero; that base recovers through its 47 kΩ toward the supply, turning its transistor on at half way.
-Each half period is RC·ln 2 = 0.326 ms with 10 nF: a period of 0.652 ms, 1.53 kHz.
+Each transistor's collector couples to the other's base through a capacitor and a 1N4148.
+When one turns on, its collector falls by nearly the supply and drives the other's timing node that far below zero, which the diode keeps from the base: the 2N3904's emitter junction takes only 6 V in reverse.
+The node recovers through its 47 kΩ toward the supply, turning its transistor on near half way.
+Each half period is about RC·ln 2 = 0.326 ms with 10 nF: a period of 0.652 ms, 1.53 kHz.
 Slightly unequal capacitors break the symmetry that would hold the circuit balanced.
 Simulate it with `jolty simulate examples/astable_multivibrator.py`.
 
 [Open in 3D](astable-multivibrator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/astable_multivibrator.py){ .md-button }
 
-9 devices, 10 unknowns, simulated in 1.49 s.
+11 devices, 16 unknowns, simulated in 2.66 s.
 
 ![The schematic](../images/gallery/astable_multivibrator.schematic.png)
 
@@ -18,9 +19,9 @@ Simulate it with `jolty simulate examples/astable_multivibrator.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of left from 2 ms in run ≥ 1.381 kHz and ≤ 1.688 kHz | 1.49066 kHz, passed | 1.48995 kHz, passed | 4.8e-04 |
-| maximum of left from 2 ms in run ≥ 8.5 V and ≤ 9.1 V | 9.00002 V, passed | 9.00002 V, passed | 4.1e-08 |
-| minimum of left from 2 ms in run ≤ 300 mV | 50.4867 mV, passed | 50.5049 mV, passed | 3.6e-04 |
+| frequency of left from 2 ms in run ≥ 1.381 kHz and ≤ 1.688 kHz | 1.48171 kHz, passed | 1.48175 kHz, passed | 3.1e-05 |
+| maximum of left from 2 ms in run ≥ 8.5 V and ≤ 9.1 V | 8.99693 V, passed | 8.99693 V, passed | 3.9e-08 |
+| minimum of left from 2 ms in run ≤ 300 mV | 50.8599 mV, passed | 50.8833 mV, passed | 4.6e-04 |
 
 ## Replicated in ngspice
 

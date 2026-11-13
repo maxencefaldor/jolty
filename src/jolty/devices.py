@@ -43,7 +43,8 @@ class Device:
     """A device ready to place: its model's name, its terminals and its parameters.
 
     Some parameters may have a tolerance, which Monte Carlo analyses sample, and the
-    device may state ratings, which a simulation checks.
+    device may state ratings, which a simulation checks, and the number of the part it
+    stands for, which a bill of materials prices.
     """
 
     model: str
@@ -51,6 +52,7 @@ class Device:
     parameters: dict[str, JsonValue]
     tolerances: dict[str, ir.Tolerance] = field(default_factory=dict)
     ratings: tuple[ir.Rating, ...] = ()
+    part: str | None = None
 
     def toleranced(
         self,
@@ -90,19 +92,19 @@ class Device:
     def rated(
         self,
         stress: ir.Stress,
-        maximum: Quantity,
+        maximum: Quantity | None = None,
         *,
-        terminals: Sequence[str] | None = None,
         minimum: Quantity | None = None,
+        terminals: Sequence[str] | None = None,
     ) -> Device:
         """The device, with a rating its maker states on one of its `stress`es.
 
         A voltage is of the first of its two `terminals` over the second, a current is
-        into its one terminal, and the power names none; a two-terminal device's
-        voltage is of its own terminals by default, in order, and its current into its
-        first. A voltage or a current without a `minimum` may take down to minus its
-        `maximum`. A simulation checks every rating at the operating point and over a
-        transient.
+        into its one terminal, and the power names none; a voltage is of the device's
+        first two terminals by default, in order, and a current into its first. A
+        rating bounds its stress from above, from below or both: a capacitor rated 50 V
+        either way takes ``maximum=50 * V, minimum=-50 * V``. A simulation checks every
+        rating at the operating point and over a transient.
 
         Examples:
             >>> from jolty.units import V, W, kohm, uF
@@ -115,27 +117,71 @@ class Device:
             DimensionError: When a bound is not a voltage, a current or a power as the
                 stress is.
             ValueError: When the terminals are not the device's, or not as many as the
-                stress needs.
+                stress needs, or the bounds are none or out of order.
         """
-        dimension, defaults = {
-            "voltage": (VOLTAGE, self.terminals[:2]),
-            "current": (CURRENT, self.terminals[:1]),
-            "power": (POWER, ()),
-        }[stress]
-        named = tuple(defaults if terminals is None else terminals)
-        unknown = [terminal for terminal in named if terminal not in self.terminals]
-        if unknown:
-            message = f"a {self.model} has no terminal {', '.join(unknown)}"
-            raise ValueError(message)
-        rating = ir.Rating(
-            stress=stress,
-            terminals=named,
-            maximum=maximum.to(dimension, f"a {stress} rating"),
-            minimum=None
-            if minimum is None
-            else minimum.to(dimension, f"a {stress} rating's minimum"),
+        rating = rate(
+            self.terminals,
+            stress,
+            maximum=maximum,
+            minimum=minimum,
+            terminals=terminals,
         )
         return replace(self, ratings=(*self.ratings, rating))
+
+    def numbered(self, part: str) -> Device:
+        """The device, standing for the part its maker numbers `part`.
+
+        Examples:
+            >>> diode().numbered("1N4148").part
+            '1N4148'
+
+        Raises:
+            ValueError: When the number is empty or spaced at either end.
+        """
+        return replace(self, part=ir.part_number(part))
+
+
+def rate(
+    own: Sequence[str],
+    stress: ir.Stress,
+    *,
+    maximum: Quantity | None,
+    minimum: Quantity | None,
+    terminals: Sequence[str] | None,
+) -> ir.Rating:
+    """A rating of the `stress` of a device or a component whose terminals are `own`.
+
+    It is as [`Device.rated`][jolty.devices.Device.rated] describes.
+
+    Raises:
+        DimensionError: When a bound is not a voltage, a current or a power as the
+            stress is.
+        ValueError: When the terminals are not `own`, or not as many as the stress
+            needs, or the bounds are none or out of order.
+    """
+    dimension, defaults = {
+        "voltage": (VOLTAGE, own[:2]),
+        "current": (CURRENT, own[:1]),
+        "power": (POWER, ()),
+    }[stress]
+    named = tuple(defaults if terminals is None else terminals)
+    unknown = [terminal for terminal in named if terminal not in own]
+    if unknown:
+        message = (
+            f"a rating names {', '.join(unknown)}, which is not among the terminals "
+            f"{', '.join(own)}"
+        )
+        raise ValueError(message)
+    return ir.Rating(
+        stress=stress,
+        terminals=named,
+        maximum=None
+        if maximum is None
+        else maximum.to(dimension, f"a {stress} rating's maximum"),
+        minimum=None
+        if minimum is None
+        else minimum.to(dimension, f"a {stress} rating's minimum"),
+    )
 
 
 PER_KELVIN: Final = DIMENSIONLESS / TEMPERATURE

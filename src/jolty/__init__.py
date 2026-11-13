@@ -10,7 +10,7 @@ analyses of [`jolty.plan`][jolty.plan] on them with the Rust engine, and
 
 from importlib.metadata import version
 
-from jolty import devices, files, plan, specs, spice, units, waveforms
+from jolty import devices, files, parts, plan, specs, spice, units, waveforms
 from jolty.builder import Builder, Component, Net, Placed, Terminal, circuit, component
 from jolty.errors import (
     BuildError,
@@ -84,6 +84,7 @@ __all__ = [
     "component",
     "devices",
     "files",
+    "parts",
     "plan",
     "specs",
     "spice",

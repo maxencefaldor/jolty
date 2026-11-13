@@ -8,7 +8,7 @@ Simulate it with `jolty simulate discovery/bandgap/design.py`.
 
 [Open in 3D](bandgap.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/bandgap/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/bandgap){ .md-button }
 
-9 devices, 14 unknowns, simulated in 1.39 s.
+9 devices, 14 unknowns, simulated in 1.28 s.
 
 ![The schematic](../images/gallery/bandgap.inside.schematic.png)
 
@@ -75,8 +75,8 @@ The 5.3 ppm/K comes from trimming R2 to 0.1 Ω on nominal models: the spread of 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
 | out in op ≥ 1.237 V and ≤ 1.246 V | 1.24252 V at cold, passed | 1.24252 V at cold, passed | 1.7e-07 |
-| out at 4.5 V in line ≥ 1.236 V and ≤ 1.247 V | 1.24238 V at cold, passed | 1.24238 V at cold, passed | 1.9e-08 |
-| out at 5.5 V in line ≥ 1.236 V and ≤ 1.247 V | 1.24265 V at cold, passed | 1.24265 V at cold, passed | 7.4e-09 |
+| out at 4.5 V in line ≥ 1.236 V and ≤ 1.247 V | 1.24238 V at cold, passed | 1.24238 V at cold, passed | 2.0e-08 |
+| out at 5.5 V in line ≥ 1.236 V and ≤ 1.247 V | 1.24265 V at cold, passed | 1.24265 V at cold, passed | 9.3e-09 |
 
 ## Replicated in ngspice
 

@@ -9,7 +9,7 @@ Simulate it with `jolty simulate discovery/current_source/design.py`.
 
 [Open in 3D](current-source.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/current_source/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/current_source){ .md-button }
 
-9 devices, 15 unknowns, simulated in 0.63 s.
+9 devices, 15 unknowns, simulated in 1.15 s.
 
 ![The schematic](../images/gallery/current_source.inside.schematic.png)
 
@@ -71,9 +71,9 @@ The results come from the makers' nominal SPICE models: the spread of Vbe and β
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| V1:current at 3 V in line ≥ -1.02 mA and ≤ -980 µA | -811.395 µA at hot, failed | -811.395 µA at hot, failed | 1.8e-08 |
-| V1:current at 12 V in line ≥ -1.02 mA and ≤ -980 µA | -1.17757 mA at cold, failed | -1.17757 mA at cold, failed | 3.1e-08 |
-| V1:current at 24 V in line ≥ -1.02 mA and ≤ -980 µA | -1.20143 mA at cold, failed | -1.20143 mA at cold, failed | 6.5e-08 |
+| V1:current at 3 V in line ≥ -1.02 mA and ≤ -980 µA | -811.395 µA at hot, failed | -811.395 µA at hot, failed | 2.7e-08 |
+| V1:current at 12 V in line ≥ -1.02 mA and ≤ -980 µA | -1.17757 mA at cold, failed | -1.17757 mA at cold, failed | 4.5e-10 |
+| V1:current at 24 V in line ≥ -1.02 mA and ≤ -980 µA | -1.20143 mA at cold, failed | -1.20143 mA at cold, failed | 1.1e-10 |
 
 ## Replicated in ngspice
 
@@ -82,7 +82,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `op` | 6 | 3.5e-06 | 1 | 3.2e-06 |
+| `op` | 6 | 3.4e-06 | 1 | 3.2e-06 |
 | `line` | 6 | 7.3e-06 | 1 | 6.7e-06 |
 
 ![The replication in ngspice](../images/gallery/current_source.line.replication.png)

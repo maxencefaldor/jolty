@@ -10,12 +10,18 @@ object, as ``waveform.dc`` names a source's DC level. A device may also state
 [`Rating`][jolty.ir.Rating]s, the limits its maker states on its stresses.
 """
 
-import math
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Literal, Self, override
+from typing import Annotated, Literal, Self, override
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    model_validator,
+)
 
 
 class _Model(BaseModel):
@@ -121,6 +127,22 @@ class Tolerance(_Spread):
     lot: Lot | None = Field(default=None, exclude_if=lambda lot: lot is None)
 
 
+def part_number(number: str) -> str:
+    """`number`, if it is a maker's part number: not empty, nor spaced at either end.
+
+    Raises:
+        ValueError: When it is empty or begins or ends with whitespace.
+    """
+    if not number or number.strip() != number:
+        message = f"a part number is neither empty nor spaced at either end: {number!r}"
+        raise ValueError(message)
+    return number
+
+
+type PartNumber = Annotated[str, AfterValidator(part_number)]
+"""A maker's part number, such as ``2N3904``."""
+
+
 type Stress = Literal["voltage", "current", "power"]
 """What a rating limits: the voltage of one terminal over another, the current into a
 terminal, or the power a part dissipates, the sum over its terminals of each one's
@@ -133,23 +155,24 @@ class Rating(_Model):
     """A limit a part's maker states on one of its stresses, which a simulation checks.
 
     The terminals are two for a voltage, the first's over the second's, one for a
-    current, into it, and none for the power. A voltage or a current that states no
-    minimum may take down to minus its maximum, and a power any. Values are in SI base
-    units.
+    current, into it, and none for the power. A rating bounds its stress from above,
+    from below or both, in SI base units; a power's only from above, and above 0.
     """
 
     stress: Stress
     terminals: tuple[str, ...] = Field(
         default=(), exclude_if=lambda terminals: not terminals
     )
-    maximum: float = Field(allow_inf_nan=False)
+    maximum: float | None = Field(
+        default=None, allow_inf_nan=False, exclude_if=lambda maximum: maximum is None
+    )
     minimum: float | None = Field(
         default=None, allow_inf_nan=False, exclude_if=lambda minimum: minimum is None
     )
 
     @model_validator(mode="after")
     def _bounded(self) -> Self:
-        """Holds the terminals to the stress, power above 0, and the bounds in order."""
+        """Holds the terminals to the stress, and the bounds in order."""
         needed = _TERMINALS[self.stress]
         if len(self.terminals) != needed or len(set(self.terminals)) != needed:
             message = (
@@ -157,23 +180,25 @@ class Rating(_Model):
                 f"not {list(self.terminals)}"
             )
             raise ValueError(message)
-        if self.stress == "power" and self.maximum <= 0:
-            message = f"a power rating is above 0, not {self.maximum!r}"
+        if self.maximum is None and self.minimum is None:
+            message = f"a {self.stress} rating states a maximum, a minimum or both"
             raise ValueError(message)
-        if self.minimum is not None and self.minimum > self.maximum:
+        if self.stress == "power" and (
+            self.minimum is not None or self.maximum is None or self.maximum <= 0
+        ):
+            message = "a power rating states only a maximum, above 0"
+            raise ValueError(message)
+        if (
+            self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
             message = (
                 f"a rating's minimum, {self.minimum!r}, exceeds its maximum, "
                 f"{self.maximum!r}"
             )
             raise ValueError(message)
         return self
-
-    @property
-    def least(self) -> float:
-        """The smallest value the stress may take."""
-        if self.minimum is not None:
-            return self.minimum
-        return -math.inf if self.stress == "power" else -self.maximum
 
 
 class Instance(_Model):
@@ -188,6 +213,14 @@ class Instance(_Model):
     )
     ratings: tuple[Rating, ...] = Field(
         default=(), exclude_if=lambda ratings: not ratings
+    )
+    part: PartNumber | None = Field(
+        default=None,
+        exclude_if=lambda part: part is None,
+        description=(
+            "The maker's number of the part the instance stands for, if any: a "
+            "component instance so numbered is that one part, whatever it places."
+        ),
     )
     source: Source | None = None
 

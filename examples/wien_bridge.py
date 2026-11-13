@@ -11,9 +11,10 @@ sets it going. Simulate it with ``jolty simulate examples/wien_bridge.py``.
 
 import math
 
-from common import opamp, signal_diode
+from common import opamp
 
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
+from jolty.parts import d1n4148
 from jolty.plan import Transient
 from jolty.specs import frequency, peak_to_peak
 from jolty.units import Hz, V, kohm, ms, nF, uA, us
@@ -47,7 +48,7 @@ def oscillator(c: Builder) -> None:
     feedback = c.place(devices.resistor(12 * kohm), id="R3")
     limited = c.place(devices.resistor(10 * kohm), id="R4")
     gain = c.place(devices.resistor(10 * kohm), id="R5")
-    forward, backward = (c.place(signal_diode(), id=name) for name in ("D1", "D2"))
+    forward, backward = (c.place(d1n4148(), id=name) for name in ("D1", "D2"))
     c.connect(amplifier.out, series_r.a, feedback.a, output)
     c.connect(series_r.b, series_c.a, name="arm")
     c.connect(

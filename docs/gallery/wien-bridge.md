@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/wien_bridge.py`.
 
 [Open in 3D](wien-bridge.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/wien_bridge.py){ .md-button }
 
-15 devices, 9 unknowns, simulated in 1.85 s.
+15 devices, 11 unknowns, simulated in 1.85 s.
 
 ![The schematic](../images/gallery/wien_bridge.schematic.png)
 
@@ -17,8 +17,8 @@ Simulate it with `jolty simulate examples/wien_bridge.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of out from 30 ms in start ≥ 1.56 kHz and ≤ 1.623 kHz | 1.57384 kHz, passed | 1.57392 kHz, passed | 5.4e-05 |
-| peak-to-peak of out from 30 ms in start ≥ 2 V and ≤ 20 V | 3.1809 V, passed | 3.18105 V, passed | 4.5e-05 |
+| frequency of out from 30 ms in start ≥ 1.56 kHz and ≤ 1.623 kHz | 1.57384 kHz, passed | 1.57392 kHz, passed | 5.5e-05 |
+| peak-to-peak of out from 30 ms in start ≥ 2 V and ≤ 20 V | 3.1809 V, passed | 3.18105 V, passed | 4.6e-05 |
 
 ## Replicated in ngspice
 
