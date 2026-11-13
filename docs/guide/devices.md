@@ -1,7 +1,7 @@
 # Devices
 
 The module `jolty.devices` holds every device a script can place.
-Each function checks its parameters' units and returns a device ready to place; parameters left out take the engine's defaults.
+Each function checks its parameters' units and returns a device ready to place; parameters left out take the engine's defaults, which the [models reference](../reference/models.md) lists with every parameter of every model.
 
 Devices are simulated at the plan's temperature, 27 °C unless it gives one, and each device's parameters were measured at its `nominal_temperature`, 27 °C unless given.
 Away from it, passive values drift by their temperature coefficients, and semiconductors scale as ngspice scales them, as the sections below say.

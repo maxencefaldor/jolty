@@ -15,10 +15,11 @@ use std::marker::PhantomData;
 
 use jolty_ir::Parameters;
 use jolty_numerics::Entry;
+use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::device::read;
+use crate::device::{read, schema, written};
 use crate::stamp::CurrentBranch;
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
@@ -29,7 +30,7 @@ use crate::{
 pub const MAX_INPUTS: usize = 16;
 
 /// The level of a logic net.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum Level {
     /// A logic 0: the ground.
     #[serde(rename = "0")]
@@ -206,7 +207,7 @@ impl Pins {
     }
 }
 
-/// A kind of logic device: its name, and how to make one from its parameters.
+/// A kind of logic device: its name, its parameters, and how to make one from them.
 pub trait LogicModel: Send + Sync {
     /// The name circuits refer to the model by, such as `logic_cell`.
     fn name(&self) -> &'static str;
@@ -217,6 +218,17 @@ pub trait LogicModel: Send + Sync {
     ///
     /// Returns [`ParameterError`] when a parameter is missing, unknown or out of range.
     fn instantiate(&self, parameters: &Parameters) -> Result<Box<dyn Logic>, ParameterError>;
+
+    /// Every parameter a device of the model takes, with its type, its default and its
+    /// description, as a JSON schema of an object, every type within it written in place.
+    fn schema(&self) -> Schema;
+
+    /// `parameters` as the model takes them: each one left out, written with its default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when the parameters cannot be read.
+    fn defaulted(&self, parameters: &Parameters) -> Result<Parameters, ParameterError>;
 }
 
 /// A logic device implemented in Rust, whose parameters deserialize into a typed struct.
@@ -224,7 +236,7 @@ pub trait NativeLogic: Logic + Sized + 'static {
     /// The model's name.
     const NAME: &'static str;
     /// The parameters, deserialized from the instance's parameter map.
-    type Parameters: DeserializeOwned;
+    type Parameters: DeserializeOwned + Serialize + JsonSchema;
 
     /// Checks `parameters` and makes the device.
     ///
@@ -265,10 +277,18 @@ impl<D: NativeLogic> LogicModel for NativeLogicModel<D> {
     fn instantiate(&self, parameters: &Parameters) -> Result<Box<dyn Logic>, ParameterError> {
         Ok(Box::new(D::new(read(parameters)?)?))
     }
+
+    fn schema(&self) -> Schema {
+        schema::<D::Parameters>()
+    }
+
+    fn defaulted(&self, parameters: &Parameters) -> Result<Parameters, ParameterError> {
+        written(&read::<D::Parameters>(parameters)?)
+    }
 }
 
 /// One output of a logic cell and its truth table.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutputParameters {
     /// The output's name.
@@ -280,7 +300,7 @@ pub struct OutputParameters {
 }
 
 /// The fixed timing of a logic cell.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FixedTiming {
     /// The delay of an output rising to 1, in seconds.
@@ -294,7 +314,7 @@ pub struct FixedTiming {
 
 /// One timing arc of a characterized cell: how an output follows one input's change from
 /// one combination of the inputs.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArcParameters {
     /// The input that changes.
@@ -313,7 +333,7 @@ pub struct ArcParameters {
 
 /// The timing of a cell characterized from its circuit: tables of delays and transitions
 /// over input transitions and output loads, as a standard cell library's.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CharacterizedTiming {
     /// The input transitions the tables were measured at, in seconds, rising.
@@ -328,7 +348,7 @@ pub struct CharacterizedTiming {
 }
 
 /// How a logic cell's outputs follow its inputs in time.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum TimingParameters {
     /// The same delays after any input changes, whatever the load.
@@ -338,7 +358,7 @@ pub enum TimingParameters {
 }
 
 /// How a logic cell's pins cross to electrical nets.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ElectricalParameters {
     /// The fraction of the supply, from ground, at which an input switches; one half unless
@@ -368,7 +388,7 @@ fn ground() -> String {
 }
 
 /// The parameters of a logic cell.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LogicCellParameters {
     /// The inputs' names, in the order of the truth tables' bits.
@@ -770,7 +790,7 @@ fn check_names(pins: &Pins) -> Result<(), ParameterError> {
 }
 
 /// The parameters of a logic source.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LogicSourceParameters {
     /// The level at time zero.
@@ -871,7 +891,7 @@ pub trait Detect {
 }
 
 /// The parameters of a logic driver: none.
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LogicDriverParameters {}
 
@@ -977,7 +997,7 @@ impl Drive for LogicDriver {
 }
 
 /// The parameters of a threshold detector.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ThresholdDetectorParameters {
     /// The fraction of the supply, from ground, at which the level switches.

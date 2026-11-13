@@ -2,6 +2,8 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use jolty_ir::Parameters;
+use schemars::generate::SchemaSettings;
+use schemars::{JsonSchema, Schema};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -78,8 +80,8 @@ pub trait Source {
     fn level_derivative(&self, derivative: &mut [f64]);
 }
 
-/// A kind of device: its name, and how to read an instance's parameters into what makes
-/// its device.
+/// A kind of device: its name, its parameters, and how to read an instance's into what
+/// makes its device.
 pub trait Model: Send + Sync {
     /// The name circuits refer to the model by, such as `resistor`.
     fn name(&self) -> &'static str;
@@ -92,6 +94,19 @@ pub trait Model: Send + Sync {
     /// Returns [`ParameterError`] when a parameter is missing, unknown or of the wrong
     /// kind.
     fn read(&self, parameters: &Parameters) -> Result<Box<dyn Specification>, ParameterError>;
+
+    /// Every parameter a device of the model takes, with its type, its default and its
+    /// description, as a JSON schema of an object, every type within it written in place.
+    fn schema(&self) -> Schema;
+
+    /// `parameters` as the model takes them: each one left out, written with its default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when the parameters cannot be read.
+    fn defaulted(&self, parameters: &Parameters) -> Result<Parameters, ParameterError> {
+        self.read(parameters)?.parameters()
+    }
 
     /// Whether its devices are a foundry's, which ngspice simulates with the foundry's
     /// models: they elaborate, so the structural checks read their branches, but no
@@ -128,6 +143,14 @@ pub trait Specification: fmt::Debug + Send {
         parameter: &str,
         binding: &mut Binding<'_>,
     ) -> Result<Box<dyn Device<Gradient>>, ParameterError>;
+
+    /// The parameters, each one left out written with its default, which read back as
+    /// they are.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when they cannot be written as a JSON object.
+    fn parameters(&self) -> Result<Parameters, ParameterError>;
 }
 
 /// A device implemented in Rust, whose parameters deserialize into a typed struct.
@@ -137,8 +160,8 @@ pub trait NativeDevice<R: Real = f64>: Device<R> + Sized + 'static {
     /// Whether the device is a foundry's, as [`Model::foundry`] says.
     const FOUNDRY: bool = false;
     /// The parameters, deserialized from the instance's parameter map, which write as they
-    /// read.
-    type Parameters: DeserializeOwned + Serialize + Clone + fmt::Debug + Send;
+    /// read and which a JSON schema describes.
+    type Parameters: DeserializeOwned + Serialize + JsonSchema + Clone + fmt::Debug + Send;
 
     /// The terminals and branches of a device with `parameters`.
     fn interface(parameters: &Self::Parameters) -> Interface;
@@ -194,6 +217,10 @@ impl<M: NativeModel> Model for Native<M> {
         Ok(Box::new(Typed::<M>(read(parameters)?)))
     }
 
+    fn schema(&self) -> Schema {
+        schema::<ParametersOf<M, f64>>()
+    }
+
     fn foundry(&self) -> bool {
         <M::Device<f64> as NativeDevice<f64>>::FOUNDRY
     }
@@ -224,6 +251,10 @@ impl<M: NativeModel> Specification for Typed<M> {
     ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
         let parameters = lift(&self.0, parameter)?;
         Ok(Box::new(M::Device::<Gradient>::new(parameters, binding)?))
+    }
+
+    fn parameters(&self) -> Result<Parameters, ParameterError> {
+        written(&self.0)
     }
 }
 
@@ -264,6 +295,34 @@ pub(crate) fn lift<P: Serialize, Q: DeserializeOwned>(
     *leaf = serde_json::json!({"value": value, "derivative": 1.0});
     serde_json::from_value(Value::Object(written))
         .map_err(|error| ParameterError(error.to_string()))
+}
+
+/// The JSON schema of the parameters `P`, every type within it written in place.
+pub(crate) fn schema<P: JsonSchema>() -> Schema {
+    SchemaSettings::draft2020_12()
+        .with(|settings| settings.inline_subschemas = true)
+        .into_generator()
+        .into_root_schema_for::<P>()
+}
+
+/// `schema`, the schema of an object, with the properties of `more`, another's, among its
+/// own.
+pub(crate) fn extended(mut schema: Schema, more: &Schema) -> Schema {
+    let Some(added) = more.get("properties").and_then(Value::as_object) else {
+        return schema;
+    };
+    let properties = schema
+        .ensure_object()
+        .entry("properties")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(properties) = properties.as_object_mut() {
+        properties.extend(
+            added
+                .iter()
+                .map(|(name, property)| (name.clone(), property.clone())),
+        );
+    }
+    schema
 }
 
 /// Why a device's parameters are invalid.

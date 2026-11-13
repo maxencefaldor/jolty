@@ -1,4 +1,5 @@
 use jolty_numerics::Entry;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::stamp::CurrentBranch;
@@ -30,7 +31,7 @@ pub struct VoltageControlledVoltageSource<R: Real = f64> {
 }
 
 /// The parameters of a [`VoltageControlledVoltageSource`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct VoltageControlledVoltageSourceParameters<R: Real = f64> {
     /// The ratio of the output voltage to the control voltage.
@@ -99,7 +100,7 @@ pub struct VoltageControlledCurrentSource<R: Real = f64> {
 }
 
 /// The parameters of a [`VoltageControlledCurrentSource`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct VoltageControlledCurrentSourceParameters<R: Real = f64> {
     /// The ratio of the output current to the control voltage, in siemens.
@@ -178,7 +179,7 @@ pub struct CurrentControlledCurrentSource<R: Real = f64> {
 }
 
 /// The parameters of a [`CurrentControlledCurrentSource`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct CurrentControlledCurrentSourceParameters<R: Real = f64> {
     /// The ratio of the output current to the control current.
@@ -260,7 +261,7 @@ pub struct CurrentControlledVoltageSource<R: Real = f64> {
 }
 
 /// The parameters of a [`CurrentControlledVoltageSource`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct CurrentControlledVoltageSourceParameters<R: Real = f64> {
     /// The ratio of the output voltage to the control current, in ohms.

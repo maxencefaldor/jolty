@@ -1,9 +1,11 @@
 # Copyright 2026 Maxence Faldor
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 
 from jolty import (
     Builder,
@@ -14,16 +16,18 @@ from jolty import (
     Role,
     Simulation,
     SpiceError,
+    _core,
     circuit,
     component,
     devices,
     ir,
     spice,
 )
+from jolty.spice import sky130
 from jolty.spice.export import netlist
 from jolty.spice.expressions import evaluate, number, parse, translate
 from jolty.spice.netlist import statements, tokens
-from jolty.units import K, V, celsius, kohm
+from jolty.units import A, C, H, J, K, V, W, celsius, kohm, mA, nm, ns, ohm, s, uF, um
 
 
 def library(text: str) -> spice.Library:
@@ -486,6 +490,90 @@ def test_resistors_and_capacitors_read_voltage_coefficients() -> None:
     )
     with pytest.raises(SpiceError, match="jolty reads no `VC1` here"):
         library(".subckt a x\nL1 x 0 1u VC1=1m\n.ends").component("a")
+
+
+def _every_model() -> list[devices.Device]:
+    """A device of every model the engine holds, as a script places it."""
+    rate = 1e6 / s
+    return [
+        devices.behavioral_current_source("1e-3 * v(a, b)"),
+        devices.behavioral_voltage_source("2 * i(p)"),
+        devices.bipolar_transistor(polarity="pnp", forward_early_voltage=50 * V),
+        devices.capacitor(1 * uF),
+        devices.coupled_inductors(
+            [devices.inductor(1 * H), devices.inductor(2 * H)], {}
+        ),
+        devices.current_controlled_current_source(2),
+        devices.current_controlled_memristor(
+            on_resistance=100 * ohm, off_resistance=16 * kohm, charge=2e-6 * C
+        ),
+        devices.current_controlled_switch(on_current=2 * mA),
+        devices.current_controlled_voltage_source(1 * kohm),
+        devices.current_source(1 * A),
+        devices.diode().heated(),
+        sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um),
+        devices.heat_source(1 * W),
+        devices.inductor(1 * H),
+        devices.jfet(channel="p"),
+        devices.logic_gate("nand", rise=1 * ns, transition=1 * ns, electrical=True),
+        devices.logic_source(0, [(1 * ns, 1)], transition=1 * ns),
+        devices.mosfet(level=3, oxide_thickness=10 * nm),
+        devices.photocell(10 * kohm),
+        devices.resistor(1 * kohm).held_at(celsius(85)),
+        devices.thermal_capacitance(1 * J / K),
+        devices.thermal_resistance(10 * K / W),
+        devices.voltage_controlled_current_source(1e-3 * A / V),
+        devices.voltage_controlled_memristor(
+            on_resistance=1 * kohm,
+            off_resistance=100 * kohm,
+            on_voltage=-1 * V,
+            off_voltage=0.5 * V,
+            on_rate=rate,
+            off_rate=rate,
+        ),
+        devices.voltage_controlled_switch(),
+        devices.voltage_controlled_voltage_source(10),
+        devices.voltage_source(5 * V),
+    ]
+
+
+def _within(given: JsonValue, defaulted: JsonValue) -> bool:
+    """Whether `defaulted` holds `given`, each object within it with defaults added."""
+    match given, defaulted:
+        case dict(), dict():
+            return all(
+                key in defaulted and _within(value, defaulted[key])
+                for key, value in given.items()
+            )
+        case list(), list():
+            return len(given) == len(defaulted) and all(
+                _within(*pair) for pair in zip(given, defaulted, strict=True)
+            )
+    return given == defaulted
+
+
+def test_the_engine_gives_every_models_parameters_with_their_defaults() -> None:
+    placed = {device.model: device.parameters for device in _every_model()}
+    assert sorted(placed) == _core.models()
+    for model, given in placed.items():
+        defaulted = json.loads(_core.defaulted(model, json.dumps(given)))
+        # The parameters with their defaults read back as they are.
+        assert json.loads(_core.defaulted(model, json.dumps(defaulted))) == defaulted
+        schema = json.loads(_core.schema(model))
+        for name, field in schema["properties"].items():
+            if name in given:
+                assert _within(given[name], defaulted[name]), (model, name)
+            elif "default" in field:
+                assert defaulted[name] == field["default"], (model, name)
+            else:
+                assert name in {"temperature", "temperature_offset"}, (model, name)
+
+
+def test_the_engine_says_what_it_cannot_default() -> None:
+    with pytest.raises(ValueError, match="no model is named `transistor`"):
+        _core.defaulted("transistor", "{}")
+    with pytest.raises(ValueError, match="a resistor's parameters: missing field"):
+        _core.defaulted("resistor", "{}")
 
 
 def test_a_download_is_checked_and_kept(tmp_path: Path) -> None:

@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::junction::{
@@ -15,7 +16,7 @@ use crate::{
 };
 
 /// The doping order of a bipolar transistor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Polarity {
     /// An NPN transistor, conducting with its base above its emitter.
@@ -37,7 +38,7 @@ impl Polarity {
 }
 
 /// How a bipolar transistor is built, which sets where its junction to the substrate lies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Construction {
     /// Built vertically, with the junction to the substrate at the collector.
@@ -110,7 +111,7 @@ const INNER_EMITTER: usize = 3;
 
 /// The parameters of a [`BipolarTransistor`], with SPICE's defaults. A parameter SPICE
 /// treats as infinite at zero, such as an Early voltage, is infinite when left out.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct BipolarTransistorParameters<R: Real = f64> {
     /// The doping order; default `npn`.

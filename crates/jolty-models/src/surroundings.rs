@@ -3,7 +3,10 @@
 use std::borrow::Cow;
 
 use jolty_ir::Parameters;
+use schemars::{JsonSchema, Schema};
+use serde_json::Value;
 
+use crate::device::{extended, schema};
 use crate::{Binding, Device, Gradient, Interface, Model, ParameterError, Specification};
 
 /// A model whose every device may run at a temperature of its own, as SPICE's `TEMP` and
@@ -28,7 +31,7 @@ impl<M: Model> Surrounded<M> {
 
 /// Where a device's temperature comes from: the simulation's, unless its parameters give
 /// one of these.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, JsonSchema)]
 struct Own {
     /// The temperature the device is held at whatever the simulation's, in kelvins; at
     /// least 0. Without it, the device is at the simulation's temperature.
@@ -119,6 +122,10 @@ impl<M: Model> Model for Surrounded<M> {
         Ok(Box::new(AtOwn { own, inner }))
     }
 
+    fn schema(&self) -> Schema {
+        extended(self.inner.schema(), &schema::<Own>())
+    }
+
     fn foundry(&self) -> bool {
         self.inner.foundry()
     }
@@ -148,6 +155,17 @@ impl Specification for AtOwn {
     ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
         binding.set_temperature(self.own.temperature(binding.temperature())?);
         self.inner.instantiate_gradient(parameter, binding)
+    }
+
+    fn parameters(&self) -> Result<Parameters, ParameterError> {
+        let mut written = self.inner.parameters()?;
+        let given = [self.own.temperature, self.own.temperature_offset];
+        for (name, value) in Own::NAMES.into_iter().zip(given) {
+            if let Some(kelvins) = value {
+                written.insert(name.to_owned(), Value::from(kelvins));
+            }
+        }
+        Ok(written)
     }
 }
 

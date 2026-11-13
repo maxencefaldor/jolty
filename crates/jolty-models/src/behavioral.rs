@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 
 use jolty_expressions::{Expression, Variable, Workspace};
 use jolty_numerics::Entry;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::stamp::CurrentBranch;
@@ -122,10 +123,12 @@ impl Behavior {
 }
 
 /// The parameters of a [`BehavioralVoltageSource`] or a [`BehavioralCurrentSource`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BehavioralParameters {
-    /// What the source's output follows.
+    /// What the source's output follows: an expression of the voltages of the terminals
+    /// it reads, of the currents through sensing ports of its own, and of time.
+    #[schemars(with = "String")]
     pub expression: Behavior,
 }
 

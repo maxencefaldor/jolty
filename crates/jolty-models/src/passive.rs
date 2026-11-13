@@ -1,4 +1,5 @@
 use jolty_numerics::Entry;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::junction::Temperatures;
@@ -67,7 +68,7 @@ impl<R: Real> VoltageCoefficients<R> {
 }
 
 /// The parameters of a [`Resistor`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct ResistorParameters<R: Real = f64> {
     /// The resistance, in ohms, at the nominal temperature; positive.
@@ -83,7 +84,7 @@ pub struct ResistorParameters<R: Real = f64> {
     #[serde(default)]
     pub exponential_temperature_coefficient: Option<R>,
     /// The temperature the resistance was measured at, in kelvins; default 27 °C.
-    #[serde(default = "reference_temperature")]
+    #[serde(default = "reference_temperature::<R>")]
     pub nominal_temperature: R,
     /// The linear voltage coefficient `vc1`, per volt; default 0.
     #[serde(default)]
@@ -95,7 +96,7 @@ pub struct ResistorParameters<R: Real = f64> {
     #[serde(default)]
     pub flicker_coefficient: R,
     /// The power of the current in the flicker noise, `AF`; default 1.
-    #[serde(default = "one")]
+    #[serde(default = "one::<R>")]
     pub flicker_exponent: R,
 }
 
@@ -267,7 +268,7 @@ pub struct Capacitor<R: Real = f64> {
 }
 
 /// The parameters of a [`Capacitor`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct CapacitorParameters<R: Real = f64> {
     /// The capacitance, in farads, at the nominal temperature; zero or positive.
@@ -279,7 +280,7 @@ pub struct CapacitorParameters<R: Real = f64> {
     #[serde(default)]
     pub quadratic_temperature_coefficient: R,
     /// The temperature the capacitance was measured at, in kelvins; default 27 °C.
-    #[serde(default = "reference_temperature")]
+    #[serde(default = "reference_temperature::<R>")]
     pub nominal_temperature: R,
     /// The linear voltage coefficient `vc1`, per volt; default 0.
     #[serde(default)]
@@ -352,7 +353,7 @@ pub struct Inductor<R: Real = f64> {
 }
 
 /// The parameters of an [`Inductor`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct InductorParameters<R: Real = f64> {
     /// The inductance, in henries, at the nominal temperature; positive.
@@ -364,7 +365,7 @@ pub struct InductorParameters<R: Real = f64> {
     #[serde(default)]
     pub quadratic_temperature_coefficient: R,
     /// The temperature the inductance was measured at, in kelvins; default 27 °C.
-    #[serde(default = "reference_temperature")]
+    #[serde(default = "reference_temperature::<R>")]
     pub nominal_temperature: R,
 }
 
@@ -426,7 +427,7 @@ pub struct CoupledInductors<R: Real = f64> {
 }
 
 /// The parameters of [`CoupledInductors`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct CoupledInductorsParameters<R: Real = f64> {
     /// Each winding, as an inductor's parameters; at least two.
@@ -437,7 +438,7 @@ pub struct CoupledInductorsParameters<R: Real = f64> {
 }
 
 /// How closely two windings' fluxes link.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct Coupling<R: Real = f64> {
     /// The two windings, by their numbers from 1.

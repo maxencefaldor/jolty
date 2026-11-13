@@ -44,6 +44,7 @@ nav = [
     { "Rules" = "reference/rules.md" },
     { "Configuration" = "reference/configuration.md" },
     { "Expressions" = "reference/expressions.md" },
+    { "Models" = "reference/models.md" },
     { "Python API" = [
       { "Circuits" = "reference/circuits.md" },
       { "Simulation" = "reference/simulation.md" },

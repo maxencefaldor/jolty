@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::stamp::CurrentBranch;
@@ -8,7 +9,7 @@ use crate::{
 };
 
 /// The parameters of an independent source.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct SourceParameters<R: Real = f64> {
     /// The source's level over time, in volts or amperes.

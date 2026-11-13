@@ -3,7 +3,8 @@
 
 Each function checks the dimension of every parameter it reads, so a capacitance
 passed where a resistance belongs fails on the line that passed it. Parameters left out
-take the engine's defaults.
+take the engine's defaults, which the reference's models page lists with every
+parameter of every model.
 
 Examples:
     >>> from jolty.units import kohm
@@ -316,18 +317,18 @@ def resistor(  # noqa: PLR0913 - its value, tolerance, drift, curvature and nois
 
     A tolerance, such as 0.01 for 1 %, spreads its resistance evenly within it, as Monte
     Carlo analyses sample it. Its resistance drifts with temperature, by
-    ``1 + tc1 · ΔT + tc2 · ΔT²`` from its value at the nominal temperature, 27 °C unless
-    given, with the linear and quadratic temperature coefficients, none unless given.
-    An exponential temperature coefficient, in percent per kelvin as SPICE's ``TCE``,
-    drifts it by ``1.01^(tce · ΔT)`` instead.
+    ``1 + tc1 · ΔT + tc2 · ΔT²`` from its value at the nominal temperature, with the
+    linear and quadratic temperature coefficients. An exponential temperature
+    coefficient, in percent per kelvin as SPICE's ``TCE``, drifts it by
+    ``1.01^(tce · ΔT)`` instead.
 
     Its resistance also changes with the voltage ``v`` from ``a`` to ``b``, by
-    ``1 + vc1 · v + vc2 · v²``, with the linear and quadratic voltage coefficients, none
-    unless given; where they bend it below zero, it is negative there, as in ngspice.
+    ``1 + vc1 · v + vc2 · v²``, with the linear and quadratic voltage coefficients;
+    where they bend it below zero, it is negative there, as in ngspice.
 
-    Beside its thermal noise, with a flicker coefficient ``KF``, none unless given, its
-    current ``I`` makes flicker noise of ``KF · |I|^AF / f`` A²/Hz across it, ``AF`` the
-    flicker exponent, 1 unless given, as ngspice's resistor makes it.
+    Beside its thermal noise, with a flicker coefficient ``KF``, its current ``I`` makes
+    flicker noise of ``KF · |I|^AF / f`` A²/Hz across it, ``AF`` the flicker exponent,
+    as ngspice's resistor makes it.
 
     Examples:
         >>> from jolty.units import K, V, kohm
@@ -648,8 +649,7 @@ def voltage_controlled_switch(
     The voltage of ``control_positive`` over ``control_negative`` moves its resistance
     smoothly, logarithmically, from the off resistance at the off voltage to the on
     resistance at the on voltage; beyond either, the resistance holds. The control
-    terminals draw no current. Parameters left out take PSpice's defaults: 1 Ω on, 1 MΩ
-    off, on at 1 V and off at 0 V.
+    terminals draw no current. Parameters left out take PSpice's defaults.
     """
     parameters = _parameters(
         {
@@ -676,8 +676,7 @@ def current_controlled_switch(
     circuit whose current, the unknown ``control``, moves the resistance as a
     [`voltage_controlled_switch`][jolty.devices.voltage_controlled_switch]'s voltage
     does, from the off resistance at the off current to the on resistance at the on
-    current. Parameters left out take PSpice's defaults: 1 Ω on, 1 MΩ off, on at 1 mA
-    and off at 0 A.
+    current. Parameters left out take PSpice's defaults.
     """
     parameters = _parameters(
         {
@@ -703,11 +702,11 @@ def photocell(
 
     The voltage of ``light_positive`` over ``light_negative`` is the illuminance on the
     cell, 1 V for each lux, and those terminals draw no current. Its resistance is
-    `resistance` at the reference `illuminance`, in lux, 10 unless given, as datasheets
-    state it, and falls as the illuminance to the power `gamma`, 0.7 unless given, in
-    parallel with its dark resistance, 1 MΩ unless given. With a response time, its
-    conductance follows the light with that time constant, as a cadmium sulphide cell's
-    does, over milliseconds; without one, at once.
+    `resistance` at the reference `illuminance`, in lux, as datasheets state it, and
+    falls as the illuminance to the power `gamma`, in parallel with its dark
+    resistance. With a response time, its conductance follows the light with that time
+    constant, as a cadmium sulphide cell's does, over milliseconds; without one, at
+    once.
 
     Examples:
         >>> from jolty.units import kohm, ms
@@ -742,15 +741,14 @@ def voltage_controlled_memristor(  # noqa: PLR0913 - VTEAM's thresholds, rates a
 ) -> Device:
     """A voltage-controlled memristor between ``positive`` and ``negative``, VTEAM's.
 
-    Its resistance follows its state by its `law`, linear unless given, from
-    `on_resistance` at a state of 0 to `off_resistance` at 1. A voltage of ``positive``
-    over ``negative`` above `off_voltage` moves the state toward off at `off_rate` times
-    ``(v/v_off - 1)`` to the power `off_exponent`, and one below `on_voltage`, a
-    negative voltage, toward on at `on_rate` times ``(v/v_on - 1)`` to the power
-    `on_exponent`, each exponent 1 unless given; between them, the state holds. Each
-    rate is the state's speed at twice its threshold, in full ranges per second. A
-    `window`, 0.01 of the range unless given, slows the state at either bound, which it
-    never passes. It is made in `state`, 1, fully off, unless given.
+    Its resistance follows its state by its `law`, from `on_resistance` at a state of 0
+    to `off_resistance` at 1. A voltage of ``positive`` over ``negative`` above
+    `off_voltage` moves the state toward off at `off_rate` times ``(v/v_off - 1)`` to
+    the power `off_exponent`, and one below `on_voltage`, a negative voltage, toward on
+    at `on_rate` times ``(v/v_on - 1)`` to the power `on_exponent`; between them, the
+    state holds. Each rate is the state's speed at twice its threshold, in full ranges
+    per second. A `window`, a fraction of the range, slows the state at either bound,
+    which it never passes. It is made in `state`.
 
     Examples:
         >>> from jolty.units import V, kohm, s
@@ -796,13 +794,12 @@ def current_controlled_memristor(  # noqa: PLR0913 - its resistances, charge, la
 ) -> Device:
     """A current-controlled memristor between ``positive`` and ``negative``, HP's.
 
-    Its resistance follows its state by its `law`, linear unless given, from
-    `on_resistance` at a state of 0 to `off_resistance` at 1. The state moves with the
-    charge through it, from ``positive`` to ``negative`` toward off, by the charge over
-    `charge`, the charge that carries it across its whole range, as the dopants of HP's
-    titanium dioxide cell drift. A `window`, 0.01 of the range unless given, slows the
-    state at either bound, which it never passes. It is made in `state`, 1, fully off,
-    unless given.
+    Its resistance follows its state by its `law`, from `on_resistance` at a state of 0
+    to `off_resistance` at 1. The state moves with the charge through it, from
+    ``positive`` to ``negative`` toward off, by the charge over `charge`, the charge
+    that carries it across its whole range, as the dopants of HP's titanium dioxide
+    cell drift. A `window`, a fraction of the range, slows the state at either bound,
+    which it never passes. It is made in `state`.
 
     Examples:
         >>> from jolty.units import kohm, ohm, uC
@@ -846,22 +843,18 @@ def diode(  # noqa: PLR0913 - the SPICE junction model has fifteen parameters
 ) -> Device:
     """A junction diode from ``anode`` to ``cathode``, in the SPICE model.
 
-    Parameters left out take SPICE's defaults: a saturation current of 10 fA, an
-    emission coefficient of 1, no series resistance, junction capacitance or transit
-    time, a junction potential of 1 V, and grading and depletion coefficients of 0.5.
-    Given a breakdown voltage, the reverse current grows exponentially beyond it, with
-    a breakdown current of 1 mA there and the emission coefficient unless given.
+    Parameters left out take SPICE's defaults. Given a breakdown voltage, the reverse
+    current grows exponentially beyond it, with the breakdown current there and the
+    breakdown emission coefficient, the emission coefficient unless given.
 
-    Away from the nominal temperature, 27 °C unless given, the saturation current scales
-    with the energy gap, 1.11 V unless given, and the temperature exponent, 3 unless
-    given; the junction potential and capacitance follow silicon's band gap, and the
-    breakdown voltage falls by its temperature coefficient, none unless given, as in
-    ngspice.
+    Away from the nominal temperature, the saturation current scales with the energy
+    gap and the temperature exponent; the junction potential and capacitance follow
+    silicon's band gap, and the breakdown voltage falls by its temperature coefficient,
+    as in ngspice.
 
     Its series resistance makes thermal noise and its current shot noise; with a
-    flicker coefficient ``KF``, none unless given, its current ``I`` also makes flicker
-    noise of ``KF · |I|^AF / f`` A²/Hz, ``AF`` the flicker exponent, 1 unless given, as
-    SPICE models it.
+    flicker coefficient ``KF``, its current ``I`` also makes flicker noise of
+    ``KF · |I|^AF / f`` A²/Hz, ``AF`` the flicker exponent, as SPICE models it.
     """
     parameters = _parameters(
         {
@@ -933,24 +926,19 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
 
     It follows the SPICE model with Sydney University's doping tail, as ngspice does:
     two gate junctions, and a drain current that follows the square law above the
-    threshold voltage. Parameters left out take SPICE's defaults: an n-channel, a
-    threshold of -2 V, a transconductance parameter of 100 µA/V², no channel-length
-    modulation, resistance or capacitance, a junction potential of 1 V, a saturation
-    current of 10 fA, a depletion coefficient of 0.5, and a doping tail of 1, the plain
-    square law. A drain or source resistance adds an internal node, the unknown
-    ``drain`` or ``source``.
+    threshold voltage. Parameters left out take SPICE's defaults, and a doping tail of 1
+    is the plain square law. A drain or source resistance adds an internal node, the
+    unknown ``drain`` or ``source``.
 
-    Away from the nominal temperature, 27 °C unless given, the gate junctions'
-    saturation current scales with the energy gap, 1.11 V unless given, and the
-    temperature exponent, none unless given; their potential and capacitances follow
-    silicon's band gap; the threshold moves by its temperature coefficient and the
-    transconductance parameter scales by its temperature exponent, neither unless given,
-    as in ngspice.
+    Away from the nominal temperature, the gate junctions' saturation current scales
+    with the energy gap and the temperature exponent; their potential and capacitances
+    follow silicon's band gap; the threshold moves by its temperature coefficient and
+    the transconductance parameter scales by its temperature exponent, as in ngspice.
 
     Its resistances make thermal noise, and its channel thermal noise of
-    ``8kT · gm / 3`` A²/Hz; with a flicker coefficient ``KF``, none unless given, its
-    drain current ``Id`` also makes flicker noise of ``KF · |Id|^AF / f`` A²/Hz, ``AF``
-    the flicker exponent, 1 unless given, as SPICE models it.
+    ``8kT · gm / 3`` A²/Hz; with a flicker coefficient ``KF``, its drain current ``Id``
+    also makes flicker noise of ``KF · |Id|^AF / f`` A²/Hz, ``AF`` the flicker exponent,
+    as SPICE models it.
 
     Examples:
         >>> from jolty.units import V, mA
@@ -1044,12 +1032,9 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
     """A bipolar junction transistor between ``collector``, ``base`` and ``emitter``.
 
     It follows the Gummel-Poon model of SPICE, as ngspice does. Parameters left out take
-    SPICE's defaults: an NPN with a saturation current of 0.1 fA, a forward beta of 100
-    and a reverse beta of 1, emission coefficients of 1, infinite Early voltages and
-    knee currents, no leakage, resistance, capacitance or transit time, and junction
-    potentials of 0.75 V with grading coefficients of 0.33. A base, collector or emitter
-    resistance adds an internal node, the unknown ``base``, ``collector`` or
-    ``emitter``.
+    SPICE's defaults, an Early voltage or a knee current left out infinite. A base,
+    collector or emitter resistance adds an internal node, the unknown ``base``,
+    ``collector`` or ``emitter``.
 
     A transistor built ``vertical`` or ``lateral`` has a fourth terminal, ``substrate``,
     joined by a junction to its collector if vertical or to its base if lateral. The
@@ -1063,15 +1048,14 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
     ``PTF``; the filter's two unknowns are ``delayed_transport`` and
     ``delayed_transport_slope``.
 
-    Away from the nominal temperature, 27 °C unless given, the saturation currents scale
-    with the energy gap, 1.11 V unless given, and the temperature exponent, 3 unless
-    given; the betas scale by their temperature exponent, none unless given, and the
-    junctions' potentials and capacitances follow silicon's band gap, as in ngspice.
+    Away from the nominal temperature, the saturation currents scale with the energy
+    gap and the temperature exponent; the betas scale by their temperature exponent,
+    and the junctions' potentials and capacitances follow silicon's band gap, as in
+    ngspice.
 
     Its resistances make thermal noise, and its collector and base currents shot noise;
-    with a flicker coefficient ``KF``, none unless given, its base current ``Ib`` also
-    makes flicker noise of ``KF · |Ib|^AF / f`` A²/Hz, ``AF`` the flicker exponent, 1
-    unless given, as SPICE models it.
+    with a flicker coefficient ``KF``, its base current ``Ib`` also makes flicker noise
+    of ``KF · |Ib|^AF / f`` A²/Hz, ``AF`` the flicker exponent, as SPICE models it.
 
     Examples:
         >>> from jolty.units import V, fA
@@ -1205,20 +1189,15 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
     saturation and ``vds · (vgs - von - vds / 2)`` below it, where the threshold
     ``von = vto + gamma · (√(phi - vbs) - √phi)`` rises with the body effect. Two
     junctions join the bulk to the drain and the source. Parameters left out take
-    SPICE's defaults: an n-channel 100 µm wide and long, a threshold of 0 V, a
-    transconductance parameter of 20 µA/V², no body effect, a surface potential of
-    0.6 V, a saturation current of 10 fA, a junction potential of 0.8 V, grading and
-    depletion coefficients of 0.5, and no channel-length modulation, resistance or
-    capacitance. An oxide thickness gives the gate Meyer's capacitances; with a
+    SPICE's defaults. An oxide thickness gives the gate Meyer's capacitances; with a
     substrate doping, it derives the threshold, the body effect and the surface
     potential left out, as SPICE derives them. The body effect is a number of
     square-root volts.
 
-    Away from the nominal temperature, 27 °C unless given, the transconductance
-    parameter and the mobility fall as the temperature to the power -1.5, the surface
-    potential follows silicon's band gap and the threshold with it, and the junctions'
-    saturation currents, potential and capacitances follow the band gap too, as in
-    ngspice.
+    Away from the nominal temperature, the transconductance parameter and the mobility
+    fall as the temperature to the power -1.5, the surface potential follows silicon's
+    band gap and the threshold with it, and the junctions' saturation currents,
+    potential and capacitances follow the band gap too, as in ngspice.
 
     At ``level=3``, the channel follows SPICE's semi-empirical law of short channels
     instead, and the parameters from ``max_drift_velocity`` on, level 3's alone, model
@@ -1235,11 +1214,10 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
     ``gate_bulk_displacement``.
 
     Its resistances make thermal noise, and its channel thermal noise of
-    ``8kT · gm / 3`` A²/Hz; with a flicker coefficient ``KF``, none unless given, its
-    drain current ``Id`` also makes flicker noise of
-    ``KF · |Id|^AF / (f · W · Leff · Cox²)`` A²/Hz over its effective gate, the widths
-    of its parallel copies summed, with an oxide 0.1 µm thick unless given, ``AF`` the
-    flicker exponent, 1 unless given, as ngspice models it.
+    ``8kT · gm / 3`` A²/Hz; with a flicker coefficient ``KF``, its drain current ``Id``
+    also makes flicker noise of ``KF · |Id|^AF / (f · W · Leff · Cox²)`` A²/Hz over its
+    effective gate, the widths of its parallel copies summed, with an oxide 0.1 µm thick
+    unless given, ``AF`` the flicker exponent, as ngspice models it.
 
     Examples:
         >>> from jolty.units import nm, um
@@ -1360,9 +1338,9 @@ def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical p
     The cell's pins join logic nets, which an event scheduler simulates. An
     `electrical` cell has the terminals ``supply`` and ``ground`` too, and its pins may
     join electrical nets: each input then reads its net against `threshold` of the
-    supply, from ground, half unless given, and loads it with `input_capacitance`, zero
-    unless given, and each output drives its net between ground and supply in a ramp,
-    crossing half the supply when its level changes.
+    supply, from ground, and loads it with `input_capacitance`, zero unless given, and
+    each output drives its net between ground and supply in a ramp, crossing half the
+    supply when its level changes.
 
     Examples:
         >>> from jolty.units import ps
@@ -1400,10 +1378,8 @@ def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical p
             if input_capacitance is None
             else input_capacitance.to(CAPACITANCE, "an input capacitance")
         )
-        parameters["electrical"] = {
-            "threshold": finite(0.5 if threshold is None else threshold, "threshold"),
-            "input_capacitances": [capacitance] * len(inputs),
-        }
+        pins: dict[str, JsonValue] = {"input_capacitances": [capacitance] * len(inputs)}
+        parameters["electrical"] = pins | _parameters({}, {"threshold": threshold})
     elif input_capacitance is not None or threshold is not None:
         message = "only an electrical cell has an input capacitance and a threshold"
         raise ValueError(message)

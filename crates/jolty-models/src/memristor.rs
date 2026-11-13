@@ -1,4 +1,5 @@
 use jolty_numerics::Entry;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -8,7 +9,7 @@ use crate::{
 
 /// How a memristor's resistance follows its state `x`, from its on resistance at 0 to its
 /// off resistance at 1, as VTEAM gives it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MemristorLaw {
     /// `r_on + (r_off − r_on) · x`, as two resistances in series whose boundary moves.
@@ -309,7 +310,7 @@ fn a_hundredth<R: Real>() -> R {
 pub struct VoltageControlledMemristor<R: Real = f64>(Memristor<R>);
 
 /// The parameters of a [`VoltageControlledMemristor`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct VoltageControlledMemristorParameters<R: Real = f64> {
     /// The resistance fully on, at a state of 0, in ohms; positive.
@@ -328,21 +329,21 @@ pub struct VoltageControlledMemristorParameters<R: Real = f64> {
     pub off_rate: R,
     /// How steeply the speed toward on grows past the on voltage, `α_on`; at least 1;
     /// default 1.
-    #[serde(default = "one")]
+    #[serde(default = "one::<R>")]
     pub on_exponent: R,
     /// How steeply the speed toward off grows past the off voltage, `α_off`; at least 1;
     /// default 1.
-    #[serde(default = "one")]
+    #[serde(default = "one::<R>")]
     pub off_exponent: R,
     /// How the resistance follows the state; default linear.
     #[serde(default)]
     pub law: MemristorLaw,
     /// The state it was made in, from 0, fully on, to 1, fully off; default 1.
-    #[serde(default = "one")]
+    #[serde(default = "one::<R>")]
     pub state: R,
     /// The width of the window that slows the state at either bound, a fraction of its
     /// range; positive; default 0.01.
-    #[serde(default = "a_hundredth")]
+    #[serde(default = "a_hundredth::<R>")]
     pub window: R,
 }
 
@@ -434,7 +435,7 @@ impl<R: Real> Device<R> for VoltageControlledMemristor<R> {
 pub struct CurrentControlledMemristor<R: Real = f64>(Memristor<R>);
 
 /// The parameters of a [`CurrentControlledMemristor`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct CurrentControlledMemristorParameters<R: Real = f64> {
     /// The resistance fully on, at a state of 0, in ohms; positive.
@@ -447,11 +448,11 @@ pub struct CurrentControlledMemristorParameters<R: Real = f64> {
     #[serde(default)]
     pub law: MemristorLaw,
     /// The state it was made in, from 0, fully on, to 1, fully off; default 1.
-    #[serde(default = "one")]
+    #[serde(default = "one::<R>")]
     pub state: R,
     /// The width of the window that slows the state at either bound, a fraction of its
     /// range; positive; default 0.01.
-    #[serde(default = "a_hundredth")]
+    #[serde(default = "a_hundredth::<R>")]
     pub window: R,
 }
 

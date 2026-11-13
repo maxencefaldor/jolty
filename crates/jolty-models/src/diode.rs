@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::junction::{
@@ -87,7 +88,7 @@ impl<R: Real> Breakdown<R> {
 }
 
 /// The parameters of a [`Diode`], with SPICE's defaults.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct DiodeParameters<R: Real = f64> {
     /// The saturation current, in amperes; default 1e-14.

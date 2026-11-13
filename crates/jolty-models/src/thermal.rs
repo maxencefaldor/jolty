@@ -5,6 +5,7 @@
 //! capacitance stores it as a capacitor stores charge, and a heat source drives it as a
 //! current source drives current, so a network of them is solved as a circuit is.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -21,7 +22,7 @@ pub struct ThermalResistance<R: Real = f64> {
 }
 
 /// The parameters of a [`ThermalResistance`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct ThermalResistanceParameters<R: Real = f64> {
     /// The resistance, in kelvins per watt; positive.
@@ -69,7 +70,7 @@ pub struct ThermalCapacitance<R: Real = f64> {
 }
 
 /// The parameters of a [`ThermalCapacitance`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct ThermalCapacitanceParameters<R: Real = f64> {
     /// The heat capacity, in joules per kelvin; zero or positive.
@@ -117,7 +118,7 @@ pub struct HeatSource<R: Real = f64> {
 }
 
 /// The parameters of a [`HeatSource`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct HeatSourceParameters<R: Real = f64> {
     /// The heat flow, in watts.

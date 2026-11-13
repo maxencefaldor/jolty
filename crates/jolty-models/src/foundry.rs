@@ -5,6 +5,7 @@
 //! names it. Its parameters name the process design kit and the kit's model, and give its
 //! size, which a netlist written for ngspice hands the kit's model.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -19,7 +20,7 @@ pub struct FoundryMosfet<R: Real = f64> {
 }
 
 /// The parameters of a [`FoundryMosfet`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct FoundryMosfetParameters<R: Real = f64> {
     /// The process design kit, such as `sky130`.

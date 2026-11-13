@@ -4,6 +4,7 @@
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, Serializer};
 
 /// A real number a model computes with.
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize, Serializer};
 /// `f64` is the number itself; [`Gradient`] carries its derivative with respect to one
 /// parameter alongside, by forward-mode automatic differentiation. Comparisons and
 /// branches read the value alone, so a model takes the same branch with either. A
-/// parameter file reads it, and it writes as it reads.
+/// parameter file reads it, it writes as it reads, and a JSON schema describes it.
 pub trait Real:
     Copy
     + fmt::Debug
@@ -32,6 +33,7 @@ pub trait Real:
     + SubAssign
     + for<'de> Deserialize<'de>
     + Serialize
+    + JsonSchema
 {
     /// A number with no derivative.
     fn constant(value: f64) -> Self;
@@ -212,7 +214,7 @@ impl Real for f64 {
 /// In a parameter file, a number reads as a constant, and the object
 /// `{"value": v, "derivative": 1}` as the parameter differentiated against. It writes as it
 /// reads: a constant as a number, any other as that object.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(from = "Written", into = "Written")]
 pub struct Gradient {
     /// The number.
@@ -222,7 +224,7 @@ pub struct Gradient {
 }
 
 /// How a [`Gradient`] is written: a plain number, or a number and its derivative.
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 enum Written {
     /// A constant.
@@ -391,7 +393,7 @@ impl SubAssign for Gradient {
 /// In a parameter file it reads as a [`Gradient`] does, the derivative with respect to the
 /// first variable, and writes as one. No parameter has a derivative with respect to the
 /// second variable, so a number with one does not write.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(from = "Written")]
 pub struct Hyper {
     /// The number.

@@ -21,7 +21,6 @@ jolty-ir.workspace = true
 jolty-models.workspace = true
 numpy.workspace = true
 pyo3 = { workspace = true, features = ["abi3-py314"] }
-serde.workspace = true
 serde_json.workspace = true
 
 [lints]

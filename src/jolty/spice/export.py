@@ -146,7 +146,7 @@ def _nets(instance: ir.Instance, model: str) -> list[str]:
     terminals = instance.terminals
     nets = [terminals[name] for name in ELEMENTS[model].terminals if name in terminals]
     if model == "bipolar_transistor" and "substrate" not in terminals:
-        npn = instance.parameters.get("polarity", "npn") == "npn"
+        npn = _defaulted(model, instance.parameters)["polarity"] == "npn"
         nets.append(terminals["collector" if npn else "base"])
     return nets
 
@@ -173,12 +173,13 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
         case "diode":
             kind, names = "D", _spice(models.DIODE)
         case "jfet":
-            kind, names = f"{values.get('channel', 'n')}jf".upper(), _spice(models.JFET)
+            channel = _defaulted(model, values)["channel"]
+            kind, names = f"{channel}jf".upper(), _spice(models.JFET)
         case "bipolar_transistor":
-            kind = str(values.get("polarity", "npn")).upper()
+            kind = str(_defaulted(model, values)["polarity"]).upper()
             names = _spice(models.BIPOLAR) | {"substrate": ("subs", 1.0)}
         case "mosfet":
-            kind = f"{values.get('channel', 'n')}mos".upper()
+            kind = f"{_defaulted(model, values)['channel']}mos".upper()
             names = _spice(models.MOSFET) | {
                 "gate_material": ("tpg", 1.0),
                 "level": ("level", 1.0),

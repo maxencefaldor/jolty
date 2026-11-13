@@ -13,8 +13,9 @@ use std::borrow::Cow;
 
 use jolty_ir::Parameters;
 use jolty_numerics::{Entry, Pattern, PatternBuilder};
+use schemars::{JsonSchema, Schema};
 
-use crate::device::{lift, read};
+use crate::device::{extended, lift, read, schema, written};
 use crate::{
     Binding, Choice, Contributions, Device, Gradient, Hyper, Input, Interface, Model, NativeDevice,
     Node, NoiseSource, Output, ParameterError, Quantity, Real, Specification, Unknown, UnknownInfo,
@@ -123,10 +124,11 @@ impl<M: HeatableModel> Default for Thermal<M> {
 }
 
 /// Whether a device heats, as its parameters say.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, JsonSchema)]
 struct Heats {
     /// Whether the device heats by the power it dissipates, through a terminal `thermal`
     /// joined to a thermal net, whose temperature above the ambient it runs at.
+    #[schemars(default)]
     thermal: bool,
 }
 
@@ -164,6 +166,10 @@ impl<M: HeatableModel> Model for Thermal<M> {
             Warmed::<M>::Cool(read(&others)?)
         };
         Ok(Box::new(warmed))
+    }
+
+    fn schema(&self) -> Schema {
+        extended(schema::<ParametersOf<M, f64>>(), &schema::<Heats>())
     }
 }
 
@@ -222,6 +228,15 @@ impl<M: HeatableModel> Specification for Warmed<M> {
                 binding,
             )?),
         })
+    }
+
+    fn parameters(&self) -> Result<Parameters, ParameterError> {
+        let (mut written, heats) = match self {
+            Self::Cool(parameters) => (written(parameters)?, false),
+            Self::Heated(parameters) => (written(parameters)?, true),
+        };
+        written.insert("thermal".to_owned(), heats.into());
+        Ok(written)
     }
 }
 

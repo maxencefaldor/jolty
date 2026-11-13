@@ -1,4 +1,5 @@
 use jolty_numerics::Entry;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -45,20 +46,20 @@ struct Lag<R: Real> {
 }
 
 /// The parameters of a [`Photocell`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct PhotocellParameters<R: Real = f64> {
     /// The resistance at the reference illuminance, in ohms; positive.
     pub resistance: R,
     /// The reference illuminance, in lux; positive; default 10, as datasheets give it.
-    #[serde(default = "ten")]
+    #[serde(default = "ten::<R>")]
     pub illuminance: R,
     /// How steeply the resistance falls with the illuminance, `γ`, the slope of its
     /// logarithm against the illuminance's; positive; default 0.7.
-    #[serde(default = "seven_tenths")]
+    #[serde(default = "seven_tenths::<R>")]
     pub gamma: R,
     /// The resistance in darkness, in ohms; positive; default 1e6.
-    #[serde(default = "a_million")]
+    #[serde(default = "a_million::<R>")]
     pub dark_resistance: R,
     /// The time constant of the response, in seconds; zero or more; default 0.
     #[serde(default)]

@@ -9,8 +9,9 @@
 //! A [`Model`] is a kind of device: it reads an instance's parameters, once, into a
 //! [`Specification`], which names the device's terminals and makes the device bound to its
 //! unknowns, as often as it is made. A [`LogicModel`] is a kind of [`Logic`] device, whose
-//! pins join logic nets that an event scheduler simulates. A [`Library`] holds the models a
-//! circuit can use.
+//! pins join logic nets that an event scheduler simulates. Every model's parameters write
+//! as they read, with each one left out at its default, and a JSON schema describes them.
+//! A [`Library`] holds the models a circuit can use.
 
 mod behavioral;
 mod binding;
@@ -82,6 +83,7 @@ pub use passive::{
 };
 pub use photocell::{Photocell, PhotocellParameters};
 pub use real::{Gradient, Hyper, Real};
+pub use schemars::Schema;
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
 pub use stamp::{SMALL_RESISTANCE, TerminalPair};
 pub use surroundings::Surrounded;
@@ -185,7 +187,201 @@ impl std::fmt::Debug for Library {
 
 #[cfg(test)]
 mod tests {
+    use jolty_ir::{Parameters, numbers, parameter};
+    use serde_json::{Value, json};
+
     use super::*;
+
+    /// Devices of every model, between them giving each kind of parameter there is: every
+    /// shape of waveform, a device's own temperature and its heating, and a logic cell's
+    /// electrical pins.
+    fn examples() -> Vec<(&'static str, Value)> {
+        let mosfet = json!({"level": 3, "channel": "p", "oxide_thickness": 1e-8,
+            "gate_material": "aluminum", "temperature": 350});
+        let memristor = json!({"on_resistance": 1e3, "off_resistance": 1e5,
+            "on_voltage": -1, "off_voltage": 0.5, "on_rate": 1e6, "off_rate": 1e5,
+            "law": "exponential", "state": 0.5});
+        let pulse = json!({"pulse": {"initial": 0, "pulsed": 5, "rise": 1e-9, "fall": 1e-9,
+            "width": 1e-6, "period": 1e-5}});
+        let cell = json!({"inputs": ["a", "b"], "outputs": [{"name": "y", "table": "1110"}],
+            "timing": {"fixed": {"rise": 1e-9, "fall": 2e-9, "transition": 1e-10}},
+            "electrical": {"input_capacitances": [1e-15, 2e-15], "supply": "vdd"}});
+        let characterized = json!({"inputs": ["a"], "outputs": [{"name": "y", "table": "10"}],
+            "timing": {"characterized": {"slews": [1e-10], "loads": [1e-15],
+                "arcs": [{"input": "a", "before": "0", "output": "y",
+                    "delay": [[1e-9]], "transition": [[1e-10]]}]}}});
+        vec![
+            (
+                "behavioral_current_source",
+                json!({"expression": "1e-3 * v(a, b) + i(p)"}),
+            ),
+            (
+                "behavioral_voltage_source",
+                json!({"expression": "2 * sin(time)"}),
+            ),
+            (
+                "bipolar_transistor",
+                json!({"polarity": "pnp", "forward_early_voltage": 50, "substrate": "lateral",
+                    "substrate_saturation_current": 1e-15, "thermal": true}),
+            ),
+            (
+                "capacitor",
+                json!({"capacitance": 1e-6, "voltage_coefficient": 0.01}),
+            ),
+            (
+                "coupled_inductors",
+                json!({"windings": [{"inductance": 1e-3}, {"inductance": 2e-3}],
+                    "couplings": [{"windings": [1, 2], "coefficient": 0.9}]}),
+            ),
+            ("current_controlled_current_source", json!({"gain": 2})),
+            (
+                "current_controlled_memristor",
+                json!({"on_resistance": 100, "off_resistance": 16e3, "charge": 2e-6}),
+            ),
+            ("current_controlled_switch", json!({"on_current": 2e-3})),
+            (
+                "current_controlled_voltage_source",
+                json!({"transresistance": 1e3}),
+            ),
+            ("current_source", json!({"waveform": pulse})),
+            (
+                "current_source",
+                json!({"waveform": {"piecewise": {"points": [[0, 0], [1e-3, 2]]}}}),
+            ),
+            (
+                "diode",
+                json!({"breakdown_voltage": 5.1, "temperature_offset": -20}),
+            ),
+            (
+                "foundry_mosfet",
+                json!({"pdk": "sky130", "model": "sky130_fd_pr__nfet_01v8", "width": 1e-6,
+                    "length": 1.5e-7}),
+            ),
+            ("heat_source", json!({"power": 0.5})),
+            ("inductor", json!({"inductance": 1e-3})),
+            ("jfet", json!({"channel": "p", "threshold_voltage": -1.5})),
+            ("logic_cell", cell),
+            ("logic_cell", characterized),
+            (
+                "logic_source",
+                json!({"initial": "0", "changes": [[1e-6, "1"], [2e-6, "x"]],
+                    "transition": 1e-9}),
+            ),
+            ("mosfet", mosfet),
+            (
+                "photocell",
+                json!({"resistance": 1e4, "response_time": 0.02}),
+            ),
+            (
+                "resistor",
+                json!({"resistance": 1e3, "exponential_temperature_coefficient": 0.5}),
+            ),
+            ("thermal_capacitance", json!({"capacitance": 2})),
+            ("thermal_resistance", json!({"resistance": 10})),
+            (
+                "voltage_controlled_current_source",
+                json!({"transconductance": 1e-3}),
+            ),
+            ("voltage_controlled_memristor", memristor),
+            ("voltage_controlled_switch", json!({})),
+            ("voltage_controlled_voltage_source", json!({"gain": 10})),
+            (
+                "voltage_source",
+                json!({"waveform": {"sine": {"offset": 1, "amplitude": 2, "frequency": 1e3}}}),
+            ),
+            ("voltage_source", json!({"waveform": {"dc": 5}})),
+        ]
+    }
+
+    /// `parameters` of a device of the model `name` of the standard library, each one
+    /// left out written with its default.
+    fn defaulted(library: &Library, name: &str, parameters: &Parameters) -> Parameters {
+        match library.logic(name) {
+            Some(model) => model.defaulted(parameters),
+            None => library.get(name).expect("a model").defaulted(parameters),
+        }
+        .unwrap_or_else(|error| panic!("{name}: {error}"))
+    }
+
+    /// The schema of the parameters of the model `name` of the standard library.
+    fn schema(library: &Library, name: &str) -> Schema {
+        match library.logic(name) {
+            Some(model) => model.schema(),
+            None => library.get(name).expect("a model").schema(),
+        }
+    }
+
+    fn object(value: &Value) -> Parameters {
+        value.as_object().cloned().expect("an object")
+    }
+
+    #[test]
+    fn every_model_has_an_example() {
+        let mut named: Vec<_> = examples().into_iter().map(|(name, _)| name).collect();
+        named.dedup();
+        assert_eq!(named, Library::standard().names().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn every_models_defaults_read_back_as_they_are() {
+        let library = Library::standard();
+        for (name, given) in examples() {
+            let given = object(&given);
+            let written = defaulted(&library, name, &given);
+            assert_eq!(defaulted(&library, name, &written), written, "{name}");
+            // Each number the circuit gives is where it was, so a sensitivity finds it.
+            for (path, value) in numbers(&given) {
+                let found = parameter(&written, &path).and_then(Value::as_f64);
+                assert_eq!(found, Some(value), "{name}'s {path}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_models_schema_lists_each_parameter_with_its_default() {
+        let library = Library::standard();
+        for (name, given) in examples() {
+            let given = object(&given);
+            let schema = schema(&library, name);
+            let properties = schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .expect("properties");
+            let required: Vec<&str> = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .map_or_else(Vec::new, |names| {
+                    names.iter().filter_map(Value::as_str).collect()
+                });
+            let written = defaulted(&library, name, &given);
+            // A device's own temperature is written only where it has one.
+            let own = ["temperature", "temperature_offset"];
+            for key in written.keys().chain(properties.keys()) {
+                assert!(
+                    properties.contains_key(key)
+                        && (written.contains_key(key) || own.contains(&key.as_str())),
+                    "{name}'s {key}"
+                );
+            }
+            for (key, property) in properties {
+                assert!(
+                    property.get("description").is_some(),
+                    "{name}'s {key} is described"
+                );
+                // Each parameter is required, or has a default, but a device's own
+                // temperature, which is the simulation's without one.
+                let default = property.get("default");
+                let required = required.contains(&key.as_str());
+                assert!(
+                    required != default.is_some() || own.contains(&key.as_str()),
+                    "{name}'s {key} is required or has a default"
+                );
+                if let Some(default) = default.filter(|_| !given.contains_key(key)) {
+                    assert_eq!(written.get(key), Some(default), "{name}'s {key}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn the_standard_library_holds_every_native_model() {

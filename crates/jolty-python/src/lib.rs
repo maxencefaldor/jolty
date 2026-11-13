@@ -12,14 +12,12 @@ use jolty_engine::{
     Options, Outcome, PolesZeros, Record, Statistics,
 };
 use jolty_ir::Circuit;
-use jolty_models::{Level, Library, Quantity};
+use jolty_models::{Level, Library, Model, ParameterError, Quantity};
 use numpy::{Element, PyArray1, PyArray2, PyArray3, PyArrayMethods};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 
 create_exception!(
     _core,
@@ -630,19 +628,41 @@ fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Boun
 fn terminals(model: &str, parameters: &str) -> PyResult<Vec<String>> {
     let library = Library::standard();
     let parameters = serde_json::from_str(parameters).map_err(|error| unreadable(&error))?;
+    let invalid = |error: ParameterError| PyValueError::new_err(error.0);
     if let Some(logic) = library.logic(model) {
-        let device = logic
-            .instantiate(&parameters)
-            .map_err(|error| PyValueError::new_err(error.0))?;
+        let device = logic.instantiate(&parameters).map_err(invalid)?;
         return Ok(device.pins().names());
     }
-    let model = library
-        .get(model)
-        .ok_or_else(|| PyValueError::new_err(format!("no model is named `{model}`")))?;
-    let specification = model
+    let specification = analog(&library, model)?
         .read(&parameters)
-        .map_err(|error| PyValueError::new_err(error.0))?;
+        .map_err(invalid)?;
     Ok(specification.interface().terminals)
+}
+
+/// The analog model of `library` named `name`.
+fn analog<'a>(library: &'a Library, name: &str) -> PyResult<&'a dyn Model> {
+    library
+        .get(name)
+        .ok_or_else(|| PyValueError::new_err(format!("no model is named `{name}`")))
+}
+
+/// The name of every model, analog and logic, in alphabetical order.
+#[pyfunction]
+fn models() -> Vec<&'static str> {
+    Library::standard().names().collect()
+}
+
+/// The parameters of the model named `model`, as a JSON schema of an object, every type
+/// within it written in place: each parameter's type, its default, unless it is
+/// required, and its description, the documentation of its field in the engine.
+#[pyfunction]
+fn schema(model: &str) -> PyResult<String> {
+    let library = Library::standard();
+    let schema = match library.logic(model) {
+        Some(logic) => logic.schema(),
+        None => analog(&library, model)?.schema(),
+    };
+    Ok(schema.as_value().to_string())
 }
 
 /// The value of `expression`, an expression in jolty's language that reads no variable.
@@ -672,36 +692,20 @@ fn expression_tree(expression: &str) -> PyResult<String> {
     Ok(term_to_json(&parsed.tree()).to_string())
 }
 
-/// The parameters `parameters` of a device of `model`, as JSON, each one left out given
-/// the value the engine takes: of the models a SPICE netlist writes as expressions of
-/// their own, the photocell, the memristors and the switches, so the netlist computes
-/// what the engine does.
+/// The parameters `parameters`, a JSON object, of a device of `model`, as JSON, each one
+/// left out given the value the engine takes, so a SPICE netlist computes what the engine
+/// does.
 #[pyfunction]
 fn defaulted(model: &str, parameters: &str) -> PyResult<String> {
-    fn filled<P: DeserializeOwned + Serialize>(parameters: &str) -> serde_json::Result<String> {
-        serde_json::to_string(&serde_json::from_str::<P>(parameters)?)
-    }
-    let filled = match model {
-        "photocell" => filled::<jolty_models::PhotocellParameters>(parameters),
-        "voltage_controlled_memristor" => {
-            filled::<jolty_models::VoltageControlledMemristorParameters>(parameters)
-        }
-        "current_controlled_memristor" => {
-            filled::<jolty_models::CurrentControlledMemristorParameters>(parameters)
-        }
-        "voltage_controlled_switch" => {
-            filled::<jolty_models::VoltageControlledSwitchParameters>(parameters)
-        }
-        "current_controlled_switch" => {
-            filled::<jolty_models::CurrentControlledSwitchParameters>(parameters)
-        }
-        _ => {
-            return Err(PyValueError::new_err(format!(
-                "the engine gives no defaults of a {model}"
-            )));
-        }
+    let library = Library::standard();
+    let parameters = serde_json::from_str(parameters).map_err(|error| unreadable(&error))?;
+    let defaulted = match library.logic(model) {
+        Some(logic) => logic.defaulted(&parameters),
+        None => analog(&library, model)?.defaulted(&parameters),
     };
-    filled.map_err(|error| PyValueError::new_err(format!("a {model}'s parameters: {error}")))
+    let defaulted = defaulted
+        .map_err(|error| PyValueError::new_err(format!("a {model}'s parameters: {}", error.0)))?;
+    Ok(serde_json::Value::Object(defaulted).to_string())
 }
 
 /// A term of an expression's tree as JSON, as [`expression_tree`] writes it.
@@ -760,6 +764,8 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(constant, module)?)?;
     module.add_function(wrap_pyfunction!(expression_tree, module)?)?;
     module.add_function(wrap_pyfunction!(defaulted, module)?)?;
+    module.add_function(wrap_pyfunction!(models, module)?)?;
+    module.add_function(wrap_pyfunction!(schema, module)?)?;
     module.add_function(wrap_pyfunction!(mantissas, module)?)?;
     module.add("EXPRESSIONS", jolty_expressions::LANGUAGE)?;
     module.add("BOLTZMANN", jolty_models::BOLTZMANN)?;

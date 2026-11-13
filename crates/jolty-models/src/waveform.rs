@@ -16,6 +16,7 @@
 
 use std::f64::consts::TAU;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{ParameterError, Real};
@@ -25,7 +26,7 @@ use crate::{ParameterError, Real};
 /// Every analysis but a transient one reads the level at time zero. A waveform is checked as
 /// it is read, so every value of this type is a valid waveform. Its numbers are plain, or
 /// carry their derivatives with respect to a parameter.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(try_from = "Shape<R>", bound = "")]
 pub struct Waveform<R: Real = f64>(Shape<R>);
 
@@ -37,7 +38,7 @@ impl<R: Real> Serialize for Waveform<R> {
 }
 
 /// A waveform's shape, an object with one key, as it is written.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields, bound = "")]
 enum Shape<R: Real> {
     /// A constant level.
@@ -53,7 +54,7 @@ enum Shape<R: Real> {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 struct Pulse<R: Real> {
     /// The level before the delay and between pulses.
@@ -75,7 +76,7 @@ struct Pulse<R: Real> {
     period: Option<R>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, bound = "")]
 struct Sine<R: Real> {
     /// The level the sine swings about.
