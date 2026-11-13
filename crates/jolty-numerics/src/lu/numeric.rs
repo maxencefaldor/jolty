@@ -19,8 +19,10 @@ const NONE: usize = usize::MAX;
 /// fraction, and else the largest, and a refactorization keeps each pivot while it reaches
 /// it. It bounds every entry of `L` by its inverse, ten, against a thousand for the
 /// thousandth that KLU and SPICE take, which keeps the rounding of the solutions close to
-/// that of strict partial pivoting; on the matrices of the circuits measured, the ordering's
-/// diagonal passes either alike, and the factors fill alike.
+/// that of strict partial pivoting: the backward errors of the tests' random circuits stay
+/// below 1e-12 with a tenth, and reach 5e-12 with a thousandth. On the matrices of the
+/// example circuits, meshes and inverter chains measured, the factors fill alike with
+/// either, but for one entry of one.
 const PIVOT_TOLERANCE: f64 = 0.1;
 
 /// A triangular factor stored by columns.

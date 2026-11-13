@@ -413,8 +413,10 @@ fn reduce_fill(
     let structure =
         SymbolicSparseColMatRef::new_checked(size, size, &block_starts, None, &block_rows);
     let (mut permutation, mut inverse) = (vec![0; size], vec![0; size]);
-    // The workspace counts the diagonal entries, which the transpose's pattern skips, as
-    // room to spare.
+    // The ordering works in room for the entries of the block plus its transpose off the
+    // diagonal, a fifth more, and one index per column, where faer's workspace for a count
+    // of entries holds 2.4 indices per entry: counting each column once more covers the
+    // last.
     let mut memory =
         MemBuffer::try_new(amd::order_scratch::<usize>(size, block_rows.len() + size))?;
     amd::order(

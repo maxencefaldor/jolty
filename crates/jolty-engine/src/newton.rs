@@ -138,9 +138,9 @@ impl Simulator {
                     -residual
                 };
             }
-            // The solver keeps the factors of a Jacobian unchanged since the last, as a
-            // linear circuit's is from one iteration to the next, and refactors a changed one
-            // with the last pivots.
+            // The solver keeps the factors of a Jacobian bitwise unchanged since the last, as
+            // a linear circuit's is from one iteration to the next, and refactors a changed
+            // one with the last pivots.
             let workspace = &mut self.workspace;
             self.solver
                 .factor(&workspace.jacobian)
@@ -300,18 +300,18 @@ impl Simulator {
 mod tests {
     use jolty_ir::Circuit;
     use jolty_models::Library;
-    use jolty_numerics::integration::Method;
-    use serde_json::json;
+    use jolty_numerics::Statistics;
+    use serde_json::{Value, json};
 
-    use crate::{Conditions, Options, Simulator, Transient};
+    use crate::{Conditions, Method, Options, Simulator, Transient};
 
-    /// A simulator of a 1 V source driving `stages` sections of 1 kΩ in series and 1 nF to
-    /// the ground, with a diode from the last to the ground if `clamped`.
-    fn ladder(stages: usize, clamped: bool) -> Simulator {
+    /// A simulator of a voltage source of `waveform` driving `stages` sections of 1 kΩ in
+    /// series and 1 nF to the ground, with a diode from the last to the ground if `clamped`.
+    fn ladder(stages: usize, waveform: &Value, clamped: bool) -> Simulator {
         let node = |index: usize| format!("n{index}");
         let mut instances = vec![json!({
             "id": "V1", "of": {"device": "voltage_source"},
-            "parameters": {"waveform": {"dc": 1.0}},
+            "parameters": {"waveform": waveform},
             "terminals": {"positive": node(0), "negative": "ground"}
         })];
         for stage in 0..stages {
@@ -344,58 +344,64 @@ mod tests {
             .expect("an elaborated circuit")
     }
 
-    #[test]
-    fn a_linear_circuit_factors_its_jacobian_once() {
-        // The first iteration steps onto the solution, the second, confirming it, finds the
-        // same Jacobian and keeps its factors.
-        let mut simulator = ladder(5, false);
-        simulator.operating_point(&Options::default()).unwrap();
-        let statistics = simulator.solver.statistics();
-        assert_eq!(
-            (
-                statistics.factorizations,
-                statistics.refactorizations,
-                statistics.reuses
-            ),
-            (1, 0, 1)
-        );
+    /// The factorizations that searched for pivots, the refactorizations and the reuses of
+    /// factors, from `before` to `after`.
+    fn work(before: Statistics, after: Statistics) -> (usize, usize, usize) {
+        (
+            after.factorizations - before.factorizations,
+            after.refactorizations - before.refactorizations,
+            after.reuses - before.reuses,
+        )
     }
 
     #[test]
-    fn a_nonlinear_circuit_refactors_with_its_first_pivots() {
-        let mut simulator = ladder(3, true);
+    fn a_linear_operating_point_factors_its_jacobian_once() {
+        // The first iteration steps onto the solution and the second, confirming it, finds
+        // the same Jacobian: of the two factorizations every iteration once made, the
+        // second keeps the factors of the first.
+        let mut simulator = ladder(5, &json!({"dc": 1.0}), false);
         simulator.operating_point(&Options::default()).unwrap();
         let statistics = simulator.solver.statistics();
-        assert_eq!(statistics.factorizations, 1);
-        assert!(statistics.refactorizations >= 2, "{statistics:?}");
+        assert_eq!(work(Statistics::default(), statistics), (1, 0, 1));
     }
 
     #[test]
-    fn a_linear_transient_factors_only_as_its_step_changes() {
-        // The step doubles from a tenth of the longest until it is the longest, and holds
-        // there to the stop: the Jacobian changes with it and no more.
-        let mut simulator = ladder(5, false);
+    fn a_nonlinear_operating_point_refactors_with_its_first_pivots() {
+        let mut simulator = ladder(3, &json!({"dc": 1.0}), true);
+        simulator.operating_point(&Options::default()).unwrap();
+        let (searched, refactored, _) = work(Statistics::default(), simulator.solver.statistics());
+        assert_eq!(searched, 1);
+        assert!(refactored >= 2, "{refactored} refactorizations");
+    }
+
+    #[test]
+    fn a_linear_transient_factors_only_as_its_step_or_formula_changes() {
+        // A sine wave keeps the ladder moving, so that every step takes an iteration at
+        // least, each of which once made a factorization. The Jacobian, `G + αC`, now changes
+        // only with `α`, as the step's length or formula changes: while the first steps grow
+        // to the longest, a millionth of a second, and on the last, landing on the stop.
+        let sine = json!({"sine": {"offset": 0.0, "amplitude": 1.0, "frequency": 1e3}});
+        let mut simulator = ladder(5, &sine, false);
         let options = Options::default();
         simulator.operating_point(&options).unwrap();
         let before = simulator.solver.statistics();
         let transient = Transient {
             stop: 1e-3,
             max_step: Some(1e-6),
-            method: Method::BackwardEuler,
+            method: Method::Trapezoidal,
             times: Vec::new(),
             periodic: false,
         };
         let waveforms = simulator.transient(&transient, &options).unwrap();
-        let after = simulator.solver.statistics();
-        let factored = after.factorizations + after.refactorizations
-            - before.factorizations
-            - before.refactorizations;
-        let steps = waveforms.statistics.accepted;
-        assert!(steps >= 1000, "{steps} steps");
+        let (searched, refactored, reused) = work(before, simulator.solver.statistics());
+        let steps = waveforms.statistics;
+        assert!(steps.accepted >= 1000, "{} steps", steps.accepted);
+        assert!(steps.iterations >= steps.accepted);
+        assert!(searched + refactored + reused >= steps.iterations);
         assert!(
-            factored <= 8,
-            "{factored} factorizations over {steps} steps"
+            searched + refactored <= 8,
+            "{searched} + {refactored} factorizations over {} steps",
+            steps.accepted
         );
-        assert!(after.reuses - before.reuses >= waveforms.statistics.iterations - factored);
     }
 }

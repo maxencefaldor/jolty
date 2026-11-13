@@ -48,6 +48,10 @@ pub trait Scalar:
 
     /// Whether the value is neither infinite nor NaN.
     fn is_finite(self) -> bool;
+
+    /// Whether the value has the same bits as `other`: unlike `==`, a zero is not a
+    /// negative zero, and a NaN can be identical to itself.
+    fn is_identical(self, other: Self) -> bool;
 }
 
 impl Scalar for f64 {
@@ -60,6 +64,10 @@ impl Scalar for f64 {
     fn is_finite(self) -> bool {
         f64::is_finite(self)
     }
+
+    fn is_identical(self, other: Self) -> bool {
+        self.to_bits() == other.to_bits()
+    }
 }
 
 impl Scalar for Complex64 {
@@ -71,6 +79,10 @@ impl Scalar for Complex64 {
 
     fn is_finite(self) -> bool {
         Complex64::is_finite(self)
+    }
+
+    fn is_identical(self, other: Self) -> bool {
+        self.re.is_identical(other.re) && self.im.is_identical(other.im)
     }
 }
 
@@ -185,11 +197,11 @@ impl<T: Scalar> SparseLu<T> {
 
     /// Factors the matrix whose stored values, in the pattern's order, are `values`.
     ///
-    /// The factors of the last matrix are kept when every value equals its own. Otherwise
-    /// the pivots of the last factorization are kept while each stays at least a tenth of
-    /// the largest entry below it in its column, and the pivots are searched for from the
-    /// first that does not, each the diagonal entry of the ordering where it is that large,
-    /// and else the largest.
+    /// The factors of the last matrix are kept when every value is bitwise identical to its
+    /// own. Otherwise the pivots of the last factorization are kept while each stays at
+    /// least a tenth of the largest entry below it in its column, and the pivots are
+    /// searched for from the first that does not, each the diagonal entry of the ordering
+    /// where it is that large, and else the largest.
     ///
     /// # Errors
     ///
@@ -208,7 +220,13 @@ impl<T: Scalar> SparseLu<T> {
             self.ordering.pattern().len(),
             "one value per stored position"
         );
-        if self.current && self.factored == values {
+        let unchanged = self.factored.len() == values.len()
+            && self
+                .factored
+                .iter()
+                .zip(values)
+                .all(|(&factored, &value)| factored.is_identical(value));
+        if self.current && unchanged {
             self.statistics.reuses += 1;
         } else {
             self.current = false;

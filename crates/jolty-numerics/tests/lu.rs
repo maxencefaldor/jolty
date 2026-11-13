@@ -237,6 +237,84 @@ fn shuffled_dominant() -> impl Strategy<Value = Matrix<f64>> {
     })
 }
 
+/// A sparse matrix with no structure to lean on: entries of random values, from −1 to 1, at
+/// random positions, and at the positions of a random permutation, so that some matching
+/// covers every column, though not necessarily with large entries.
+fn random_sparse() -> impl Strategy<Value = Matrix<f64>> {
+    (1usize..40).prop_flat_map(|dimension| {
+        let entries =
+            proptest::collection::vec((0..dimension, 0..dimension, -1.0..1.0f64), 0..4 * dimension);
+        let matched = proptest::collection::vec(-1.0..1.0f64, dimension);
+        let order = Just((0..dimension).collect::<Vec<_>>()).prop_shuffle();
+        (entries, matched, order).prop_map(move |(entries, matched, order)| {
+            let (mut positions, mut values): (Vec<_>, Vec<_>) = entries
+                .into_iter()
+                .map(|(row, column, value)| ((row, column), value))
+                .unzip();
+            positions.extend(order.iter().enumerate().map(|(column, &row)| (row, column)));
+            values.extend(matched);
+            Matrix {
+                dimension,
+                positions,
+                values,
+            }
+        })
+    })
+}
+
+/// Two matrices of one pattern, each strictly diagonally dominant by rows once its rows are
+/// put back in order, the first shuffled by one permutation and the second by another, so
+/// that the pivots the first takes are mostly too small for the second, from a column
+/// anywhere in the order of elimination.
+fn reshuffled_pair() -> impl Strategy<Value = (Matrix<f64>, Matrix<f64>)> {
+    (2usize..30).prop_flat_map(|dimension| {
+        let off =
+            proptest::collection::vec((0..dimension, 0..dimension, -1.0..1.0f64), 0..3 * dimension);
+        let order = || Just((0..dimension).collect::<Vec<_>>()).prop_shuffle();
+        (off, order(), order()).prop_map(move |(off, first, second)| {
+            let off: Vec<_> = off
+                .into_iter()
+                .filter(|(row, column, _)| row != column)
+                .collect();
+            let mut sums = vec![1.0; dimension];
+            for &(row, _, value) in &off {
+                sums[row] += f64::abs(value);
+            }
+            // Each matrix's own entries, then the other's positions with zeros, so that both
+            // claim the same positions in the same order. The second's dominant entries are
+            // twice as large, so that it differs from the first even where the two
+            // permutations agree.
+            let shuffled = |order: &[usize], scale: f64| -> Vec<((usize, usize), f64)> {
+                off.iter()
+                    .map(|&(row, column, value)| ((order[row], column), value))
+                    .chain(
+                        sums.iter()
+                            .enumerate()
+                            .map(|(row, &sum)| ((order[row], row), scale * sum)),
+                    )
+                    .collect()
+            };
+            let (one, other) = (shuffled(&first, 1.0), shuffled(&second, 2.0));
+            let matrix =
+                |own: &[((usize, usize), f64)], zeros: &[((usize, usize), f64)], first: bool| {
+                    let zeros = zeros.iter().map(|&(position, _)| (position, 0.0));
+                    let entries: Vec<_> = if first {
+                        own.iter().copied().chain(zeros).collect()
+                    } else {
+                        zeros.chain(own.iter().copied()).collect()
+                    };
+                    let (positions, values) = entries.into_iter().unzip();
+                    Matrix {
+                        dimension,
+                        positions,
+                        values,
+                    }
+                };
+            (matrix(&one, &other, true), matrix(&other, &one, false))
+        })
+    })
+}
+
 /// The modified nodal equations of a random circuit, `G + s C`, on `nodes` nodes and the
 /// reference, numbered `nodes`, with a current unknown per voltage source after the nodes.
 #[derive(Debug, Clone)]
@@ -412,6 +490,26 @@ proptest! {
     fn solves_matrices_whose_large_entries_are_off_the_diagonal(matrix in shuffled_dominant()) {
         let (mut lu, _) = solver(&matrix);
         check(&mut lu, &matrix)?;
+    }
+
+    /// Matrices without dominance or symmetry, whose pivots the threshold search must find
+    /// wherever they are.
+    #[test]
+    fn solves_random_sparse_matrices(matrix in random_sparse()) {
+        let (mut lu, _) = solver(&matrix);
+        check(&mut lu, &matrix)?;
+    }
+
+    /// A refactorization whose kept pivots become too small searches for the pivots afresh
+    /// from the first of them, keeping the columns before it, and solves as well as a first
+    /// factorization.
+    #[test]
+    fn searches_afresh_from_a_kept_pivot_too_small((first, second) in reshuffled_pair()) {
+        let (mut lu, _) = solver(&first);
+        check(&mut lu, &first)?;
+        check(&mut lu, &second)?;
+        let statistics = lu.statistics();
+        prop_assert_eq!(statistics.factorizations + statistics.refactorizations, 2);
     }
 
     /// The equations of circuits: voltage sources' equations with nothing on their
