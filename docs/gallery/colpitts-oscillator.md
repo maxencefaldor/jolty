@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/colpitts_oscillator.py`.
 
 [Open in 3D](colpitts-oscillator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/colpitts_oscillator.py){ .md-button }
 
-9 devices, 8 unknowns, simulated in 2.01 s.
+9 devices and 8 unknowns.
 
 ![The schematic](../images/gallery/colpitts_oscillator.schematic.png)
 

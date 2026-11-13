@@ -9,7 +9,7 @@ Simulate it with `jolty simulate discovery/sine_oscillator/design.py`.
 
 [Open in 3D](sine-oscillator.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/sine_oscillator/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/sine_oscillator){ .md-button }
 
-18 devices, 13 unknowns, simulated in 15.41 s.
+18 devices and 13 unknowns.
 
 ![The schematic](../images/gallery/sine_oscillator.inside.schematic.png)
 

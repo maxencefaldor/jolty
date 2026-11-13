@@ -17,9 +17,7 @@ import pytest
 
 from differential import (
     SKIP,
-    SPICE_OPTIONS,
     TIGHT,
-    VOLTAGE_TOLERANCE,
     closest,
     compare,
     compared,
@@ -42,7 +40,7 @@ from jolty import (
     spice,
 )
 from jolty.plan import decade, linear
-from jolty.spice.export import Compatibility
+from jolty.spice.ngspice import OPTIONS, VOLTAGE_TOLERANCE, Compatibility
 from jolty.units import Hz, MHz, Quantity, V, celsius, kHz, kohm, ms, us
 from jolty.waveforms import Sine
 
@@ -212,7 +210,7 @@ class Bench:
     transient: tuple[Quantity, Quantity] | None
     ac: bool = True
     options: Options = TIGHT
-    spice_options: str = SPICE_OPTIONS
+    spice_options: str = OPTIONS
     compatibility: Compatibility | None = "ps"
 
     def runs(self, analysis: str) -> bool:
@@ -263,7 +261,7 @@ def test_operating_points_agree(name: str, downloads: Path) -> None:
     top, file = bench.build(downloads)
     simulation = Simulation(top)
     point = simulation.run(OperatingPoint(), bench.options)
-    raw = ngspice(
+    raw = ngspice.run(
         netlist(simulation.circuit),
         "op",
         libraries=(file,),
@@ -301,7 +299,7 @@ def test_operating_points_agree_across_temperatures(
     temperature = celsius(degrees)
     simulation = Simulation(top, temperature)
     point = simulation.run(OperatingPoint(), bench.options)
-    raw = ngspice(
+    raw = ngspice.run(
         netlist(simulation.circuit),
         "op",
         libraries=(file,),
@@ -331,7 +329,7 @@ def test_dc_sweeps_agree(name: str, downloads: Path) -> None:
         DcSweep("V1", linear(first * V, last * V, count)), bench.options
     )
     step = (last - first) / (count - 1)
-    raw = ngspice(
+    raw = ngspice.run(
         netlist(simulation.circuit),
         f"dc VV1 {first!r} {last!r} {step!r}",
         libraries=(file,),
@@ -355,7 +353,7 @@ def test_ac_responses_agree(name: str, downloads: Path) -> None:
     top, file = bench.build(downloads)
     simulation = Simulation(top)
     response = simulation.run(Ac("V1", decade(10 * Hz, 10 * MHz, 20)), bench.options)
-    raw = ngspice(
+    raw = ngspice.run(
         netlist(simulation.circuit, excited="V1"),
         "ac dec 20 10 10meg",
         libraries=(file,),
@@ -384,7 +382,7 @@ def test_transients_agree(name: str, downloads: Path) -> None:
         Transient(stop=duration, max_step=maximal), bench.options
     )
     step, stop = maximal.value, duration.value
-    raw = ngspice(
+    raw = ngspice.run(
         netlist(simulation.circuit),
         f"tran {step!r} {stop!r} 0 {step!r}",
         libraries=(file,),

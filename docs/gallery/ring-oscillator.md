@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/ring_oscillator.py`.
 
 [Open in 3D](ring-oscillator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ring_oscillator.py){ .md-button }
 
-9 devices, 37 unknowns, simulated in 3.01 s.
+9 devices and 37 unknowns.
 
 ![The schematic](../images/gallery/ring_oscillator.schematic.png)
 

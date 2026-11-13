@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/differential_pair.py`.
 
 [Open in 3D](differential-pair.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/differential_pair.py){ .md-button }
 
-8 devices, 13 unknowns, simulated in 1.65 s.
+8 devices and 13 unknowns.
 
 ![The schematic](../images/gallery/differential_pair.schematic.png)
 

@@ -24,7 +24,7 @@ the others', as a Monte Carlo sample of the process does; the same seed draws th
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Final
 
 import numpy as np
@@ -32,8 +32,17 @@ from pydantic import JsonValue
 
 from jolty import ir, results
 from jolty.errors import JoltyError, SimulationError
-from jolty.plan import Ac, Analysis, DcSweep, Noise, OperatingPoint, Options, Transient
-from jolty.spice import export, sky130
+from jolty.plan import (
+    Ac,
+    Analysis,
+    Conditions,
+    DcSweep,
+    Noise,
+    OperatingPoint,
+    Options,
+    Transient,
+)
+from jolty.spice import export, ngspice, sky130
 from jolty.units import CURRENT, FREQUENCY, TIME, VOLTAGE, Quantity
 
 STRATEGY: Final = "ngspice"
@@ -60,22 +69,6 @@ _METHODS: Final = {
 
 _EVEN: Final = 1e-9
 """How far, as a fraction of a step, a DC sweep's levels may lie from even steps."""
-
-
-@dataclass(frozen=True, slots=True)
-class Conditions:
-    """What a circuit of a foundry's devices runs at."""
-
-    temperature: float
-    """The temperature, in kelvins."""
-    process: str | None = None
-    """The process corner of the kit's model library, such as ``ss``, its typical one
-    unless given."""
-    overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
-    """The parameters that replace the circuit's, by instance path, then by parameter
-    path, such as ``waveform.dc``, as the engine replaces them."""
-    mismatch: int | None = None
-    """The seed the kit's mismatch is drawn from, if it is drawn."""
 
 
 def run(
@@ -111,7 +104,7 @@ class _Deck:
     lines: list[str]
     read: list[tuple[results.Unknown, str]]
     """Each unknown ngspice names, and the name of its vector."""
-    running: export.Running
+    running: ngspice.Running
 
     @classmethod
     def of(
@@ -128,18 +121,13 @@ class _Deck:
             SimulationError: When the kit has no such process corner, or the analysis
                 names no independent source where it names one.
         """
-        process = sky130.TYPICAL if conditions.process is None else conditions.process
-        if process not in sky130.CORNERS:
-            message = (
-                f"SKY130 has no process corner {process!r}: it has {sky130.CORNERS}"
-            )
-            raise SimulationError(message)
+        kit = sky130.running(
+            conditions.process, mismatched=conditions.mismatch is not None
+        )
         flat, paths = _flattened(circuit, conditions.overrides)
         excited = _excited(flat, analysis)
-        section = process if conditions.mismatch is None else f"{process}_mm"
-        running: export.Running = {
-            "sections": ((sky130.root() / sky130.LIBRARY, section),),
-            "compatibility": "hsa",
+        running: ngspice.Running = {
+            **kit,
             "options": _options(options, analysis),
             "temperature": conditions.temperature,
             "seed": conditions.mismatch,
@@ -152,9 +140,9 @@ class _Deck:
             running,
         )
 
-    def runs(self, commands: Sequence[str]) -> tuple[export.Raw, ...]:
+    def runs(self, commands: Sequence[str]) -> tuple[ngspice.Raw, ...]:
         """The plot of each of `commands`, run in turn in one ngspice."""
-        return export.ngspice_runs(self.lines, commands, **self.running)
+        return ngspice.runs(self.lines, commands, **self.running)
 
     def unknowns(self) -> tuple[results.Unknown, ...]:
         return tuple(unknown for unknown, _ in self.read)
@@ -192,7 +180,7 @@ class _Deck:
         )
         raise SimulationError(message)
 
-    def operating_point(self, raw: export.Raw) -> results.OperatingPoint:
+    def operating_point(self, raw: ngspice.Raw) -> results.OperatingPoint:
         return results.OperatingPoint(
             unknowns=self.unknowns(),
             values=_table(raw, self.read)[0],
@@ -311,7 +299,7 @@ class _Deck:
         return f"v({','.join(vector[2:-1] for vector in vectors)})"
 
     def contributions(
-        self, spectra: Sequence[export.Raw]
+        self, spectra: Sequence[ngspice.Raw]
     ) -> tuple[tuple[results.NoiseSource, ...], results.Real]:
         """Each device's sources of noise that add any, and what each adds.
 
@@ -452,7 +440,7 @@ def _options(options: Options, analysis: Analysis) -> str:
 
 
 def _table(
-    raw: export.Raw, read: Sequence[tuple[results.Unknown, str]]
+    raw: ngspice.Raw, read: Sequence[tuple[results.Unknown, str]]
 ) -> results.Real:
     """The real values of each of `read`'s vectors, a column each."""
     return np.column_stack([raw.real(vector) for _, vector in read]).reshape(

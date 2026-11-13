@@ -9,7 +9,7 @@ Simulate it with `jolty simulate discovery/notch/design.py`.
 
 [Open in 3D](notch.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/notch/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/notch){ .md-button }
 
-18 devices, 18 unknowns, simulated in 2.38 s.
+18 devices and 18 unknowns.
 
 ![The schematic](../images/gallery/notch.inside.schematic.png)
 

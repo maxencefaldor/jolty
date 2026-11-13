@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/voltage_multiplier.py`.
 
 [Open in 3D](voltage-multiplier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/voltage_multiplier.py){ .md-button }
 
-14 devices, 20 unknowns, simulated in 5.15 s.
+14 devices and 20 unknowns.
 
 ![The schematic](../images/gallery/voltage_multiplier.schematic.png)
 

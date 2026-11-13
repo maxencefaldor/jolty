@@ -13,6 +13,7 @@ hand-written circuits stop.
 
 import os
 from collections import Counter
+from collections.abc import Iterable
 from typing import Final, Literal
 
 import numpy as np
@@ -24,7 +25,16 @@ from jolty.settings import Level
 from jolty.units import A, F, H, K, S, V, m, ohm, us
 from jolty.waveforms import Pulse
 
-__all__ = ["PARASITIC", "SETTINGS", "STEP", "STOP", "circuits", "parasitic", "pulsed"]
+__all__ = [
+    "PARASITIC",
+    "SETTINGS",
+    "STEP",
+    "STOP",
+    "circuits",
+    "parasitic",
+    "placing",
+    "pulsed",
+]
 
 SEARCH: Final = os.environ.get("JOLTY_RANDOM_CIRCUITS")
 """How many circuits each test draws afresh, if a search is asked for."""
@@ -267,7 +277,7 @@ def pulsed(circuit: ir.Circuit) -> ir.Circuit:
     instances[index] = instances[index].model_copy(
         update={"parameters": devices.voltage_source(pulse).parameters}
     )
-    return _placing(circuit, instances)
+    return placing(circuit, instances)
 
 
 def parasitic(circuit: ir.Circuit) -> ir.Circuit:
@@ -277,7 +287,7 @@ def parasitic(circuit: ir.Circuit) -> ir.Circuit:
         {net for instance in instances for net in instance.terminals.values()} - {"0"}
     )
     capacitor = devices.capacitor(PARASITIC * F)
-    return _placing(
+    return placing(
         circuit,
         [
             *instances,
@@ -294,7 +304,7 @@ def parasitic(circuit: ir.Circuit) -> ir.Circuit:
     )
 
 
-def _placing(circuit: ir.Circuit, instances: list[ir.Instance]) -> ir.Circuit:
+def placing(circuit: ir.Circuit, instances: Iterable[ir.Instance]) -> ir.Circuit:
     """The circuit with its top placing `instances` instead of its own."""
     top = circuit.components[circuit.top].model_copy(
         update={"instances": tuple(instances)}

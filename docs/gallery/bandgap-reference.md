@@ -10,7 +10,7 @@ Simulate it with `jolty simulate examples/bandgap_reference.py`.
 
 [Open in 3D](bandgap-reference.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/bandgap_reference.py){ .md-button }
 
-19 devices, 26 unknowns, simulated in 1.24 s.
+19 devices and 26 unknowns.
 
 ![The schematic](../images/gallery/bandgap_reference.schematic.png)
 

@@ -405,17 +405,18 @@ pub enum SimulationError {
         /// Why the analysis rejected its last step.
         rejection: Rejection,
     },
-    /// A transient's results would hold more numbers than the engine keeps.
+    /// A transient's results would hold more numbers than its options let it keep.
     #[error(
-        "the transient's results would pass {} GiB before it stops, its steps {step:?} s \
-         long at t = {time:?} s",
-        crate::transient::MOST_HELD_GIB
+        "the transient's results would pass {memory:?} GiB before it stops, its steps \
+         {step:?} s long at t = {time:?} s"
     )]
     TooManyPoints {
         /// The time the analysis reached, in seconds.
         time: f64,
         /// The length of its steps there, in seconds.
         step: f64,
+        /// The gibibytes its results may hold, its `transient_memory` option.
+        memory: f64,
     },
     /// A sensitivity analysis names an output that is no unknown.
     #[error("there is no unknown named `{0}`")]

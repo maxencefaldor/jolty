@@ -18,6 +18,8 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 create_exception!(
     _core,
@@ -678,6 +680,38 @@ fn expression_tree(expression: &str) -> PyResult<String> {
     Ok(term_to_json(&parsed.tree()).to_string())
 }
 
+/// The parameters `parameters` of a device of `model`, as JSON, each one left out given
+/// the value the engine takes: of the models a SPICE netlist writes as expressions of
+/// their own, the photocell, the memristors and the switches, so the netlist computes
+/// what the engine does.
+#[pyfunction]
+fn defaulted(model: &str, parameters: &str) -> PyResult<String> {
+    fn filled<P: DeserializeOwned + Serialize>(parameters: &str) -> serde_json::Result<String> {
+        serde_json::to_string(&serde_json::from_str::<P>(parameters)?)
+    }
+    let filled = match model {
+        "photocell" => filled::<jolty_models::PhotocellParameters>(parameters),
+        "voltage_controlled_memristor" => {
+            filled::<jolty_models::VoltageControlledMemristorParameters>(parameters)
+        }
+        "current_controlled_memristor" => {
+            filled::<jolty_models::CurrentControlledMemristorParameters>(parameters)
+        }
+        "voltage_controlled_switch" => {
+            filled::<jolty_models::VoltageControlledSwitchParameters>(parameters)
+        }
+        "current_controlled_switch" => {
+            filled::<jolty_models::CurrentControlledSwitchParameters>(parameters)
+        }
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "the engine gives no defaults of a {model}"
+            )));
+        }
+    };
+    filled.map_err(|error| PyValueError::new_err(format!("a {model}'s parameters: {error}")))
+}
+
 /// A term of an expression's tree as JSON, as [`expression_tree`] writes it.
 fn term_to_json(term: &jolty_expressions::Term) -> serde_json::Value {
     use jolty_expressions::{Term, Variable};
@@ -733,6 +767,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
     module.add_function(wrap_pyfunction!(constant, module)?)?;
     module.add_function(wrap_pyfunction!(expression_tree, module)?)?;
+    module.add_function(wrap_pyfunction!(defaulted, module)?)?;
     module.add_function(wrap_pyfunction!(mantissas, module)?)?;
     module.add("EXPRESSIONS", jolty_expressions::LANGUAGE)?;
     module.add("BOLTZMANN", jolty_models::BOLTZMANN)?;

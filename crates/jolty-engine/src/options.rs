@@ -26,6 +26,10 @@ pub struct Options {
     /// How many times the estimated truncation error may exceed the tolerances before a step
     /// is rejected; default 7, which accounts for the estimate's pessimism.
     pub truncation_tolerance: f64,
+    /// The gibibytes of numbers a transient's results may hold, every unknown's and every
+    /// device's at each point, before it stops: a transient whose steps shrink to a crawl
+    /// fails instead of filling the memory; default 2.
+    pub transient_memory: f64,
 }
 
 impl Default for Options {
@@ -39,6 +43,7 @@ impl Default for Options {
             dc_iterations: 100,
             transient_iterations: 10,
             truncation_tolerance: 7.0,
+            transient_memory: 2.0,
         }
     }
 }
@@ -78,6 +83,7 @@ impl Options {
             ("current_tolerance", self.current_tolerance),
             ("charge_tolerance", self.charge_tolerance),
             ("truncation_tolerance", self.truncation_tolerance),
+            ("transient_memory", self.transient_memory),
         ];
         if let Some((name, value)) = tolerances.into_iter().find(|&(_, value)| value <= 0.0) {
             return Err(SimulationError::InvalidOptions(format!(

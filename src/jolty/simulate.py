@@ -36,6 +36,7 @@ from jolty.errors import ElaborationError, SimulationError
 from jolty.plan import (
     Ac,
     Analysis,
+    Conditions,
     DcSweep,
     Noise,
     OperatingPoint,
@@ -135,11 +136,8 @@ class Simulation:
     devices: int
     """The number of devices, with every component instance unfolded."""
 
-    temperature: float
-    """The temperature the devices are simulated at, in kelvins."""
-
-    overrides: Mapping[str, Mapping[str, float]]
-    """The parameters that replace the circuit's, by instance path then by path."""
+    conditions: Conditions
+    """What the circuit is simulated at."""
 
     excursions: tuple[Excursion, ...]
     """Where the last analysis used logic devices outside their domains."""
@@ -147,12 +145,6 @@ class Simulation:
     foundry: tuple[str, ...]
     """The paths of the foundry's devices, which ngspice simulates in the engine's
     place."""
-
-    process: str | None
-    """The process corner of the foundry's devices, the kit's typical unless given."""
-
-    mismatch: int | None
-    """The seed the foundry's devices draw their kit's mismatch from, if any."""
 
     def __init__(  # noqa: PLR0913 - the circuit, and what it runs at
         self,
@@ -187,10 +179,6 @@ class Simulation:
             if isinstance(circuit_or_top, ir.Circuit)
             else circuit(circuit_or_top)
         )
-        self.temperature = kelvins(temperature)
-        self.overrides = {
-            path: dict(replaced) for path, replaced in (overrides or {}).items()
-        }
         try:
             stand_ins = {
                 path: {"model": device.model, "parameters": device.parameters}
@@ -198,7 +186,7 @@ class Simulation:
             }
             self._core = _core.Simulator(
                 self.circuit.model_dump_json(),
-                self.temperature,
+                kelvins(temperature),
                 json.dumps(overrides or {}, allow_nan=False),
                 json.dumps(stand_ins, allow_nan=False),
             )
@@ -235,8 +223,12 @@ class Simulation:
                 "circuit holds none"
             )
             raise ValueError(message)
-        self.process = process
-        self.mismatch = mismatch
+        self.conditions = Conditions(
+            kelvins(temperature),
+            process,
+            {path: dict(replaced) for path, replaced in (overrides or {}).items()},
+            mismatch,
+        )
 
     def check(self) -> tuple[checks.Diagnostic, ...]:
         """Every diagnostic the structural checks find, at its rule's default level."""
@@ -307,8 +299,8 @@ class Simulation:
             at = _Terminals(
                 electrical,
                 thermal,
-                self.temperature,
-                self.overrides,
+                self.conditions.temperature,
+                self.conditions.overrides,
                 columns,
                 values,
                 currents,
@@ -383,11 +375,8 @@ class Simulation:
         chosen = Options() if options is None else options
         if self.foundry:
             self.excursions = ()
-            conditions = foundry.Conditions(
-                self.temperature, self.process, self.overrides, self.mismatch
-            )
             return foundry.run(
-                self.circuit, analysis, chosen, conditions, self.unknowns
+                self.circuit, analysis, chosen, self.conditions, self.unknowns
             )
         encoded = json.dumps(self._encode(analysis), allow_nan=False)
         settings = json.dumps(chosen.to_json(), allow_nan=False)
@@ -409,10 +398,11 @@ class Simulation:
         """
         if plan.temperature is not None:
             temperature = plan.temperature.to(TEMPERATURE, "a plan's temperature")
-            if temperature != self.temperature:
+            own = self.conditions.temperature
+            if temperature != own:
                 message = (
                     f"the plan's temperature, {plan.temperature}, is not the "
-                    f"simulation's, {Quantity(self.temperature, TEMPERATURE)}"
+                    f"simulation's, {Quantity(own, TEMPERATURE)}"
                 )
                 raise ValueError(message)
         return {

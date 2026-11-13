@@ -242,6 +242,7 @@ The report states how many runs it took and each requirement's verdict, its wors
 | `dc_iterations` | 100 | Newton iterations allowed for a DC solution |
 | `transient_iterations` | 10 | Newton iterations allowed for a time step |
 | `truncation_tolerance` | 7 | how much the time step's truncation error may exceed the tolerances |
+| `transient_memory` | 2 GiB | how much a transient's results may hold before it stops, rather than fill the memory |
 
 ## How the engine solves a circuit
 

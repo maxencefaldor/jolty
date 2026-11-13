@@ -1359,7 +1359,7 @@ def flickering(c: Builder) -> None:
 def test_operating_points_agree(top: Callable[[], Component]) -> None:
     simulation = Simulation(top())
     point = simulation.run(OperatingPoint(), TIGHT)
-    raw = ngspice(netlist(simulation.circuit), "op")
+    raw = ngspice.run(netlist(simulation.circuit), "op")
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))[0]
         compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
@@ -1398,7 +1398,7 @@ def test_a_transistor_without_a_substrate_agrees_to_rounding(
     """
     simulation = Simulation(bare_transistor(polarity))
     point = simulation.run(OperatingPoint(), TIGHT)
-    raw = ngspice(netlist(simulation.circuit), "op")
+    raw = ngspice.run(netlist(simulation.circuit), "op")
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))[0]
         compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-10)
@@ -1432,7 +1432,7 @@ def test_operating_points_agree_across_temperatures(
 ) -> None:
     simulation = Simulation(top(), temperature)
     point = simulation.run(OperatingPoint(), TIGHT)
-    raw = ngspice(netlist(simulation.circuit), "op", temperature=temperature.value)
+    raw = ngspice.run(netlist(simulation.circuit), "op", temperature=temperature.value)
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))[0]
         compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
@@ -1462,7 +1462,9 @@ def test_dc_sweeps_agree_across_temperatures(
     first, last = float(sweep.levels[0]), float(sweep.levels[-1])
     step = (last - first) / (len(levels) - 1)
     command = f"dc V{source} {first!r} {last!r} {step!r}"
-    raw = ngspice(netlist(simulation.circuit), command, temperature=temperature.value)
+    raw = ngspice.run(
+        netlist(simulation.circuit), command, temperature=temperature.value
+    )
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))
         compare(
@@ -1478,7 +1480,7 @@ def test_ac_responses_agree_across_temperatures(
     simulation = Simulation(top(), temperature)
     response = simulation.run(Ac("V1", decade(10 * Hz, 10 * MHz, 20)), TIGHT)
     lines = netlist(simulation.circuit, excited="V1")
-    raw = ngspice(lines, "ac dec 20 10 10meg", temperature=temperature.value)
+    raw = ngspice.run(lines, "ac dec 20 10 10meg", temperature=temperature.value)
     for column, unknown in compared(simulation):
         spice = raw.vectors[vector(simulation.circuit, unknown)]
         compare(
@@ -1496,8 +1498,8 @@ def test_loop_gains_agree() -> None:
     loop = simulation.run(Stability("VP", decade(10 * Hz, 1 * GHz, 10)), TIGHT)
     circuit = simulation.circuit
     command = "ac dec 10 10 1g"
-    series = ngspice(netlist(circuit, excited="VP"), command)
-    shunt = ngspice(netlist(circuit, excited="IP"), command)
+    series = ngspice.run(netlist(circuit, excited="VP"), command)
+    shunt = ngspice.run(netlist(circuit, excited="IP"), command)
     entering = series.vectors[vector(circuit, results.Unknown("fb", "voltage"))]
     current = results.Unknown("VP:current", "current")
     u = entering - shunt.vectors[vector(circuit, current)]
@@ -1541,7 +1543,7 @@ def test_dc_sweeps_agree(
     first, last = float(sweep.levels[0]), float(sweep.levels[-1])
     step = (last - first) / (len(levels) - 1)
     command = f"dc V{source} {first!r} {last!r} {step!r}"
-    raw = ngspice(netlist(simulation.circuit), command)
+    raw = ngspice.run(netlist(simulation.circuit), command)
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))
         compare(
@@ -1573,7 +1575,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
     simulation = Simulation(top())
     response = simulation.run(Ac("V1", decade(10 * Hz, 10 * MHz, 20)), TIGHT)
     lines = netlist(simulation.circuit, excited="V1")
-    raw = ngspice(lines, "ac dec 20 10 10meg")
+    raw = ngspice.run(lines, "ac dec 20 10 10meg")
     np.testing.assert_allclose(response.frequencies, raw.real("frequency"), rtol=1e-9)
     for column, unknown in compared(simulation):
         spice = raw.vectors[vector(simulation.circuit, unknown)]
@@ -1606,7 +1608,7 @@ def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
         Noise("out", decade(1 * Hz, 100 * MHz, 5), source=source), TIGHT
     )
     lines = netlist(simulation.circuit, excited=source)
-    raw = ngspice(lines, f"noise v(out) V{source} dec 5 1 100meg\nsetplot noise1")
+    raw = ngspice.run(lines, f"noise v(out) V{source} dec 5 1 100meg\nsetplot noise1")
     np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
     np.testing.assert_allclose(
         np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
@@ -1629,7 +1631,7 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
     simulation = Simulation(top())
     found = simulation.run(PoleZero(source="V1", output="out"), TIGHT)
     lines = netlist(simulation.circuit, excited="V1")
-    raw = ngspice(lines, "pz in 0 out 0 vol pz")
+    raw = ngspice.run(lines, "pz in 0 out 0 vol pz")
     roots = {
         kind: _ordered(
             np.array(
@@ -1684,7 +1686,7 @@ def test_transients_agree(
     simulation = Simulation(top())
     waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
     command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}"
-    raw = ngspice(netlist(simulation.circuit), command)
+    raw = ngspice.run(netlist(simulation.circuit), command)
     times = raw.real("time")
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))

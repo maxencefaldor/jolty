@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/common_emitter.py`.
 
 [Open in 3D](common-emitter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/common_emitter.py){ .md-button }
 
-12 devices, 11 unknowns, simulated in 2.33 s.
+12 devices and 11 unknowns.
 
 ![The schematic](../images/gallery/common_emitter.schematic.png)
 

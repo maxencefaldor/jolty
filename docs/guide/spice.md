@@ -77,10 +77,10 @@ Every part's operating point also agrees at -40 °C and at 125 °C, but the AD22
 
 ```python
 from jolty import circuit
-from jolty.spice import export
+from jolty.spice import export, ngspice
 
 lines = export.netlist(circuit(bench()), excited="V1")
-raw = export.ngspice(lines, "ac dec 20 10 1meg")
+raw = ngspice.run(lines, "ac dec 20 10 1meg")
 raw.vectors[export.vector(drawn, unknown)]  # ngspice's values of a jolty unknown
 ```
 
@@ -88,5 +88,5 @@ The netlist flattens the hierarchy into devices whose ids and nets join their pa
 Behavioral sources become ngspice's `B` sources, and so do switches, each a current of its own law; coupled inductors become inductors and their `K` elements, a foundry's transistors instances of their [kit's](foundry.md) subcircuits, and each model card carries the device's parameters in SPICE's units.
 ngspice reads a pulse's width of 0 as the transient's stop time, so a pulse with no width is written with a width of 1e-40 s, which vanishes beside its rise.
 Logic devices have no SPICE element, so a circuit that holds one cannot be written.
-`ngspice` runs one analysis with tolerances as tight as jolty's, at the temperature where ngspice's thermal voltage is jolty's, and reads the raw file it writes.
+`jolty.spice.ngspice` runs it: `run` runs one analysis with tolerances as tight as jolty's, at the temperature where ngspice's thermal voltage is jolty's, and reads the raw file it writes.
 The [gallery](../gallery.md) replicates every example without logic devices this way.

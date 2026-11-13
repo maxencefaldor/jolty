@@ -8,7 +8,7 @@ A resistor across the inputs takes the voltage off both-off inputs while barely 
 
 [Open in 3D](memristive-nor.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/memristive_nor/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/memristive_nor){ .md-button }
 
-17 devices, 18 unknowns, simulated in 0.66 s.
+17 devices and 18 unknowns.
 
 ![The schematic](../images/gallery/memristive_nor.inside.schematic.png)
 

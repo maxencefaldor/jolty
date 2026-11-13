@@ -355,7 +355,7 @@ def _corner(
     failures = tuple(r for r in reports if isinstance(r, report.FailureReport))
     found = report.CornerReport(
         name=name,
-        temperature=simulation.temperature,
+        temperature=simulation.conditions.temperature,
         process=process,
         failures=failures,
     )

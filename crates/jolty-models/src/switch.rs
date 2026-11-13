@@ -1,5 +1,5 @@
 use jolty_numerics::Entry;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::stamp::CurrentBranch;
 use crate::{
@@ -83,8 +83,8 @@ pub struct VoltageControlledSwitch<R: Real = f64> {
 }
 
 /// The parameters of a [`VoltageControlledSwitch`], with PSpice's defaults.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields, bound(deserialize = ""))]
 pub struct VoltageControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on voltage, in ohms; default 1.
     pub on_resistance: R,
@@ -209,8 +209,8 @@ pub struct CurrentControlledSwitch<R: Real = f64> {
 }
 
 /// The parameters of a [`CurrentControlledSwitch`], with PSpice's defaults.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields, bound = "")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields, bound(deserialize = ""))]
 pub struct CurrentControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on current, in ohms; default 1.
     pub on_resistance: R,

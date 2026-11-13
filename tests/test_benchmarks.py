@@ -568,7 +568,7 @@ def test_a_board_sets_its_corner_on_the_bench() -> None:
     corner = Corner(temperature=70.0, supply=0.95)
     board = Board({"R2": {"resistance": 3e3}}, corner)
     simulation = board.simulation(circuit(divider()), ["VCC"])
-    assert simulation.temperature == pytest.approx(343.15)
+    assert simulation.conditions.temperature == pytest.approx(343.15)
     point = simulation.run(OperatingPoint())
     assert point.voltage("out") == pytest.approx(2 * 0.95 * 3 / 4)
     assert corner.describe() == "at 70 °C with the supplies 5 % low"

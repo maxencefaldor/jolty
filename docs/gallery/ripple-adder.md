@@ -10,7 +10,7 @@ Simulate it with `jolty simulate examples/ripple_adder.py`.
 
 [Open in 3D](ripple-adder.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ripple_adder.py){ .md-button }
 
-20 devices, 12 unknowns, simulated in 2.95 s.
+20 devices and 12 unknowns.
 
 ![The schematic](../images/gallery/ripple_adder.schematic.png)
 

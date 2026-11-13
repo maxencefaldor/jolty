@@ -53,7 +53,7 @@ from jolty.files import load_circuit, load_results
 from jolty.plan import Ac, DcSweep, OperatingPoint, Transient
 from jolty.service import SimulateRequest, simulate
 from jolty.settings import Settings
-from jolty.spice import export
+from jolty.spice import export, ngspice
 from jolty.units import celsius
 
 ROOT: Final = Path(__file__).resolve().parent.parent
@@ -261,24 +261,24 @@ def _commands(
 
 def _run(
     lines: list[str], commands: list[str], option: str, kelvins: float
-) -> tuple[export.Raw, bool]:
+) -> tuple[ngspice.Raw, bool]:
     """What ngspice finds of `commands`, merged along their axis, and if it loosened.
 
     A transient that stops before its end, or a run that fails, runs again with
     ngspice's default tolerances, and loosened says so.
     """
-    raws: list[export.Raw] = []
+    raws: list[ngspice.Raw] = []
     loosened = False
-    tight = f"{export.SPICE_OPTIONS}\n{option}" if option else export.SPICE_OPTIONS
+    tight = f"{ngspice.OPTIONS}\n{option}" if option else ngspice.OPTIONS
     for command in commands:
-        raw: export.Raw | None
+        raw: ngspice.Raw | None
         try:
-            raw = export.ngspice(lines, command, options=tight, temperature=kelvins)
+            raw = ngspice.run(lines, command, options=tight, temperature=kelvins)
         except JoltyError:
             raw = None
         if raw is None or _stopped_early(raw, command):
             loosened = True
-            raw = export.ngspice(
+            raw = ngspice.run(
                 lines, command, options=option or "*", temperature=kelvins
             )
         raws.append(raw)
@@ -291,7 +291,7 @@ def _run(
     }
     order = np.argsort(merged[axis].real)
     return (
-        export.Raw(
+        ngspice.Raw(
             raws[0].plot,
             {name: values[order] for name, values in merged.items()},
             "".join(raw.printed for raw in raws),
@@ -311,7 +311,7 @@ def _element(circuit: ir.Circuit, path: str) -> str:
 
 
 def _from_raw(
-    raw: export.Raw, circuit: ir.Circuit, unknowns: tuple[results.Unknown, ...]
+    raw: ngspice.Raw, circuit: ir.Circuit, unknowns: tuple[results.Unknown, ...]
 ) -> tuple[np.ndarray, list[int]]:
     """Each jolty unknown's ngspice vector, and the columns both engines report.
 
@@ -331,7 +331,7 @@ def _from_raw(
     return table, shared
 
 
-def _stopped_early(raw: export.Raw, command: str) -> bool:
+def _stopped_early(raw: ngspice.Raw, command: str) -> bool:
     """Whether a transient stopped before the end its `command` asks for."""
     if not command.startswith("tran"):
         return False
@@ -409,7 +409,7 @@ def _replicate(
 
 
 def _result(
-    jolty: results.Result, raw: export.Raw, table: np.ndarray
+    jolty: results.Result, raw: ngspice.Raw, table: np.ndarray
 ) -> results.Result:
     """The results ngspice found, as jolty's, on the same unknowns."""
     match jolty:
@@ -520,7 +520,6 @@ class Built:
     replication: Replication | None
     devices: int
     unknowns: int
-    seconds: float
     replicated_plots: list[str]
 
 
@@ -603,7 +602,6 @@ def build(entry: Entry) -> Built:
             if isinstance(instance.of, ir.DeviceOf)
         ),
         unknowns=len(next(iter(solved.values())).unknowns),
-        seconds=simulated.seconds,
         replicated_plots=replicated_plots,
     )
 
@@ -803,10 +801,7 @@ def page(built: Built) -> str:
         "",
         buttons,
         "",
-        (
-            f"{built.devices} devices, {built.unknowns} unknowns, simulated in "
-            f"{built.seconds:.2f} s."
-        ),
+        f"{built.devices} devices and {built.unknowns} unknowns.",
         "",
     ]
     drawn = [image for image in built.images if image.endswith("schematic.png")]

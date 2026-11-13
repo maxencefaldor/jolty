@@ -63,7 +63,7 @@ def _spice_point(
         ]
         lines = [*lines, ".nodeset " + " ".join(guesses)]
     try:
-        raw = ngspice(lines, "op")
+        raw = ngspice.run(lines, "op")
     except JoltyError:
         return None
     return {
@@ -130,7 +130,7 @@ def test_frequency_responses_agree(circuit: ir.Circuit) -> None:
         if instance.of == ir.DeviceOf(device="voltage_source")
     )
     response = simulation.run(Ac(source, decade(1 * Hz, 1 * GHz, 5)), TIGHT)
-    raw = ngspice(netlist(circuit, excited=source), "ac dec 5 1 1g")
+    raw = ngspice.run(netlist(circuit, excited=source), "ac dec 5 1 1g")
     shared = compared(simulation)
     jolty = {unknown.name: response.values[:, column] for column, unknown in shared}
     spice = {
@@ -171,7 +171,7 @@ def _transients(
     """
     circuit = simulation.circuit
     try:
-        raw = ngspice(netlist(circuit), f"tran {step!r} {STOP!r} 0 {step!r}")
+        raw = ngspice.run(netlist(circuit), f"tran {step!r} {STOP!r} 0 {step!r}")
     except JoltyError:
         return None
     times = raw.real("time")

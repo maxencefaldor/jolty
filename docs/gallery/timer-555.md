@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/timer_555.py`.
 
 [Open in 3D](timer-555.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/timer_555.py){ .md-button }
 
-16 devices, 17 unknowns, simulated in 3.32 s.
+16 devices and 17 unknowns.
 
 ![The schematic](../images/gallery/timer_555.schematic.png)
 

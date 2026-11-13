@@ -272,11 +272,31 @@ class Options:
     dc_iterations: int | None = None
     transient_iterations: int | None = None
     truncation_tolerance: float | None = None
+    transient_memory: float | None = None
 
     def to_json(self) -> JsonValue:
         """The options in the engine's format, without those left to its defaults."""
         values = {setting.name: getattr(self, setting.name) for setting in fields(self)}
         return {name: value for name, value in values.items() if value is not None}
+
+
+@dataclass(frozen=True, slots=True)
+class Conditions:
+    """What a simulation runs its circuit at.
+
+    A Monte Carlo sample and a corner each run at conditions of their own.
+    """
+
+    temperature: float
+    """The temperature, in kelvins."""
+    process: str | None = None
+    """The process corner of a foundry's devices, such as ``ss``, its kit's typical one
+    unless given."""
+    overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    """The parameters that replace the circuit's, by instance path, then by parameter
+    path, such as ``waveform.dc``, in SI base units."""
+    mismatch: int | None = None
+    """The seed a foundry's devices draw their kit's mismatch from, if they draw it."""
 
 
 @dataclass(frozen=True, slots=True, init=False)

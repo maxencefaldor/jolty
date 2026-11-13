@@ -26,9 +26,10 @@ from typing import Final
 from pydantic import JsonValue
 
 from jolty.devices import Device, device
-from jolty.errors import JoltyError
+from jolty.errors import JoltyError, SimulationError
 from jolty.settings import Settings
 from jolty.spice.download import fetch
+from jolty.spice.ngspice import Running
 from jolty.units import LENGTH, Quantity
 
 VERSION: Final = "bdc9412b3e468c102d01b7cf6337be06ec6e9c9a"
@@ -224,6 +225,23 @@ def written(parameters: Mapping[str, JsonValue]) -> str:
     }
     listed = " ".join(f"{name}={_rounded(value)}" for name, value in values.items())
     return f"{model} {listed}"
+
+
+def running(process: str | None, *, mismatched: bool) -> Running:
+    """How ngspice reads the kit's model library: at the corner `process`.
+
+    The corner is the library's typical one unless given, and each transistor draws its
+    mismatch when `mismatched`.
+
+    Raises:
+        SimulationError: When the library has no such corner.
+    """
+    corner = TYPICAL if process is None else process
+    if corner not in CORNERS:
+        message = f"SKY130 has no process corner {corner!r}: it has {CORNERS}"
+        raise SimulationError(message)
+    section = f"{corner}_mm" if mismatched else corner
+    return {"sections": ((root() / LIBRARY, section),), "compatibility": "hsa"}
 
 
 def inner(element: str, model: str) -> str:

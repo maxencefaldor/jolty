@@ -1,5 +1,5 @@
 use jolty_numerics::Entry;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
@@ -45,8 +45,8 @@ struct Lag<R: Real> {
 }
 
 /// The parameters of a [`Photocell`].
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, bound = "")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, bound(deserialize = ""))]
 pub struct PhotocellParameters<R: Real = f64> {
     /// The resistance at the reference illuminance, in ohms; positive.
     pub resistance: R,

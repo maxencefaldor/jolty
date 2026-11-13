@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/inverting_amplifier.py`.
 
 [Open in 3D](inverting-amplifier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/inverting_amplifier.py){ .md-button }
 
-8 devices, 6 unknowns, simulated in 2.07 s.
+8 devices and 6 unknowns.
 
 ![The schematic](../images/gallery/inverting_amplifier.schematic.png)
 

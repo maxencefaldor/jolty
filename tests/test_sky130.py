@@ -425,4 +425,4 @@ def test_a_seed_draws_the_kits_mismatch() -> None:
     assert first == again
     assert first != pytest.approx(other, rel=1e-6)
     assert first != pytest.approx(nominal, rel=1e-6)
-    assert Simulation(divider(), mismatch=1).mismatch == 1
+    assert Simulation(divider(), mismatch=1).conditions.mismatch == 1

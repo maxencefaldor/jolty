@@ -7,7 +7,7 @@ Simulate it with `jolty simulate examples/widlar_source.py`.
 
 [Open in 3D](widlar-source.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/widlar_source.py){ .md-button }
 
-6 devices, 10 unknowns, simulated in 1.32 s.
+6 devices and 10 unknowns.
 
 ![The schematic](../images/gallery/widlar_source.schematic.png)
 

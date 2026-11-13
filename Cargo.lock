@@ -537,6 +537,7 @@ dependencies = [
  "jolty-models",
  "numpy",
  "pyo3",
+ "serde",
  "serde_json",
 ]
 

@@ -27,23 +27,15 @@ from jolty import (
     results,
 )
 from jolty.plan import decade
-from jolty.spice.export import CURRENT_TOLERANCE
+from jolty.spice.ngspice import CURRENT_TOLERANCE
 from jolty.units import GHz, Hz, V, ohm, s
-from strategies import SETTINGS, STEP, STOP, circuits, pulsed
+from strategies import SETTINGS, STEP, STOP, circuits, placing, pulsed
 
 TIMES = np.linspace(0, STOP, 201)
 """The times each transient steps onto, and is read at."""
 
 type Simulated = dict[str, dict[str, Values]]
 """What each analysis found, by the name of each unknown."""
-
-
-def _placing(circuit: ir.Circuit, instances: Iterable[ir.Instance]) -> ir.Circuit:
-    """The circuit with its top placing `instances` instead of its own."""
-    top = circuit.components[circuit.top].model_copy(
-        update={"instances": tuple(instances)}
-    )
-    return circuit.model_copy(update={"components": {circuit.top: top}})
 
 
 def _instances(circuit: ir.Circuit) -> tuple[ir.Instance, ...]:
@@ -160,7 +152,7 @@ def test_renamed_nets_simulate_the_same(
     )
     shuffled = data.draw(st.permutations(nets))
     names = {net: f"renamed{index}" for index, net in enumerate(shuffled)}
-    written = _placing(
+    written = placing(
         original,
         (
             instance.model_copy(
@@ -184,7 +176,7 @@ def test_reordered_instances_simulate_the_same(
 ) -> None:
     original = pulsed(circuit)
     _assert_same(
-        original, _placing(original, data.draw(st.permutations(_instances(original))))
+        original, placing(original, data.draw(st.permutations(_instances(original))))
     )
 
 
@@ -220,7 +212,7 @@ def test_a_resistor_split_in_two_simulates_the_same(
             ("b", {"a": "halfway", "b": resistor.terminals["b"]}),
         )
     )
-    written = _placing(
+    written = placing(
         original, [*instances[:index], first, second, *instances[index + 1 :]]
     )
     _assert_same(original, written)
@@ -253,7 +245,7 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
     moved = probed.model_copy(
         update={"terminals": {**probed.terminals, terminal: "probe"}}
     )
-    written = _placing(
+    written = placing(
         original, [*instances[:index], moved, *instances[index + 1 :], ammeter]
     )
     found = _assert_same(original, written)

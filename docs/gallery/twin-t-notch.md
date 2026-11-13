@@ -8,7 +8,7 @@ Simulate it with `jolty simulate examples/twin_t_notch.py`.
 
 [Open in 3D](twin-t-notch.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/twin_t_notch.py){ .md-button }
 
-8 devices, 5 unknowns, simulated in 1.67 s.
+8 devices and 5 unknowns.
 
 ![The schematic](../images/gallery/twin_t_notch.schematic.png)
 

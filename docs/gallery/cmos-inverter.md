@@ -8,7 +8,7 @@ with `jolty simulate examples/cmos_inverter.py`.
 
 [Open in 3D](cmos-inverter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/cmos_inverter.py){ .md-button }
 
-5 devices, 11 unknowns, simulated in 1.68 s.
+5 devices and 11 unknowns.
 
 ![The schematic](../images/gallery/cmos_inverter.schematic.png)
 

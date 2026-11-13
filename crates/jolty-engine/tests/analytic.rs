@@ -1090,13 +1090,14 @@ fn a_transient_whose_results_would_fill_the_memory_fails_at_once() {
         error,
         SimulationError::TooManyPoints {
             time: 0.0,
-            step: 1e-12
+            step: 1e-12,
+            memory: 2.0
         }
     );
     assert_eq!(
         error.to_string(),
-        "the transient's results would pass 2 GiB before it stops, its steps 1e-12 s long \
-         at t = 0.0 s"
+        "the transient's results would pass 2.0 GiB before it stops, its steps 1e-12 s \
+         long at t = 0.0 s"
     );
 }
 

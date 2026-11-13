@@ -9,7 +9,7 @@ Simulate it with `jolty simulate discovery/current_source/design.py`.
 
 [Open in 3D](current-source.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/current_source/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/current_source){ .md-button }
 
-9 devices, 15 unknowns, simulated in 1.15 s.
+9 devices and 15 unknowns.
 
 ![The schematic](../images/gallery/current_source.inside.schematic.png)
 

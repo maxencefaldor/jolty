@@ -19,7 +19,7 @@ logic nets, which ``level`` reads by name: 0, 1, or NaN for an unknown level.
 import difflib
 import math
 from dataclasses import dataclass, field
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict, override
 
 import numpy as np
 import numpy.typing as npt
@@ -203,8 +203,106 @@ def _summed[T: (np.float64, np.complex128)](
     return array[..., columns].sum(axis=-1)
 
 
+class _Unknowns[T]:
+    """A result's unknowns and its terminals' currents, read by name.
+
+    A reading is one number of an operating point, or one per row of a result of many,
+    such as a sweep's levels, a transient's times or a response's frequencies.
+    """
+
+    __slots__ = ()
+
+    unknowns: tuple[Unknown, ...]
+    values: npt.NDArray[Any]
+    terminals: tuple[str, ...]
+    currents: npt.NDArray[Any]
+    composites: Composites
+
+    def _read(self, values: npt.NDArray[Any]) -> T:
+        """`values`, a number or a column, as a reading."""
+        raise NotImplementedError
+
+    def _unknown(self, name: str, quantity: Quantity | None = None) -> T:
+        return self._read(self.values[..., column(self.unknowns, name, quantity)])
+
+    def voltage(self, net: str, reference: str | None = None) -> T:
+        """The voltage of `net`, relative to `reference` or to ground."""
+        values = self.values[..., column(self.unknowns, net, "voltage")]
+        if reference is not None:
+            values = (
+                values - self.values[..., column(self.unknowns, reference, "voltage")]
+            )
+        return self._read(values)
+
+    def rise(self, net: str) -> T:
+        """The temperature of the thermal net `net` above the ambient, in kelvins."""
+        return self._unknown(net, "temperature")
+
+    def state(self, name: str) -> T:
+        """The device's state `name`, such as a memristor's ``M1:state``."""
+        return self._unknown(name, "state")
+
+    def current(self, instance: str, terminal: str | None = None) -> T:
+        """The current into `terminal` of `instance`.
+
+        The instance is a device, a component instance or a logic device; into a
+        thermal terminal, the current is the heat flowing in, in watts. Without a
+        terminal, the current through `instance`, a source or an inductor, in its
+        direction.
+        """
+        if terminal is None:
+            return self._unknown(_current(instance))
+        columns = terminal_columns(self.terminals, self.composites, instance, terminal)
+        return self._read(_summed(self.currents, columns))
+
+
+class _Devices[T](_Unknowns[T]):
+    """A result's unknowns, and its devices' charges, derivatives and variables, read.
+
+    Each is read by name, as `_Unknowns` reads an unknown.
+    """
+
+    __slots__ = ()
+
+    charges: npt.NDArray[Any]
+    derivatives: tuple[tuple[str, str], ...]
+    conductances: npt.NDArray[Any]
+    capacitances: npt.NDArray[Any]
+    variables: tuple[tuple[str, str], ...]
+    readings: npt.NDArray[Any]
+
+    def charge(self, instance: str, terminal: str) -> T:
+        """The charge `terminal` of `instance` holds."""
+        columns = terminal_columns(self.terminals, self.composites, instance, terminal)
+        return self._read(_summed(self.charges, columns))
+
+    def conductance(self, equation: str, unknown: str) -> T:
+        """The derivative of a device's `equation`'s residual with respect to `unknown`.
+
+        For two terminals, such as ``M1.drain`` and ``M1.gate``, it is the change of the
+        current into the first with the voltage at the second.
+        """
+        index = derivative_column(self.derivatives, equation, unknown)
+        return self._read(self.conductances[..., index])
+
+    def capacitance(self, equation: str, unknown: str) -> T:
+        """The derivative of a device's `equation`'s charge with respect to `unknown`.
+
+        For two terminals, it is the change of the first's charge with the voltage at
+        the second.
+        """
+        index = derivative_column(self.derivatives, equation, unknown)
+        return self._read(self.capacitances[..., index])
+
+    def variable(self, instance: str, name: str) -> T:
+        """The variable `name` of the device `instance`, such as a threshold voltage."""
+        return self._read(
+            self.readings[..., variable_column(self.variables, instance, name)]
+        )
+
+
 @dataclass(frozen=True, slots=True)
-class OperatingPoint:
+class OperatingPoint(_Devices[float]):
     """A DC solution, and the strategy that found it."""
 
     unknowns: tuple[Unknown, ...]
@@ -242,62 +340,9 @@ class OperatingPoint:
         """The level of the logic net `net`: 0, 1, or NaN when unknown."""
         return float(self.logic[net_column(self.nets, net)])
 
-    def voltage(self, net: str, reference: str | None = None) -> float:
-        """The voltage of `net`, relative to `reference` or to ground."""
-        offset = 0.0 if reference is None else self.voltage(reference)
-        return float(self.values[column(self.unknowns, net, "voltage")]) - offset
-
-    def rise(self, net: str) -> float:
-        """The temperature of the thermal net `net` above the ambient, in kelvins."""
-        return float(self.values[column(self.unknowns, net, "temperature")])
-
-    def state(self, name: str) -> float:
-        """The device's state `name`, such as a memristor's ``M1:state``."""
-        return float(self.values[column(self.unknowns, name, "state")])
-
-    def current(self, instance: str, terminal: str | None = None) -> float:
-        """The current into `terminal` of `instance`.
-
-        The instance is a device, a component instance or a logic device; into a
-        thermal terminal, the current is the heat flowing in, in watts. Without a
-        terminal, the current through `instance`, a source or an inductor, in its
-        direction.
-        """
-        if terminal is not None:
-            columns = terminal_columns(
-                self.terminals, self.composites, instance, terminal
-            )
-            return float(_summed(self.currents, columns))
-        return float(self.values[column(self.unknowns, _current(instance))])
-
-    def charge(self, instance: str, terminal: str) -> float:
-        """The charge `terminal` of `instance` holds."""
-        columns = terminal_columns(self.terminals, self.composites, instance, terminal)
-        return float(_summed(self.charges, columns))
-
-    def conductance(self, equation: str, unknown: str) -> float:
-        """The derivative of a device's `equation`'s residual with respect to `unknown`.
-
-        For two terminals, such as ``M1.drain`` and ``M1.gate``, it is the change of the
-        current into the first with the voltage at the second.
-        """
-        return float(
-            self.conductances[derivative_column(self.derivatives, equation, unknown)]
-        )
-
-    def capacitance(self, equation: str, unknown: str) -> float:
-        """The derivative of a device's `equation`'s charge with respect to `unknown`.
-
-        For two terminals, it is the change of the first's charge with the voltage at
-        the second.
-        """
-        return float(
-            self.capacitances[derivative_column(self.derivatives, equation, unknown)]
-        )
-
-    def variable(self, instance: str, name: str) -> float:
-        """The variable `name` of the device `instance`, such as a threshold voltage."""
-        return float(self.readings[variable_column(self.variables, instance, name)])
+    @override
+    def _read(self, values: Real) -> float:
+        return float(values)
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,7 +372,7 @@ class OperatingPoints:
 
 
 @dataclass(frozen=True, slots=True)
-class Sweep:
+class Sweep(_Devices[Real]):
     """The operating points of a DC sweep, one row per level of its source."""
 
     unknowns: tuple[Unknown, ...]
@@ -369,53 +414,13 @@ class Sweep:
         """The level of the logic net `net` at each level: 0, 1, or NaN when unknown."""
         return self.logic[:, net_column(self.nets, net)]
 
-    def voltage(self, net: str, reference: str | None = None) -> Real:
-        """The voltage of `net` at each level, relative to `reference` or to ground."""
-        values = self.values[:, column(self.unknowns, net, "voltage")]
-        return values if reference is None else values - self.voltage(reference)
-
-    def rise(self, net: str) -> Real:
-        """The temperature of the thermal net `net` above the ambient at each level."""
-        return self.values[:, column(self.unknowns, net, "temperature")]
-
-    def state(self, name: str) -> Real:
-        """The device's state `name`, such as ``M1:state``, at each level."""
-        return self.values[:, column(self.unknowns, name, "state")]
-
-    def current(self, instance: str, terminal: str | None = None) -> Real:
-        """The current into `terminal` of `instance` at each level.
-
-        Without a terminal, the current through `instance`, a source or an inductor.
-        """
-        if terminal is not None:
-            columns = terminal_columns(
-                self.terminals, self.composites, instance, terminal
-            )
-            return _summed(self.currents, columns)
-        return self.values[:, column(self.unknowns, _current(instance))]
-
-    def charge(self, instance: str, terminal: str) -> Real:
-        """The charge `terminal` of `instance` holds at each level."""
-        columns = terminal_columns(self.terminals, self.composites, instance, terminal)
-        return _summed(self.charges, columns)
-
-    def conductance(self, equation: str, unknown: str) -> Real:
-        """The derivative of `equation`'s residual by `unknown` at each level."""
-        index = derivative_column(self.derivatives, equation, unknown)
-        return self.conductances[:, index]
-
-    def capacitance(self, equation: str, unknown: str) -> Real:
-        """The derivative of `equation`'s charge by `unknown` at each level."""
-        index = derivative_column(self.derivatives, equation, unknown)
-        return self.capacitances[:, index]
-
-    def variable(self, instance: str, name: str) -> Real:
-        """The variable `name` of the device `instance` at each level."""
-        return self.readings[:, variable_column(self.variables, instance, name)]
+    @override
+    def _read(self, values: Real) -> Real:
+        return values
 
 
 @dataclass(frozen=True, slots=True)
-class Response:
+class Response(_Unknowns[Complex]):
     """A small-signal response: phasors per unit excitation, one row per frequency."""
 
     unknowns: tuple[Unknown, ...]
@@ -435,30 +440,9 @@ class Response:
     """The thermal terminals among the devices' and the composites': each one's
     current is the heat flowing into it, in watts."""
 
-    def voltage(self, net: str, reference: str | None = None) -> Complex:
-        """The phasor of `net` at each frequency, relative to `reference` or ground."""
-        values = self.values[:, column(self.unknowns, net, "voltage")]
-        return values if reference is None else values - self.voltage(reference)
-
-    def rise(self, net: str) -> Complex:
-        """The phasor of the thermal net `net`'s temperature at each frequency."""
-        return self.values[:, column(self.unknowns, net, "temperature")]
-
-    def state(self, name: str) -> Complex:
-        """The phasor of the device's state `name` at each frequency."""
-        return self.values[:, column(self.unknowns, name, "state")]
-
-    def current(self, instance: str, terminal: str | None = None) -> Complex:
-        """The phasor of the current into `terminal` of `instance` at each frequency.
-
-        Without a terminal, the phasor of the current through `instance`.
-        """
-        if terminal is not None:
-            columns = terminal_columns(
-                self.terminals, self.composites, instance, terminal
-            )
-            return _summed(self.currents, columns)
-        return self.values[:, column(self.unknowns, _current(instance))]
+    @override
+    def _read(self, values: Complex) -> Complex:
+        return values
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,7 +459,7 @@ class Statistics:
 
 
 @dataclass(frozen=True, slots=True)
-class Waveforms:
+class Waveforms(_Devices[Real]):
     """The waveforms of a transient analysis, one row per accepted time point."""
 
     unknowns: tuple[Unknown, ...]
@@ -515,49 +499,9 @@ class Waveforms:
         """The level of the logic net `net` over time."""
         return self.logic[net_column(self.nets, net)]
 
-    def voltage(self, net: str, reference: str | None = None) -> Real:
-        """The voltage of `net` over time, relative to `reference` or to ground."""
-        values = self.values[:, column(self.unknowns, net, "voltage")]
-        return values if reference is None else values - self.voltage(reference)
-
-    def rise(self, net: str) -> Real:
-        """The temperature of the thermal net `net` above the ambient over time."""
-        return self.values[:, column(self.unknowns, net, "temperature")]
-
-    def state(self, name: str) -> Real:
-        """The device's state `name`, such as a memristor's ``M1:state``, over time."""
-        return self.values[:, column(self.unknowns, name, "state")]
-
-    def current(self, instance: str, terminal: str | None = None) -> Real:
-        """The current into `terminal` of `instance` over time.
-
-        Without a terminal, the current through `instance`, a source or an inductor.
-        """
-        if terminal is not None:
-            columns = terminal_columns(
-                self.terminals, self.composites, instance, terminal
-            )
-            return _summed(self.currents, columns)
-        return self.values[:, column(self.unknowns, _current(instance))]
-
-    def charge(self, instance: str, terminal: str) -> Real:
-        """The charge `terminal` of `instance` holds over time."""
-        columns = terminal_columns(self.terminals, self.composites, instance, terminal)
-        return _summed(self.charges, columns)
-
-    def conductance(self, equation: str, unknown: str) -> Real:
-        """The derivative of `equation`'s residual by `unknown` over time."""
-        index = derivative_column(self.derivatives, equation, unknown)
-        return self.conductances[:, index]
-
-    def capacitance(self, equation: str, unknown: str) -> Real:
-        """The derivative of `equation`'s charge by `unknown` over time."""
-        index = derivative_column(self.derivatives, equation, unknown)
-        return self.capacitances[:, index]
-
-    def variable(self, instance: str, name: str) -> Real:
-        """The variable `name` of the device `instance` over time."""
-        return self.readings[:, variable_column(self.variables, instance, name)]
+    @override
+    def _read(self, values: Real) -> Real:
+        return values
 
 
 @dataclass(frozen=True, slots=True)

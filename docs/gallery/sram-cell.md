@@ -9,7 +9,7 @@ Simulate it with `jolty simulate examples/sram_cell.py`.
 
 [Open in 3D](sram-cell.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sram_cell.py){ .md-button }
 
-8 devices, 28 unknowns, simulated in 1.72 s.
+8 devices and 28 unknowns.
 
 ![The schematic](../images/gallery/sram_cell.schematic.png)
 

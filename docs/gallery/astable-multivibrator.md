@@ -11,7 +11,7 @@ Simulate it with `jolty simulate examples/astable_multivibrator.py`.
 
 [Open in 3D](astable-multivibrator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/astable_multivibrator.py){ .md-button }
 
-11 devices, 16 unknowns, simulated in 2.66 s.
+11 devices and 16 unknowns.
 
 ![The schematic](../images/gallery/astable_multivibrator.schematic.png)
 

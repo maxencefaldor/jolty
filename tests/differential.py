@@ -14,21 +14,12 @@ import numpy.typing as npt
 import pytest
 
 from jolty import Options, Simulation, ir, results
-from jolty.spice import export
-from jolty.spice.export import (
-    CURRENT_TOLERANCE,
-    NGSPICE,
-    SPICE_OPTIONS,
-    VOLTAGE_TOLERANCE,
-    ngspice,
-    spice_celsius,
-)
+from jolty.spice import export, ngspice
+from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE
 
 __all__ = [
     "SKIP",
-    "SPICE_OPTIONS",
     "TIGHT",
-    "VOLTAGE_TOLERANCE",
     "Values",
     "closest",
     "compare",
@@ -38,12 +29,11 @@ __all__ = [
     "netlist",
     "ngspice",
     "size",
-    "spice_celsius",
     "unstable",
     "vector",
 ]
 
-SKIP = pytest.mark.skipif(NGSPICE is None, reason="ngspice is not installed")
+SKIP = pytest.mark.skipif(ngspice.EXECUTABLE is None, reason="ngspice is not installed")
 """Marks tests that need ngspice."""
 
 type Real = npt.NDArray[np.float64]
@@ -160,9 +150,10 @@ def differing(
     small current beside large ones only that far. Values within twice the engines'
     absolute tolerance of each other agree too.
     """
-    scales = dict.fromkeys(("voltage", "current"), 0.0)
+    scales: dict[str, float] = {}
     for name, values in reference.items():
-        scales[quantities[name]] = max(scales[quantities[name]], size(values))
+        quantity = quantities[name]
+        scales[quantity] = max(scales.get(quantity, 0.0), size(values))
     return [
         name
         for name, values in reference.items()

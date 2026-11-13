@@ -8,7 +8,7 @@ Simulate it with `jolty simulate discovery/bandgap/design.py`.
 
 [Open in 3D](bandgap.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/bandgap/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/bandgap){ .md-button }
 
-9 devices, 14 unknowns, simulated in 1.28 s.
+9 devices and 14 unknowns.
 
 ![The schematic](../images/gallery/bandgap.inside.schematic.png)
 

@@ -9,7 +9,7 @@ Simulate it with `jolty simulate discovery/vco/design.py`.
 
 [Open in 3D](vco.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/vco/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/discovery/vco){ .md-button }
 
-17 devices, 16 unknowns, simulated in 30.32 s.
+17 devices and 16 unknowns.
 
 ![The schematic](../images/gallery/vco.inside.schematic.png)
 

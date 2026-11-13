@@ -1,5 +1,5 @@
 use jolty_numerics::Entry;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
@@ -8,7 +8,7 @@ use crate::{
 
 /// How a memristor's resistance follows its state `x`, from its on resistance at 0 to its
 /// off resistance at 1, as VTEAM gives it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemristorLaw {
     /// `r_on + (r_off − r_on) · x`, as two resistances in series whose boundary moves.
@@ -309,8 +309,8 @@ fn a_hundredth<R: Real>() -> R {
 pub struct VoltageControlledMemristor<R: Real = f64>(Memristor<R>);
 
 /// The parameters of a [`VoltageControlledMemristor`].
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, bound = "")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, bound(deserialize = ""))]
 pub struct VoltageControlledMemristorParameters<R: Real = f64> {
     /// The resistance fully on, at a state of 0, in ohms; positive.
     pub on_resistance: R,
@@ -434,8 +434,8 @@ impl<R: Real> Device<R> for VoltageControlledMemristor<R> {
 pub struct CurrentControlledMemristor<R: Real = f64>(Memristor<R>);
 
 /// The parameters of a [`CurrentControlledMemristor`].
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, bound = "")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, bound(deserialize = ""))]
 pub struct CurrentControlledMemristorParameters<R: Real = f64> {
     /// The resistance fully on, at a state of 0, in ohms; positive.
     pub on_resistance: R,
