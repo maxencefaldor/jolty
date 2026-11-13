@@ -27,7 +27,7 @@ import math
 from collections.abc import Iterable, Iterator
 from functools import cache
 from pathlib import Path
-from typing import Final, Literal, Self
+from typing import Annotated, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -51,11 +51,12 @@ VALUED: Final[dict[Device, str]] = {
 }
 """The parameter that holds the value of each device a catalog prices."""
 
-_SYMBOLS: Final[dict[Device, str]] = {
+SYMBOLS: Final[dict[Device, str]] = {
     "resistor": "Ω",
     "capacitor": "F",
     "inductor": "H",
 }
+"""The symbol of the unit of each device's value."""
 
 
 @cache
@@ -125,10 +126,17 @@ class _Model(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+type Pins = dict[str, tuple[Annotated[str, Field(min_length=1)], ...]]
+"""The pads of a part's package each terminal or port of its instance joins, by name,
+such as ``{"collector": ("3",), "base": ("2",), "emitter": ("1",)}``; a terminal of no
+pads joins none."""
+
+
 class Part(_Model):
     """A part at a unit price: a device of one value and tolerance, numbered, or both.
 
-    A part that states no device is any device or component its number names.
+    A part that states no device is any device or component its number names. Its
+    footprint and pins place it on a board, as a [KiCad netlist][jolty.kicad] writes it.
     """
 
     device: Device | None = Field(
@@ -159,6 +167,18 @@ class Part(_Model):
         exclude_if=lambda package: package is None,
         description="Its package, such as 0603 or TO-92.",
     )
+    footprint: str | None = Field(
+        default=None,
+        pattern=r"^[^:]+:[^:]+$",
+        exclude_if=lambda footprint: footprint is None,
+        description="Its footprint, as KiCad's libraries name it, such as "
+        "Resistor_SMD:R_0603_1608Metric.",
+    )
+    pins: Pins | None = Field(
+        default=None,
+        exclude_if=lambda pins: pins is None,
+        description="The pads each terminal or port of its instance joins, by name.",
+    )
     lifecycle: Lifecycle = Field(
         default="active", exclude_if=lambda lifecycle: lifecycle == "active"
     )
@@ -175,6 +195,10 @@ class Part(_Model):
         if self.device is None and self.number is None:
             message = "a part states a device, value and tolerance, or a number"
             raise ValueError(message)
+        for terminal, pads in (self.pins or {}).items():
+            if len(set(pads)) < len(pads):
+                message = f"a part's pins give {terminal} a pad twice"
+                raise ValueError(message)
         return self
 
     @property
@@ -187,7 +211,7 @@ class Part(_Model):
         said = []
         if self.device is not None and self.value is not None:
             said.append(
-                f"{self.device} of {format_si(self.value, _SYMBOLS[self.device])} "
+                f"{self.device} of {format_si(self.value, SYMBOLS[self.device])} "
                 f"within {self.tolerance:.6g}"
             )
         if self.number is not None:
@@ -243,6 +267,43 @@ class Catalog(_Model):
             if not distinct or not _same(distinct[-1], value):
                 distinct.append(value)
         return tuple(distinct)
+
+    def part_for(self, instance: ir.Instance) -> Part | str:
+        """The cheapest orderable part that builds `instance`, or why none does.
+
+        A numbered instance takes a part of its number, which a part that states a
+        device builds only as that device would, of its value and within the
+        instance's tolerance if it states one. A resistor, a capacitor or an inductor
+        takes a part of its value within its tolerance. Any other instance takes none.
+        """
+        if instance.part is not None:
+            return _numbered(self, instance, instance.part)
+        model = (
+            instance.of.device
+            if isinstance(instance.of, ir.DeviceOf)
+            else instance.of.component
+        )
+        match model:
+            case "resistor" | "capacitor" | "inductor":
+                kind: Device = model
+            case _:
+                return (
+                    f"a {model} is priced by its part number alone, and it states none"
+                )
+        found = _valued(instance, kind)
+        if isinstance(found, str):
+            return found
+        value, tolerance = found
+        matching = self.matching(kind, value, tolerance)
+        part = _cheapest(part for part in matching if part.orderable)
+        if part is not None:
+            return part
+        described = (
+            f"{kind} of {format_si(value, SYMBOLS[kind])} within {tolerance:.6g}"
+        )
+        if matching:
+            return f"every {described} in the catalog is obsolete"
+        return f"no {described} is in the catalog"
 
     def _valued(self, device: Device, tolerance: float) -> Iterator[tuple[Part, float]]:
         """Each part of `device` within `tolerance`, orderable or not, and its value."""
@@ -325,8 +386,8 @@ def bill(circuit: ir.Circuit, catalog: Catalog, instance: str = "") -> Bill:
     prefix = f"{instance}/" if instance else ""
     lines: list[Line] = []
     unpriced: list[Unpriced] = []
-    for path, placed in _priced(circuit, component, prefix):
-        found = _price(catalog, placed)
+    for path, placed in built(circuit, component, prefix):
+        found = catalog.part_for(placed)
         if isinstance(found, Part):
             lines.append(Line(instance=path, part=found))
         else:
@@ -334,51 +395,21 @@ def bill(circuit: ir.Circuit, catalog: Catalog, instance: str = "") -> Bill:
     return Bill(currency=catalog.currency, lines=tuple(lines), unpriced=tuple(unpriced))
 
 
-def _priced(
-    circuit: ir.Circuit, component: str, prefix: str
+def built(
+    circuit: ir.Circuit, component: str, prefix: str = ""
 ) -> Iterator[tuple[str, ir.Instance]]:
-    """Each instance within `component` a part builds, by path.
+    """Each instance within `component` a part builds, by its path after `prefix`.
 
-    They are the numbered instances, and the device instances outside them.
+    They are the numbered instances, devices or component instances, and the device
+    instances outside them, in the order the components place them.
     """
     for instance in circuit.components[component].instances:
         path = f"{prefix}{instance.id}"
         match instance:
             case ir.Instance(part=None, of=ir.ComponentOf(component=inner)):
-                yield from _priced(circuit, inner, f"{path}/")
+                yield from built(circuit, inner, f"{path}/")
             case _:
                 yield path, instance
-
-
-def _price(catalog: Catalog, instance: ir.Instance) -> Part | str:
-    """The cheapest part that builds `instance`, or why none does.
-
-    The instance is numbered, or a device instance.
-    """
-    if instance.part is not None:
-        return _numbered(catalog, instance, instance.part)
-    model = (
-        instance.of.device
-        if isinstance(instance.of, ir.DeviceOf)
-        else instance.of.component
-    )
-    match model:
-        case "resistor" | "capacitor" | "inductor":
-            kind: Device = model
-        case _:
-            return f"a {model} is priced by its part number alone, and it states none"
-    found = _valued(instance, kind)
-    if isinstance(found, str):
-        return found
-    value, tolerance = found
-    matching = catalog.matching(kind, value, tolerance)
-    part = _cheapest(part for part in matching if part.orderable)
-    if part is not None:
-        return part
-    described = f"{kind} of {format_si(value, _SYMBOLS[kind])} within {tolerance:.6g}"
-    if matching:
-        return f"every {described} in the catalog is obsolete"
-    return f"no {described} is in the catalog"
 
 
 def _valued(instance: ir.Instance, kind: Device) -> tuple[float, float] | str:

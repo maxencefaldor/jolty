@@ -52,9 +52,12 @@ The server offers one tool per command:
 | `simulate_circuit` | `jolty simulate` |
 | `plot_results` | `jolty plot` |
 | `draw_schematic` | `jolty draw` |
+| `write_viewer` | `jolty view` |
 | `check_circuit` | `jolty check` |
 | `explain_rule` | `jolty explain` |
+| `price_circuit` | `jolty cost` |
+| `write_kicad_netlist` | `jolty kicad` |
 
 Each tool answers with the text the command prints, with the result itself as structured content, and with the schematics and plots it drew as images.
 Scripts run in a process of their own, with the configured time limit, so nothing a script prints can reach the protocol stream.
-The build and simulate tools run any Python the script holds, with the user's permissions, so a harness should ask before each call; the check and explain tools only read, and the plot and draw tools only add images beside the files they read.
+The build and simulate tools run any Python the script holds, with the user's permissions, so a harness should ask before each call; the check, explain and price tools only read, and the plot, draw, viewer and KiCad tools only add files beside the files they read.

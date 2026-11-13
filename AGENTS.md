@@ -5,7 +5,7 @@ The README says what jolty does; the rules below say how to change it.
 
 ## Scope
 
-jolty describes circuits, checks them, simulates them, measures them against specs, and writes them in the formats other tools read, such as SPICE netlists for ngspice.
+jolty describes circuits, checks them, simulates them, measures them against specs, and writes them in the formats other tools read, such as SPICE netlists for ngspice and KiCad netlists for boards.
 Physical design is out of scope: placing parts and routing wires on a board or a chip, and a foundry's checks before a chip is made.
 jolty exports to the tools that do these rather than doing them itself, and a foundry's transistor models run in ngspice on an exported netlist, not in the engine.
 A schematic's layout only draws a circuit as feedback; it lays out no board.
@@ -54,7 +54,7 @@ Each module imports only from the modules listed before it:
 1. `devices`, `builder`, `parts`: the devices a script places, components written as Python functions, and real parts, each a model with its maker's number and ratings.
 1. `spice`: SPICE libraries read into components, model files downloaded and checked, and circuits written as SPICE netlists for ngspice.
 1. `plan`, `checks`, `results`, `specs`, `simulate`, `variation`, `catalog`, `fidelity`: analyses and their options, the rules and their diagnostics, results, requirements measured on results, the engine's Python face, Monte Carlo samples of tolerances, orderable parts and bills of materials, and logic models characterized from components' circuits.
-1. `files`, `report`, `plots`: circuit and results files, what each analysis found as data and as text, and plots of results.
+1. `files`, `kicad`, `report`, `plots`: circuit and results files, components written as KiCad netlists, what each analysis found as data and as text, and plots of results.
 1. `layout`, `schematic`, `viewer`: where a schematic places each instance and runs each wire, the schematic drawn, and the 3D viewer that plays a simulation on the layout.
 1. `runner`, `service`: scripts in child processes, and every command defined once.
 1. `cli`, `mcp`: front ends that only adapt `service`.

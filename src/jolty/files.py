@@ -191,6 +191,23 @@ def schematic_path(circuit: Path, instance: str = "") -> Path:
     return circuit.with_name(".".join([*parts, "schematic.png"]))
 
 
+def netlist_path(circuit: Path, instance: str = "") -> Path:
+    """Where the KiCad netlist of the component at `instance` goes beside its circuit.
+
+    The top component's is ``<stem>.net``; another's carries the ids of its instance's
+    path, joined by dots, as ``<stem>.X1.X2.net``.
+
+    Examples:
+        >>> netlist_path(Path("amp.jolty.json")).name
+        'amp.net'
+        >>> netlist_path(Path("amp.jolty.json"), "X1/X2").name
+        'amp.X1.X2.net'
+    """
+    stem = circuit.name.removesuffix(CIRCUIT_SUFFIX).removesuffix(".json")
+    parts = [stem, *instance.split("/")] if instance else [stem]
+    return circuit.with_name(".".join([*parts, "net"]))
+
+
 def save_circuit(path: Path, circuit: ir.Circuit) -> None:
     """Writes `circuit` to `path` as JSON."""
     path.write_text(circuit.model_dump_json(indent=2) + "\n", encoding="utf-8")

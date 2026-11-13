@@ -14,7 +14,7 @@ The guide explains jolty one concept per page.
 - [Results](results.md): the report, the plots, the results file, and how to read a result by net and by instance.
 - [Specs](specs.md): requirements on measurements of the results, and the verdict on each.
 - [Fidelity](fidelity.md): logic cells characterized from components' circuits that stand in for them, and the spot checks that hold them to their contracts.
-- [Parts and costs](parts.md): real parts with their makers' numbers and ratings, catalogs of orderable parts, the E series of preferred values, and the bill of materials of a component.
+- [Parts and costs](parts.md): real parts with their makers' numbers and ratings, catalogs of orderable parts, the E series of preferred values, the bill of materials of a component, and its netlist for KiCad to lay out its board.
 
 A circuit and its simulation stay apart.
 The circuit says what exists: components, devices, values and connections.

@@ -241,6 +241,13 @@ def create_server(settings: Settings) -> MCPServer:
         service.CostResult,
         READS_FILES,
     )
+    register(
+        "write_kicad_netlist",
+        service.KicadRequest,
+        service.write_kicad,
+        service.KicadResult,
+        WRITES_FILES,
+    )
     return server
 
 

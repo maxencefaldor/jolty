@@ -37,6 +37,19 @@ class ElaborationError(JoltyError):
         super().__init__("\n\n".join(self.problems))
 
 
+class NetlistError(JoltyError):
+    """A component cannot be written as a board's netlist: every problem found."""
+
+    def __init__(self, problems: Sequence[str]) -> None:
+        """Holds `problems`: what keeps the component, or an instance, off a board.
+
+        A problem of an instance begins with its path.
+        """
+        self.problems = tuple(problems)
+        listed = "".join(f"\n  {problem}" for problem in self.problems)
+        super().__init__(f"cannot write the netlist:{listed}")
+
+
 class SimulationError(JoltyError):
     """An analysis failed, such as an operating point that no strategy finds."""
 

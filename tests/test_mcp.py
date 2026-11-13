@@ -78,6 +78,7 @@ def test_tools_mirror_the_service_requests() -> None:
         "check_circuit",
         "explain_rule",
         "price_circuit",
+        "write_kicad_netlist",
     }
     simulate = tools["simulate_circuit"]
     assert set(simulate.input_schema["properties"]) == {

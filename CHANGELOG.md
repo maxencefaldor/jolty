@@ -26,5 +26,6 @@ The first release, 0.1.0.
 - The periodic steady state of a driven circuit, found by shooting with the monodromy matrix carried along each period.
 - Noise analysis by the adjoint method: every device's thermal, shot and flicker noise at an output, each source's share, the noise referred to an input, and specs on noise densities and RMS noise, all agreeing with ngspice.
 - A parts catalog that prices a circuit's bill of materials: by value and tolerance, or by part number for numbered devices and components, in packages, never with an obsolete part.
+- KiCad netlists of a component, for laying out its board: each part of its bill of materials a footprint from its catalog part, its pads on the nets its part's pins name, with every problem that keeps an instance off the board named.
 - A command line, an MCP server and a Python package, every command defined once.
 - Benchmarks: blind tasks for one agent, from Koza's patented circuits, AnalogCoder's problems and a cost-down, each judged by a scorer the agent never sees.

@@ -1,6 +1,6 @@
 # Parts and costs
 
-Real parts carry their makers' numbers and ratings, a catalog lists the parts a circuit can be built from, and a bill of materials prices a component with them.
+Real parts carry their makers' numbers and ratings, a catalog lists the parts a circuit can be built from, a bill of materials prices a component with them, and a KiCad netlist places them on a board.
 
 ## Real parts
 
@@ -51,9 +51,9 @@ A catalog file holds JSON: a currency, then parts, each at a unit price, and eac
   "version": 1,
   "currency": "USD",
   "parts": [
-    {"device": "resistor", "value": 4700.0, "tolerance": 0.01, "price": 0.004, "number": "RC0603FR-074K7L", "package": "0603"},
+    {"device": "resistor", "value": 4700.0, "tolerance": 0.01, "price": 0.004, "number": "RC0603FR-074K7L", "package": "0603", "footprint": "Resistor_SMD:R_0603_1608Metric"},
     {"device": "capacitor", "value": 1e-9, "tolerance": 0.1, "price": 0.003},
-    {"number": "2N3904", "price": 0.12, "package": "TO-92"},
+    {"number": "2N3904", "price": 0.12, "package": "TO-92", "footprint": "Package_TO_SOT_THT:TO-92_Inline", "pins": {"emitter": ["1"], "base": ["2"], "collector": ["3"]}},
     {"number": "IRF511", "price": 1.1, "package": "TO-220AB", "lifecycle": "obsolete"}
   ]
 }
@@ -61,6 +61,7 @@ A catalog file holds JSON: a currency, then parts, each at a unit price, and eac
 
 Values are in SI base units.
 A part's `number`, its maker's part number, and its `package` are optional, and its `lifecycle` is `active` unless it states `not-recommended`, for parts still made but not for new designs, or `obsolete`, for parts no longer made.
+Its `footprint` and `pins`, also optional, place it on a [board](#boards): the footprint as KiCad's libraries name it, `Library:Name`, and the pins as the pads of that footprint each terminal or port of its instance joins, by name, as its maker's datasheet numbers its package's pins.
 In Python, `Catalog.load(path)` reads one, and `catalog.save(path)` writes one.
 
 ## Bills of materials
@@ -76,6 +77,25 @@ Each other resistor, capacitor and inductor takes the cheapest part of its value
 No instance takes an obsolete part.
 An instance that states no tolerance, that comes from a lot, whose shared spread no part states, that no orderable part matches, or that is another device without a number, stays unpriced: the bill says why, the total leaves it out, and the command exits with 1.
 The MCP server's `price_circuit` tool does the same, and `jolty.catalog.bill` in Python.
+
+## Boards
+
+`jolty kicad` writes a saved circuit's top component, or the component at `--instance`, as a KiCad netlist, which KiCad's PCB editor imports with **File > Import > Netlist** to lay out its board:
+
+```sh
+jolty kicad bench.jolty.json --catalog parts.json --instance X1
+```
+
+Each instance its [bill of materials](#bills-of-materials) prices becomes a footprint, its catalog part's, whose pads join the nets of the terminals its part's pins name.
+A resistor, a capacitor or an inductor whose part states no pins joins `a` to pad 1 and `b` to pad 2, as KiCad's two-pad footprints number them.
+A terminal on a thermal net, such as a heated part's `thermal`, joins no pad, and an instance whose every terminal is on one, such as a thermal resistance, has no footprint; a terminal its part's pins give no pads, as `"light": []`, joins none either.
+The component is elaborated alone, so it has a ground port, whose name its ground net takes; each other port's net takes the port's name, and each net inside its path, such as `X1/mid`.
+Each footprint's reference designator is its device's letter, R, C, L, T for coupled inductors, D, or Q for a transistor, or U for any other part, numbered in the order the components place them, and its fields name the instance it builds and its maker's number.
+Its identifier comes from its instance's path, so a footprint keeps it from one netlist of a component to the next.
+
+The netlist is written only when every instance is placed, and otherwise the command lists what keeps each off the board and exits with 1: no part prices it, its part states no footprint, or its part's pins name a terminal it lacks or one on a thermal net, leave out one on an electrical net, or put a pad on two nets.
+The netlist is saved beside the circuit, as `bench.X1.net` here, unless `--output` says where.
+The MCP server's `write_kicad_netlist` tool does the same, and `jolty.kicad.netlist` in Python.
 
 ## Preferred values
 

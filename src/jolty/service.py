@@ -27,6 +27,7 @@ from jolty import (
     checks,
     files,
     ir,
+    kicad,
     plots,
     results,
     runner,
@@ -34,7 +35,7 @@ from jolty import (
     specs,
     viewer,
 )
-from jolty.errors import ElaborationError, JoltyError
+from jolty.errors import ElaborationError, JoltyError, NetlistError
 from jolty.fidelity import FidelityReport
 from jolty.report import (
     AnalysisReport,
@@ -743,6 +744,78 @@ async def cost(request: CostRequest, settings: Settings) -> CostResult:
         return CostResult(bill=catalog.bill(circuit, parts, request.instance))
     except KeyError as error:
         raise JoltyError(error.args[0]) from None
+
+
+class KicadRequest(_Model):
+    """Write a saved circuit's top component, or an instance's, as a KiCad netlist.
+
+    Each part of its bill of materials becomes a footprint, which its catalog part
+    states with the pads each terminal joins, and KiCad's PCB editor imports the file.
+    """
+
+    circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
+    catalog: Path = Field(
+        description="A catalog file of parts, with their footprints and pins."
+    )
+    instance: str = Field(
+        default="",
+        description="The path of the component instance to write, such as 'X1'; the "
+        "top component by default.",
+    )
+    output: Path | None = Field(
+        default=None,
+        description="Where to save the netlist; defaults to <stem>.net beside the "
+        "circuit, or <stem>.X1.X2.net for the instance X1/X2.",
+    )
+
+
+class KicadResult(CommandResult):
+    """The KiCad netlist written, or what keeps the component off a board."""
+
+    netlist: kicad.Netlist | None = Field(
+        default=None, description="The netlist, when it was written."
+    )
+    path: Path | None = Field(default=None, description="The netlist file written.")
+    problems: tuple[str, ...] = Field(
+        default=(),
+        description="What keeps the component, or an instance by its path, off the "
+        "board; the netlist is written only when there is none.",
+    )
+
+    @property
+    @override
+    def ok(self) -> bool:
+        """Whether the netlist was written."""
+        return not self.problems
+
+    @override
+    def describe(self) -> str:
+        """The netlist, a line per footprint, or each problem."""
+        if self.netlist is None or self.path is None:
+            listed = "".join(f"\n  {problem}" for problem in self.problems)
+            return f"cannot write the netlist:{listed}"
+        return f"wrote {self.path}: {self.netlist.describe()}"
+
+
+async def write_kicad(request: KicadRequest, settings: Settings) -> KicadResult:
+    """Writes a component of a saved circuit as a KiCad netlist; settings play no part.
+
+    Raises:
+        JoltyError: When a file is missing or holds no circuit or no catalog, or no
+            component instance is at the path.
+    """
+    del settings
+    circuit = await asyncio.to_thread(_load_circuit, request.circuit)
+    parts = await asyncio.to_thread(_load_catalog, request.catalog)
+    try:
+        written = await asyncio.to_thread(
+            kicad.netlist, circuit, parts, request.instance
+        )
+    except (ElaborationError, NetlistError) as error:
+        return KicadResult(problems=error.problems)
+    target = request.output or files.netlist_path(request.circuit, request.instance)
+    await asyncio.to_thread(written.save, target)
+    return KicadResult(netlist=written, path=target)
 
 
 def _load_catalog(path: Path) -> catalog.Catalog:

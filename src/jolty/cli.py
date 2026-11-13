@@ -105,6 +105,14 @@ class CostCommand(service.CostRequest, _Output):
         self.emit(await service.cost(self, Settings.load()))
 
 
+class KicadCommand(service.KicadRequest, _Output):
+    """Write a component of a saved circuit file as a KiCad netlist."""
+
+    async def cli_cmd(self) -> None:
+        """Runs the command."""
+        self.emit(await service.write_kicad(self, Settings.load()))
+
+
 class Jolty(BaseSettings):
     """Build and simulate electronic circuits written as Python scripts."""
 
@@ -141,6 +149,9 @@ class Jolty(BaseSettings):
     cost: CliSubCommand[CostCommand] = Field(
         description="Price a component of a saved circuit file with a catalog."
     )
+    kicad: CliSubCommand[KicadCommand] = Field(
+        description="Write a component of a saved circuit file as a KiCad netlist."
+    )
 
     @classmethod
     @override
@@ -167,9 +178,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Runs the command line.
 
     The exit status is 1 when a circuit does not elaborate, a check finds an error, an
-    analysis fails or no part prices a device instance, and 2 when the arguments or
-    settings are invalid, a command needs a subcommand, or a command fails, as when a
-    script raises. The lone argument ``--version`` prints the version.
+    analysis fails, no part prices a device instance or a component's netlist cannot be
+    written, and 2 when the arguments or settings are invalid, a command needs a
+    subcommand, or a command fails, as when a script raises. The lone argument
+    ``--version`` prints the version.
     """
     arguments = sys.argv[1:] if argv is None else list(argv)
     if arguments == ["--version"]:

@@ -110,3 +110,15 @@ Price a component of a saved circuit file with a catalog.
 | `CIRCUIT` | required | A .jolty.json circuit file. |
 | `--catalog` | required | A catalog file of parts and their prices. |
 | `--instance` |  | The path of the component instance to price, such as 'X1'; the top component by default. |
+
+## `jolty kicad`
+
+Write a component of a saved circuit file as a KiCad netlist.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
+| `CIRCUIT` | required | A .jolty.json circuit file. |
+| `--catalog` | required | A catalog file of parts, with their footprints and pins. |
+| `--instance` |  | The path of the component instance to write, such as 'X1'; the top component by default. |
+| `--output` |  | Where to save the netlist; defaults to &lt;stem&gt;.net beside the circuit, or &lt;stem&gt;.X1.X2.net for the instance X1/X2. |
