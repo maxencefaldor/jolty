@@ -9,13 +9,15 @@
 //! temperature is an unknown like any voltage, so Newton's iteration solves the circuit
 //! and its heating together, with every derivative exact.
 
+use std::borrow::Cow;
+
 use jolty_ir::Parameters;
 use jolty_numerics::{Entry, Pattern, PatternBuilder};
 
-use crate::device::read;
+use crate::device::{lift, read};
 use crate::{
     Binding, Choice, Contributions, Device, Gradient, Hyper, Input, Interface, Model, NativeDevice,
-    Node, NoiseSource, Output, ParameterError, Quantity, Real, Unknown, UnknownInfo,
+    Node, NoiseSource, Output, ParameterError, Quantity, Real, Specification, Unknown, UnknownInfo,
 };
 
 /// A device whose parameters scale to any temperature.
@@ -33,8 +35,11 @@ pub trait Heatable<R: Real>: NativeDevice<R> {
 /// A model whose devices heat.
 pub trait HeatableModel: 'static {
     /// The device, computing with `R`.
-    type Device<R: Real>: Heatable<R, Parameters: Clone + Send>;
+    type Device<R: Real>: Heatable<R>;
 }
+
+/// The parameters of the devices of `M` that compute with `R`.
+type ParametersOf<M, R> = <<M as HeatableModel>::Device<R> as NativeDevice<R>>::Parameters;
 
 /// The numbers a device computes with, and those it computes with when it heats: the
 /// same, with their derivative with respect to its temperature beside them.
@@ -117,15 +122,32 @@ impl<M: HeatableModel> Default for Thermal<M> {
     }
 }
 
-/// Whether `parameters` say the device heats, and the parameters without saying so.
-fn heated(parameters: &Parameters) -> Result<(bool, Parameters), ParameterError> {
-    let mut own = parameters.clone();
-    match own.remove("thermal") {
-        None => Ok((false, own)),
-        Some(serde_json::Value::Bool(heats)) => Ok((heats, own)),
-        Some(other) => Err(ParameterError(format!(
-            "thermal must be true or false, not {other}"
-        ))),
+/// Whether a device heats, as its parameters say.
+#[derive(Debug, Clone, Copy)]
+struct Heats {
+    /// Whether the device heats by the power it dissipates, through a terminal `thermal`
+    /// joined to a thermal net, whose temperature above the ambient it runs at.
+    thermal: bool,
+}
+
+impl Heats {
+    /// Whether `parameters` say the device heats, and the parameters without saying so.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when they say it with anything but true or false.
+    fn read(parameters: &Parameters) -> Result<(Self, Cow<'_, Parameters>), ParameterError> {
+        let Some(said) = parameters.get("thermal") else {
+            return Ok((Self { thermal: false }, Cow::Borrowed(parameters)));
+        };
+        let Some(thermal) = said.as_bool() else {
+            return Err(ParameterError(format!(
+                "thermal must be true or false, not {said}"
+            )));
+        };
+        let mut others = parameters.clone();
+        others.remove("thermal");
+        Ok((Self { thermal }, Cow::Owned(others)))
     }
 }
 
@@ -134,40 +156,72 @@ impl<M: HeatableModel> Model for Thermal<M> {
         <M::Device<f64> as NativeDevice<f64>>::NAME
     }
 
-    fn interface(&self, parameters: &Parameters) -> Result<Interface, ParameterError> {
-        let (heats, own) = heated(parameters)?;
-        let mut interface = M::Device::<f64>::interface(&read::<f64, M::Device<f64>>(&own)?);
-        if heats {
-            interface.thermal.push(interface.terminals.len());
-            interface.terminals.push("thermal".to_owned());
+    fn read(&self, parameters: &Parameters) -> Result<Box<dyn Specification>, ParameterError> {
+        let (heats, others) = Heats::read(parameters)?;
+        let warmed = if heats.thermal {
+            Warmed::<M>::Heated(read(&others)?)
+        } else {
+            Warmed::<M>::Cool(read(&others)?)
+        };
+        Ok(Box::new(warmed))
+    }
+}
+
+/// The parameters of a device of `M`, read as the numbers it computes with: plain, or,
+/// when it heats, with their derivatives with respect to its temperature beside them.
+enum Warmed<M: HeatableModel> {
+    /// A device at the temperature of its surroundings.
+    Cool(ParametersOf<M, f64>),
+    /// A device that heats.
+    Heated(ParametersOf<M, <f64 as Heating>::Warm>),
+}
+
+impl<M: HeatableModel> std::fmt::Debug for Warmed<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cool(parameters) => f.debug_tuple("Cool").field(parameters).finish(),
+            Self::Heated(parameters) => f.debug_tuple("Heated").field(parameters).finish(),
         }
-        Ok(interface)
+    }
+}
+
+impl<M: HeatableModel> Specification for Warmed<M> {
+    fn interface(&self) -> Interface {
+        match self {
+            Self::Cool(parameters) => M::Device::<f64>::interface(parameters),
+            Self::Heated(parameters) => {
+                let mut interface = M::Device::<Gradient>::interface(parameters);
+                interface.thermal.push(interface.terminals.len());
+                interface.terminals.push("thermal".to_owned());
+                interface
+            }
+        }
     }
 
-    fn instantiate(
-        &self,
-        parameters: &Parameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device>, ParameterError> {
-        let (heats, own) = heated(parameters)?;
-        if heats {
-            return Ok(Box::new(Heated::<M, f64>::new(&own, binding)?));
-        }
-        let parameters = read::<f64, M::Device<f64>>(&own)?;
-        Ok(Box::new(M::Device::<f64>::new(parameters, binding)?))
+    fn instantiate(&self, binding: &mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError> {
+        Ok(match self {
+            Self::Cool(parameters) => Box::new(M::Device::<f64>::new(parameters.clone(), binding)?),
+            Self::Heated(parameters) => {
+                Box::new(Heated::<M, f64>::new(parameters.clone(), binding)?)
+            }
+        })
     }
 
     fn instantiate_gradient(
         &self,
-        parameters: &Parameters,
+        parameter: &str,
         binding: &mut Binding<'_>,
     ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
-        let (heats, own) = heated(parameters)?;
-        if heats {
-            return Ok(Box::new(Heated::<M, Gradient>::new(&own, binding)?));
-        }
-        let parameters = read::<Gradient, M::Device<Gradient>>(&own)?;
-        Ok(Box::new(M::Device::<Gradient>::new(parameters, binding)?))
+        Ok(match self {
+            Self::Cool(parameters) => Box::new(M::Device::<Gradient>::new(
+                lift(parameters, parameter)?,
+                binding,
+            )?),
+            Self::Heated(parameters) => Box::new(Heated::<M, Gradient>::new(
+                lift(parameters, parameter)?,
+                binding,
+            )?),
+        })
     }
 }
 
@@ -176,7 +230,7 @@ impl<M: HeatableModel> Model for Thermal<M> {
 /// and its internal unknowns, and whose equations and entries map onto the circuit's.
 pub struct Heated<M: HeatableModel, R: Heating> {
     device: M::Device<R::Warm>,
-    parameters: <M::Device<R::Warm> as NativeDevice<R::Warm>>::Parameters,
+    parameters: ParametersOf<M, R::Warm>,
     /// The device's own system: its pattern, and its contributions there.
     pattern: Pattern,
     contributions: Contributions<R::Warm>,
@@ -213,10 +267,12 @@ impl<M: HeatableModel, R: Heating> std::fmt::Debug for Heated<M, R> {
 }
 
 impl<M: HeatableModel, R: Heating> Heated<M, R> {
-    /// The device of `M` with `parameters`, which say nothing of heating, bound through
-    /// `binding`, whose last terminal is the thermal one.
-    fn new(parameters: &Parameters, binding: &mut Binding<'_>) -> Result<Self, ParameterError> {
-        let parameters = read::<R::Warm, M::Device<R::Warm>>(parameters)?;
+    /// The device of `M` with `parameters`, read as the numbers it computes with when it
+    /// heats, bound through `binding`, whose last terminal is the thermal one.
+    fn new(
+        parameters: ParametersOf<M, R::Warm>,
+        binding: &mut Binding<'_>,
+    ) -> Result<Self, ParameterError> {
         let ambient = binding.temperature();
         let terminals = binding.terminals().len() - 1;
         let thermal = binding.terminal(terminals);
@@ -459,8 +515,9 @@ mod tests {
         let model = Thermal::<Diode>::new();
         let interface = |parameters: &str| {
             model
-                .interface(&serde_json::from_str(parameters).expect("JSON"))
+                .read(&serde_json::from_str(parameters).expect("JSON"))
                 .expect("valid")
+                .interface()
         };
         let heated = interface(r#"{"thermal": true}"#);
         assert_eq!(heated.terminals, ["anode", "cathode", "thermal"]);
@@ -470,7 +527,7 @@ mod tests {
             ["anode", "cathode"]
         );
         let error = model
-            .interface(&serde_json::from_str(r#"{"thermal": 1}"#).expect("JSON"))
+            .read(&serde_json::from_str(r#"{"thermal": 1}"#).expect("JSON"))
             .unwrap_err();
         assert_eq!(error.to_string(), "thermal must be true or false, not 1");
     }

@@ -25,7 +25,7 @@
 //! Each device's `∂F/∂p` is exact: the device made again computing with [`Gradient`], the
 //! parameter differentiated against, and evaluated where the device itself is.
 
-use jolty_ir::{numbers, parameter_mut};
+use jolty_ir::numbers;
 use jolty_models::{Binding, Contributions, Device, Gradient, Input, Unknown, UnknownInfo};
 use jolty_numerics::integration::Formula;
 use jolty_numerics::{Complex64, Pattern, PatternBuilder};
@@ -289,11 +289,6 @@ impl Simulator {
                 continue;
             };
             for (name, value) in numbers(&made.parameters) {
-                let mut seeded = made.parameters.clone();
-                let Some(leaf) = parameter_mut(&mut seeded, &name) else {
-                    continue;
-                };
-                *leaf = serde_json::json!({"value": value, "derivative": 1.0});
                 let mut unknowns: Vec<UnknownInfo> =
                     self.system.unknowns[..placed.first_internal].to_vec();
                 let mut builder = PatternBuilder::new();
@@ -304,7 +299,8 @@ impl Simulator {
                     &mut builder,
                     self.system.temperature,
                 );
-                let Ok(device) = made.model.instantiate_gradient(&seeded, &mut binding) else {
+                let Ok(device) = made.specification.instantiate_gradient(&name, &mut binding)
+                else {
                     continue;
                 };
                 let pattern = builder.finish(self.system.unknowns.len());

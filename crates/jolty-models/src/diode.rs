@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
@@ -87,7 +87,7 @@ impl<R: Real> Breakdown<R> {
 }
 
 /// The parameters of a [`Diode`], with SPICE's defaults.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct DiodeParameters<R: Real = f64> {
     /// The saturation current, in amperes; default 1e-14.

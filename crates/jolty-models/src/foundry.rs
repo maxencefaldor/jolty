@@ -5,7 +5,7 @@
 //! names it. Its parameters name the process design kit and the kit's model, and give its
 //! size, which a netlist written for ngspice hands the kit's model.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
@@ -19,7 +19,7 @@ pub struct FoundryMosfet<R: Real = f64> {
 }
 
 /// The parameters of a [`FoundryMosfet`].
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, bound = "")]
 pub struct FoundryMosfetParameters<R: Real = f64> {
     /// The process design kit, such as `sky130`.
@@ -123,13 +123,14 @@ mod tests {
         assert!(model.foundry());
         assert!(!Native::<crate::Resistor>::new().foundry());
         let interface = model
-            .interface(&parameters(json!({
+            .read(&parameters(json!({
                 "pdk": "sky130",
                 "model": "sky130_fd_pr__nfet_01v8",
                 "width": 1e-6,
                 "length": 1.5e-7,
             })))
-            .expect("valid");
+            .expect("valid")
+            .interface();
         assert_eq!(interface.terminals, ["drain", "gate", "source", "bulk"]);
         assert!(interface.thermal.is_empty());
     }

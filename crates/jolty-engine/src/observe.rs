@@ -217,7 +217,7 @@ impl Probe {
             system.temperature,
         );
         let copy: Box<dyn Device> = match &device.origin {
-            Origin::Model(made) => made.model.instantiate(&made.parameters, &mut binding)?,
+            Origin::Model(made) => made.specification.instantiate(&mut binding)?,
             Origin::Detector(parameters) => {
                 Box::new(ThresholdDetector::new(*parameters, &mut binding)?)
             }

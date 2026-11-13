@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use jolty_ir::{Circuit, Component, Name, Of, Parameters, Problem, Role, Source, set_parameter};
 use jolty_models::{
-    Binding, Branch, Device, Interface, Library, LogicDriver, LogicDriverParameters, LogicModel,
-    Model, NativeDevice, Node, Pins, Quantity, ThresholdDetector, ThresholdDetectorParameters,
-    Unknown, UnknownInfo,
+    Binding, Branch, Device, Interface, Library, Logic, LogicDriver, LogicDriverParameters,
+    LogicModel, Model, NativeDevice, Node, Pins, Quantity, Specification, ThresholdDetector,
+    ThresholdDetectorParameters, Unknown, UnknownInfo,
 };
 use jolty_numerics::{Entry, Pattern, PatternBuilder};
 
@@ -123,19 +123,14 @@ pub(crate) enum Origin {
     Driver,
 }
 
-/// The model and the parameters a device was made from.
+/// What a model made a device from: the instance's parameters, read once into the
+/// specification that makes the device again, and as the circuit gives them.
+#[derive(Debug)]
 pub(crate) struct Made {
-    pub(crate) model: Arc<dyn Model>,
+    pub(crate) specification: Box<dyn Specification>,
     pub(crate) parameters: Parameters,
-}
-
-impl fmt::Debug for Made {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Made")
-            .field("model", &self.model.name())
-            .field("parameters", &self.parameters)
-            .finish()
-    }
+    /// Whether the model is a foundry's.
+    foundry: bool,
 }
 
 impl Placed {
@@ -199,7 +194,7 @@ impl Placed {
     #[must_use]
     pub fn foundry(&self) -> bool {
         match &self.origin {
-            Origin::Model(made) => made.model.foundry(),
+            Origin::Model(made) => made.foundry,
             Origin::Detector(_) | Origin::Driver => false,
         }
     }
@@ -757,15 +752,16 @@ impl Elements<'_> {
             self.builder,
             self.temperature,
         );
-        match pending.model.instantiate(&pending.parameters, &mut binding) {
+        match pending.specification.instantiate(&mut binding) {
             Ok(device) => self.placed.push(Placed {
                 location: pending.at,
                 model: pending.model.name(),
                 interface: pending.interface,
                 nodes: terminals,
                 origin: Origin::Model(Made {
-                    model: pending.model,
+                    specification: pending.specification,
                     parameters: pending.parameters.into_owned(),
+                    foundry: pending.model.foundry(),
                 }),
                 first_internal,
                 internals: self.unknowns.len() - first_internal,
@@ -789,16 +785,7 @@ impl Elements<'_> {
             nets: pending.nets.clone(),
             elements: vec![None; signals],
         });
-        let device = match pending.model.instantiate(&pending.parameters) {
-            Ok(device) => device,
-            Err(error) => {
-                self.problems.push(ElaborationProblem::Parameters {
-                    at: pending.at,
-                    message: error.0,
-                });
-                return;
-            }
-        };
+        let device = pending.device;
         let index = self.partition.devices.len();
         let Pins {
             inputs, outputs, ..
@@ -986,19 +973,21 @@ struct NetRecord {
 /// A device instance found by the walk, waiting for every net to be classified.
 struct Pending<'a> {
     at: Location,
-    model: Arc<dyn Model>,
-    /// The instance's parameters, with those the conditions replace.
+    model: &'a dyn Model,
+    /// The instance's parameters, with those the conditions replace, read.
+    specification: Box<dyn Specification>,
+    /// The same parameters, as the circuit and the conditions give them.
     parameters: Cow<'a, Parameters>,
     interface: Interface,
     terminals: Vec<NetRef>,
 }
 
-/// A logic device instance found by the walk.
+/// A logic device instance found by the walk, made from its parameters.
 struct PendingLogic<'a> {
     at: Location,
     name: Name,
     model: &'a dyn LogicModel,
-    parameters: Cow<'a, Parameters>,
+    device: Box<dyn Logic>,
     pins: Pins,
     /// The net of each pin and terminal, in the order of [`Pins::names`].
     nets: Vec<NetRef>,
@@ -1170,98 +1159,131 @@ impl<'a> Walk<'a> {
         scope: Scope<'_>,
         ports: &BTreeMap<&'a Name, Joined>,
     ) {
+        let name = placement.model.as_str();
+        if let Some(model) = self.library.get(name) {
+            self.analog(placement, model, scope, ports);
+        } else if let Some(model) = self.library.logic(name) {
+            self.logic(placement, model, scope, ports);
+        } else {
+            self.problems.push(ElaborationProblem::UnknownModel {
+                at: placement.at,
+                model: placement.model.clone(),
+            });
+        }
+    }
+
+    /// Places the analog device of `placement`, of `model`, which reads its parameters
+    /// once, as [`Walk::device`] does.
+    fn analog(
+        &mut self,
+        placement: Placement<'a, '_>,
+        model: &'a dyn Model,
+        scope: Scope<'_>,
+        ports: &BTreeMap<&'a Name, Joined>,
+    ) {
         let Placement {
             terminals: connected,
             parameters,
             at,
             model: model_name,
         } = placement;
-        if let Some(model) = self.library.shared(model_name.as_str()) {
-            let interface = match model.interface(&parameters) {
-                Ok(interface) => interface,
-                Err(error) => {
-                    self.problems.push(ElaborationProblem::Parameters {
-                        at,
-                        message: error.0,
-                    });
-                    return;
-                }
-            };
-            let Some(joined) = self.terminals(
-                connected,
-                &at,
-                model_name,
-                &interface.terminals,
-                scope,
-                ports,
-            ) else {
+        let specification = match model.read(&parameters) {
+            Ok(specification) => specification,
+            Err(error) => {
+                self.problems.push(ElaborationProblem::Parameters {
+                    at,
+                    message: error.0,
+                });
                 return;
-            };
-            let device = self.devices.len();
-            for (terminal, joined) in joined.iter().enumerate() {
-                self.attach(joined.port, Member::Analog { device, terminal });
             }
-            let terminals: Vec<NetRef> = joined.iter().map(|joined| joined.net).collect();
-            for (index, net) in terminals.iter().enumerate() {
-                let Some(net) = *net else { continue };
-                let record = &mut self.nets[net];
-                if interface.thermal.contains(&index) {
-                    record
-                        .thermal
-                        .get_or_insert_with(|| (at.clone(), interface.terminals[index].clone()));
-                } else {
-                    record.electrical = true;
-                }
-            }
-            self.devices.push(Pending {
-                at,
-                model,
-                parameters,
-                interface,
-                terminals,
-            });
-        } else if let Some(model) = self.library.logic(model_name.as_str()) {
-            let pins = match model.pins(&parameters) {
-                Ok(pins) => pins,
-                Err(error) => {
-                    self.problems.push(ElaborationProblem::Parameters {
-                        at,
-                        message: error.0,
-                    });
-                    return;
-                }
-            };
-            let Some(joined) =
-                self.terminals(connected, &at, model_name, &pins.names(), scope, ports)
-            else {
-                return;
-            };
-            let device = self.logic.len();
-            for (pin, joined) in joined.iter().enumerate() {
-                self.attach(joined.port, Member::Logic { device, pin });
-            }
-            let nets: Vec<NetRef> = joined.iter().map(|joined| joined.net).collect();
-            let pin_count = pins.inputs.len() + pins.outputs.len();
-            for &net in nets[..pin_count].iter().flatten() {
-                self.nets[net].logic = true;
-            }
-            for &net in nets[pin_count..].iter().flatten() {
-                self.nets[net].electrical = true;
-            }
-            self.logic.push(PendingLogic {
-                at,
-                name: model_name.clone(),
-                model,
-                parameters,
-                pins,
-                nets,
-            });
-        } else {
-            self.problems.push(ElaborationProblem::UnknownModel {
-                at,
-                model: model_name.clone(),
-            });
+        };
+        let interface = specification.interface();
+        let Some(joined) = self.terminals(
+            connected,
+            &at,
+            model_name,
+            &interface.terminals,
+            scope,
+            ports,
+        ) else {
+            return;
+        };
+        let device = self.devices.len();
+        for (terminal, joined) in joined.iter().enumerate() {
+            self.attach(joined.port, Member::Analog { device, terminal });
         }
+        let terminals: Vec<NetRef> = joined.iter().map(|joined| joined.net).collect();
+        for (index, net) in terminals.iter().enumerate() {
+            let Some(net) = *net else { continue };
+            let record = &mut self.nets[net];
+            if interface.thermal.contains(&index) {
+                record
+                    .thermal
+                    .get_or_insert_with(|| (at.clone(), interface.terminals[index].clone()));
+            } else {
+                record.electrical = true;
+            }
+        }
+        self.devices.push(Pending {
+            at,
+            model,
+            specification,
+            parameters,
+            interface,
+            terminals,
+        });
+    }
+
+    /// Places the logic device of `placement`, of `model`, which it makes from its
+    /// parameters, as [`Walk::device`] does.
+    fn logic(
+        &mut self,
+        placement: Placement<'a, '_>,
+        model: &'a dyn LogicModel,
+        scope: Scope<'_>,
+        ports: &BTreeMap<&'a Name, Joined>,
+    ) {
+        let Placement {
+            terminals: connected,
+            parameters,
+            at,
+            model: model_name,
+        } = placement;
+        let device = match model.instantiate(&parameters) {
+            Ok(device) => device,
+            Err(error) => {
+                self.problems.push(ElaborationProblem::Parameters {
+                    at,
+                    message: error.0,
+                });
+                return;
+            }
+        };
+        let pins = device.pins();
+        let Some(joined) = self.terminals(connected, &at, model_name, &pins.names(), scope, ports)
+        else {
+            return;
+        };
+        let found = self.logic.len();
+        for (pin, joined) in joined.iter().enumerate() {
+            self.attach(joined.port, Member::Logic { device: found, pin });
+        }
+        let nets: Vec<NetRef> = joined.iter().map(|joined| joined.net).collect();
+        let pin_count = pins.inputs.len() + pins.outputs.len();
+        for &net in nets[..pin_count].iter().flatten() {
+            self.nets[net].logic = true;
+        }
+        for &net in nets[pin_count..].iter().flatten() {
+            self.nets[net].electrical = true;
+        }
+        self.logic.push(PendingLogic {
+            at,
+            name: model_name.clone(),
+            model,
+            device,
+            pins,
+            nets,
+        });
     }
 
     /// The net of each of `expected`, the terminals a model declares, as `connected` joins

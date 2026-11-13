@@ -6,9 +6,10 @@
 //! with their derivatives `G = ∂f/∂x` and `C = ∂q/∂x`. Compiled Verilog-A models use the same
 //! form, so native and foundry models plug in alike.
 //!
-//! A [`Model`] is a kind of device: it names its terminals and turns parameters into a
-//! device bound to its unknowns. A [`LogicModel`] is a kind of [`Logic`] device, whose pins
-//! join logic nets that an event scheduler simulates. A [`Library`] holds the models a
+//! A [`Model`] is a kind of device: it reads an instance's parameters, once, into a
+//! [`Specification`], which names the device's terminals and makes the device bound to its
+//! unknowns, as often as it is made. A [`LogicModel`] is a kind of [`Logic`] device, whose
+//! pins join logic nets that an event scheduler simulates. A [`Library`] holds the models a
 //! circuit can use.
 
 mod behavioral;
@@ -41,7 +42,6 @@ mod topology;
 pub mod waveform;
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 pub use behavioral::{
     Behavior, BehavioralCurrentSource, BehavioralParameters, BehavioralVoltageSource,
@@ -54,7 +54,9 @@ pub use controlled::{
     VoltageControlledCurrentSource, VoltageControlledCurrentSourceParameters,
     VoltageControlledVoltageSource, VoltageControlledVoltageSourceParameters,
 };
-pub use device::{Device, Model, Native, NativeDevice, NativeModel, ParameterError, Source};
+pub use device::{
+    Device, Model, Native, NativeDevice, NativeModel, ParameterError, Source, Specification,
+};
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Contributions, Input, Output};
 pub use foundry::{FoundryMosfet, FoundryMosfetParameters};
@@ -97,7 +99,7 @@ pub use topology::{Branch, BranchKind, Interface};
 /// same name.
 #[derive(Default)]
 pub struct Library {
-    models: BTreeMap<&'static str, Arc<dyn Model>>,
+    models: BTreeMap<&'static str, Box<dyn Model>>,
     logic: BTreeMap<&'static str, Box<dyn LogicModel>>,
 }
 
@@ -141,7 +143,7 @@ impl Library {
     pub fn add(&mut self, model: impl Model + 'static) {
         self.logic.remove(model.name());
         self.models
-            .insert(model.name(), Arc::new(Surrounded::new(model)));
+            .insert(model.name(), Box::new(Surrounded::new(model)));
     }
 
     /// Adds the logic model `model`, replacing any model of the same name.
@@ -153,13 +155,7 @@ impl Library {
     /// The analog model named `name`.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&dyn Model> {
-        self.models.get(name).map(AsRef::as_ref)
-    }
-
-    /// The analog model named `name`, shared, for a device to keep and be made again from.
-    #[must_use]
-    pub fn shared(&self, name: &str) -> Option<Arc<dyn Model>> {
-        self.models.get(name).cloned()
+        self.models.get(name).map(Box::as_ref)
     }
 
     /// The logic model named `name`.

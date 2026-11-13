@@ -2,7 +2,9 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use jolty_ir::Parameters;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 
 use crate::{
     Binding, Choice, Detect, Drive, Gradient, Input, Interface, NoiseSource, Output, Real,
@@ -76,42 +78,20 @@ pub trait Source {
     fn level_derivative(&self, derivative: &mut [f64]);
 }
 
-/// A kind of device: its name, its terminals, and how to make a device from parameters.
+/// A kind of device: its name, and how to read an instance's parameters into what makes
+/// its device.
 pub trait Model: Send + Sync {
     /// The name circuits refer to the model by, such as `resistor`.
     fn name(&self) -> &'static str;
 
-    /// The terminals and branches of a device with `parameters`.
+    /// Reads `parameters`, once, into what makes a device of the model, as often as it is
+    /// made.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when the parameters cannot be read.
-    fn interface(&self, parameters: &Parameters) -> Result<Interface, ParameterError>;
-
-    /// Reads `parameters` and makes a device bound through `binding`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParameterError`] when a parameter is missing, unknown or out of range.
-    fn instantiate(
-        &self,
-        parameters: &Parameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device>, ParameterError>;
-
-    /// Reads `parameters`, in which the number to differentiate against is written as
-    /// `{"value": v, "derivative": 1}`, and makes a device bound through `binding` whose
-    /// residuals and charges carry their exact derivatives with respect to it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParameterError`] when the parameters cannot be read, as when the model
-    /// reads the number differentiated against as a choice, such as a level.
-    fn instantiate_gradient(
-        &self,
-        parameters: &Parameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device<Gradient>>, ParameterError>;
+    /// Returns [`ParameterError`] when a parameter is missing, unknown or of the wrong
+    /// kind.
+    fn read(&self, parameters: &Parameters) -> Result<Box<dyn Specification>, ParameterError>;
 
     /// Whether its devices are a foundry's, which ngspice simulates with the foundry's
     /// models: they elaborate, so the structural checks read their branches, but no
@@ -121,14 +101,44 @@ pub trait Model: Send + Sync {
     }
 }
 
+/// An instance's parameters, read into its model's typed form: the terminals of its device,
+/// and how to make the device, bound to unknowns, each time it is made.
+pub trait Specification: fmt::Debug + Send {
+    /// The terminals and branches of the device.
+    fn interface(&self) -> Interface;
+
+    /// Makes the device bound through `binding`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when a parameter is out of range.
+    fn instantiate(&self, binding: &mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError>;
+
+    /// Makes the device bound through `binding`, its residuals and charges carrying their
+    /// exact derivatives with respect to the number at `parameter`, its path among the
+    /// parameters as [`jolty_ir::numbers`] names it, such as `waveform.dc`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when the parameters hold no number there that the device
+    /// reads as a real number, as when it reads it as a choice, such as a level, or when a
+    /// parameter is out of range.
+    fn instantiate_gradient(
+        &self,
+        parameter: &str,
+        binding: &mut Binding<'_>,
+    ) -> Result<Box<dyn Device<Gradient>>, ParameterError>;
+}
+
 /// A device implemented in Rust, whose parameters deserialize into a typed struct.
 pub trait NativeDevice<R: Real = f64>: Device<R> + Sized + 'static {
     /// The model's name.
     const NAME: &'static str;
     /// Whether the device is a foundry's, as [`Model::foundry`] says.
     const FOUNDRY: bool = false;
-    /// The parameters, deserialized from the instance's parameter map.
-    type Parameters: DeserializeOwned;
+    /// The parameters, deserialized from the instance's parameter map, which write as they
+    /// read.
+    type Parameters: DeserializeOwned + Serialize + Clone + fmt::Debug + Send;
 
     /// The terminals and branches of a device with `parameters`.
     fn interface(parameters: &Self::Parameters) -> Interface;
@@ -147,6 +157,9 @@ pub trait NativeModel: 'static {
     /// The device, computing with `R`.
     type Device<R: Real>: NativeDevice<R>;
 }
+
+/// The parameters of the devices of `M` that compute with `R`.
+pub(crate) type ParametersOf<M, R> = <<M as NativeModel>::Device<R> as NativeDevice<R>>::Parameters;
 
 /// The [`Model`] of a [`NativeModel`], whose devices give their exact derivatives with
 /// respect to any of their parameters.
@@ -177,28 +190,8 @@ impl<M: NativeModel> Model for Native<M> {
         <M::Device<f64> as NativeDevice<f64>>::NAME
     }
 
-    fn interface(&self, parameters: &Parameters) -> Result<Interface, ParameterError> {
-        Ok(M::Device::<f64>::interface(&read::<f64, M::Device<f64>>(
-            parameters,
-        )?))
-    }
-
-    fn instantiate(
-        &self,
-        parameters: &Parameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device>, ParameterError> {
-        let parameters = read::<f64, M::Device<f64>>(parameters)?;
-        Ok(Box::new(M::Device::<f64>::new(parameters, binding)?))
-    }
-
-    fn instantiate_gradient(
-        &self,
-        parameters: &Parameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
-        let parameters = read::<Gradient, M::Device<Gradient>>(parameters)?;
-        Ok(Box::new(M::Device::<Gradient>::new(parameters, binding)?))
+    fn read(&self, parameters: &Parameters) -> Result<Box<dyn Specification>, ParameterError> {
+        Ok(Box::new(Typed::<M>(read(parameters)?)))
     }
 
     fn foundry(&self) -> bool {
@@ -206,11 +199,70 @@ impl<M: NativeModel> Model for Native<M> {
     }
 }
 
-/// The typed parameters of `D` in `parameters`.
-pub(crate) fn read<R: Real, D: NativeDevice<R>>(
-    parameters: &Parameters,
-) -> Result<D::Parameters, ParameterError> {
-    serde_json::from_value(serde_json::Value::Object(parameters.clone()))
+/// The parameters of a device of `M`, read.
+struct Typed<M: NativeModel>(ParametersOf<M, f64>);
+
+impl<M: NativeModel> fmt::Debug for Typed<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Typed").field(&self.0).finish()
+    }
+}
+
+impl<M: NativeModel> Specification for Typed<M> {
+    fn interface(&self) -> Interface {
+        M::Device::<f64>::interface(&self.0)
+    }
+
+    fn instantiate(&self, binding: &mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError> {
+        Ok(Box::new(M::Device::<f64>::new(self.0.clone(), binding)?))
+    }
+
+    fn instantiate_gradient(
+        &self,
+        parameter: &str,
+        binding: &mut Binding<'_>,
+    ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
+        let parameters = lift(&self.0, parameter)?;
+        Ok(Box::new(M::Device::<Gradient>::new(parameters, binding)?))
+    }
+}
+
+/// The typed parameters `P` in `parameters`.
+pub(crate) fn read<P: DeserializeOwned>(parameters: &Parameters) -> Result<P, ParameterError> {
+    P::deserialize(parameters).map_err(|error| ParameterError(error.to_string()))
+}
+
+/// The typed `parameters` written as a JSON object, each one as it reads.
+pub(crate) fn written<P: Serialize>(parameters: &P) -> Result<Parameters, ParameterError> {
+    match serde_json::to_value(parameters) {
+        Ok(Value::Object(written)) => Ok(written),
+        Ok(other) => Err(ParameterError(format!(
+            "parameters are written as an object, not as {other}"
+        ))),
+        Err(error) => Err(ParameterError(error.to_string())),
+    }
+}
+
+/// The typed `parameters` read again as `Q`, whose devices compute with their derivatives
+/// with respect to the number at the path `parameter`: written as JSON, where that number
+/// becomes `{"value": v, "derivative": 1}`, and read back, which gives every other number
+/// exactly as it was.
+///
+/// # Errors
+///
+/// Returns [`ParameterError`] when no number is at `parameter`, or `Q` does not read one
+/// there as a real number, as when it reads it as a choice, such as a level.
+pub(crate) fn lift<P: Serialize, Q: DeserializeOwned>(
+    parameters: &P,
+    parameter: &str,
+) -> Result<Q, ParameterError> {
+    let mut written = written(parameters)?;
+    let leaf = jolty_ir::parameter_mut(&mut written, parameter)
+        .filter(|leaf| leaf.is_number())
+        .ok_or_else(|| ParameterError(format!("the parameters hold no number at `{parameter}`")))?;
+    let value = leaf.take();
+    *leaf = serde_json::json!({"value": value, "derivative": 1.0});
+    serde_json::from_value(Value::Object(written))
         .map_err(|error| ParameterError(error.to_string()))
 }
 

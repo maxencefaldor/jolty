@@ -1,9 +1,10 @@
 //! A device's own temperature, apart from the simulation's.
 
-use jolty_ir::Parameters;
-use serde_json::Value;
+use std::borrow::Cow;
 
-use crate::{Binding, Device, Gradient, Interface, Model, ParameterError};
+use jolty_ir::Parameters;
+
+use crate::{Binding, Device, Gradient, Interface, Model, ParameterError, Specification};
 
 /// A model whose every device may run at a temperature of its own, as SPICE's `TEMP` and
 /// `DTEMP` set an instance's: the parameter `temperature`, in kelvins, holds the device
@@ -25,27 +26,77 @@ impl<M: Model> Surrounded<M> {
     }
 }
 
-/// Where a device's temperature comes from.
-enum Surroundings {
-    /// The simulation's.
-    Simulation,
-    /// Its own, in kelvins.
-    Held(f64),
-    /// The simulation's raised by this many kelvins.
-    Offset(f64),
+/// Where a device's temperature comes from: the simulation's, unless its parameters give
+/// one of these.
+#[derive(Debug, Clone, Copy)]
+struct Own {
+    /// The temperature the device is held at whatever the simulation's, in kelvins; at
+    /// least 0. Without it, the device is at the simulation's temperature.
+    temperature: Option<f64>,
+    /// How far the device's temperature lies above the simulation's, below where
+    /// negative, in kelvins; the device's temperature at least 0. Without it, the device
+    /// is at the simulation's temperature.
+    temperature_offset: Option<f64>,
 }
 
-impl Surroundings {
+impl Own {
+    /// The parameters that give a device's own temperature.
+    const NAMES: [&str; 2] = ["temperature", "temperature_offset"];
+
+    /// The device's own temperature in `parameters`, and its other parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when a temperature is no finite number, or both are
+    /// given.
+    fn read(parameters: &Parameters) -> Result<(Self, Cow<'_, Parameters>), ParameterError> {
+        if !Self::NAMES
+            .iter()
+            .any(|name| parameters.contains_key(*name))
+        {
+            let own = Self {
+                temperature: None,
+                temperature_offset: None,
+            };
+            return Ok((own, Cow::Borrowed(parameters)));
+        }
+        if Self::NAMES
+            .iter()
+            .all(|name| parameters.contains_key(*name))
+        {
+            return Err(ParameterError(
+                "a device has a temperature or a temperature offset, not both".to_owned(),
+            ));
+        }
+        let mut others = parameters.clone();
+        let mut number = |name: &str| {
+            others
+                .remove(name)
+                .map(|value| match value.as_f64() {
+                    Some(number) if number.is_finite() => Ok(number),
+                    _ => Err(ParameterError(format!(
+                        "{name} must be a finite number of kelvins, not {value}"
+                    ))),
+                })
+                .transpose()
+        };
+        let own = Self {
+            temperature: number("temperature")?,
+            temperature_offset: number("temperature_offset")?,
+        };
+        Ok((own, Cow::Owned(others)))
+    }
+
     /// The device's temperature, in kelvins, where the simulation's is `simulation`.
     ///
     /// # Errors
     ///
     /// Returns [`ParameterError`] when it lies below 0 K.
     fn temperature(self, simulation: f64) -> Result<f64, ParameterError> {
-        let temperature = match self {
-            Self::Simulation => return Ok(simulation),
-            Self::Held(temperature) => temperature,
-            Self::Offset(offset) => simulation + offset,
+        let temperature = match (self.temperature, self.temperature_offset) {
+            (Some(held), _) => held,
+            (None, Some(offset)) => simulation + offset,
+            (None, None) => return Ok(simulation),
         };
         if temperature >= 0.0 {
             Ok(temperature)
@@ -57,66 +108,46 @@ impl Surroundings {
     }
 }
 
-/// The device's surroundings, and its other parameters.
-///
-/// # Errors
-///
-/// Returns [`ParameterError`] when a temperature is no finite number, or both are given.
-fn surroundings(parameters: &Parameters) -> Result<(Surroundings, Parameters), ParameterError> {
-    let mut own = parameters.clone();
-    let number = |name: &str, value: Value| match value.as_f64() {
-        Some(number) if number.is_finite() => Ok(number),
-        _ => Err(ParameterError(format!(
-            "{name} must be a finite number of kelvins, not {value}"
-        ))),
-    };
-    let held = own.remove("temperature");
-    let offset = own.remove("temperature_offset");
-    let found = match (held, offset) {
-        (None, None) => Surroundings::Simulation,
-        (Some(held), None) => Surroundings::Held(number("temperature", held)?),
-        (None, Some(offset)) => Surroundings::Offset(number("temperature_offset", offset)?),
-        (Some(_), Some(_)) => {
-            return Err(ParameterError(
-                "a device has a temperature or a temperature offset, not both".to_owned(),
-            ));
-        }
-    };
-    Ok((found, own))
-}
-
 impl<M: Model> Model for Surrounded<M> {
     fn name(&self) -> &'static str {
         self.inner.name()
     }
 
-    fn interface(&self, parameters: &Parameters) -> Result<Interface, ParameterError> {
-        let (_, own) = surroundings(parameters)?;
-        self.inner.interface(&own)
-    }
-
-    fn instantiate(
-        &self,
-        parameters: &Parameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device>, ParameterError> {
-        let (found, own) = surroundings(parameters)?;
-        binding.set_temperature(found.temperature(binding.temperature())?);
-        self.inner.instantiate(&own, binding)
-    }
-
-    fn instantiate_gradient(
-        &self,
-        parameters: &Parameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
-        let (found, own) = surroundings(parameters)?;
-        binding.set_temperature(found.temperature(binding.temperature())?);
-        self.inner.instantiate_gradient(&own, binding)
+    fn read(&self, parameters: &Parameters) -> Result<Box<dyn Specification>, ParameterError> {
+        let (own, others) = Own::read(parameters)?;
+        let inner = self.inner.read(&others)?;
+        Ok(Box::new(AtOwn { own, inner }))
     }
 
     fn foundry(&self) -> bool {
         self.inner.foundry()
+    }
+}
+
+/// A device's specification, and its own temperature.
+#[derive(Debug)]
+struct AtOwn {
+    own: Own,
+    inner: Box<dyn Specification>,
+}
+
+impl Specification for AtOwn {
+    fn interface(&self) -> Interface {
+        self.inner.interface()
+    }
+
+    fn instantiate(&self, binding: &mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError> {
+        binding.set_temperature(self.own.temperature(binding.temperature())?);
+        self.inner.instantiate(binding)
+    }
+
+    fn instantiate_gradient(
+        &self,
+        parameter: &str,
+        binding: &mut Binding<'_>,
+    ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
+        binding.set_temperature(self.own.temperature(binding.temperature())?);
+        self.inner.instantiate_gradient(parameter, binding)
     }
 }
 

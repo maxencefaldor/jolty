@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::junction::{
     Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// The channel of a field-effect transistor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
     /// An n-channel, conducting with its gate above its threshold.
@@ -77,7 +77,7 @@ const INNER_DRAIN: usize = 1;
 const INNER_SOURCE: usize = 2;
 
 /// The parameters of a [`Jfet`], with SPICE's defaults.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct JfetParameters<R: Real = f64> {
     /// The channel; default `n`.

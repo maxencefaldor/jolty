@@ -631,18 +631,18 @@ fn terminals(model: &str, parameters: &str) -> PyResult<Vec<String>> {
     let library = Library::standard();
     let parameters = serde_json::from_str(parameters).map_err(|error| unreadable(&error))?;
     if let Some(logic) = library.logic(model) {
-        let pins = logic
-            .pins(&parameters)
+        let device = logic
+            .instantiate(&parameters)
             .map_err(|error| PyValueError::new_err(error.0))?;
-        return Ok(pins.names());
+        return Ok(device.pins().names());
     }
     let model = library
         .get(model)
         .ok_or_else(|| PyValueError::new_err(format!("no model is named `{model}`")))?;
-    let interface = model
-        .interface(&parameters)
+    let specification = model
+        .read(&parameters)
         .map_err(|error| PyValueError::new_err(error.0))?;
-    Ok(interface.terminals)
+    Ok(specification.interface().terminals)
 }
 
 /// The value of `expression`, an expression in jolty's language that reads no variable.

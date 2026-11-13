@@ -46,7 +46,7 @@ struct Lag<R: Real> {
 
 /// The parameters of a [`Photocell`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, bound(deserialize = ""))]
+#[serde(deny_unknown_fields, bound = "")]
 pub struct PhotocellParameters<R: Real = f64> {
     /// The resistance at the reference illuminance, in ohms; positive.
     pub resistance: R,

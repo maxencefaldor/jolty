@@ -1,7 +1,7 @@
 mod semiempirical;
 
 use jolty_numerics::Entry;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use self::semiempirical::Semiempirical;
 use crate::dual::Dual;
@@ -34,8 +34,8 @@ const DEFAULT_OXIDE_THICKNESS: f64 = 1e-7;
 const MEYER_SATURATION: f64 = 0.025;
 
 /// Which of SPICE's MOSFET models a transistor follows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "u8")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "u8", into = "u8")]
 pub enum Level {
     /// Level 1, Shichman and Hodges's square law.
     One,
@@ -57,8 +57,17 @@ impl TryFrom<u8> for Level {
     }
 }
 
+impl From<Level> for u8 {
+    fn from(level: Level) -> Self {
+        match level {
+            Level::One => 1,
+            Level::Three => 3,
+        }
+    }
+}
+
 /// The material of a MOSFET's gate, which sets its work function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateMaterial {
     /// Polysilicon doped opposite to the substrate, as an n⁺ gate over a p substrate:
@@ -145,7 +154,7 @@ const VARIABLES: [(usize, usize); 3] = [
 
 /// The parameters of a [`Mosfet`], with SPICE's defaults. The parameters from `vmax` on
 /// are level 3's alone.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct MosfetParameters<R: Real = f64> {
     /// The model's level, 1 or 3; default 1.

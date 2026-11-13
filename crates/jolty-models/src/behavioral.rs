@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use jolty_expressions::{Expression, Variable, Workspace};
 use jolty_numerics::Entry;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::stamp::CurrentBranch;
 use crate::{
@@ -21,6 +21,8 @@ use crate::{
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "String")]
 pub struct Behavior {
+    /// The expression as written.
+    text: String,
     expression: Expression,
     terminals: Vec<String>,
     /// What each variable of the expression reads.
@@ -88,11 +90,19 @@ impl TryFrom<String> for Behavior {
             });
         }
         Ok(Self {
+            text,
             expression,
             terminals,
             reads,
             ports,
         })
+    }
+}
+
+impl Serialize for Behavior {
+    /// The behavior as its expression is written.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
     }
 }
 
@@ -112,7 +122,7 @@ impl Behavior {
 }
 
 /// The parameters of a [`BehavioralVoltageSource`] or a [`BehavioralCurrentSource`].
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BehavioralParameters {
     /// What the source's output follows.

@@ -16,7 +16,7 @@
 
 use std::f64::consts::TAU;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{ParameterError, Real};
 
@@ -26,63 +26,82 @@ use crate::{ParameterError, Real};
 /// it is read, so every value of this type is a valid waveform. Its numbers are plain, or
 /// carry their derivatives with respect to a parameter.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(try_from = "Spec<R>", bound = "")]
+#[serde(try_from = "Shape<R>", bound = "")]
 pub struct Waveform<R: Real = f64>(Shape<R>);
 
-#[derive(Debug, Clone, PartialEq)]
-enum Shape<R: Real> {
-    Dc(R),
-    Pulse(Pulse<R>),
-    Sine(Sine<R>),
-    /// At least one point, in strictly increasing time.
-    Piecewise(Vec<(R, R)>),
+impl<R: Real> Serialize for Waveform<R> {
+    /// The waveform as it is written: its shape.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+/// A waveform's shape, an object with one key, as it is written.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields, bound = "")]
+enum Shape<R: Real> {
+    /// A constant level.
+    Dc(R),
+    /// A trapezoidal pulse, repeated each period, if it has one.
+    Pulse(Pulse<R>),
+    /// A sine, damped from its delay on.
+    Sine(Sine<R>),
+    /// Straight lines between points, holding the first and last levels outside them.
+    Piecewise {
+        /// Each point's time and level, in strictly increasing time; at least one.
+        points: Vec<(R, R)>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, bound = "")]
 struct Pulse<R: Real> {
+    /// The level before the delay and between pulses.
     initial: R,
+    /// The level at the top of each pulse.
     pulsed: R,
+    /// The time the first pulse starts its rise, in seconds.
     #[serde(default)]
     delay: R,
+    /// The time each pulse takes to rise, in seconds; positive.
     rise: R,
+    /// The time each pulse takes to fall, in seconds; positive.
     fall: R,
+    /// The time each pulse holds its top, in seconds.
     width: R,
+    /// The time from one pulse's start to the next's, in seconds; without it, a single
+    /// pulse.
     #[serde(default)]
     period: Option<R>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, bound = "")]
 struct Sine<R: Real> {
+    /// The level the sine swings about.
     offset: R,
+    /// The sine's amplitude at its delay.
     amplitude: R,
+    /// The sine's frequency, in hertz.
     frequency: R,
+    /// The time the sine starts, in seconds, before which it holds its value then.
     #[serde(default)]
     delay: R,
+    /// The rate at which the amplitude decays from the delay on, per second.
     #[serde(default)]
     damping: R,
+    /// The phase at the delay, in radians.
     #[serde(default)]
     phase: R,
 }
 
-/// The JSON form of a waveform, before it is checked.
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields, bound = "")]
-enum Spec<R: Real> {
-    Dc(R),
-    Pulse(Pulse<R>),
-    Sine(Sine<R>),
-    Piecewise { points: Vec<(R, R)> },
-}
-
-impl<R: Real> TryFrom<Spec<R>> for Waveform<R> {
+impl<R: Real> TryFrom<Shape<R>> for Waveform<R> {
     type Error = ParameterError;
 
-    fn try_from(spec: Spec<R>) -> Result<Self, Self::Error> {
-        let shape = match spec {
-            Spec::Dc(level) => Shape::Dc(level),
-            Spec::Pulse(pulse) => {
+    fn try_from(shape: Shape<R>) -> Result<Self, Self::Error> {
+        match &shape {
+            Shape::Dc(_) => {}
+            Shape::Pulse(pulse) => {
                 ParameterError::non_negative("pulse delay", pulse.delay)?;
                 ParameterError::positive("pulse rise", pulse.rise)?;
                 ParameterError::positive("pulse fall", pulse.fall)?;
@@ -95,14 +114,12 @@ impl<R: Real> TryFrom<Spec<R>> for Waveform<R> {
                         "pulse period {period:?} is shorter than one pulse, {duration:?}"
                     )));
                 }
-                Shape::Pulse(pulse)
             }
-            Spec::Sine(sine) => {
+            Shape::Sine(sine) => {
                 ParameterError::non_negative("sine frequency", sine.frequency)?;
                 ParameterError::non_negative("sine delay", sine.delay)?;
-                Shape::Sine(sine)
             }
-            Spec::Piecewise { points } => {
+            Shape::Piecewise { points } => {
                 if points.is_empty() {
                     return Err(ParameterError(
                         "a piecewise waveform needs a point".to_owned(),
@@ -116,9 +133,8 @@ impl<R: Real> TryFrom<Spec<R>> for Waveform<R> {
                         "the times of a piecewise waveform must increase".to_owned(),
                     ));
                 }
-                Shape::Piecewise(points)
             }
-        };
+        }
         Ok(Self(shape))
     }
 }
@@ -139,7 +155,7 @@ impl<R: Real> Waveform<R> {
             Shape::Dc(level) => *level,
             Shape::Pulse(pulse) => pulse.value(time),
             Shape::Sine(sine) => sine.value(time),
-            Shape::Piecewise(points) => piecewise(points, time),
+            Shape::Piecewise { points } => piecewise(points, time),
         }
     }
 
@@ -171,7 +187,7 @@ impl<R: Real> Waveform<R> {
                     push(sine.delay.value());
                 }
             }
-            Shape::Piecewise(points) => {
+            Shape::Piecewise { points } => {
                 for &(time, _) in points {
                     push(time.value());
                 }

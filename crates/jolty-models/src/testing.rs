@@ -48,7 +48,7 @@ impl Bench {
         temperature: f64,
     ) -> Result<Self, ParameterError> {
         let parameters = serde_json::from_str(parameters).expect("a JSON object");
-        let typed = crate::device::read::<f64, D>(&parameters)?;
+        let typed: D::Parameters = crate::device::read(&parameters)?;
         let terminals = D::interface(&typed).terminals.len();
         Self::made(terminals, temperature, |binding| {
             Ok(Box::new(D::new(typed, binding)?))
@@ -61,10 +61,11 @@ impl Bench {
         parameters: &str,
         temperature: f64,
     ) -> Result<Self, ParameterError> {
-        let parameters = serde_json::from_str(parameters).expect("a JSON object");
-        let terminals = model.interface(&parameters)?.terminals.len();
+        let specification =
+            model.read(&serde_json::from_str(parameters).expect("a JSON object"))?;
+        let terminals = specification.interface().terminals.len();
         Self::made(terminals, temperature, |binding| {
-            model.instantiate(&parameters, binding)
+            specification.instantiate(binding)
         })
     }
 
@@ -320,23 +321,26 @@ impl Rig<'_> {
         let mut binding = self.binding(&mut unknowns, &mut builder);
         let mut device = self
             .model
-            .instantiate(parameters, &mut binding)
+            .read(parameters)
+            .and_then(|specification| specification.instantiate(&mut binding))
             .expect("valid");
         residuals_and_charges(device.as_mut(), &builder.finish(x.0.len()), x)
     }
 
-    /// The residuals, charges and conductances at `x`, with their gradients, of the
-    /// device made with `parameters`, one number of which is seeded.
+    /// The residuals, charges and conductances at `x`, with their gradients with respect
+    /// to the number at `parameter`, of the device made with `parameters`.
     fn exact(
         &self,
         parameters: &jolty_ir::Parameters,
+        parameter: &str,
         x: (&[f64], Option<f64>),
     ) -> Option<[Vec<Gradient>; 3]> {
         let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
         let mut binding = self.binding(&mut unknowns, &mut builder);
         let mut device = self
             .model
-            .instantiate_gradient(parameters, &mut binding)
+            .read(parameters)
+            .and_then(|specification| specification.instantiate_gradient(parameter, &mut binding))
             .ok()?;
         Some(residuals_and_charges(
             device.as_mut(),
@@ -407,8 +411,9 @@ pub(crate) fn assert_model_parameter_gradients_match(
         value.as_object().cloned().expect("a JSON object")
     };
     let terminals = model
-        .interface(&object(&parameters))
+        .read(&object(&parameters))
         .expect("valid")
+        .interface()
         .terminals
         .len();
     let rig = Rig {
@@ -424,9 +429,8 @@ pub(crate) fn assert_model_parameter_gradients_match(
         let name = path.join(".");
         let mut changed = parameters.clone();
         let value = at(&mut changed, &path).as_f64().expect("a number");
-        *at(&mut changed, &path) = serde_json::json!({"value": value, "derivative": 1.0});
         // A number the model reads as a choice, such as a level, is no real parameter.
-        let Some(exact) = rig.exact(&object(&changed), (x, time)) else {
+        let Some(exact) = rig.exact(&object(&parameters), &name, (x, time)) else {
             assert!(value.fract() == 0.0, "{name} is a real parameter");
             continue;
         };

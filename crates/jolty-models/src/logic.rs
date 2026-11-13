@@ -18,6 +18,7 @@ use jolty_numerics::Entry;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::device::read;
 use crate::stamp::CurrentBranch;
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
@@ -124,6 +125,9 @@ pub struct Stimulus {
 
 /// One placed logic device.
 pub trait Logic: fmt::Debug + Send {
+    /// The device's pins.
+    fn pins(&self) -> Pins;
+
     /// Writes the levels the outputs settle at when the inputs hold `inputs`.
     fn levels(&self, inputs: &[Level], outputs: &mut [Level]);
 
@@ -202,19 +206,12 @@ impl Pins {
     }
 }
 
-/// A kind of logic device: its name, its pins, and how to make one from parameters.
+/// A kind of logic device: its name, and how to make one from its parameters.
 pub trait LogicModel: Send + Sync {
     /// The name circuits refer to the model by, such as `logic_cell`.
     fn name(&self) -> &'static str;
 
-    /// The pins of a device with `parameters`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParameterError`] when the parameters cannot be read.
-    fn pins(&self, parameters: &Parameters) -> Result<Pins, ParameterError>;
-
-    /// Reads `parameters` and makes a device.
+    /// Reads `parameters` and makes a device, which tells its pins.
     ///
     /// # Errors
     ///
@@ -235,9 +232,6 @@ pub trait NativeLogic: Logic + Sized + 'static {
     ///
     /// Returns [`ParameterError`] when a parameter is out of range.
     fn new(parameters: Self::Parameters) -> Result<Self, ParameterError>;
-
-    /// The device's pins.
-    fn pins(&self) -> Pins;
 }
 
 /// The [`LogicModel`] of a [`NativeLogic`] device.
@@ -248,12 +242,6 @@ impl<D: NativeLogic> NativeLogicModel<D> {
     #[must_use]
     pub fn new() -> Self {
         Self(PhantomData)
-    }
-
-    fn device(parameters: &Parameters) -> Result<D, ParameterError> {
-        let typed = serde_json::from_value(serde_json::Value::Object(parameters.clone()))
-            .map_err(|error| ParameterError(error.to_string()))?;
-        D::new(typed)
     }
 }
 
@@ -274,12 +262,8 @@ impl<D: NativeLogic> LogicModel for NativeLogicModel<D> {
         D::NAME
     }
 
-    fn pins(&self, parameters: &Parameters) -> Result<Pins, ParameterError> {
-        Ok(Self::device(parameters)?.pins())
-    }
-
     fn instantiate(&self, parameters: &Parameters) -> Result<Box<dyn Logic>, ParameterError> {
-        Ok(Box::new(Self::device(parameters)?))
+        Ok(Box::new(D::new(read(parameters)?)?))
     }
 }
 
@@ -732,13 +716,13 @@ impl NativeLogic for LogicCell {
             input_capacitances,
         })
     }
-
-    fn pins(&self) -> Pins {
-        self.pins.clone()
-    }
 }
 
 impl Logic for LogicCell {
+    fn pins(&self) -> Pins {
+        self.pins.clone()
+    }
+
     fn levels(&self, inputs: &[Level], outputs: &mut [Level]) {
         for (output, table) in outputs.iter_mut().zip(&self.tables) {
             *output = Self::level(table, inputs);
@@ -825,7 +809,9 @@ impl NativeLogic for LogicSource {
         }
         Ok(Self { parameters })
     }
+}
 
+impl Logic for LogicSource {
     fn pins(&self) -> Pins {
         Pins {
             inputs: Vec::new(),
@@ -833,9 +819,7 @@ impl NativeLogic for LogicSource {
             electrical: None,
         }
     }
-}
 
-impl Logic for LogicSource {
     fn levels(&self, _: &[Level], outputs: &mut [Level]) {
         outputs[0] = self.parameters.initial;
     }
@@ -887,7 +871,7 @@ pub trait Detect {
 }
 
 /// The parameters of a logic driver: none.
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogicDriverParameters {}
 
@@ -993,7 +977,7 @@ impl Drive for LogicDriver {
 }
 
 /// The parameters of a threshold detector.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThresholdDetectorParameters {
     /// The fraction of the supply, from ground, at which the level switches.

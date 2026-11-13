@@ -4,13 +4,14 @@
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 
 /// A real number a model computes with.
 ///
 /// `f64` is the number itself; [`Gradient`] carries its derivative with respect to one
 /// parameter alongside, by forward-mode automatic differentiation. Comparisons and
-/// branches read the value alone, so a model takes the same branch with either.
+/// branches read the value alone, so a model takes the same branch with either. A
+/// parameter file reads it, and it writes as it reads.
 pub trait Real:
     Copy
     + fmt::Debug
@@ -30,6 +31,7 @@ pub trait Real:
     + AddAssign
     + SubAssign
     + for<'de> Deserialize<'de>
+    + Serialize
 {
     /// A number with no derivative.
     fn constant(value: f64) -> Self;
@@ -208,9 +210,10 @@ impl Real for f64 {
 /// A number and its exact derivative with respect to one parameter.
 ///
 /// In a parameter file, a number reads as a constant, and the object
-/// `{"value": v, "derivative": 1}` as the parameter differentiated against.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
-#[serde(from = "Written")]
+/// `{"value": v, "derivative": 1}` as the parameter differentiated against. It writes as it
+/// reads: a constant as a number, any other as that object.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
+#[serde(from = "Written", into = "Written")]
 pub struct Gradient {
     /// The number.
     pub value: f64,
@@ -219,11 +222,24 @@ pub struct Gradient {
 }
 
 /// How a [`Gradient`] is written: a plain number, or a number and its derivative.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum Written {
+    /// A constant.
     Constant(f64),
+    /// A number and its derivative.
     Seeded { value: f64, derivative: f64 },
+}
+
+impl From<Gradient> for Written {
+    fn from(gradient: Gradient) -> Self {
+        let Gradient { value, derivative } = gradient;
+        if derivative == 0.0 {
+            Self::Constant(value)
+        } else {
+            Self::Seeded { value, derivative }
+        }
+    }
 }
 
 impl From<Written> for Gradient {
@@ -373,7 +389,8 @@ impl SubAssign for Gradient {
 /// variable its temperature.
 ///
 /// In a parameter file it reads as a [`Gradient`] does, the derivative with respect to the
-/// first variable.
+/// first variable, and writes as one. No parameter has a derivative with respect to the
+/// second variable, so a number with one does not write.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
 #[serde(from = "Written")]
 pub struct Hyper {
@@ -385,6 +402,21 @@ pub struct Hyper {
     pub second: f64,
     /// Its derivative with respect to both.
     pub both: f64,
+}
+
+impl Serialize for Hyper {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.second != 0.0 || self.both != 0.0 {
+            return Err(serde::ser::Error::custom(
+                "a number with a derivative with respect to a second variable does not write",
+            ));
+        }
+        let gradient = Gradient {
+            value: self.value,
+            derivative: self.first,
+        };
+        gradient.serialize(serializer)
+    }
 }
 
 impl From<Written> for Hyper {
@@ -608,5 +640,33 @@ mod tests {
                 derivative: 1.0
             }
         );
+    }
+
+    #[test]
+    fn a_number_with_derivatives_writes_as_it_reads() {
+        let seeded = Gradient {
+            value: 2.5,
+            derivative: 1.0,
+        };
+        let written = serde_json::to_value(seeded).unwrap();
+        assert_eq!(
+            written,
+            serde_json::json!({"value": 2.5, "derivative": 1.0})
+        );
+        assert_eq!(serde_json::from_value::<Gradient>(written).unwrap(), seeded);
+        let constant = serde_json::to_value(Gradient::constant(-3.0)).unwrap();
+        assert_eq!(constant, serde_json::json!(-3.0));
+        assert_eq!(
+            serde_json::from_value::<Gradient>(constant).unwrap(),
+            Gradient::constant(-3.0)
+        );
+        let hyper: Hyper = serde_json::from_str(r#"{"value": 2.5, "derivative": 1}"#).unwrap();
+        let written = serde_json::to_value(hyper).unwrap();
+        assert_eq!(serde_json::from_value::<Hyper>(written).unwrap(), hyper);
+        let warm = Hyper {
+            second: 1.0,
+            ..hyper
+        };
+        assert!(serde_json::to_value(warm).is_err());
     }
 }

@@ -84,7 +84,7 @@ pub struct VoltageControlledSwitch<R: Real = f64> {
 
 /// The parameters of a [`VoltageControlledSwitch`], with PSpice's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields, bound(deserialize = ""))]
+#[serde(default, deny_unknown_fields, bound = "")]
 pub struct VoltageControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on voltage, in ohms; default 1.
     pub on_resistance: R,
@@ -210,7 +210,7 @@ pub struct CurrentControlledSwitch<R: Real = f64> {
 
 /// The parameters of a [`CurrentControlledSwitch`], with PSpice's defaults.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields, bound(deserialize = ""))]
+#[serde(default, deny_unknown_fields, bound = "")]
 pub struct CurrentControlledSwitchParameters<R: Real = f64> {
     /// The resistance with the control at or past the on current, in ohms; default 1.
     pub on_resistance: R,
