@@ -19,7 +19,7 @@ UNKNOWNS = (
     results.Unknown("V1:current", "current"),
 )
 TIMES = np.linspace(0, 1e-6, 5)
-STATISTICS = results.Statistics("direct", 4, 0, 8)
+STATISTICS = results.Statistics("direct", 4, 0, 0, 8)
 
 
 def waveforms() -> results.Waveforms:

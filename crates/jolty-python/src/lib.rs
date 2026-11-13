@@ -617,6 +617,7 @@ fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Boun
     result.set_item("initial", statistics.initial.name())?;
     result.set_item("accepted", statistics.accepted)?;
     result.set_item("rejected", statistics.rejected)?;
+    result.set_item("landed", statistics.landed)?;
     result.set_item("iterations", statistics.iterations)?;
     result.set_item("periods", statistics.periods)?;
     Ok(result)

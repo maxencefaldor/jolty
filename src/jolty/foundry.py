@@ -231,6 +231,8 @@ class _Deck:
                 initial=STRATEGY,
                 accepted=counted["accepted"][0],
                 rejected=counted["rejected"][0],
+                # ngspice steps across an event rather than landing on it.
+                landed=0,
                 iterations=counted["iterations"][0],
             ),
         )

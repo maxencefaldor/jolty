@@ -56,6 +56,7 @@ class StatisticsOutcome(TypedDict):
     initial: str
     accepted: int
     rejected: int
+    landed: int
     iterations: int
     periods: int | None
 

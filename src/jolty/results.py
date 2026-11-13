@@ -635,6 +635,10 @@ class Statistics:
     initial: str
     accepted: int
     rejected: int
+    """Steps rejected for their error, or for Newton iteration that did not converge."""
+    landed: int
+    """Steps tried again shorter to land on an event within them: a detector's crossing,
+    a logic driver's change or a device's jump."""
     iterations: int
     periods: int | None = None
     """For a periodic steady state, the periods simulated to find it, the last the one

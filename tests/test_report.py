@@ -39,7 +39,7 @@ def test_an_operating_point_lists_each_value() -> None:
 def test_a_transient_states_the_range_of_each_unknown() -> None:
     values = np.array([[0.0, 0.0, 0.0], [1.0, 0.4, -1e-3], [1.0, 0.9, -1e-4]])
     statistics = results.Statistics(
-        initial="direct", accepted=2, rejected=1, iterations=9
+        initial="direct", accepted=2, rejected=1, landed=3, iterations=9
     )
     waveforms = results.Waveforms(
         UNKNOWNS, np.array([0.0, 1e-6, 2e-6]), values, statistics
@@ -50,7 +50,8 @@ def test_a_transient_states_the_range_of_each_unknown() -> None:
         unknown="out", quantity="voltage", first=0, minimum=0, maximum=0.9, last=0.9
     )
     assert summary.describe() == (
-        "step: transient to 2 µs in 2 steps, 1 rejected\n"
+        "step: transient to 2 µs in 2 steps, 1 rejected, "
+        "3 shortened to land on events\n"
         "       first  min  max     last\n"
         "  in   0 V    0 V  1 V     1 V\n"
         "  out  0 V    0 V  900 mV  900 mV\n"
@@ -59,7 +60,7 @@ def test_a_transient_states_the_range_of_each_unknown() -> None:
 
 
 def test_a_periodic_steady_state_states_its_periods() -> None:
-    statistics = results.Statistics("direct", 2, 0, 4, periods=3)
+    statistics = results.Statistics("direct", 2, 0, 0, 4, periods=3)
     waveforms = results.Waveforms(
         UNKNOWNS, np.array([0.0, 1e-6]), np.zeros((2, 3)), statistics
     )
@@ -158,7 +159,7 @@ def test_sensitivities_along_an_analysis_state_where_each_is_largest() -> None:
         "    C1  capacitance  at 1e-09  largest 5.0 at 1 MHz"
     )
     times = np.array([0.0, 1e-6, 2e-6])
-    statistics = results.Statistics("direct", 2, 0, 4)
+    statistics = results.Statistics("direct", 2, 0, 0, 4)
     waveforms = results.Waveforms(UNKNOWNS, times, np.zeros((3, 3)), statistics)
     falling = results.Sensitivities(
         UNKNOWNS,

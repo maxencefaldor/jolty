@@ -216,8 +216,12 @@ class TransientReport(_Model):
     stop: float = Field(description="Time the analysis ended, in seconds.")
     accepted: int = Field(description="Time steps accepted.")
     rejected: int = Field(
-        description="Time steps rejected for their error or Newton, or to land on a "
-        "logic event."
+        description="Time steps rejected for their error or for Newton iteration that "
+        "did not converge."
+    )
+    landed: int = Field(
+        description="Time steps tried again shorter to land on an event within them: "
+        "a detector's crossing, a logic driver's change or a device's jump."
     )
     periods: int | None = Field(
         default=None,
@@ -231,6 +235,8 @@ class TransientReport(_Model):
     def describe(self) -> str:
         """The report as text."""
         steps = f"in {self.accepted} steps, {self.rejected} rejected"
+        if self.landed:
+            steps += f", {self.landed} shortened to land on events"
         if self.periods is None:
             head = f"{self.name}: transient to {format_si(self.stop, 's')} {steps}"
         else:
@@ -757,6 +763,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 stop=float(result.times[-1]),
                 accepted=result.statistics.accepted,
                 rejected=result.statistics.rejected,
+                landed=result.statistics.landed,
                 periods=result.statistics.periods,
                 extents=_extents_of(unknowns, result.values[:, :listed]),
                 activities=tuple(

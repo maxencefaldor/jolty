@@ -74,7 +74,7 @@ def point(out: float) -> results.OperatingPoint:
 
 def waveforms(times: results.Real, out: results.Real) -> results.Waveforms:
     values = np.column_stack([out, np.full_like(out, 0.5), -out / 1e3])
-    statistics = results.Statistics("operating point", times.size, 0, 0)
+    statistics = results.Statistics("operating point", times.size, 0, 0, 0)
     return results.Waveforms(UNKNOWNS, times, values, statistics)
 
 

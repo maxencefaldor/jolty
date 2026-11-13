@@ -16,7 +16,7 @@ Examples:
     >>> import numpy as np
     >>> from jolty import results
     >>> unknowns = (results.Unknown("out", "voltage"),)
-    >>> statistics = results.Statistics("direct", 1, 0, 2)
+    >>> statistics = results.Statistics("direct", 1, 0, 0, 2)
     >>> step = results.Waveforms(
     ...     unknowns, np.array([0.0, 1e-6]), np.array([[0.0], [1.0]]), statistics
     ... )

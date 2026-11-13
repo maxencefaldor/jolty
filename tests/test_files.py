@@ -19,7 +19,9 @@ from jolty.files import (
 from jolty.units import V, kohm
 
 UNKNOWNS = (results.Unknown("out", "voltage"), results.Unknown("V1:current", "current"))
-STATISTICS = results.Statistics(initial="direct", accepted=2, rejected=1, iterations=7)
+STATISTICS = results.Statistics(
+    initial="direct", accepted=2, rejected=1, landed=3, iterations=7
+)
 PARAMETER = results.Parameter("X1/R1", "resistance", 1e3)
 RECORDING = results.Recording(
     (
@@ -260,7 +262,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 3
+    assert header["version"] == 4
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {

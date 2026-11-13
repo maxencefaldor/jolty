@@ -79,6 +79,9 @@ pub struct Statistics {
     pub accepted: usize,
     /// The steps rejected, for failing to converge or for too large an error.
     pub rejected: usize,
+    /// The steps tried again shorter to land on an event within them: a detector's
+    /// crossing, a logic driver's change or a device's jump.
+    pub landed: usize,
     /// The Newton iterations of the accepted steps.
     pub iterations: usize,
     /// For a periodic steady state, the periods shooting simulated to find it, the last
@@ -285,8 +288,8 @@ enum Step {
     Accepted(Observation, Vec<f64>),
     /// The step was rejected, to be tried again shorter.
     Rejected,
-    /// The step was rejected because a detector crosses, a logic driver changes or a
-    /// device's contribution jumps within it, at this time, which the step must land on.
+    /// A detector crosses, a logic driver changes or a device's contribution jumps within
+    /// the step, at this time, which the step is tried again to land on.
     Land(f64),
 }
 
@@ -325,7 +328,6 @@ struct Stepper {
 }
 
 impl Stepper {
-    /// Records a rejected step, and shortens the next one to `next`.
     /// Whether an event at `time`, within a step from the last point to `end`, comes
     /// before `end` by more than the relative tolerance of the step, and after the last
     /// point by the shortest step at least, so the step should land on it instead: an
@@ -337,11 +339,6 @@ impl Stepper {
         time < end - tolerance && time - self.time >= self.shortest
     }
 
-    fn shorten(&mut self, next: f64) {
-        self.statistics.rejected += 1;
-        self.next = next;
-    }
-
     /// Records a step rejected for the reason `why` gives, and shortens the next one to
     /// `next`, failing when it falls below the shortest step allowed.
     fn reject(
@@ -349,7 +346,8 @@ impl Stepper {
         next: f64,
         why: impl FnOnce() -> Rejection,
     ) -> Result<Step, SimulationError> {
-        self.shorten(next);
+        self.statistics.rejected += 1;
+        self.next = next;
         if next < self.shortest {
             return Err(SimulationError::StepTooSmall {
                 time: self.time,
@@ -518,6 +516,7 @@ impl Simulator {
                 initial: strategy,
                 accepted: 0,
                 rejected: 0,
+                landed: 0,
                 iterations: 0,
                 periods: None,
             },
@@ -651,7 +650,8 @@ impl Simulator {
             Ok(found) => found,
             Err(early) => {
                 // An event lands no closer than the shortest step allowed.
-                stepper.shorten(early - stepper.time);
+                stepper.statistics.landed += 1;
+                stepper.next = early - stepper.time;
                 return Ok(Step::Land(early));
             }
         };
