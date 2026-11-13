@@ -450,9 +450,20 @@ def caller() -> ir.Source | None:
     line = frame.f_back.f_back if frame and frame.f_back else None
     if line is None:
         return None
-    path = Path(line.f_code.co_filename)
-    with contextlib.suppress(ValueError):
-        path = path.resolve().relative_to(Path.cwd())
     return ir.Source(
-        file=path.as_posix(), line=line.f_lineno, function=line.f_code.co_name
+        file=_script_path(line.f_code.co_filename, Path.cwd()),
+        line=line.f_lineno,
+        function=line.f_code.co_name,
     )
+
+
+@functools.cache
+def _script_path(filename: str, directory: Path) -> str:
+    """The script `filename`, relative to `directory` when it lies within it.
+
+    A script places many instances, so each file is resolved once per directory.
+    """
+    path = Path(filename)
+    with contextlib.suppress(ValueError):
+        path = path.resolve().relative_to(directory)
+    return path.as_posix()

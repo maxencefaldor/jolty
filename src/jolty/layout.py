@@ -387,34 +387,40 @@ def _rows(
     """Each instance's row within its column, ordered to keep wires short.
 
     Instances start in placement order, then each column sorts by the mean row of the
-    instances it shares signal nets with, a few times over. An instance that shares no
-    signal net, such as a supply's source, sinks to the bottom of its column.
+    other instances on its signal nets, net by net, a few times over: an instance that
+    shares two nets with another is pulled toward it twice. An instance that shares no
+    signal net, such as a supply's source, sinks to the bottom of its column. Each net
+    keeps the sum of its instances' rows, so a sweep reads each pin a bounded number of
+    times beside sorting each column.
     """
-    neighbors: dict[str, set[str]] = {instance.id: set() for instance in instances}
-    for first, second in itertools.combinations(instances, 2):
-        if _signal_nets(first, roles) & _signal_nets(second, roles):
-            neighbors[first.id].add(second.id)
-            neighbors[second.id].add(first.id)
+    nets = {instance.id: _signal_nets(instance, roles) for instance in instances}
     stacks: dict[int, list[str]] = {}
     for instance in instances:
         stacks.setdefault(columns[instance.id], []).append(instance.id)
     rows = {id: index for stack in stacks.values() for index, id in enumerate(stack)}
+    sums: dict[str, int] = {}
+    counts: dict[str, int] = {}
+    for id, shared in nets.items():
+        for net in shared:
+            sums[net] = sums.get(net, 0) + rows[id]
+            counts[net] = counts.get(net, 0) + 1
+
+    def barycenter(id: str) -> tuple[bool, float]:
+        """An instance's sort key: whether it is alone, then its neighbors' mean row."""
+        others = sum(counts[net] - 1 for net in nets[id])
+        if not others:
+            return True, rows[id]
+        return False, sum(sums[net] - rows[id] for net in nets[id]) / others
+
     for _ in range(4):
         for column in sorted(stacks):
             stack = stacks[column]
-            stack.sort(key=lambda id: _barycenter(id, neighbors, rows))
-            rows.update({id: index for index, id in enumerate(stack)})
+            stack.sort(key=barycenter)
+            for index, id in enumerate(stack):
+                for net in nets[id]:
+                    sums[net] += index - rows[id]
+                rows[id] = index
     return rows
-
-
-def _barycenter(
-    id: str, neighbors: Mapping[str, set[str]], rows: Mapping[str, int]
-) -> tuple[bool, float]:
-    """An instance's sort key: whether it is alone, then its neighbors' mean row."""
-    others = neighbors[id]
-    if not others:
-        return True, rows[id]
-    return False, sum(rows[other] for other in others) / len(others)
 
 
 def _place(

@@ -306,7 +306,7 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
     )
     arrays[_HEADER] = np.array(header.model_dump_json())
     with path.open("wb") as file:
-        np.savez_compressed(file, allow_pickle=False, **arrays)
+        np.savez(file, allow_pickle=False, **arrays)
 
 
 def load_results(path: Path) -> dict[str, results.Result]:
