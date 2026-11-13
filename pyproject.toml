@@ -117,7 +117,8 @@ extra-paths = ["tests", "benchmarks", "examples"]
 
 [tool.pytest]
 testpaths = ["src", "tests"]
-# The tests share a harness module, `differential`, which they import from there.
+# The tests share harness modules, `differential` and `strategies`, which they import
+# from there.
 pythonpath = ["tests"]
 addopts = [
     "--import-mode=importlib",

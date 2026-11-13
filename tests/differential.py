@@ -7,6 +7,8 @@ engines run with tight tolerances, ngspice at the temperature where its thermal 
 is jolty's.
 """
 
+from collections.abc import Mapping
+
 import numpy as np
 import numpy.typing as npt
 import pytest
@@ -27,9 +29,12 @@ __all__ = [
     "SPICE_OPTIONS",
     "TIGHT",
     "VOLTAGE_TOLERANCE",
+    "Values",
     "closest",
     "compare",
     "compared",
+    "differing",
+    "nearest",
     "netlist",
     "ngspice",
     "size",
@@ -137,3 +142,44 @@ def _shared(name: str) -> bool:
     if ":" in leaf:
         return not path and leaf.endswith((":current", ":control"))
     return "." not in leaf
+
+
+def differing(
+    jolty: Mapping[str, Values],
+    reference: Mapping[str, Values],
+    quantities: Mapping[str, str],
+    tolerance: float = 1e-6,
+) -> list[str]:
+    """The unknowns, by name, whose values jolty and a reference disagree on.
+
+    The values are at a point or over a sweep. Each agrees within `tolerance`, a
+    millionth by default, of the largest value of its quantity anywhere in the
+    reference: an engine resolves an equation to a millionth of its largest term, so a
+    small current beside large ones only that far. Values within twice the engines'
+    absolute tolerance of each other agree too.
+    """
+    scales = dict.fromkeys(("voltage", "current"), 0.0)
+    for name, values in reference.items():
+        scales[quantities[name]] = max(scales[quantities[name]], size(values))
+    return [
+        name
+        for name, values in reference.items()
+        if np.max(np.abs(np.asarray(jolty[name]) - values))
+        > tolerance * scales[quantities[name]] + 2 * _noise(quantities[name])
+    ]
+
+
+def _noise(quantity: str) -> float:
+    """The engines' absolute tolerance on an unknown of `quantity`."""
+    return CURRENT_TOLERANCE if quantity == "current" else VOLTAGE_TOLERANCE
+
+
+def nearest(times: Real, targets: Real) -> npt.NDArray[np.intp]:
+    """The index of the time nearest each target.
+
+    jolty counts a time it was asked to step onto as reached once a step ends within
+    the shortest step allowed of it.
+    """
+    after = np.clip(np.searchsorted(times, targets), 1, len(times) - 1)
+    before = after - 1
+    return np.where(targets - times[before] <= times[after] - targets, before, after)

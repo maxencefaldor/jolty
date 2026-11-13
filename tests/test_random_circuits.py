@@ -1,173 +1,46 @@
 # Copyright 2026 Maxence Faldor
 """Random circuits, simulated by jolty and by ngspice, which must agree on every one.
 
-Each circuit joins every node to the ground through a tree of resistors, so it always
-has a DC path, then places sources and devices at random: capacitors, inductors in
-series with a resistor, so that no loop of inductors and voltage sources forms, diodes,
-bipolar and MOS transistors with series resistances that bound their currents, and
-transconductances. Sizes run past the 32 unknowns where hand-written circuits stop, and
-Hypothesis shrinks any disagreement to the smallest circuit that shows it.
-
-The number of circuits defaults to 40; the environment variable
-`JOLTY_RANDOM_CIRCUITS` sets another, for a longer run.
+The circuits come from `strategies`, of every device and size, and Hypothesis shrinks
+any disagreement to the smallest circuit that shows it. Each test runs the same 40
+circuits every time; the environment variable `JOLTY_RANDOM_CIRCUITS` sets how many to
+draw afresh instead, for a longer search.
 """
 
-import os
-from collections import Counter
-from typing import Final, Literal
+from collections.abc import Mapping
+from typing import Final
 
 import numpy as np
-from hypothesis import HealthCheck, assume, event, given, settings
-from hypothesis import strategies as st
+import numpy.typing as npt
+from hypothesis import event, given
 
-from differential import SKIP, TIGHT, compared, netlist, ngspice, vector
+from differential import (
+    SKIP,
+    TIGHT,
+    compared,
+    differing,
+    nearest,
+    netlist,
+    ngspice,
+    vector,
+)
 from jolty import (
+    Ac,
     JoltyError,
     OperatingPoint,
     Simulation,
     SimulationError,
-    devices,
+    Transient,
     ir,
     results,
 )
-from jolty.settings import Level
-from jolty.spice.export import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE
-from jolty.units import A, F, H, S, V, m, ohm
+from jolty.plan import decade
+from jolty.units import GHz, Hz, s
+from strategies import SETTINGS, STEP, STOP, circuits, parasitic, pulsed
 
 pytestmark = SKIP
 
-CIRCUITS: Final = int(os.environ.get("JOLTY_RANDOM_CIRCUITS", "40"))
-"""How many random circuits each test simulates."""
-
-
-def _decades(low: float, high: float) -> st.SearchStrategy[float]:
-    """Values spread evenly over the decades from `low` to `high`."""
-    return st.floats(np.log10(low), np.log10(high)).map(lambda exponent: 10**exponent)
-
-
-def _resistor(draw: st.DrawFn, low: float = 10, high: float = 1e6) -> devices.Device:
-    return devices.resistor(draw(_decades(low, high)) * ohm)
-
-
-def _capacitor(draw: st.DrawFn) -> devices.Device:
-    return devices.capacitor(draw(_decades(1e-12, 1e-6)) * F)
-
-
-def _current(draw: st.DrawFn) -> devices.Device:
-    return devices.current_source(draw(_decades(1e-6, 1e-3)) * A)
-
-
-def _diode(draw: st.DrawFn) -> devices.Device:
-    return devices.diode(
-        saturation_current=draw(_decades(1e-16, 1e-12)) * A,
-        series_resistance=draw(_decades(1, 100)) * ohm,
-    )
-
-
-POLARITIES: Final[tuple[Literal["npn", "pnp"], ...]] = ("npn", "pnp")
-
-
-def _bipolar(draw: st.DrawFn) -> devices.Device:
-    return devices.bipolar_transistor(
-        polarity=draw(st.sampled_from(POLARITIES)),
-        saturation_current=draw(_decades(1e-16, 1e-14)) * A,
-        forward_beta=draw(st.floats(20, 400)),
-        base_resistance=draw(_decades(10, 1e3)) * ohm,
-        emitter_resistance=draw(_decades(1, 100)) * ohm,
-        collector_resistance=draw(_decades(1, 100)) * ohm,
-    )
-
-
-def _mosfet(draw: st.DrawFn) -> devices.Device:
-    channel: Literal["n", "p"] = draw(st.sampled_from(["n", "p"]))
-    threshold = draw(st.floats(0.3, 1.5)) * (V if channel == "n" else -V)
-    return devices.mosfet(
-        level=1,
-        channel=channel,
-        width=draw(_decades(1e-6, 1e-4)) * m,
-        length=draw(_decades(1e-6, 1e-5)) * m,
-        threshold_voltage=threshold,
-    )
-
-
-def _transconductance(draw: st.DrawFn) -> devices.Device:
-    return devices.voltage_controlled_current_source(draw(_decades(1e-6, 1e-3)) * S)
-
-
-DEVICES: Final = {
-    "R": _resistor,
-    "C": _capacitor,
-    "I": _current,
-    "D": _diode,
-    "Q": _bipolar,
-    "M": _mosfet,
-    "G": _transconductance,
-}
-"""What each device placed at random between existing nodes is, by its prefix; an
-inductor goes in series with a resistor besides."""
-
-
-@st.composite
-def circuits(draw: st.DrawFn) -> ir.Circuit:
-    """A random circuit with a DC path from every node to the ground."""
-    count = draw(st.integers(1, 40))
-    nodes = ["0", *(f"n{index}" for index in range(1, count + 1))]
-    instances: list[ir.Instance] = []
-
-    def place(prefix: str, device: devices.Device, nets: list[str]) -> None:
-        terminals = dict(zip(device.terminals, nets, strict=False))
-        instances.append(
-            ir.Instance(
-                id=f"{prefix}{len(instances)}",
-                of=ir.DeviceOf(device=device.model),
-                parameters=device.parameters,
-                terminals=terminals,
-            )
-        )
-
-    for index in range(1, count + 1):
-        parent = draw(st.integers(0, index - 1))
-        place("R", _resistor(draw), [nodes[index], nodes[parent]])
-    driven = draw(st.sets(st.integers(1, count), min_size=1, max_size=min(3, count)))
-    for node in sorted(driven):
-        level = draw(st.floats(-5, 5)) * V
-        place("V", devices.voltage_source(level), [nodes[node], "0"])
-    for _ in range(draw(st.integers(0, 2 * count))):
-        # Two distinct nodes first, so that no source drives its current through
-        # nothing, then any two, for a transistor's or a control's other terminals.
-        node = st.sampled_from(nodes)
-        ends = [
-            *draw(st.lists(node, min_size=2, max_size=2, unique=True)),
-            *draw(st.lists(node, min_size=2, max_size=2)),
-        ]
-        prefix = draw(st.sampled_from([*DEVICES, "L"]))
-        if prefix == "L":
-            middle = f"m{len(instances)}"
-            inductance = draw(_decades(1e-9, 1e-3)) * H
-            place("L", devices.inductor(inductance), [ends[0], middle])
-            place("R", _resistor(draw, 1, 1e3), [middle, ends[1]])
-        else:
-            place(prefix, DEVICES[prefix](draw), ends)
-    # A node that only the tree's resistor reaches would dangle: tie it to another.
-    joined = Counter(
-        net for instance in instances for net in instance.terminals.values()
-    )
-    for net in nodes[1:]:
-        if joined[net] == 1:
-            other = draw(st.sampled_from([node for node in nodes if node != net]))
-            place("R", _resistor(draw), [net, other])
-    circuit = ir.Circuit(
-        top="random",
-        components={
-            "random": ir.Component(
-                ports=(ir.Port(name="0", role=ir.Role.GROUND),),
-                instances=tuple(instances),
-            )
-        },
-    )
-    simulation = Simulation(circuit)
-    assume(all(found.level is not Level.ERROR for found in simulation.check()))
-    return circuit
+type Real = npt.NDArray[np.float64]
 
 
 def _spice_point(
@@ -199,34 +72,10 @@ def _spice_point(
 
 
 def _agrees(point: results.OperatingPoint, spice: dict[str, float]) -> bool:
-    """Whether jolty's operating point is ngspice's.
-
-    Each unknown agrees within a millionth of the largest of its quantity in the
-    circuit: both engines resolve an equation to a millionth of its largest term, so
-    a small current beside large ones only that far.
-    """
+    """Whether jolty's operating point is ngspice's."""
     quantities = {unknown.name: unknown.quantity for unknown in point.unknowns}
-    scales = dict.fromkeys(("voltage", "current"), 0.0)
-    for name, value in spice.items():
-        scales[quantities[name]] = max(scales[quantities[name]], abs(value))
-    return all(
-        abs(value - spice[unknown.name])
-        <= 1e-6 * scales[unknown.quantity] + 2 * _noise(unknown)
-        for unknown, value in zip(point.unknowns, point.values, strict=True)
-        if unknown.name in spice
-    )
-
-
-def _noise(unknown: results.Unknown) -> float:
-    """The engines' absolute tolerance on an unknown of its quantity."""
-    return CURRENT_TOLERANCE if unknown.quantity == "current" else VOLTAGE_TOLERANCE
-
-
-SETTINGS: Final = settings(
-    max_examples=CIRCUITS,
-    deadline=None,
-    suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
-)
+    values = dict(zip(quantities, point.values, strict=True))
+    return not differing(values, spice, quantities)
 
 
 @SETTINGS
@@ -250,3 +99,151 @@ def test_operating_points_agree(circuit: ir.Circuit) -> None:
     again = _spice_point(simulation, start=point)
     assert again is not None, "ngspice finds no operating point from jolty's"
     assert _agrees(point, again), "jolty's operating point is not one of ngspice's"
+
+
+def _resting(simulation: Simulation) -> results.OperatingPoint | None:
+    """The operating point both engines find, around which both linearize the circuit.
+
+    There is none when ngspice finds none, or rests in another state than jolty.
+    """
+    spice = _spice_point(simulation)
+    if spice is None:
+        event("ngspice found no operating point")
+        return None
+    point = simulation.run(OperatingPoint(), TIGHT)
+    if not _agrees(point, spice):
+        event("another operating point")
+        return None
+    return point
+
+
+@SETTINGS
+@given(circuits())
+def test_frequency_responses_agree(circuit: ir.Circuit) -> None:
+    simulation = Simulation(circuit)
+    if _resting(simulation) is None:
+        return
+    source = next(
+        instance.id
+        for instance in circuit.components[circuit.top].instances
+        if instance.of == ir.DeviceOf(device="voltage_source")
+    )
+    response = simulation.run(Ac(source, decade(1 * Hz, 1 * GHz, 5)), TIGHT)
+    raw = ngspice(netlist(circuit, excited=source), "ac dec 5 1 1g")
+    shared = compared(simulation)
+    jolty = {unknown.name: response.values[:, column] for column, unknown in shared}
+    spice = {
+        unknown.name: raw.vectors[vector(circuit, unknown)] for _, unknown in shared
+    }
+    quantities = {unknown.name: unknown.quantity for _, unknown in shared}
+    assert not differing(jolty, spice, quantities), "the responses differ"
+
+
+type Waveforms = dict[str, Real]
+
+SHORTENED: Final = (4, 16, 64)
+"""The factors by which both engines shorten their longest step where they differ."""
+
+
+def _jolty(simulation: Simulation, step: float, times: Real) -> Waveforms:
+    """The waveforms jolty finds with `step` the longest, read at `times`."""
+    plan = Transient(
+        stop=STOP * s, max_step=step * s, times=[time * s for time in times[1:]]
+    )
+    waveforms = simulation.run(plan, TIGHT)
+    taken = nearest(waveforms.times, times)
+    assert np.allclose(waveforms.times[taken], times, rtol=0, atol=1e-9 * step)
+    return {
+        unknown.name: waveforms.values[taken, column]
+        for column, unknown in compared(simulation)
+    }
+
+
+def _transients(
+    simulation: Simulation, step: float
+) -> tuple[Waveforms, Waveforms, Real] | None:
+    """The waveforms both engines find with `step` the longest, at ngspice's times.
+
+    jolty steps onto every time ngspice took, so that both are read where each solved,
+    not between their points, where a waveform may bend. There are none when ngspice
+    stops short.
+    """
+    circuit = simulation.circuit
+    try:
+        raw = ngspice(netlist(circuit), f"tran {step!r} {STOP!r} 0 {step!r}")
+    except JoltyError:
+        return None
+    times = raw.real("time")
+    spice = {
+        unknown.name: raw.real(vector(circuit, unknown))
+        for _, unknown in compared(simulation)
+    }
+    return _jolty(simulation, step, times), spice, times
+
+
+def _excused(
+    simulation: Simulation,
+    jolty: Waveforms,
+    times: Real,
+    quantities: Mapping[str, str],
+) -> str | None:
+    """Why the engines' waveforms at `times`, jolty's being `jolty`, may differ, if so.
+
+    Both take steps a quarter as long, then a sixteenth and a sixty-fourth, each
+    shrinking an error of the second order sixteenfold: they agree then if one had not
+    settled. A waveform that
+    jolty's own shorter steps still move, as a chaotic one's, has not settled at these
+    steps, and is no reference for either engine.
+    """
+    for divisor in SHORTENED:
+        shorter = _transients(simulation, STEP / divisor)
+        if shorter is None:
+            return "ngspice stopped short"
+        if not differing(*shorter[:2], quantities, 1e-3):
+            return "agree once both take shorter steps"
+    finest = _jolty(simulation, STEP / SHORTENED[-1], times)
+    if differing(finest, jolty, quantities, 1e-3):
+        return "a waveform that shorter steps move"
+    return None
+
+
+def _assert_no_solution_continues(circuit: ir.Circuit) -> None:
+    """Asserts that where jolty stops short of ngspice, no solution continues.
+
+    Without capacitance, the equations of a net that only resistive devices hold can
+    fold, as their solution moves, into a point past which none continues: ngspice
+    may leap past it, or stop. With 10 fF from every net to the ground, as real nets
+    have, the solution continues, and jolty must finish wherever ngspice does.
+    """
+    try:
+        _transients(Simulation(parasitic(circuit)), STEP)
+    except SimulationError as error:
+        message = f"jolty stopped short where ngspice finished: {error}"
+        raise AssertionError(message) from None
+    event("no solution continues without capacitance")
+
+
+@SETTINGS
+@given(circuits())
+def test_transients_agree(circuit: ir.Circuit) -> None:
+    simulation = Simulation(pulsed(circuit))
+    if _resting(simulation) is None:
+        return
+    if simulation.check_operating_point(TIGHT):
+        # A mode that grows away from rest makes no waveform to agree on.
+        event("an unstable operating point")
+        return
+    quantities = {unknown.name: unknown.quantity for _, unknown in compared(simulation)}
+    try:
+        found = _transients(simulation, STEP)
+    except SimulationError:
+        _assert_no_solution_continues(simulation.circuit)
+        return
+    if found is None:
+        event("ngspice stopped short")
+        return
+    jolty, spice, times = found
+    if differing(jolty, spice, quantities, 1e-3):
+        excuse = _excused(simulation, jolty, times, quantities)
+        assert excuse is not None, "the waveforms differ"
+        event(excuse)

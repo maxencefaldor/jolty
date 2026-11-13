@@ -272,5 +272,8 @@ Every other choice the engine makes is one SPICE simulators make, save those the
 When no step converges, however short, the transient fails and names why: the unknowns furthest from converging, or the equation whose truncation error stayed above its tolerance.
 
 The engine's results agree with ngspice's on a corpus of reference circuits: operating points, sweeps and frequency responses to within a millionth of each signal, and transients to within a thousandth of their swing.
-Random circuits agree too, of every device and up to a hundred unknowns, each operating point within a millionth of the circuit's largest voltage or current; where the two engines rest in different states of a circuit with several, ngspice started from jolty's finds jolty's.
-An operating point ngspice reaches only by its last resort, the end of a transient of fixed length that it does not check to be one, is no reference.
+Random circuits agree too, of every device and up to a hundred unknowns: each operating point and frequency response within a millionth of the circuit's largest voltage or current, and each transient within a thousandth, jolty stepping onto every time ngspice took.
+Where the two engines rest in different states of a circuit with several, ngspice started from jolty's finds jolty's.
+Where two transients differ, both run again with steps a quarter as long, then a sixteenth and a sixty-fourth, and agree then if one had not settled; one that jolty's own shorter steps still move, as a chaotic one's, is no reference for either engine.
+Where jolty stops short of ngspice, the same circuit with 10 fF from every net to the ground, as real nets have, must finish: without capacitance, the equations of a net that only resistive devices hold can fold into a point past which no solution continues, which ngspice may leap past.
+An operating point ngspice reaches only by its last resort, the end of a transient of fixed length that it does not check to be one, is no reference either.
