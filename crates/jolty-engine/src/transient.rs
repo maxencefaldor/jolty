@@ -737,12 +737,14 @@ impl Simulator {
             before.clear();
             placed
                 .device
-                .choices(&stepping(&stepper.x, start), &mut before);
+                .choices(&Input::new(&stepper.x, Some(start), 0.0), &mut before);
             if before.is_empty() {
                 continue;
             }
             later.clear();
-            placed.device.choices(&stepping(after, end), &mut later);
+            placed
+                .device
+                .choices(&Input::new(after, Some(end), 0.0), &mut later);
             if let Some(fraction) = Choice::first_jump(&before, &later) {
                 let time = start + (end - start) * fraction;
                 first = Some(first.map_or(time, |earlier| earlier.min(time)));
@@ -892,11 +894,4 @@ impl Simulator {
         }
         Some(worst)
     }
-}
-
-/// The input of the state `x` at `time` of a transient analysis, with no gmin.
-fn stepping(x: &[f64], time: f64) -> Input<'_> {
-    let mut input = Input::new(x, time, 0.0);
-    input.transient = true;
-    input
 }

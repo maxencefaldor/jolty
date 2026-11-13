@@ -145,7 +145,7 @@ impl Simulator {
             )));
         }
         let operating_point = self.linearize(&noise.frequencies, options)?;
-        let state = Input::new(&operating_point.values, 0.0, options.gmin);
+        let state = Input::new(&operating_point.values, None, options.gmin);
         let mut sources: Vec<NoiseSource> = Vec::new();
         let mut contributions = Vec::new();
         for placed in &self.system.devices {

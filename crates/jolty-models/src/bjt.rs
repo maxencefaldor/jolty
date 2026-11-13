@@ -1628,7 +1628,7 @@ mod tests {
     fn a_substrate_junction_without_a_diode_conducts_the_minimum_conductance() {
         let mut bench = Bench::new::<BipolarTransistor>(r#"{"substrate": "vertical"}"#);
         let (gmin, x) = (1e-12, [2.0, 0.5, 0.0, -3.0]);
-        let evaluation = bench.evaluate_with(&Input::new(&x, 0.0, gmin));
+        let evaluation = bench.evaluate_with(&Input::new(&x, None, gmin));
         assert!((evaluation.residual[3] - gmin * (x[3] - x[0])).abs() < 1e-24);
         assert!((evaluation.conductance[3][3] - gmin).abs() < 1e-24);
     }

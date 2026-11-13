@@ -230,14 +230,14 @@ class Quantity:
         """The value with an SI prefix and the unit's symbol, such as ``4.7 kΩ``.
 
         A unit without a symbol of its own takes no prefix, which would bind to its
-        first factor alone.
+        first factor alone, and a plain number none either, which would read as a unit.
 
         Examples:
-            >>> str(0.02 / V)
-            '0.02 V⁻¹'
+            >>> str(0.02 / V), str(0.3 * V / V)
+            ('0.02 V⁻¹', '0.3')
         """
         if self.dimension == DIMENSIONLESS:
-            return format_si(self.value, "")
+            return f"{float(f'{self.value:.4g}'):g}"
         if self.dimension in _SYMBOLS:
             return format_si(self.value, _SYMBOLS[self.dimension])
         return f"{float(f'{self.value:.4g}'):g} {self.dimension}"

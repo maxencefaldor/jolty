@@ -314,7 +314,7 @@ impl Simulator {
     /// Records each characterized logic device whose supply at `values`, at `time`, lies
     /// further from the supply it was measured at than the relative tolerance.
     pub(crate) fn watch_supplies(&mut self, values: &[f64], time: f64, options: &Options) {
-        let input = Input::new(values, time, 0.0);
+        let input = Input::new(values, Some(time), 0.0);
         for (index, placed) in self.system.logic.devices.iter().enumerate() {
             let (Some(nominal), &[supply, ground]) = (
                 placed.device.domain().and_then(|domain| domain.supply),
@@ -348,7 +348,7 @@ impl Simulator {
                 .iter()
                 .map(|&(element, _)| {
                     let sense = self.system.devices[element].device.as_detector();
-                    let input = Input::new(&solved.values, 0.0, 0.0);
+                    let input = Input::new(&solved.values, None, 0.0);
                     sense.map_or(Level::Unknown, |sense| {
                         detected(sense.margin(&input), Level::Unknown)
                     })

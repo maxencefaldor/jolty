@@ -3,12 +3,15 @@
 #
 # Runs every check CI runs on each commit about to be pushed, so CI never sees a change
 # that fails. Each commit is checked out on its own, apart from any uncommitted work, and
-# builds in the repository's Cargo target directory to reuse what is already compiled.
+# builds in a Cargo target directory of the hook's own, which keeps what it compiled from
+# one push to the next. Cargo hashes a path dependency apart from its path, so a checkout
+# building in the repository's own target directory would leave its artifacts newer than
+# the sources there, which Cargo would then take for built.
 # Enable the hook once per clone with `git config core.hooksPath .githooks`.
 
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}"
+export CARGO_TARGET_DIR="$root/target/pre-push"
 
 while read -r _ local_commit _ _; do
     # A deleted branch pushes no commit.

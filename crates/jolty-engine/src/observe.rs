@@ -147,8 +147,7 @@ impl Probe {
         for (value, source) in self.x.iter_mut().zip(&self.sources) {
             *value = source.map_or(0.0, |unknown| x[unknown.index()]);
         }
-        let mut input = Input::new(&self.x, time.unwrap_or(0.0), gmin);
-        input.transient = time.is_some();
+        let mut input = Input::new(&self.x, time, gmin);
         input.limiting = false;
         self.device
             .evaluate(&input, &mut self.contributions.output(&self.pattern));

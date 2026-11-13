@@ -122,8 +122,7 @@ impl Twin {
     /// Evaluates the twin where the device is: at the solution `x`, at `time` in a
     /// transient analysis or, with `None`, at an operating point or about one.
     fn evaluate(&mut self, x: &[f64], time: Option<f64>, gmin: f64) {
-        let mut input = Input::new(x, time.unwrap_or(0.0), gmin);
-        input.transient = time.is_some();
+        let mut input = Input::new(x, time, gmin);
         input.limiting = false;
         self.made
             .evaluate(&input, &mut self.contributions.output(&self.pattern));

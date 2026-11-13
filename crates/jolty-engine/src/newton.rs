@@ -90,8 +90,7 @@ impl Simulator {
         limiting: bool,
     ) -> bool {
         let mut output = self.workspace.contributions.output(&self.system.pattern);
-        let mut input = Input::new(x, time.unwrap_or(0.0), gmin);
-        input.transient = time.is_some();
+        let mut input = Input::new(x, time, gmin);
         input.source_scale = source_scale;
         input.limiting = limiting;
         for placed in &mut self.system.devices {

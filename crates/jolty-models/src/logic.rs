@@ -1308,7 +1308,7 @@ mod tests {
         assert_close(&[driver.settles_at()], &[3.0]);
         // Halfway up the ramp, the output holds half of the 5 V from ground at 1 V.
         let x = [3.0, 6.0, 1.0, 0.0];
-        let evaluation = bench.evaluate_with(&Input::new(&x, 2.0, 0.0));
+        let evaluation = bench.evaluate_with(&Input::new(&x, Some(2.0), 0.0));
         assert!((evaluation.residual[3] - (2.0 - 0.5 * 5.0)).abs() < 1e-12);
         // Driven back down from halfway, it takes half the transition.
         let driver = bench.device().as_driver().unwrap();
@@ -1326,7 +1326,7 @@ mod tests {
         let mut bench =
             Bench::new::<ThresholdDetector>(r#"{"threshold": 0.4, "capacitance": 1e-12}"#);
         let x = [2.5, 5.0, 0.0];
-        let input = Input::new(&x, 0.0, 0.0);
+        let input = Input::new(&x, None, 0.0);
         let detector = bench.device().as_detector().unwrap();
         assert!((detector.margin(&input) - 0.5).abs() < 1e-12);
         assert_close(&[detector.swing(&input)], &[5.0]);

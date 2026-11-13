@@ -24,14 +24,15 @@ pub struct Input<'a> {
 }
 
 impl<'a> Input<'a> {
-    /// The state `x` at `time`, outside a transient analysis, with sources at full scale,
-    /// `gmin` across junctions, and steps limited.
+    /// The state `x` at `time` in a transient analysis or, with `None`, at an operating
+    /// point or about one, at time zero, with sources at full scale, `gmin` across
+    /// junctions, and steps limited.
     #[must_use]
-    pub fn new(x: &'a [f64], time: f64, gmin: f64) -> Self {
+    pub fn new(x: &'a [f64], time: Option<f64>, gmin: f64) -> Self {
         Self {
             x,
-            time,
-            transient: false,
+            time: time.unwrap_or(0.0),
+            transient: time.is_some(),
             source_scale: 1.0,
             gmin,
             limiting: true,

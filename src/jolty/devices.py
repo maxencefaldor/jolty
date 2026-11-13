@@ -342,13 +342,11 @@ def resistor(  # noqa: PLR0913 - its value, tolerance, drift, curvature and nois
     parameters |= _drift(
         temperature_coefficient, quadratic_temperature_coefficient, nominal_temperature
     )
-    parameters |= _parameters(
-        {}, {"exponential_temperature_coefficient": exponential_temperature_coefficient}
-    )
     parameters |= _curvature(voltage_coefficient, quadratic_voltage_coefficient)
     parameters |= _parameters(
         {},
         {
+            "exponential_temperature_coefficient": exponential_temperature_coefficient,
             "flicker_coefficient": flicker_coefficient,
             "flicker_exponent": flicker_exponent,
         },
@@ -782,9 +780,8 @@ def voltage_controlled_memristor(  # noqa: PLR0913 - VTEAM's thresholds, rates a
             "state": state,
             "window": window,
         },
+        {"law": law},
     )
-    if law is not None:
-        parameters["law"] = law
     return device("voltage_controlled_memristor", parameters)
 
 
@@ -822,9 +819,8 @@ def current_controlled_memristor(  # noqa: PLR0913 - its resistances, charge, la
             "charge": (charge, CHARGE),
         },
         {"state": state, "window": window},
+        {"law": law},
     )
-    if law is not None:
-        parameters["law"] = law
     return device("current_controlled_memristor", parameters)
 
 
@@ -1087,12 +1083,7 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
         >>> transistor.parameters["forward_early_voltage"]
         50.0
     """
-    parameters: dict[str, JsonValue] = {
-        name: value
-        for name, value in (("polarity", polarity), ("substrate", substrate))
-        if value is not None
-    }
-    parameters |= _parameters(
+    parameters = _parameters(
         {
             "saturation_current": (saturation_current, CURRENT),
             "forward_early_voltage": (forward_early_voltage, VOLTAGE),
@@ -1146,6 +1137,7 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
             "flicker_coefficient": flicker_coefficient,
             "flicker_exponent": flicker_exponent,
         },
+        {"polarity": polarity, "substrate": substrate},
     )
     return device("bipolar_transistor", parameters)
 
@@ -1254,17 +1246,8 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
         >>> mosfet(width=2 * um, length=1 * um, oxide_thickness=20 * nm).parameters
         {'width': 2e-06, 'length': 1e-06, 'oxide_thickness': 2e-08}
     """
-    parameters: dict[str, JsonValue] = {
-        name: value
-        for name, value in (
-            ("level", level),
-            ("channel", channel),
-            ("gate_material", gate_material),
-        )
-        if value is not None
-    }
     capacitance_per_length = CAPACITANCE / LENGTH
-    parameters |= _parameters(
+    parameters = _parameters(
         {
             "width": (width, LENGTH),
             "length": (length, LENGTH),
@@ -1327,6 +1310,7 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
             "flicker_coefficient": flicker_coefficient,
             "flicker_exponent": flicker_exponent,
         },
+        {"level": level, "channel": channel, "gate_material": gate_material},
     )
     return device("mosfet", parameters)
 
@@ -1358,7 +1342,7 @@ def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical p
     transition: Quantity,
     electrical: bool = False,
     input_capacitance: Quantity | None = None,
-    threshold: float = 0.5,
+    threshold: float | None = None,
 ) -> Device:
     """A combinational logic cell: each output a function of the inputs.
 
@@ -1376,9 +1360,9 @@ def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical p
     The cell's pins join logic nets, which an event scheduler simulates. An
     `electrical` cell has the terminals ``supply`` and ``ground`` too, and its pins may
     join electrical nets: each input then reads its net against `threshold` of the
-    supply, from ground, and loads it with `input_capacitance`, zero unless given, and
-    each output drives its net between ground and supply in a ramp, crossing half the
-    supply when its level changes.
+    supply, from ground, half unless given, and loads it with `input_capacitance`, zero
+    unless given, and each output drives its net between ground and supply in a ramp,
+    crossing half the supply when its level changes.
 
     Examples:
         >>> from jolty.units import ps
@@ -1417,10 +1401,10 @@ def logic_cell(  # noqa: PLR0913 - the function, its timing and its electrical p
             else input_capacitance.to(CAPACITANCE, "an input capacitance")
         )
         parameters["electrical"] = {
-            "threshold": finite(threshold, "threshold"),
+            "threshold": finite(0.5 if threshold is None else threshold, "threshold"),
             "input_capacitances": [capacitance] * len(inputs),
         }
-    elif input_capacitance is not None or threshold != 0.5:  # noqa: PLR2004 - the default
+    elif input_capacitance is not None or threshold is not None:
         message = "only an electrical cell has an input capacitance and a threshold"
         raise ValueError(message)
     return device("logic_cell", parameters)
@@ -1446,7 +1430,7 @@ def logic_gate(  # noqa: PLR0913 - a logic cell's parameters
     transition: Quantity,
     electrical: bool = False,
     input_capacitance: Quantity | None = None,
-    threshold: float = 0.5,
+    threshold: float | None = None,
 ) -> Device:
     """A logic gate of `gate`'s function, a [`logic_cell`][jolty.devices.logic_cell].
 
@@ -1525,10 +1509,12 @@ def device(model: str, parameters: dict[str, JsonValue]) -> Device:
 def _parameters(
     quantities: Mapping[str, tuple[Quantity | None, Dimension]],
     numbers: Mapping[str, float | None],
+    choices: Mapping[str, str | int | None] | None = None,
 ) -> dict[str, JsonValue]:
     """The parameters given, by name, each checked and in SI base units.
 
-    A quantity's dimension is checked, and a number is checked finite.
+    A quantity's dimension is checked, and a number is checked finite; a choice, such
+    as a transistor's polarity, is taken as it is.
 
     Raises:
         DimensionError: When a quantity has the wrong dimension.
@@ -1543,5 +1529,8 @@ def _parameters(
         name: finite(value, name)
         for name, value in numbers.items()
         if value is not None
+    }
+    parameters |= {
+        name: value for name, value in (choices or {}).items() if value is not None
     }
     return parameters

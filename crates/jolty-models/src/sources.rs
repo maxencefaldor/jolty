@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn source_stepping_scales_the_level() {
         let mut bench = Bench::new::<CurrentSource>(r#"{"waveform": {"dc": 2e-3}}"#);
-        let mut input = Input::new(&[0.0, 0.0], 0.0, 0.0);
+        let mut input = Input::new(&[0.0, 0.0], None, 0.0);
         input.source_scale = 0.5;
         assert_close(&bench.evaluate_with(&input).residual, &[1e-3, -1e-3]);
     }

@@ -219,8 +219,9 @@ class Requirement:
         return ("marginal" if slack < margin else "passed"), slack
 
     def _text(self, bound: Quantity) -> str:
-        if bound.dimension == DIMENSIONLESS:
-            return _format(bound.value, self.measurement.plain or "")
+        plain = self.measurement.plain
+        if plain is not None and bound.dimension == DIMENSIONLESS:
+            return _format(bound.value, plain)
         return str(bound)
 
     @override

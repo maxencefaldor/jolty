@@ -115,9 +115,8 @@ impl Bench {
     }
 
     pub(crate) fn evaluate(&mut self, x: &[f64]) -> Evaluation {
-        let mut input = Input::new(x, 0.0, 0.0);
-        input.transient = self.transient;
-        self.evaluate_with(&input)
+        let time = self.transient.then_some(0.0);
+        self.evaluate_with(&Input::new(x, time, 0.0))
     }
 
     /// Evaluates at `x` until no voltage is limited any more, as Newton's iterations would
@@ -172,7 +171,7 @@ impl Bench {
     /// The device's noise sources at `x`.
     pub(crate) fn noise(&self, x: &[f64]) -> Vec<NoiseSource> {
         let mut sources = Vec::new();
-        self.device.noise(&Input::new(x, 0.0, 0.0), &mut sources);
+        self.device.noise(&Input::new(x, None, 0.0), &mut sources);
         sources
     }
 }
@@ -278,8 +277,7 @@ fn residuals_and_charges<R: Real>(
     (x, time): (&[f64], Option<f64>),
 ) -> [Vec<R>; 3] {
     let mut contributions = Contributions::new(pattern);
-    let mut input = Input::new(x, time.unwrap_or(0.0), 1e-12);
-    input.transient = time.is_some();
+    let mut input = Input::new(x, time, 1e-12);
     input.limiting = false;
     device.evaluate(&input, &mut contributions.output(pattern));
     [

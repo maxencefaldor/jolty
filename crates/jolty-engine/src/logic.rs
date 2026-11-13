@@ -688,8 +688,8 @@ pub(crate) fn crossing(
     (end, after): (f64, &[f64]),
 ) -> Option<Crossing> {
     let sense = placed.device.as_detector()?;
-    let first = sense.margin(&Input::new(before, start, 0.0));
-    let last = sense.margin(&Input::new(after, end, 0.0));
+    let first = sense.margin(&Input::new(before, Some(start), 0.0));
+    let last = sense.margin(&Input::new(after, Some(end), 0.0));
     let level = detected(last, held);
     if level == held {
         return None;
@@ -701,7 +701,7 @@ pub(crate) fn crossing(
     } else {
         end
     };
-    let swing = sense.swing(&Input::new(after, end, 0.0)).abs();
+    let swing = sense.swing(&Input::new(after, Some(end), 0.0)).abs();
     Some(Crossing {
         time,
         detector,
