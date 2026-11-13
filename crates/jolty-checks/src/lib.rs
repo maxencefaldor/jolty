@@ -110,8 +110,9 @@ pub fn check(simulator: &Simulator) -> Vec<Diagnostic> {
     rules::shorted_sources(&structure, &mut diagnostics);
     rules::shorted_devices(&structure, &mut diagnostics);
     rules::voltage_loops(&structure, &mut diagnostics);
-    rules::no_dc_paths(&structure, &mut diagnostics);
-    rules::current_cutsets(&structure, &mut diagnostics);
+    let floating = rules::floating_groups(&structure);
+    rules::no_dc_paths(&structure, &floating, &mut diagnostics);
+    rules::current_cutsets(&structure, &floating, &mut diagnostics);
     rules::driver_conflicts(simulator, &mut diagnostics);
     rules::floating_inputs(simulator, &mut diagnostics);
     rules::non_standard_values(simulator, &mut diagnostics);

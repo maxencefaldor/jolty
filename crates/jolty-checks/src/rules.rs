@@ -352,8 +352,12 @@ fn path(forest: &[Vec<(usize, usize)>], start: usize, goal: usize) -> (Vec<usize
 }
 
 /// Each floating group that no current source drives.
-pub(crate) fn no_dc_paths(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
-    for group in floating_groups(structure) {
+pub(crate) fn no_dc_paths(
+    structure: &Structure<'_>,
+    floating: &[Group],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for group in floating {
         if !group.sources.is_empty() {
             continue;
         }
@@ -377,9 +381,13 @@ pub(crate) fn no_dc_paths(structure: &Structure<'_>, diagnostics: &mut Vec<Diagn
 }
 
 /// Each floating group that current sources drive.
-pub(crate) fn current_cutsets(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
+pub(crate) fn current_cutsets(
+    structure: &Structure<'_>,
+    floating: &[Group],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     let devices = structure.devices();
-    for group in floating_groups(structure) {
+    for group in floating {
         if group.sources.is_empty() {
             continue;
         }
@@ -414,7 +422,7 @@ pub(crate) fn current_cutsets(structure: &Structure<'_>, diagnostics: &mut Vec<D
 }
 
 /// Nodes with no DC path to the reference, and what touches them.
-struct Group {
+pub(crate) struct Group {
     /// The group's nodes, in the engine's order.
     nodes: Vec<usize>,
     /// The devices with a terminal on the group, current sources first, by index.
@@ -442,7 +450,7 @@ impl Group {
 
 /// The groups of nodes that branches conducting at DC join to each other but not to the
 /// reference, leaving out the groups whose every node joins a single terminal.
-fn floating_groups(structure: &Structure<'_>) -> Vec<Group> {
+pub(crate) fn floating_groups(structure: &Structure<'_>) -> Vec<Group> {
     let devices = structure.devices();
     let mut partition = Partition::new(structure.len());
     for device in devices {
@@ -472,27 +480,49 @@ fn floating_groups(structure: &Structure<'_>) -> Vec<Group> {
         groups[group].nodes.push(node);
     }
     groups.retain(|group| group.nodes.iter().any(|&node| structure.degree(node) > 1));
-    for group in &mut groups {
-        let inside = |node: usize| group.nodes.binary_search(&node).is_ok();
-        let mut others = Vec::new();
-        for (number, device) in devices.iter().enumerate() {
-            if drives(device, &inside) {
-                group.sources.push(number);
-            } else if device.nodes().iter().any(|&node| inside(index(node))) {
-                others.push(number);
+    let mut floating = vec![None; structure.len()];
+    for (number, group) in groups.iter().enumerate() {
+        for &node in &group.nodes {
+            floating[node] = Some(number);
+        }
+    }
+    // One pass over the devices: each joins the groups its terminals are on, as a source
+    // of those a current source's output has exactly one end in.
+    let mut others: Vec<Vec<usize>> = vec![Vec::new(); groups.len()];
+    let (mut touched, mut driven) = (Vec::new(), Vec::new());
+    for (number, device) in devices.iter().enumerate() {
+        touched.clear();
+        touched.extend(
+            device
+                .nodes()
+                .iter()
+                .filter_map(|&node| floating[index(node)]),
+        );
+        if touched.is_empty() {
+            continue;
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        driven.clear();
+        for &branch in device.branches() {
+            let (from, to) = ends(device, branch);
+            let (from, to) = (floating[from], floating[to]);
+            if branch.kind == BranchKind::CurrentSource && from != to {
+                driven.extend(from.into_iter().chain(to));
             }
         }
+        for &group in &touched {
+            if driven.contains(&group) {
+                groups[group].sources.push(number);
+            } else {
+                others[group].push(number);
+            }
+        }
+    }
+    for (group, others) in groups.iter_mut().zip(others) {
         group.devices = group.sources.iter().copied().chain(others).collect();
     }
     groups
-}
-
-/// Whether `device` has a current source with exactly one end of its output `inside`.
-fn drives(device: &Placed, inside: &impl Fn(usize) -> bool) -> bool {
-    device.branches().iter().any(|&branch| {
-        let (from, to) = ends(device, branch);
-        branch.kind == BranchKind::CurrentSource && inside(from) != inside(to)
-    })
 }
 
 /// Each resistor, capacitor and inductor whose value no E series it comes in holds.
@@ -854,6 +884,24 @@ mod tests {
         assert_eq!(rules(&series), ["current-cutset"]);
         let loaded = diagnostics(&[current("I1", "0", "top"), resistor("R1", "top", "0")]);
         assert_eq!(loaded, []);
+        // A source between two floating groups drives both, and a capacitor between them
+        // touches both and drives neither.
+        let between = diagnostics(&[
+            current("I1", "a", "b"),
+            capacitor("C1", "a", "0"),
+            capacitor("C2", "b", "0"),
+            capacitor("C3", "a", "b"),
+        ]);
+        assert_eq!(rules(&between), ["current-cutset", "current-cutset"]);
+        let instances: Vec<Vec<&str>> = between
+            .iter()
+            .map(|found| found.instances.iter().map(|at| at.path.as_str()).collect())
+            .collect();
+        assert_eq!(instances, [["I1", "C1", "C3"], ["I1", "C2", "C3"]]);
+        assert_eq!(
+            between[1].message,
+            "`I1` drives current into `b`, which has no DC path to `0`"
+        );
     }
 
     fn gate(id: &'static str, terminals: Vec<(&'static str, &'static str)>) -> Device {
