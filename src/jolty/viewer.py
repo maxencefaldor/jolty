@@ -8,7 +8,8 @@ along each lead as moving light, faster as it grows, and each part glows with th
 it takes. A timeline scrubs through every point of each analysis; clicking a part shows
 its parameters and its state at that point, the voltage, current and charge of each
 terminal, its variables and its small-signal conductances; double-clicking a component
-instance opens it.
+instance opens it. Currents, charges, variables and conductances are those the results
+recorded: a simulation records every instance with ``Options(record=["**"])``.
 
 The page holds the circuit, the layouts and the results as JSON, and the viewer's
 script and styles, and loads three.js from jsDelivr, so it needs a network connection
@@ -219,48 +220,58 @@ def _levels(result: results.Result, axis: np.ndarray) -> dict[str, np.ndarray]:
 
 
 def _currents(
-    result: _Observed, frames: np.ndarray, currents: np.ndarray
+    recording: results.Recording, frames: np.ndarray, currents: np.ndarray
 ) -> dict[str, JsonValue]:
-    """The current into every electrical terminal, the composites' summed, at `frames`.
+    """The current into every recorded electrical terminal, at `frames`.
 
-    The heat into a thermal terminal is no current: no light moves along its lead.
+    A component instance's or a logic device's terminal carries the sum the result
+    recorded. The heat into a thermal terminal is no current: no light moves along its
+    lead.
     """
     terminals: dict[str, JsonValue] = {}
     if not currents.size:
         return terminals
     sampled = currents[frames]
-    for index, terminal in enumerate(result.terminals):
-        if terminal not in result.thermal:
+    for index, terminal in enumerate(recording.terminals):
+        if terminal not in recording.thermal:
             terminals[terminal] = _series(sampled[:, index])
-    for composite, members in result.composites:
-        if composite not in result.thermal:
-            terminals[composite] = _series(sampled[:, list(members)].sum(axis=1))
     return terminals
 
 
 def _state(result: _Observed, frames: np.ndarray) -> dict[str, JsonValue]:
-    """Every terminal's charge, every device's variables and conductances, at `frames`.
+    """Each recorded device's charges, variables and conductances, at `frames`.
 
-    A device's conductances are those between two of its terminals.
+    A device's charges are its terminals', and its conductances those between two of
+    its terminals.
     """
-    charges: dict[str, JsonValue] = {}
+    recording = result.recording
     stored = _rows(result, "charges")
-    for index, terminal in enumerate(result.terminals if stored.size else ()):
-        charges[terminal] = _series(stored[frames, index])
-    variables: dict[str, dict[str, JsonValue]] = {}
     readings = _rows(result, "readings")
-    for index, (device, variable) in enumerate(
-        result.variables if readings.size else ()
-    ):
-        variables.setdefault(device, {})[variable] = _series(readings[frames, index])
-    small_signal: dict[str, JsonValue] = {}
     conductances = _rows(result, "conductances")
-    named = set(result.terminals)
-    for index, (row, column) in enumerate(
-        result.derivatives if conductances.size else ()
-    ):
-        if row in named and column in named:
-            small_signal[f"{row}|{column}"] = _series(conductances[frames, index])
+    charges: dict[str, JsonValue] = {}
+    variables: dict[str, dict[str, JsonValue]] = {}
+    small_signal: dict[str, JsonValue] = {}
+    terminal, variable, derivative = 0, 0, 0
+    for device in recording.devices:
+        names = [f"{device.path}.{own}" for own in device.terminals]
+        if stored.size:
+            for name in names:
+                charges[name] = _series(stored[frames, terminal])
+                terminal += 1
+        if readings.size:
+            for own in device.variables:
+                values = _series(readings[frames, variable])
+                variables.setdefault(device.path, {})[own] = values
+                variable += 1
+        size = len(device.unknowns)
+        if conductances.size:
+            for row, first in enumerate(names):
+                for column, second in enumerate(names):
+                    index = derivative + row * size + column
+                    small_signal[f"{first}|{second}"] = _series(
+                        conductances[frames, index]
+                    )
+        derivative += size * size
     found: dict[str, JsonValue] = dict(variables)
     return {"charges": charges, "variables": found, "conductances": small_signal}
 
@@ -278,12 +289,13 @@ def _analysis(name: str, result: results.Result) -> dict[str, JsonValue] | None:
     devices: dict[str, JsonValue]
     if isinstance(result, results.Response):
         values = np.abs(result.values)
-        point = result.operating_point
-        devices = {"currents": _currents(point, frames, np.abs(result.currents))}
+        currents = np.abs(result.currents)
+        devices = {"currents": _currents(result.recording, frames, currents)}
     elif isinstance(result, _OBSERVED):
         values = _rows(result, "values")
+        currents = _rows(result, "currents")
         devices = {
-            "currents": _currents(result, frames, _rows(result, "currents")),
+            "currents": _currents(result.recording, frames, currents),
             **_state(result, frames),
         }
     else:

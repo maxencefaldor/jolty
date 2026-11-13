@@ -11,6 +11,7 @@ from jolty import (
     Component,
     JoltyError,
     OperatingPoint,
+    Options,
     Role,
     Simulation,
     SimulationError,
@@ -21,6 +22,7 @@ from jolty import (
     results,
 )
 from jolty.plan import Ac, Sensitivity, Transient
+from jolty.simulate import Joined
 from jolty.spice.export import netlist
 from jolty.units import A, F, Hz, J, K, V, W, celsius, kohm, ohm, s, us
 from jolty.waveforms import Pulse
@@ -70,14 +72,20 @@ def _rise(voltage: float, coefficient: float = COEFFICIENT) -> float:
 
 def test_a_resistor_heats_itself_to_where_its_power_balances_the_sink() -> None:
     simulation = Simulation(_warmed(devices.voltage_source(10 * V)))
-    point = simulation.run(OperatingPoint())
+    point = simulation.run(OperatingPoint(), Options(record=["**"]))
     rise = _rise(10.0)
     assert point.rise("junction") == pytest.approx(rise, rel=1e-9)
     hot = RESISTANCE * (1 + COEFFICIENT * rise)
     assert point.current("R1", "a") == pytest.approx(10.0 / hot, rel=1e-9)
     # The heat into its thermal terminal is the power it dissipates, out of it.
     assert point.current("R1", "thermal") == pytest.approx(-100.0 / hot, rel=1e-9)
-    assert simulation.thermal == {"R1.thermal", "RTH.a", "RTH.b", "CTH.a", "CTH.b"}
+    assert point.recording.thermal == {
+        "R1.thermal",
+        "RTH.a",
+        "RTH.b",
+        "CTH.a",
+        "CTH.b",
+    }
 
 
 def test_a_heated_device_warms_through_its_thermal_time_constant() -> None:
@@ -277,8 +285,10 @@ def test_a_heated_power_mosfet_heats_its_channel_and_body_diode_together() -> No
         c.connect(supply.negative, gate.negative, transistor.source, mount.b, ground)
 
     simulation = Simulation(switch())
-    assert "X1.thermal" in simulation.thermal
+    assert simulation.joined("X1", "thermal") == Joined("junction", thermal=True)
     point = simulation.run(OperatingPoint())
+    # The part is rated for a power, so the point records its ports by default.
+    assert "X1.thermal" in point.recording.thermal
     power = point.voltage("d") * point.current("X1", "drain")
     assert point.rise("junction") == pytest.approx(2.0 * power, rel=1e-9)
     assert point.current("X1", "thermal") == pytest.approx(-power, rel=1e-9)
@@ -303,7 +313,7 @@ def test_a_port_on_the_ground_sums_its_electrical_terminals_only() -> None:
         c.connect(source.positive, inner.top, name="top")
         c.connect(source.negative, inner.ground, ground)
 
-    point = Simulation(board()).run(OperatingPoint())
+    point = Simulation(board()).run(OperatingPoint(), Options(record=["X1"]))
     # 0.1 A in at the top and out at the ground, whatever heat flows to the ambient.
     assert point.current("X1", "ground") == pytest.approx(-0.1, rel=1e-9)
     assert point.rise("X1/junction") == pytest.approx(2.0, rel=1e-9)

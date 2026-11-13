@@ -1,8 +1,12 @@
-//! What every device does: the current into every terminal and the charge it holds, the
-//! derivatives of its equations, and its variables.
+//! What the recorded devices do: the current into every terminal and the charge it holds,
+//! the derivatives of its equations, and its variables, for the devices and the component
+//! instances a record names.
+
+use std::collections::BTreeSet;
 
 use jolty_engine::{
-    Ac, Conditions, DcSweep, Method, Observation, Observed, Options, Simulator, Transient,
+    Ac, Composite, Conditions, DcSweep, Method, Observation, Observed, Options, Record, Recorded,
+    Simulator, Transient,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -41,35 +45,111 @@ fn bench() -> Value {
     ])
 }
 
-/// Tolerances so tight that what Newton iteration leaves of each node's equation, the sum
-/// of the currents into it, is all but nothing.
-fn tight() -> Options {
+/// The record of the instances at `paths`.
+fn instances(paths: &[&str]) -> Record {
+    Record::Instances(
+        paths
+            .iter()
+            .map(|&path| path.to_owned())
+            .collect::<BTreeSet<_>>(),
+    )
+}
+
+/// Every device recorded, at SPICE's tolerances.
+fn everything() -> Options {
     Options {
-        relative_tolerance: 1e-9,
-        current_tolerance: 1e-18,
+        record: Record::All,
         ..Options::default()
     }
 }
 
-/// Checks that `found` is `expected` exactly.
-fn assert_exact(found: f64, expected: f64) {
-    assert!(
-        found.to_bits() == expected.to_bits() || found.abs() + expected.abs() <= 0.0,
-        "{found} is not {expected}"
-    );
+/// Every device recorded, at tolerances so tight that what Newton iteration leaves of each
+/// node's equation, the sum of the currents into it, is all but nothing.
+fn tight() -> Options {
+    Options {
+        relative_tolerance: 1e-9,
+        current_tolerance: 1e-18,
+        record: Record::All,
+        ..Options::default()
+    }
 }
 
-/// The index of `name` among the simulator's terminals.
+/// The names of the values every observation holds under `record`, as [`Recorded`] lays
+/// them out: each terminal of each recorded device, such as `R1.a`, then each recorded
+/// composite terminal; each pair of each recorded device's unknowns, its terminals then its
+/// internal unknowns, row by row; and each recorded device's variables.
+#[derive(Debug, Default)]
+struct Columns {
+    terminals: Vec<String>,
+    derivatives: Vec<(String, String)>,
+    variables: Vec<(String, &'static str)>,
+}
+
+impl Columns {
+    fn of(simulator: &Simulator, record: &Record) -> Self {
+        let recorded = simulator.recorded(record);
+        let mut columns = Self::default();
+        for &device in &recorded.devices {
+            let placed = &simulator.devices()[device];
+            let local: Vec<String> = placed
+                .terminals()
+                .iter()
+                .map(|terminal| format!("{}.{terminal}", placed.path()))
+                .chain(
+                    placed
+                        .internals()
+                        .map(|index| simulator.unknowns()[index].name.clone()),
+                )
+                .collect();
+            columns
+                .terminals
+                .extend(local[..placed.terminals().len()].iter().cloned());
+            for row in &local {
+                for column in &local {
+                    columns.derivatives.push((row.clone(), column.clone()));
+                }
+            }
+            columns.variables.extend(
+                placed
+                    .variable_names()
+                    .iter()
+                    .map(|&name| (placed.path().to_owned(), name)),
+            );
+        }
+        columns.terminals.extend(
+            recorded
+                .composites
+                .iter()
+                .map(|&composite| simulator.composites()[composite].name().to_owned()),
+        );
+        columns
+    }
+
+    /// The index of the terminal `name`.
+    fn terminal(&self, name: &str) -> usize {
+        self.terminals
+            .iter()
+            .position(|found| found == name)
+            .unwrap_or_else(|| panic!("no terminal {name}"))
+    }
+
+    /// The index of the derivative of `equation` with respect to `unknown`.
+    fn derivative(&self, equation: &str, unknown: &str) -> usize {
+        self.derivatives
+            .iter()
+            .position(|(row, column)| row == equation && column == unknown)
+            .unwrap_or_else(|| panic!("no derivative of {equation} by {unknown}"))
+    }
+}
+
+/// The index of `name` among the terminals every device's record holds.
 fn terminal(simulator: &Simulator, name: &str) -> usize {
-    simulator
-        .terminals()
-        .iter()
-        .position(|found| found == name)
-        .unwrap_or_else(|| panic!("no terminal {name}"))
+    Columns::of(simulator, &Record::All).terminal(name)
 }
 
-/// The sum of the currents into the terminals on each node, which Kirchhoff's current law
-/// makes zero, relative to the largest of them.
+/// The sum of the currents into the device terminals on each node, which Kirchhoff's
+/// current law makes zero, relative to the largest of them, from `currents` as every
+/// device's record holds them.
 fn imbalance<T: Copy + Into<Complex64>>(simulator: &Simulator, currents: &[T]) -> f64 {
     let mut sums = vec![Complex64::default(); simulator.unknowns().len()];
     let mut largest = vec![0.0_f64; simulator.unknowns().len()];
@@ -84,7 +164,11 @@ fn imbalance<T: Copy + Into<Complex64>>(simulator: &Simulator, currents: &[T]) -
             index += 1;
         }
     }
-    assert_eq!(index, currents.len(), "a current per terminal");
+    assert_eq!(
+        index + simulator.composites().len(),
+        currents.len(),
+        "a current per terminal"
+    );
     sums.iter()
         .zip(&largest)
         .filter(|(_, largest)| **largest > 0.0)
@@ -92,11 +176,19 @@ fn imbalance<T: Copy + Into<Complex64>>(simulator: &Simulator, currents: &[T]) -
         .fold(0.0, f64::max)
 }
 
+/// Checks that `found` is `expected` exactly.
+fn assert_exact(found: f64, expected: f64) {
+    assert!(
+        found.to_bits() == expected.to_bits() || found.abs() + expected.abs() <= 0.0,
+        "{found} is not {expected}"
+    );
+}
+
 #[test]
 fn every_terminal_is_named_by_its_device_and_its_own_name() {
     let simulator = simulator(&bench());
     assert_eq!(
-        simulator.terminals(),
+        Columns::of(&simulator, &Record::All).terminals,
         [
             "V1.positive",
             "V1.negative",
@@ -126,7 +218,7 @@ fn currents_at_an_operating_point_obey_ohm_and_kirchhoff() {
         {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-9},
          "terminals": {"a": "out", "b": "0"}}
     ]));
-    let point = simulator.operating_point(&Options::default()).unwrap();
+    let point = simulator.operating_point(&everything()).unwrap();
     let Observation {
         currents, charges, ..
     } = &point.observation;
@@ -145,7 +237,7 @@ fn currents_at_an_operating_point_obey_ohm_and_kirchhoff() {
 #[test]
 fn terminals_that_share_a_net_or_join_the_reference_keep_their_own_currents() {
     let mut simulator = simulator(&bench());
-    let point = simulator.operating_point(&Options::default()).unwrap();
+    let point = simulator.operating_point(&everything()).unwrap();
     let currents = &point.observation.currents;
     let current = |name: &str| currents[terminal(&simulator, name)];
     // At DC, no current flows into the gate, though it shares its net with the drain.
@@ -219,7 +311,7 @@ fn small_signal_currents_are_the_admittances_times_the_phasors() {
                 source: "V1".to_owned(),
                 frequencies: frequencies.clone(),
             },
-            &Options::default(),
+            &everything(),
         )
         .unwrap();
     let out = simulator
@@ -237,15 +329,6 @@ fn small_signal_currents_are_the_admittances_times_the_phasors() {
         assert!((currents[capacitor] - expected).norm() <= 1e-12 * expected.norm());
         assert!(imbalance(&simulator, currents) < 1e-9);
     }
-}
-
-/// The index of the derivative of `equation` with respect to `unknown`.
-fn derivative(simulator: &Simulator, equation: &str, unknown: &str) -> usize {
-    simulator
-        .derivatives()
-        .iter()
-        .position(|(row, column)| row == equation && column == unknown)
-        .unwrap_or_else(|| panic!("no derivative of {equation} by {unknown}"))
 }
 
 #[test]
@@ -271,8 +354,9 @@ fn each_device_reports_its_own_small_signal_model_and_variables() {
         variables,
         ..
     } = &point.observation;
-    let conductance = |row: &str, column: &str| conductances[derivative(&simulator, row, column)];
-    let capacitance = |row: &str, column: &str| capacitances[derivative(&simulator, row, column)];
+    let columns = Columns::of(&simulator, &Record::All);
+    let conductance = |row: &str, column: &str| conductances[columns.derivative(row, column)];
+    let capacitance = |row: &str, column: &str| capacitances[columns.derivative(row, column)];
     assert_exact(conductance("R1.a", "R1.a"), 2.5e-4);
     assert_exact(conductance("R1.a", "R1.b"), -2.5e-4);
     assert_exact(capacitance("C1.b", "C1.a"), -3e-12);
@@ -283,8 +367,8 @@ fn each_device_reports_its_own_small_signal_model_and_variables() {
     let gm = conductance("M1.drain", "M1.gate");
     assert!((gm - 2e-4 * 0.7).abs() < 1e-18, "{gm}");
     assert_exact(conductance("M1.gate", "M1.drain"), 0.0);
-    let names: Vec<(&str, &str)> = simulator
-        .variables()
+    let names: Vec<(&str, &str)> = columns
+        .variables
         .iter()
         .map(|(device, name)| (device.as_str(), *name))
         .collect();
@@ -335,51 +419,95 @@ fn nested(outside: (&str, &str)) -> Simulator {
         .expect("an elaborated circuit")
 }
 
+/// Each composite terminal's name, with the device terminals it sums, by name.
+fn composites(simulator: &Simulator) -> Vec<(&str, Vec<String>)> {
+    simulator
+        .composites()
+        .iter()
+        .map(|composite| {
+            let members = composite
+                .members()
+                .iter()
+                .map(|&(device, terminal)| {
+                    let placed = &simulator.devices()[device];
+                    format!("{}.{}", placed.path(), placed.terminals()[terminal])
+                })
+                .collect();
+            (composite.name(), members)
+        })
+        .collect()
+}
+
 #[test]
 fn a_component_instance_s_terminals_sum_the_device_terminals_inside_it() {
     let mut simulator = nested(("in", "0"));
-    let named: Vec<(&str, Vec<&str>)> = simulator
-        .composites()
-        .iter()
-        .map(|(name, members)| {
-            let members = members
-                .iter()
-                .map(|&index| simulator.terminals()[index].as_str())
-                .collect();
-            (name.as_str(), members)
-        })
-        .collect();
     assert_eq!(
-        named,
+        composites(&simulator),
         [
-            ("X1.p", vec!["X1/X2/R1.a", "X1/R4.a"]),
-            ("X1.q", vec!["X1/X2/R2.b", "X1/R4.b"]),
-            ("X1/X2.a", vec!["X1/X2/R1.a"]),
-            ("X1/X2.b", vec!["X1/X2/R2.b"]),
+            ("X1.p", vec!["X1/X2/R1.a".to_owned(), "X1/R4.a".to_owned()]),
+            ("X1.q", vec!["X1/X2/R2.b".to_owned(), "X1/R4.b".to_owned()]),
+            ("X1/X2.a", vec!["X1/X2/R1.a".to_owned()]),
+            ("X1/X2.b", vec!["X1/X2/R2.b".to_owned()]),
         ]
     );
+    let owners: Vec<&str> = simulator
+        .composites()
+        .iter()
+        .map(Composite::owner)
+        .collect();
+    assert_eq!(owners, ["X1", "X1", "X1/X2", "X1/X2"]);
+    let columns = Columns::of(&simulator, &Record::All);
     let point = simulator.operating_point(&tight()).unwrap();
-    let current = |index: usize| -> f64 {
-        simulator.composites()[index]
-            .1
-            .iter()
-            .map(|&terminal| point.observation.currents[terminal])
-            .sum()
-    };
+    let currents = &point.observation.currents;
+    let current = |name: &str| currents[columns.terminal(name)];
     // Into X1: 3 V across 2 kΩ in parallel with 1 kΩ.
-    assert!((current(0) - 4.5e-3).abs() < 1e-12, "{}", current(0));
-    assert!((current(1) + 4.5e-3).abs() < 1e-12);
-    assert!((current(2) - 1.5e-3).abs() < 1e-12);
+    assert!(
+        (current("X1.p") - 4.5e-3).abs() < 1e-12,
+        "{}",
+        current("X1.p")
+    );
+    assert!((current("X1.q") + 4.5e-3).abs() < 1e-12);
+    assert!((current("X1/X2.a") - 1.5e-3).abs() < 1e-12);
+    for (name, members) in composites(&simulator) {
+        let summed: f64 = members.iter().map(|member| current(member)).sum();
+        assert_exact(current(name), summed);
+    }
 
     // Ports tied together outside keep their own currents: here both join `in`.
     let mut tied = nested(("in", "in"));
     let point = tied.operating_point(&tight()).unwrap();
-    let currents: Vec<f64> = tied
-        .composites()
-        .iter()
-        .map(|(_, members)| members.iter().map(|&t| point.observation.currents[t]).sum())
-        .collect();
-    assert!(currents.iter().all(|current| current.abs() < 1e-15));
+    let ports = &point.observation.currents[point.observation.currents.len() - 4..];
+    assert!(ports.iter().all(|current| current.abs() < 1e-15));
+}
+
+#[test]
+fn a_component_instance_recorded_alone_keeps_its_terminals_and_none_of_its_devices() {
+    let mut simulator = nested(("in", "0"));
+    let everything = simulator.operating_point(&tight()).unwrap();
+    let all = Columns::of(&simulator, &Record::All);
+    let record = instances(&["X1"]);
+    let recorded = simulator.recorded(&record);
+    assert!(recorded.devices.is_empty());
+    assert_eq!(recorded.composites, [0, 1]);
+    let options = Options {
+        record: record.clone(),
+        ..tight()
+    };
+    let alone = simulator.operating_point(&options).unwrap();
+    let Observation {
+        currents,
+        charges,
+        conductances,
+        capacitances,
+        variables,
+    } = &alone.observation;
+    assert!(conductances.is_empty() && capacitances.is_empty() && variables.is_empty());
+    assert_eq!(Columns::of(&simulator, &record).terminals, ["X1.p", "X1.q"]);
+    for (index, name) in ["X1.p", "X1.q"].into_iter().enumerate() {
+        let column = all.terminal(name);
+        assert_exact(currents[index], everything.observation.currents[column]);
+        assert_exact(charges[index], everything.observation.charges[column]);
+    }
 }
 
 #[test]
@@ -401,11 +529,7 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
          "terminals": {"a": "y", "b": "0"}}
     ]));
-    let named: Vec<&str> = simulator
-        .composites()
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .collect();
+    let named: Vec<&str> = simulator.composites().iter().map(Composite::name).collect();
     assert_eq!(named, ["U1.a", "U1.y", "U1.supply", "U1.ground"]);
     let transient = Transient {
         stop: 1e-8,
@@ -415,15 +539,14 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         periodic: false,
     };
     let waveforms = simulator.transient(&transient, &tight()).unwrap();
-    let pin = |index: usize, found: Observed<'_>| -> f64 {
-        simulator.composites()[index]
-            .1
-            .iter()
-            .map(|&terminal| found.currents[terminal])
-            .sum()
-    };
-    let fraction = derivative(&simulator, "U1:y:current", "U1:y.supply");
-    let resistor = terminal(&simulator, "R1.a");
+    let columns = Columns::of(&simulator, &Record::All);
+    let pins: Vec<usize> = ["U1.a", "U1.y", "U1.supply", "U1.ground"]
+        .into_iter()
+        .map(|name| columns.terminal(name))
+        .collect();
+    let pin = |index: usize, found: Observed<'_>| -> f64 { found.currents[pins[index]] };
+    let fraction = columns.derivative("U1:y:current", "U1:y.supply");
+    let resistor = columns.terminal("R1.a");
     let (mut high, mut low) = (false, false);
     for (time, found) in waveforms.times.iter().zip(waveforms.observations.iter()) {
         // The driver takes the resistor's current from its output to the ground.
@@ -442,4 +565,109 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         assert!((0.0..=1.0).contains(&held), "{held}");
     }
     assert!(high && low, "the inverter falls after its input rises");
+}
+
+/// A transient of the bench's pulse, with steps at most 10 ns long.
+fn pulse() -> Transient {
+    Transient {
+        stop: 1e-6,
+        max_step: Some(1e-8),
+        method: Method::Trapezoidal,
+        times: vec![2.5e-7],
+        periodic: false,
+    }
+}
+
+#[test]
+fn nothing_beyond_the_unknowns_is_recorded_by_default() {
+    let mut simulator = simulator(&bench());
+    assert_eq!(simulator.recorded(&Record::default()), Recorded::default());
+    let point = simulator.operating_point(&Options::default()).unwrap();
+    assert_eq!(point.observation, Observation::default());
+    let waveforms = simulator.transient(&pulse(), &Options::default()).unwrap();
+    let observations = &waveforms.observations;
+    assert_eq!(observations.points, waveforms.times.len());
+    assert!(observations.currents.is_empty() && observations.conductances.is_empty());
+    let ac = Ac {
+        source: "V1".to_owned(),
+        frequencies: vec![1e3, 1e6],
+    };
+    let response = simulator.ac(&ac, &Options::default()).unwrap();
+    assert!(response.currents.iter().all(Vec::is_empty));
+}
+
+#[test]
+fn a_device_recorded_alone_reads_as_it_does_among_every_device() {
+    let record = instances(&["C1", "M1", "R9"]);
+    let mut simulator = simulator(&bench());
+    assert_eq!(simulator.recorded(&record).devices, [2, 4]);
+    let all = Columns::of(&simulator, &Record::All);
+    let some = Columns::of(&simulator, &record);
+    assert_eq!(
+        some.terminals,
+        [
+            "C1.a",
+            "C1.b",
+            "M1.drain",
+            "M1.gate",
+            "M1.source",
+            "M1.bulk"
+        ]
+    );
+    let chosen = Options { record, ..tight() };
+    // Each simulator makes again only the devices it records.
+    let mut apart = self::simulator(&bench());
+    let every = simulator.transient(&pulse(), &tight()).unwrap();
+    let alone = apart.transient(&pulse(), &chosen).unwrap();
+    assert_eq!(alone.times, every.times);
+    assert_eq!(alone.values, every.values);
+    for (found, expected) in alone.observations.iter().zip(every.observations.iter()) {
+        for (index, name) in some.terminals.iter().enumerate() {
+            let column = all.terminal(name);
+            assert_exact(found.currents[index], expected.currents[column]);
+            assert_exact(found.charges[index], expected.charges[column]);
+        }
+        for (index, (row, column)) in some.derivatives.iter().enumerate() {
+            let at = all.derivative(row, column);
+            assert_exact(found.conductances[index], expected.conductances[at]);
+            assert_exact(found.capacitances[index], expected.capacitances[at]);
+        }
+        let variables = &expected.variables[expected.variables.len() - 5..];
+        assert_eq!(found.variables, variables);
+    }
+    let ac = Ac {
+        source: "V1".to_owned(),
+        frequencies: vec![1e3, 1e6, 1e9],
+    };
+    let every = simulator.ac(&ac, &tight()).unwrap();
+    let alone = apart.ac(&ac, &chosen).unwrap();
+    for (found, expected) in alone.currents.iter().zip(&every.currents) {
+        for (index, name) in some.terminals.iter().enumerate() {
+            assert_eq!(found[index], expected[all.terminal(name)]);
+        }
+    }
+}
+
+#[test]
+fn a_transient_holds_what_it_records_against_its_memory() {
+    let mut simulator = simulator(&bench());
+    // Four thousand numbers: a hundred points of every device's hundred-odd numbers
+    // overflow them, and a thousand points of the three unknowns alone fit.
+    let memory = 4000.0 / 134_217_728.0;
+    let every = Options {
+        transient_memory: memory,
+        record: Record::All,
+        ..Options::default()
+    };
+    let error = simulator.transient(&pulse(), &every).unwrap_err();
+    assert!(
+        matches!(error, jolty_engine::SimulationError::TooManyPoints { time, .. } if time == 0.0),
+        "{error}"
+    );
+    let unknowns = Options {
+        transient_memory: memory,
+        ..Options::default()
+    };
+    let waveforms = simulator.transient(&pulse(), &unknowns).unwrap();
+    assert!(waveforms.times.len() > 100);
 }

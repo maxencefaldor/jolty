@@ -59,9 +59,10 @@ pub struct Waveforms {
     pub times: Vec<f64>,
     /// The value of every unknown at each time.
     pub values: Vec<Vec<f64>>,
-    /// What every device did at each time: the current into each terminal and the charge it
-    /// holds, its derivatives and its variables. A current includes its charge's
-    /// derivative, by the step's integration formula.
+    /// What the devices its options record did at each time: the current into each
+    /// recorded terminal and the charge it holds, and the recorded devices' derivatives and
+    /// variables. A current includes its charge's derivative, by the step's integration
+    /// formula.
     pub observations: Observations,
     /// Each logic net's changes: its level at time zero, then each time it changes, in
     /// seconds, and its new level.
@@ -431,12 +432,11 @@ impl Simulator {
         }
     }
 
-    /// The numbers each point of a transient's results holds: the unknowns, and every
-    /// device's currents, charges, derivatives and variables.
-    fn point_width(&self) -> f64 {
-        let width = self.system.unknowns.len()
-            + 2 * (self.observer.names().len() + self.observer.derivatives().len())
-            + self.observer.variables().len();
+    /// The numbers each point of a transient's results holds: the unknowns, and the
+    /// recorded terminals' currents and charges and the recorded devices' derivatives and
+    /// variables.
+    pub(crate) fn point_width(&self) -> f64 {
+        let width = self.system.unknowns.len() + self.observer.width();
         f64::from(u32::try_from(width).unwrap_or(u32::MAX))
     }
 
@@ -450,7 +450,7 @@ impl Simulator {
         start: Option<(Vec<f64>, Strategy)>,
         mut carried: Carried<'_>,
     ) -> Result<Waveforms, SimulationError> {
-        options.check()?;
+        self.prepare(options)?;
         let longest = self.longest_step(transient)?;
         let shortest = longest * SMALLEST_STEP_FRACTION;
         let width = self.point_width();

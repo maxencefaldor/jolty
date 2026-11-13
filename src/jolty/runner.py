@@ -32,6 +32,7 @@ from collections import deque
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Final, Literal, override
 
@@ -217,7 +218,7 @@ def _run(job: Job, directory: Path) -> Built:
         except ElaborationError as error:
             return Built(circuit=built, problems=error.problems)
     outside: list[fidelity.Outside] = []
-    solved, reports = _analyses(simulation, plan, job.listed, outside)
+    solved, reports = _analyses(simulation, plan, job.listed, outside, recorded=True)
     at_point = (
         _at_operating_point(simulation, plan) + simulation.check_results(solved)
         if job.check
@@ -651,16 +652,22 @@ def _analyses(
     plan: Plan,
     listed: int,
     outside: list[fidelity.Outside] | None = None,
+    *,
+    recorded: bool = False,
 ) -> tuple[dict[str, Result], tuple[report.AnalysisReport, ...]]:
     """The results of the analyses of `plan` that end, by name, and a report on each.
 
-    Each analysis's excursions outside its logic devices' domains join `outside`.
+    Each analysis's excursions outside its logic devices' domains join `outside`. The
+    results keep what the plan's options record when they are `recorded`, as the plan's
+    own run's are, which are saved and checked, and the unknowns alone otherwise, as a
+    corner's, a sample's and a spot check's are, which only specs and contracts read.
     """
+    options = plan.options if recorded else replace(plan.options, record=())
     solved: dict[str, Result] = {}
     reports: list[report.AnalysisReport] = []
     for name, analysis in plan.analyses.items():
         try:
-            result = simulation.run(analysis, plan.options)
+            result = simulation.run(analysis, options)
         except JoltyError as error:
             reports.append(report.FailureReport(name=name, error=str(error)))
         else:

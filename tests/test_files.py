@@ -1,8 +1,8 @@
 # Copyright 2026 Maxence Faldor
 
 import dataclasses
+import json
 from pathlib import Path
-from typing import TypedDict
 
 import numpy as np
 import pytest
@@ -21,24 +21,18 @@ from jolty.units import V, kohm
 UNKNOWNS = (results.Unknown("out", "voltage"), results.Unknown("V1:current", "current"))
 STATISTICS = results.Statistics(initial="direct", accepted=2, rejected=1, iterations=7)
 PARAMETER = results.Parameter("X1/R1", "resistance", 1e3)
-TERMINALS = ("C1.a", "C1.b")
-
-
-class Names(TypedDict):
-    """The names of a result's device columns."""
-
-    terminals: tuple[str, ...]
-    composites: results.Composites
-    derivatives: tuple[tuple[str, str], ...]
-    variables: tuple[tuple[str, str], ...]
-
-
-NAMES = Names(
-    terminals=TERMINALS,
-    composites=(("X1.p", (0, 1)),),
-    derivatives=(("C1.a", "C1.a"), ("C1.a", "C1.b")),
-    variables=(("M1", "threshold_voltage"),),
+RECORDING = results.Recording(
+    (
+        results.RecordedDevice("C1", ("a", "b")),
+        results.RecordedDevice(
+            "M1", ("drain",), ("M1:drain",), variables=("threshold_voltage",)
+        ),
+    ),
+    ("X1.p",),
+    frozenset({"M1.drain"}),
 )
+"""Two devices recorded, their terminals then a port in four columns of currents,
+their derivatives in eight, and a variable."""
 
 
 def every_kind() -> dict[str, results.Result]:
@@ -46,12 +40,12 @@ def every_kind() -> dict[str, results.Result]:
         UNKNOWNS,
         np.array([1.0, -1e-3]),
         "gmin_stepping",
-        currents=np.array([1e-3, -1e-3]),
-        charges=np.array([1e-12, -1e-12]),
-        conductances=np.array([0.0, 0.0]),
-        capacitances=np.array([1e-12, -1e-12]),
+        recording=RECORDING,
+        currents=np.array([1e-3, -1e-3, 0.0, 0.0]),
+        charges=np.array([1e-12, -1e-12, 0.0, 0.0]),
+        conductances=np.zeros(8),
+        capacitances=np.array([1e-12, -1e-12, -1e-12, 1e-12, 0.0, 0.0, 0.0, 0.0]),
         readings=np.array([0.7]),
-        **NAMES,
     )
     return {
         "op": point,
@@ -61,12 +55,12 @@ def every_kind() -> dict[str, results.Result]:
             "voltage",
             np.array([0.0, 1.0]),
             np.eye(2),
-            currents=np.eye(2),
-            charges=np.zeros((2, 2)),
-            conductances=np.zeros((2, 2)),
-            capacitances=np.zeros((2, 2)),
+            recording=RECORDING,
+            currents=np.eye(2, 4),
+            charges=np.zeros((2, 4)),
+            conductances=np.zeros((2, 8)),
+            capacitances=np.zeros((2, 8)),
             readings=np.zeros((2, 1)),
-            **NAMES,
         ),
         "bode": results.Response(
             UNKNOWNS,
@@ -74,21 +68,20 @@ def every_kind() -> dict[str, results.Result]:
             np.array([1e3]),
             np.array([[0.5 - 0.5j, 1j]]),
             point,
-            TERMINALS,
-            np.array([[1j, -1j]]),
-            NAMES["composites"],
+            RECORDING,
+            np.array([[1j, -1j, 0, 0]]),
         ),
         "step": results.Waveforms(
             UNKNOWNS,
             np.array([0.0, 1e-6]),
             np.ones((2, 2)),
             STATISTICS,
-            currents=np.ones((2, 2)),
-            charges=np.ones((2, 2)),
-            conductances=np.zeros((2, 2)),
-            capacitances=np.ones((2, 2)),
+            recording=RECORDING,
+            currents=np.array([[1.0, 1.0, 1.0, 2.0], [1.0, 1.0, 1.0, 2.0]]),
+            charges=np.ones((2, 4)),
+            conductances=np.zeros((2, 8)),
+            capacitances=np.ones((2, 8)),
             readings=np.ones((2, 1)),
-            **NAMES,
         ),
         "sensitivity": results.Sensitivities(
             UNKNOWNS,
@@ -103,7 +96,7 @@ def every_kind() -> dict[str, results.Result]:
             (PARAMETER,),
             np.array([[[0.0]], [[1.0]]]),
             results.Waveforms(
-                UNKNOWNS, np.array([0.0, 1e-6]), np.ones((2, 2)), STATISTICS, **NAMES
+                UNKNOWNS, np.array([0.0, 1e-6]), np.ones((2, 2)), STATISTICS
             ),
         ),
         "loop": results.LoopGain(
@@ -154,6 +147,8 @@ def assert_same(loaded: object, written: object, where: str) -> None:
     assert type(loaded) is type(written), where
     if dataclasses.is_dataclass(written):
         for field in dataclasses.fields(written):
+            if not field.compare:
+                continue
             assert_same(
                 getattr(loaded, field.name),
                 getattr(written, field.name),
@@ -188,7 +183,9 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     assert op.charge("C1", "b") == -1e-12
     assert op.current("X1", "p") == 0
     assert op.capacitance("C1.a", "C1.b") == -1e-12
+    assert op.conductance("M1:drain", "M1.drain") == 0
     assert op.variable("M1", "threshold_voltage") == 0.7
+    assert op.recording.thermal == {"M1.drain"}
     bode = read["bode"]
     assert isinstance(bode, results.Response)
     np.testing.assert_array_equal(bode.current("C1", "b"), [-1j])
@@ -256,3 +253,32 @@ def test_circuit_files_round_trip(tmp_path: Path) -> None:
     save_circuit(path, written)
     assert load_circuit(path) == written
     assert results_path(tmp_path / "load.py").name == "load.results.npz"
+
+
+def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
+    path = tmp_path / "bench.results.npz"
+    save_results(path, every_kind())
+    with np.load(path) as data:
+        header = json.loads(str(data["header"]))
+    assert header["version"] == 3
+    # Every result recorded RECORDING but the transient a sensitivity differentiates.
+    assert len(header["recordings"]) == 2
+    assert header["recordings"][0]["devices"][1] == {
+        "path": "M1",
+        "terminals": ["drain"],
+        "internals": ["M1:drain"],
+        "variables": ["threshold_voltage"],
+    }
+    read = load_results(path)
+    first, second = read["op"], read["step"]
+    assert isinstance(first, results.OperatingPoint)
+    assert isinstance(second, results.Waveforms)
+    assert first.recording is second.recording
+
+
+def test_a_results_file_of_an_earlier_format_says_so(tmp_path: Path) -> None:
+    path = tmp_path / "old.results.npz"
+    header = {"format": "jolty-results", "version": 2, "unknowns": [], "analyses": {}}
+    np.savez(path, header=np.array(json.dumps(header)))
+    with pytest.raises(JoltyError, match="version 2 of the format, which jolty reads"):
+        load_results(path)

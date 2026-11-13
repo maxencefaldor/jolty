@@ -90,11 +90,15 @@ integrated_noise, and PoleZero(source=None, output=None, reference=None): the po
 the linearized circuit, and the zeros of the transfer function from source to output,
 read with jolty.specs.damping and dominant_pole. Unknowns
 are named by path: a net such as out or stage/mid, and the current through a source or
-inductor such as V1:current. Every result holds the current into every terminal of every
-device and the charge it holds, read with current(instance, terminal) and
-charge(instance, terminal), such as current("X1/R1", "a"); Transient(stop, times=[...])
-steps onto the given times exactly, and Transient(period, periodic=True) simulates one
-period of the periodic steady state, found by shooting.
+inductor such as V1:current. A result records the instances its options name, as
+Plan(..., options=Options(record=["X1/R1", "X2"])) does, or every instance, as
+Options(record=["**"]) does: the current into each terminal and the charge it holds,
+read with current(instance, terminal) and charge(instance, terminal), such as
+current("X1/R1", "a"), a component instance's terminals summing the devices' behind
+them, and each device's conductances and variables. By default it records the
+instances rated for a current or a power. Transient(stop, times=[...]) steps onto the
+given times exactly, and Transient(period, periodic=True) simulates one period of the
+periodic steady state, found by shooting.
 """
 
 READS_FILES: Final = ToolAnnotations(read_only_hint=True, open_world_hint=False)

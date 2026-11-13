@@ -10,6 +10,9 @@ uv run jolty view examples/common_emitter.jolty.json --results examples/common_e
 The page, `<script>.view.html` beside the circuit, opens in any browser and loads three.js from jsDelivr.
 Every example of the [gallery](../gallery.md) opens in one.
 
+The viewer plays what the results [recorded](results.md#what-a-result-records): every net's voltage, and the currents, charges, variables and conductances of the instances the plan records, by default those rated for a current or a power.
+A plan that records every instance, with `options=Options(record=["**"])`, lights every lead.
+
 ## The board
 
 The board lays out one component at a time, as its [schematic](schematics.md) does: each device a part standing on its pins, each wire a copper trace, each ground or supply pin a post, and each port a flag at the edge.

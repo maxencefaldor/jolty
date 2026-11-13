@@ -38,7 +38,7 @@ The circuit is written as a [SPICE netlist](spice.md#writing-spice), each transi
 ngspice reads the whole library, which takes seconds, before each analysis.
 
 Its results are jolty's: reports, plots, specs and corners read them as they read the engine's.
-They hold the circuit's nets and the currents of its sources and inductors, as jolty names them; a device's own unknowns and its terminals' currents ngspice keeps to itself, so a rating of a current or a power goes unjudged, and an operating point is found by `ngspice`.
+They hold the circuit's nets and the currents of its sources and inductors, as jolty names them; a device's own unknowns and its terminals' currents ngspice keeps to itself, whatever the options [record](results.md#what-a-result-records), so a rating of a current or a power goes unjudged, and an operating point is found by `ngspice`.
 
 An operating point, a DC sweep in even steps, a small-signal response, a transient and the noise at a voltage run this way.
 A transient takes the steps ngspice chooses, and lands on the times its analysis names only where they fall.

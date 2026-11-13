@@ -1,9 +1,46 @@
+use std::collections::BTreeSet;
+
 use jolty_models::Quantity;
 use serde::Deserialize;
 
 use crate::SimulationError;
 
-/// The numerical settings of a simulation: tolerances and iteration limits.
+/// What an analysis records of the circuit's devices beside the unknowns: the current into
+/// each terminal and the charge it holds, and each device's derivatives and variables.
+///
+/// In JSON, every instance is the string `"all"`, and some instances an object with one
+/// key, such as `{"instances": ["M1", "X1"]}`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Record {
+    /// Every device, and the terminals of every component instance and logic device.
+    All,
+    /// The devices at these paths, such as `X1/M1`, and the terminals of the component
+    /// instances and logic devices at them, such as `X1`'s ports; a path that names none
+    /// records nothing.
+    Instances(BTreeSet<String>),
+}
+
+impl Default for Record {
+    /// Nothing beyond the unknowns.
+    fn default() -> Self {
+        Self::Instances(BTreeSet::new())
+    }
+}
+
+impl Record {
+    /// Whether the record names the device or the component instance at `path`.
+    #[must_use]
+    pub fn names(&self, path: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Instances(paths) => paths.contains(path),
+        }
+    }
+}
+
+/// The numerical settings of a simulation: tolerances and iteration limits, and what its
+/// results record.
 ///
 /// The defaults are SPICE's, so results compare with SPICE simulators run at their defaults.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -27,9 +64,11 @@ pub struct Options {
     /// is rejected; default 7, which accounts for the estimate's pessimism.
     pub truncation_tolerance: f64,
     /// The gibibytes of numbers a transient's results may hold, every unknown's and every
-    /// device's at each point, before it stops: a transient whose steps shrink to a crawl
-    /// fails instead of filling the memory; default 2.
+    /// recorded device's at each point, before it stops: a transient whose steps shrink to
+    /// a crawl fails instead of filling the memory; default 2.
     pub transient_memory: f64,
+    /// What the results record of the devices beside the unknowns; by default nothing.
+    pub record: Record,
 }
 
 impl Default for Options {
@@ -44,6 +83,7 @@ impl Default for Options {
             transient_iterations: 10,
             truncation_tolerance: 7.0,
             transient_memory: 2.0,
+            record: Record::default(),
         }
     }
 }

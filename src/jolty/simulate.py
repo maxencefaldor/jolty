@@ -21,10 +21,12 @@ Examples:
     2.5
 """
 
+import functools
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, overload
+from pathlib import PurePosixPath
+from typing import Final, Literal, overload
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
@@ -69,6 +71,21 @@ def kelvins(temperature: Quantity | None) -> float:
     return temperature.to(TEMPERATURE, "a temperature")
 
 
+_WILDCARDS: Final = frozenset("*?[")
+"""The characters that make a recorded path a pattern."""
+
+
+@dataclass(frozen=True, slots=True)
+class Joined:
+    """Where a terminal of a device, a component instance or a logic device joins."""
+
+    node: str | None
+    """The unknown that is its voltage, by name; None on the ground."""
+    thermal: bool
+    """Whether it is thermal: its voltage a temperature above the ambient, and its
+    current the heat flowing into it."""
+
+
 class Excursion(BaseModel):
     """A logic device used outside its domain, where its timing was never measured."""
 
@@ -90,6 +107,10 @@ class Excursion(BaseModel):
 class Simulation:
     """A circuit elaborated once, ready to run any number of analyses.
 
+    Each result holds the circuit's unknowns, and what the analysis's options record of
+    its devices and component instances: their names are made only for what a result
+    records, and its devices are made again to be read only once a result records them.
+
     The engine solves no foundry's device, such as a SKY130 transistor, so ngspice runs
     the analyses of a circuit that holds one, with its kit's models, as
     [`foundry`][jolty.foundry] describes.
@@ -103,35 +124,6 @@ class Simulation:
 
     nets: tuple[str, ...]
     """The logic nets the event scheduler simulates, in its order."""
-
-    terminals: tuple[str, ...]
-    """Every terminal of every device, such as ``X1/R1.a``, in the order of every
-    result's currents and charges."""
-
-    terminal_nodes: tuple[str | None, ...]
-    """The unknown that is each terminal's voltage, by name, in the order of
-    `terminals`, or None for a terminal on the ground."""
-
-    thermal: frozenset[str]
-    """The thermal terminals of devices, component instances and logic devices, such
-    as ``Q1.thermal``: each one's voltage is a temperature above the ambient, and its
-    current the heat flowing into it."""
-
-    composites: results.Composites
-    """Each terminal of a component instance or a logic device, such as ``X1.vdd``, with
-    the indices of the device terminals whose currents and charges sum to its own."""
-
-    composite_nodes: tuple[str | None, ...]
-    """The unknown that is each composite terminal's voltage, by name, in the order of
-    `composites`, or None for one on the ground."""
-
-    derivatives: tuple[tuple[str, str], ...]
-    """For each device, every pair of its terminals and internal unknowns, its equation
-    then its unknown, in the order of every result's conductances and capacitances."""
-
-    variables: tuple[tuple[str, str], ...]
-    """Every variable of every device, its path and its name, in the order of every
-    result's readings."""
 
     devices: int
     """The number of devices, with every component instance unfolded."""
@@ -179,6 +171,9 @@ class Simulation:
             if isinstance(circuit_or_top, ir.Circuit)
             else circuit(circuit_or_top)
         )
+        self._substituted = frozenset(substitutes or {})
+        self._recordings: dict[str, results.Recording] = {}
+        self._records: dict[tuple[str, ...], JsonValue] = {}
         try:
             stand_ins = {
                 path: {"model": device.model, "parameters": device.parameters}
@@ -197,23 +192,6 @@ class Simulation:
             results.Unknown(name, quantity) for name, quantity in self._core.unknowns
         )
         self.nets = tuple(self._core.nets)
-        self.terminals = tuple(self._core.terminals)
-        self.terminal_nodes = tuple(self._core.terminal_nodes)
-        self.composites = tuple(
-            (name, tuple(members)) for name, members in self._core.composites
-        )
-        self.composite_nodes = tuple(self._core.composite_nodes)
-        named = (*self.terminals, *(name for name, _ in self.composites))
-        heats = (*self._core.thermal_terminals, *self._core.thermal_composites)
-        self.thermal = frozenset(
-            name for name, thermal in zip(named, heats, strict=True) if thermal
-        )
-        self.derivatives = tuple(
-            (equation, unknown) for equation, unknown in self._core.derivatives
-        )
-        self.variables = tuple(
-            (instance, name) for instance, name in self._core.variables
-        )
         self.devices = self._core.devices
         self.excursions = ()
         self.foundry = tuple(self._core.foundry_devices)
@@ -229,6 +207,24 @@ class Simulation:
             {path: dict(replaced) for path, replaced in (overrides or {}).items()},
             mismatch,
         )
+
+    @functools.cached_property
+    def instances(self) -> tuple[str, ...]:
+        """Every path a record can name, in the engine's order.
+
+        Each device's comes first, such as ``X1/R1``, then each component instance's
+        and logic device's whose terminals the engine sums, such as ``X1``.
+        """
+        return tuple(self._core.instances)
+
+    def joined(self, instance: str, terminal: str) -> Joined | None:
+        """Where `terminal` of the device, component instance or logic device joins.
+
+        The instance is named by its path, such as ``X1/R1``. None when it has no such
+        terminal on an electrical or a thermal net.
+        """
+        found = self._core.terminal(instance, terminal)
+        return None if found is None else Joined(*found)
 
     def check(self) -> tuple[checks.Diagnostic, ...]:
         """Every diagnostic the structural checks find, at its rule's default level."""
@@ -263,22 +259,19 @@ class Simulation:
         Each stability analysis's loop is held to its usual margins, as
         [`specs.diagnose`][jolty.specs.diagnose] holds it, and the ratings of each
         device and component instance to every operating point and transient, at the
-        furthest point of each.
+        furthest point of each. A rating of a current or a power is held where the
+        result recorded the instance's terminals, as it does by default.
         """
         found = list(specs.diagnose(solved))
-        reached = self._reached()
+        joined = functools.cache(self.joined)
         rated = [
             (path, instance, rating)
-            for path, instance in _instances(self.circuit, self.circuit.top, "")
-            if any(f"{path}.{terminal}" in reached for terminal in instance.terminals)
+            for path, instance in _rated(self.circuit, self._substituted)
+            if any(
+                joined(path, terminal) is not None for terminal in instance.terminals
+            )
             for rating in instance.ratings
         ]
-        electrical = {
-            terminal: reached[terminal]
-            for terminal in reached
-            if terminal not in self.thermal
-        }
-        thermal = {terminal: reached[terminal][0] for terminal in self.thermal}
         for name, result in solved.items():
             match result:
                 case results.OperatingPoint():
@@ -297,14 +290,13 @@ class Simulation:
                 unknown.name: column for column, unknown in enumerate(result.unknowns)
             }
             at = _Terminals(
-                electrical,
-                thermal,
+                joined,
                 self.conditions.temperature,
                 self.conditions.overrides,
                 columns,
                 values,
                 currents,
-                len(self.terminals),
+                result.recording,
             )
             for path, instance, rating in rated:
                 stress = at.stress(path, instance, rating)
@@ -312,25 +304,6 @@ class Simulation:
                     judged = Stressed(name, path, instance, rating, stress, times)
                     found.extend(judged.diagnostics())
         return tuple(found)
-
-    def _reached(self) -> dict[str, tuple[str | None, tuple[int, ...]]]:
-        """Each terminal on an electrical or a thermal net, such as ``X1.vdd``.
-
-        A terminal is of a device, a component instance or a logic device, and maps to
-        the unknown that is its voltage, None on the ground, and the columns of the
-        currents that sum to its own.
-        """
-        reached: dict[str, tuple[str | None, tuple[int, ...]]] = {
-            terminal: (node, (column,))
-            for column, (terminal, node) in enumerate(
-                zip(self.terminals, self.terminal_nodes, strict=True)
-            )
-        }
-        for (composite, members), node in zip(
-            self.composites, self.composite_nodes, strict=True
-        ):
-            reached[composite] = (node, members)
-        return reached
 
     @overload
     def run(
@@ -369,8 +342,12 @@ class Simulation:
     def run(self, analysis: Analysis, options: Options | None = None) -> results.Result:
         """Runs `analysis` with `options`, or with the engine's defaults.
 
+        The result records the instances the options' ``record`` names, or by default
+        those its ratings read (see [`Options`][jolty.plan.Options]).
+
         Raises:
-            SimulationError: When the analysis fails, saying why.
+            SimulationError: When the analysis fails, saying why, or the record names
+                an instance the circuit does not have.
         """
         chosen = Options() if options is None else options
         if self.foundry:
@@ -379,7 +356,9 @@ class Simulation:
                 self.circuit, analysis, chosen, self.conditions, self.unknowns
             )
         encoded = json.dumps(self._encode(analysis), allow_nan=False)
-        settings = json.dumps(chosen.to_json(), allow_nan=False)
+        record = self._record(analysis, chosen.record)
+        settings = json.dumps({**chosen.to_json(), "record": record}, allow_nan=False)
+        recording = self._recording(json.dumps(record))
         try:
             outcome = self._core.run(encoded, settings)
         except _core.SimulationError as error:
@@ -388,7 +367,7 @@ class Simulation:
             self.excursions = tuple(
                 Excursion.model_validate(found) for found in self._core.excursions()
             )
-        return self._result(outcome)
+        return self._result(outcome, recording)
 
     def run_plan(self, plan: Plan) -> dict[str, results.Result]:
         """Runs every analysis of `plan`, by name, with its options.
@@ -410,6 +389,105 @@ class Simulation:
             for name, analysis in plan.analyses.items()
         }
 
+    def _record(self, analysis: Analysis, record: Sequence[str] | None) -> JsonValue:
+        """What `analysis` records, in the engine's format.
+
+        It records what `record` names or, by default, at an operating point and in a
+        transient, the instances rated for a current or a power, whose currents the
+        checks of ratings read.
+
+        Raises:
+            SimulationError: When the record names an instance the circuit does not
+                have, or holds a pattern that matches none.
+        """
+        if record is None:
+            reads = isinstance(analysis, OperatingPoint | Transient)
+            rated: list[JsonValue] = list(self._rated) if reads else []
+            return {"instances": rated}
+        named = tuple(record)
+        found = self._records.get(named)
+        if found is None:
+            found = self._resolve(named)
+            self._records[named] = found
+        return found
+
+    def _resolve(self, record: tuple[str, ...]) -> JsonValue:
+        """The instances `record` names, in the engine's format.
+
+        Raises:
+            SimulationError: When the record names an instance the circuit does not
+                have, or holds a pattern that matches none.
+        """
+        if "**" in record:
+            return "all"
+        named: set[str] = set()
+        for pattern in record:
+            if _WILDCARDS.isdisjoint(pattern):
+                if pattern not in self._known:
+                    hint = results.close_names(self.instances, pattern)
+                    message = (
+                        f"the circuit has no instance named {pattern!r} to record{hint}"
+                    )
+                    raise SimulationError(message)
+                named.add(pattern)
+                continue
+            matched = {
+                path
+                for path in self.instances
+                if PurePosixPath(path).full_match(pattern)
+            }
+            if not matched:
+                message = f"the record's pattern {pattern!r} matches no instance"
+                raise SimulationError(message)
+            named |= matched
+        paths: list[JsonValue] = [*sorted(named)]
+        return {"instances": paths}
+
+    @functools.cached_property
+    def _known(self) -> frozenset[str]:
+        """Every path a record can name."""
+        return frozenset(self.instances)
+
+    @functools.cached_property
+    def _rated(self) -> tuple[str, ...]:
+        """The paths of the instances rated for a current or a power."""
+        return tuple(
+            path
+            for path, instance in _rated(self.circuit, self._substituted)
+            if any(rating.stress in {"current", "power"} for rating in instance.ratings)
+        )
+
+    def _recording(self, record: str) -> results.Recording:
+        """What the record whose JSON text is `record` keeps, made once each."""
+        found = self._recordings.get(record)
+        if found is not None:
+            return found
+        devices, composites = self._core.recording(record)
+        thermal = {name for name, heat in composites if heat}
+        recorded = []
+        for path, terminals, heats, first, count, variables in devices:
+            thermal.update(
+                f"{path}.{terminal}"
+                for terminal, heat in zip(terminals, heats, strict=True)
+                if heat
+            )
+            internals = self.unknowns[first : first + count]
+            recorded.append(
+                results.RecordedDevice(
+                    path,
+                    tuple(terminals),
+                    tuple(unknown.name for unknown in internals),
+                    tuple(variables),
+                )
+            )
+        found = results.Recording(
+            tuple(recorded),
+            tuple(name for name, _ in composites),
+            frozenset(thermal),
+        )
+        self._recordings[record] = found
+        return found
+
     def _encode(self, analysis: Analysis) -> JsonValue:
         match analysis:
             case DcSweep():
@@ -430,13 +508,18 @@ class Simulation:
         # Not an independent source: the engine reports it, whatever the levels.
         return sweep.levels[0].dimension
 
-    def _result(self, outcome: _core.Outcome) -> results.Result:
+    def _result(
+        self, outcome: _core.Outcome, recording: results.Recording
+    ) -> results.Result:
+        """The result of `outcome`, which recorded what `recording` says."""
         unknowns, nets = self.unknowns, self.nets
         match outcome["kind"]:
             case "operating_point":
-                return self._point(outcome)
+                return self._point(outcome, recording)
             case "operating_points":
-                points = tuple(self._point(point) for point in outcome["points"])
+                points = tuple(
+                    self._point(point, recording) for point in outcome["points"]
+                )
                 return results.OperatingPoints(unknowns, points)
             case "dc_sweep":
                 return results.Sweep(
@@ -447,7 +530,7 @@ class Simulation:
                     outcome["values"],
                     nets,
                     outcome["logic"],
-                    **self._observed(outcome),
+                    **_observed(outcome, recording),
                 )
             case "ac":
                 return results.Response(
@@ -455,11 +538,9 @@ class Simulation:
                     outcome["source"],
                     outcome["frequencies"],
                     outcome["values"],
-                    self._point(outcome["operating_point"]),
-                    terminals=self.terminals,
+                    self._point(outcome["operating_point"], recording),
+                    recording=recording,
                     currents=outcome["currents"],
-                    composites=self.composites,
-                    thermal=self.thermal,
                 )
             case "transient":
                 statistics = results.Statistics(**outcome["statistics"])
@@ -473,10 +554,10 @@ class Simulation:
                     statistics,
                     nets,
                     traces,
-                    **self._observed(outcome),
+                    **_observed(outcome, recording),
                 )
             case _:
-                return self._linear(outcome)
+                return self._linear(outcome, recording)
 
     def _linear(
         self,
@@ -484,6 +565,7 @@ class Simulation:
         | _core.StabilityOutcome
         | _core.NoiseOutcome
         | _core.PoleZeroOutcome,
+        recording: results.Recording,
     ) -> results.Result:
         """The result of sensitivities, a loop gain, a noise spectrum or poles."""
         unknowns = self.unknowns
@@ -495,7 +577,7 @@ class Simulation:
                         outcome["parameters"], outcome["values"], strict=True
                     )
                 )
-                differentiated = self._result(outcome["result"])
+                differentiated = self._result(outcome["result"], recording)
                 if not isinstance(
                     differentiated,
                     results.OperatingPoint
@@ -521,7 +603,7 @@ class Simulation:
                     outcome["probe"],
                     outcome["frequencies"],
                     outcome["gains"],
-                    self._point(outcome["operating_point"]),
+                    self._point(outcome["operating_point"], recording),
                 )
             case "noise":
                 found = outcome["input"]
@@ -543,7 +625,7 @@ class Simulation:
                     ),
                     outcome["contributions"],
                     noise_input,
-                    self._point(outcome["operating_point"]),
+                    self._point(outcome["operating_point"], recording),
                 )
             case "pole_zero":
                 return results.PolesZeros(
@@ -553,33 +635,34 @@ class Simulation:
                     outcome["source"],
                     outcome["output"],
                     outcome["reference"],
-                    self._point(outcome["operating_point"]),
+                    self._point(outcome["operating_point"], recording),
                 )
 
-    def _point(self, solved: _core.SolvedPoint) -> results.OperatingPoint:
+    def _point(
+        self, solved: _core.SolvedPoint, recording: results.Recording
+    ) -> results.OperatingPoint:
         return results.OperatingPoint(
             self.unknowns,
             solved["values"],
             solved["strategy"],
             self.nets,
             solved["logic"],
-            **self._observed(solved),
+            **_observed(solved, recording),
         )
 
-    def _observed(self, outcome: _core.Observed) -> results.Observed:
-        """What every device did in `outcome`, as a result's fields."""
-        return {
-            "terminals": self.terminals,
-            "currents": outcome["currents"],
-            "charges": outcome["charges"],
-            "composites": self.composites,
-            "thermal": self.thermal,
-            "derivatives": self.derivatives,
-            "conductances": outcome["conductances"],
-            "capacitances": outcome["capacitances"],
-            "variables": self.variables,
-            "readings": outcome["variables"],
-        }
+
+def _observed(
+    outcome: _core.Observed, recording: results.Recording
+) -> results.Observed:
+    """What the devices `recording` names did in `outcome`, as a result's fields."""
+    return {
+        "recording": recording,
+        "currents": outcome["currents"],
+        "charges": outcome["charges"],
+        "conductances": outcome["conductances"],
+        "capacitances": outcome["capacitances"],
+        "readings": outcome["variables"],
+    }
 
 
 _UNITS: dict[ir.Stress, str] = {
@@ -590,15 +673,43 @@ _UNITS: dict[ir.Stress, str] = {
 }
 
 
-def _instances(
-    circuit: ir.Circuit, component: str, prefix: str
+def _rated(
+    circuit: ir.Circuit, substituted: Collection[str]
 ) -> Iterator[tuple[str, ir.Instance]]:
-    """Every instance within `component`, by path, each before those it places."""
-    for instance in circuit.components[component].instances:
-        path = f"{prefix}{instance.id}"
-        yield path, instance
-        if isinstance(instance.of, ir.ComponentOf):
-            yield from _instances(circuit, instance.of.component, f"{path}/")
+    """Every rated instance of `circuit`, by path, each before those it places.
+
+    The walk skips the inside of each component instance whose path is among
+    `substituted`, a model standing in for it, and of each component that holds no
+    rated instance.
+    """
+    holds: dict[str, bool] = {}
+
+    def holding(component: str) -> bool:
+        """Whether `component` holds a rated instance, at any depth."""
+        if component not in holds:
+            holds[component] = any(
+                instance.ratings
+                or (
+                    isinstance(instance.of, ir.ComponentOf)
+                    and holding(instance.of.component)
+                )
+                for instance in circuit.components[component].instances
+            )
+        return holds[component]
+
+    def walk(component: str, prefix: str) -> Iterator[tuple[str, ir.Instance]]:
+        for instance in circuit.components[component].instances:
+            path = f"{prefix}{instance.id}"
+            if instance.ratings:
+                yield path, instance
+            if (
+                isinstance(instance.of, ir.ComponentOf)
+                and path not in substituted
+                and holding(instance.of.component)
+            ):
+                yield from walk(instance.of.component, f"{path}/")
+
+    yield from walk(circuit.top, "")
 
 
 def _own(ambient: float, parameters: Mapping[str, JsonValue]) -> float:
@@ -618,10 +729,8 @@ def _own(ambient: float, parameters: Mapping[str, JsonValue]) -> float:
 class _Terminals:
     """The voltage at and the current into each reached terminal, over a result."""
 
-    reached: Mapping[str, tuple[str | None, tuple[int, ...]]]
-    """Each terminal on an electrical net, as `Simulation._reached` maps it."""
-    thermal: Mapping[str, str | None]
-    """The unknown that is each thermal terminal's temperature, None on the ground."""
+    joined: Callable[[str, str], Joined | None]
+    """Where each terminal of an instance joins, by the instance's path and its name."""
     ambient: float
     """The simulation's temperature, in kelvins, which instances run at but those with
     temperatures of their own."""
@@ -631,9 +740,8 @@ class _Terminals:
     """The column of each unknown's values, by name."""
     values: results.Real
     currents: results.Real
-    terminals: int
-    """The number of device terminals, which the currents have a column each for, if
-    the result holds them."""
+    recording: results.Recording
+    """What the result recorded, and where its currents hold each terminal's."""
 
     def stress(
         self, path: str, instance: ir.Instance, rating: ir.Rating
@@ -641,7 +749,7 @@ class _Terminals:
         """The stress `rating` limits on the instance at `path`, at each point.
 
         There is none when a rated terminal is on a logic or a thermal net, or the
-        result holds no currents and the stress needs them.
+        result recorded no current into it and the stress needs one.
         """
         if rating.stress == "temperature":
             replaced = {**instance.parameters, **self.overrides.get(path, {})}
@@ -649,25 +757,32 @@ class _Terminals:
         named = rating.terminals or tuple(
             terminal
             for terminal in instance.terminals
-            if f"{path}.{terminal}" in self.reached
+            if self._electrical(path, terminal)
         )
-        if any(f"{path}.{terminal}" not in self.reached for terminal in named):
+        if not all(self._electrical(path, terminal) for terminal in named):
             return None
         if rating.stress == "voltage":
             first, second = named
             return self._voltage(path, first) - self._voltage(path, second)
-        if self.currents.shape[1] != self.terminals:
+        columns = [self.recording.find(path, terminal) for terminal in named]
+        if None in columns:
             return None
+        currents = [self.currents[:, column] for column in columns]
         if rating.stress == "current":
-            (terminal,) = named
-            return self._current(path, terminal)
+            (current,) = currents
+            return current
         return sum(
             (
-                self._voltage(path, terminal) * self._current(path, terminal)
-                for terminal in named
+                self._voltage(path, terminal) * current
+                for terminal, current in zip(named, currents, strict=True)
             ),
             start=np.zeros(self.values.shape[0]),
         )
+
+    def _electrical(self, path: str, terminal: str) -> bool:
+        """Whether `terminal` of the instance at `path` is on an electrical net."""
+        found = self.joined(path, terminal)
+        return found is not None and not found.thermal
 
     def _rise(self, path: str) -> results.Real:
         """The temperature above the ambient of the instance at `path`.
@@ -675,20 +790,16 @@ class _Terminals:
         It is that of the thermal net its terminal ``thermal`` joins, or none where it
         has no such terminal or the terminal is on the ground.
         """
-        node = self.thermal.get(f"{path}.thermal")
-        if node is None:
+        found = self.joined(path, "thermal")
+        if found is None or not found.thermal or found.node is None:
             return np.zeros(self.values.shape[0])
-        return self.values[:, self.columns[node]]
+        return self.values[:, self.columns[found.node]]
 
     def _voltage(self, path: str, terminal: str) -> results.Real:
-        node, _ = self.reached[f"{path}.{terminal}"]
-        if node is None:
+        found = self.joined(path, terminal)
+        if found is None or found.node is None:
             return np.zeros(self.values.shape[0])
-        return self.values[:, self.columns[node]]
-
-    def _current(self, path: str, terminal: str) -> results.Real:
-        _, columns = self.reached[f"{path}.{terminal}"]
-        return self.currents[:, list(columns)].sum(axis=1)
+        return self.values[:, self.columns[found.node]]
 
 
 @dataclass(frozen=True, slots=True)

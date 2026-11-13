@@ -56,21 +56,22 @@ mod sweep;
 mod transient;
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use jolty_ir::{Circuit, Name, Parameters};
-use jolty_models::{Level, Library, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
+use jolty_models::{Level, Library, Node, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
 use jolty_numerics::{LinearError, SparseLu};
 use serde::Deserialize;
 
 pub use ac::{Ac, Response};
 pub use analysis::{Analysis, Outcome};
-pub use elaborate::{ElaborationError, ElaborationProblem, Location, Placed};
+pub use elaborate::{Composite, ElaborationError, ElaborationProblem, Location, Placed};
 pub use jolty_numerics::integration::Method;
 pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
 pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseSpectrum};
-pub use observe::{Observation, Observations, Observed};
+pub use observe::{Observation, Observations, Observed, Recorded};
 pub use operating_point::{OperatingPoint, OperatingPoints, Strategy};
-pub use options::Options;
+pub use options::{Options, Record};
 pub use pole_zero::{Mode, PoleZero, PolesZeros};
 pub use sensitivity::{Derivatives, Differentiated, Parameter, Sensitivities, Sensitivity};
 pub use stability::{LoopGain, Stability};
@@ -142,6 +143,31 @@ pub struct Simulator {
     events: Events,
     /// The devices made again, to read their terminals.
     observer: Observer,
+    /// The devices and the composite terminals in the order of their paths, made the first
+    /// time a terminal is looked up.
+    index: OnceLock<Index>,
+}
+
+/// The devices and the composite terminals of a circuit, each by index, sorted by path and
+/// by name, to find one by either.
+#[derive(Debug)]
+struct Index {
+    devices: Vec<usize>,
+    composites: Vec<usize>,
+}
+
+impl Index {
+    /// The index of `system`'s devices and composite terminals.
+    fn new(system: &System) -> Self {
+        let mut devices: Vec<usize> = (0..system.devices.len()).collect();
+        devices.sort_by(|&a, &b| system.devices[a].path().cmp(system.devices[b].path()));
+        let mut composites: Vec<usize> = (0..system.composites.len()).collect();
+        composites.sort_by(|&a, &b| system.composites[a].name.cmp(&system.composites[b].name));
+        Self {
+            devices,
+            composites,
+        }
+    }
 }
 
 impl Simulator {
@@ -162,103 +188,57 @@ impl Simulator {
             .map_err(|_| ElaborationError::from(ElaborationProblem::TooLarge))?;
         let workspace = Workspace::new(&system);
         let events = Events::new(&system.logic);
-        let observer = Observer::new(&system)?;
+        let observer = Observer::new(&system);
         Ok(Self {
             system,
             solver,
             workspace,
             events,
             observer,
+            index: OnceLock::new(),
         })
     }
 
-    /// Every terminal of every device, by its device's path and its own name, such as
-    /// `X1/R1.a`, in the order of every [`Observation`]'s currents and charges.
+    /// The terminals of every component instance and logic device on an electrical or a
+    /// thermal net, such as `X1.vdd`, each with the device terminals whose currents and
+    /// charges sum to its own. One on the reference, which is the ambient as well as the
+    /// ground, sums its electrical terminals only.
     #[must_use]
-    pub fn terminals(&self) -> &[String] {
-        self.observer.names()
+    pub fn composites(&self) -> &[Composite] {
+        &self.system.composites
     }
 
-    /// The unknown that is each terminal's voltage, by name, in the order of
-    /// [`Simulator::terminals`], or `None` for a terminal on the reference.
-    #[must_use]
-    pub fn terminal_nodes(&self) -> Vec<Option<&str>> {
-        self.system
-            .devices
-            .iter()
-            .flat_map(|device| {
-                device.nodes().iter().map(|node| {
-                    node.map(|unknown| self.system.unknowns[unknown.index()].name.as_str())
-                })
-            })
-            .collect()
-    }
-
-    /// Whether each terminal, in the order of [`Simulator::terminals`], is thermal: its
-    /// voltage a temperature above the ambient, and its current the heat flowing into it.
-    #[must_use]
-    pub fn thermal_terminals(&self) -> Vec<bool> {
-        self.system
-            .devices
-            .iter()
-            .flat_map(|device| {
-                let thermal = device.thermal();
-                (0..device.nodes().len()).map(move |terminal| thermal.contains(&terminal))
-            })
-            .collect()
-    }
-
-    /// The equation and the unknown of every derivative of every device, in the order of
-    /// every [`Observation`]'s conductances and capacitances: for each device, every pair
-    /// of its terminals and internal unknowns, row by row. Each is named as a terminal, for
-    /// the current into it and the voltage at it, or as one of the device's internal
-    /// unknowns, such as `X1/Q1:base`, for its equation and its value.
-    #[must_use]
-    pub fn derivatives(&self) -> &[(String, String)] {
-        self.observer.derivatives()
-    }
-
-    /// Every variable of every device, by its device's path and its own name, such as
-    /// `threshold_voltage`, in the order of every [`Observation`]'s variables.
-    #[must_use]
-    pub fn variables(&self) -> &[(String, &'static str)] {
-        self.observer.variables()
-    }
-
-    /// Every terminal of every component instance and logic device on an electrical or a
-    /// thermal net, such as `X1.vdd`, with the indices among [`Simulator::terminals`] of
-    /// the device terminals whose currents and charges sum to its own. One on the
-    /// reference, which is the ambient as well as the ground, sums its electrical
-    /// terminals only.
-    #[must_use]
-    pub fn composites(&self) -> &[(String, Vec<usize>)] {
-        self.observer.composites()
-    }
-
-    /// Whether each composite terminal, in the order of [`Simulator::composites`], is on a
+    /// The node that the terminal `terminal` of the device, component instance or logic
+    /// device at the path `instance` joins, such as `X1/R1` and `a`, and whether it is
+    /// thermal: its voltage a temperature above the ambient, and its current the heat
+    /// flowing into it. `None` when the instance has no such terminal on an electrical or a
     /// thermal net.
     #[must_use]
-    pub fn thermal_composites(&self) -> Vec<bool> {
-        self.system
+    pub fn terminal(&self, instance: &str, terminal: &str) -> Option<(Node, bool)> {
+        let index = self.index.get_or_init(|| Index::new(&self.system));
+        let devices = &self.system.devices;
+        if let Ok(found) = index
+            .devices
+            .binary_search_by(|&device| devices[device].path().cmp(instance))
+        {
+            let device = &devices[index.devices[found]];
+            let position = device
+                .terminals()
+                .iter()
+                .position(|name| name == terminal)?;
+            return Some((
+                device.nodes()[position],
+                device.thermal().contains(&position),
+            ));
+        }
+        let name = format!("{instance}.{terminal}");
+        let composites = &self.system.composites;
+        let found = index
             .composites
-            .iter()
-            .map(|composite| composite.thermal)
-            .collect()
-    }
-
-    /// The unknown that is each composite terminal's voltage, by name, in the order of
-    /// [`Simulator::composites`], or `None` for one on the reference.
-    #[must_use]
-    pub fn composite_nodes(&self) -> Vec<Option<&str>> {
-        self.system
-            .composites
-            .iter()
-            .map(|composite| {
-                composite
-                    .node
-                    .map(|unknown| self.system.unknowns[unknown.index()].name.as_str())
-            })
-            .collect()
+            .binary_search_by(|&composite| composites[composite].name.cmp(&name))
+            .ok()?;
+        let composite = &composites[index.composites[found]];
+        Some((composite.node, composite.thermal))
     }
 
     /// Starts the logic driver at `element` among the devices on a `(time, level,
@@ -451,6 +431,10 @@ pub enum SimulationError {
     /// The options are out of range.
     #[error("invalid options: {0}")]
     InvalidOptions(String),
+    /// Devices an analysis records cannot be made again, each terminal on a node of its own,
+    /// to be read.
+    #[error("cannot record {}", .0.join("; "))]
+    Unrecordable(Vec<String>),
     /// The circuit holds a foundry's devices, which ngspice simulates with the foundry's
     /// models, and which the engine does not solve.
     #[error(

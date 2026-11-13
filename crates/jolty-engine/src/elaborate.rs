@@ -49,15 +49,50 @@ pub(crate) struct System {
 /// is the ambient as well as the ground, so a port on it sums its electrical terminals
 /// only: heat into the ambient is no current.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Composite {
+pub struct Composite {
     /// Its instance's path and its own name, such as `X1.vdd`.
     pub(crate) name: String,
+    /// Its instance's path, such as `X1`.
+    pub(crate) owner: String,
     /// The node it joins, or `None` for the reference.
     pub(crate) node: Node,
     /// Whether it is on a thermal net.
     pub(crate) thermal: bool,
     /// Each device terminal summed, by the device's index and the terminal's.
     pub(crate) members: Vec<(usize, usize)>,
+}
+
+impl Composite {
+    /// Its instance's path and its own name, such as `X1.vdd`.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The path of its component instance or logic device, such as `X1`.
+    #[must_use]
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    /// The node it joins: a node voltage's unknown, or `None` for the reference.
+    #[must_use]
+    pub fn node(&self) -> Node {
+        self.node
+    }
+
+    /// Whether it is on a thermal net, its current the heat flowing into it.
+    #[must_use]
+    pub fn thermal(&self) -> bool {
+        self.thermal
+    }
+
+    /// Each device terminal whose current and charge it sums, by the device's index among
+    /// [`Simulator::devices`](crate::Simulator::devices) and the terminal's among its own.
+    #[must_use]
+    pub fn members(&self) -> &[(usize, usize)] {
+        &self.members
+    }
 }
 
 /// A device placed in the flattened circuit: where its instance is, what model it is, and
@@ -72,6 +107,8 @@ pub struct Placed {
     pub(crate) origin: Origin,
     /// How many unknowns there were before the device added its own.
     pub(crate) first_internal: usize,
+    /// How many internal unknowns the device added.
+    internals: usize,
     pub(crate) device: Box<dyn Device>,
 }
 
@@ -142,6 +179,20 @@ impl Placed {
     #[must_use]
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
+    }
+
+    /// The device's internal unknowns, such as a transistor's internal drain behind its
+    /// series resistance, by index among the unknowns.
+    #[must_use]
+    pub fn internals(&self) -> std::ops::Range<usize> {
+        self.first_internal..self.first_internal + self.internals
+    }
+
+    /// The names of the variables the device computes, such as a transistor's
+    /// `threshold_voltage`.
+    #[must_use]
+    pub fn variable_names(&self) -> &'static [&'static str] {
+        self.device.variable_names()
     }
 
     /// Whether the device is a foundry's, which no analysis solves.
@@ -333,11 +384,6 @@ impl From<Problem> for ElaborationProblem {
 pub struct ElaborationError(Vec<ElaborationProblem>);
 
 impl ElaborationError {
-    /// The error of `problems`, in the order they were found.
-    pub(crate) fn new(problems: Vec<ElaborationProblem>) -> Self {
-        Self(problems)
-    }
-
     /// The problems, in the order they were found.
     #[must_use]
     pub fn problems(&self) -> &[ElaborationProblem] {
@@ -497,6 +543,7 @@ fn composites(
                 .collect();
             Composite {
                 name: port.name.clone(),
+                owner: port.owner.clone(),
                 node: classes.node(port.net),
                 thermal,
                 members,
@@ -507,6 +554,7 @@ fn composites(
             let on_electrical = pin >= device.elements.len() || device.elements[pin].is_some();
             on_electrical.then(|| Composite {
                 name: format!("{}.{}", device.path, device.names[pin]),
+                owner: device.path.clone(),
                 node: classes.node(device.nets[pin]),
                 thermal: false,
                 members: device.members(pin),
@@ -715,6 +763,7 @@ impl Elements<'_> {
                     parameters: pending.parameters.into_owned(),
                 }),
                 first_internal,
+                internals: self.unknowns.len() - first_internal,
                 device,
             }),
             Err(error) => self.problems.push(ElaborationProblem::Parameters {
@@ -907,6 +956,7 @@ impl Elements<'_> {
             nodes: terminals.to_vec(),
             origin,
             first_internal,
+            internals: self.unknowns.len() - first_internal,
             device,
         });
         self.placed.len() - 1
@@ -989,6 +1039,8 @@ struct Joined {
 struct PortRecord {
     /// Its instance's path and its own name, such as `X1.vdd`.
     name: String,
+    /// Its instance's path, such as `X1`.
+    owner: String,
     /// The net it joins.
     net: NetRef,
     /// The port of the enclosing instance that its net is outside, if it is one.
@@ -1069,6 +1121,7 @@ impl<'a> Walk<'a> {
                             let outside = self.net(prefix, ports, &instance.terminals[&port.name]);
                             self.ports.push(PortRecord {
                                 name: format!("{}.{}", at.path, port.name),
+                                owner: at.path.clone(),
                                 net: outside.net,
                                 parent: outside.port,
                                 members: Vec::new(),

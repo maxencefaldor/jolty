@@ -157,14 +157,13 @@ def netlist(circuit: ir.Circuit, parts: catalog.Catalog, instance: str = "") -> 
             "are elaborated against"
         )
         raise NetlistError([message])
-    reached = _reached(Simulation(alone), ground)
+    reached = _Reached(Simulation(alone), ground)
     problems: list[str] = []
     footprints: list[Footprint] = []
     nodes: defaultdict[str, list[Node]] = defaultdict(list)
     counts: Counter[str] = Counter()
     for path, placed in catalog.built(alone, component):
-        terminals = [f"{path}.{terminal}" for terminal in placed.terminals]
-        if all(terminal in reached.thermal for terminal in terminals):
+        if all(reached.thermal(path, terminal) for terminal in placed.terminals):
             continue
         part = parts.part_for(placed)
         if isinstance(part, str):
@@ -211,26 +210,27 @@ def _component_at(circuit: ir.Circuit, instance: str) -> str:
 class _Reached:
     """Where the terminals of an elaborated component are."""
 
-    nets: Mapping[str, str]
-    """The name of the net each terminal, such as ``R1.a``, is on."""
-    thermal: frozenset[str]
-    """The terminals on thermal nets."""
+    simulation: Simulation
+    """The component elaborated alone."""
+    ground: str
+    """The name of its ground net."""
 
+    def net(self, path: str, terminal: str) -> str:
+        """The name of the net `terminal` of the instance at `path` is on.
 
-def _reached(simulation: Simulation, ground: str) -> _Reached:
-    """Where the terminals of `simulation`'s circuit are, its ground net `ground`."""
-    named = (
-        *simulation.terminals,
-        *(name for name, _ in simulation.composites),
-    )
-    nodes = (*simulation.terminal_nodes, *simulation.composite_nodes)
-    return _Reached(
-        {
-            terminal: ground if node is None else node
-            for terminal, node in zip(named, nodes, strict=True)
-        },
-        simulation.thermal,
-    )
+        Raises:
+            KeyError: When the instance has no such terminal on a net.
+        """
+        found = self.simulation.joined(path, terminal)
+        if found is None:
+            message = f"{path}.{terminal} is on no electrical or thermal net"
+            raise KeyError(message)
+        return self.ground if found.node is None else found.node
+
+    def thermal(self, path: str, terminal: str) -> bool:
+        """Whether `terminal` of the instance at `path` is on a thermal net."""
+        found = self.simulation.joined(path, terminal)
+        return found is not None and found.thermal
 
 
 def _pads(
@@ -241,9 +241,7 @@ def _pads(
     Or why its pads cannot be found: every problem of its part's footprint and pins.
     """
     electrical = [
-        terminal
-        for terminal in placed.terminals
-        if f"{path}.{terminal}" not in reached.thermal
+        terminal for terminal in placed.terminals if not reached.thermal(path, terminal)
     ]
     problems = []
     if part.footprint is None:
@@ -255,7 +253,7 @@ def _pads(
     problems.extend(unpinned)
     pads: dict[str, tuple[str, tuple[str, ...]]] = {}
     for terminal in electrical if not unpinned else ():
-        net = reached.nets[f"{path}.{terminal}"]
+        net = reached.net(path, terminal)
         for pad in pins[terminal]:
             held, joined = pads.get(pad, (net, ()))
             if held != net:

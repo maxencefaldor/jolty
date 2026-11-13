@@ -49,8 +49,9 @@ START = 0.3
 SWING = 0.4
 """How far each lobe of the sine moves a state."""
 
-TIGHT = Options(relative_tolerance=1e-7)
-"""Options under which the integration's error is far below the comparisons'."""
+TIGHT = Options(relative_tolerance=1e-7, record=["M1"])
+"""Options under which the integration's error is far below the comparisons', which
+record the memristor ``M1`` the tests read."""
 
 
 def _driven(memristor: devices.Device, frequency: float = FREQUENCY) -> Component:
@@ -312,7 +313,9 @@ def test_an_operating_point_holds_the_state_and_shows_its_rate() -> None:
     """
     simulation = Simulation(_fed(0.0))
     levels = [-3.0, -0.2, 0.2, 3.0]
-    sweep = simulation.run(DcSweep("V1", [level * V for level in levels]))
+    sweep = simulation.run(
+        DcSweep("V1", [level * V for level in levels]), Options(record=["M1"])
+    )
     np.testing.assert_allclose(sweep.state("M1:state"), START, rtol=0, atol=1e-12)
     resistance = ON + (OFF - ON) * START
     np.testing.assert_allclose(sweep.variable("M1", "resistance"), resistance)

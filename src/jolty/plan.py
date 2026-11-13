@@ -259,9 +259,27 @@ type Analysis = (
 
 @dataclass(frozen=True, slots=True)
 class Options:
-    """Numerical settings; each one left out takes the engine's default, SPICE's own.
+    """Numerical settings, and what results record; each one left out takes its default.
 
-    Tolerances are in SI base units: volts, amperes and coulombs.
+    Tolerances are in SI base units: volts, amperes and coulombs, and default to
+    SPICE's own.
+
+    Every result holds the circuit's unknowns. `record` chooses what it keeps of the
+    devices beside them: the instances at these paths, or the patterns of paths that
+    match them, as a plan's fidelity scopes do, where ``*`` matches within a level of
+    the hierarchy and ``**`` across levels, so ``["**"]`` records every instance and
+    ``[]`` none. A device recorded keeps the current into each of its terminals and the
+    charge each holds, its derivatives and its variables; a component instance or a
+    logic device recorded keeps its terminals' currents and charges, each the sum of the
+    device terminals behind it. By default, an operating point and a transient record
+    the instances rated for a current or a power, whose ratings the checks hold them to,
+    and other analyses record nothing beyond the unknowns.
+
+    Examples:
+        >>> Options(record=["M1", "X1/**"]).record
+        ('M1', 'X1/**')
+        >>> Options(gmin=1e-15).to_json()
+        {'gmin': 1e-15}
     """
 
     relative_tolerance: float | None = None
@@ -273,10 +291,38 @@ class Options:
     transient_iterations: int | None = None
     truncation_tolerance: float | None = None
     transient_memory: float | None = None
+    record: Sequence[str] | None = None
 
-    def to_json(self) -> JsonValue:
-        """The options in the engine's format, without those left to its defaults."""
-        values = {setting.name: getattr(self, setting.name) for setting in fields(self)}
+    def __post_init__(self) -> None:
+        """Keeps the record as a tuple.
+
+        Raises:
+            TypeError: When the record is a string, or holds anything but strings.
+        """
+        if self.record is None:
+            return
+        if isinstance(self.record, str):
+            message = (
+                "a record is a sequence of instance paths, such as "
+                f"[{self.record!r}], not the string {self.record!r}"
+            )
+            raise TypeError(message)
+        recorded = tuple(self.record)
+        if not all(isinstance(path, str) for path in recorded):
+            message = f"a record is a sequence of instance paths, not {recorded!r}"
+            raise TypeError(message)
+        object.__setattr__(self, "record", recorded)
+
+    def to_json(self) -> dict[str, JsonValue]:
+        """The numerical options in the engine's format, without those left to defaults.
+
+        The record is not among them: a simulation finds the instances it names.
+        """
+        values = {
+            setting.name: getattr(self, setting.name)
+            for setting in fields(self)
+            if setting.name != "record"
+        }
         return {name: value for name, value in values.items() if value is not None}
 
 

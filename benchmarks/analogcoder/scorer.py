@@ -42,7 +42,7 @@ from verdict import Verdict
 
 from jolty import Builder, Component, Role, Simulation, circuit, component, devices, ir
 from jolty.errors import JoltyError
-from jolty.plan import Ac, DcSweep, OperatingPoint, Transient, linear
+from jolty.plan import Ac, DcSweep, OperatingPoint, Options, Transient, linear
 from jolty.results import OperatingPoint as Solution
 from jolty.results import Real
 from jolty.units import A, Hz, V, ns, ohm, s, um, us
@@ -341,6 +341,16 @@ def volts(solution: Solution, net: str) -> float:
     return 0.0 if net == "ground" else solution.voltage(net)
 
 
+def recorded(parts: list[Part], *also: str) -> Options:
+    """Options that record each MOSFET of `parts`, whose bias `misbiased` reads.
+
+    They record the instances at the paths `also` too.
+    """
+    return Options(
+        record=[*(part.path for part in parts if part.model == "mosfet"), *also]
+    )
+
+
 def misbiased(solution: Solution, parts: list[Part], least: float = 0.0) -> list[str]:
     """Why each MOSFET of `parts` is not on, forward and carrying `least`.
 
@@ -417,7 +427,7 @@ def amplifier(
     simulation = Simulation(built)
     parts = designed(built)
     found = structure(number, parts)
-    found += misbiased(simulation.run(OperatingPoint()), parts, LEAST)
+    found += misbiased(simulation.run(OperatingPoint(), recorded(parts)), parts, LEAST)
     swept = simulation.run(DcSweep("VIN", linear(0 * V, SUPPLY * V, 501)))
     moved = float(np.ptp(swept.voltage("vout")))
     if moved < MOVES:
@@ -448,10 +458,11 @@ def mirror(_: int, made: Component, problem: Problem, levels: Levels) -> list[st
     middle = LOADS[len(LOADS) // 2]
     for load in LOADS:
         built = circuit(bench(made, problem, held(problem, levels), load=load))
-        solution = Simulation(built).run(OperatingPoint())
+        parts = designed(built)
+        solution = Simulation(built).run(OperatingPoint(), recorded(parts, "RLOAD"))
         currents.append(solution.current("RLOAD", "a"))
         if load == middle:
-            found += misbiased(solution, designed(built))
+            found += misbiased(solution, parts)
     step = float(np.max(np.abs(np.diff(currents))))
     if step >= STEADY:
         found.append(f"its current changes by {step:.4g} A from one load to the next")
@@ -460,7 +471,11 @@ def mirror(_: int, made: Component, problem: Problem, levels: Levels) -> list[st
     if "iref" in problem.inputs:
         drives = {"iref": driven("iref", REFERENCE)}
         built = circuit(bench(made, problem, drives, load=middle))
-        followed = Simulation(built).run(OperatingPoint()).current("RLOAD", "a")
+        followed = (
+            Simulation(built)
+            .run(OperatingPoint(), Options(record=["RLOAD"]))
+            .current("RLOAD", "a")
+        )
         if abs(followed - currents[len(LOADS) // 2]) < STEADY:
             found.append(f"its current stays {followed:.4g} A as iref turns 1.55 mA")
     return found
@@ -479,7 +494,7 @@ def opamp(number: int, made: Component, problem: Problem, levels: Levels) -> lis
     simulation = Simulation(built)
     parts = designed(built)
     found += structure(number, parts)
-    found += misbiased(simulation.run(OperatingPoint()), parts, LEAST)
+    found += misbiased(simulation.run(OperatingPoint(), recorded(parts)), parts, LEAST)
     plus, minus = (
         complex(simulation.run(Ac(source, [100 * Hz])).voltage("vout")[0])
         for source in ("VINP", "VINN")

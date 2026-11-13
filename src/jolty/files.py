@@ -3,11 +3,12 @@
 
 A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A results file holds the
 results of named analyses as a NumPy ``.npz`` archive: a JSON header that names the
-circuit's unknowns, logic nets, device terminals, derivatives and variables, and says
-what each analysis is, then the arrays of each analysis under keys such as
-``step.times``, ``step.values``, ``step.currents`` and ``step.conductances``,
-``loop.frequencies`` and ``loop.gains``, or ``hiss.densities`` and
-``hiss.contributions``.
+circuit's unknowns and logic nets, says what the analyses recorded of its devices, each
+recording once however many analyses share it, and says what each analysis is, then
+the arrays of each analysis under keys such as ``step.times``, ``step.values``,
+``step.currents`` and ``step.conductances``, ``loop.frequencies`` and ``loop.gains``, or
+``hiss.densities`` and ``hiss.contributions``. The header is in version 3 of the format;
+a file of an earlier version, written before results recorded selectively, is not read.
 
 Examples:
     >>> import tempfile
@@ -41,6 +42,9 @@ RESULTS_SUFFIX: Final = ".results.npz"
 
 _HEADER: Final = "header"
 
+_VERSION: Final = 3
+"""The version of the results file's format that jolty writes and reads."""
+
 
 class _Model(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -49,28 +53,33 @@ class _Model(BaseModel):
 class _Point(_Model):
     kind: Literal["operating_point"] = "operating_point"
     strategy: str
+    recording: int
 
 
 class _Points(_Model):
     kind: Literal["operating_points"] = "operating_points"
     strategies: tuple[str, ...]
+    recording: int
 
 
 class _Sweep(_Model):
     kind: Literal["dc_sweep"] = "dc_sweep"
     source: str
     quantity: results.Quantity
+    recording: int
 
 
 class _Response(_Model):
     kind: Literal["ac"] = "ac"
     source: str
     strategy: str
+    recording: int
 
 
 class _Waveforms(_Model):
     kind: Literal["transient"] = "transient"
     statistics: results.Statistics
+    recording: int
 
 
 class _Sensitivities(_Model):
@@ -84,6 +93,7 @@ class _LoopGain(_Model):
     kind: Literal["stability"] = "stability"
     probe: str
     strategy: str
+    recording: int
 
 
 class _NoiseInput(_Model):
@@ -99,6 +109,7 @@ class _NoiseSpectrum(_Model):
     sources: tuple[tuple[str, str], ...]
     input: _NoiseInput | None
     strategy: str
+    recording: int
 
 
 class _PolesZeros(_Model):
@@ -107,6 +118,7 @@ class _PolesZeros(_Model):
     output: str | None
     reference: str | None
     strategy: str
+    recording: int
 
 
 type _Entry = Annotated[
@@ -128,17 +140,69 @@ class _Names(_Model):
 
     unknowns: tuple[results.Unknown, ...]
     nets: tuple[str, ...] = ()
-    terminals: tuple[str, ...] = ()
-    composites: tuple[tuple[str, tuple[int, ...]], ...] = ()
+
+
+class _Device(_Model):
+    """A device a result recorded, as a `RecordedDevice`."""
+
+    path: str
+    terminals: tuple[str, ...]
+    internals: tuple[str, ...] = ()
+    variables: tuple[str, ...] = ()
+
+
+class _Recording(_Model):
+    """What results recorded, as a [`Recording`][jolty.results.Recording]."""
+
+    devices: tuple[_Device, ...] = ()
+    composites: tuple[str, ...] = ()
     thermal: tuple[str, ...] = ()
-    derivatives: tuple[tuple[str, str], ...] = ()
-    variables: tuple[tuple[str, str], ...] = ()
+
+    @classmethod
+    def of(cls, recording: results.Recording) -> _Recording:
+        """The header's entry of `recording`."""
+        return cls(
+            devices=tuple(
+                _Device(
+                    path=device.path,
+                    terminals=device.terminals,
+                    internals=device.internals,
+                    variables=device.variables,
+                )
+                for device in recording.devices
+            ),
+            composites=recording.composites,
+            thermal=tuple(sorted(recording.thermal)),
+        )
+
+    def recording(self) -> results.Recording:
+        """The recording the entry describes."""
+        return results.Recording(
+            tuple(
+                results.RecordedDevice(
+                    device.path, device.terminals, device.internals, device.variables
+                )
+                for device in self.devices
+            ),
+            self.composites,
+            frozenset(self.thermal),
+        )
 
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[2] = 2
+    version: Literal[3] = 3
+    recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
+
+
+class _Format(BaseModel):
+    """A results file's format and version, whatever else its header holds."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    format: Literal["jolty-results"]
+    version: int
 
 
 def circuit_path(script: Path) -> Path:
@@ -229,9 +293,17 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
         message = "a results file holds analyses of one circuit, one or more"
         raise ValueError(message)
     arrays: dict[str, np.ndarray] = {}
-    entries = {name: _save(name, result, arrays) for name, result in analyses.items()}
+    recordings: dict[results.Recording, int] = {}
+    entries = {
+        name: _save(name, result, arrays, recordings)
+        for name, result in analyses.items()
+    }
     names = circuits.pop()
-    header = _Header(**names.model_dump(), analyses=entries)
+    header = _Header(
+        **names.model_dump(),
+        recordings=tuple(_Recording.of(recording) for recording in recordings),
+        analyses=entries,
+    )
     arrays[_HEADER] = np.array(header.model_dump_json())
     with path.open("wb") as file:
         np.savez_compressed(file, allow_pickle=False, **arrays)
@@ -241,39 +313,72 @@ def load_results(path: Path) -> dict[str, results.Result]:
     """Reads the results file at `path`: the results of each analysis, by name.
 
     Raises:
-        JoltyError: When the file is not a jolty results file.
+        JoltyError: When the file is not a jolty results file, or one in an earlier
+            version of the format.
     """
     with np.load(path, allow_pickle=False) as data:
         try:
             header = _Header.model_validate_json(str(data[_HEADER]))
         except KeyError, ValidationError:
-            message = f"{path} is not a jolty results file"
-            raise JoltyError(message) from None
+            raise _unreadable(path, data) from None
+        recordings = tuple(recording.recording() for recording in header.recordings)
         return {
-            name: _load(data, name, entry, header)
+            name: _load(data, name, entry, header, recordings)
             for name, entry in header.analyses.items()
         }
 
 
-def _save(name: str, result: results.Result, arrays: dict[str, np.ndarray]) -> _Entry:
-    """The header's entry of `result`, its arrays added to `arrays` under `name`."""
+def _unreadable(path: Path, data: Mapping[str, np.ndarray]) -> JoltyError:
+    """Why the file at `path`, holding `data`, cannot be read as results."""
+    try:
+        version = _Format.model_validate_json(str(data[_HEADER])).version
+    except KeyError, ValidationError:
+        return JoltyError(f"{path} is not a jolty results file")
+    if version == _VERSION:
+        return JoltyError(f"{path} is not a jolty results file")
+    return JoltyError(
+        f"{path} holds results in version {version} of the format, which jolty reads "
+        f"no more; simulate again to write them in version {_VERSION}"
+    )
+
+
+def _save(
+    name: str,
+    result: results.Result,
+    arrays: dict[str, np.ndarray],
+    recordings: dict[results.Recording, int],
+) -> _Entry:
+    """The header's entry of `result`, its arrays added to `arrays` under `name`.
+
+    Its recording joins `recordings`, each recording by its index in the header, unless
+    another result's is the same.
+    """
     match result:
         case results.OperatingPoint():
             arrays.update(_point_arrays(name, result))
-            return _Point(strategy=result.strategy)
+            recording = _indexed(recordings, result.recording)
+            return _Point(strategy=result.strategy, recording=recording)
         case results.Sweep():
             arrays[f"{name}.levels"] = result.levels
             arrays[f"{name}.values"] = result.values
             arrays[f"{name}.logic"] = result.logic
             arrays.update(_observed_arrays(name, result))
-            return _Sweep(source=result.source, quantity=result.quantity)
+            return _Sweep(
+                source=result.source,
+                quantity=result.quantity,
+                recording=_indexed(recordings, result.recording),
+            )
         case results.Response():
             arrays[f"{name}.frequencies"] = result.frequencies
             arrays[f"{name}.values"] = result.values
             arrays[f"{name}.currents"] = result.currents
             point = result.operating_point
             arrays.update(_point_arrays(f"{name}.operating_point", point))
-            return _Response(source=result.source, strategy=point.strategy)
+            return _Response(
+                source=result.source,
+                strategy=point.strategy,
+                recording=_indexed(recordings, result.recording),
+            )
         case results.Waveforms():
             arrays[f"{name}.times"] = result.times
             arrays[f"{name}.values"] = result.values
@@ -288,13 +393,26 @@ def _save(name: str, result: results.Result, arrays: dict[str, np.ndarray]) -> _
             arrays[f"{name}.logic.levels"] = np.concatenate(
                 [np.empty(0), *(trace.levels for trace in traces)]
             )
-            return _Waveforms(statistics=result.statistics)
+            return _Waveforms(
+                statistics=result.statistics,
+                recording=_indexed(recordings, result.recording),
+            )
         case results.OperatingPoints():
             for index, point in enumerate(result.points):
                 arrays.update(_point_arrays(f"{name}.{index}", point))
-            return _Points(strategies=tuple(point.strategy for point in result.points))
+            return _Points(
+                strategies=tuple(point.strategy for point in result.points),
+                recording=_indexed(recordings, result.points[0].recording),
+            )
         case _:
-            return _save_linear(name, result, arrays)
+            return _save_linear(name, result, arrays, recordings)
+
+
+def _indexed(
+    recordings: dict[results.Recording, int], recording: results.Recording
+) -> int:
+    """The index of `recording` among `recordings`, which it joins if it is new."""
+    return recordings.setdefault(recording, len(recordings))
 
 
 def _save_linear(
@@ -304,6 +422,7 @@ def _save_linear(
     | results.NoiseSpectrum
     | results.PolesZeros,
     arrays: dict[str, np.ndarray],
+    recordings: dict[results.Recording, int],
 ) -> _Entry:
     """The header's entry of sensitivities, a loop gain, a noise spectrum or poles."""
     match result:
@@ -318,14 +437,18 @@ def _save_linear(
                     (parameter.instance, parameter.name)
                     for parameter in result.parameters
                 ),
-                result=_save(f"{name}.result", result.result, arrays),
+                result=_save(f"{name}.result", result.result, arrays, recordings),
             )
         case results.LoopGain():
             arrays[f"{name}.frequencies"] = result.frequencies
             arrays[f"{name}.gains"] = result.gains
             point = result.operating_point
             arrays.update(_point_arrays(f"{name}.operating_point", point))
-            return _LoopGain(probe=result.probe, strategy=point.strategy)
+            return _LoopGain(
+                probe=result.probe,
+                strategy=point.strategy,
+                recording=_indexed(recordings, point.recording),
+            )
         case results.NoiseSpectrum():
             arrays[f"{name}.frequencies"] = result.frequencies
             arrays[f"{name}.densities"] = result.densities
@@ -347,6 +470,7 @@ def _save_linear(
                 ),
                 input=found,
                 strategy=point.strategy,
+                recording=_indexed(recordings, point.recording),
             )
         case results.PolesZeros():
             arrays[f"{name}.poles"] = result.poles
@@ -359,24 +483,32 @@ def _save_linear(
                 output=result.output,
                 reference=result.reference,
                 strategy=point.strategy,
+                recording=_indexed(recordings, point.recording),
             )
 
 
 def _load(
-    data: Mapping[str, np.ndarray], name: str, entry: _Entry, header: _Header
+    data: Mapping[str, np.ndarray],
+    name: str,
+    entry: _Entry,
+    header: _Header,
+    recordings: tuple[results.Recording, ...],
 ) -> results.Result:
-    """The result stored under `name` in `data`, as `entry` says it is."""
+    """The result stored under `name` in `data`, as `entry` says it is.
+
+    It recorded the one of `recordings` the entry names.
+    """
     unknowns, nets = header.unknowns, header.nets
     match entry:
-        case _Point(strategy=strategy):
-            return _point(data, name, strategy, header)
-        case _Points(strategies=strategies):
+        case _Point(strategy=strategy, recording=recording):
+            return _point(data, name, strategy, header, recordings[recording])
+        case _Points(strategies=strategies, recording=recording):
             points = tuple(
-                _point(data, f"{name}.{index}", strategy, header)
+                _point(data, f"{name}.{index}", strategy, header, recordings[recording])
                 for index, strategy in enumerate(strategies)
             )
             return results.OperatingPoints(unknowns, points)
-        case _Sweep(source=source, quantity=quantity):
+        case _Sweep(source=source, quantity=quantity, recording=recording):
             return results.Sweep(
                 unknowns,
                 source,
@@ -385,21 +517,20 @@ def _load(
                 data[f"{name}.values"],
                 nets,
                 data[f"{name}.logic"],
-                **_observed(data, name, header),
+                **_observed(data, name, recordings[recording]),
             )
-        case _Response(source=source, strategy=strategy):
+        case _Response(source=source, strategy=strategy, recording=recording):
+            point = f"{name}.operating_point"
             return results.Response(
                 unknowns,
                 source,
                 data[f"{name}.frequencies"],
                 data[f"{name}.values"],
-                _point(data, f"{name}.operating_point", strategy, header),
-                terminals=header.terminals,
+                _point(data, point, strategy, header, recordings[recording]),
+                recording=recordings[recording],
                 currents=data[f"{name}.currents"],
-                composites=header.composites,
-                thermal=frozenset(header.thermal),
             )
-        case _Waveforms(statistics=statistics):
+        case _Waveforms(statistics=statistics, recording=recording):
             return results.Waveforms(
                 unknowns,
                 data[f"{name}.times"],
@@ -407,10 +538,10 @@ def _load(
                 statistics,
                 nets,
                 _traces(data, name),
-                **_observed(data, name, header),
+                **_observed(data, name, recordings[recording]),
             )
         case _:
-            return _load_linear(data, name, entry, header)
+            return _load_linear(data, name, entry, header, recordings)
 
 
 def _load_linear(
@@ -418,6 +549,7 @@ def _load_linear(
     name: str,
     entry: _Sensitivities | _LoopGain | _NoiseSpectrum | _PolesZeros,
     header: _Header,
+    recordings: tuple[results.Recording, ...],
 ) -> results.Result:
     """The sensitivities, loop gain, noise spectrum or poles stored under `name`."""
     unknowns = header.unknowns
@@ -429,7 +561,7 @@ def _load_linear(
                     named, data[f"{name}.parameters"], strict=True
                 )
             )
-            found = _load(data, f"{name}.result", differentiated, header)
+            found = _load(data, f"{name}.result", differentiated, header, recordings)
             if isinstance(
                 found,
                 results.Sensitivities
@@ -446,13 +578,14 @@ def _load_linear(
             return results.Sensitivities(
                 unknowns, outputs, parameters, data[f"{name}.derivatives"], found
             )
-        case _LoopGain(probe=probe, strategy=strategy):
+        case _LoopGain(probe=probe, strategy=strategy, recording=recording):
+            point = f"{name}.operating_point"
             return results.LoopGain(
                 unknowns,
                 probe,
                 data[f"{name}.frequencies"],
                 data[f"{name}.gains"],
-                _point(data, f"{name}.operating_point", strategy, header),
+                _point(data, point, strategy, header, recordings[recording]),
             )
         case _NoiseSpectrum():
             found_input = None
@@ -473,11 +606,22 @@ def _load_linear(
                 ),
                 data[f"{name}.contributions"],
                 found_input,
-                _point(data, f"{name}.operating_point", entry.strategy, header),
+                _point(
+                    data,
+                    f"{name}.operating_point",
+                    entry.strategy,
+                    header,
+                    recordings[entry.recording],
+                ),
             )
         case _PolesZeros(
-            source=source, output=output, reference=reference, strategy=strategy
+            source=source,
+            output=output,
+            reference=reference,
+            strategy=strategy,
+            recording=recording,
         ):
+            point = f"{name}.operating_point"
             return results.PolesZeros(
                 unknowns,
                 data[f"{name}.poles"],
@@ -485,7 +629,7 @@ def _load_linear(
                 source,
                 output,
                 reference,
-                _point(data, f"{name}.operating_point", strategy, header),
+                _point(data, point, strategy, header, recordings[recording]),
             )
 
 
@@ -503,25 +647,17 @@ def _names(result: results.Result) -> _Names:
         | results.PolesZeros,
     ):
         return _names(result.operating_point)
-    return _Names(
-        unknowns=result.unknowns,
-        nets=result.nets,
-        terminals=result.terminals,
-        composites=result.composites,
-        thermal=tuple(sorted(result.thermal)),
-        derivatives=result.derivatives,
-        variables=result.variables,
-    )
+    return _Names(unknowns=result.unknowns, nets=result.nets)
 
 
 _OBSERVED: Final = ("currents", "charges", "conductances", "capacitances", "readings")
-"""The arrays of what every device did, by the names of their fields."""
+"""The arrays of what the recorded devices did, by the names of their fields."""
 
 
 def _observed_arrays(
     name: str, result: results.OperatingPoint | results.Sweep | results.Waveforms
 ) -> dict[str, np.ndarray]:
-    """The arrays of what every device did in the analysis `name`."""
+    """The arrays of what the recorded devices did in the analysis `name`."""
     return {f"{name}.{field}": getattr(result, field) for field in _OBSERVED}
 
 
@@ -535,34 +671,34 @@ def _point_arrays(name: str, point: results.OperatingPoint) -> dict[str, np.ndar
 
 
 def _observed(
-    data: Mapping[str, np.ndarray], name: str, header: _Header
+    data: Mapping[str, np.ndarray], name: str, recording: results.Recording
 ) -> results.Observed:
-    """What every device did in the analysis stored under `name`, as fields."""
+    """What the devices `recording` names did in the analysis stored under `name`."""
     return {
-        "terminals": header.terminals,
+        "recording": recording,
         "currents": data[f"{name}.currents"],
         "charges": data[f"{name}.charges"],
-        "composites": header.composites,
-        "thermal": frozenset(header.thermal),
-        "derivatives": header.derivatives,
         "conductances": data[f"{name}.conductances"],
         "capacitances": data[f"{name}.capacitances"],
-        "variables": header.variables,
         "readings": data[f"{name}.readings"],
     }
 
 
 def _point(
-    data: Mapping[str, np.ndarray], name: str, strategy: str, header: _Header
+    data: Mapping[str, np.ndarray],
+    name: str,
+    strategy: str,
+    header: _Header,
+    recording: results.Recording,
 ) -> results.OperatingPoint:
-    """The operating point stored under `name` in `data`."""
+    """The operating point stored under `name` in `data`, which recorded `recording`."""
     return results.OperatingPoint(
         header.unknowns,
         data[f"{name}.values"],
         strategy,
         header.nets,
         data[f"{name}.logic"],
-        **_observed(data, name, header),
+        **_observed(data, name, recording),
     )
 
 

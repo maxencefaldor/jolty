@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use jolty_engine::{
     Analysis, Derivatives, Location, NoiseSpectrum, Observation, Observations, OperatingPoint,
-    Options, Outcome, PolesZeros, Statistics,
+    Options, Outcome, PolesZeros, Record, Statistics,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library, Quantity};
@@ -35,17 +35,24 @@ struct Simulator {
     inner: Mutex<jolty_engine::Simulator>,
     unknowns: Vec<(String, &'static str)>,
     nets: Vec<String>,
-    terminals: Vec<String>,
-    terminal_nodes: Vec<Option<String>>,
-    thermal_terminals: Vec<bool>,
-    derivatives: Vec<(String, String)>,
-    variables: Vec<(String, &'static str)>,
-    composites: Vec<(String, Vec<usize>)>,
-    composite_nodes: Vec<Option<String>>,
-    thermal_composites: Vec<bool>,
     devices: usize,
     foundry_devices: Vec<String>,
 }
+
+/// A device a recording keeps: its path, its terminals' names, whether each is thermal, the
+/// index of its first internal unknown and their number, and its variables' names.
+type RecordedDevice = (
+    String,
+    Vec<String>,
+    Vec<bool>,
+    usize,
+    usize,
+    Vec<&'static str>,
+);
+
+/// What a recording keeps: each device, then each terminal of a component instance or a
+/// logic device, its name and whether it is thermal.
+type Recording = (Vec<RecordedDevice>, Vec<(String, bool)>);
 
 #[pymethods]
 impl Simulator {
@@ -87,22 +94,6 @@ impl Simulator {
             .map(|net| net.name.clone())
             .collect();
         let devices = inner.devices().len() - inner.elements() + inner.logic_devices().len();
-        let terminals = inner.terminals().to_vec();
-        let terminal_nodes = inner
-            .terminal_nodes()
-            .into_iter()
-            .map(|node| node.map(str::to_owned))
-            .collect();
-        let thermal_terminals = inner.thermal_terminals();
-        let derivatives = inner.derivatives().to_vec();
-        let variables = inner.variables().to_vec();
-        let composites = inner.composites().to_vec();
-        let composite_nodes = inner
-            .composite_nodes()
-            .into_iter()
-            .map(|node| node.map(str::to_owned))
-            .collect();
-        let thermal_composites = inner.thermal_composites();
         let foundry_devices = inner
             .foundry_devices()
             .into_iter()
@@ -112,14 +103,6 @@ impl Simulator {
             inner: Mutex::new(inner),
             unknowns,
             nets,
-            terminals,
-            terminal_nodes,
-            thermal_terminals,
-            derivatives,
-            variables,
-            composites,
-            composite_nodes,
-            thermal_composites,
             devices,
             foundry_devices,
         })
@@ -138,62 +121,73 @@ impl Simulator {
         self.nets.clone()
     }
 
-    /// Every terminal of every device, such as `X1/R1.a`, in the order of every result's
-    /// currents and charges.
+    /// Every path a recording can name, in order: each device's, such as `X1/R1`, then each
+    /// component instance's and logic device's whose terminals the engine sums, such as
+    /// `X1`.
     #[getter]
-    fn terminals(&self) -> Vec<String> {
-        self.terminals.clone()
+    fn instances(&self) -> Vec<String> {
+        let simulator = self.lock();
+        let mut paths: Vec<String> = simulator
+            .devices()
+            .iter()
+            .map(|device| device.path().to_owned())
+            .collect();
+        for composite in simulator.composites() {
+            if paths.last().is_none_or(|last| last != composite.owner()) {
+                paths.push(composite.owner().to_owned());
+            }
+        }
+        paths
     }
 
-    /// The unknown that is each terminal's voltage, by name, in the order of `terminals`,
-    /// or `None` for a terminal on the reference.
-    #[getter]
-    fn terminal_nodes(&self) -> Vec<Option<String>> {
-        self.terminal_nodes.clone()
+    /// What the record whose JSON text is `record` keeps, in the order of every result's
+    /// arrays: each recorded device, as its path, its terminals' names, whether each is
+    /// thermal, the index among the unknowns of its first internal unknown and their
+    /// number, and its variables' names; then each recorded terminal of a component instance
+    /// or a logic device, as its name, such as `X1.vdd`, and whether it is thermal.
+    fn recording(&self, record: &str) -> PyResult<Recording> {
+        let record: Record = serde_json::from_str(record).map_err(|error| unreadable(&error))?;
+        let simulator = self.lock();
+        let recorded = simulator.recorded(&record);
+        let devices = recorded
+            .devices
+            .iter()
+            .map(|&index| {
+                let device = &simulator.devices()[index];
+                let thermal = (0..device.terminals().len())
+                    .map(|terminal| device.thermal().contains(&terminal))
+                    .collect();
+                let internals = device.internals();
+                (
+                    device.path().to_owned(),
+                    device.terminals().to_vec(),
+                    thermal,
+                    internals.start,
+                    internals.len(),
+                    device.variable_names().to_vec(),
+                )
+            })
+            .collect();
+        let composites = recorded
+            .composites
+            .iter()
+            .map(|&index| {
+                let composite = &simulator.composites()[index];
+                (composite.name().to_owned(), composite.thermal())
+            })
+            .collect();
+        Ok((devices, composites))
     }
 
-    /// Whether each terminal is thermal, its voltage a temperature above the ambient and
-    /// its current the heat flowing into it, in the order of `terminals`.
-    #[getter]
-    fn thermal_terminals(&self) -> Vec<bool> {
-        self.thermal_terminals.clone()
-    }
-
-    /// The equation and the unknown of every derivative of every device, each a terminal
-    /// such as `M1.drain` or an internal unknown such as `M1:drain`, in the order of every
-    /// result's conductances and capacitances.
-    #[getter]
-    fn derivatives(&self) -> Vec<(String, String)> {
-        self.derivatives.clone()
-    }
-
-    /// Every variable of every device, its path and its name, in the order of every
-    /// result's variables.
-    #[getter]
-    fn variables(&self) -> Vec<(String, &'static str)> {
-        self.variables.clone()
-    }
-
-    /// Every terminal of every component instance and logic device on an electrical or a
-    /// thermal net, such as `X1.vdd`, with the indices among the terminals of those whose
-    /// currents and charges sum to its own. One on the ground, which is the ambient as
-    /// well, sums its electrical terminals only.
-    #[getter]
-    fn composites(&self) -> Vec<(String, Vec<usize>)> {
-        self.composites.clone()
-    }
-
-    /// The unknown that is each composite terminal's voltage, by name, in the order of
-    /// `composites`, or `None` for one on the reference.
-    #[getter]
-    fn composite_nodes(&self) -> Vec<Option<String>> {
-        self.composite_nodes.clone()
-    }
-
-    /// Whether each composite terminal is on a thermal net, in the order of `composites`.
-    #[getter]
-    fn thermal_composites(&self) -> Vec<bool> {
-        self.thermal_composites.clone()
+    /// Where the terminal `terminal` of the device, component instance or logic device at
+    /// `instance` joins the circuit: the unknown that is its voltage, by name, or `None` on
+    /// the reference, and whether it is thermal; `None` when there is no such terminal on
+    /// an electrical or a thermal net.
+    fn terminal(&self, instance: &str, terminal: &str) -> Option<(Option<String>, bool)> {
+        let simulator = self.lock();
+        let (node, thermal) = simulator.terminal(instance, terminal)?;
+        let name = node.map(|unknown| simulator.unknowns()[unknown.index()].name.clone());
+        Some((name, thermal))
     }
 
     /// The paths of the foundry's devices, which ngspice simulates in the engine's place,
@@ -213,10 +207,7 @@ impl Simulator {
     /// `message`, its `instances` and its `nets`; each instance is a dictionary of its `path`
     /// and its `source`, the script line that placed it or `None`.
     fn check<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let simulator = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let simulator = self.lock();
         diagnostics_to_python(py, jolty_checks::check(&simulator))
     }
 
@@ -231,10 +222,7 @@ impl Simulator {
     ) -> PyResult<Bound<'py, PyList>> {
         let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
         let found = py.detach(|| {
-            let mut simulator = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut simulator = self.lock();
             jolty_checks::check_operating_point(&mut simulator, &options)
         });
         diagnostics_to_python(
@@ -248,10 +236,7 @@ impl Simulator {
     /// and `high`, the `value` furthest outside, the `time` it first left, and the `count`
     /// of times it was read outside.
     fn excursions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let simulator = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let simulator = self.lock();
         let found = PyList::empty(py);
         for excursion in simulator.excursions() {
             let item = PyDict::new(py);
@@ -279,16 +264,22 @@ impl Simulator {
             serde_json::from_str(analysis).map_err(|error| unreadable(&error))?;
         let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
         let outcome = py.detach(|| {
-            let mut simulator = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut simulator = self.lock();
             simulator.run(&analysis, &options)
         });
         outcome_to_python(
             py,
             outcome.map_err(|error| SimulationError::new_err(error.to_string()))?,
         )
+    }
+}
+
+impl Simulator {
+    /// The engine's simulator, which an analysis on another thread may hold.
+    fn lock(&self) -> std::sync::MutexGuard<'_, jolty_engine::Simulator> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -496,9 +487,9 @@ fn add_operating_point(
     result.set_item("strategy", operating_point.strategy.name())
 }
 
-/// Adds what every device did at each point to `result`: the terminals' `currents` and
-/// `charges`, the derivatives' `conductances` and `capacitances`, and the `variables`, one
-/// row per point.
+/// Adds what the recorded devices did at each point to `result`: the terminals' `currents`
+/// and `charges`, the derivatives' `conductances` and `capacitances`, and the `variables`,
+/// one row per point.
 fn add_observations(result: &Bound<'_, PyDict>, observations: Observations) -> PyResult<()> {
     let py = result.py();
     let points = observations.points;

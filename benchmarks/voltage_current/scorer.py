@@ -34,7 +34,7 @@ from scoring import Board, cornered, count_devices, disallowed, discrete, tolera
 from verdict import Verdict
 
 from jolty import Builder, Component, Role, circuit, component, devices
-from jolty.plan import Transient
+from jolty.plan import Options, Transient
 from jolty.units import Hz, V, ns, ohm, s, us
 from jolty.waveforms import Piecewise, Pulse, Sine
 
@@ -58,6 +58,8 @@ UNSETTLED = 1e-6
 """The swing of the output current, in amperes, beyond which it has not settled."""
 SETTLED = 40e-6
 """The time from which the output current must have settled, in seconds."""
+LOAD = Options(record=["RLOAD"])
+"""Options that record the load, whose current the output is."""
 SETTLED_ERROR = max(PATENT)
 """How far, in amperes, the settled output current may lie from 1 mA/V times the inputs'
 difference: the patent's largest mean error over a case, so that a design no worse than
@@ -155,7 +157,8 @@ def measure(made: Component, board: Board) -> dict[str, float]:
                 stop=1 * s,
                 max_step=(1 / (10 * (TIMES - 1))) * s,
                 times=[time * s for time in times[1:]],
-            )
+            ),
+            LOAD,
         )
 
         def read(values: np.ndarray, at: np.ndarray = waveforms.times) -> np.ndarray:
@@ -174,7 +177,7 @@ def measure(made: Component, board: Board) -> dict[str, float]:
         inputs = (devices.voltage_source(plus * V), devices.voltage_source(minus * V))
         waveforms = board.simulation(
             circuit(bench(made, inputs, step(level))), SUPPLIES
-        ).run(Transient(stop=50 * us, max_step=10 * ns))
+        ).run(Transient(stop=50 * us, max_step=10 * ns), LOAD)
         late = waveforms.times >= SETTLED
         current = waveforms.current("RLOAD", "a")[late]
         measurements[f"swing {case}"] = float(np.ptp(current))

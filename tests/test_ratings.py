@@ -11,7 +11,9 @@ import pytest
 from jolty import (
     Builder,
     Component,
+    DcSweep,
     OperatingPoint,
+    Options,
     Role,
     Simulation,
     Transient,
@@ -19,6 +21,7 @@ from jolty import (
     component,
     devices,
     ir,
+    results,
 )
 from jolty.errors import DimensionError
 from jolty.files import load_circuit, save_circuit
@@ -155,6 +158,52 @@ def test_a_stress_below_a_minimum_and_at_rest() -> None:
         )
     ]
     assert found[0].instances[0].path == "C1"
+
+
+def test_by_default_results_record_the_instances_rated_for_a_current_or_power() -> None:
+    simulation = Simulation(supply(rated_power=0.5, rated_voltage=50))
+    point = simulation.run(OperatingPoint())
+    # R1's power reads its currents; C1's voltage reads its nets alone.
+    assert point.recording.terminals == ("R1.a", "R1.b")
+    assert [d.rule for d in simulation.check_results({"op": point})] == ["over-rating"]
+    step = simulation.run(Transient(stop=1e-6 * s))
+    assert step.recording.terminals == ("R1.a", "R1.b")
+    sweep = simulation.run(DcSweep("V1", [0 * V, 10 * V]))
+    assert sweep.recording == results.Recording()
+    # Without its currents, R1's power goes unjudged.
+    bare = simulation.run(OperatingPoint(), Options(record=[]))
+    assert simulation.check_results({"op": bare}) == ()
+
+
+@component
+def divided(c: Builder) -> None:
+    """Two resistors of 100 Ω in series, a component rated for 0.5 W."""
+    top, bottom = c.port("top"), c.port("bottom")
+    upper = c.place(devices.resistor(100 * ohm), id="R1")
+    lower = c.place(devices.resistor(100 * ohm), id="R2")
+    c.connect(top, upper.a)
+    c.connect(upper.b, lower.a)
+    c.connect(lower.b, bottom)
+
+
+def test_a_component_s_rating_reads_its_ports_without_its_devices() -> None:
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(20 * V), id="V1")
+        load = c.place(divided().rated("power", 1.5 * W), id="X1")
+        c.connect(source.positive, load.top)
+        c.connect(source.negative, load.bottom, ground)
+
+    simulation = Simulation(bench())
+    point = simulation.run(OperatingPoint())
+    assert point.recording.devices == ()
+    assert point.recording.composites == ("X1.top", "X1.bottom")
+    ((rule, message),) = [
+        (d.rule, d.message) for d in simulation.check_results({"op": point})
+    ]
+    assert rule == "over-rating"
+    assert message.startswith("the power `X1` dissipates reaches 2.0 W")
 
 
 def test_ratings_travel_with_the_circuit(tmp_path: Path) -> None:

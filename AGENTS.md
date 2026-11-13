@@ -70,7 +70,7 @@ Each module imports only from the modules listed before it:
 - **Rust:** no `unsafe`, and no `unwrap` outside tests.
   Every public item has documentation.
 - **Circuit and plan:** the circuit says what exists; the plan says how to simulate it.
-  Nothing about simulation lives in the circuit format, and a plan names only the instances it excites.
+  Nothing about simulation lives in the circuit format, and a plan names instances only to excite them, to record them, or to run a model in their place.
 - **Units:** quantities carry their dimension in Python, and every device checks the dimension of each parameter as it reads it.
   The circuit format, the engine and the results hold numbers in SI base units.
 - **One definition:** each command is a request model plus a function in `jolty.service`.

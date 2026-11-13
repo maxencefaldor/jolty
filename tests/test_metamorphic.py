@@ -16,6 +16,7 @@ another.
 """
 
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 
 import numpy as np
 from hypothesis import event, given
@@ -272,7 +273,7 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
     found = _assert_same(original, written)
     if not found:
         return
-    point = Simulation(written).run(OperatingPoint(), TIGHT)
+    point = Simulation(written).run(OperatingPoint(), replace(TIGHT, record=["**"]))
     reading = point.current("ammeter")
     into = point.current(probed.id, terminal)
     scale = max(abs(current) for current in _currents(point)) or 1.0
@@ -282,10 +283,15 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
 
 
 def _currents(point: results.OperatingPoint) -> Iterable[float]:
-    """Every current the operating point holds: through branches and into terminals."""
+    """Every current the operating point holds: through branches and into terminals.
+
+    The terminals are those of every device it recorded, whose currents come before
+    the sums of the component instances' ports.
+    """
     yield from (
         float(value)
         for unknown, value in zip(point.unknowns, point.values, strict=True)
         if unknown.quantity == "current"
     )
-    yield from (float(current) for current in point.currents)
+    terminals = sum(len(device.terminals) for device in point.recording.devices)
+    yield from (float(current) for current in point.currents[:terminals])

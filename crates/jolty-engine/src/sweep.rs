@@ -32,8 +32,9 @@ pub struct Sweep {
     pub levels: Vec<f64>,
     /// The value of every unknown at each level.
     pub values: Vec<Vec<f64>>,
-    /// What every device did at each level: the current into each terminal and the charge
-    /// it holds, its derivatives and its variables.
+    /// What the devices its options record did at each level: the current into each
+    /// recorded terminal and the charge it holds, and the recorded devices' derivatives and
+    /// variables.
     pub observations: Observations,
     /// The level of every logic net at each level.
     pub logic: Vec<Vec<Level>>,
@@ -53,7 +54,7 @@ impl Simulator {
         options: &Options,
     ) -> Result<Sweep, SimulationError> {
         self.solvable()?;
-        options.check()?;
+        self.prepare(options)?;
         if sweep.levels.is_empty() {
             return Err(SimulationError::InvalidAnalysis(
                 "a DC sweep needs at least one level".to_owned(),

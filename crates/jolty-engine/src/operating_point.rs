@@ -48,8 +48,8 @@ const SETTLE_ROUNDS: usize = 4;
 pub struct OperatingPoint {
     /// The value of every unknown, in the simulator's order.
     pub values: Vec<f64>,
-    /// What every device did: the current into each terminal and the charge it holds, its
-    /// derivatives and its variables.
+    /// What the devices its options record did: the current into each recorded terminal
+    /// and the charge it holds, and the recorded devices' derivatives and variables.
     pub observation: Observation,
     /// The level of every logic net, in the simulator's order.
     pub logic: Vec<Level>,
@@ -127,7 +127,7 @@ impl Simulator {
         options: &Options,
     ) -> Result<OperatingPoint, SimulationError> {
         self.solvable()?;
-        options.check()?;
+        self.prepare(options)?;
         self.reset_logic();
         let solved = self.solve_dc(vec![0.0; self.system.unknowns.len()], options)?;
         self.settle(solved, options)
@@ -152,7 +152,7 @@ impl Simulator {
         options: &Options,
     ) -> Result<Vec<OperatingPoint>, SimulationError> {
         self.solvable()?;
-        options.check()?;
+        self.prepare(options)?;
         if search.most == 0 {
             return Err(SimulationError::InvalidAnalysis(
                 "a search for operating points finds one or more".to_owned(),
@@ -495,7 +495,10 @@ impl Simulator {
                 anchor: None,
                 deflated,
             };
-            let stepping = Options { gmin, ..*options };
+            let stepping = Options {
+                gmin,
+                ..options.clone()
+            };
             match self.newton(values, mode, &stepping, options.dc_iterations) {
                 Ok(_) if conductance <= options.gmin => break,
                 Ok(iterations) => {
