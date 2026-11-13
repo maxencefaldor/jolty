@@ -449,12 +449,17 @@ pub(crate) fn elaborate(
         substituted: BTreeSet::new(),
         nets: Vec::new(),
         named: HashMap::new(),
+        entered: 1,
         ports: Vec::new(),
         devices: Vec::new(),
         logic: Vec::new(),
         problems,
     };
-    walk.component(top, "", &reference);
+    let scope = Scope {
+        prefix: "",
+        number: 0,
+    };
+    walk.component(top, scope, &reference);
     let Walk {
         nets,
         ports,
@@ -1019,12 +1024,24 @@ struct Walk<'a> {
     /// The paths of the component instances a model stands in for.
     substituted: BTreeSet<String>,
     nets: Vec<NetRecord>,
-    named: HashMap<String, usize>,
+    /// Each net met, by the number of the component instance it is in and its name there.
+    named: HashMap<(usize, &'a Name), usize>,
+    /// How many component instances the walk has entered, the top's among them.
+    entered: usize,
     /// Every port of every component instance, in the order they were met.
     ports: Vec<PortRecord>,
     devices: Vec<Pending<'a>>,
     logic: Vec<PendingLogic<'a>>,
     problems: Vec<ElaborationProblem>,
+}
+
+/// A component instance the walk is in.
+#[derive(Debug, Clone, Copy)]
+struct Scope<'p> {
+    /// The start of the paths of the instances within it, such as `X1/`.
+    prefix: &'p str,
+    /// Its number, in the order the walk enters component instances, from 0, the top's.
+    number: usize,
 }
 
 /// A net as a component sees it: the net, and the port of the component's instance it is,
@@ -1060,18 +1077,18 @@ enum Member {
 }
 
 impl<'a> Walk<'a> {
-    /// Walks `component`, whose instances' paths start with `prefix` and whose ports connect
-    /// to the nets in `ports`. The circuit has been validated, so every referenced component
+    /// Walks `component`, in the component instance `scope`, whose ports connect to the
+    /// nets in `ports`. The circuit has been validated, so every referenced component
     /// exists and every port of a component instance is connected.
     fn component(
         &mut self,
         component: &'a Component,
-        prefix: &str,
+        scope: Scope<'_>,
         ports: &BTreeMap<&'a Name, Joined>,
     ) {
         for instance in &component.instances {
             let at = Location {
-                path: format!("{prefix}{}", instance.id),
+                path: format!("{}{}", scope.prefix, instance.id),
                 source: instance.source.clone(),
             };
             match &instance.of {
@@ -1099,7 +1116,7 @@ impl<'a> Walk<'a> {
                         at,
                         model,
                     };
-                    self.device(placement, prefix, ports);
+                    self.device(placement, scope, ports);
                 }
                 Of::Component(_) if self.substitutes.contains_key(&at.path) => {
                     let substitute = &self.substitutes[&at.path];
@@ -1110,7 +1127,7 @@ impl<'a> Walk<'a> {
                         at,
                         model: &substitute.model,
                     };
-                    self.device(placement, prefix, ports);
+                    self.device(placement, scope, ports);
                 }
                 Of::Component(target) => {
                     let definition = &self.circuit.components[target];
@@ -1118,7 +1135,7 @@ impl<'a> Walk<'a> {
                         .ports
                         .iter()
                         .map(|port| {
-                            let outside = self.net(prefix, ports, &instance.terminals[&port.name]);
+                            let outside = self.net(scope, ports, &instance.terminals[&port.name]);
                             self.ports.push(PortRecord {
                                 name: format!("{}.{}", at.path, port.name),
                                 owner: at.path.clone(),
@@ -1134,17 +1151,23 @@ impl<'a> Walk<'a> {
                             (&port.name, joined)
                         })
                         .collect();
-                    self.component(definition, &format!("{}/", at.path), &inner);
+                    let inside = Scope {
+                        prefix: &format!("{}/", at.path),
+                        number: self.entered,
+                    };
+                    self.entered += 1;
+                    self.component(definition, inside, &inner);
                 }
             }
         }
     }
 
-    /// Places the device of `placement`, analog or logic, in the component at `prefix`.
+    /// Places the device of `placement`, analog or logic, in the component instance
+    /// `scope`.
     fn device(
         &mut self,
         placement: Placement<'a, '_>,
-        prefix: &str,
+        scope: Scope<'_>,
         ports: &BTreeMap<&'a Name, Joined>,
     ) {
         let Placement {
@@ -1169,7 +1192,7 @@ impl<'a> Walk<'a> {
                 &at,
                 model_name,
                 &interface.terminals,
-                prefix,
+                scope,
                 ports,
             ) else {
                 return;
@@ -1209,7 +1232,7 @@ impl<'a> Walk<'a> {
                 }
             };
             let Some(joined) =
-                self.terminals(connected, &at, model_name, &pins.names(), prefix, ports)
+                self.terminals(connected, &at, model_name, &pins.names(), scope, ports)
             else {
                 return;
             };
@@ -1246,11 +1269,11 @@ impl<'a> Walk<'a> {
     /// Each net comes with the port of the enclosing instance it is, if it is one.
     fn terminals(
         &mut self,
-        connected: &BTreeMap<Name, Name>,
+        connected: &'a BTreeMap<Name, Name>,
         at: &Location,
         model: &Name,
         expected: &[String],
-        prefix: &str,
+        scope: Scope<'_>,
         ports: &BTreeMap<&'a Name, Joined>,
     ) -> Option<Vec<Joined>> {
         let mut complete = true;
@@ -1267,7 +1290,7 @@ impl<'a> Walk<'a> {
         let mut terminals = Vec::with_capacity(expected.len());
         for terminal in expected {
             if let Some(net) = connected.get(terminal.as_str()) {
-                terminals.push(self.net(prefix, ports, net));
+                terminals.push(self.net(scope, ports, net));
             } else {
                 complete = false;
                 self.problems.push(ElaborationProblem::UnconnectedTerminal {
@@ -1280,14 +1303,19 @@ impl<'a> Walk<'a> {
         complete.then_some(terminals)
     }
 
-    /// The net `net` of the component at `prefix`: a port's net from the parent, with the
-    /// port, or the component's own net, recorded when first met.
-    fn net(&mut self, prefix: &str, ports: &BTreeMap<&'a Name, Joined>, net: &Name) -> Joined {
+    /// The net `net` of the component instance `scope`: a port's net from the parent, with
+    /// the port, or the component's own net, recorded and named by its path when first
+    /// met.
+    fn net(
+        &mut self,
+        scope: Scope<'_>,
+        ports: &BTreeMap<&'a Name, Joined>,
+        net: &'a Name,
+    ) -> Joined {
         if let Some(&found) = ports.get(net) {
             return found;
         }
-        let name = format!("{prefix}{net}");
-        if let Some(&index) = self.named.get(&name) {
+        if let Some(&index) = self.named.get(&(scope.number, net)) {
             return Joined {
                 net: Some(index),
                 port: None,
@@ -1295,12 +1323,12 @@ impl<'a> Walk<'a> {
         }
         let index = self.nets.len();
         self.nets.push(NetRecord {
-            name: name.clone(),
+            name: format!("{}{net}", scope.prefix),
             electrical: false,
             logic: false,
             thermal: None,
         });
-        self.named.insert(name, index);
+        self.named.insert((scope.number, net), index);
         Joined {
             net: Some(index),
             port: None,
@@ -1359,6 +1387,45 @@ mod tests {
         assert_eq!(names, ["in", "X1/mid", "V1:current"]);
         let paths: Vec<&str> = system.devices.iter().map(Placed::path).collect();
         assert_eq!(paths, ["V1", "X1/R1", "X1/R2"]);
+    }
+
+    #[test]
+    fn each_instance_of_a_component_has_nets_of_its_own() {
+        let system = elaborate_json(
+            r#"{
+                "top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
+                    {"id": "X1", "of": {"component": "cell"}, "terminals": {"a": "gnd"}},
+                    {"id": "X2", "of": {"component": "cell"}, "terminals": {"a": "mid"}},
+                    {"id": "R0", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                     "terminals": {"a": "mid", "b": "gnd"}}
+                ]},
+                "cell": {"ports": [{"name": "a", "role": "signal"}], "instances": [
+                    {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                     "terminals": {"a": "a", "b": "mid"}},
+                    {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                     "terminals": {"a": "mid", "b": "a"}}
+                ]}
+            }"#,
+        )
+        .unwrap();
+        let names: Vec<&str> = system
+            .unknowns
+            .iter()
+            .map(|unknown| unknown.name.as_str())
+            .collect();
+        assert_eq!(names, ["X1/mid", "mid", "X2/mid"]);
+        let nodes: Vec<&[Node]> = system.devices.iter().map(Placed::nodes).collect();
+        let [first, second, third] = [0, 1, 2].map(|index| Some(Unknown::new(index)));
+        assert_eq!(
+            nodes,
+            [
+                [None, first].as_slice(),
+                &[first, None],
+                &[second, third],
+                &[third, second],
+                &[second, None],
+            ]
+        );
     }
 
     #[test]
