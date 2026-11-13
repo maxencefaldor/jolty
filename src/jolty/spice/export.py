@@ -583,6 +583,10 @@ _TRANSIENT_OPERATING_POINT: Final = "Transient op started"
 """What ngspice prints when Newton iteration, gmin stepping and source stepping all fail
 to find an operating point, and it takes the end of a transient from zero instead."""
 
+_ABORTED: Final = "simulation(s) aborted"
+"""What ngspice prints when an analysis stops short, as a transient whose step falls
+below its smallest; the results it writes then end where it stopped."""
+
 _SHORTEST_TRANSIENT_OPERATING_POINT: Final = "optran 1 1 1 1n 1n 0"
 """Keeps ngspice's first Newton iteration, gmin stepping and source stepping, and makes
 the transient it falls back to a single nanosecond: its end is refused anyway, and the
@@ -610,8 +614,8 @@ def ngspice(  # noqa: PLR0913 - a deck, its analysis, and how ngspice runs it
 
     Raises:
         JoltyError: When ngspice runs out of time, writes no results, runs no
-            analysis, or finds its operating point only as the end of a transient of
-            fixed length, which it does not check to be one.
+            analysis, aborts it, or finds its operating point only as the end of a
+            transient of fixed length, which it does not check to be one.
     """
     nominal = spice_celsius(_core.REFERENCE_TEMPERATURE)
     deck = [
@@ -657,7 +661,11 @@ def ngspice(  # noqa: PLR0913 - a deck, its analysis, and how ngspice runs it
     if result.plot == "Constant values":
         message = f"ngspice ran no analysis:\n{done.stdout}{done.stderr}"
         raise JoltyError(message)
-    if _TRANSIENT_OPERATING_POINT in done.stdout + done.stderr:
+    printed = done.stdout + done.stderr
+    if _ABORTED in printed:
+        message = f"ngspice aborted the analysis:\n{printed}"
+        raise JoltyError(message)
+    if _TRANSIENT_OPERATING_POINT in printed:
         message = (
             "ngspice found no operating point but by a transient of fixed length, "
             f"whose end it does not check to be one:\n{done.stdout}{done.stderr}"
