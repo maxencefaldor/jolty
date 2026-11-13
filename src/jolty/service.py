@@ -226,9 +226,11 @@ class SimulateRequest(_Model):
     """Build a script's circuit, run every analysis of a plan on it, check its specs.
 
     A plan is a Python file defining plan(), which returns a jolty Plan: named analyses,
-    the numerical options they share, a temperature, corners, other temperatures or
-    arguments to build() at which the analyses run again, and a Monte Carlo analysis
-    that runs them on samples of the circuit's tolerances. It may define specs(), which
+    the numerical options they share, among them the instances whose currents and
+    small-signal models the saved results record beside the unknowns, a temperature,
+    corners, other temperatures or arguments to build() at which the analyses run
+    again, and a Monte Carlo analysis that runs them on samples of the circuit's
+    tolerances. It may define specs(), which
     returns jolty Specs: requirements on measurements of the analyses' results, each of
     which passes, is marginal, fails or goes unmeasured, at its worst corner, and a
     yield target for the Monte Carlo samples. It can be the build script itself.
