@@ -157,7 +157,7 @@ impl Simulator {
                 densities: Vec::with_capacity(noise.frequencies.len()),
             }));
         }
-        let mut linearization = Linearization::new(&self.system.pattern)?;
+        let mut linearization = Linearization::new(self.solver.ordering());
         let mut densities = Vec::with_capacity(noise.frequencies.len());
         for &frequency in &noise.frequencies {
             let mut weights = vec![Complex64::default(); unknowns];

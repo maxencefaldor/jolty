@@ -226,7 +226,7 @@ impl Simulator {
             .filter(|pole| pole.re > GROWING * pole.norm() && pole.im >= 0.0)
             .collect();
         growing.sort_by(|x, y| y.re.total_cmp(&x.re));
-        let mut linearization = Linearization::new(&self.system.pattern)?;
+        let mut linearization = Linearization::new(self.solver.ordering());
         growing
             .into_iter()
             .map(|pole| {

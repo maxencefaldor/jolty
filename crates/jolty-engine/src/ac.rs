@@ -4,7 +4,7 @@ use std::f64::consts::TAU;
 use std::sync::Arc;
 
 use jolty_models::{Contributions, Quantity, Unknown};
-use jolty_numerics::{Complex64, Factors, Pattern, SparseLu};
+use jolty_numerics::{Complex64, Factors, Ordering, SparseLu};
 use serde::Deserialize;
 
 use crate::{OperatingPoint, Options, SimulationError, Simulator};
@@ -54,7 +54,7 @@ impl Simulator {
         if let Some(source) = self.system.devices[index].device.as_source() {
             source.level_derivative(&mut excitation);
         }
-        let mut linearization = Linearization::new(&self.system.pattern)?;
+        let mut linearization = Linearization::new(self.solver.ordering());
         self.observer
             .linearize(&operating_point.values, options.gmin);
         let mut values = Vec::with_capacity(ac.frequencies.len());
@@ -162,12 +162,13 @@ pub(crate) struct Linearization {
 }
 
 impl Linearization {
-    /// A linearization over `pattern`, whose symbolic analysis every frequency shares.
-    pub(crate) fn new(pattern: &Arc<Pattern>) -> Result<Self, SimulationError> {
-        Ok(Self {
-            solver: SparseLu::new(Arc::clone(pattern))?,
-            matrix: vec![Complex64::default(); pattern.len()],
-        })
+    /// A linearization over the pattern of `ordering`, which it shares with the simulator's
+    /// real solver.
+    pub(crate) fn new(ordering: &Arc<Ordering>) -> Self {
+        Self {
+            solver: SparseLu::new(Arc::clone(ordering)),
+            matrix: vec![Complex64::default(); ordering.pattern().len()],
+        }
     }
 
     /// `G + jωC` at `frequency`, from the `contributions` at the operating point, factored.

@@ -57,11 +57,11 @@ mod sweep;
 mod transient;
 
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{Level, Library, Node, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
-use jolty_numerics::{LinearError, SparseLu};
+use jolty_numerics::{LinearError, Ordering, SparseLu};
 use serde::Deserialize;
 
 pub use ac::{Ac, Response};
@@ -199,8 +199,9 @@ impl Simulator {
         conditions: &Conditions,
     ) -> Result<Self, ElaborationError> {
         let system = elaborate::elaborate(circuit, library, conditions)?;
-        let solver = SparseLu::new(system.pattern.clone())
+        let ordering = Ordering::new(system.pattern.clone())
             .map_err(|_| ElaborationError::from(ElaborationProblem::TooLarge))?;
+        let solver = SparseLu::new(Arc::new(ordering));
         let workspace = Workspace::new(&system);
         let events = Events::new(&system.logic);
         let observer = Observer::new(&system);

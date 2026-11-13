@@ -1,32 +1,74 @@
+//! A sparse LU solver for the matrices of circuits, after KLU (Davis and Palamadai Natarajan,
+//! "Algorithm 907: KLU, a direct sparse solver for circuit simulation problems", ACM
+//! Transactions on Mathematical Software 37(3), 2010).
+//!
+//! An [`Ordering`] analyzes a pattern once: it matches every column with a row so that the
+//! matched entries make a diagonal free of structural zeros, splits the matrix into its
+//! block triangular form, and orders each diagonal block to reduce its fill. A [`SparseLu`]
+//! then factors the matrices of the pattern, real or complex, by left-looking Gaussian
+//! elimination with threshold partial pivoting that prefers the ordering's diagonal, and
+//! refactors each new matrix with the pivots of the last, searching afresh only from a pivot
+//! that has become too small.
+
+mod numeric;
+mod ordering;
+
 use std::fmt;
+use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 use std::sync::Arc;
 
-use dyn_stack::{MemBuffer, MemStack};
-use faer::sparse::linalg::LuError;
-use faer::sparse::linalg::lu::{
-    LuRef, LuSymbolicParams, NumericLu, SymbolicLu, factorize_symbolic_lu,
-};
-use faer::sparse::{FaerError, SparseColMatRef};
-use faer::traits::ComplexField;
-use faer::{Conj, MatMut, Par, Spec};
+use faer::sparse::FaerError;
 use num_complex::Complex64;
 
+use self::numeric::Numeric;
+pub use self::ordering::Ordering;
 use crate::Pattern;
 
 /// A scalar the sparse solver works in: `f64` for DC and transient analyses, [`Complex64`]
 /// for small-signal analyses.
-pub trait Scalar: ComplexField + Copy {
+pub trait Scalar:
+    Copy
+    + PartialEq
+    + fmt::Debug
+    + Send
+    + Sync
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
+    + Div<Output = Self>
+    + Neg<Output = Self>
+    + AddAssign
+    + SubAssign
+{
+    /// Zero.
+    const ZERO: Self;
+
+    /// The value's magnitude: its absolute value, or a complex number's modulus.
+    fn magnitude(self) -> f64;
+
     /// Whether the value is neither infinite nor NaN.
     fn is_finite(self) -> bool;
 }
 
 impl Scalar for f64 {
+    const ZERO: Self = 0.0;
+
+    fn magnitude(self) -> f64 {
+        self.abs()
+    }
+
     fn is_finite(self) -> bool {
         f64::is_finite(self)
     }
 }
 
 impl Scalar for Complex64 {
+    const ZERO: Self = Self::new(0.0, 0.0);
+
+    fn magnitude(self) -> f64 {
+        self.norm()
+    }
+
     fn is_finite(self) -> bool {
         Complex64::is_finite(self)
     }
@@ -55,62 +97,98 @@ impl From<dyn_stack::mem::AllocError> for LinearError {
     }
 }
 
-impl From<LuError> for LinearError {
-    fn from(error: LuError) -> Self {
-        match error {
-            LuError::SymbolicSingular { .. } => Self::Singular,
-            LuError::Generic(_) => Self::TooLarge,
-        }
+impl From<std::collections::TryReserveError> for LinearError {
+    fn from(_: std::collections::TryReserveError) -> Self {
+        Self::TooLarge
     }
+}
+
+/// How much work a [`SparseLu`] has done, by kind, over the factorizations that succeeded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Statistics {
+    /// Factorizations that searched for pivots: the first, one after a failure, and one
+    /// whose matrix made a pivot of the last too small, which searched from that pivot on.
+    pub factorizations: usize,
+    /// Factorizations that kept every pivot of the last, with no search.
+    pub refactorizations: usize,
+    /// Calls given the very matrix last factored, which kept its factors.
+    pub reuses: usize,
 }
 
 /// A sparse LU solver for matrices of one [`Pattern`].
 ///
-/// Construction runs the symbolic analysis, a fill-reducing column ordering, once. Every
-/// [`SparseLu::factor`] then reuses it and its workspaces, so the Newton iterations of a whole
-/// simulation allocate nothing.
+/// It shares its pattern's [`Ordering`] with any other solver of the pattern, real or
+/// complex. Each [`SparseLu::factor`] keeps the factors of the last when given the same
+/// matrix, refactors with the last pivots when given another, and searches for pivots only
+/// where one has become too small; its workspaces are kept, so the Newton iterations of a
+/// whole simulation allocate nothing once the first has run.
 pub struct SparseLu<T: Scalar> {
-    pattern: Arc<Pattern>,
-    symbolic: SymbolicLu<usize>,
-    numeric: NumericLu<usize, T>,
-    factor_workspace: MemBuffer,
-    solve_workspace: MemBuffer,
+    ordering: Arc<Ordering>,
+    numeric: Numeric<T>,
+    /// The values of the matrix last factored, which the solves read outside the diagonal
+    /// blocks.
+    factored: Vec<T>,
+    /// Whether the factors are those of `factored`.
+    current: bool,
+    /// The solves' workspace, by row of the ordered matrix and by position.
+    workspace: (Vec<T>, Vec<T>),
+    statistics: Statistics,
 }
 
 impl<T: Scalar> SparseLu<T> {
-    /// Analyzes `pattern` and allocates the workspaces its factorizations need.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinearError::TooLarge`] when the analysis or its workspaces do not fit.
-    pub fn new(pattern: Arc<Pattern>) -> Result<Self, LinearError> {
-        let symbolic =
-            factorize_symbolic_lu(pattern.structure().as_ref(), LuSymbolicParams::default())?;
-        let factor_workspace = MemBuffer::try_new(
-            symbolic.factorize_numeric_lu_scratch::<T>(Par::Seq, Spec::default()),
-        )?;
-        let solve_workspace =
-            MemBuffer::try_new(symbolic.solve_in_place_scratch::<T>(1, Par::Seq))?;
-        Ok(Self {
-            pattern,
-            symbolic,
-            numeric: NumericLu::new(),
-            factor_workspace,
-            solve_workspace,
-        })
+    /// A solver for the matrices of `ordering`'s pattern.
+    #[must_use]
+    pub fn new(ordering: Arc<Ordering>) -> Self {
+        let dimension = ordering.pattern().dimension();
+        Self {
+            numeric: Numeric::new(dimension),
+            ordering,
+            factored: Vec::new(),
+            current: false,
+            workspace: (vec![T::ZERO; dimension], vec![T::ZERO; dimension]),
+            statistics: Statistics::default(),
+        }
+    }
+
+    /// The ordering of the pattern this solver factors.
+    #[must_use]
+    pub fn ordering(&self) -> &Arc<Ordering> {
+        &self.ordering
     }
 
     /// The pattern of the matrices this solver factors.
     #[must_use]
     pub fn pattern(&self) -> &Arc<Pattern> {
-        &self.pattern
+        self.ordering.pattern()
+    }
+
+    /// How much work the solver has done.
+    #[must_use]
+    pub fn statistics(&self) -> Statistics {
+        self.statistics
+    }
+
+    /// The entries the solves read: those of `L` below its unit diagonal, those of `U` on
+    /// and above its diagonal, and the matrix's own entries above its diagonal blocks, as
+    /// the last factorization left them. The fill is their number less the matrix's.
+    #[must_use]
+    pub fn entries(&self) -> usize {
+        self.numeric.entries() + self.ordering.entries_above()
     }
 
     /// Factors the matrix whose stored values, in the pattern's order, are `values`.
     ///
+    /// The factors of the last matrix are kept when every value equals its own. Otherwise
+    /// the pivots of the last factorization are kept while each stays at least a tenth of
+    /// the largest entry below it in its column, and the pivots are searched for from the
+    /// first that does not, each the diagonal entry of the ordering where it is that large,
+    /// and else the largest.
+    ///
     /// # Errors
     ///
-    /// Returns [`LinearError::Singular`] when no pivot can be found for some column.
+    /// Returns [`LinearError::Singular`] when a column has no nonzero pivot, which every
+    /// matrix of a structurally singular pattern meets, and [`LinearError::TooLarge`] when
+    /// the factors do not fit in memory.
     ///
     /// # Panics
     ///
@@ -118,20 +196,30 @@ impl<T: Scalar> SparseLu<T> {
     pub fn factor(&mut self, values: &[T]) -> Result<Factors<'_, T>, LinearError> {
         assert_eq!(
             values.len(),
-            self.pattern.len(),
+            self.ordering.pattern().len(),
             "one value per stored position"
         );
-        let matrix = SparseColMatRef::new(self.pattern.structure().as_ref(), values);
-        self.symbolic.factorize_numeric_lu(
-            &mut self.numeric,
-            matrix,
-            Par::Seq,
-            MemStack::new(&mut self.factor_workspace),
-            Spec::default(),
-        )?;
+        if self.current && self.factored == values {
+            self.statistics.reuses += 1;
+        } else {
+            self.current = false;
+            if self.ordering.is_singular() {
+                return Err(LinearError::Singular);
+            }
+            self.factored.clear();
+            self.factored.extend_from_slice(values);
+            if self.numeric.factor(&self.ordering, values)? {
+                self.statistics.factorizations += 1;
+            } else {
+                self.statistics.refactorizations += 1;
+            }
+            self.current = true;
+        }
         Ok(Factors {
-            factors: LuRef::new_unchecked(&self.symbolic, &self.numeric),
-            workspace: &mut self.solve_workspace,
+            ordering: &self.ordering,
+            numeric: &self.numeric,
+            values: &self.factored,
+            workspace: &mut self.workspace,
         })
     }
 }
@@ -139,21 +227,24 @@ impl<T: Scalar> SparseLu<T> {
 impl<T: Scalar> fmt::Debug for SparseLu<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SparseLu")
-            .field("pattern", &self.pattern)
+            .field("ordering", &self.ordering)
+            .field("statistics", &self.statistics)
             .finish_non_exhaustive()
     }
 }
 
 /// The LU factors of one matrix, ready to solve systems with it.
 pub struct Factors<'a, T: Scalar> {
-    factors: LuRef<'a, usize, T>,
-    workspace: &'a mut MemBuffer,
+    ordering: &'a Ordering,
+    numeric: &'a Numeric<T>,
+    values: &'a [T],
+    workspace: &'a mut (Vec<T>, Vec<T>),
 }
 
 impl<T: Scalar> fmt::Debug for Factors<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Factors")
-            .field("rows", &self.factors.symbolic().nrows())
+            .field("rows", &self.ordering.pattern().dimension())
             .finish_non_exhaustive()
     }
 }
@@ -163,21 +254,21 @@ impl<T: Scalar> Factors<'_, T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::Singular`] when the solution is not finite, which a zero pivot
-    /// causes.
+    /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
+    /// too small for the matrix's range causes.
     ///
     /// # Panics
     ///
     /// Panics if `rhs` does not hold one value per row.
     pub fn solve(&mut self, rhs: &mut [T]) -> Result<(), LinearError> {
-        let rows = self.factors.symbolic().nrows();
-        assert_eq!(rhs.len(), rows, "one right-hand side value per row");
-        self.factors.solve_in_place_with_conj(
-            Conj::No,
-            MatMut::from_column_major_slice_mut(rhs, rows, 1),
-            Par::Seq,
-            MemStack::new(self.workspace),
+        assert_eq!(
+            rhs.len(),
+            self.ordering.pattern().dimension(),
+            "one right-hand side value per row"
         );
+        let (by_row, by_position) = &mut *self.workspace;
+        self.numeric
+            .solve(self.ordering, self.values, rhs, (by_row, by_position));
         finite(rhs)
     }
 
@@ -186,21 +277,21 @@ impl<T: Scalar> Factors<'_, T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::Singular`] when the solution is not finite, which a zero pivot
-    /// causes.
+    /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
+    /// too small for the matrix's range causes.
     ///
     /// # Panics
     ///
     /// Panics if `rhs` does not hold one value per row.
     pub fn solve_transpose(&mut self, rhs: &mut [T]) -> Result<(), LinearError> {
-        let rows = self.factors.symbolic().nrows();
-        assert_eq!(rhs.len(), rows, "one right-hand side value per row");
-        self.factors.solve_transpose_in_place_with_conj(
-            Conj::No,
-            MatMut::from_column_major_slice_mut(rhs, rows, 1),
-            Par::Seq,
-            MemStack::new(self.workspace),
+        assert_eq!(
+            rhs.len(),
+            self.ordering.pattern().dimension(),
+            "one right-hand side value per row"
         );
+        let (by_row, by_position) = &mut *self.workspace;
+        self.numeric
+            .solve_transpose(self.ordering, self.values, rhs, (by_row, by_position));
         finite(rhs)
     }
 }
@@ -211,112 +302,5 @@ fn finite<T: Scalar>(solution: &[T]) -> Result<(), LinearError> {
         Ok(())
     } else {
         Err(LinearError::Singular)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use proptest::prelude::*;
-
-    use super::*;
-    use crate::PatternBuilder;
-
-    /// A dense matrix stored with a full pattern, and its pattern.
-    fn dense(matrix: &[Vec<f64>]) -> (Arc<Pattern>, Vec<f64>) {
-        let n = matrix.len();
-        let mut builder = PatternBuilder::new();
-        let entries: Vec<_> = (0..n)
-            .flat_map(|row| (0..n).map(move |column| (row, column)))
-            .map(|(row, column)| (builder.entry(row, column), matrix[row][column]))
-            .collect();
-        let pattern = Arc::new(builder.finish(n));
-        let mut values = vec![0.0; pattern.len()];
-        for (entry, value) in entries {
-            values[pattern.slot(entry)] += value;
-        }
-        (pattern, values)
-    }
-
-    #[test]
-    fn solves_a_system_that_needs_pivoting() {
-        let (pattern, values) = dense(&[vec![0.0, 1.0], vec![2.0, 3.0]]);
-        let mut lu = SparseLu::new(pattern).unwrap();
-        let mut rhs = [1.0, 8.0];
-        lu.factor(&values).unwrap().solve(&mut rhs).unwrap();
-        assert!(
-            (rhs[0] - 2.5).abs() < 1e-15 && (rhs[1] - 1.0).abs() < 1e-15,
-            "{rhs:?}"
-        );
-    }
-
-    #[test]
-    fn solves_the_transposed_system() {
-        let (pattern, values) = dense(&[vec![0.0, 1.0], vec![2.0, 3.0]]);
-        let mut lu = SparseLu::new(pattern).unwrap();
-        // [[0, 2], [1, 3]] x = [4, 7] has x = [1, 2].
-        let mut rhs = [4.0, 7.0];
-        lu.factor(&values)
-            .unwrap()
-            .solve_transpose(&mut rhs)
-            .unwrap();
-        assert!(
-            (rhs[0] - 1.0).abs() < 1e-15 && (rhs[1] - 2.0).abs() < 1e-15,
-            "{rhs:?}"
-        );
-    }
-
-    #[test]
-    fn solves_complex_systems() {
-        let mut builder = PatternBuilder::new();
-        let entry = builder.entry(0, 0);
-        let pattern = Arc::new(builder.finish(1));
-        let mut values = vec![Complex64::default(); 1];
-        values[pattern.slot(entry)] = Complex64::new(0.0, 2.0);
-        let mut rhs = [Complex64::new(4.0, 0.0)];
-        SparseLu::new(pattern)
-            .unwrap()
-            .factor(&values)
-            .unwrap()
-            .solve(&mut rhs)
-            .unwrap();
-        assert_eq!(rhs[0], Complex64::new(0.0, -2.0));
-    }
-
-    #[test]
-    fn reports_singular_matrices() {
-        let (pattern, values) = dense(&[vec![1.0, 2.0], vec![2.0, 4.0]]);
-        let mut lu = SparseLu::new(pattern).unwrap();
-        let result = lu
-            .factor(&values)
-            .and_then(|mut factors| factors.solve(&mut [1.0, 1.0]));
-        assert_eq!(result, Err(LinearError::Singular));
-    }
-
-    proptest! {
-        /// A diagonally dominant matrix is nonsingular, and its solution reproduces the
-        /// right-hand side.
-        #[test]
-        fn solutions_satisfy_the_system(
-            seed in proptest::collection::vec(-1.0..1.0f64, 36),
-            rhs in proptest::collection::vec(-10.0..10.0f64, 6),
-        ) {
-            let n = 6;
-            // Off-diagonal entries of a row sum to at most 5 in magnitude, so a diagonal above 11
-            // makes the matrix strictly diagonally dominant.
-            let matrix: Vec<Vec<f64>> = (0..n)
-                .map(|row| (0..n).map(|column| {
-                    let value = seed[row * n + column];
-                    if row == column { value + 12.0 } else { value }
-                }).collect())
-                .collect();
-            let (pattern, values) = dense(&matrix);
-            let mut solution = rhs.clone();
-            SparseLu::new(pattern).unwrap().factor(&values).unwrap().solve(&mut solution).unwrap();
-            for row in 0..n {
-                let product: f64 =
-                    matrix[row].iter().zip(&solution).map(|(entry, value)| entry * value).sum();
-                prop_assert!((product - rhs[row]).abs() < 1e-9);
-            }
-        }
     }
 }

@@ -92,7 +92,7 @@ impl Simulator {
             source.level_derivative(&mut level);
         }
         let operating_point = self.linearize(&stability.frequencies, options)?;
-        let mut linearization = Linearization::new(&self.system.pattern)?;
+        let mut linearization = Linearization::new(self.solver.ordering());
         let mut gains = Vec::with_capacity(stability.frequencies.len());
         for &frequency in &stability.frequencies {
             let mut factors = linearization.factor(&self.workspace.contributions, frequency)?;

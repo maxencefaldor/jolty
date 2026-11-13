@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
+use std::sync::Arc;
 
 use jolty_models::{Input, Level, Quantity};
 use jolty_numerics::{Complex64, SparseLu};
@@ -464,9 +465,7 @@ impl Simulator {
             .zip(&contributions.capacitance)
             .map(|(&conductance, &capacitance)| Complex64::new(conductance, omega * capacitance))
             .collect();
-        let Ok(mut solver) = SparseLu::<Complex64>::new(self.system.pattern.clone()) else {
-            return;
-        };
+        let mut solver = SparseLu::<Complex64>::new(Arc::clone(self.solver.ordering()));
         let Ok(mut factors) = solver.factor(&matrix) else {
             return;
         };
