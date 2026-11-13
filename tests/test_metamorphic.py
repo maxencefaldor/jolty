@@ -7,6 +7,12 @@ circuit is written and not what it is: jolty finds the same operating point, fre
 response and transient for each, on the random circuits of `strategies`, and the
 ammeter reads the current into the terminal. Each circuit is its own reference, so
 these tests need no other simulator.
+
+Transients are those of the circuits with capacitance at their nets, as real nets have,
+which `strategies.parasitic` places: without it, a regenerative loop of devices that
+hold no charge can fold into a point past which no solution continues, where a
+transient stops, or leaps by chance to another solution, in one spelling and not in
+another.
 """
 
 from collections.abc import Callable, Iterable
@@ -29,7 +35,16 @@ from jolty import (
 from jolty.plan import decade
 from jolty.spice.ngspice import CURRENT_TOLERANCE
 from jolty.units import GHz, Hz, V, ohm, s
-from strategies import SETTINGS, STEP, STOP, circuits, placing, pulsed
+from strategies import (
+    SETTINGS,
+    STEP,
+    STOP,
+    capacitive,
+    circuits,
+    parasitic,
+    placing,
+    pulsed,
+)
 
 TIMES = np.linspace(0, STOP, 201)
 """The times each transient steps onto, and is read at."""
@@ -65,9 +80,10 @@ def _transient(simulation: Simulation, step: float) -> dict[str, Values]:
     }
 
 
-def _simulated(circuit: ir.Circuit, source: str) -> Simulated:
+def _simulated(circuit: ir.Circuit, loaded: ir.Circuit, source: str) -> Simulated:
     """The operating point, the response to `source` and the transient of `circuit`.
 
+    The transient is that of `loaded`, the same circuit with capacitance at its nets.
     A transient that grows away from an unstable operating point is left out: it
     amplifies rounding, and two ways of writing the circuit round differently.
     """
@@ -83,8 +99,9 @@ def _simulated(circuit: ir.Circuit, source: str) -> Simulated:
             for column, unknown in enumerate(response.unknowns)
         },
     }
-    if not unstable(simulation):
-        found["transient"] = _transient(simulation, STEP)
+    charged = Simulation(loaded)
+    if not unstable(charged):
+        found["transient"] = _transient(charged, STEP)
     return found
 
 
@@ -112,18 +129,22 @@ def _assert_same(
 ) -> Simulated:
     """Asserts both circuits simulate the same, and returns what `written` found.
 
-    Each unknown of `original` is found in `written` by its `name` there. A transient
-    that jolty's own shorter steps still move, as a chaotic one's, has not settled at
-    these steps, and is left out too.
+    Each unknown of `original` is found in `written` by its `name` there. Their
+    transients are those of both with capacitance at each net of `original` and at its
+    namesake in `written`, so that a net the writing adds, such as an ammeter's, holds
+    none, and both remain one circuit. A transient that jolty's own shorter steps still
+    move, as a chaotic one's, has not settled at these steps, and is left out too.
     """
     source = _source(original)
+    nets = capacitive(original)
+    loaded = parasitic(original, nets)
     try:
-        expected = _simulated(original, source)
+        expected = _simulated(original, loaded, source)
     except SimulationError:
         event("no simulation of the circuit as drawn")
         return {}
-    found = _simulated(written, source)
-    if "transient" in expected and not _settled(original, expected):
+    found = _simulated(written, parasitic(written, map(name, nets)), source)
+    if "transient" in expected and not _settled(loaded, expected):
         event("a waveform that shorter steps move")
         del expected["transient"]
     quantities = _quantities(original)

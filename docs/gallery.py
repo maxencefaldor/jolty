@@ -371,7 +371,8 @@ def _replicate(
             ):
                 continue
             texts, excited, option = commands
-            lines = export.netlist(circuit, excited=excited)
+            transient = isinstance(analysis, Transient)
+            lines = export.netlist(circuit, excited=excited, transient=transient)
             raw, loosened = _run(lines, texts, option, kelvins)
             if loosened and corner is None:
                 replication.loosened.append(name)

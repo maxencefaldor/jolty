@@ -171,7 +171,9 @@ def _transients(
     """
     circuit = simulation.circuit
     try:
-        raw = ngspice.run(netlist(circuit), f"tran {step!r} {STOP!r} 0 {step!r}")
+        raw = ngspice.run(
+            netlist(circuit, transient=True), f"tran {step!r} {STOP!r} 0 {step!r}"
+        )
     except JoltyError:
         return None
     times = raw.real("time")

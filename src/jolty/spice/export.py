@@ -308,8 +308,13 @@ def netlist(
     *,
     excited: str | None = None,
     subcircuits: Collection[str] = (),
+    transient: bool = False,
 ) -> list[str]:
-    """The SPICE lines of a circuit; `excited` is the source an AC run excites.
+    """The SPICE lines of a circuit; `excited` is the source a small-signal run excites.
+
+    The lines are for a `transient` or for the other analyses: a memristor's state moves
+    in a transient's lines, and holds where it was made in the others', as jolty's
+    does.
 
     Every component is flattened into its devices, but those named in `subcircuits`,
     components read from SPICE libraries, which become instances of their
@@ -347,12 +352,19 @@ def netlist(
                     f"{line}{own}" if line.startswith("L") else line for line in coupled
                 )
             case ir.DeviceOf(device=model):
-                lines.extend(_device(instance, model, ground, excited))
+                lines.extend(
+                    _device(instance, model, ground, excited, transient=transient)
+                )
     return lines
 
 
 def _device(
-    instance: ir.Instance, model: str, ground: str, excited: str | None
+    instance: ir.Instance,
+    model: str,
+    ground: str,
+    excited: str | None,
+    *,
+    transient: bool,
 ) -> list[str]:
     """The SPICE lines of a device of `model`: its element's, after any it needs.
 
@@ -393,7 +405,14 @@ def _device(
             | "voltage_controlled_memristor"
             | "current_controlled_memristor"
         ):
-            nodes, value = _varying(instance.id, model, values, nodes.split(), lines)
+            nodes, value, moving = _varying(
+                instance.id,
+                model,
+                values,
+                nodes.split(),
+                transient=transient,
+            )
+            lines.extend(moving)
         case "resistor" | "capacitor" | "inductor":
             value = _passive(model, values, nodes.split(), (instance.id, lines))
         case "foundry_mosfet":
@@ -413,20 +432,20 @@ def _varying(
     model: str,
     values: Mapping[str, JsonValue],
     nodes: list[str],
-    lines: list[str],
-) -> tuple[str, str]:
-    """The nodes and the value of a resistance an expression varies, after its lines.
+    *,
+    transient: bool,
+) -> tuple[str, str, list[str]]:
+    """The nodes and the value of a resistance an expression varies, and its lines.
 
-    A photocell's conductance follows its light, and a memristor's its state; `lines`
-    gains those that lag the one and move the other.
+    A photocell's conductance follows its light, and a memristor's its state; the lines
+    lag the one and, in a `transient`'s lines, move the other.
     """
     a, b, *light = nodes
     if model == "photocell":
-        conductance, moving = _photocell(id, values, light)
+        conductance, lines = _photocell(id, values, light)
     else:
-        conductance, moving = _memristor(id, model, values, [a, b])
-    lines.extend(moving)
-    return f"{a} {b}", f"I={{V({a},{b})*{conductance}}}"
+        conductance, lines = _memristor(id, model, values, [a, b], transient=transient)
+    return f"{a} {b}", f"I={{V({a},{b})*{conductance}}}", lines
 
 
 _DARKNESS: Final = 1e-6
@@ -458,25 +477,23 @@ def _photocell(
     return conductance, lines
 
 
-_HOLD: Final = 1e-12
-"""The rate, per second, at which a memristor's state returns in ngspice to the state it
-was made in: slower than any transient sees, it pins the state at an operating point,
-which in ngspice holds no initial condition."""
-
-
 def _memristor(
-    id: str, model: str, values: Mapping[str, JsonValue], terminals: list[str]
+    id: str,
+    model: str,
+    values: Mapping[str, JsonValue],
+    terminals: list[str],
+    *,
+    transient: bool,
 ) -> tuple[str, list[str]]:
     """A memristor's conductance as an ngspice expression, and the lines that move it.
 
-    Its state is the voltage of a node of its own over 1 F, which a behavioral current
-    charges at the rate the state moves, and which a transient starts from the state it
-    was made in, as jolty's does. ngspice's own operating point, which holds no initial
-    condition, finds the state of a memristor that nothing drives where it was made,
-    held there by `_HOLD`, but that of one driven past a threshold at the bound it is
-    driven to, where jolty holds the state it was made in.
+    Its state is the voltage of a node of its own. In a `transient`'s lines, that node
+    is over 1 F, which a behavioral current charges at the rate the state moves, from an
+    initial condition at the state it was made in; elsewhere, as at an operating point
+    and in the analyses about it, a source holds it at that state, as jolty's does.
     """
     given = _defaulted(model, values)
+    made = _number(id, given, "state")
     node = f"_{id}_state"
     state = f"V({node})"
     held = f"min(max({state},0),1)"
@@ -486,6 +503,8 @@ def _memristor(
         if given["law"] == "linear"
         else f"(exp({-math.log(off / on)!r}*{held})/{on!r})"
     )
+    if not transient:
+        return conductance, [f"V{id}_state {node} 0 {made!r}"]
     voltage = f"V({terminals[0]},{terminals[1]})"
     if model == "voltage_controlled_memristor":
         drive = (
@@ -501,11 +520,10 @@ def _memristor(
     toward_off = f"(1-exp(-max({off_distance},0))+min({off_distance},0))"
     toward_on = f"(1-exp(-max({on_distance},0))+min({on_distance},0))"
     rate = f"max({drive},0)*{toward_off}+min({drive},0)*{toward_on}"
-    hold = f"{_HOLD!r}*({state}-{given['state']!r})"
     lines = [
-        f"B{id}_state 0 {node} I={{{rate}-{hold}}}",
+        f"B{id}_state 0 {node} I={{{rate}}}",
         f"C{id}_state {node} 0 1",
-        f".ic {state}={given['state']!r}",
+        f".ic {state}={made!r}",
     ]
     return conductance, lines
 

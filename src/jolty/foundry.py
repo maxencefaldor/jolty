@@ -135,7 +135,9 @@ class _Deck:
         return cls(
             flat,
             paths,
-            export.netlist(flat, excited=excited),
+            export.netlist(
+                flat, excited=excited, transient=isinstance(analysis, Transient)
+            ),
             _readable(flat, unknowns),
             running,
         )

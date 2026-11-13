@@ -57,9 +57,13 @@ def _libraries(circuit: ir.Circuit) -> set[str]:
     }
 
 
-def netlist(circuit: ir.Circuit, *, excited: str | None = None) -> list[str]:
+def netlist(
+    circuit: ir.Circuit, *, excited: str | None = None, transient: bool = False
+) -> list[str]:
     """The SPICE lines of a circuit whose top places devices and library subcircuits."""
-    return export.netlist(circuit, excited=excited, subcircuits=_libraries(circuit))
+    return export.netlist(
+        circuit, excited=excited, subcircuits=_libraries(circuit), transient=transient
+    )
 
 
 def vector(circuit: ir.Circuit, unknown: results.Unknown) -> str:

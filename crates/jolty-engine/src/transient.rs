@@ -568,12 +568,11 @@ impl Simulator {
     ) -> Result<Step, SimulationError> {
         let target = breakpoint.min(observation);
         let remaining = target - stepper.time;
-        let landing = stepper.next >= remaining - stepper.shortest;
-        let length = if landing {
-            remaining
-        } else {
-            stepper.next.min(stepper.longest)
-        };
+        // The step grows from the last by its error, but never past the longest allowed,
+        // whether it lands on its target or not.
+        let reach = stepper.next.min(stepper.longest);
+        let landing = reach >= remaining - stepper.shortest;
+        let length = if landing { remaining } else { reach };
         let end = if landing {
             target
         } else {

@@ -22,7 +22,7 @@ from hypothesis import strategies as st
 
 from jolty import Simulation, devices, ir
 from jolty.settings import Level
-from jolty.units import A, F, H, K, S, V, m, ohm, us
+from jolty.units import A, F, H, Hz, K, S, V, m, ohm, s, uC, us
 from jolty.waveforms import Pulse
 
 __all__ = [
@@ -30,6 +30,7 @@ __all__ = [
     "SETTINGS",
     "STEP",
     "STOP",
+    "capacitive",
     "circuits",
     "parasitic",
     "placing",
@@ -136,6 +137,50 @@ def _switch(draw: st.DrawFn) -> devices.Device:
     )
 
 
+def _voltage_switch(draw: st.DrawFn) -> devices.Device:
+    off = draw(st.floats(-5, 5))
+    return devices.voltage_controlled_switch(
+        on_resistance=draw(_decades(1, 1e3)) * ohm,
+        off_resistance=draw(_decades(1e5, 1e7)) * ohm,
+        on_voltage=(off + draw(st.sampled_from([-1, 1])) * draw(st.floats(0.1, 5))) * V,
+        off_voltage=off * V,
+    )
+
+
+def _photocell(draw: st.DrawFn) -> devices.Device:
+    return devices.photocell(
+        draw(_decades(100, 1e5)) * ohm,
+        gamma=draw(st.floats(0.5, 1)),
+        dark_resistance=draw(_decades(1e6, 1e8)) * ohm,
+        response_time=draw(st.sampled_from([0, 1e-7])) * s,
+    )
+
+
+def _memristor(draw: st.DrawFn) -> devices.Device:
+    on = draw(_decades(100, 1e4))
+    off = on * draw(_decades(2, 100))
+    law = "exponential" if draw(st.booleans()) else "linear"
+    state = draw(st.floats(0, 1))
+    if draw(st.booleans()):
+        return devices.voltage_controlled_memristor(
+            on_resistance=on * ohm,
+            off_resistance=off * ohm,
+            on_voltage=-draw(st.floats(0.2, 2)) * V,
+            off_voltage=draw(st.floats(0.2, 2)) * V,
+            on_rate=draw(_decades(1e3, 1e6)) * Hz,
+            off_rate=draw(_decades(1e3, 1e6)) * Hz,
+            law=law,
+            state=state,
+        )
+    return devices.current_controlled_memristor(
+        on_resistance=on * ohm,
+        off_resistance=off * ohm,
+        charge=draw(_decades(1e-3, 1)) * uC,
+        law=law,
+        state=state,
+    )
+
+
 DEVICES: Final = {
     "R": _resistor,
     "C": _capacitor,
@@ -144,10 +189,13 @@ DEVICES: Final = {
     "Q": _bipolar,
     "M": _mosfet,
     "G": _transconductance,
+    "S": _voltage_switch,
+    "P": _photocell,
+    "X": _memristor,
 }
 """What each device placed at random between existing nodes is, by its prefix; an
 inductor, a pair of coupled windings and a switch's control port go in series with a
-resistor besides."""
+resistor besides, and a behavioral source reads the voltage of a control terminal."""
 
 
 def _placements(
@@ -177,6 +225,11 @@ def _placements(
                 ("W", _switch(draw), [ends[0], ends[1], ends[2], fresh]),
                 ("R", _resistor(draw, 10, 1e5), [fresh, ends[3]]),
             ]
+        case "B":
+            # A transconductance as an expression of its own control terminal.
+            gain = draw(_decades(1e-6, 1e-3))
+            source = devices.behavioral_current_source(f"{gain!r}*v(control)")
+            return [("B", source, ends[:3])]
         case "M":
             # Its body on its source, as a discrete MOSFET's is, so that no junction to
             # it lies across a source with nothing to bound its current.
@@ -217,7 +270,7 @@ def circuits(draw: st.DrawFn) -> ir.Circuit:
             *draw(st.lists(node, min_size=2, max_size=2, unique=True)),
             *draw(st.lists(node, min_size=2, max_size=2)),
         ]
-        prefix = draw(st.sampled_from([*DEVICES, "L", "K", "W"]))
+        prefix = draw(st.sampled_from([*DEVICES, "L", "K", "W", "B"]))
         for placed in _placements(draw, prefix, ends, f"m{len(instances)}"):
             place(*placed)
     # A node that only the tree's resistor reaches would dangle: tie it to another.
@@ -280,12 +333,39 @@ def pulsed(circuit: ir.Circuit) -> ir.Circuit:
     return placing(circuit, instances)
 
 
-def parasitic(circuit: ir.Circuit) -> ir.Circuit:
-    """The circuit with `PARASITIC` from every net to the ground, as real nets have."""
+def capacitive(circuit: ir.Circuit) -> list[str]:
+    """The nets that hold `PARASITIC`, sorted.
+
+    They are every net but the ground, and but the negative one of each
+    current-controlled switch's control port. The port holds its two nets at one
+    voltage, as one net, which holds one capacitance, on the port's positive net. With
+    one on each, the port would carry the current that charges the second, which the
+    switch's own output can drive through the first: its control would still move with
+    no charge to slow it, and its equations could fold.
+    """
     instances = circuit.components[circuit.top].instances
-    nets = sorted(
-        {net for instance in instances for net in instance.terminals.values()} - {"0"}
-    )
+    joined = {
+        instance.terminals["control_negative"]
+        for instance in instances
+        if instance.of == ir.DeviceOf(device="current_controlled_switch")
+    }
+    nets = {net for instance in instances for net in instance.terminals.values()}
+    return sorted(nets - joined - {"0"})
+
+
+def parasitic(circuit: ir.Circuit, nets: Iterable[str] | None = None) -> ir.Circuit:
+    """The circuit with `PARASITIC` from each of `nets` to the ground, as nets have.
+
+    Without `nets`, it is each net that `capacitive` names, as in a real circuit.
+    Without capacitance, a regenerative loop of devices that hold no charge, such as a
+    switch whose output moves its own control, can fold as its solution moves, into a
+    point past which none continues: a transient's equations then have no solution, and
+    an engine stops there, or leaps by chance to another. With it, every loop charges a
+    capacitance, and the solution continues.
+    """
+    instances = circuit.components[circuit.top].instances
+    if nets is None:
+        nets = capacitive(circuit)
     capacitor = devices.capacitor(PARASITIC * F)
     return placing(
         circuit,

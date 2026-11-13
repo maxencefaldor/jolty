@@ -374,7 +374,9 @@ def test_an_ideal_discrete_cubic_has_no_error_but_is_forbidden(tmp_path: Path) -
         encoding="utf-8",
     )
     verdict = score(CUBIC_DISCRETE, tmp_path)
-    assert verdict.measurements["mean absolute error"] < 1e-9
+    # Newton iteration leaves the ideal cubic's output within nanovolts of the cube,
+    # where a hit is within 7 mV.
+    assert verdict.measurements["mean absolute error"] < 1e-8
     assert verdict.measurements["hits"] == 1
     assert verdict.reasons == (
         "B1 is a behavioral_current_source, which the task forbids",

@@ -1686,7 +1686,7 @@ def test_transients_agree(
     simulation = Simulation(top())
     waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
     command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}"
-    raw = ngspice.run(netlist(simulation.circuit), command)
+    raw = ngspice.run(netlist(simulation.circuit, transient=True), command)
     times = raw.real("time")
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))

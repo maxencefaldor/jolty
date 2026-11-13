@@ -213,8 +213,8 @@ Each rate is the state's speed at twice its threshold, in full ranges per second
 A charge `q` from `positive` to `negative` moves the state toward off by `q/Q`, where `Q`, its `charge`, carries it across its whole range; with a linear law, it is Chua's ideal memristor, whose flux is a function of its charge alone.
 Its `on_resistance`, `off_resistance`, `law`, `state` and `window` are as above.
 
-Written for ngspice, a memristor is a behavioral current whose state is the voltage of a node of its own over 1 F, charged by a behavioral current at the state's rate, with an initial condition that starts a transient from the state it was made in.
-ngspice's own operating point holds no initial condition, so the state returns to the one it was made in at a part in 10¹² of its range a second, which no transient sees: there, a memristor that nothing drives is at that state, but one driven past a threshold is at the bound it is driven to.
+Written for ngspice, a memristor is a behavioral current whose state is the voltage of a node of its own.
+In a transient's netlist, that node is over 1 F, charged by a behavioral current at the state's rate, with an initial condition that starts the transient from the state it was made in; in any other analysis's netlist, a source holds the node at that state, as jolty holds it at an operating point and in the analyses about one.
 
 ## Thermal networks
 

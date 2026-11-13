@@ -503,6 +503,62 @@ fn an_rc_charges_exponentially_with_every_method() {
     }
 }
 
+/// No step is longer than the longest allowed, though its error would let it grow and a
+/// breakpoint or a time asked for lies within its reach: landing there, a step would be up
+/// to twice the longest, and on times asked for a step apart, the steps after it too.
+#[test]
+fn no_step_is_longer_than_the_longest_allowed() {
+    // An RC low-pass of 1 µs, whose response to a pulse settles long before each corner.
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"pulse": {
+                "initial": 0, "pulsed": 1, "delay": 1e-6, "rise": 1e-7, "fall": 1e-7,
+                "width": 4e-6,
+            }}}),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "in"), ("b", "out")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": 1e-9}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let longest = 5e-8;
+    let every_microsecond: Vec<f64> = (1..=20).map(|index| f64::from(index) * 1e-6).collect();
+    for times in [Vec::new(), every_microsecond] {
+        let transient = Transient {
+            stop: 2e-5,
+            max_step: Some(longest),
+            method: Method::Trapezoidal,
+            times: times.clone(),
+            periodic: false,
+        };
+        let waveforms = simulator(&circuit)
+            .transient(&transient, &Options::default())
+            .expect("a transient analysis");
+        let step = waveforms
+            .times
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .fold(0.0, f64::max);
+        assert!(
+            step <= longest * (1.0 + 1e-9),
+            "a step of {step} s, longer than {longest} s, with {} times asked for",
+            times.len()
+        );
+        assert!(times.iter().all(|time| waveforms.times.contains(time)));
+    }
+}
+
 /// Each integration method's order, the power of the step its global error falls with.
 const ORDERS: [(Method, f64); 3] = [
     (Method::BackwardEuler, 1.0),
