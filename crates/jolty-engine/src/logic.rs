@@ -313,6 +313,15 @@ pub(crate) struct Crossing {
 /// still changing are taken to be unknown, as an oscillating loop's are.
 const SETTLE_CHANGES: usize = 4;
 
+/// The state of [`Events`] before a tentative advance: see [`Events::checkpoint`].
+#[derive(Debug)]
+pub(crate) struct Checkpoint {
+    /// The events without their traces.
+    state: Box<Events>,
+    /// The length of each net's trace.
+    lengths: Vec<usize>,
+}
+
 /// The state of the logic nets during an analysis.
 #[derive(Debug, Clone)]
 pub(crate) struct Events {
@@ -663,6 +672,27 @@ impl Events {
             }
             self.push(at.max(time), drive, level, timing.transition, false);
         }
+    }
+
+    /// The state before a tentative advance, which [`Events::restore`] returns to: all of
+    /// it but the traces, of which it keeps the lengths, as an advance only appends to them.
+    /// It costs the nets' state and the pending events, not the changes so far.
+    pub(crate) fn checkpoint(&mut self) -> Checkpoint {
+        let traces = std::mem::take(&mut self.traces);
+        let state = Box::new(self.clone());
+        let lengths = traces.iter().map(Vec::len).collect();
+        self.traces = traces;
+        Checkpoint { state, lengths }
+    }
+
+    /// Returns to the state at `checkpoint`, dropping the changes appended since.
+    pub(crate) fn restore(&mut self, checkpoint: Checkpoint) {
+        let mut traces = std::mem::take(&mut self.traces);
+        for (trace, &length) in traces.iter_mut().zip(&checkpoint.lengths) {
+            trace.truncate(length);
+        }
+        *self = *checkpoint.state;
+        self.traces = traces;
     }
 
     /// Each net's changes since the analysis began.

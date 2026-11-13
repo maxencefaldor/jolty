@@ -813,21 +813,21 @@ impl Simulator {
             return Ok(Vec::new());
         }
         // Without drivers, no change reaches back into the analog circuit, so the logic can
-        // move on in place.
-        let mut tentative = (!logic.drivers.is_empty()).then(|| events.clone());
-        let state = tentative.as_mut().unwrap_or(events);
-        state.inject(logic, &crossings);
-        let commands = state.advance(logic, end);
+        // move on for good; with them, it moves on tentatively, and goes back if a driver
+        // must change before the step ends.
+        let checkpoint = (!logic.drivers.is_empty()).then(|| events.checkpoint());
+        events.inject(logic, &crossings);
+        let commands = events.advance(logic, end);
         let first = commands
             .iter()
             .map(|command| command.time)
             .filter(|&time| early(time))
             .min_by(f64::total_cmp);
         if let Some(first) = first {
+            if let Some(checkpoint) = checkpoint {
+                events.restore(checkpoint);
+            }
             return Err(first);
-        }
-        if let Some(tentative) = tentative {
-            *events = tentative;
         }
         Ok(commands)
     }

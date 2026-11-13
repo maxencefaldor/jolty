@@ -9,14 +9,16 @@ Each item leaves this file when it lands on `main`, and its change says so in th
 
 ## Agreed and waiting
 
+Each item says what it waits for; the rest can start at any time.
+
 - Each device's parameters parsed once, into their typed form, and every model's defaults given by the engine, with the reference's tables of parameters generated from it.
-- Sensitivity twins local to their devices, so sensitivity costs O(P·k) rather than O(P·n).
-- Logic events without a copy of every trace at each step with activity, and the logic drivers' loads measured without an allocation each.
-- A predictor that starts each time step's Newton iteration, and each retry, from an extrapolation of the last accepted points, as SPICE does.
-- Batched variants in Rust: one elaboration for every sample, corner and worst-case point, run in parallel, with a setting for the number of threads and the GIL released in every long call.
-- Spec measurements in Rust, so a batch returns verdicts rather than waveforms.
-- AC, noise, stability and sensitivity solved in parallel across frequencies and columns, and devices evaluated and assembled in parallel, bit for bit the same whatever the number of threads.
-- The docs' schematics and the gallery drawn again, after the schematic layout's new row order and routing.
+- Sensitivity twins local to their devices, so sensitivity costs O(P·k) rather than O(P·n); after the LU, whose solver it uses.
+- The logic drivers' loads measured without an allocation each; after the LU, which rewrites the code around it.
+- A predictor that starts each time step's Newton iteration from the line through the last two accepted points, as SPICE's does: written and measured, 28 to 45% fewer Newton iterations on the examples' transients, but held back, as with it and retries started from the prediction two benchmark circuits and some random circuits' transients no longer finish, and two ratings' messages print their power rounded differently.
+- Batched variants in Rust: one elaboration for every sample, corner and worst-case point, run in parallel, with a setting for the number of threads and the GIL released in every long call; after the parameters are parsed once, which makes a variant cheap.
+- Spec measurements in Rust, so a batch returns verdicts rather than waveforms; after the batched variants, whose API they plug into.
+- AC, noise, stability and sensitivity solved in parallel across frequencies and columns, and devices evaluated and assembled in parallel, bit for bit the same whatever the number of threads; after the LU, the local sensitivity twins and the batched variants' thread setting.
+- The docs' schematics and the gallery drawn again, after the schematic layout's new row order and routing; last, once the layout and the engine settle.
 - A benchmark of what jolty gives an agent: the same tasks done with jolty and with ngspice, compared by success and by iterations.
 - Continuous integration, which waits for GitHub Actions minutes.
 
