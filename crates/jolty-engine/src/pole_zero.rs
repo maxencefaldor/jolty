@@ -21,6 +21,9 @@
 //! point: an oscillation that builds up, or a latch that tips. Its shape, the amplitude of
 //! each unknown in it, solves `(G + sC) x = 0` at the pole, found by inverse iteration
 //! with the sparse factorization of `G + sC` just beside it.
+//!
+//! The dense pencils take memory as the square of the unknowns, so an analysis checks
+//! them against its options' `memory` before it makes them, and fails if they pass it.
 
 use std::cmp::Ordering;
 
@@ -61,6 +64,12 @@ const BESIDE: f64 = 1e-6;
 
 /// The steps of inverse iteration, each of which multiplies the mode's lead by `1 / BESIDE`.
 const ITERATIONS: usize = 2;
+
+/// The most dense real matrices a pole-zero analysis holds at once, each of a row per
+/// unknown, and one more where it borders them for the zeros: the circuit's `G` and `C`,
+/// and, for the pencil it solves, the two it equilibrates, the two its QZ algorithm
+/// flushes and the two complex ones it iterates on, each the size of two real ones.
+const PENCIL_MATRICES: f64 = 10.0;
 
 /// A pole-zero analysis: the poles of the circuit linearized at its operating point, and,
 /// given a source and an output, the zeros of the transfer function between them.
@@ -120,7 +129,8 @@ impl Simulator {
     /// [`SimulationError::NotASource`] when they name no such unknown or source;
     /// [`SimulationError::Singular`] when the linearized circuit is singular at every
     /// frequency; [`SimulationError::Unconverged`] when the QZ iteration does not
-    /// converge; and the errors of [`Simulator::operating_point`].
+    /// converge; [`SimulationError::TooMuchMemory`] when its dense matrices would hold
+    /// more than the options' `memory`; and the errors of [`Simulator::operating_point`].
     pub fn pole_zero(
         &mut self,
         analysis: &PoleZero,
@@ -142,6 +152,8 @@ impl Simulator {
                 ));
             }
         };
+        options.check()?;
+        self.pencils_fit(transfer.is_some(), options)?;
         let operating_point = self.linearized(options)?;
         let n = self.system.unknowns.len();
         let (conductance, capacitance) = self.dense_pencil();
@@ -203,6 +215,8 @@ impl Simulator {
     /// Returns the errors of [`Simulator::pole_zero`] without a source.
     pub fn growing_modes(&mut self, options: &Options) -> Result<Vec<Mode>, SimulationError> {
         self.solvable()?;
+        options.check()?;
+        self.pencils_fit(false, options)?;
         self.linearized(options)?;
         let n = self.system.unknowns.len();
         let (conductance, capacitance) = self.dense_pencil();
@@ -229,6 +243,14 @@ impl Simulator {
                 Ok(Mode { pole, shape })
             })
             .collect()
+    }
+
+    /// Checks that the dense pencils of a pole-zero analysis fit the options' `memory`,
+    /// `bordered` if it finds zeros too, its matrices a row larger.
+    fn pencils_fit(&self, bordered: bool, options: &Options) -> Result<(), SimulationError> {
+        let rows = self.system.unknowns.len() + usize::from(bordered);
+        let size = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
+        options.hold("pole-zero analysis", rows, PENCIL_MATRICES * size * size)
     }
 
     /// The matrices `G` and `C` the workspace holds, dense in column-major order.

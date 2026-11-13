@@ -655,7 +655,7 @@ fn a_transient_holds_what_it_records_against_its_memory() {
     // overflow them, and a thousand points of the three unknowns alone fit.
     let memory = 4000.0 / 134_217_728.0;
     let every = Options {
-        transient_memory: memory,
+        memory,
         record: Record::All,
         ..Options::default()
     };
@@ -665,7 +665,7 @@ fn a_transient_holds_what_it_records_against_its_memory() {
         "{error}"
     );
     let unknowns = Options {
-        transient_memory: memory,
+        memory,
         ..Options::default()
     };
     let waveforms = simulator.transient(&pulse(), &unknowns).unwrap();

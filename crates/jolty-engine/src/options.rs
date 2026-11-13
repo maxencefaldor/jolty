@@ -5,6 +5,9 @@ use serde::Deserialize;
 
 use crate::SimulationError;
 
+/// The numbers of eight bytes a gibibyte holds.
+pub(crate) const NUMBERS_PER_GIB: f64 = 134_217_728.0;
+
 /// What an analysis records of the circuit's devices beside the unknowns: the current into
 /// each terminal and the charge it holds, and each device's derivatives and variables.
 ///
@@ -63,10 +66,13 @@ pub struct Options {
     /// How many times the estimated truncation error may exceed the tolerances before a step
     /// is rejected; default 7, which accounts for the estimate's pessimism.
     pub truncation_tolerance: f64,
-    /// The gibibytes of numbers a transient's results may hold, every unknown's and every
-    /// recorded device's at each point, before it stops: a transient whose steps shrink to
-    /// a crawl fails instead of filling the memory; default 2.
-    pub transient_memory: f64,
+    /// The gibibytes of numbers an analysis may hold at once: a transient's results, every
+    /// unknown's and every device's at each point, and the dense matrices of a pole-zero
+    /// analysis or a periodic steady state, of a row and a column per unknown. An analysis
+    /// that would hold more fails instead of filling the memory: a transient whose steps
+    /// shrink to a crawl, once it passes the limit, and a dense analysis before it begins;
+    /// default 2.
+    pub memory: f64,
     /// What the results record of the devices beside the unknowns; by default nothing.
     pub record: Record,
 }
@@ -82,7 +88,7 @@ impl Default for Options {
             dc_iterations: 100,
             transient_iterations: 10,
             truncation_tolerance: 7.0,
-            transient_memory: 2.0,
+            memory: 2.0,
             record: Record::default(),
         }
     }
@@ -111,6 +117,30 @@ impl Options {
         }
     }
 
+    /// Checks that `analysis`, whose dense matrices have `rows` rows, may hold `numbers`
+    /// numbers at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::TooMuchMemory`] when they would pass its `memory`.
+    pub(crate) fn hold(
+        &self,
+        analysis: &'static str,
+        rows: usize,
+        numbers: f64,
+    ) -> Result<(), SimulationError> {
+        let needed = numbers / NUMBERS_PER_GIB;
+        if needed > self.memory {
+            return Err(SimulationError::TooMuchMemory {
+                analysis,
+                rows,
+                needed,
+                memory: self.memory,
+            });
+        }
+        Ok(())
+    }
+
     /// Checks that every tolerance is positive and every limit allows an iteration.
     ///
     /// # Errors
@@ -123,7 +153,7 @@ impl Options {
             ("current_tolerance", self.current_tolerance),
             ("charge_tolerance", self.charge_tolerance),
             ("truncation_tolerance", self.truncation_tolerance),
-            ("transient_memory", self.transient_memory),
+            ("memory", self.memory),
         ];
         if let Some((name, value)) = tolerances.into_iter().find(|&(_, value)| value <= 0.0) {
             return Err(SimulationError::InvalidOptions(format!(

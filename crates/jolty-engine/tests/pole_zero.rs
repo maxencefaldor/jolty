@@ -282,3 +282,53 @@ fn a_qz_iteration_that_stalls_is_taken_again_on_the_reversed_pencil() {
             .is_empty()
     );
 }
+
+#[test]
+fn a_pencil_that_would_fill_the_memory_fails_at_once() {
+    // A low-pass of three unknowns: in, V1:current and out, and the bordered pencil a row
+    // more, of ten dense matrices of 16 numbers each.
+    let circuit = circuit(&json!([
+        source("V1", "in"),
+        resistor("R1", 1e3, "in", "out"),
+        capacitor("C1", 1e-9, "out", "0"),
+    ]));
+    let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+        .expect("the circuit elaborates");
+    let options = Options {
+        memory: 1e-9,
+        ..Options::default()
+    };
+    let analysis = PoleZero {
+        source: Some("V1".to_owned()),
+        output: Some("out".to_owned()),
+        reference: None,
+    };
+    let error = simulator
+        .pole_zero(&analysis, &options)
+        .expect_err("too little memory");
+    assert_eq!(
+        error,
+        SimulationError::TooMuchMemory {
+            analysis: "pole-zero analysis",
+            rows: 4,
+            needed: 160.0 / 134_217_728.0,
+            memory: 1e-9,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "the pole-zero analysis's dense matrices of 4 rows would hold 1.1920928955078125e-6 \
+         GiB, more than its `memory` option's 1e-9 GiB"
+    );
+    // The poles alone take the pencil of the unknowns, and so do the modes that grow.
+    let poles = PoleZero::default();
+    let rows = |error| match error {
+        SimulationError::TooMuchMemory { rows, .. } => rows,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(rows(simulator.pole_zero(&poles, &options).unwrap_err()), 3);
+    assert_eq!(rows(simulator.growing_modes(&options).unwrap_err()), 3);
+    assert_eq!(simulator.operating_point_solves(), 0);
+    // A gibibyte holds it.
+    assert!(simulator.pole_zero(&analysis, &Options::default()).is_ok());
+}

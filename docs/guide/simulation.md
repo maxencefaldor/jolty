@@ -44,7 +44,7 @@ A transient's method is `"trapezoidal"`, `"gear2"` for stiff circuits that ring,
 Its longest step defaults to a fiftieth of `stop`.
 It steps onto each of `times` exactly, besides the times it chooses, without restarting its integration there, so every unknown and terminal current has its solved value at those times.
 
-A simulation solves its operating point once: it remembers the last one it solved, and every analysis about the operating point, a DC sweep that starts at its source's own level, and the checks at the operating point take it again, as long as the options stay the same, save `charge_tolerance`, `transient_iterations`, `truncation_tolerance` and `transient_memory`, which a DC solution does not read.
+A simulation solves its operating point once: it remembers the last one it solved, and every analysis about the operating point, a DC sweep that starts at its source's own level, and the checks at the operating point take it again, as long as the options stay the same, save `charge_tolerance`, `transient_iterations`, `truncation_tolerance` and `memory`, which a DC solution does not read.
 Under other tolerances or another `dc_iterations` alone, Newton iteration goes on from where it stopped, as from zero it would, since it takes the same iterates from zero under any tolerances.
 
 ## Periodic steady state
@@ -66,6 +66,7 @@ A circuit can have a neutral direction, a quantity a period carries back as it w
 Every value of it has a steady state of its own, and `Φ − I` is singular.
 The step `Δ` is then the least-squares solution of least norm among those in the range of `Φ − I`, which leaves every quantity a period conserves as it was, so shooting keeps the start's place along the neutral directions and finds the steady state a transient from the operating point would settle into; where `Φ − I` is regular, it is Newton's step.
 The system is measured in each unknown's tolerance, as the mismatches are, and a direction is neutral when its singular value is within the rounding of the matrix, or below the relative tolerance with the start already repeating along it within its tolerance: there the period moves the state by too little for the tolerances to place the steady state along it.
+The monodromy matrix and the dense factorizations of `Φ − I` hold up to 14 numbers per unknown squared, so a circuit whose matrices would pass the `memory` option fails before the first period, and each period's waveforms may hold what the matrices leave of it.
 A circuit with logic, whose state shooting does not carry, has no periodic transient, and a sensitivity analysis differentiates none.
 
 ## Several DC solutions
@@ -162,6 +163,7 @@ Linearized at its operating point, the circuit's small-signal equations are `(G 
 The poles are the `s` at which `G + sC` is singular, the finite generalized eigenvalues of the pencil `(G, −C)`, and the zeros those at which the transfer function vanishes, the finite eigenvalues of the pencil bordered by the source's excitation and the output's reading.
 The engine solves both pencils, dense, by the QZ algorithm, after scaling the frequency by the circuit's own and equilibrating their rows and columns; an eigenvalue beyond 10¹² times the circuit's frequency is infinite, and a zero within 10⁻¹⁰ times the largest pole or zero lies at the origin, as a coupling capacitor's does.
 The circuit has an operating point, so no pole lies at the origin.
+The pencils hold up to ten dense matrices of a row per unknown, a row more for the zeros, so an analysis whose matrices would pass the `memory` option fails before it begins.
 A natural frequency the source cannot excite, or the output cannot see, is both a pole and a zero, as ngspice reports it too.
 
 The result's `poles` and `zeros` are complex frequencies in radians per second, by increasing magnitude, a conjugate pair's upper member first, and `natural_frequencies(roots)` and `dampings(roots)` read each as a frequency in hertz, its magnitude over 2π, and a damping ratio, minus its real part over its magnitude: 1 for a real root in the left half-plane, between 0 and 1 for a pair that rings, and negative for a pole in the right half-plane, which grows.
@@ -250,11 +252,10 @@ The report states how many runs it took and each requirement's verdict, its wors
 | `dc_iterations` | 100 | Newton iterations allowed for a DC solution |
 | `transient_iterations` | 10 | Newton iterations allowed for a time step |
 | `truncation_tolerance` | 7 | how much the time step's truncation error may exceed the tolerances |
-| `transient_memory` | 2 GiB | how much a transient's results may hold before it stops, rather than fill the memory |
-| `record` | the rated instances | the instances whose terminals' currents and charges, derivatives and variables results keep beside the unknowns, by path or pattern, such as `["M1", "X1/**"]`, or `["**"]` for every one (see [Results](results.md#what-a-result-records)) |
+| `memory` | 2 GiB | how much an analysis may hold at once, rather than fill the memory: a transient's results, past which it stops, and the dense matrices of a pole-zero analysis or a periodic steady state, past which it fails before it begins |
 
 The unknowns cost a transient a number each at every point, eight bytes; a device recorded costs its terminals' currents and charges, the square of its unknowns twice over for its derivatives, and its variables: 12 numbers for a resistor, and 111 for a MOSFET whose gate oxide adds three unknowns to its four terminals.
-By default, an operating point and a transient record only the instances rated for a current or a power, whose ratings the checks read, so a transient of a large circuit holds about its unknowns alone; recording every instance multiplies what it holds by thirty or more, and reaches `transient_memory` sooner.
+An operating point and a transient record the instances rated for a current or a power, whose ratings the checks read, and what the plan's or the analysis's [record](results.md#what-a-result-records) names, so a transient of a large circuit holds about its unknowns alone unless asked for more; recording every instance multiplies what it holds by thirty or more, and reaches `memory` sooner.
 
 ## How the engine solves a circuit
 
@@ -276,7 +277,7 @@ Every other choice the engine makes is one SPICE simulators make, save those the
 | Periodic steady state | Newton iteration on the state each period starts at, with the monodromy matrix carried along the period's steps and solved densely by its singular value decomposition, each step in the range of `Φ − I`, which leaves every quantity a period conserves where it started. | Shooting (Aprille and Trick, 1972), as Spectre's periodic steady-state analysis; the step along neutral directions is jolty's own. |
 | Integration | The trapezoidal rule by default, or Gear's second-order formula or backward Euler, as the transient asks. | SPICE. |
 | Truncation error | Each step's error is estimated from divided differences of the charges, against tolerances on the charge and on the current it carries, times `truncation_tolerance`. | SPICE's `CKTterr` and `trtol`. |
-| Step length | At most a fiftieth of the run unless `max_step` says otherwise; a step whose error is too large is retried shorter, the next grows by at most twice, with a safety factor of 0.9; one whose Newton iteration fails is retried an eighth as long. A transient whose results would pass 2 GiB before it stops, every unknown's and every recorded device's at each point, fails and says how long its steps were where it stopped, rather than fill the memory. | SPICE. |
+| Step length | At most a fiftieth of the run unless `max_step` says otherwise; a step whose error is too large is retried shorter, the next grows by at most twice, with a safety factor of 0.9; one whose Newton iteration fails is retried an eighth as long. A transient whose results would pass its `memory`, 2 GiB by default, before it stops, every unknown's and every recorded device's at each point, fails and says how long its steps were where it stopped, rather than fill the memory. | SPICE. |
 | Corners | Steps land on every corner of every waveform, and on every time asked for; after a corner, the first step is a tenth of the shorter of the last step and the gap to the next corner, and takes backward Euler. | SPICE. |
 | Jumps | A behavioral source's value jumps where a comparison, `u`, `sgn`, `floor` or `ceil` it reads through the branches it takes changes; the change is located by linear interpolation of its input within a step, a step in which it comes early is retried to land on it, and the integration restarts after it as after a corner. | jolty's own, as hybrid-system simulators locate zero crossings; SPICE steps across such a jump unlocated, and ngspice may stall there. |
 | Ringing | Whenever some charge's derivative under the trapezoidal rule turns back and forth twice in a row by more than its tolerance, the next step takes backward Euler. | jolty's own, as simulators that mix the trapezoidal rule with backward Euler do: the trapezoidal rule carries an error in a derivative from step to step undamped. |

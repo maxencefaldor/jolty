@@ -318,7 +318,7 @@ class Options:
     dc_iterations: int | None = None
     transient_iterations: int | None = None
     truncation_tolerance: float | None = None
-    transient_memory: float | None = None
+    memory: float | None = None
 
     def to_json(self) -> dict[str, JsonValue]:
         """The options in the engine's format, without those left to defaults."""

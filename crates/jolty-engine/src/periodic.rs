@@ -27,11 +27,21 @@ use jolty_numerics::integration::Formula;
 use jolty_numerics::solve_in_range;
 
 use crate::newton::NAMED_UNKNOWNS;
+use crate::options::NUMBERS_PER_GIB;
 use crate::transient::{Carried, Tangent};
 use crate::{Options, SimulationError, Simulator, Transient, Waveforms};
 
 /// The most periods shooting simulates before it gives up.
 const MOST_PERIODS: usize = 40;
+
+/// The most dense matrices of a row and a column per unknown that shooting holds at once,
+/// while it solves for the next start where `Φ − I` is singular: `Φ − I`, the two factors
+/// of its singular value decomposition, the reduced system, the two factors of the reduced
+/// system's own decomposition, and that decomposition's workspace, up to about 7.3 such
+/// matrices in faer's. Before, the first decomposition holds a copy of `Φ − I` and a
+/// workspace of its own instead of the reduced system and its factors, and a period four:
+/// its tangents, three vectors per unknown, and `Φ`.
+const DENSE_MATRICES: f64 = 14.0;
 
 /// The derivatives with respect to the state a period starts from, at the last point a
 /// transient accepted: of the charges, which the integration formula reads, and of the
@@ -51,8 +61,10 @@ impl Simulator {
     /// # Errors
     ///
     /// Returns [`SimulationError::InvalidAnalysis`] for a circuit with logic, whose state
-    /// shooting does not carry, [`SimulationError::NoSteadyState`] when the periods do not
-    /// converge, and the errors of [`Simulator::transient`].
+    /// shooting does not carry, [`SimulationError::TooMuchMemory`] when its dense matrices
+    /// would hold more than the options' `memory`, [`SimulationError::NoSteadyState`] when
+    /// the periods do not converge, and the errors of [`Simulator::transient`], each
+    /// period's results holding what the dense matrices leave of the memory.
     pub(crate) fn periodic_steady_state(
         &mut self,
         transient: &Transient,
@@ -63,7 +75,15 @@ impl Simulator {
                 "a periodic steady state is found for circuits without logic".to_owned(),
             ));
         }
+        options.check()?;
         let unknowns = self.system.unknowns.len();
+        let size = f64::from(u32::try_from(unknowns).unwrap_or(u32::MAX));
+        let dense = DENSE_MATRICES * size * size;
+        options.hold("periodic steady state", unknowns, dense)?;
+        let period_options = Options {
+            memory: options.memory - dense / NUMBERS_PER_GIB,
+            ..options.clone()
+        };
         let point = self.operating_point(options)?;
         let strategy = point.strategy;
         let mut start = point.values;
@@ -72,7 +92,7 @@ impl Simulator {
             let mut monodromy = Monodromy::default();
             let carried = Carried::Monodromy(&mut monodromy);
             let begun = Some((start.clone(), strategy));
-            let mut waveforms = self.transient_with(transient, options, begun, carried)?;
+            let mut waveforms = self.transient_with(transient, &period_options, begun, carried)?;
             let end = waveforms.values.last().unwrap_or(&start);
             let tolerances = self.tolerances(&start, end, options);
             mismatches = start

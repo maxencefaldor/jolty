@@ -124,7 +124,7 @@ fn read_at_dc(options: &Options) -> Options {
         charge_tolerance: unread.charge_tolerance,
         transient_iterations: unread.transient_iterations,
         truncation_tolerance: unread.truncation_tolerance,
-        transient_memory: unread.transient_memory,
+        memory: unread.memory,
         ..options.clone()
     }
 }

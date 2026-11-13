@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::logic::{Command, Crossing, crossing};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
+use crate::options::NUMBERS_PER_GIB;
 use crate::periodic::Monodromy;
 use crate::sensitivity::Forward;
 use crate::{Observation, Observations, Options, Rejection, SimulationError, Simulator, Strategy};
@@ -17,8 +18,6 @@ use crate::{Observation, Observations, Options, Rejection, SimulationError, Simu
 const RESTART_FRACTION: f64 = 0.1;
 /// The smallest step allowed, as a fraction of the longest.
 const SMALLEST_STEP_FRACTION: f64 = 1e-9;
-/// The numbers a gibibyte holds, each of eight bytes.
-const NUMBERS_PER_GIB: f64 = 134_217_728.0;
 /// The factor a step shrinks by when Newton iteration fails.
 const FAILURE_SHRINK: f64 = 0.125;
 /// The bounds on the factor the truncation error changes the step by.
@@ -473,12 +472,12 @@ impl Simulator {
         let longest = self.longest_step(transient)?;
         let shortest = longest * SMALLEST_STEP_FRACTION;
         let width = self.point_width();
-        let most_held = options.transient_memory * NUMBERS_PER_GIB;
+        let most_held = options.memory * NUMBERS_PER_GIB;
         if transient.stop / longest * width > most_held {
             return Err(SimulationError::TooManyPoints {
                 time: 0.0,
                 step: longest,
-                memory: options.transient_memory,
+                memory: options.memory,
             });
         }
         let mut held = width;
@@ -545,7 +544,7 @@ impl Simulator {
                         return Err(SimulationError::TooManyPoints {
                             time: stepper.time,
                             step: stepper.previous,
-                            memory: options.transient_memory,
+                            memory: options.memory,
                         });
                     }
                     times.push(stepper.time);

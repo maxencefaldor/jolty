@@ -59,7 +59,7 @@ pub(crate) const UNSTABLE_POLE: Rule = Rule {
                 the circuit does not rest there. A real pole, or a conjugate pair, raises one \
                 diagnostic, naming the nets where its mode's amplitude is at least half its \
                 largest. A simulation checks it at its plan's operating point, on circuits \
-                of at most 500 unknowns.",
+                of at most 500 unknowns whose linearization fits its memory option.",
 };
 
 /// Every diagnostic of the rules on the circuit `simulator` elaborated, at its operating
@@ -73,7 +73,8 @@ pub(crate) const UNSTABLE_POLE: Rule = Rule {
 /// # Errors
 ///
 /// Returns the errors of [`Simulator::gmin_dependence`], [`Simulator::operating_points`]
-/// and [`Simulator::growing_modes`].
+/// and [`Simulator::growing_modes`], but its memory's: a circuit whose linearization would
+/// pass the options' `memory` is not checked for growing modes.
 pub fn check_operating_point(
     simulator: &mut Simulator,
     options: &Options,
@@ -87,8 +88,15 @@ pub fn check_operating_point(
         if let [point, other] = points.as_slice() {
             diagnostics.push(multiple_operating_points(simulator, point, other));
         }
-        let growing = simulator.growing_modes(options)?;
-        diagnostics.extend(growing.iter().map(|mode| unstable_pole(simulator, mode)));
+        // Like a circuit too large to linearize, one whose linearization would pass the
+        // options' memory goes unchecked for growing modes, and keeps its other rules.
+        match simulator.growing_modes(options) {
+            Ok(growing) => {
+                diagnostics.extend(growing.iter().map(|mode| unstable_pole(simulator, mode)));
+            }
+            Err(SimulationError::TooMuchMemory { .. }) => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(diagnostics)
 }
@@ -386,5 +394,19 @@ mod tests {
             "{}",
             raised[0].message
         );
+    }
+
+    #[test]
+    fn a_linearization_past_the_memory_skips_growing_modes_alone() {
+        // The memory holds not even the pencil of this one-unknown circuit, so it goes
+        // unchecked for growing modes; the net only the diode's gmin holds is still found.
+        let options = Options {
+            memory: 1e-12,
+            ..Options::default()
+        };
+        let found = check_operating_point(&mut simulator(&leaking(1e-9, None)), &options)
+            .expect("the rules but growing modes");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].rule, "gmin-dependence");
     }
 }

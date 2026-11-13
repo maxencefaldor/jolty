@@ -76,7 +76,7 @@ An analysis fails when its record names a path the circuit does not have, saying
 Whatever the record names, an operating point and a transient also record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read; specs, plots, schematics and the operating point's rules read the unknowns alone.
 A plan's corners, Monte Carlo samples, worst-case runs and spot checks record no more than that, since only specs read their results.
 
-Recording costs memory at every point: a transistor recorded keeps 45 numbers, or 111 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and a transient's `transient_memory` bounds them all (see [Options](simulation.md#options)).
+Recording costs memory at every point: a transistor recorded keeps 45 numbers, or 111 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and the `memory` option bounds them all (see [Options](simulation.md#options)).
 Reading what a result did not record raises a `KeyError` that suggests the closest names it holds and how to record the instance:
 
 ```text

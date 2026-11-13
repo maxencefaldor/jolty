@@ -275,6 +275,44 @@ fn a_memristor_and_a_capacitor_keep_the_charge_they_share() {
 }
 
 #[test]
+fn a_periodic_steady_state_whose_matrices_would_fill_the_memory_fails_at_once() {
+    let mut simulator = simulator(&json!([
+        sine("V1", "in", (0.0, 1.0, 1e3)),
+        two_terminal("R1", ("resistor", "resistance", 1e3), "in", "out"),
+        two_terminal("C1", ("capacitor", "capacitance", 1e-6), "out", "0"),
+    ]));
+    let transient = Transient {
+        stop: 1e-3,
+        max_step: None,
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+        periodic: true,
+    };
+    let options = Options {
+        memory: 1e-9,
+        ..Options::default()
+    };
+    let error = simulator
+        .run(&Analysis::Transient(transient), &options)
+        .expect_err("too little memory");
+    assert_eq!(
+        error,
+        SimulationError::TooMuchMemory {
+            analysis: "periodic steady state",
+            rows: 3,
+            needed: 14.0 * 9.0 / 134_217_728.0,
+            memory: 1e-9,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "the periodic steady state's dense matrices of 3 rows would hold \
+         9.387731552124023e-7 GiB, more than its `memory` option's 1e-9 GiB"
+    );
+    assert_eq!(simulator.operating_point_solves(), 0);
+}
+
+#[test]
 fn a_circuit_with_logic_has_no_periodic_steady_state_here() {
     let mut simulator = simulator(&json!([
         {"id": "A", "of": {"device": "logic_source"},
