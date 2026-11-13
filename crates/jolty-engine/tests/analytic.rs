@@ -1497,3 +1497,34 @@ fn a_circuit_of_a_foundrys_device_elaborates_but_no_analysis_solves_it() {
          models: M1"
     );
 }
+
+#[test]
+fn a_step_starts_from_its_prediction() {
+    // A resistor's current follows its source's ramp exactly, so once two points lie on
+    // the line, each step's prediction is its solution, which Newton iteration confirms
+    // at once: one iteration a step, where starting from the last point took two.
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"piecewise": {"points": [[0, 0], [1e-3, 1]]}}}),
+            &[("positive", "a"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "a"), ("b", "0")],
+        ),
+    ]);
+    let outcome = transient(&circuit, 1e-3, &Options::default()).expect("a transient");
+    let Outcome::Transient(waveforms) = outcome else {
+        panic!("not a transient: {outcome:?}")
+    };
+    let statistics = &waveforms.statistics;
+    assert_eq!(statistics.rejected, 0, "{statistics:?}");
+    assert!(
+        statistics.iterations <= statistics.accepted + 2,
+        "{statistics:?}"
+    );
+}

@@ -4,6 +4,7 @@
 A simulation holds them to every operating point and transient it solves.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -102,34 +103,45 @@ def raised(built: Component) -> list[tuple[str, str]]:
     return [(d.rule, d.message) for d in simulation.check_results(solved)]
 
 
+def stated(pattern: str, message: str) -> float:
+    """The stress `message` states where `pattern` holds `{}`.
+
+    A transient's stress carries the rounding of its Newton iteration in its last
+    digits, which the message states exactly.
+    """
+    head, tail = (re.escape(part) for part in pattern.split("{}"))
+    found = re.fullmatch(rf"{head}(\S+){tail}", message)
+    assert found is not None, message
+    return float(found[1])
+
+
 def test_a_stress_beyond_its_rating_is_an_error() -> None:
     found = raised(supply(rated_power=1.5, rated_voltage=16))
-    assert found == [
-        (
-            "over-rating",
-            (
-                "the power `R1` dissipates reaches 4.0 W at 2e-06 s in `tran`, beyond "
-                "its rating of 1.5 W"
-            ),
-        ),
-        (
-            "over-rating",
-            (
-                "the voltage of `C1` at `a` over `b` reaches 20.0 V at 2e-06 s in "
-                "`tran`, beyond its rating of 16.0 V"
-            ),
-        ),
-    ]
+    assert [rule for rule, _ in found] == ["over-rating", "over-rating"]
+    power = stated(
+        "the power `R1` dissipates reaches {} W at 2e-06 s in `tran`, "
+        "beyond its rating of 1.5 W",
+        found[0][1],
+    )
+    voltage = stated(
+        "the voltage of `C1` at `a` over `b` reaches {} V at 2e-06 s in `tran`, "
+        "beyond its rating of 16.0 V",
+        found[1][1],
+    )
+    assert power == pytest.approx(4.0, rel=1e-12)
+    assert voltage == pytest.approx(20.0, rel=1e-12)
 
 
 def test_a_stress_past_its_derating_is_a_warning() -> None:
     # 1 W at rest is 80 % of 1.25 W, and 20 V within 25 V is 80 % of it.
     found = raised(supply(rated_power=4.5, rated_voltage=24))
     assert [rule for rule, _ in found] == ["derating", "derating"]
-    assert found[0][1] == (
-        "the power `R1` dissipates reaches 4.0 W at 2e-06 s in `tran`, past 80% of its "
-        "rating of 4.5 W"
+    power = stated(
+        "the power `R1` dissipates reaches {} W at 2e-06 s in `tran`, "
+        "past 80% of its rating of 4.5 W",
+        found[0][1],
     )
+    assert power == pytest.approx(4.0, rel=1e-12)
     assert raised(supply(rated_power=10, rated_voltage=50)) == []
 
 

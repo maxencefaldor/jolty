@@ -310,6 +310,11 @@ struct Stepper {
     /// transistor turning off with nothing else to hold its source, goes on where it
     /// stopped instead of starting over.
     resume: Option<Vec<f64>>,
+    /// The accepted point before the last, its time and solution, through which each
+    /// step's Newton iteration starts from a prediction; none after a corner in the
+    /// waveforms, a breakpoint, a driver's ramp starting or a device's jump, where the last
+    /// point alone is the start.
+    before: Option<(f64, Vec<f64>)>,
     history: History,
     /// The length of the next step to try.
     next: f64,
@@ -328,6 +333,21 @@ struct Stepper {
 }
 
 impl Stepper {
+    /// Where Newton iteration starts a step ending at `end`, as SPICE's does: the line
+    /// through the last two accepted points carried on to `end`, or the last point after a
+    /// corner.
+    fn predicted(&self, end: f64) -> Vec<f64> {
+        let Some((time, before)) = &self.before else {
+            return self.x.clone();
+        };
+        let ratio = (end - self.time) / (self.time - time);
+        self.x
+            .iter()
+            .zip(before)
+            .map(|(&last, &earlier)| last + (last - earlier) * ratio)
+            .collect()
+    }
+
     /// Whether an event at `time`, within a step from the last point to `end`, comes
     /// before `end` by more than the relative tolerance of the step, and after the last
     /// point by the shortest step at least, so the step should land on it instead: an
@@ -500,6 +520,7 @@ impl Simulator {
             shortest,
             time: 0.0,
             resume: None,
+            before: None,
             history: History {
                 earlier: VecDeque::with_capacity(HISTORY - 1),
                 last: (0.0, self.workspace.contributions.charge.clone()),
@@ -610,7 +631,10 @@ impl Simulator {
             );
         }
 
-        let mut candidate = stepper.resume.take().unwrap_or_else(|| stepper.x.clone());
+        let mut candidate = stepper
+            .resume
+            .take()
+            .unwrap_or_else(|| stepper.predicted(end));
         let mode = Mode::Step {
             time: end,
             alpha: formula.alpha,
@@ -659,7 +683,7 @@ impl Simulator {
         stepper.statistics.accepted += 1;
         stepper.statistics.iterations += iterations;
         stepper.formula = formula;
-        stepper.x = candidate;
+        let last = (stepper.time, std::mem::replace(&mut stepper.x, candidate));
         stepper.previous = length;
         let settles = self.follow(&commands);
         let restart = corner || !commands.is_empty() || jumped;
@@ -671,6 +695,7 @@ impl Simulator {
             // waveforms.
             let gap = if corner { gap } else { breakpoint - end };
             stepper.time = end;
+            stepper.before = None;
             stepper.history.restart(end, charge, derivative);
             stepper.restart = true;
             stepper.damp = false;
@@ -679,6 +704,7 @@ impl Simulator {
             let trapezoidal = method == Method::Trapezoidal;
             stepper.damp = trapezoidal && self.rings(&stepper.history, &derivative, options);
             stepper.time = end;
+            stepper.before = Some(last);
             stepper.history.accept(end, charge, derivative, trapezoidal);
             stepper.restart = false;
             stepper.next = length * factor;
