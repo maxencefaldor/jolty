@@ -11,8 +11,10 @@ netlist, ngspice runs every analysis of its plan, and the gallery reads ngspice'
 results as jolty's own: it judges the same specs on them, and measures how far each
 signal both engines report lies from the other's.
 
-The script writes ``docs/gallery.md``, a page per example under ``docs/gallery``, the
-images under ``docs/images/gallery``, and each example's 3D viewer as
+Each runs its plan recording every instance, so its 3D viewer plays every device's
+currents, charges and variables. The script writes ``docs/gallery.md``, a page per
+example under ``docs/gallery``, the images under ``docs/images/gallery``, and each
+example's 3D viewer as
 ``docs/gallery/<name>.view.html``; and ``docs/discovery.md``, with a page holding its
 findings and a viewer per discovery under ``docs/discovery``. Once every page is
 written, the script fails on a spec an example fails in either engine, and on a spec
@@ -66,6 +68,25 @@ SAME: Final = 1e-9
 """Two frequencies within this many decades of each other are the same."""
 PERCENT: Final = 1e-3
 """Deviations from this one up read as percentages, smaller ones as powers of ten."""
+RECORDED: Final = """\
+# The plan and specs of {script}, its plan recording every instance.
+
+import runpy
+from dataclasses import replace
+
+_ENTRY = runpy.run_path({script!r}, run_name="__gallery__")
+
+
+def plan():
+    found = _ENTRY["plan"]()
+    return replace(found, options=replace(found.options, record=["**"]))
+
+
+def specs():
+    stated = _ENTRY.get("specs")
+    return stated() if callable(stated) else None
+"""
+"""A plan script that runs an entry's plan recording every instance, for its viewer."""
 
 
 @dataclass(frozen=True)
@@ -535,8 +556,11 @@ def build(entry: Entry) -> Built:
     namespace = runpy.run_path(str(script), run_name="__gallery__")
     with TemporaryDirectory() as directory:
         scratch = Path(directory)
+        recorded = scratch / "recorded.py"
+        recorded.write_text(RECORDED.format(script=str(script)), encoding="utf-8")
         request = SimulateRequest(
             script=script,
+            plan=recorded,
             output=scratch / f"{entry.name}.jolty.json",
             results=scratch / f"{entry.name}.results.npz",
         )
