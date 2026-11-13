@@ -48,6 +48,7 @@ from jolty import (
     specs,
     viewer,
 )
+from jolty import circuit as circuit_of
 from jolty.files import load_circuit, load_results
 from jolty.plan import Ac, DcSweep, OperatingPoint, Transient
 from jolty.service import SimulateRequest, simulate
@@ -195,6 +196,7 @@ DISCOVERIES: Final = (
         free_running=True,
         discovered=True,
     ),
+    Entry("memristive_nor", "A NOR gate of three memristors", "", discovered=True),
 )
 
 
@@ -340,12 +342,16 @@ def _stopped_early(raw: export.Raw, command: str) -> bool:
 def _replicate(
     plan: Plan,
     script_specs: Specs | None,
-    circuit: ir.Circuit,
+    circuits: Mapping[str | None, ir.Circuit],
     solved: Mapping[str, results.Result],
     *,
     free_running: bool,
 ) -> Replication:
-    """Runs `plan` in ngspice, and compares what it finds with jolty's `solved`."""
+    """Runs `plan` in ngspice, and compares what it finds with jolty's `solved`.
+
+    `circuits` holds the circuit of each condition, by its corner's name or `None`; a
+    corner that builds no circuit of its own runs the plan's.
+    """
     replication = Replication()
     conditions = [(None, plan.temperature_at())]
     conditions += [
@@ -353,6 +359,7 @@ def _replicate(
     ]
     for corner, temperature in conditions:
         kelvins = (temperature or celsius(27)).value
+        circuit = circuits.get(corner, circuits[None])
         found: dict[str, results.Result] = {}
         for name, analysis in plan.analyses.items():
             commands = _commands(analysis, circuit)
@@ -566,8 +573,13 @@ def build(entry: Entry) -> Built:
     replication = None
     replicated_plots: list[str] = []
     if not logic:
+        # A corner that passes arguments to `build()` builds a circuit of its own.
+        circuits: dict[str | None, ir.Circuit] = {None: circuit}
+        for name, corner in plan.corners.items():
+            if corner.arguments:
+                circuits[name] = circuit_of(namespace["build"](**corner.arguments))
         replication = _replicate(
-            plan, script_specs, circuit, solved, free_running=entry.free_running
+            plan, script_specs, circuits, solved, free_running=entry.free_running
         )
         for name, found in replication.solved.items():
             ours = solved[name]
@@ -927,7 +939,8 @@ def discoveries(built: Sequence[Built]) -> str:
             "current source that ignores its supply and its temperature, a sine wave "
             "that holds its amplitude without distorting it, a notch that stays deep "
             "with real tolerances, a reference without an op-amp, an oscillator whose "
-            "frequency follows its control in a straight line."
+            "frequency follows its control in a straight line, a logic gate of "
+            "memristors that tolerates its drive."
         ),
         (
             "For each, a prompt states the bounds as an engineer would, and an agent, "

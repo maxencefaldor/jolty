@@ -19,7 +19,7 @@ A circuit of SKY130 transistors runs its plans in ngspice with the foundry's own
 jolty stops at the circuit: it writes SPICE netlists for ngspice and KiCad netlists for boards, and leaves laying out boards and chips to the tools made for them.
 
 The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.
-Its [gallery](https://maxencefaldor.github.io/jolty/gallery/) shows thirty famous circuits, analog and digital, each simulated by jolty and replicated in ngspice, and its [discovery](https://maxencefaldor.github.io/jolty/discovery/) pages five hard design problems and the circuits an agent found for them with jolty alone.
+Its [gallery](https://maxencefaldor.github.io/jolty/gallery/) shows thirty famous circuits, analog and digital, each simulated by jolty and replicated in ngspice, and its [discovery](https://maxencefaldor.github.io/jolty/discovery/) pages six hard design problems and the circuits an agent found for them with jolty alone.
 
 ## 🚀 Quick start
 

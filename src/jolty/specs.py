@@ -219,9 +219,8 @@ class Requirement:
         return ("marginal" if slack < margin else "passed"), slack
 
     def _text(self, bound: Quantity) -> str:
-        plain = self.measurement.plain
-        if plain is not None and bound.dimension == DIMENSIONLESS:
-            return _format(bound.value, plain)
+        if bound.dimension == DIMENSIONLESS:
+            return _format(bound.value, self.measurement.plain or "")
         return str(bound)
 
     @override
@@ -593,7 +592,9 @@ def _verdict(
     except (JoltyError, KeyError) as error:
         return stated.model_copy(update={"reason": str(error.args[0])})
     update = {"status": status, "value": reading.value, "slack": slack}
-    return stated.model_copy(update={**update, "unit": str(reading.unit)})
+    # A dimensionless reading, such as a device's state, is a plain number.
+    unit = "" if reading.unit == DIMENSIONLESS else str(reading.unit)
+    return stated.model_copy(update={**update, "unit": unit})
 
 
 def value(

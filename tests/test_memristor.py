@@ -30,6 +30,7 @@ from jolty import (
 from jolty.plan import Ac, DcSweep, OperatingPoint, Sensitivity, Transient
 from jolty.plots import plot
 from jolty.report import report
+from jolty.specs import Specs, evaluate, value
 from jolty.units import C, Hz, V, kohm, ohm, s
 from jolty.waveforms import Sine
 
@@ -392,3 +393,13 @@ def test_a_state_has_a_panel_of_its_own_and_reads_as_a_number() -> None:
     point = simulation.run(OperatingPoint())
     written = report("point", point, listed=10).describe()
     assert re.search(r"M1:state\s+0\.3\b", written), written
+
+
+def test_a_spec_reads_a_state_as_a_plain_number() -> None:
+    simulation = Simulation(_driven(_vteam()))
+    point = simulation.run(OperatingPoint())
+    requirement = value("point", "M1:state").within(START, 0.01)
+    (verdict,) = evaluate(Specs([requirement]), ["point"], {"point": point})
+    assert str(requirement) == "M1:state in point ≥ 0.29 and ≤ 0.31"
+    assert (verdict.status, verdict.unit) == ("passed", "")
+    assert verdict.value == pytest.approx(START)

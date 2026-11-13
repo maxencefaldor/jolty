@@ -1,6 +1,6 @@
 # Discovery
 
-Some circuits are famous for being hard to get right with few parts: a current source that ignores its supply and its temperature, a sine wave that holds its amplitude without distorting it, a notch that stays deep with real tolerances, a reference without an op-amp, an oscillator whose frequency follows its control in a straight line.
+Some circuits are famous for being hard to get right with few parts: a current source that ignores its supply and its temperature, a sine wave that holds its amplitude without distorting it, a notch that stays deep with real tolerances, a reference without an op-amp, an oscillator whose frequency follows its control in a straight line, a logic gate of memristors that tolerates its drive.
 For each, a prompt states the bounds as an engineer would, and an agent, Claude, searched for a circuit with nothing but jolty: it wrote candidates as components, ran experiments with jolty's Python API and command line, read the exact currents, delays and drifts jolty reports, and kept what the numbers supported.
 Each page holds the prompt, every experiment's result and what it showed; the final design runs through `jolty simulate` and again in ngspice.
 Where no design met a bound, the page says so, and why.
@@ -52,5 +52,14 @@ The prompts, candidates, experiments and designs are all in [`discovery/`](https
     The textbook integrator and Schmitt trigger missed the linearity by a factor of three; jolty traced the error to the Schmitt trigger's delay, and two parts that cancel it brought every frequency within 0.1 % of 996 Hz/V.
 
     [Open in 3D](discovery/vco.view.html#view=X1) · [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/vco/design.py)
+
+-   ![A NOR gate of three memristors, its schematic](images/gallery/memristive_nor.inside.schematic.png)
+
+    **[A NOR gate of three memristors](discovery/memristive-nor.md)** · 12/12 specs · ngspice within 4.9e-09
+
+    The prompt asks for a NOR gate of three VTEAM memristors and one pulse of at most 10 ns, every output within 0.1 of its NOR and every input within 0.05 of its bit, with the pulse's amplitude 10 % off either way.
+    MAGIC's gate, the textbook answer, works only between 1.30 V and 1.32 V, ±0.8 %; a 2.2 kΩ resistor across its inputs widens that to 1.14 V to 1.91 V, ±25 %, and meets the prompt.
+
+    [Open in 3D](discovery/memristive-nor.view.html#view=X1) · [Script](https://github.com/maxencefaldor/jolty/blob/main/discovery/memristive_nor/design.py)
 
 </div>

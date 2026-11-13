@@ -30,7 +30,7 @@ Each build checks every device and connection, reports each problem with the scr
 
 -   🔬 **[Discovery](discovery.md)**
 
-    Five hard problems of circuit design, and the circuits an agent found for them with jolty alone.
+    Six hard problems of circuit design, and the circuits an agent found for them with jolty alone.
 
 -   📘 **[Guide](guide/index.md)**
 
