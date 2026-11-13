@@ -900,6 +900,82 @@ fn a_transient_follows_a_source_that_only_its_transistor_holds() {
     assert_close(last, supply - threshold, 1e-2);
 }
 
+#[test]
+fn a_transient_couples_an_edge_beside_a_node_at_a_hundred_megavolts() {
+    // Only the reverse-biased diode's gmin holds `high`, so the current source lifts it to
+    // 100 MV, and the microfarad from it to `low` holds 100 C: rounding alone leaves
+    // microamperes in `low`'s equation, which Newton iteration must not chase. No current
+    // flows through that microfarad, so `low` is the high-pass of the source's edge
+    // through 10 nF into 10 Ω, 0.63 V once a time constant of the edge has risen.
+    let circuit = circuit(&[
+        (
+            "I1",
+            "current_source",
+            dc(1e-4),
+            &[("positive", "0"), ("negative", "high")],
+        ),
+        (
+            "D1",
+            "diode",
+            json!({}),
+            &[("anode", "0"), ("cathode", "high")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": 1e-6}),
+            &[("a", "high"), ("b", "low")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 10}),
+            &[("a", "low"), ("b", "0")],
+        ),
+        (
+            "V1",
+            "voltage_source",
+            json!({"waveform": {"pulse": {
+                "initial": 3, "pulsed": 4, "delay": 2e-7, "rise": 1e-7, "fall": 1e-7,
+                "width": 8e-7,
+            }}}),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "C2",
+            "capacitor",
+            json!({"capacitance": 1e-8}),
+            &[("a", "in"), ("b", "low")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let transient = Transient {
+        stop: 2e-6,
+        max_step: Some(1e-8),
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+        periodic: false,
+    };
+    let outcome = simulator
+        .run(&Analysis::Transient(transient), &Options::default())
+        .unwrap();
+    let Outcome::Transient(waveforms) = outcome else {
+        panic!("a transient outcome")
+    };
+    let risen = waveforms
+        .times
+        .iter()
+        .position(|&time| (time - 3e-7).abs() < 1e-15)
+        .expect("a step onto the end of the edge");
+    let tau: f64 = 10.0 * 1e-8;
+    let expected = 1e7 * tau * (1.0 - (-1e-7 / tau).exp());
+    assert_close(
+        waveforms.values[risen][index(&simulator, "low")],
+        expected,
+        1e-2,
+    );
+}
+
 /// A level 1 MOSFET of the given channel, its bulk on its source.
 fn mosfet<'a>(
     id: &'a str,

@@ -123,11 +123,18 @@ impl Simulator {
             if stepped_within_tolerance && !limited && self.residual_within_tolerance(options) {
                 return Ok(iteration);
             }
-            let workspace = &mut self.workspace;
-            let residual = &workspace.contributions.residual;
-            for (step, residual) in workspace.step.iter_mut().zip(residual) {
-                *step = -residual;
+            // A residual within the rounding of the unknowns its equation reads is noise: the
+            // step it would drive is one the unknowns cannot record, and chasing it moves
+            // the others without end, as a source's current beside a node at megavolts.
+            for index in 0..x.len() {
+                let residual = self.workspace.contributions.residual[index];
+                self.workspace.step[index] = if residual.abs() <= self.rounding(index) {
+                    0.0
+                } else {
+                    -residual
+                };
             }
+            let workspace = &mut self.workspace;
             self.solver
                 .factor(&workspace.jacobian)
                 .and_then(|mut factors| factors.solve(&mut workspace.step))
@@ -248,11 +255,18 @@ impl Simulator {
             .enumerate()
             .all(|(index, unknown)| {
                 let absolute = options.equation_tolerance(unknown.quantity);
-                let rounding = RESIDUAL_ROUNDINGS * f64::EPSILON * workspace.resolution[index];
                 let contributions = &workspace.contributions;
                 contributions.residual[index].abs()
-                    <= options.relative_tolerance * contributions.scale[index] + absolute + rounding
+                    <= options.relative_tolerance * contributions.scale[index]
+                        + absolute
+                        + self.rounding(index)
             })
+    }
+
+    /// The floating-point resolution of equation `index`'s residual: the rounding of the
+    /// unknowns it reads, which no step can resolve.
+    fn rounding(&self, index: usize) -> f64 {
+        RESIDUAL_ROUNDINGS * f64::EPSILON * self.workspace.resolution[index]
     }
 
     /// The names of the `count` unknowns whose last step was largest against its tolerance.
