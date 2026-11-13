@@ -253,7 +253,9 @@ impl<T: Scalar> Numeric<T> {
         }
         if chosen == NONE {
             self.clear_reach();
-            return Err(LinearError::Singular);
+            return Err(LinearError::Singular {
+                columns: vec![ordering.columns()[column]],
+            });
         }
         let pivot = self.work[chosen];
         self.work[chosen] = T::ZERO;

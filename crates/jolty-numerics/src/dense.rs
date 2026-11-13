@@ -4,6 +4,7 @@ use faer::linalg::svd::SvdError;
 use faer::{Mat, MatRef};
 
 use crate::LinearError;
+use crate::lu::finite;
 
 /// Solves the dense square system `A x = b`, for the matrix `a` of `rhs.len()` rows in
 /// column-major order and `b` in `rhs`, by the least squares among the `x` in the range of
@@ -27,9 +28,9 @@ use crate::LinearError;
 ///
 /// # Errors
 ///
-/// Returns [`LinearError::Singular`] when no finite solution is found: the matrix or the
-/// right-hand side holds a number that is not finite, or its singular values do not
-/// converge.
+/// Returns [`LinearError::Singular`] when no finite solution is found: naming the columns
+/// whose values in the solution are not finite, or none when the matrix's singular values
+/// do not converge, as a number in it that is not finite makes them.
 ///
 /// # Panics
 ///
@@ -48,7 +49,9 @@ pub fn solve_in_range(
     if n == 0 {
         return Ok(0);
     }
-    let singular = |_: SvdError| LinearError::Singular;
+    let singular = |_: SvdError| LinearError::Singular {
+        columns: Vec::new(),
+    };
     let svd = Mat::from_fn(n, n, |row, column| a[column * n + row])
         .svd()
         .map_err(singular)?;
@@ -86,9 +89,7 @@ pub fn solve_in_range(
             .map(|row| (0..rank).map(|k| range[(row, k)] * within[k]).sum::<f64>())
             .collect()
     };
-    if !solution.iter().all(|value| value.is_finite()) {
-        return Err(LinearError::Singular);
-    }
+    finite(&solution)?;
     rhs.copy_from_slice(&solution);
     Ok(rank)
 }
@@ -274,10 +275,14 @@ mod tests {
 
     #[test]
     fn a_number_that_is_not_finite_has_no_solution() {
+        // The projections onto the decomposition's directions carry the NaN into every
+        // value of the solution, each of which the error names.
         let mut rhs = [1.0, f64::NAN];
         assert_eq!(
             solve_in_range(&[1.0, 0.0, 0.0, 1.0], &mut rhs, EXACT),
-            Err(LinearError::Singular)
+            Err(LinearError::Singular {
+                columns: vec![0, 1]
+            })
         );
     }
 }

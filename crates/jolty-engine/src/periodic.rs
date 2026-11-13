@@ -124,7 +124,8 @@ impl Simulator {
                 .zip(&tolerances)
                 .map(|((start, end), tolerance)| (start - end) / tolerance)
                 .collect();
-            solve_in_range(&matrix, &mut step, (options.relative_tolerance, 1.0))?;
+            solve_in_range(&matrix, &mut step, (options.relative_tolerance, 1.0))
+                .map_err(|error| self.solver.name(error))?;
             for ((value, step), tolerance) in start.iter_mut().zip(&step).zip(&tolerances) {
                 *value += step * tolerance;
             }

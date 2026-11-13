@@ -157,8 +157,7 @@ impl Simulator {
         let operating_point = self.linearized(options)?;
         let n = self.system.unknowns.len();
         let (conductance, capacitance) = self.dense_pencil();
-        let poles =
-            roots(n, conductance.clone(), capacitance.clone())?.ok_or(SimulationError::Singular)?;
+        let poles = roots(n, conductance.clone(), capacitance.clone())?.ok_or_else(everywhere)?;
         let zeros = match transfer {
             Some((index, output, reference)) => {
                 let mut level = vec![0.0; n];
@@ -220,13 +219,13 @@ impl Simulator {
         self.linearized(options)?;
         let n = self.system.unknowns.len();
         let (conductance, capacitance) = self.dense_pencil();
-        let poles = roots(n, conductance, capacitance)?.ok_or(SimulationError::Singular)?;
+        let poles = roots(n, conductance, capacitance)?.ok_or_else(everywhere)?;
         let mut growing: Vec<Complex64> = poles
             .into_iter()
             .filter(|pole| pole.re > GROWING * pole.norm() && pole.im >= 0.0)
             .collect();
         growing.sort_by(|x, y| y.re.total_cmp(&x.re));
-        let mut linearization = Linearization::new(self.solver.ordering());
+        let mut linearization = Linearization::new(&self.solver);
         growing
             .into_iter()
             .map(|pole| {
@@ -289,6 +288,14 @@ fn bordered(n: usize, g: &[f64], c: &[f64], level: &[f64], read: &[f64]) -> (Vec
         bordered_g[n * size + index] = excitation;
     }
     (bordered_g, bordered_c)
+}
+
+/// The error of a linearized circuit whose `det(G + sC)` is zero at every `s`: singular,
+/// with no unknown standing out.
+fn everywhere() -> SimulationError {
+    SimulationError::Singular {
+        unknowns: Vec::new(),
+    }
 }
 
 /// The finite roots of `det(g + s·c)`, of two dense matrices of `n` rows in column-major

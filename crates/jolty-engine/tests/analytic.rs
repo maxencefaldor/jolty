@@ -987,7 +987,46 @@ fn a_node_with_no_dc_path_is_singular() {
     let error = simulator(&circuit)
         .operating_point(&Options::default())
         .unwrap_err();
-    assert_eq!(error, SimulationError::Singular);
+    assert_eq!(
+        error,
+        SimulationError::Singular {
+            unknowns: vec!["floating".to_owned()]
+        }
+    );
+}
+
+#[test]
+fn sources_in_parallel_leave_their_currents_undetermined() {
+    // Both sources' currents appear in the equation of `in` alone: only their sum is
+    // determined.
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(1.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "V2",
+            "voltage_source",
+            dc(1.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "in"), ("b", "0")],
+        ),
+    ]);
+    let error = simulator(&circuit)
+        .operating_point(&Options::default())
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "the circuit's equations are singular, leaving V1:current, V2:current undetermined: a \
+         node may have no DC path to the reference, or sources may fix conflicting values"
+    );
 }
 
 #[test]

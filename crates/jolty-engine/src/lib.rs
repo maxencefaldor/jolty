@@ -53,6 +53,7 @@ mod options;
 mod periodic;
 mod pole_zero;
 mod sensitivity;
+mod solver;
 mod stability;
 mod sweep;
 mod transient;
@@ -62,7 +63,7 @@ use std::sync::{Arc, OnceLock};
 
 use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{Level, Library, Node, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
-use jolty_numerics::{LinearError, Ordering, SparseLu};
+use jolty_numerics::Ordering;
 use serde::Deserialize;
 
 pub use ac::{Ac, Response};
@@ -85,6 +86,7 @@ use logic::Events;
 use newton::Workspace;
 use observe::Observer;
 use operating_point::Remembered;
+use solver::Solver;
 
 /// What a circuit is simulated in, apart from its analyses: its devices' temperature,
 /// parameters that replace the circuit's own for some device instances, as a Monte Carlo
@@ -140,7 +142,7 @@ impl Default for Conditions {
 #[derive(Debug)]
 pub struct Simulator {
     system: System,
-    solver: SparseLu<f64>,
+    solver: Solver<f64>,
     workspace: Workspace,
     /// The state of the logic nets, as the last analysis left it.
     events: Events,
@@ -202,7 +204,8 @@ impl Simulator {
         let system = elaborate::elaborate(circuit, library, conditions)?;
         let ordering = Ordering::new(system.pattern.clone())
             .map_err(|_| ElaborationError::from(ElaborationProblem::TooLarge))?;
-        let solver = SparseLu::new(Arc::new(ordering));
+        let names = system.unknowns.iter().map(|unknown| unknown.name.clone());
+        let solver = Solver::new(Arc::new(ordering), names.collect());
         let workspace = Workspace::new(&system);
         let events = Events::new(&system.logic);
         let observer = Observer::new(&system);
@@ -396,12 +399,22 @@ pub enum SimulationError {
         /// The unknowns furthest from converging at the last attempt, worst first.
         worst: Vec<String>,
     },
-    /// The circuit's equations are singular at every attempt.
+    /// The circuit's equations are singular at every attempt, or a system made from them
+    /// is: the circuit linearized at its operating point at a frequency, or the shooting
+    /// equations of a periodic steady state.
     #[error(
-        "the circuit's equations are singular: a node may have no DC path to the reference, \
-         or sources may fix conflicting values"
+        "the circuit's equations are singular{}: a node may have no DC path to the reference, \
+         or sources may fix conflicting values",
+        undetermined(.unknowns)
     )]
-    Singular,
+    Singular {
+        /// Up to three of the unknowns the equations leave undetermined, as the sparse
+        /// solver found them: a set of unknowns that appear in fewer equations than there
+        /// are of them, the unknown whose column elimination left with no nonzero pivot, or
+        /// those whose values in a solution are not finite. None when no unknown stands
+        /// out, as when the pencil of a pole-zero analysis is singular at every frequency.
+        unknowns: Vec<String>,
+    },
     /// The circuit's system is too large to factor.
     #[error("the circuit's system is too large to factor")]
     TooLarge,
@@ -491,11 +504,12 @@ pub enum SimulationError {
     Foundry(Vec<String>),
 }
 
-impl From<LinearError> for SimulationError {
-    fn from(error: LinearError) -> Self {
-        match error {
-            LinearError::Singular => Self::Singular,
-            LinearError::TooLarge => Self::TooLarge,
-        }
+/// The clause of a singular error's message naming the `unknowns` its equations leave
+/// undetermined, if any.
+fn undetermined(unknowns: &[String]) -> String {
+    if unknowns.is_empty() {
+        String::new()
+    } else {
+        format!(", leaving {} undetermined", unknowns.join(", "))
     }
 }

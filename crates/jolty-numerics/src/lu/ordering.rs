@@ -36,8 +36,10 @@ const NONE: usize = usize::MAX;
 ///    factors, its matched entries the pivots it expects.
 pub struct Ordering {
     pattern: Arc<Pattern>,
-    /// Whether no matching covers every column, so every matrix of the pattern is singular.
-    singular: bool,
+    /// When no matching covers every column, so that every matrix of the pattern is
+    /// singular, a set of columns with entries in fewer rows than there are columns, in
+    /// increasing order; else empty.
+    undetermined: Vec<usize>,
     /// The pattern's row at each position of the ordered matrix.
     rows: Vec<usize>,
     /// The pattern's column at each position of the ordered matrix.
@@ -87,17 +89,20 @@ impl Ordering {
         let dimension = pattern.dimension();
         let structure = pattern.structure();
         let (starts, rows) = (structure.col_ptr(), structure.row_idx());
-        let Some(matched) = maximum_transversal(dimension, starts, rows) else {
-            let identity: Vec<usize> = (0..dimension).collect();
-            return Ok(Self {
-                pattern,
-                singular: true,
-                rows: identity.clone(),
-                columns: identity,
-                blocks: vec![0, dimension],
-                within: Entries::empty(dimension),
-                above: Entries::empty(dimension),
-            });
+        let matched = match maximum_transversal(dimension, starts, rows) {
+            Ok(matched) => matched,
+            Err(undetermined) => {
+                let identity: Vec<usize> = (0..dimension).collect();
+                return Ok(Self {
+                    pattern,
+                    undetermined,
+                    rows: identity.clone(),
+                    columns: identity,
+                    blocks: vec![0, dimension],
+                    within: Entries::empty(dimension),
+                    above: Entries::empty(dimension),
+                });
+            }
         };
         let mut column_of_row = vec![NONE; dimension];
         for (column, &row) in matched.iter().enumerate() {
@@ -136,7 +141,7 @@ impl Ordering {
         }
         Ok(Self {
             pattern,
-            singular: false,
+            undetermined: Vec::new(),
             rows: ordered_rows,
             columns,
             blocks,
@@ -162,7 +167,15 @@ impl Ordering {
     /// position on every diagonal position.
     #[must_use]
     pub fn is_singular(&self) -> bool {
-        self.singular
+        !self.undetermined.is_empty()
+    }
+
+    /// For a structurally singular pattern, a set of its columns whose entries lie in fewer
+    /// rows than there are columns, so that no matrix of the pattern determines their
+    /// unknowns, in increasing order; empty for any other pattern.
+    #[must_use]
+    pub fn undetermined(&self) -> &[usize] {
+        &self.undetermined
     }
 
     /// The pattern's row at each position of the ordered matrix.
@@ -203,20 +216,27 @@ impl fmt::Debug for Ordering {
         f.debug_struct("Ordering")
             .field("dimension", &self.pattern.dimension())
             .field("blocks", &self.blocks())
-            .field("singular", &self.singular)
+            .field("undetermined", &self.undetermined)
             .finish_non_exhaustive()
     }
 }
 
 /// The row matched with each column of the `dimension` × `dimension` pattern whose
-/// columns start at `starts` in its sorted `rows`, every pair holding an entry; `None`
-/// when no matching covers every column.
+/// columns start at `starts` in its sorted `rows`, every pair holding an entry; or, when no
+/// matching covers every column, a set of columns with entries in fewer rows than there are
+/// columns, in increasing order.
 ///
 /// Each diagonal entry is matched first, then Duff's depth-first search with look-ahead
 /// ("On algorithms for obtaining a maximum transversal", ACM Transactions on Mathematical
 /// Software 7(3), 1981) finds an augmenting path for every column left, rematching only the
-/// columns along it.
-fn maximum_transversal(dimension: usize, starts: &[usize], rows: &[usize]) -> Option<Vec<usize>> {
+/// columns along it. A search that finds none has visited every column an alternating path
+/// reaches from its start, each of whose rows is matched with another of them: one more
+/// column than rows.
+fn maximum_transversal(
+    dimension: usize,
+    starts: &[usize],
+    rows: &[usize],
+) -> Result<Vec<usize>, Vec<usize>> {
     let column_rows = |column: usize| &rows[starts[column]..starts[column + 1]];
     let mut row_of_column = vec![NONE; dimension];
     let mut column_of_row = vec![NONE; dimension];
@@ -273,8 +293,12 @@ fn maximum_transversal(dimension: usize, starts: &[usize], rows: &[usize]) -> Op
                 path.pop();
             }
         }
+        let Some(mut row) = free else {
+            return Err((0..dimension)
+                .filter(|&column| visited[column] == start)
+                .collect());
+        };
         // Each column on the path takes the row that led on from it, the last the free row.
-        let mut row = free?;
         for level in (0..path.len()).rev() {
             let column = path[level];
             let taken = row_of_column[column];
@@ -283,7 +307,7 @@ fn maximum_transversal(dimension: usize, starts: &[usize], rows: &[usize]) -> Op
             row = taken;
         }
     }
-    Some(row_of_column)
+    Ok(row_of_column)
 }
 
 /// The columns of the pattern in block upper triangular order, and the first position of
@@ -422,8 +446,8 @@ mod tests {
         Arc::new(builder.finish(dimension))
     }
 
-    /// The row matched with each column of `pattern`.
-    fn matching(pattern: &Pattern) -> Option<Vec<usize>> {
+    /// The row matched with each column of `pattern`, or columns no matching covers.
+    fn matching(pattern: &Pattern) -> Result<Vec<usize>, Vec<usize>> {
         let structure = pattern.structure();
         maximum_transversal(
             pattern.dimension(),
@@ -464,13 +488,17 @@ mod tests {
         // current, column 1, is in the node's equation only, so the node's voltage, column
         // 0, takes the source's equation, row 1.
         let source = pattern(2, &[(0, 0), (0, 1), (1, 0)]);
-        assert_eq!(matching(&source), Some(vec![1, 0]));
+        assert_eq!(matching(&source), Ok(vec![1, 0]));
         // A full diagonal is kept, whatever else the pattern holds.
         let full = pattern(3, &[(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (1, 2), (2, 2)]);
-        assert_eq!(matching(&full), Some(vec![0, 1, 2]));
-        // Two sources in parallel read the same node only.
+        assert_eq!(matching(&full), Ok(vec![0, 1, 2]));
+        // Two sources in parallel read the same node only: their currents, columns 1 and 2,
+        // are both in the node's equation and no other.
         let parallel = pattern(3, &[(0, 0), (0, 1), (0, 2), (1, 0), (2, 0)]);
-        assert_eq!(matching(&parallel), None);
+        assert_eq!(matching(&parallel), Err(vec![1, 2]));
+        let ordering = Ordering::new(parallel).expect("fits");
+        assert!(ordering.is_singular());
+        assert_eq!(ordering.undetermined(), [1, 2]);
     }
 
     #[test]
@@ -487,7 +515,8 @@ mod tests {
 
     proptest! {
         /// The matching covers every column exactly when some permutation does, and pairs
-        /// each column with a distinct row holding an entry in it.
+        /// each column with a distinct row holding an entry in it; when there is none, the
+        /// columns it names have entries in fewer rows than there are columns.
         #[test]
         fn finds_a_perfect_matching_when_there_is_one(
             dimension in 1usize..7,
@@ -498,13 +527,24 @@ mod tests {
                 .filter(|&(row, column)| row < dimension && column < dimension)
                 .collect();
             let found = matching(&pattern(dimension, &positions));
-            prop_assert_eq!(found.is_some(), perfect_matching_exists(dimension, &positions));
-            if let Some(rows) = found {
-                let mut taken = vec![false; dimension];
-                for (column, &row) in rows.iter().enumerate() {
-                    prop_assert!(positions.contains(&(row, column)));
-                    prop_assert!(!taken[row]);
-                    taken[row] = true;
+            prop_assert_eq!(found.is_ok(), perfect_matching_exists(dimension, &positions));
+            match found {
+                Ok(rows) => {
+                    let mut taken = vec![false; dimension];
+                    for (column, &row) in rows.iter().enumerate() {
+                        prop_assert!(positions.contains(&(row, column)));
+                        prop_assert!(!taken[row]);
+                        taken[row] = true;
+                    }
+                }
+                Err(columns) => {
+                    prop_assert!(columns.is_sorted() && !columns.is_empty());
+                    let rows: std::collections::BTreeSet<usize> = positions
+                        .iter()
+                        .filter(|(_, column)| columns.binary_search(column).is_ok())
+                        .map(|&(row, _)| row)
+                        .collect();
+                    prop_assert!(rows.len() < columns.len());
                 }
             }
         }

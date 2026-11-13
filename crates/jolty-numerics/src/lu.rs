@@ -75,11 +75,18 @@ impl Scalar for Complex64 {
 }
 
 /// Why a linear system could not be solved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LinearError {
     /// The matrix is singular, structurally or numerically.
     #[error("the system matrix is singular")]
-    Singular,
+    Singular {
+        /// The columns, by index, whose unknowns the system leaves undetermined, as far as
+        /// the solver found them, in increasing order: those of a set of columns with
+        /// entries in fewer rows than there are columns, for a structurally singular
+        /// pattern; the column that has no nonzero pivot left, when elimination finds
+        /// one; or else the columns whose values in the solution are not finite.
+        columns: Vec<usize>,
+    },
     /// The system exceeds the memory or index range available.
     #[error("the system is too large to factor")]
     TooLarge,
@@ -186,9 +193,11 @@ impl<T: Scalar> SparseLu<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LinearError::Singular`] when a column has no nonzero pivot, which every
-    /// matrix of a structurally singular pattern meets, and [`LinearError::TooLarge`] when
-    /// the factors do not fit in memory.
+    /// Returns [`LinearError::Singular`] for every matrix of a structurally singular
+    /// pattern, naming its [undetermined](Ordering::undetermined) columns, and for a matrix
+    /// with a column that has no nonzero pivot left once the columns before it are
+    /// eliminated, naming that column; and [`LinearError::TooLarge`] when the factors do not
+    /// fit in memory.
     ///
     /// # Panics
     ///
@@ -203,8 +212,11 @@ impl<T: Scalar> SparseLu<T> {
             self.statistics.reuses += 1;
         } else {
             self.current = false;
-            if self.ordering.is_singular() {
-                return Err(LinearError::Singular);
+            let undetermined = self.ordering.undetermined();
+            if !undetermined.is_empty() {
+                return Err(LinearError::Singular {
+                    columns: undetermined.to_vec(),
+                });
             }
             self.factored.clear();
             self.factored.extend_from_slice(values);
@@ -255,7 +267,7 @@ impl<T: Scalar> Factors<'_, T> {
     /// # Errors
     ///
     /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
-    /// too small for the matrix's range causes.
+    /// too small for the matrix's range causes, naming the columns whose values are not.
     ///
     /// # Panics
     ///
@@ -278,7 +290,7 @@ impl<T: Scalar> Factors<'_, T> {
     /// # Errors
     ///
     /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
-    /// too small for the matrix's range causes.
+    /// too small for the matrix's range causes, naming the columns whose values are not.
     ///
     /// # Panics
     ///
@@ -296,11 +308,17 @@ impl<T: Scalar> Factors<'_, T> {
     }
 }
 
-/// `Ok` when every value of a solution is finite.
-fn finite<T: Scalar>(solution: &[T]) -> Result<(), LinearError> {
+/// `Ok` when every value of a solution is finite, and else the singular error that names
+/// the columns whose values are not.
+pub(crate) fn finite<T: Scalar>(solution: &[T]) -> Result<(), LinearError> {
     if solution.iter().all(|&value| value.is_finite()) {
-        Ok(())
-    } else {
-        Err(LinearError::Singular)
+        return Ok(());
     }
+    let columns = solution
+        .iter()
+        .enumerate()
+        .filter(|&(_, &value)| !value.is_finite())
+        .map(|(column, _)| column)
+        .collect();
+    Err(LinearError::Singular { columns })
 }

@@ -1,12 +1,12 @@
 //! The small-signal frequency response around the operating point.
 
 use std::f64::consts::TAU;
-use std::sync::Arc;
 
 use jolty_models::{Contributions, Quantity, Unknown};
-use jolty_numerics::{Complex64, Factors, Ordering, SparseLu};
+use jolty_numerics::Complex64;
 use serde::Deserialize;
 
+use crate::solver::{Factors, Solver};
 use crate::{OperatingPoint, Options, SimulationError, Simulator};
 
 /// A small-signal analysis: the response to a unit excitation of one independent source.
@@ -54,7 +54,7 @@ impl Simulator {
         if let Some(source) = self.system.devices[index].device.as_source() {
             source.level_derivative(&mut excitation);
         }
-        let mut linearization = Linearization::new(self.solver.ordering());
+        let mut linearization = Linearization::new(&self.solver);
         self.observer
             .linearize(&operating_point.values, options.gmin);
         let mut values = Vec::with_capacity(ac.frequencies.len());
@@ -157,17 +157,17 @@ impl Simulator {
 /// The matrix `G + jωC` of a circuit linearized at its operating point, factored at any
 /// frequency.
 pub(crate) struct Linearization {
-    solver: SparseLu<Complex64>,
+    solver: Solver<Complex64>,
     matrix: Vec<Complex64>,
 }
 
 impl Linearization {
-    /// A linearization over the pattern of `ordering`, which it shares with the simulator's
-    /// real solver.
-    pub(crate) fn new(ordering: &Arc<Ordering>) -> Self {
+    /// A linearization over the matrices of `solver`, the simulator's, whose ordering it
+    /// shares.
+    pub(crate) fn new(solver: &Solver<f64>) -> Self {
         Self {
-            solver: SparseLu::new(Arc::clone(ordering)),
-            matrix: vec![Complex64::default(); ordering.pattern().len()],
+            solver: solver.sharing(),
+            matrix: vec![Complex64::default(); solver.pattern().len()],
         }
     }
 
@@ -195,6 +195,6 @@ impl Linearization {
         {
             *value = conductance + s * capacitance;
         }
-        Ok(self.solver.factor(&self.matrix)?)
+        self.solver.factor(&self.matrix)
     }
 }

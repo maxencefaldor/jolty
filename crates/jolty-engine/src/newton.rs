@@ -3,7 +3,7 @@
 use jolty_models::{Contributions, Input, Quantity};
 
 use crate::elaborate::System;
-use crate::{Options, Simulator};
+use crate::{Options, SimulationError, Simulator};
 
 /// How many roundings of the unknowns a residual may show and still count as zero.
 ///
@@ -69,10 +69,11 @@ pub(crate) enum Mode<'a> {
 }
 
 /// Why a Newton iteration stopped without converging.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Failure {
-    /// The Jacobian was singular.
-    Singular,
+    /// The solver could not factor the Jacobian, or solve for its step: the error says
+    /// whether it was singular, naming the unknowns it leaves undetermined, or too large.
+    Solver(SimulationError),
     /// The iteration limit was reached.
     Diverged,
 }
@@ -144,7 +145,7 @@ impl Simulator {
             self.solver
                 .factor(&workspace.jacobian)
                 .and_then(|mut factors| factors.solve(&mut workspace.step))
-                .map_err(|_| Failure::Singular)?;
+                .map_err(Failure::Solver)?;
             if let Mode::Dc { deflated, .. } = mode {
                 self.deflate(x, deflated);
             }

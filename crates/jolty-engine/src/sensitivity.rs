@@ -399,7 +399,7 @@ impl Simulator {
             bias.push(self.bias_derivative(x, shift, options));
         }
         self.evaluate(x, None, (1.0, options.gmin), false);
-        let mut linearization = Linearization::new(self.solver.ordering());
+        let mut linearization = Linearization::new(&self.solver);
         let mut found = Vec::with_capacity(response.frequencies.len());
         for (&frequency, phasors) in response.frequencies.iter().zip(&response.values) {
             let omega = std::f64::consts::TAU * frequency;

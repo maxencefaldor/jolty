@@ -543,18 +543,26 @@ fn pivots_off_the_diagonal_where_it_holds_too_little() {
     );
 }
 
+/// Whether `result` is a singular error.
+fn is_singular<T>(result: &Result<T, LinearError>) -> bool {
+    matches!(result, Err(LinearError::Singular { .. }))
+}
+
 #[test]
 fn reports_singular_matrices() {
     // Numerically singular: the second row is twice the first.
     let (mut lu, stored, _) = two_by_two([[1.0, 2.0], [2.0, 4.0]]);
-    assert_eq!(lu.factor(&stored).err(), Some(LinearError::Singular));
+    assert!(is_singular(&lu.factor(&stored)));
+    // A column of zeros is the one named, whatever the order of elimination.
+    let (mut lu, stored, _) = two_by_two([[1.0, 0.0], [3.0, 0.0]]);
+    assert_eq!(
+        lu.factor(&stored).err(),
+        Some(LinearError::Singular { columns: vec![1] })
+    );
     // A refactorization that meets a singular matrix fails too, and the solver recovers.
     let (mut lu, stored, _) = two_by_two([[1.0, 2.0], [3.0, 4.0]]);
     lu.factor(&stored).unwrap();
-    assert_eq!(
-        lu.factor(&[1.0, 2.0, 2.0, 4.0]).err(),
-        Some(LinearError::Singular)
-    );
+    assert!(is_singular(&lu.factor(&[1.0, 2.0, 2.0, 4.0])));
     let mut x = [1.0, 1.0];
     lu.factor(&stored).unwrap().solve(&mut x).unwrap();
     assert!(
@@ -568,14 +576,42 @@ fn reports_singular_matrices() {
     let ordering = Ordering::new(Arc::new(builder.finish(2))).unwrap();
     assert!(ordering.is_singular());
     let mut lu = SparseLu::new(Arc::new(ordering));
-    assert_eq!(lu.factor(&[1.0, 1.0]).err(), Some(LinearError::Singular));
-    // Two voltage sources in parallel: their equations read only the same node.
+    assert_eq!(
+        lu.factor(&[1.0, 1.0]).err(),
+        Some(LinearError::Singular { columns: vec![1] })
+    );
+    // Two voltage sources in parallel: their equations read only the same node, so their
+    // currents, unknowns 1 and 2, appear in the node's equation alone.
     let mut builder = PatternBuilder::new();
     for (row, column) in [(0, 0), (0, 1), (0, 2), (1, 0), (2, 0)] {
         builder.entry(row, column);
     }
     let ordering = Ordering::new(Arc::new(builder.finish(3))).unwrap();
-    assert!(ordering.is_singular());
+    assert_eq!(ordering.undetermined(), [1, 2]);
+    let mut lu = SparseLu::new(Arc::new(ordering));
+    assert_eq!(
+        lu.factor(&[1.0; 5]).err(),
+        Some(LinearError::Singular {
+            columns: vec![1, 2]
+        })
+    );
+}
+
+#[test]
+fn reports_solutions_that_are_not_finite() {
+    // A subnormal pivot is no zero, but its inverse overflows.
+    let diagonal = Matrix {
+        dimension: 2,
+        positions: vec![(0, 0), (1, 1)],
+        values: vec![1.0, 1e-310],
+    };
+    let (mut lu, entries) = solver(&diagonal);
+    let stored = diagonal.stored(lu.pattern(), &entries);
+    let mut x = [1.0, 1.0];
+    assert_eq!(
+        lu.factor(&stored).unwrap().solve(&mut x),
+        Err(LinearError::Singular { columns: vec![1] })
+    );
 }
 
 #[test]

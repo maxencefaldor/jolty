@@ -13,10 +13,9 @@
 
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
-use std::sync::Arc;
 
 use jolty_models::{Input, Level, Quantity};
-use jolty_numerics::{Complex64, SparseLu};
+use jolty_numerics::Complex64;
 use serde::Deserialize;
 
 use crate::logic::{Bound, Events, detected};
@@ -465,7 +464,7 @@ impl Simulator {
             .zip(&contributions.capacitance)
             .map(|(&conductance, &capacitance)| Complex64::new(conductance, omega * capacitance))
             .collect();
-        let mut solver = SparseLu::<Complex64>::new(Arc::clone(self.solver.ordering()));
+        let mut solver = self.solver.sharing::<Complex64>();
         let Ok(mut factors) = solver.factor(&matrix) else {
             return;
         };
@@ -638,7 +637,7 @@ impl Simulator {
                 strategy: Strategy::PseudoTransient,
                 iterations: None,
             }),
-            (Failure::Singular, _) | (_, Err(Failure::Singular)) => Err(SimulationError::Singular),
+            (Failure::Solver(error), _) | (_, Err(Failure::Solver(error))) => Err(error),
             (Failure::Diverged, Err(Failure::Diverged)) => Err(SimulationError::NoOperatingPoint {
                 worst: self.furthest_from_converging(&stepped, options, NAMED_UNKNOWNS),
             }),

@@ -288,6 +288,7 @@ Every other choice the engine makes is one SPICE simulators make, save those the
 | Logic loads | Each logic driver's load is the capacitance it drives, read from its small-signal current at 1 Hz at the operating point. | jolty's own. |
 
 When no step converges, however short, the transient fails and names why: the unknowns furthest from converging, or the equation whose truncation error stayed above its tolerance.
+Equations singular at every attempt fail the operating point, and an analysis whose linearized circuit is singular at a frequency fails too, each naming up to three of the unknowns the equations leave undetermined: the currents of two voltage sources in parallel, of which only the sum is determined, or the voltage of a node only a capacitor joins to the circuit.
 
 The engine's results agree with ngspice's on a corpus of reference circuits: operating points, sweeps and frequency responses to within a millionth of each signal, and transients to within a thousandth of their swing.
 Random circuits agree too, of every device and up to a hundred unknowns: each operating point and frequency response within a millionth of the circuit's largest voltage or current, and each transient within a thousandth, jolty stepping onto every time ngspice took.
