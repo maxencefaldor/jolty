@@ -149,6 +149,26 @@ With a response time `τ`, `s` lags the light, `τ · ds/dt = (E/E₀)^γ − s`
 
 SPICE has no photocell; written for ngspice, it is a behavioral current whose response lags through 1 Ω and a capacitance of its response time.
 
+## Thermal networks
+
+A thermal network carries heat as a circuit carries current: its nets are temperatures above the ambient, in kelvins, its flows heat, in watts, and the ground is the ambient itself.
+Its devices have thermal terminals, which join thermal nets or the ground, and never a net an electrical terminal or a logic pin joins.
+
+| Function | Terminals | Parameter |
+| --- | --- | --- |
+| `thermal_resistance(resistance)` | `a`, `b` | K/W: heat flows from the hotter terminal to the colder at their difference over it |
+| `thermal_capacitance(capacitance)` | `a`, `b` | J/K: heat it stores, in proportion to their difference |
+| `heat_source(power)` | `a`, `b` | W: a constant flow from `a` into `b` |
+
+```python
+heat = c.place(devices.heat_source(1 * W), id="P1")
+sink = c.place(devices.thermal_resistance(50 * K / W), id="RTH")
+c.connect(heat.b, sink.a, name="hot")
+c.connect(heat.a, sink.b, ground)
+```
+
+A thermal net's unknown is its temperature above the ambient, which results read with `rise(net)`: 50 K here.
+
 ## Diode
 
 `diode(...)` is a junction diode from `anode` to `cathode`, in the SPICE model.

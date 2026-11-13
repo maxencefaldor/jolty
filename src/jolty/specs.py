@@ -43,6 +43,7 @@ from jolty.units import (
     CURRENT,
     DIMENSIONLESS,
     FREQUENCY,
+    TEMPERATURE,
     TIME,
     VOLTAGE,
     Dimension,
@@ -70,6 +71,13 @@ type Status = Literal["passed", "marginal", "failed", "unmeasured"]
 """What became of a requirement."""
 
 _STATUSES: Final[tuple[Status, ...]] = ("passed", "marginal", "failed", "unmeasured")
+
+_DIMENSIONS: Final[dict[results.Quantity, Dimension]] = {
+    "voltage": VOLTAGE,
+    "current": CURRENT,
+    "temperature": TEMPERATURE,
+}
+"""The dimension of each quantity an unknown is."""
 
 _SEVERITY: Final[dict[Status, int]] = {
     "failed": 0,
@@ -1233,14 +1241,16 @@ class _Signal:
         index = results.column(result.unknowns, self.name)
         quantity = result.unknowns[index].quantity
         values = result.values[..., index]
-        dimension = VOLTAGE if quantity == "voltage" else CURRENT
+        dimension = _DIMENSIONS[quantity]
         if self.reference is None:
             return values, dimension
         base = results.column(result.unknowns, self.reference)
         for position in (index, base):
             unknown = result.unknowns[position]
             if unknown.quantity != "voltage":
-                message = f"{self} names the current {unknown.name}, not a voltage"
+                message = (
+                    f"{self} names the {unknown.quantity} {unknown.name}, not a voltage"
+                )
                 raise MeasurementError(message)
         return values - result.values[..., base], dimension
 

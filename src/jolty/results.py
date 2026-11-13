@@ -40,22 +40,35 @@ def _no_phasors() -> Complex:
     return np.empty((0, 0), dtype=np.complex128)
 
 
+type Quantity = Literal["voltage", "current", "temperature"]
+"""What an unknown is: a node's voltage, a branch's current, or a thermal net's
+temperature above the ambient, in kelvins."""
+
+
 @dataclass(frozen=True, slots=True)
 class Unknown:
-    """A node voltage or branch current the engine solves for."""
+    """A node voltage, a branch current or a thermal net's temperature, solved for."""
 
     name: str
-    quantity: Literal["voltage", "current"]
+    quantity: Quantity
 
 
-def column(unknowns: tuple[Unknown, ...], name: str) -> int:
+def column(
+    unknowns: tuple[Unknown, ...], name: str, quantity: Quantity | None = None
+) -> int:
     """The column of the unknown `name` in the values of a result over `unknowns`.
 
     Raises:
-        KeyError: When no unknown has that name; the message suggests the closest names.
+        KeyError: When no unknown has that name, the message suggesting the closest
+            names, or when `quantity` is given and the unknown is not of it.
     """
     names = [unknown.name for unknown in unknowns]
-    return _find(names, name, "the circuit has no unknown")
+    index = _find(names, name, "the circuit has no unknown")
+    found = unknowns[index].quantity
+    if quantity is not None and found != quantity:
+        message = f"{name!r} holds a {found}, not a {quantity}"
+        raise KeyError(message)
+    return index
 
 
 type Composites = tuple[tuple[str, tuple[int, ...]], ...]
@@ -227,7 +240,11 @@ class OperatingPoint:
     def voltage(self, net: str, reference: str | None = None) -> float:
         """The voltage of `net`, relative to `reference` or to ground."""
         offset = 0.0 if reference is None else self.voltage(reference)
-        return float(self.values[column(self.unknowns, net)]) - offset
+        return float(self.values[column(self.unknowns, net, "voltage")]) - offset
+
+    def rise(self, net: str) -> float:
+        """The temperature of the thermal net `net` above the ambient, in kelvins."""
+        return float(self.values[column(self.unknowns, net, "temperature")])
 
     def current(self, instance: str, terminal: str | None = None) -> float:
         """The current into `terminal` of `instance`.
@@ -295,7 +312,7 @@ class OperatingPoints:
 
     def voltages(self, net: str) -> Real:
         """The voltage of `net` at each solution, in the order found."""
-        index = column(self.unknowns, net)
+        index = column(self.unknowns, net, "voltage")
         return np.array([float(point.values[index]) for point in self.points])
 
 
@@ -306,7 +323,7 @@ class Sweep:
     unknowns: tuple[Unknown, ...]
     source: str
     """The path of the swept source, such as ``V1``."""
-    quantity: Literal["voltage", "current"]
+    quantity: Quantity
     """Whether the levels are voltages or currents."""
     levels: Real
     values: Real
@@ -341,8 +358,12 @@ class Sweep:
 
     def voltage(self, net: str, reference: str | None = None) -> Real:
         """The voltage of `net` at each level, relative to `reference` or to ground."""
-        values = self.values[:, column(self.unknowns, net)]
+        values = self.values[:, column(self.unknowns, net, "voltage")]
         return values if reference is None else values - self.voltage(reference)
+
+    def rise(self, net: str) -> Real:
+        """The temperature of the thermal net `net` above the ambient at each level."""
+        return self.values[:, column(self.unknowns, net, "temperature")]
 
     def current(self, instance: str, terminal: str | None = None) -> Real:
         """The current into `terminal` of `instance` at each level.
@@ -396,8 +417,12 @@ class Response:
 
     def voltage(self, net: str, reference: str | None = None) -> Complex:
         """The phasor of `net` at each frequency, relative to `reference` or ground."""
-        values = self.values[:, column(self.unknowns, net)]
+        values = self.values[:, column(self.unknowns, net, "voltage")]
         return values if reference is None else values - self.voltage(reference)
+
+    def rise(self, net: str) -> Complex:
+        """The phasor of the thermal net `net`'s temperature at each frequency."""
+        return self.values[:, column(self.unknowns, net, "temperature")]
 
     def current(self, instance: str, terminal: str | None = None) -> Complex:
         """The phasor of the current into `terminal` of `instance` at each frequency.
@@ -465,8 +490,12 @@ class Waveforms:
 
     def voltage(self, net: str, reference: str | None = None) -> Real:
         """The voltage of `net` over time, relative to `reference` or to ground."""
-        values = self.values[:, column(self.unknowns, net)]
+        values = self.values[:, column(self.unknowns, net, "voltage")]
         return values if reference is None else values - self.voltage(reference)
+
+    def rise(self, net: str) -> Real:
+        """The temperature of the thermal net `net` above the ambient over time."""
+        return self.values[:, column(self.unknowns, net, "temperature")]
 
     def current(self, instance: str, terminal: str | None = None) -> Real:
         """The current into `terminal` of `instance` over time.
@@ -606,7 +635,7 @@ class NoiseInput:
 
     source: str
     """The source's path, such as ``V1``."""
-    quantity: Literal["voltage", "current"]
+    quantity: Quantity
     """What the source's level is."""
     gains: Complex
     """The gain from the source's level to the output at each frequency."""
@@ -647,7 +676,7 @@ class NoiseSpectrum:
     """The output's unknown, by name."""
     reference: str | None
     """The node the output voltage is taken over; the ground if None."""
-    quantity: Literal["voltage", "current"]
+    quantity: Quantity
     """What the output is."""
     frequencies: Real
     densities: Real

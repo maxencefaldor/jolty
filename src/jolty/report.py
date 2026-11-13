@@ -21,9 +21,9 @@ from jolty import results, specs
 from jolty.specs import Spread, Verdict, Yield
 from jolty.units import format_si
 
-type Quantity = Literal["voltage", "current"]
+type Quantity = results.Quantity
 
-_SYMBOLS = {"voltage": "V", "current": "A"}
+_SYMBOLS = {"voltage": "V", "current": "A", "temperature": "K"}
 
 _STRATEGIES = {
     "direct": "Newton iteration",

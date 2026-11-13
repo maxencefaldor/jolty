@@ -33,6 +33,7 @@ The module `jolty.units` defines the units below; the micro prefix is written `u
 | Inductance | `H`, `mH`, `uH`, `nH` |
 | Power | `W`, `mW`, `uW` |
 | Temperature | `K` |
+| Energy | `J`, `mJ` |
 | Noise density | `rtHz`, the square root of a hertz: `4 * nV / rtHz` |
 
 ## Printed with prefixes

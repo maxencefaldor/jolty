@@ -14,6 +14,7 @@ The first release, 0.1.0.
 - Device models: resistors, capacitors and inductors with voltage coefficients, sources and their waveforms, controlled sources, behavioral sources, switches, the diode, the JFET, the Gummel-Poon transistor with its excess phase, level 1 and level 3 MOSFETs, a photocell, and logic devices simulated by an event scheduler beside the analog circuit.
 - Vendors' SPICE macromodels read as components, and any circuit written as a SPICE netlist for ngspice.
 - Ratings a part's maker states on its voltages, currents and power, on a device or a component's ports, each bounded above, below or both, held to every operating point and transient.
+- Thermal networks of thermal resistances, heat capacities and heat sources, whose nets are temperatures above the ambient, solved with the circuit.
 - Real parts, each a model with its maker's number and ratings: the 2N3904, 2N3906 and 1N4148, and four power MOSFETs fitted to their datasheets.
 - Rules on a circuit's structure, on its values against the E series, at its operating point (a net only gmin holds, another DC solution, a mode that grows), on its loops' margins and on its ratings; schematics drawn from the connections alone, plots of every analysis, and a 3D viewer that plays any simulation on the layout.
 - Specs measured on every result, at every temperature and corner, over Monte Carlo samples of tolerances, and at the extremes a worst-case analysis sets them to: on any number of a device's parameters, by path, in linear or logarithmic spreads, and shared by lots.

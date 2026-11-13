@@ -59,7 +59,7 @@ _SURFACE: Final = "#fcfcfb"
 _INK: Final = "#0b0b0b"
 _MUTED: Final = "#52514e"
 _GRID: Final = "#e4e3df"
-_UNITS: Final = {"voltage": "V", "current": "A"}
+_UNITS: Final = {"voltage": "V", "current": "A", "temperature": "K"}
 
 type Plotted = (
     results.Sweep
@@ -71,7 +71,7 @@ type Plotted = (
 )
 """A result a plot draws; an operating point has no axis to draw along."""
 
-type _Quantity = Literal["voltage", "current", "logic"]
+type _Quantity = Literal["voltage", "current", "temperature", "logic"]
 
 _LANE: Final = 1.5
 """The height of a logic net's lane, in levels: its level spans 1, and a gap follows."""
@@ -84,15 +84,20 @@ def default_probes(
 
     A net the script named at the top has no slash in its path, and no dot or colon,
     which only the names the builder and the engine give other nets carry. Its voltage
-    is drawn, or its level if it is a logic net. Without such nets, a plot draws the
-    first voltages, or else the first logic nets. Either way, it draws at most
+    is drawn, its temperature if it is a thermal net, or its level if it is a logic net.
+    Without such nets, a plot draws the first voltages and temperatures, or else the
+    first logic nets. Either way, it draws at most
     [`MAX_SERIES`][jolty.plots.MAX_SERIES].
     """
-    voltages = [unknown.name for unknown in unknowns if unknown.quantity == "voltage"]
-    named = [
-        name for name in [*voltages, *nets] if not any(mark in name for mark in "/.:")
+    nodes = [
+        unknown.name
+        for unknown in unknowns
+        if unknown.quantity in {"voltage", "temperature"}
     ]
-    return tuple((named or voltages or list(nets))[:MAX_SERIES])
+    named = [
+        name for name in [*nodes, *nets] if not any(mark in name for mark in "/.:")
+    ]
+    return tuple((named or nodes or list(nets))[:MAX_SERIES])
 
 
 def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
@@ -152,7 +157,8 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
                 (probe, colors[probe], result.values[:, columns[probe]])
                 for probe in groups[quantity]
             ]
-            _draw(axes[index], x, series, quantity, _UNITS[quantity])
+            label = "temperature rise" if quantity == "temperature" else quantity
+            _draw(axes[index], x, series, label, _UNITS[quantity])
     _label_abscissa(axes[-1], result, x_unit)
     return figure
 
@@ -168,7 +174,12 @@ def _grouped(
     """
     nets = () if isinstance(result, results.Response) else result.nets
     columns = {}
-    groups: dict[_Quantity, list[str]] = {"voltage": [], "current": [], "logic": []}
+    groups: dict[_Quantity, list[str]] = {
+        "voltage": [],
+        "current": [],
+        "temperature": [],
+        "logic": [],
+    }
     for probe in probes:
         if probe in nets:
             groups["logic"].append(probe)

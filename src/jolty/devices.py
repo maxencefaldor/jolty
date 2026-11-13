@@ -24,11 +24,13 @@ from jolty.units import (
     CONDUCTANCE,
     CURRENT,
     DIMENSIONLESS,
+    HEAT_CAPACITY,
     INDUCTANCE,
     LENGTH,
     POWER,
     RESISTANCE,
     TEMPERATURE,
+    THERMAL_RESISTANCE,
     TIME,
     VOLTAGE,
     Dimension,
@@ -319,6 +321,46 @@ def _curvature(
         },
         {},
     )
+
+
+def thermal_resistance(resistance: Quantity) -> Device:
+    """A thermal resistance between thermal terminals ``a`` and ``b``, in K/W.
+
+    Heat flows through it from the hotter terminal to the colder at their difference
+    over its resistance, as current flows through a resistor. A thermal terminal joins
+    a thermal net, whose unknown is its temperature above the ambient, or the ground,
+    which is the ambient itself.
+
+    Examples:
+        >>> from jolty.units import K, W
+        >>> thermal_resistance(50 * K / W).terminals
+        ('a', 'b')
+    """
+    return device(
+        "thermal_resistance",
+        {"resistance": resistance.to(THERMAL_RESISTANCE, "thermal resistance")},
+    )
+
+
+def thermal_capacitance(capacitance: Quantity) -> Device:
+    """A heat capacity between thermal terminals ``a`` and ``b``, in J/K.
+
+    It stores heat in proportion to their difference, as a capacitor stores charge, so
+    it sets how fast a thermal net's temperature follows the heat into it.
+    """
+    return device(
+        "thermal_capacitance",
+        {"capacitance": capacitance.to(HEAT_CAPACITY, "heat capacity")},
+    )
+
+
+def heat_source(power: Quantity) -> Device:
+    """A constant heat flow, in watts, from thermal terminal ``a`` into ``b``.
+
+    It drives heat as a current source drives current: a part beside the circuit,
+    heating the board under it.
+    """
+    return device("heat_source", {"power": power.to(POWER, "heat flow")})
 
 
 def voltage_source(waveform: Waveform | Quantity) -> Device:

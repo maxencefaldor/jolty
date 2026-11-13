@@ -106,6 +106,7 @@ impl Behavior {
         Interface {
             terminals: self.terminals.clone(),
             branches,
+            thermal: Vec::new(),
         }
     }
 }

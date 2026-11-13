@@ -218,6 +218,15 @@ pub enum ElaborationProblem {
         /// The net's path.
         net: String,
     },
+    /// A thermal terminal joins a net that electrical terminals or logic pins join too.
+    ThermalOnElectricalNet {
+        /// The instance.
+        at: Location,
+        /// The thermal terminal.
+        terminal: String,
+        /// The net's path.
+        net: String,
+    },
     /// A model stands in for a component instance the circuit does not have.
     UnknownSubstitute(String),
     /// Parameters replace those of an instance the circuit does not have.
@@ -235,7 +244,8 @@ impl ElaborationProblem {
             | Self::UnconnectedTerminal { at, .. }
             | Self::UnknownTerminal { at, .. }
             | Self::Parameters { at, .. }
-            | Self::LogicPinOnElectricalNet { at, .. } => Some(at),
+            | Self::LogicPinOnElectricalNet { at, .. }
+            | Self::ThermalOnElectricalNet { at, .. } => Some(at),
             _ => None,
         }
     }
@@ -264,6 +274,10 @@ impl ElaborationProblem {
             } => format!(
                 "joins its logic pin `{pin}` to the electrical net `{net}`, and a {model} has no \
                  supply and ground to cross to it"
+            ),
+            Self::ThermalOnElectricalNet { terminal, net, .. } => format!(
+                "joins its thermal terminal `{terminal}` to the net `{net}`, which electrical \
+                 terminals or logic pins join too, and a temperature is no voltage"
             ),
             Self::UnknownSubstitute(path) => format!(
                 "the circuit has no component instance at `{path}`, for which a model stands in"
@@ -385,6 +399,7 @@ pub(crate) fn elaborate(
         ..
     } = walk;
 
+    problems.extend(mixed_domains(&nets));
     let (mut unknowns, classes, mut partition) = classify(&nets, ground_name(circuit));
     let mut builder = PatternBuilder::new();
     let node_diagonals: Vec<(Unknown, Entry)> = (0..unknowns.len())
@@ -410,20 +425,7 @@ pub(crate) fn elaborate(
     let detected = std::mem::take(&mut elements.detected);
     let pins = std::mem::take(&mut elements.pins);
     partition.index(&detected, &placed);
-    problems.extend(
-        conditions
-            .substitutes
-            .keys()
-            .filter(|path| !substituted.contains(path.as_str()))
-            .map(|path| ElaborationProblem::UnknownSubstitute(path.clone())),
-    );
-    problems.extend(
-        conditions
-            .overrides
-            .keys()
-            .filter(|path| !overridden.contains(path.as_str()))
-            .map(|path| ElaborationProblem::UnknownOverride(path.clone())),
-    );
+    problems.extend(unclaimed(conditions, &substituted, &overridden));
     // Without a single ground, a problem says so.
     let (Some(ground), true) = (ground, problems.is_empty()) else {
         return Err(ElaborationError(problems));
@@ -442,15 +444,14 @@ pub(crate) fn elaborate(
     })
 }
 
-/// The terminals of every component instance and logic device on an electrical net, each
-/// with the device terminals it sums: the ports, in the order the walk met them, then the
-/// logic devices' pins and terminals. The analog devices were placed in the order the walk
-/// found them, so the walk's index of each is its index among the devices.
+/// The terminals of every component instance and logic device on a node, electrical or
+/// thermal, each with the device terminals it sums: the ports, in the order the walk met
+/// them, then the logic devices' pins and terminals. The analog devices were placed in the
+/// order the walk found them, so the walk's index of each is its index among the devices.
 fn composites(ports: &[PortRecord], pins: &[LogicPins], classes: &Classes<'_>) -> Vec<Composite> {
-    let electrical = |net: NetRef| net.is_none_or(|net| classes.nets[net].electrical);
     let ports = ports
         .iter()
-        .filter(|port| electrical(port.net))
+        .filter(|port| port.net.is_none_or(|net| classes.nodes[net].is_some()))
         .map(|port| {
             let members = port
                 .members
@@ -539,20 +540,58 @@ fn reference(circuit: &Circuit) -> (Option<&Name>, Vec<ElaborationProblem>) {
     }
 }
 
-/// Classifies the walk's `nets`: those an electrical terminal joins become node voltages, in
-/// the order they were first met, and the others logic nets. Returns the node voltages, the
-/// classes, and the logic partition with its nets.
+/// The problem of each substitute and override of `conditions` whose path the walk did not
+/// find: those it `replaced` and `overridden`.
+fn unclaimed<'a>(
+    conditions: &'a Conditions,
+    replaced: &'a BTreeSet<String>,
+    overridden: &'a BTreeSet<String>,
+) -> impl Iterator<Item = ElaborationProblem> + 'a {
+    let standing = conditions
+        .substitutes
+        .keys()
+        .filter(|path| !replaced.contains(path.as_str()))
+        .map(|path| ElaborationProblem::UnknownSubstitute(path.clone()));
+    let unused = conditions
+        .overrides
+        .keys()
+        .filter(|path| !overridden.contains(path.as_str()))
+        .map(|path| ElaborationProblem::UnknownOverride(path.clone()));
+    standing.chain(unused)
+}
+
+/// The problem of each net a thermal terminal joins that an electrical terminal or a logic
+/// pin joins too.
+fn mixed_domains(nets: &[NetRecord]) -> impl Iterator<Item = ElaborationProblem> + '_ {
+    nets.iter().filter_map(|net| {
+        let (at, terminal) = net.thermal.as_ref()?;
+        (net.electrical || net.logic).then(|| ElaborationProblem::ThermalOnElectricalNet {
+            at: at.clone(),
+            terminal: terminal.clone(),
+            net: net.name.clone(),
+        })
+    })
+}
+
+/// Classifies the walk's `nets`: those an electrical terminal joins become node voltages,
+/// and those a thermal terminal joins temperatures above the ambient, in the order they
+/// were first met, and the others logic nets. Returns the nodes' unknowns, the classes, and
+/// the logic partition with its nets.
 fn classify(nets: &[NetRecord], ground: String) -> (Vec<UnknownInfo>, Classes<'_>, LogicSystem) {
     let mut unknowns = Vec::new();
     let mut nodes: Vec<Node> = vec![None; nets.len()];
     let mut logic: Vec<Option<usize>> = vec![None; nets.len()];
     let mut partition = LogicSystem::default();
     for (index, net) in nets.iter().enumerate() {
-        if net.electrical {
+        if net.electrical || net.thermal.is_some() {
             nodes[index] = Some(Unknown::new(unknowns.len()));
             unknowns.push(UnknownInfo {
                 name: net.name.clone(),
-                quantity: Quantity::Voltage,
+                quantity: if net.electrical {
+                    Quantity::Voltage
+                } else {
+                    Quantity::Temperature
+                },
             });
         } else {
             logic[index] = Some(partition.nets.len());
@@ -847,6 +886,10 @@ struct NetRecord {
     name: String,
     /// Whether an electrical terminal joins it.
     electrical: bool,
+    /// Whether a logic pin joins it.
+    logic: bool,
+    /// The first thermal terminal that joins it, if one does: its instance and its name.
+    thermal: Option<(Location, String)>,
 }
 
 /// A device instance found by the walk, waiting for every net to be classified.
@@ -1047,8 +1090,16 @@ impl<'a> Walk<'a> {
                 self.attach(joined.port, Member::Analog { device, terminal });
             }
             let terminals: Vec<NetRef> = joined.iter().map(|joined| joined.net).collect();
-            for &net in terminals.iter().flatten() {
-                self.nets[net].electrical = true;
+            for (index, net) in terminals.iter().enumerate() {
+                let Some(net) = *net else { continue };
+                let record = &mut self.nets[net];
+                if interface.thermal.contains(&index) {
+                    record
+                        .thermal
+                        .get_or_insert_with(|| (at.clone(), interface.terminals[index].clone()));
+                } else {
+                    record.electrical = true;
+                }
             }
             self.devices.push(Pending {
                 at,
@@ -1079,6 +1130,9 @@ impl<'a> Walk<'a> {
             }
             let nets: Vec<NetRef> = joined.iter().map(|joined| joined.net).collect();
             let pin_count = pins.inputs.len() + pins.outputs.len();
+            for &net in nets[..pin_count].iter().flatten() {
+                self.nets[net].logic = true;
+            }
             for &net in nets[pin_count..].iter().flatten() {
                 self.nets[net].electrical = true;
             }
@@ -1154,6 +1208,8 @@ impl<'a> Walk<'a> {
         self.nets.push(NetRecord {
             name: name.clone(),
             electrical: false,
+            logic: false,
+            thermal: None,
         });
         self.named.insert(name, index);
         Joined {

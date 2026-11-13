@@ -35,6 +35,9 @@ pub enum Quantity {
     /// the current through a capacitance no charge describes, such as a transistor's gate
     /// oxide in Meyer's model, which the device's own currents follow.
     Displacement,
+    /// A thermal net's temperature above the ambient, in kelvins, whose equation sums the
+    /// heat flows leaving the net, in watts, as a node's sums currents.
+    Temperature,
 }
 
 impl Quantity {
@@ -44,10 +47,11 @@ impl Quantity {
         matches!(self, Self::Current | Self::Displacement)
     }
 
-    /// Whether the unknown's equation sums currents, rather than constraining a voltage.
+    /// Whether the unknown's equation sums currents, or heat flows, rather than
+    /// constraining a voltage.
     #[must_use]
     pub const fn sums_currents(self) -> bool {
-        matches!(self, Self::Voltage | Self::Displacement)
+        matches!(self, Self::Voltage | Self::Displacement | Self::Temperature)
     }
 }
 

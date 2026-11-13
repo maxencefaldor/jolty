@@ -59,7 +59,7 @@ class _Points(_Model):
 class _Sweep(_Model):
     kind: Literal["dc_sweep"] = "dc_sweep"
     source: str
-    quantity: Literal["voltage", "current"]
+    quantity: results.Quantity
 
 
 class _Response(_Model):
@@ -88,14 +88,14 @@ class _LoopGain(_Model):
 
 class _NoiseInput(_Model):
     source: str
-    quantity: Literal["voltage", "current"]
+    quantity: results.Quantity
 
 
 class _NoiseSpectrum(_Model):
     kind: Literal["noise"] = "noise"
     output: str
     reference: str | None
-    quantity: Literal["voltage", "current"]
+    quantity: results.Quantity
     sources: tuple[tuple[str, str], ...]
     input: _NoiseInput | None
     strategy: str

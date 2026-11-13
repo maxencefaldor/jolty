@@ -106,6 +106,8 @@ RESISTANCE: Final = VOLTAGE / CURRENT
 CONDUCTANCE: Final = DIMENSIONLESS / RESISTANCE
 CAPACITANCE: Final = CHARGE / VOLTAGE
 INDUCTANCE: Final = VOLTAGE * TIME / CURRENT
+THERMAL_RESISTANCE: Final = TEMPERATURE / POWER
+HEAT_CAPACITY: Final = ENERGY / TEMPERATURE
 
 _SYMBOLS: Final = {
     LENGTH: "m",
@@ -121,6 +123,8 @@ _SYMBOLS: Final = {
     CONDUCTANCE: "S",
     CAPACITANCE: "F",
     INDUCTANCE: "H",
+    THERMAL_RESISTANCE: "K/W",
+    HEAT_CAPACITY: "J/K",
     CURRENT / VOLTAGE**2: "A/V\N{SUPERSCRIPT TWO}",
     FREQUENCY ** Fraction(1, 2): "\N{SQUARE ROOT}Hz",
     VOLTAGE / FREQUENCY ** Fraction(1, 2): "V/\N{SQUARE ROOT}Hz",
@@ -326,5 +330,7 @@ W: Final = Quantity(1.0, POWER)
 mW: Final = Quantity(1e-3, POWER)
 uW: Final = Quantity(1e-6, POWER)
 K: Final = Quantity(1.0, TEMPERATURE)
+J: Final = Quantity(1.0, ENERGY)
+mJ: Final = Quantity(1e-3, ENERGY)
 rtHz: Final = Hz ** Fraction(1, 2)
 """The square root of a hertz, the unit of a noise density such as ``4 * nV / rtHz``."""

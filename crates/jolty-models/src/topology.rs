@@ -69,15 +69,27 @@ pub struct Interface {
     pub terminals: Vec<String>,
     /// The branches between the terminals; a terminal on none only senses its node.
     pub branches: Vec<Branch>,
+    /// The thermal terminals, by index: each joins a thermal net, whose unknown is its
+    /// temperature above the ambient and whose equation sums heat flows, or the ground,
+    /// which is the ambient. The others are electrical.
+    pub thermal: Vec<usize>,
 }
 
 impl Interface {
-    /// An interface of `terminals` and `branches`.
+    /// An interface of electrical `terminals` and `branches`.
     #[must_use]
     pub fn new(terminals: &[&str], branches: &[Branch]) -> Self {
         Self {
             terminals: terminals.iter().map(|&name| name.to_owned()).collect(),
             branches: branches.to_vec(),
+            thermal: Vec::new(),
         }
+    }
+
+    /// The interface with every terminal thermal.
+    #[must_use]
+    pub fn thermal(mut self) -> Self {
+        self.thermal = (0..self.terminals.len()).collect();
+        self
     }
 }

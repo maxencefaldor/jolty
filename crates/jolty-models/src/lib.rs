@@ -32,6 +32,7 @@ mod stamp;
 mod switch;
 #[cfg(test)]
 mod testing;
+mod thermal;
 mod topology;
 pub mod waveform;
 
@@ -71,6 +72,10 @@ pub use real::{Gradient, Real};
 pub use sources::{CurrentSource, SourceParameters, VoltageSource};
 pub use stamp::{SMALL_RESISTANCE, TerminalPair};
 pub use switch::{VoltageControlledSwitch, VoltageControlledSwitchParameters};
+pub use thermal::{
+    HeatSource, HeatSourceParameters, ThermalCapacitance, ThermalCapacitanceParameters,
+    ThermalResistance, ThermalResistanceParameters,
+};
 pub use topology::{Branch, BranchKind, Interface};
 
 /// The models a circuit can use, by name: analog models and logic models, no two of the
@@ -103,6 +108,9 @@ impl Library {
         library.add(Native::<Jfet>::new());
         library.add(Native::<Mosfet>::new());
         library.add(Native::<Photocell>::new());
+        library.add(Native::<ThermalResistance>::new());
+        library.add(Native::<ThermalCapacitance>::new());
+        library.add(Native::<HeatSource>::new());
         library.add_logic(NativeLogicModel::<LogicCell>::new());
         library.add_logic(NativeLogicModel::<LogicSource>::new());
         library
@@ -175,6 +183,7 @@ mod tests {
                 "current_controlled_voltage_source",
                 "current_source",
                 "diode",
+                "heat_source",
                 "inductor",
                 "jfet",
                 "logic_cell",
@@ -182,6 +191,8 @@ mod tests {
                 "mosfet",
                 "photocell",
                 "resistor",
+                "thermal_capacitance",
+                "thermal_resistance",
                 "voltage_controlled_current_source",
                 "voltage_controlled_switch",
                 "voltage_controlled_voltage_source",
