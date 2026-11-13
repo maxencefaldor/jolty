@@ -96,7 +96,7 @@ def specs() -> Specs:
     )
 ```
 
-The engine solves the charge-oriented equations `f(x) + d/dt q(x) = 0` of modified nodal analysis by Newton iteration, with SPICE's convergence aids, one sparse LU factorization shared by every analysis, and adaptive time steps controlled by the local truncation error.
+The engine solves the charge-oriented equations `f(x) + d/dt q(x) = 0` of modified nodal analysis by Newton iteration, with SPICE's convergence aids, a sparse LU solver built for circuits' matrices that refactors each new Jacobian with the last one's pivots, and adaptive time steps controlled by the local truncation error.
 
 ## 🏗️ Architecture
 

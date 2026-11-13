@@ -137,6 +137,9 @@ impl Simulator {
                     -residual
                 };
             }
+            // The solver keeps the factors of a Jacobian unchanged since the last, as a
+            // linear circuit's is from one iteration to the next, and refactors a changed one
+            // with the last pivots.
             let workspace = &mut self.workspace;
             self.solver
                 .factor(&workspace.jacobian)
@@ -289,5 +292,109 @@ impl Simulator {
             .take(count)
             .map(|(_, index)| self.system.unknowns[index].name.clone())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use jolty_ir::Circuit;
+    use jolty_models::Library;
+    use jolty_numerics::integration::Method;
+    use serde_json::json;
+
+    use crate::{Conditions, Options, Simulator, Transient};
+
+    /// A simulator of a 1 V source driving `stages` sections of 1 kΩ in series and 1 nF to
+    /// the ground, with a diode from the last to the ground if `clamped`.
+    fn ladder(stages: usize, clamped: bool) -> Simulator {
+        let node = |index: usize| format!("n{index}");
+        let mut instances = vec![json!({
+            "id": "V1", "of": {"device": "voltage_source"},
+            "parameters": {"waveform": {"dc": 1.0}},
+            "terminals": {"positive": node(0), "negative": "ground"}
+        })];
+        for stage in 0..stages {
+            instances.push(json!({
+                "id": format!("R{stage}"), "of": {"device": "resistor"},
+                "parameters": {"resistance": 1e3},
+                "terminals": {"a": node(stage), "b": node(stage + 1)}
+            }));
+            instances.push(json!({
+                "id": format!("C{stage}"), "of": {"device": "capacitor"},
+                "parameters": {"capacitance": 1e-9},
+                "terminals": {"a": node(stage + 1), "b": "ground"}
+            }));
+        }
+        if clamped {
+            instances.push(json!({
+                "id": "D1", "of": {"device": "diode"}, "parameters": {},
+                "terminals": {"anode": node(stages), "cathode": "ground"}
+            }));
+        }
+        let document = json!({
+            "format": "jolty-circuit", "version": 1, "top": "ladder",
+            "components": {"ladder": {
+                "ports": [{"name": "ground", "role": "ground"}],
+                "instances": instances
+            }}
+        });
+        let circuit = Circuit::from_json(&document.to_string()).expect("a circuit");
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("an elaborated circuit")
+    }
+
+    #[test]
+    fn a_linear_circuit_factors_its_jacobian_once() {
+        // The first iteration steps onto the solution, the second, confirming it, finds the
+        // same Jacobian and keeps its factors.
+        let mut simulator = ladder(5, false);
+        simulator.operating_point(&Options::default()).unwrap();
+        let statistics = simulator.solver.statistics();
+        assert_eq!(
+            (
+                statistics.factorizations,
+                statistics.refactorizations,
+                statistics.reuses
+            ),
+            (1, 0, 1)
+        );
+    }
+
+    #[test]
+    fn a_nonlinear_circuit_refactors_with_its_first_pivots() {
+        let mut simulator = ladder(3, true);
+        simulator.operating_point(&Options::default()).unwrap();
+        let statistics = simulator.solver.statistics();
+        assert_eq!(statistics.factorizations, 1);
+        assert!(statistics.refactorizations >= 2, "{statistics:?}");
+    }
+
+    #[test]
+    fn a_linear_transient_factors_only_as_its_step_changes() {
+        // The step doubles from a tenth of the longest until it is the longest, and holds
+        // there to the stop: the Jacobian changes with it and no more.
+        let mut simulator = ladder(5, false);
+        let options = Options::default();
+        simulator.operating_point(&options).unwrap();
+        let before = simulator.solver.statistics();
+        let transient = Transient {
+            stop: 1e-3,
+            max_step: Some(1e-6),
+            method: Method::BackwardEuler,
+            times: Vec::new(),
+            periodic: false,
+        };
+        let waveforms = simulator.transient(&transient, &options).unwrap();
+        let after = simulator.solver.statistics();
+        let factored = after.factorizations + after.refactorizations
+            - before.factorizations
+            - before.refactorizations;
+        let steps = waveforms.statistics.accepted;
+        assert!(steps >= 1000, "{steps} steps");
+        assert!(
+            factored <= 8,
+            "{factored} factorizations over {steps} steps"
+        );
+        assert!(after.reuses - before.reuses >= waveforms.statistics.iterations - factored);
     }
 }

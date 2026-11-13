@@ -8,8 +8,9 @@
 //! probe, the [noise](Simulator::noise) at an output, and the [poles and
 //! zeros](Simulator::pole_zero).
 //! Every analysis solves the charge-oriented equations `f(x) + d/dt q(x) = 0` by Newton
-//! iteration with one sparse LU solver, whose symbolic analysis is shared by all of them,
-//! and every analysis about the operating point takes the one the simulator solved last.
+//! iteration with one sparse LU solver, whose ordering all of them share, real and complex,
+//! and which refactors each new Jacobian with the pivots of the last; every analysis about
+//! the operating point takes the one the simulator solved last.
 //! Logic devices join logic nets, which an event scheduler simulates beside the analog
 //! circuit, joined to it by connect elements where a logic pin meets an electrical net.
 //!
