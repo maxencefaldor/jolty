@@ -151,13 +151,18 @@ class Simulation:
     process: str | None
     """The process corner of the foundry's devices, the kit's typical unless given."""
 
-    def __init__(
+    mismatch: int | None
+    """The seed the foundry's devices draw their kit's mismatch from, if any."""
+
+    def __init__(  # noqa: PLR0913 - the circuit, and what it runs at
         self,
         circuit_or_top: ir.Circuit | Component,
         temperature: Quantity | None = None,
         overrides: Mapping[str, Mapping[str, float]] | None = None,
         substitutes: Mapping[str, Device] | None = None,
+        *,
         process: str | None = None,
+        mismatch: int | None = None,
     ) -> None:
         """Elaborates a circuit, or the circuit with a component at its top.
 
@@ -166,7 +171,9 @@ class Simulation:
         as ``waveform.dc``, in SI base units, as a Monte Carlo sample does. In
         `substitutes`, a device stands in for each component instance, by path, its
         terminals the component's ports, as a plan's fidelity chooses. A foundry's
-        devices run at the `process` corner, such as ``ss``.
+        devices run at the `process` corner, such as ``ss``, and draw their kit's
+        mismatch from the seed `mismatch`, as a Monte Carlo sample does; other devices
+        have none to draw.
 
         Raises:
             ElaborationError: With every problem the engine finds, each naming the
@@ -229,6 +236,7 @@ class Simulation:
             )
             raise ValueError(message)
         self.process = process
+        self.mismatch = mismatch
 
     def check(self) -> tuple[checks.Diagnostic, ...]:
         """Every diagnostic the structural checks find, at its rule's default level."""
@@ -375,13 +383,11 @@ class Simulation:
         chosen = Options() if options is None else options
         if self.foundry:
             self.excursions = ()
+            conditions = foundry.Conditions(
+                self.temperature, self.process, self.overrides, self.mismatch
+            )
             return foundry.run(
-                foundry.overridden(self.circuit, self.overrides),
-                analysis,
-                chosen,
-                temperature=self.temperature,
-                process=self.process,
-                unknowns=self.unknowns,
+                self.circuit, analysis, chosen, conditions, self.unknowns
             )
         encoded = json.dumps(self._encode(analysis), allow_nan=False)
         settings = json.dumps(chosen.to_json(), allow_nan=False)

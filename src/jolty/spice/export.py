@@ -833,6 +833,8 @@ class Running(TypedDict, total=False):
     """The options line, as tight as jolty's tightest unless given."""
     temperature: float
     """jolty's temperature, in kelvins, 27 °C unless given."""
+    seed: int | None
+    """The seed of ngspice's random numbers, such as a kit's mismatch draws, if any."""
 
 
 def ngspice(
@@ -859,10 +861,10 @@ def ngspice_runs(
     """Runs analysis commands in turn in one ngspice, and reads the plot each writes.
 
     ngspice includes the `libraries`, reads the `sections` of others, and reads them
-    and the deck in its `compatibility` mode. `options` replaces the tight options. It
-    runs at jolty's `temperature`, in kelvins, its models' nominal temperature at
-    jolty's 27 °C. Each command may run several analyses, and a result is read from the
-    plot of each.
+    and the deck in its `compatibility` mode, its random numbers drawn from `seed`.
+    `options` replaces the tight options. It runs at jolty's `temperature`, in kelvins,
+    its models' nominal temperature at jolty's 27 °C. Each command may run several
+    analyses, and a result is read from the plot of each.
 
     Raises:
         JoltyError: When ngspice is not installed, runs out of time, writes no results,
@@ -884,6 +886,11 @@ def ngspice_runs(
         *lines[1:],
         running.get("options", SPICE_OPTIONS),
         f".options temp={spice_celsius(temperature)!r} tnom={nominal!r}",
+        *(
+            f".options seed={seed}"
+            for seed in [running.get("seed")]
+            if seed is not None
+        ),
         ".control",
         "set filetype=ascii",
         "set appendwrite",
@@ -966,15 +973,19 @@ def _read_raw(text: str, printed: str) -> Raw:
     )
 
 
-_SCALES: Final = frozenset({"time", "frequency", "onoise_spectrum", "inoise_spectrum"})
-"""The vectors of a raw file that are neither a node's voltage nor a branch's current:
-the scales, and the noise densities at the output and referred to the input."""
+_SCALES: Final = frozenset({"time", "frequency"})
+"""The scales of a raw file's vectors."""
+
+_NOISES: Final = ("onoise", "inoise")
+"""The prefixes of the vectors of noise densities, at the output and referred to the
+input, in all and of each device's sources, a device within a subcircuit after a dot
+and any other after an underscore."""
 
 
 def _spice_name(name: str) -> str:
     """A raw file's vector name in the ``v(node)`` and ``i(device)`` forms."""
     if name.endswith("#branch"):
         return f"i({name.removesuffix('#branch')})"
-    if name.startswith(("v(", "i(")) or name in _SCALES:
+    if name.startswith(("v(", "i(", *_NOISES)) or name in _SCALES:
         return name
     return f"v({name})"

@@ -226,6 +226,15 @@ def written(parameters: Mapping[str, JsonValue]) -> str:
     return f"{model} {listed}"
 
 
+def inner(element: str, model: str) -> str:
+    """The name ngspice gives the transistor within the kit's subcircuit `element`.
+
+    The kit's subcircuit names it after its model, so the transistor of ``XM1``, an
+    ``nfet_01v8``, is ``m.xm1.msky130_fd_pr__nfet_01v8``.
+    """
+    return f"m.{element}.m{model}".lower()
+
+
 def _micrometres(size: float) -> float:
     """`size`, in metres, in micrometres, to twelve significant digits."""
     return float(f"{size / SCALE:.12g}")

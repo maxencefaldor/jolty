@@ -587,6 +587,10 @@ class MonteCarloReport(_Model):
     samples: int
     seed: int
     toleranced: int = Field(description="The toleranced parameters each sample draws.")
+    mismatched: int = Field(
+        default=0,
+        description="The foundry's devices each sample draws its kit's mismatch for.",
+    )
     corners: tuple[str, ...] = Field(
         default=(),
         description="The corners each sample also ran at, after the plan's own "
@@ -607,9 +611,14 @@ class MonteCarloReport(_Model):
     def describe(self) -> str:
         """The report as text."""
         at = "".join(f", at {name}" for name in self.corners)
+        mismatch = (
+            f" and the mismatch of {self.mismatched} foundry's devices"
+            if self.mismatched
+            else ""
+        )
         head = (
             f"monte carlo: {self.samples} samples of {self.toleranced} toleranced "
-            f"parameters{at}, seed {self.seed}; {self.failed} failed"
+            f"parameters{mismatch}{at}, seed {self.seed}; {self.failed} failed"
         )
         lines = [head]
         lines.extend(f"  {spread.describe(self.samples)}" for spread in self.spreads)

@@ -672,14 +672,19 @@ class Fidelity:
         self,
         overrides: Mapping[str, Mapping[str, float]] | None = None,
         opened: str | None = None,
+        mismatch: int | None = None,
     ) -> Simulation:
-        """The circuit elaborated with the models, but for `opened`, and `overrides`."""
+        """The circuit elaborated with the models, but for `opened`, and `overrides`.
+
+        A foundry's devices draw their kit's mismatch from the seed `mismatch`.
+        """
         return Simulation(
             self.built,
             self.temperature,
             overrides and self.overrides(overrides),
             self.substitutes(opened),
-            self.process,
+            process=self.process,
+            mismatch=mismatch,
         )
 
 

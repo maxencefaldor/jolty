@@ -40,8 +40,9 @@ ngspice reads the whole library, which takes seconds, before each analysis.
 Its results are jolty's: reports, plots, specs and corners read them as they read the engine's.
 They hold the circuit's nets and the currents of its sources and inductors, as jolty names them; a device's own unknowns and its terminals' currents ngspice keeps to itself, so a rating of a current or a power goes unjudged, and an operating point is found by `ngspice`.
 
-An operating point, a DC sweep in even steps, a small-signal response and a transient run this way.
+An operating point, a DC sweep in even steps, a small-signal response, a transient and the noise at a voltage run this way.
 A transient takes the steps ngspice chooses, and lands on the times its analysis names only where they fall.
+A noise analysis gives each device's sources of noise as ngspice names them, such as a transistor's `id`, its channel's thermal noise, and `1overf`, its flicker noise; ngspice refers noise to a source, so it takes the circuit's first independent source when the analysis names none, and the result then leaves the referral out.
 Any other analysis of such a circuit fails, and says so.
 
 A netlist holds no level-1 or level-3 MOSFET beside a foundry's, since the kit scales the sizes of every MOSFET, and no foundry's device at a temperature of its own.
@@ -62,7 +63,12 @@ Plan(
 
 `sky130.CORNERS` lists them: `tt`, then `ff`, `ss`, `sf` and `fs`, fast and slow, the n-channel transistors first where they differ, and `ll`, `hh`, `hl` and `lh`, which move the resistors and capacitors too.
 A process corner of a circuit that holds no foundry's device is an error.
-A [Monte Carlo](simulation.md#monte-carlo) analysis samples the tolerances of jolty's own devices, which the netlist carries to ngspice, and not the kit's mismatch.
+
+## Mismatch
+
+A [Monte Carlo](simulation.md#monte-carlo) analysis draws the kit's mismatch on each sample, as the kit models it at the corner's process: each transistor's threshold, oxide and mobility apart from the others', by how far its area lies from the kit's, from a seed of the sample's own, as well as the tolerances of jolty's own devices, which the netlist carries to ngspice.
+A sample draws the same mismatch at every corner, so a corner runs the same transistors, and the report counts the foundry's devices whose mismatch each sample draws.
+`Simulation(circuit, mismatch=seed)` draws one sample of it.
 
 ## The process design kit
 

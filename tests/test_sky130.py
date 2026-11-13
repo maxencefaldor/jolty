@@ -17,6 +17,7 @@ from jolty import (
     Role,
     Simulation,
     SimulationError,
+    _core,
     circuit,
     component,
     devices,
@@ -24,10 +25,18 @@ from jolty import (
 )
 from jolty.cli import main
 from jolty.errors import DimensionError, JoltyError
-from jolty.plan import Ac, DcSweep, Noise, OperatingPoint, Transient, linear
+from jolty.plan import (
+    Ac,
+    DcSweep,
+    Noise,
+    OperatingPoint,
+    Sensitivity,
+    Transient,
+    linear,
+)
 from jolty.settings import Settings
 from jolty.spice import export, sky130
-from jolty.units import V, celsius, kHz, kohm, ns, um
+from jolty.units import Hz, MHz, V, celsius, kHz, kohm, ns, um
 from jolty.waveforms import Pulse
 
 
@@ -189,8 +198,8 @@ def test_an_inverter_switches_in_ngspice() -> None:
     during = (transient.times > 3e-9) & (transient.times < 6e-9)
     assert np.all(output[during] < 0.05)
     assert output[-1] == pytest.approx(1.8, abs=1e-2)
-    with pytest.raises(SimulationError, match=r"runs no Noise analysis"):
-        simulation.run(Noise("out", [1 * kHz]))
+    with pytest.raises(SimulationError, match=r"runs no Sensitivity analysis"):
+        simulation.run(Sensitivity(["out"]))
     with pytest.raises(SimulationError, match="in even steps, and its levels are not"):
         simulation.run(DcSweep("VIN", [0 * V, 0.1 * V, 0.3 * V]))
 
@@ -256,7 +265,9 @@ def test_a_plan_runs_at_the_kits_corners(
     script.write_text(
         textwrap.dedent(
             """
-            from jolty import Builder, Corner, Plan, Role, component, devices
+            from jolty import (
+                Builder, Corner, MonteCarlo, Plan, Role, component, devices,
+            )
             from jolty.plan import OperatingPoint
             from jolty.spice import sky130
             from jolty.units import V, kohm, um
@@ -289,6 +300,7 @@ def test_a_plan_runs_at_the_kits_corners(
                     {"bias": OperatingPoint()},
                     process="tt",
                     corners={"slow": Corner(process="ss")},
+                    monte_carlo=MonteCarlo(2),
                 )
             """
         ),
@@ -298,6 +310,10 @@ def test_a_plan_runs_at_the_kits_corners(
     text = capsys.readouterr().out
     assert "bias: operating point, found by ngspice" in text
     assert "corner slow, at 27 °C, process ss: every analysis ended" in text
+    assert (
+        "monte carlo: 2 samples of 0 toleranced parameters and the mismatch of 1 "
+        "foundry's devices, at slow, seed 0; 0 failed"
+    ) in text
 
 
 def _run(*arguments: str) -> int:
@@ -334,3 +350,79 @@ def test_a_nested_source_is_swept_and_excited_with_overrides() -> None:
     )
     with pytest.raises(SimulationError, match="`X1/RL` is not an independent source"):
         simulation.run(Ac("X1/RL", [1 * kHz]))
+
+
+@component
+def quiet(c: Builder) -> None:
+    """A divider beside a transistor that its noise does not reach."""
+    ground = c.port("0", Role.GROUND)
+    supply = c.place(devices.voltage_source(1 * V), id="V1")
+    upper = c.place(devices.resistor(1 * kohm), id="R1")
+    lower = c.place(devices.resistor(2 * kohm), id="R2")
+    rail = c.place(devices.voltage_source(1.8 * V), id="VDD")
+    transistor = c.place(sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um), id="M1")
+    c.connect(supply.positive, upper.a, name="in")
+    c.connect(upper.b, lower.a, name="out")
+    c.connect(rail.positive, transistor.drain, transistor.gate, name="vdd")
+    c.connect(
+        supply.negative,
+        lower.b,
+        rail.negative,
+        transistor.source,
+        transistor.bulk,
+        ground,
+    )
+
+
+@SKIP
+@pytest.mark.usefixtures("cached")
+def test_the_noise_of_a_divider_is_its_resistances_in_parallel() -> None:
+    # Each resistor's 4kTR reaches the output divided by the other's share: R1's by
+    # 2/3, R2's by 1/3, and their sum is 4kT times 1 kΩ in parallel with 2 kΩ.
+    spectrum = Simulation(quiet()).run(Noise("out", [1 * kHz, 1 * MHz], source="V1"))
+    four_kt = 4 * _core.BOLTZMANN * _core.REFERENCE_TEMPERATURE
+    expected = four_kt * 2e3 / 3
+    np.testing.assert_allclose(spectrum.densities, expected, rtol=1e-4)
+    assert spectrum.sources == (
+        results.NoiseSource("R1", "thermal"),
+        results.NoiseSource("R2", "thermal"),
+    )
+    np.testing.assert_allclose(
+        spectrum.contributions,
+        [[four_kt * 1e3 * 4 / 9] * 2, [four_kt * 2e3 / 9] * 2],
+        rtol=1e-4,
+    )
+    assert spectrum.input is not None
+    np.testing.assert_allclose(spectrum.input.gains, 2 / 3, rtol=1e-9)
+    np.testing.assert_allclose(spectrum.referred(), expected * 9 / 4, rtol=1e-4)
+
+
+@SKIP
+@pytest.mark.usefixtures("cached")
+def test_a_transistors_noise_adds_its_channels_and_its_flicker() -> None:
+    simulation = Simulation(amplifier())
+    spectrum = simulation.run(Noise("out", [10 * Hz, 1 * MHz]))
+    named = {(source.instance, source.name) for source in spectrum.sources}
+    assert {("M1", "id"), ("M1", "1overf"), ("RL", "thermal")} <= named
+    assert spectrum.input is None
+    np.testing.assert_allclose(
+        spectrum.contributions.sum(axis=0), spectrum.densities, rtol=1e-6
+    )
+    flicker = spectrum.contribution("M1", "1overf")
+    assert flicker[0] > 100 * flicker[1]
+    with pytest.raises(SimulationError, match="takes the noise at a voltage"):
+        simulation.run(Noise("VDD:current", [1 * kHz]))
+
+
+@SKIP
+@pytest.mark.usefixtures("cached")
+def test_a_seed_draws_the_kits_mismatch() -> None:
+    def current(mismatch: int | None) -> float:
+        simulation = Simulation(amplifier(), mismatch=mismatch)
+        return simulation.run(OperatingPoint()).current("VDD")
+
+    first, again, other, nominal = current(1), current(1), current(2), current(None)
+    assert first == again
+    assert first != pytest.approx(other, rel=1e-6)
+    assert first != pytest.approx(nominal, rel=1e-6)
+    assert Simulation(divider(), mismatch=1).mismatch == 1

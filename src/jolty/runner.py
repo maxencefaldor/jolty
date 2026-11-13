@@ -246,7 +246,14 @@ def _run(job: Job, directory: Path) -> Built:
     monte_carlo = (
         None
         if plan.monte_carlo is None
-        else _monte_carlo(chosen, chosen_at, plan, plan.monte_carlo, specs)
+        else _monte_carlo(
+            chosen,
+            chosen_at,
+            plan,
+            plan.monte_carlo,
+            specs,
+            mismatched=len(simulation.foundry),
+        )
     )
     worst_case = (
         None
@@ -377,16 +384,19 @@ def _built(
             raise ScriptError(message)
 
 
-def _monte_carlo(
+def _monte_carlo(  # noqa: PLR0913 - the analysis, where it runs, and what it judges
     chosen: fidelity.Fidelity,
     chosen_at: Mapping[str, fidelity.Fidelity | None],
     plan: Plan,
     monte_carlo: MonteCarlo,
     specs: Specs | None,
+    *,
+    mismatched: int,
 ) -> report.MonteCarloReport:
     """What `plan`'s analyses find on each sample of `monte_carlo`, against `specs`.
 
-    Each sample draws the circuit's tolerances and runs at the plan's own conditions,
+    Each sample draws the circuit's tolerances, and the kit's mismatch of its
+    `mismatched` foundry's devices, and runs at the plan's own conditions,
     with the models `chosen` holds, and at each corner, with the models `chosen_at`
     holds there, none where the circuit does not elaborate; the models stand for their
     circuits' nominal parts. Every run draws its samples from the seed afresh, so a
@@ -412,6 +422,7 @@ def _monte_carlo(
         samples=monte_carlo.samples,
         seed=monte_carlo.seed,
         toleranced=len(variation.toleranced(chosen.built)),
+        mismatched=mismatched,
         corners=tuple(chosen_at),
         failed=failed,
         spreads=spreads,
@@ -434,20 +445,33 @@ def _samples(
     toleranced = variation.toleranced(chosen.built)
     generator = np.random.default_rng(monte_carlo.seed)
     drawn = (
-        variation.sample(toleranced, generator) for _ in range(monte_carlo.samples)
+        (variation.sample(toleranced, generator), _mismatch(monte_carlo.seed, index))
+        for index in range(monte_carlo.samples)
     )
     yield from _parallel(functools.partial(_sampled, chosen, plan), drawn)
 
 
-def _sampled(
-    chosen: fidelity.Fidelity, plan: Plan, overrides: dict[str, dict[str, float]]
-) -> tuple[dict[str, Result], bool]:
-    """What `plan`'s analyses find on one sample, its parameters `overrides`.
+def _mismatch(seed: int, index: int) -> int:
+    """The seed of the kit's mismatch of the sample `index` of a Monte Carlo analysis.
 
-    The results of the analyses that end, by name, and whether all of them do.
+    It is the same at every corner, so a corner runs the same parts.
     """
+    return int(np.random.SeedSequence([seed, index]).generate_state(1)[0])
+
+
+def _sampled(
+    chosen: fidelity.Fidelity,
+    plan: Plan,
+    drawn: tuple[dict[str, dict[str, float]], int],
+) -> tuple[dict[str, Result], bool]:
+    """What `plan`'s analyses find on one sample, its parameters and its mismatch.
+
+    The sample replaces the circuit's parameters and draws a kit's mismatch from its
+    seed. The results of the analyses that end, by name, and whether all of them do.
+    """
+    overrides, mismatch = drawn
     try:
-        simulation = chosen.simulation(overrides)
+        simulation = chosen.simulation(overrides, mismatch=mismatch)
     except ElaborationError:
         return {}, False
     solved, reports = _analyses(simulation, plan, 1)

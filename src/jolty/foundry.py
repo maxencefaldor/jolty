@@ -10,14 +10,21 @@ writes become a result of the same kind, whose unknowns are the circuit's nets a
 currents of its sources and inductors, as jolty names them: a device's own unknowns,
 and its terminals' currents, ngspice keeps to itself.
 
-An operating point, a DC sweep in even steps, a small-signal response and a transient
-run this way. ngspice steps a transient where it chooses, and lands on the times the
-analysis names only where its steps do. Any other analysis of such a circuit fails, and
+An operating point, a DC sweep in even steps, a small-signal response, a transient and
+the noise at a voltage run this way. ngspice steps a transient where it chooses, and
+lands on the times the analysis names only where its steps do. It names each source of
+noise its own way, such as ``id`` for a transistor's channel and ``1overf`` for its
+flicker noise, and refers noise to a source of its own choosing when the analysis names
+none, which the result then leaves out. Any other analysis of such a circuit fails, and
 says so.
+
+Given a seed, ngspice draws the kit's mismatch, each transistor's parameters apart from
+the others', as a Monte Carlo sample of the process does; the same seed draws the same.
 """
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Final
 
 import numpy as np
@@ -25,9 +32,9 @@ from pydantic import JsonValue
 
 from jolty import ir, results
 from jolty.errors import JoltyError, SimulationError
-from jolty.plan import Ac, Analysis, DcSweep, OperatingPoint, Options, Transient
+from jolty.plan import Ac, Analysis, DcSweep, Noise, OperatingPoint, Options, Transient
 from jolty.spice import export, sky130
-from jolty.units import CURRENT, FREQUENCY, TIME, VOLTAGE
+from jolty.units import CURRENT, FREQUENCY, TIME, VOLTAGE, Quantity
 
 STRATEGY: Final = "ngspice"
 """The strategy of an operating point ngspice found."""
@@ -55,127 +62,307 @@ _EVEN: Final = 1e-9
 """How far, as a fraction of a step, a DC sweep's levels may lie from even steps."""
 
 
-def run(  # noqa: PLR0913 - the analysis, and the conditions it runs at
+@dataclass(frozen=True, slots=True)
+class Conditions:
+    """What a circuit of a foundry's devices runs at."""
+
+    temperature: float
+    """The temperature, in kelvins."""
+    process: str | None = None
+    """The process corner of the kit's model library, such as ``ss``, its typical one
+    unless given."""
+    overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    """The parameters that replace the circuit's, by instance path, then by parameter
+    path, such as ``waveform.dc``, as the engine replaces them."""
+    mismatch: int | None = None
+    """The seed the kit's mismatch is drawn from, if it is drawn."""
+
+
+def run(
     circuit: ir.Circuit,
     analysis: Analysis,
     options: Options,
-    *,
-    temperature: float,
-    process: str | None,
+    conditions: Conditions,
     unknowns: Sequence[results.Unknown],
 ) -> results.Result:
-    """Runs `analysis` of `circuit` in ngspice, at `temperature` and at `process`.
+    """Runs `analysis` of `circuit` in ngspice, with `options`, at `conditions`.
 
-    The temperature is in kelvins, and the process is the corner of the kit's model
-    library, such as ``ss``, its typical one unless given. The result holds those of
-    `unknowns` that ngspice names.
+    The result holds those of `unknowns` that ngspice names.
 
     Raises:
         SimulationError: When ngspice does not run the analysis, or cannot read the
             circuit, saying why.
     """
-    corner = sky130.TYPICAL if process is None else process
     try:
-        return _run(
-            circuit,
-            analysis,
-            options=options,
-            temperature=temperature,
-            process=corner,
-            unknowns=unknowns,
-        )
+        return _Deck.of(circuit, analysis, options, conditions, unknowns).run(analysis)
     except JoltyError as error:
         if isinstance(error, SimulationError):
             raise
         raise SimulationError(str(error)) from None
 
 
-def _run(  # noqa: PLR0913 - as `run`
-    circuit: ir.Circuit,
-    analysis: Analysis,
-    *,
-    options: Options,
-    temperature: float,
-    process: str,
-    unknowns: Sequence[results.Unknown],
-) -> results.Result:
-    if process not in sky130.CORNERS:
-        message = f"SKY130 has no process corner {process!r}: it has {sky130.CORNERS}"
-        raise SimulationError(message)
-    flat = export.flatten(circuit)
-    excited = _source(flat, analysis.source)[0].id if isinstance(analysis, Ac) else None
-    lines = export.netlist(flat, excited=excited)
-    read = _readable(flat, unknowns)
-    running: export.Running = {
-        "sections": ((sky130.root() / sky130.LIBRARY, process),),
-        "compatibility": "hsa",
-        "options": _options(options, analysis),
-        "temperature": temperature,
-    }
-    match analysis:
-        case OperatingPoint():
-            (raw,) = export.ngspice_runs(lines, ("op",), **running)
-            return _operating_point(raw, read)
-        case DcSweep():
-            command, levels, quantity = _sweep(flat, analysis)
-            (raw,) = export.ngspice_runs(lines, (command,), **running)
-            values = _table(raw, read)
-            if values.shape[0] != len(levels):
-                message = (
-                    f"ngspice swept {analysis.source} through {values.shape[0]} "
-                    f"levels, not {len(levels)}"
+@dataclass(frozen=True, slots=True)
+class _Deck:
+    """A circuit flattened into its devices, as ngspice runs one of its analyses."""
+
+    flat: ir.Circuit
+    paths: Mapping[str, str]
+    """Each device's path, by its id in `flat`."""
+    lines: list[str]
+    read: list[tuple[results.Unknown, str]]
+    """Each unknown ngspice names, and the name of its vector."""
+    running: export.Running
+
+    @classmethod
+    def of(
+        cls,
+        circuit: ir.Circuit,
+        analysis: Analysis,
+        options: Options,
+        conditions: Conditions,
+        unknowns: Sequence[results.Unknown],
+    ) -> _Deck:
+        """The deck of `analysis` of `circuit`, which excites the source it reads.
+
+        Raises:
+            SimulationError: When the kit has no such process corner, or the analysis
+                names no independent source where it names one.
+        """
+        process = sky130.TYPICAL if conditions.process is None else conditions.process
+        if process not in sky130.CORNERS:
+            message = (
+                f"SKY130 has no process corner {process!r}: it has {sky130.CORNERS}"
+            )
+            raise SimulationError(message)
+        flat, paths = _flattened(circuit, conditions.overrides)
+        excited = _excited(flat, analysis)
+        section = process if conditions.mismatch is None else f"{process}_mm"
+        running: export.Running = {
+            "sections": ((sky130.root() / sky130.LIBRARY, section),),
+            "compatibility": "hsa",
+            "options": _options(options, analysis),
+            "temperature": conditions.temperature,
+            "seed": conditions.mismatch,
+        }
+        return cls(
+            flat,
+            paths,
+            export.netlist(flat, excited=excited),
+            _readable(flat, unknowns),
+            running,
+        )
+
+    def runs(self, commands: Sequence[str]) -> tuple[export.Raw, ...]:
+        """The plot of each of `commands`, run in turn in one ngspice."""
+        return export.ngspice_runs(self.lines, commands, **self.running)
+
+    def unknowns(self) -> tuple[results.Unknown, ...]:
+        return tuple(unknown for unknown, _ in self.read)
+
+    def run(self, analysis: Analysis) -> results.Result:
+        match analysis:
+            case OperatingPoint():
+                (raw,) = self.runs(("op",))
+                return self.operating_point(raw)
+            case DcSweep():
+                return self.sweep(analysis)
+            case Ac():
+                frequencies = _frequencies(analysis.frequencies)
+                point, *responses = self.runs(("op", *_points("ac", frequencies)))
+                return results.Response(
+                    unknowns=self.unknowns(),
+                    source=analysis.source,
+                    frequencies=np.array(frequencies),
+                    values=np.array(
+                        [
+                            [raw.vectors[vector][0] for _, vector in self.read]
+                            for raw in responses
+                        ]
+                    ).reshape(len(frequencies), len(self.read)),
+                    operating_point=self.operating_point(point),
                 )
-                raise SimulationError(message)
-            return results.Sweep(
-                unknowns=tuple(unknown for unknown, _ in read),
-                source=analysis.source,
+            case Transient(periodic=False):
+                return self.transient(analysis)
+            case Noise():
+                return self.noise(analysis)
+        message = (
+            f"ngspice runs no {type(analysis).__name__} analysis of a circuit that "
+            "holds a foundry's device here: only an operating point, a DC sweep, a "
+            "small-signal response, a transient that is not periodic and noise"
+        )
+        raise SimulationError(message)
+
+    def operating_point(self, raw: export.Raw) -> results.OperatingPoint:
+        return results.OperatingPoint(
+            unknowns=self.unknowns(),
+            values=_table(raw, self.read)[0],
+            strategy=STRATEGY,
+        )
+
+    def sweep(self, sweep: DcSweep) -> results.Sweep:
+        command, levels, quantity = _sweep(self.flat, sweep)
+        (raw,) = self.runs((command,))
+        values = _table(raw, self.read)
+        if values.shape[0] != len(levels):
+            message = (
+                f"ngspice swept {sweep.source} through {values.shape[0]} levels, not "
+                f"{len(levels)}"
+            )
+            raise SimulationError(message)
+        return results.Sweep(
+            unknowns=self.unknowns(),
+            source=sweep.source,
+            quantity=quantity,
+            levels=levels,
+            values=values,
+        )
+
+    def transient(self, transient: Transient) -> results.Waveforms:
+        stop = transient.stop.to(TIME, "a transient's stop time")
+        longest = (
+            stop / 50
+            if transient.max_step is None
+            else transient.max_step.to(TIME, "a transient's longest step")
+        )
+        steps = f"tran {longest!r} {stop!r} 0 {longest!r}"
+        (raw,) = self.runs((f"{steps}\nrusage traniter accept rejected",))
+        counted = {
+            name: [int(found) for found in pattern.findall(raw.printed)]
+            for name, pattern in _STATISTICS.items()
+        }
+        if any(len(found) != 1 for found in counted.values()):
+            message = f"ngspice printed no statistics of its transient:\n{raw.printed}"
+            raise SimulationError(message)
+        return results.Waveforms(
+            unknowns=self.unknowns(),
+            times=raw.real("time"),
+            values=_table(raw, self.read),
+            statistics=results.Statistics(
+                initial=STRATEGY,
+                accepted=counted["accepted"][0],
+                rejected=counted["rejected"][0],
+                iterations=counted["iterations"][0],
+            ),
+        )
+
+    def noise(self, noise: Noise) -> results.NoiseSpectrum:
+        """The noise at a voltage, each device's sources apart, referred to a source.
+
+        Raises:
+            SimulationError: When the output is not a voltage, or the circuit holds no
+                independent source to refer its noise to.
+        """
+        output = self.output(noise)
+        frequencies = _frequencies(noise.frequencies)
+        source = _referred(self.flat, noise)
+        reads = f"noise {output} {export.element(source)}"
+        noises = [
+            f"{reads} lin 1 {frequency!r} {frequency!r} 1" for frequency in frequencies
+        ]
+        noises[0] = f"set sqrnoise\n{noises[0]}"
+        gains = _points("ac", frequencies) if noise.source is not None else []
+        point, *found = self.runs(("op", *gains, *noises))
+        responses, spectra = found[: len(gains)], found[len(gains) :]
+        densities = np.array([raw.real("onoise_spectrum")[0] for raw in spectra])
+        sources, contributions = self.contributions(spectra)
+        given = None
+        if noise.source is not None:
+            _, quantity = _source(self.flat, noise.source)
+            transfer = _difference(output)
+            given = results.NoiseInput(
+                source=noise.source,
                 quantity=quantity,
-                levels=levels,
-                values=values,
-            )
-        case Ac():
-            frequencies = [
-                frequency.to(FREQUENCY, "a frequency")
-                for frequency in analysis.frequencies
-            ]
-            commands = (
-                "op",
-                *(f"ac lin 1 {frequency!r} {frequency!r}" for frequency in frequencies),
-            )
-            point, *responses = export.ngspice_runs(lines, commands, **running)
-            return results.Response(
-                unknowns=tuple(unknown for unknown, _ in read),
-                source=analysis.source,
-                frequencies=np.array(frequencies),
-                values=np.array(
+                gains=np.array(
                     [
-                        [raw.vectors[vector][0] for _, vector in read]
+                        raw.vectors[transfer[0]][0]
+                        - (raw.vectors[transfer[1]][0] if transfer[1] else 0)
                         for raw in responses
                     ]
-                ).reshape(len(frequencies), len(read)),
-                operating_point=_operating_point(point, read),
+                ),
             )
-        case Transient(periodic=False):
-            return _transient(lines, analysis, running, read)
-    message = (
-        f"ngspice runs no {type(analysis).__name__} analysis of a circuit that holds a "
-        "foundry's device here: only an operating point, a DC sweep, a small-signal "
-        "response and a transient that is not periodic"
-    )
-    raise SimulationError(message)
+        return results.NoiseSpectrum(
+            unknowns=self.unknowns(),
+            output=noise.output,
+            reference=noise.reference,
+            quantity="voltage",
+            frequencies=np.array(frequencies),
+            densities=densities,
+            sources=sources,
+            contributions=contributions,
+            input=given,
+            operating_point=self.operating_point(point),
+        )
+
+    def output(self, noise: Noise) -> str:
+        """The output of `noise` as ngspice names it, ``v(out)`` or ``v(out,ref)``.
+
+        Raises:
+            SimulationError: When the output is not a voltage.
+        """
+        named = {unknown.name: vector for unknown, vector in self.read}
+        nodes = [noise.output, *([] if noise.reference is None else [noise.reference])]
+        vectors = [named.get(node, "") for node in nodes]
+        if not all(vector.startswith("v(") for vector in vectors):
+            message = (
+                "ngspice takes the noise at a voltage, over the ground or a node, and "
+                f"{' over '.join(nodes)} is not one"
+            )
+            raise SimulationError(message)
+        return f"v({','.join(vector[2:-1] for vector in vectors)})"
+
+    def contributions(
+        self, spectra: Sequence[export.Raw]
+    ) -> tuple[tuple[results.NoiseSource, ...], results.Real]:
+        """Each device's sources of noise that add any, and what each adds.
+
+        Raises:
+            SimulationError: When ngspice names noise of a device the netlist does not
+                hold.
+        """
+        devices = sorted(
+            _devices(self.flat, self.paths).items(), key=lambda pair: -len(pair[0])
+        )
+        found: dict[results.NoiseSource, list[float]] = {}
+        for name in spectra[0].vectors:
+            rest = name.removeprefix("onoise")[1:]
+            if not name.startswith("onoise") or rest == "spectrum":
+                continue
+            matched = next(
+                (
+                    (path, rest[len(device) + 1 :])
+                    for device, path in devices
+                    if rest == device or rest.startswith((f"{device}_", f"{device}."))
+                ),
+                None,
+            )
+            if matched is None:
+                message = (
+                    f"ngspice names noise of {rest}, which the netlist does not hold"
+                )
+                raise SimulationError(message)
+            path, kind = matched
+            values = [raw.real(name)[0] for raw in spectra]
+            if kind and any(values):
+                found[results.NoiseSource(path, kind)] = values
+        sources = tuple(found)
+        contributions = np.array([found[source] for source in sources]).reshape(
+            len(sources), len(spectra)
+        )
+        return sources, contributions
 
 
-def overridden(
+def _flattened(
     circuit: ir.Circuit, overrides: Mapping[str, Mapping[str, float]]
-) -> ir.Circuit:
-    """`circuit` with the parameters `overrides` replaces, as the engine replaces them.
+) -> tuple[ir.Circuit, dict[str, str]]:
+    """`circuit` flattened into its devices, with the parameters `overrides` replaces.
 
-    They replace a device's parameters by its instance's path, then by the parameter's
-    path, such as ``waveform.dc``. A circuit with any is flattened into its devices,
-    their ids their paths joined by underscores, as a netlist writes them.
+    Each device's id is its path, its ids joined by underscores, as a netlist writes
+    it; the mapping gives each device's path by that id.
     """
-    if not overrides:
-        return circuit
+    paths = {
+        path.replace("/", "_"): path
+        for path, instance in _devices_within(circuit, circuit.top, "")
+    }
     replaced = {path.replace("/", "_"): values for path, values in overrides.items()}
     flat = export.flatten(circuit)
     top = flat.components[flat.top]
@@ -187,9 +374,40 @@ def overridden(
             parameters[key] = _replaced(parameters.get(key), rest, value)
         instances.append(instance.model_copy(update={"parameters": parameters}))
     placing = top.model_copy(update={"instances": tuple(instances)})
-    return flat.model_copy(
+    flattened = flat.model_copy(
         update={"components": {**flat.components, flat.top: placing}}
     )
+    return flattened, paths
+
+
+def _devices_within(
+    circuit: ir.Circuit, component: str, prefix: str
+) -> list[tuple[str, ir.Instance]]:
+    """Every device within `component`, by path."""
+    found = []
+    for instance in circuit.components[component].instances:
+        path = f"{prefix}{instance.id}"
+        if isinstance(instance.of, ir.ComponentOf):
+            found.extend(_devices_within(circuit, instance.of.component, f"{path}/"))
+        else:
+            found.append((path, instance))
+    return found
+
+
+def _devices(flat: ir.Circuit, paths: Mapping[str, str]) -> dict[str, str]:
+    """Each device's path, by the name ngspice gives it in its noise's vectors."""
+    named = {}
+    for instance in flat.components[flat.top].instances:
+        element = export.element(instance).lower()
+        match instance:
+            case ir.Instance(
+                of=ir.DeviceOf(device="foundry_mosfet"),
+                parameters={"model": str(model)},
+            ):
+                named[sky130.inner(element, model)] = paths[instance.id]
+            case _:
+                named[element] = paths[instance.id]
+    return named
 
 
 def _replaced(found: JsonValue, keys: Sequence[str], value: float) -> JsonValue:
@@ -239,16 +457,6 @@ def _table(
     """The real values of each of `read`'s vectors, a column each."""
     return np.column_stack([raw.real(vector) for _, vector in read]).reshape(
         -1, len(read)
-    )
-
-
-def _operating_point(
-    raw: export.Raw, read: Sequence[tuple[results.Unknown, str]]
-) -> results.OperatingPoint:
-    return results.OperatingPoint(
-        unknowns=tuple(unknown for unknown, _ in read),
-        values=_table(raw, read)[0],
-        strategy=STRATEGY,
     )
 
 
@@ -305,37 +513,58 @@ _STATISTICS: Final = {
 points it accepted and rejected."""
 
 
-def _transient(
-    lines: list[str],
-    transient: Transient,
-    running: export.Running,
-    read: Sequence[tuple[results.Unknown, str]],
-) -> results.Waveforms:
-    stop = transient.stop.to(TIME, "a transient's stop time")
-    longest = (
-        stop / 50
-        if transient.max_step is None
-        else transient.max_step.to(TIME, "a transient's longest step")
-    )
-    command = (
-        f"tran {longest!r} {stop!r} 0 {longest!r}\nrusage traniter accept rejected"
-    )
-    (raw,) = export.ngspice_runs(lines, (command,), **running)
-    counted = {
-        name: [int(found) for found in pattern.findall(raw.printed)]
-        for name, pattern in _STATISTICS.items()
-    }
-    if any(len(found) != 1 for found in counted.values()):
-        message = f"ngspice printed no statistics of its transient:\n{raw.printed}"
-        raise SimulationError(message)
-    return results.Waveforms(
-        unknowns=tuple(unknown for unknown, _ in read),
-        times=raw.real("time"),
-        values=_table(raw, read),
-        statistics=results.Statistics(
-            initial=STRATEGY,
-            accepted=counted["accepted"][0],
-            rejected=counted["rejected"][0],
-            iterations=counted["iterations"][0],
+def _excited(flat: ir.Circuit, analysis: Analysis) -> str | None:
+    """The id of the source a small-signal response or a noise analysis excites."""
+    match analysis:
+        case Ac():
+            return _source(flat, analysis.source)[0].id
+        case Noise():
+            return _referred(flat, analysis).id
+    return None
+
+
+def _referred(flat: ir.Circuit, noise: Noise) -> ir.Instance:
+    """The independent source `noise` is referred to: its own, or the circuit's first.
+
+    Raises:
+        SimulationError: When the analysis names no independent source, or names none
+            and the circuit holds none.
+    """
+    if noise.source is not None:
+        return _source(flat, noise.source)[0]
+    found = next(
+        (
+            instance
+            for instance in flat.components[flat.top].instances
+            if instance.of
+            in (
+                ir.DeviceOf(device="voltage_source"),
+                ir.DeviceOf(device="current_source"),
+            )
         ),
+        None,
     )
+    if found is None:
+        message = (
+            "ngspice refers noise to an independent source, and the circuit holds none"
+        )
+        raise SimulationError(message)
+    return found
+
+
+def _frequencies(given: Sequence[Quantity]) -> list[float]:
+    return [frequency.to(FREQUENCY, "a frequency") for frequency in given]
+
+
+def _points(analysis: str, frequencies: Sequence[float]) -> list[str]:
+    """A small-signal command of `analysis` at each of `frequencies`, in turn."""
+    return [
+        f"{analysis} lin 1 {frequency!r} {frequency!r}" for frequency in frequencies
+    ]
+
+
+def _difference(output: str) -> tuple[str, str]:
+    """The vectors whose difference is the voltage ``v(out,reference)`` names."""
+    nodes = output.removeprefix("v(").removesuffix(")").split(",")
+    first, *rest = nodes
+    return f"v({first})", f"v({rest[0]})" if rest else ""
