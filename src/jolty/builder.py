@@ -131,6 +131,7 @@ class _Placement:
     terminals: tuple[str, ...]
     source: ir.Source | None
     tolerances: dict[str, ir.Tolerance] = field(default_factory=dict)
+    ratings: tuple[ir.Rating, ...] = ()
 
 
 class Builder:
@@ -195,6 +196,7 @@ class Builder:
                 item.terminals,
                 caller(),
                 item.tolerances,
+                item.ratings,
             )
         self._placements[id] = placement
         return Placed(id, placement.terminals)
@@ -234,6 +236,7 @@ class Builder:
                     parameters=placement.parameters,
                     terminals=terminals,
                     tolerances=placement.tolerances,
+                    ratings=placement.ratings,
                     source=placement.source,
                 )
             )
@@ -361,7 +364,7 @@ def _format(value: object) -> str:
         ('1.00001kΩ', '0.5', "'fast'")
         >>> from jolty.devices import resistor
         >>> _format(resistor(1 * kohm))
-        'resistor~c7007fa6'
+        'resistor~1c2dea91'
     """
     match value:
         case Quantity():

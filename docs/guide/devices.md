@@ -44,6 +44,20 @@ In a [noise analysis](simulation.md#noise), a resistor makes thermal noise, `4kT
 
 A `tolerance`, such as `0.01` for 1 %, spreads each value evenly within it, and `device.toleranced(parameter, relative, distribution, lot)` gives any device's number parameter a `"uniform"`, `"normal"`, `"log_uniform"` or `"log_normal"` tolerance, by its path, such as `waveform.dc` for a source's DC level, and optionally a lot it shares a spread with; [Monte Carlo analyses](simulation.md#monte-carlo) sample them, and [worst-case analyses](simulation.md#worst-case) set them at their extremes.
 
+## Ratings
+
+Any device may state the limits its maker warrants it within, as `device.rated(stress, maximum, terminals=..., minimum=...)`: a `"voltage"` of one of its terminals over another, a `"current"` into one, or the `"power"` it dissipates.
+A two-terminal device's voltage is of its own terminals by default, in order, and its current into its first; a voltage or a current without a minimum may swing as far negative as positive.
+
+```python
+devices.resistor(100 * ohm).rated("power", 0.25 * W)
+devices.capacitor(10 * uF).rated("voltage", 25 * V, minimum=-1 * V)
+switch = npn().rated("voltage", 40 * V, terminals=("collector", "emitter"))
+switch.rated("power", 0.625 * W)
+```
+
+A simulation holds every rating to every operating point and transient its plan solves, as the [checks](checks.md#on-analyses-results) describe.
+
 ## Independent sources
 
 | Function | Terminals | Parameter |

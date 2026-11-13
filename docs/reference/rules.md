@@ -20,6 +20,8 @@ The default levels below hold until settings or options set others (see [Checks]
 | [`unstable-pole`](#unstable-pole) | `warn` |
 | [`phase-margin`](#phase-margin) | `warn` |
 | [`gain-margin`](#gain-margin) | `warn` |
+| [`over-rating`](#over-rating) | `error` |
+| [`derating`](#derating) | `warn` |
 
 ## unconnected-terminal
 
@@ -92,3 +94,13 @@ The diagnostic names the probe, the margin and the crossover frequency.
 
 A stability analysis's loop gain is above -6 dB where its phase, unwrapped from the lowest frequency, first falls through -180°: less than doubling the loop's gain makes it oscillate.
 The diagnostic names the probe and the margin.
+
+## over-rating
+
+A stress a device's rating limits, the voltage of one of its terminals over another, the current into one, or the power it dissipates, lies beyond the rating's bounds at an operating point or at any time of a transient the plan solves: the part's maker does not warrant it there, and it may fail.
+Each rating raises one diagnostic per analysis and bound, at the furthest point.
+
+## derating
+
+A stress a device's rating limits lies within the rating but beyond 80 % of a bound away from zero, at an operating point or at any time of a transient the plan solves: the part runs without the margin derating keeps for heat, ageing and its spread.
+Each rating raises one diagnostic per analysis and bound, at the furthest point.

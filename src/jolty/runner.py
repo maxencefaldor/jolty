@@ -49,7 +49,6 @@ from jolty.specs import (
     Requirement,
     Specs,
     Verdict,
-    diagnose,
     evaluate,
     judge,
     reading,
@@ -220,7 +219,9 @@ def _run(job: Job, directory: Path) -> Built:
     outside: list[fidelity.Outside] = []
     solved, reports = _analyses(simulation, plan, job.listed, outside)
     at_point = (
-        _at_operating_point(simulation, plan) + diagnose(solved) if job.check else ()
+        _at_operating_point(simulation, plan) + simulation.check_results(solved)
+        if job.check
+        else ()
     )
     if solved:
         files.save_results(directory / RESULTS, solved)

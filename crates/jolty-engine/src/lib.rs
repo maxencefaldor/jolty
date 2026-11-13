@@ -176,6 +176,21 @@ impl Simulator {
         self.observer.names()
     }
 
+    /// The unknown that is each terminal's voltage, by name, in the order of
+    /// [`Simulator::terminals`], or `None` for a terminal on the reference.
+    #[must_use]
+    pub fn terminal_nodes(&self) -> Vec<Option<&str>> {
+        self.system
+            .devices
+            .iter()
+            .flat_map(|device| {
+                device.nodes().iter().map(|node| {
+                    node.map(|unknown| self.system.unknowns[unknown.index()].name.as_str())
+                })
+            })
+            .collect()
+    }
+
     /// The equation and the unknown of every derivative of every device, in the order of
     /// every [`Observation`]'s conductances and capacitances: for each device, every pair
     /// of its terminals and internal unknowns, row by row. Each is named as a terminal, for

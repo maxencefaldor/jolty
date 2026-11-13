@@ -6,9 +6,11 @@ one. Build scripts never write this format by hand: [`jolty.builder`][jolty.buil
 produces it, and the engine validates and elaborates it. Parameter values are numbers in
 SI base units, and a device may give some of them a [`Tolerance`][jolty.ir.Tolerance],
 each naming its parameter by [path][jolty.ir.parameter], so that it may reach into an
-object, as ``waveform.dc`` names a source's DC level.
+object, as ``waveform.dc`` names a source's DC level. A device may also state
+[`Rating`][jolty.ir.Rating]s, the limits its maker states on its stresses.
 """
 
+import math
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Literal, Self, override
@@ -119,6 +121,61 @@ class Tolerance(_Spread):
     lot: Lot | None = Field(default=None, exclude_if=lambda lot: lot is None)
 
 
+type Stress = Literal["voltage", "current", "power"]
+"""What a rating limits: the voltage of one terminal over another, the current into a
+terminal, or the power a part dissipates, the sum over its terminals of each one's
+voltage times the current into it."""
+
+_TERMINALS: dict[str, int] = {"voltage": 2, "current": 1, "power": 0}
+
+
+class Rating(_Model):
+    """A limit a part's maker states on one of its stresses, which a simulation checks.
+
+    The terminals are two for a voltage, the first's over the second's, one for a
+    current, into it, and none for the power. A voltage or a current that states no
+    minimum may take down to minus its maximum, and a power any. Values are in SI base
+    units.
+    """
+
+    stress: Stress
+    terminals: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda terminals: not terminals
+    )
+    maximum: float = Field(allow_inf_nan=False)
+    minimum: float | None = Field(
+        default=None, allow_inf_nan=False, exclude_if=lambda minimum: minimum is None
+    )
+
+    @model_validator(mode="after")
+    def _bounded(self) -> Self:
+        """Holds the terminals to the stress, power above 0, and the bounds in order."""
+        needed = _TERMINALS[self.stress]
+        if len(self.terminals) != needed or len(set(self.terminals)) != needed:
+            message = (
+                f"a {self.stress} rating names {needed} distinct terminals, "
+                f"not {list(self.terminals)}"
+            )
+            raise ValueError(message)
+        if self.stress == "power" and self.maximum <= 0:
+            message = f"a power rating is above 0, not {self.maximum!r}"
+            raise ValueError(message)
+        if self.minimum is not None and self.minimum > self.maximum:
+            message = (
+                f"a rating's minimum, {self.minimum!r}, exceeds its maximum, "
+                f"{self.maximum!r}"
+            )
+            raise ValueError(message)
+        return self
+
+    @property
+    def least(self) -> float:
+        """The smallest value the stress may take."""
+        if self.minimum is not None:
+            return self.minimum
+        return -math.inf if self.stress == "power" else -self.maximum
+
+
 class Instance(_Model):
     """One placed device or component, and the net each of its terminals joins."""
 
@@ -128,6 +185,9 @@ class Instance(_Model):
     terminals: dict[str, str]
     tolerances: dict[str, Tolerance] = Field(
         default_factory=dict, exclude_if=lambda tolerances: not tolerances
+    )
+    ratings: tuple[Rating, ...] = Field(
+        default=(), exclude_if=lambda ratings: not ratings
     )
     source: Source | None = None
 

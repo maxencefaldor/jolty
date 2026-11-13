@@ -23,11 +23,13 @@ Examples:
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Literal, overload
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from jolty import _core, checks, ir, results
+from jolty import _core, checks, ir, results, specs
 from jolty.builder import Component, circuit
 from jolty.devices import Device
 from jolty.errors import ElaborationError, SimulationError
@@ -92,6 +94,10 @@ class Simulation:
     terminals: tuple[str, ...]
     """Every terminal of every device, such as ``X1/R1.a``, in the order of every
     result's currents and charges."""
+
+    terminal_nodes: tuple[str | None, ...]
+    """The unknown that is each terminal's voltage, by name, in the order of
+    `terminals`, or None for a terminal on the ground."""
 
     composites: results.Composites
     """Each terminal of a component instance or a logic device, such as ``X1.vdd``, with
@@ -159,6 +165,7 @@ class Simulation:
         )
         self.nets = tuple(self._core.nets)
         self.terminals = tuple(self._core.terminals)
+        self.terminal_nodes = tuple(self._core.terminal_nodes)
         self.composites = tuple(
             (name, tuple(members)) for name, members in self._core.composites
         )
@@ -195,6 +202,96 @@ class Simulation:
         except _core.SimulationError as error:
             raise SimulationError(str(error)) from None
         return checks.diagnostics(found)
+
+    def check_results(
+        self, solved: Mapping[str, results.Result]
+    ) -> tuple[checks.Diagnostic, ...]:
+        """Every diagnostic of the rules on the analyses' results `solved`.
+
+        Each stability analysis's loop is held to its usual margins, as
+        [`specs.diagnose`][jolty.specs.diagnose] holds it, and each device's ratings to
+        every operating point and transient, at the furthest point of each.
+        """
+        rated = [
+            (path, instance, rating)
+            for path, instance in self._devices()
+            for rating in instance.ratings
+        ]
+        found = list(specs.diagnose(solved))
+        for name, result in solved.items():
+            match result:
+                case results.OperatingPoint():
+                    values = result.values[np.newaxis, :]
+                    currents = result.currents.reshape(1, -1)
+                    times = None
+                case results.Waveforms():
+                    values, currents, times = (
+                        result.values,
+                        result.currents,
+                        result.times,
+                    )
+                case _:
+                    continue
+            for path, instance, rating in rated:
+                stress = self._stress(path, rating, values, currents)
+                if stress is not None:
+                    at = Stressed(name, path, instance, rating, stress, times)
+                    found.extend(at.diagnostics())
+        return tuple(found)
+
+    def _devices(self) -> list[tuple[str, ir.Instance]]:
+        """Every device instance of the circuit, by path, that some terminal names."""
+        paths = dict.fromkeys(
+            terminal.rpartition(".")[0] for terminal in self.terminals
+        )
+        found = []
+        for path in paths:
+            instance = self.circuit.find(path)
+            if instance is not None:
+                found.append((path, instance))
+        return found
+
+    def _stress(
+        self,
+        path: str,
+        rating: ir.Rating,
+        values: results.Real,
+        currents: results.Real,
+    ) -> results.Real | None:
+        """The stress `rating` limits on the device at `path`, at each row of a result.
+
+        The rows are of `values` and `currents`; there is none when the result holds no
+        currents and the stress needs them.
+        """
+        index = {terminal: column for column, terminal in enumerate(self.terminals)}
+        columns = {unknown.name: column for column, unknown in enumerate(self.unknowns)}
+
+        def voltage(terminal: str) -> results.Real:
+            node = self.terminal_nodes[index[f"{path}.{terminal}"]]
+            if node is None:
+                return np.zeros(values.shape[0])
+            return values[:, columns[node]]
+
+        if rating.stress == "voltage":
+            first, second = rating.terminals
+            return voltage(first) - voltage(second)
+        if currents.shape[1] != len(self.terminals):
+            return None
+        if rating.stress == "current":
+            (terminal,) = rating.terminals
+            return currents[:, index[f"{path}.{terminal}"]]
+        own = [
+            terminal.rpartition(".")[2]
+            for terminal in self.terminals
+            if terminal.rpartition(".")[0] == path
+        ]
+        return sum(
+            (
+                voltage(terminal) * currents[:, index[f"{path}.{terminal}"]]
+                for terminal in own
+            ),
+            start=np.zeros(values.shape[0]),
+        )
 
     @overload
     def run(
@@ -436,3 +533,66 @@ class Simulation:
             "variables": self.variables,
             "readings": outcome["variables"],
         }
+
+
+_UNITS: dict[ir.Stress, str] = {"voltage": "V", "current": "A", "power": "W"}
+
+
+@dataclass(frozen=True, slots=True)
+class Stressed:
+    """A rated stress of a device over one analysis's points, judged by its rating."""
+
+    analysis: str
+    path: str
+    instance: ir.Instance
+    rating: ir.Rating
+    stress: results.Real
+    times: results.Real | None
+    """The time of each point, or None at an operating point."""
+
+    def diagnostics(self) -> list[checks.Diagnostic]:
+        """The diagnostics of over-rating and derating, one per bound at most."""
+        found = []
+        high = int(np.argmax(self.stress))
+        low = int(np.argmin(self.stress))
+        for point, bound, beyond in (
+            (high, self.rating.maximum, self.stress[high] > self.rating.maximum),
+            (low, self.rating.least, self.stress[low] < self.rating.least),
+        ):
+            value = float(self.stress[point])
+            derated = bound != 0 and abs(value) > checks.DERATED * abs(bound)
+            same_side = value * bound > 0
+            if beyond:
+                found.append(self._diagnostic(checks.OVER_RATING, point, bound, value))
+            elif derated and same_side:
+                found.append(self._diagnostic(checks.DERATING, point, bound, value))
+        return found
+
+    def _diagnostic(
+        self, rule: checks.Rule, point: int, bound: float, value: float
+    ) -> checks.Diagnostic:
+        unit = _UNITS[self.rating.stress]
+        terminals = [f"`{terminal}`" for terminal in self.rating.terminals]
+        described = {
+            "voltage": f"the voltage of `{self.path}` at {' over '.join(terminals)}",
+            "current": f"the current into `{self.path}` at {''.join(terminals)}",
+            "power": f"the power `{self.path}` dissipates",
+        }[self.rating.stress]
+        where = (
+            f"at the operating point of `{self.analysis}`"
+            if self.times is None
+            else f"at {float(self.times[point])!r} s in `{self.analysis}`"
+        )
+        moves = "reaches" if value >= 0 else "falls to"
+        if rule is checks.OVER_RATING:
+            beyond = "beyond" if bound == self.rating.maximum else "below"
+            judged = f"{beyond} its rating of {bound!r} {unit}"
+        else:
+            judged = f"past {checks.DERATED:.0%} of its rating of {bound!r} {unit}"
+        return checks.Diagnostic(
+            rule=rule.name,
+            level=rule.level,
+            message=f"{described} {moves} {value!r} {unit} {where}, {judged}",
+            instances=(checks.Instance(path=self.path, source=self.instance.source),),
+            nets=(),
+        )

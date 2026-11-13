@@ -124,9 +124,57 @@ pub struct Instance {
     /// [path](parameter()).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tolerances: BTreeMap<String, Tolerance>,
+    /// The limits the part's maker states on its stresses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ratings: Vec<Rating>,
     /// The line of source code that placed the instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
+}
+
+/// A limit a part's maker states on one of its stresses, which a simulation checks: the
+/// voltage of one of its terminals over another, the current into one, or the power it
+/// dissipates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rating {
+    /// What the rating limits.
+    pub stress: Stress,
+    /// The terminals the stress is at: two for a voltage, the first's over the second's,
+    /// one for a current, into it, and none for the power.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terminals: Vec<Name>,
+    /// The largest value the stress may take, in SI base units.
+    pub maximum: f64,
+    /// The smallest value the stress may take, if the rating states one; a voltage or a
+    /// current that states none may take down to minus its maximum, and a power any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<f64>,
+}
+
+/// What a [`Rating`] limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stress {
+    /// The voltage of one terminal over another.
+    Voltage,
+    /// The current into a terminal.
+    Current,
+    /// The power the part dissipates: the sum over its terminals of each one's voltage
+    /// times the current into it.
+    Power,
+}
+
+impl Stress {
+    /// How many terminals a rating of the stress names.
+    #[must_use]
+    pub const fn terminals(self) -> usize {
+        match self {
+            Self::Voltage => 2,
+            Self::Current => 1,
+            Self::Power => 0,
+        }
+    }
 }
 
 /// How far a parameter's value may lie from its nominal one, relative to it.

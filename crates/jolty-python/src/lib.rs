@@ -34,6 +34,7 @@ struct Simulator {
     unknowns: Vec<(String, &'static str)>,
     nets: Vec<String>,
     terminals: Vec<String>,
+    terminal_nodes: Vec<Option<String>>,
     derivatives: Vec<(String, String)>,
     variables: Vec<(String, &'static str)>,
     composites: Vec<(String, Vec<usize>)>,
@@ -81,6 +82,11 @@ impl Simulator {
             .collect();
         let devices = inner.devices().len() - inner.elements() + inner.logic_devices().len();
         let terminals = inner.terminals().to_vec();
+        let terminal_nodes = inner
+            .terminal_nodes()
+            .into_iter()
+            .map(|node| node.map(str::to_owned))
+            .collect();
         let derivatives = inner.derivatives().to_vec();
         let variables = inner.variables().to_vec();
         let composites = inner.composites().to_vec();
@@ -89,6 +95,7 @@ impl Simulator {
             unknowns,
             nets,
             terminals,
+            terminal_nodes,
             derivatives,
             variables,
             composites,
@@ -114,6 +121,13 @@ impl Simulator {
     #[getter]
     fn terminals(&self) -> Vec<String> {
         self.terminals.clone()
+    }
+
+    /// The unknown that is each terminal's voltage, by name, in the order of `terminals`,
+    /// or `None` for a terminal on the reference.
+    #[getter]
+    fn terminal_nodes(&self) -> Vec<Option<String>> {
+        self.terminal_nodes.clone()
     }
 
     /// The equation and the unknown of every derivative of every device, each a terminal

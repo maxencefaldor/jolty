@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::{Circuit, Component, Lot, Name, Of};
+use crate::{Circuit, Component, Lot, Name, Of, Stress};
 
 /// A reason a circuit's structure is invalid.
 ///
@@ -105,6 +105,27 @@ pub enum Problem {
         lot: Name,
         /// The lot's tolerance, in its shortest exact form.
         relative: String,
+    },
+    /// An instance states a rating that names terminals it does not connect, or not as
+    /// many as its stress needs, or whose bounds are not finite and in order.
+    #[error(
+        "instance `{component}/{id}` states a rating of its {stress} {at}up to {maximum}, \
+         which needs {needed}, a finite maximum, a positive one for a power, and no \
+         minimum above it"
+    )]
+    InvalidRating {
+        /// The component that places the instance.
+        component: Name,
+        /// The instance.
+        id: Name,
+        /// The stress rated: `voltage`, `current` or `power`.
+        stress: String,
+        /// Where, as the terminals named, such as `at `collector`, `emitter` `.
+        at: String,
+        /// The maximum, in its shortest exact form.
+        maximum: String,
+        /// How many terminals the stress needs, in words.
+        needed: &'static str,
     },
     /// Two instances spread one parameter of one lot differently.
     #[error(
@@ -229,6 +250,48 @@ fn check_lots(components: &BTreeMap<Name, Component>, problems: &mut Vec<Problem
     }
 }
 
+/// Checks that each rating of `instance`, placed in `name`, names as many of its terminals
+/// as its stress needs and bounds it finitely and in order.
+fn check_ratings(name: &Name, instance: &crate::Instance, problems: &mut Vec<Problem>) {
+    for rating in &instance.ratings {
+        let needed = rating.stress.terminals();
+        let own = rating
+            .terminals
+            .iter()
+            .all(|terminal| instance.terminals.contains_key(terminal));
+        let distinct = rating.terminals.len() < 2 || rating.terminals[0] != rating.terminals[1];
+        let bounded = rating.maximum.is_finite()
+            && (rating.stress != Stress::Power || rating.maximum > 0.0)
+            && rating
+                .minimum
+                .is_none_or(|minimum| minimum.is_finite() && minimum <= rating.maximum);
+        if rating.terminals.len() != needed || !own || !distinct || !bounded {
+            let at = if rating.terminals.is_empty() {
+                String::new()
+            } else {
+                let named: Vec<String> = rating
+                    .terminals
+                    .iter()
+                    .map(|terminal| format!("`{terminal}`"))
+                    .collect();
+                format!("at {} ", named.join(" over "))
+            };
+            problems.push(Problem::InvalidRating {
+                component: name.clone(),
+                id: instance.id.clone(),
+                stress: format!("{:?}", rating.stress).to_lowercase(),
+                at,
+                maximum: format!("{:?}", rating.maximum),
+                needed: [
+                    "no terminals",
+                    "one of its terminals",
+                    "two distinct terminals of its own",
+                ][needed],
+            });
+        }
+    }
+}
+
 fn check_component(
     name: &Name,
     component: &Component,
@@ -275,6 +338,7 @@ fn check_component(
                 });
             }
         }
+        check_ratings(name, instance, problems);
         let Of::Component(target) = &instance.of else {
             continue;
         };
@@ -391,6 +455,7 @@ mod tests {
             parameters: crate::Parameters::new(),
             terminals: terminals.iter().map(|&(t, n)| (name(t), name(n))).collect(),
             tolerances: BTreeMap::new(),
+            ratings: Vec::new(),
             source: None,
         }
     }
@@ -468,6 +533,44 @@ mod tests {
     }
 
     #[test]
+    fn checks_ratings() {
+        let rating = |stress, terminals: &[&str], maximum, minimum| crate::Rating {
+            stress,
+            terminals: terminals.iter().map(|terminal| name(terminal)).collect(),
+            maximum,
+            minimum,
+        };
+        let mut transistor = instance_of("Q1", "unused", &[("collector", "c"), ("base", "b")]);
+        transistor.of = Of::Device(name("bipolar_transistor"));
+        transistor.ratings = vec![
+            rating(Stress::Voltage, &["collector", "base"], 40.0, None),
+            rating(Stress::Current, &["collector"], 0.2, Some(-0.2)),
+            rating(Stress::Power, &[], 0.625, None),
+            rating(Stress::Voltage, &["collector"], 40.0, None),
+            rating(Stress::Voltage, &["collector", "emitter"], 40.0, None),
+            rating(Stress::Voltage, &["base", "base"], 6.0, None),
+            rating(Stress::Power, &[], 0.0, None),
+            rating(Stress::Current, &["base"], 0.1, Some(0.2)),
+            rating(Stress::Current, &["base"], f64::INFINITY, None),
+        ];
+        let top = Component {
+            instances: vec![transistor],
+            ..Component::default()
+        };
+        let problems = circuit(vec![("top", top)]).validate().unwrap_err();
+        let messages: Vec<String> = problems.0.iter().map(ToString::to_string).collect();
+        assert_eq!(messages.len(), 6, "{messages:?}");
+        assert_eq!(
+            messages[0],
+            "instance `top/Q1` states a rating of its voltage at `collector` up to 40.0, which \
+             needs two distinct terminals of its own, a finite maximum, a positive one for a \
+             power, and no minimum above it"
+        );
+        assert!(messages[1].contains("its voltage at `collector` over `emitter` up to 40.0"));
+        assert!(messages[3].contains("its power up to 0.0, which needs no terminals"));
+    }
+
+    #[test]
     fn checks_tolerances() {
         let tolerance = |relative| crate::Tolerance {
             relative,
@@ -490,6 +593,7 @@ mod tests {
                 ("level.ac".to_owned(), tolerance(0.05)),
             ]
             .into(),
+            ratings: Vec::new(),
             source: None,
         };
         let mut component = instance_of("X1", "cell", &[("a", "n"), ("b", "n")]);
@@ -536,6 +640,7 @@ mod tests {
                     .unwrap(),
                 terminals: BTreeMap::new(),
                 tolerances: [("resistance".to_owned(), tolerance)].into(),
+                ratings: Vec::new(),
                 source: None,
             }
         };

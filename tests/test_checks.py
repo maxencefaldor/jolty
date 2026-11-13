@@ -10,6 +10,7 @@ from jolty import (
     Builder,
     Component,
     JoltyError,
+    OperatingPoint,
     Role,
     Simulation,
     circuit,
@@ -24,7 +25,7 @@ from jolty.ir import Source
 from jolty.service import SimulateResult
 from jolty.settings import Level
 from jolty.specs import diagnose
-from jolty.units import Mohm, Quantity, S, V, kohm, mA, mH, nA, nF, ns, ps
+from jolty.units import Mohm, Quantity, S, V, W, kohm, mA, mH, nA, nF, ns, ohm, ps
 
 
 def raised(top: Component) -> list[str]:
@@ -216,7 +217,23 @@ def test_every_rule_has_a_case_that_raises_it() -> None:
     rest = results.OperatingPoint(unknowns, np.zeros(1), "direct")
     loop = results.LoopGain(unknowns, "VP", frequencies, poor, rest)
     found |= {diagnostic.rule for diagnostic in diagnose({"loop": loop})}
+    loaded = Simulation(burning())
+    point = loaded.run(OperatingPoint())
+    found |= {diagnostic.rule for diagnostic in loaded.check_results({"op": point})}
     assert found == set(rules())
+
+
+@component
+def burning(c: Builder) -> None:
+    """10 V across two 100 Ω resistors, one rated 0.5 W and the other 1.2 W."""
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(10 * V), id="V1")
+    for id, rating in (("R1", 0.5), ("R2", 1.2)):
+        resistor = c.place(
+            devices.resistor(100 * ohm).rated("power", rating * W), id=id
+        )
+        c.connect(source.positive, resistor.a)
+        c.connect(source.negative, resistor.b, ground)
 
 
 def test_levels_apply_settings_then_options() -> None:

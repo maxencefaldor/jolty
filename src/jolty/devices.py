@@ -26,6 +26,7 @@ from jolty.units import (
     DIMENSIONLESS,
     INDUCTANCE,
     LENGTH,
+    POWER,
     RESISTANCE,
     TEMPERATURE,
     TIME,
@@ -41,13 +42,15 @@ from jolty.waveforms import Dc, Waveform
 class Device:
     """A device ready to place: its model's name, its terminals and its parameters.
 
-    Some parameters may have a tolerance, which Monte Carlo analyses sample.
+    Some parameters may have a tolerance, which Monte Carlo analyses sample, and the
+    device may state ratings, which a simulation checks.
     """
 
     model: str
     terminals: tuple[str, ...]
     parameters: dict[str, JsonValue]
     tolerances: dict[str, ir.Tolerance] = field(default_factory=dict)
+    ratings: tuple[ir.Rating, ...] = ()
 
     def toleranced(
         self,
@@ -83,6 +86,56 @@ class Device:
                 raise ValueError(message)
         tolerance = ir.Tolerance(relative=relative, distribution=distribution, lot=lot)
         return replace(self, tolerances={**self.tolerances, parameter: tolerance})
+
+    def rated(
+        self,
+        stress: ir.Stress,
+        maximum: Quantity,
+        *,
+        terminals: Sequence[str] | None = None,
+        minimum: Quantity | None = None,
+    ) -> Device:
+        """The device, with a rating its maker states on one of its `stress`es.
+
+        A voltage is of the first of its two `terminals` over the second, a current is
+        into its one terminal, and the power names none; a two-terminal device's
+        voltage is of its own terminals by default, in order, and its current into its
+        first. A voltage or a current without a `minimum` may take down to minus its
+        `maximum`. A simulation checks every rating at the operating point and over a
+        transient.
+
+        Examples:
+            >>> from jolty.units import V, W, kohm, uF
+            >>> resistor(1 * kohm).rated("power", 0.25 * W).ratings[0].maximum
+            0.25
+            >>> capacitor(1 * uF).rated("voltage", 50 * V).ratings[0].terminals
+            ('a', 'b')
+
+        Raises:
+            DimensionError: When a bound is not a voltage, a current or a power as the
+                stress is.
+            ValueError: When the terminals are not the device's, or not as many as the
+                stress needs.
+        """
+        dimension, defaults = {
+            "voltage": (VOLTAGE, self.terminals[:2]),
+            "current": (CURRENT, self.terminals[:1]),
+            "power": (POWER, ()),
+        }[stress]
+        named = tuple(defaults if terminals is None else terminals)
+        unknown = [terminal for terminal in named if terminal not in self.terminals]
+        if unknown:
+            message = f"a {self.model} has no terminal {', '.join(unknown)}"
+            raise ValueError(message)
+        rating = ir.Rating(
+            stress=stress,
+            terminals=named,
+            maximum=maximum.to(dimension, f"a {stress} rating"),
+            minimum=None
+            if minimum is None
+            else minimum.to(dimension, f"a {stress} rating's minimum"),
+        )
+        return replace(self, ratings=(*self.ratings, rating))
 
 
 PER_KELVIN: Final = DIMENSIONLESS / TEMPERATURE
