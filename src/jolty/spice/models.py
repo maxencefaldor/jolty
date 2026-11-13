@@ -111,6 +111,7 @@ BIPOLAR: Final[Table] = {
     "xcjc": ("internal_base_fraction", 1.0),
     "tr": ("reverse_transit_time", 1.0),
     "fc": ("depletion_coefficient", 1.0),
+    "ptf": ("excess_phase", 1.0),
     "iss": ("substrate_saturation_current", 1.0),
     "ns": ("substrate_emission_coefficient", 1.0),
     "cjs": ("substrate_capacitance", 1.0),

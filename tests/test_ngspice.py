@@ -331,10 +331,12 @@ def _bipolar(
     polarity: Literal["npn", "pnp"],
     base_resistance: Literal["current", "charge", "fixed"],
     substrate: Literal["vertical", "lateral"] | None = None,
+    excess_phase: float | None = None,
 ) -> devices.Device:
     """A small-signal transistor with every effect of the model switched on.
 
-    With a `substrate`, so are its substrate junction's. Its base resistance falls with
+    With a `substrate`, so are its substrate junction's, and with an `excess_phase`,
+    in degrees, its delay. Its base resistance falls with
     the base current, with the base charge, or stays fixed. ngspice leaves a falling
     base resistance out of its small-signal model, where jolty keeps it, so a frequency
     response compares transistors with a fixed one.
@@ -370,6 +372,7 @@ def _bipolar(
         base_collector_grading=0.4,
         internal_base_fraction=0.6,
         reverse_transit_time=50 * ns,
+        excess_phase=excess_phase,
         substrate=substrate,
         substrate_saturation_current=0.2 * fA if junction else None,
         substrate_emission_coefficient=1.05 if junction else None,
@@ -415,6 +418,33 @@ def bjt_amplifier(c: Builder) -> None:
     c.connect(
         source.negative, supply.negative, lower.b, degeneration.b, bypass.b, ground
     )
+
+
+@component
+def delayed_stage(c: Builder) -> None:
+    """A common-emitter stage whose transistor delays its transport current.
+
+    An excess phase of 60° on a transit time of 0.4 ns delays it by 0.42 ns, through
+    the Bessel filter ngspice integrates in a transient, and edges of 1 ns show it.
+    """
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    edges = Pulse(
+        initial=0.68 * V,
+        pulsed=0.74 * V,
+        delay=2 * ns,
+        rise=1 * ns,
+        fall=1 * ns,
+        width=5 * ns,
+        period=12 * ns,
+    )
+    source = c.place(devices.voltage_source(edges), id="V1")
+    transistor = c.place(_bipolar("npn", "fixed", excess_phase=60.0), id="Q1")
+    load = c.place(devices.resistor(1 * kohm), id="RC")
+    c.connect(source.positive, transistor.base, name="base")
+    c.connect(supply.positive, load.a, name="supply")
+    c.connect(load.b, transistor.collector, name="out")
+    c.connect(source.negative, supply.negative, transistor.emitter, ground)
 
 
 @component
@@ -1416,6 +1446,7 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
         (jfet_stage, 15 * us, 10 * ns),
         (bjt_amplifier, 4 * us, 2 * ns),
         (integrated_stage, 4 * us, 2 * ns),
+        (delayed_stage, 40 * ns, 0.002 * ns),
         (nmos_stage, 2 * us, 1 * ns),
         (level_three_stage, 2 * us, 1 * ns),
         (cmos_inverter, 160 * ns, 0.01 * ns),

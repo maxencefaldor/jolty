@@ -45,11 +45,13 @@ from jolty.units import (
     Quantity,
     V,
     celsius,
+    fA,
     kHz,
     kohm,
     mA,
     ms,
     nF,
+    ns,
     ohm,
     uA,
     uF,
@@ -350,6 +352,47 @@ def test_a_low_pass_has_one_real_pole_and_no_zero() -> None:
     assert alone.zeros is None
     with pytest.raises(SimulationError, match="both or neither"):
         simulation.run(PoleZero(source="V1"))
+
+
+def test_an_excess_phase_delays_the_collector_current_through_two_poles() -> None:
+    """With its terminals held, a transistor's only dynamics are its delay's filter.
+
+    Its two poles are the roots of s² td² + 3 s td + 3, and the collector current's
+    response to the base is the transconductance through 3 / (s² td² + 3 s td + 3).
+    """
+    delay = 30 * math.pi / 180 * 0.4e-9
+
+    @component
+    def held(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        base = c.place(devices.voltage_source(0.7 * V), id="VB")
+        collector = c.place(devices.voltage_source(3 * V), id="VC")
+        transistor = c.place(
+            devices.bipolar_transistor(
+                saturation_current=1 * fA,
+                forward_transit_time=0.4 * ns,
+                excess_phase=30.0,
+            ),
+            id="Q1",
+        )
+        c.connect(base.positive, transistor.base, name="base")
+        c.connect(collector.positive, transistor.collector, name="collector")
+        c.connect(base.negative, collector.negative, transistor.emitter, ground)
+
+    simulation = Simulation(held())
+    poles = simulation.run(PoleZero()).poles
+    expected = (-3 + np.array([-1, 1]) * 1j * math.sqrt(3)) / (2 * delay)
+    np.testing.assert_allclose(np.sort_complex(poles), expected, rtol=1e-9)
+    point = simulation.run(OperatingPoint())
+    thermal_voltage = 1.380649e-23 * 300.15 / 1.602176634e-19
+    transconductance = -point.current("VC") / thermal_voltage
+    frequencies = [1 * MHz, 100 * MHz, 1 * GHz]
+    response = simulation.run(Ac("VB", frequencies))
+    s = 2j * np.pi * np.array([frequency.value for frequency in frequencies])
+    bessel = 3 / ((s * delay) ** 2 + 3 * s * delay + 3)
+    np.testing.assert_allclose(
+        -response.current("VC"), transconductance * bessel, rtol=1e-6
+    )
 
 
 def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:

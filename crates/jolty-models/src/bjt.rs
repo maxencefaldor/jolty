@@ -10,7 +10,7 @@ use crate::noise::Flicker;
 use crate::stamp::{self, CurrentBranch, SMALL_RESISTANCE, Series, Stamp};
 use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
-    NoiseSource, Output, ParameterError, REFERENCE_TEMPERATURE, Real,
+    NoiseSource, Output, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown,
 };
 
 /// The doping order of a bipolar transistor.
@@ -66,6 +66,12 @@ pub enum Construction {
 /// The junction conducts the minimum conductance, and its diode's current if it has a
 /// saturation current; its depletion capacitance grows linearly in forward bias.
 ///
+/// An excess phase delays the forward transport current, `Ibe / qb`, through Weil's
+/// approximation as SPICE makes it, a second-order Bessel filter,
+/// `3 / (s² · td² + 3 · s · td + 3)`: its group delay at low frequencies is `td`, and its
+/// phase at the frequency `1 / (2π · TF)` nearly the excess phase. Two unknowns carry the
+/// filter, labelled `delayed_transport` and `delayed_transport_slope`.
+///
 /// Away from its nominal temperature, its saturation currents scale with the energy gap,
 /// its betas by their temperature exponent, and its junctions' potentials and
 /// capacitances with silicon's band gap, as ngspice scales them.
@@ -78,6 +84,7 @@ pub struct BipolarTransistor<R: Real = f64> {
     base: Option<(BaseResistance<R>, BaseForm)>,
     junctions: Junctions<R>,
     charges: Option<Charges<R>>,
+    excess: Option<ExcessPhase<R>>,
     substrate: Option<Substrate<R>>,
     /// The thermal voltage at the transistor's temperature.
     thermal_voltage: f64,
@@ -175,6 +182,9 @@ pub struct BipolarTransistorParameters<R: Real = f64> {
     /// The fraction of each junction's potential above which its depletion capacitance is
     /// extended linearly, `FC`, below 1; default 0.5.
     pub depletion_coefficient: R,
+    /// The excess phase at the frequency `1 / (2π · TF)`, `PTF`, in degrees, which delays
+    /// the forward transport current by `PTF · π / 180 · TF`; default 0.
+    pub excess_phase: R,
     /// How the transistor is built, if it has a substrate, as ngspice's `SUBS` of 1 and −1
     /// builds it; without it, the transistor has none. The parameters below, of the
     /// junction to the substrate, need one.
@@ -243,6 +253,7 @@ impl<R: Real> Default for BipolarTransistorParameters<R> {
             internal_base_fraction: R::constant(1.0),
             reverse_transit_time: R::constant(0.0),
             depletion_coefficient: R::constant(0.5),
+            excess_phase: R::constant(0.0),
             substrate: None,
             substrate_saturation_current: None,
             substrate_emission_coefficient: None,
@@ -289,6 +300,8 @@ struct State<R: Real> {
     base: [(R, R); 2],
     /// The transport current from collector to emitter, and its derivatives.
     transport: (R, [R; 2]),
+    /// Its forward part, `Ibe / qb`, which an excess phase delays, and its derivatives.
+    forward_transport: (R, [R; 2]),
     /// The normalized base charge, `qb`, and its derivatives.
     charge: (R, [R; 2]),
 }
@@ -350,10 +363,18 @@ impl<R: Real> Junctions<R> {
                 (-reverse.1 - net * dqb[1] / qb) / qb,
             ],
         );
+        let forward_transport = (
+            forward.0 / qb,
+            [
+                (forward.1 - forward.0 * dqb[0] / qb) / qb,
+                -forward.0 * dqb[1] / (qb * qb),
+            ],
+        );
         State {
             ideal: [forward, reverse],
             base,
             transport,
+            forward_transport,
             charge: (qb, dqb),
         }
     }
@@ -508,6 +529,77 @@ fn shape<R: Real>(z: R) -> (R, R) {
         top / bottom,
         (top_slope * bottom - top * bottom_slope) / (bottom * bottom),
     )
+}
+
+/// The forward transport current `u` delayed through the filter of an excess phase: the
+/// delayed current `x` and `y = td · dx/dt`, both in amperes, held by `td · dx/dt − y = 0`
+/// and `td · dy/dt + 3 · y + 3 · x − 3 · u = 0`, so `td² · x'' + 3 · td · x' + 3 · x = 3 · u`.
+/// At the operating point `x` is `u`.
+#[derive(Debug)]
+struct ExcessPhase<R: Real> {
+    /// The delay `td`, in seconds.
+    delay: R,
+    /// The unknowns `x` and `y`.
+    unknowns: [Unknown; 2],
+    /// The entries of `x`'s equation at `x` and `y`, and of `y`'s at `x` and `y`.
+    own: [[Option<Entry>; 2]; 2],
+    /// The entries of `y`'s equation at the internal base, emitter and collector.
+    driven: [Option<Entry>; 3],
+    /// The entries of the internal collector's and emitter's equations at `x`.
+    delivered: [Option<Entry>; 2],
+}
+
+impl<R: Real> ExcessPhase<R> {
+    /// The filter of `delay`, between the internal `nodes`: base, emitter and collector.
+    fn new(binding: &mut Binding<'_>, delay: R, [base, emitter, collector]: [Node; 3]) -> Self {
+        let unknowns = [
+            binding.internal("delayed_transport", Quantity::Current),
+            binding.internal("delayed_transport_slope", Quantity::Current),
+        ];
+        let [x, y] = unknowns.map(Some);
+        Self {
+            delay,
+            unknowns,
+            own: [x, y].map(|row| [x, y].map(|column| binding.entry(row, column))),
+            driven: [base, emitter, collector].map(|column| binding.entry(y, column)),
+            delivered: [collector, emitter].map(|row| binding.entry(row, x)),
+        }
+    }
+
+    /// The delayed forward transport current, `x`.
+    fn delayed(&self, input: &Input<'_>) -> f64 {
+        input.value(Some(self.unknowns[0]))
+    }
+
+    /// Adds the filter's two equations for the forward transport current of `state`, of a
+    /// transistor of polarity `sign`.
+    fn add(
+        &self,
+        bias: &Bias,
+        state: &State<R>,
+        sign: f64,
+        input: &Input<'_>,
+        output: &mut Output<'_, R>,
+    ) {
+        let [x, y] = self.unknowns.map(Some);
+        let [delayed, slope] = [x, y].map(|unknown| input.value(unknown));
+        let (forward, slopes) = state.forward_transport;
+        let driven = forward + bias.extend(slopes);
+        output.add_residual(x, R::constant(-slope));
+        output.add_charge(x, self.delay * delayed);
+        output.add_residual(y, (R::constant(delayed + slope) - driven) * 3.0);
+        output.add_charge(y, self.delay * slope);
+        let [[x_x, x_y], [y_x, y_y]] = self.own;
+        output.add_conductance(x_y, R::constant(-1.0));
+        output.add_capacitance(x_x, self.delay);
+        output.add_conductance(y_x, R::constant(3.0));
+        output.add_conductance(y_y, R::constant(3.0));
+        output.add_capacitance(y_y, self.delay);
+        let [at_base, at_emitter, at_collector] = self.driven;
+        output.add_conductance(at_base, -(slopes[0] + slopes[1]) * (3.0 * sign));
+        output.add_conductance(at_emitter, slopes[0] * (3.0 * sign));
+        output.add_conductance(at_collector, slopes[1] * (3.0 * sign));
+    }
 }
 
 /// What the transistor stores: the junctions' depletion charges and transit times.
@@ -921,6 +1013,7 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
         let junctions = parameters.junctions(temperatures)?;
         let base_resistance = parameters.base_resistance()?;
         let charges = parameters.charges(temperatures)?;
+        let excess_phase = ParameterError::non_negative("excess_phase", parameters.excess_phase)?;
         let substrate_junction = parameters.substrate_junction(temperatures)?;
         let non_negative = ParameterError::non_negative;
         let collector_resistance =
@@ -963,6 +1056,10 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
             binding,
             [base_terminal, inner_collector, inner_base, inner_emitter],
         );
+        let delay = excess_phase * (std::f64::consts::PI / 180.0) * parameters.forward_transit_time;
+        let excess = (delay.value() > 0.0).then(|| {
+            ExcessPhase::new(binding, delay, [inner_base, inner_emitter, inner_collector])
+        });
         Ok(Self {
             stamp,
             sign: parameters.polarity.sign(),
@@ -976,6 +1073,7 @@ impl<R: Real> NativeDevice<R> for BipolarTransistor<R> {
             ),
             junctions,
             charges,
+            excess,
             substrate,
             last: [0.0; 2],
             temperature: temperatures.actual,
@@ -1016,10 +1114,25 @@ impl<R: Real> BipolarTransistor<R> {
         Bias::new(applied, voltages)
     }
 
-    /// Adds the transport current and the base currents through each junction.
-    fn add_currents(&self, bias: &Bias, state: &State<R>, output: &mut Output<'_, R>) {
+    /// Adds the transport current and the base currents through each junction. With an
+    /// excess phase, the delayed forward transport current stands in for the forward one.
+    fn add_currents(
+        &self,
+        bias: &Bias,
+        state: &State<R>,
+        input: &Input<'_>,
+        output: &mut Output<'_, R>,
+    ) {
         let (stamp, sign) = (&self.stamp, self.sign);
-        let (transport, slopes) = state.transport;
+        let (mut transport, mut slopes) = state.transport;
+        if let Some(excess) = &self.excess {
+            let (forward, forward_slopes) = state.forward_transport;
+            transport = transport - forward + excess.delayed(input);
+            slopes = [0, 1].map(|index| slopes[index] - forward_slopes[index]);
+            let [at_collector, at_emitter] = excess.delivered;
+            output.add_conductance(at_collector, R::constant(sign));
+            output.add_conductance(at_emitter, R::constant(-sign));
+        }
         let collector_emitter = (INNER_COLLECTOR, INNER_EMITTER);
         let current = (transport + bias.extend(slopes)) * sign;
         stamp.current(output, INNER_COLLECTOR, INNER_EMITTER, current);
@@ -1102,7 +1215,10 @@ impl<R: Real> Device<R> for BipolarTransistor<R> {
         let bias = self.bias(input, output);
         let [vbe, vbc] = bias.voltages;
         let state = self.junctions.evaluate(vbe, vbc, input.gmin);
-        self.add_currents(&bias, &state, output);
+        self.add_currents(&bias, &state, input, output);
+        if let Some(excess) = &self.excess {
+            excess.add(&bias, &state, self.sign, input, output);
+        }
         if let Some(base) = &self.base {
             self.add_base_resistance(base, &bias, &state, input, output);
         }
@@ -1291,6 +1407,101 @@ mod tests {
         }
     }
 
+    /// [`FULL`] with an excess phase of 30°, a delay of 30 · π / 180 · 0.4 ns.
+    fn excess() -> String {
+        FULL.replace('{', r#"{"excess_phase": 30, "#)
+    }
+
+    #[test]
+    fn an_excess_phase_delays_the_forward_transport_current_through_two_unknowns() {
+        let mut plain = Bench::new::<BipolarTransistor>(FULL);
+        let mut delayed = Bench::new::<BipolarTransistor>(&excess());
+        assert_eq!(
+            delayed.unknowns(),
+            [
+                "n0",
+                "n1",
+                "n2",
+                "device:delayed_transport",
+                "device:delayed_transport_slope"
+            ]
+        );
+        let at = [3.0, 0.7, 0.0];
+        let rest = plain.settle(&at);
+        // y's residual is 3 (x + y − u), so at x = y = 0 it gives the forward transport
+        // current u, `Ibe / qb`; at rest x is u, and the transistor's currents are those
+        // it has without the delay.
+        let forward = -delayed.settle(&[at[0], at[1], at[2], 0.0, 0.0]).residual[4] / 3.0;
+        let settled = delayed.settle(&[at[0], at[1], at[2], forward, 0.0]);
+        assert_close(&settled.residual[..3], &rest.residual);
+        assert!(settled.residual[3].abs() < 1e-30);
+        assert!(
+            settled.residual[4].abs() < 1e-15 * forward.abs(),
+            "{} vs {forward}",
+            settled.residual[4]
+        );
+        // The delayed current's equations hold charges of the delay times each unknown.
+        let delay = 30.0 * std::f64::consts::PI / 180.0 * 4e-10;
+        assert_close(&settled.charge[3..], &[delay * forward, 0.0]);
+        assert_close(
+            &[settled.capacitance[3][3], settled.capacitance[4][4]],
+            &[delay, delay],
+        );
+    }
+
+    #[test]
+    fn its_delay_is_a_second_order_bessel_filter() {
+        // Linearized, the delayed current responds to the forward transport current
+        // through 3 / (s² td² + 3 s td + 3): solve the two rows at s = jω for a unit drive.
+        let mut delayed = Bench::new::<BipolarTransistor>(&excess());
+        let evaluation = delayed.settle(&[3.0, 0.7, 0.0, 1e-3, 0.0]);
+        let delay = 30.0 * std::f64::consts::PI / 180.0 * 4e-10;
+        for omega in [1e8, 1.0 / delay, 1e10] {
+            let entry = |row: usize, column: usize| {
+                (
+                    evaluation.conductance[row][column],
+                    omega * evaluation.capacitance[row][column],
+                )
+            };
+            // The rows of x and y over the columns x and y, and y's drive by the forward
+            // transport current, whose conductance at the internal base is −3 du/dvb.
+            let [a, b, c, d] = [entry(3, 3), entry(3, 4), entry(4, 3), entry(4, 4)];
+            let multiply =
+                |p: (f64, f64), q: (f64, f64)| (p.0 * q.0 - p.1 * q.1, p.0 * q.1 + p.1 * q.0);
+            let determinant = {
+                let (ad, bc) = (multiply(a, d), multiply(b, c));
+                (ad.0 - bc.0, ad.1 - bc.1)
+            };
+            // x = −b · (−3 u) / det for a drive u of 1 into y's row, as y's residual holds −3 u.
+            let numerator = multiply(b, (3.0, 0.0));
+            let numerator = (-numerator.0, -numerator.1);
+            let norm = determinant.0 * determinant.0 + determinant.1 * determinant.1;
+            let response = (
+                (numerator.0 * determinant.0 + numerator.1 * determinant.1) / norm,
+                (numerator.1 * determinant.0 - numerator.0 * determinant.1) / norm,
+            );
+            let wt = omega * delay;
+            let denominator = (3.0 - wt * wt, 3.0 * wt);
+            let dnorm = denominator.0 * denominator.0 + denominator.1 * denominator.1;
+            let expected = (3.0 * denominator.0 / dnorm, -3.0 * denominator.1 / dnorm);
+            assert!(
+                (response.0 - expected.0).abs() < 1e-12 && (response.1 - expected.1).abs() < 1e-12,
+                "{response:?} vs {expected:?} at {omega}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_excess_phase_needs_a_transit_time_and_is_not_negative() {
+        let without = Bench::new::<BipolarTransistor>(r#"{"excess_phase": 30}"#);
+        assert_eq!(without.unknowns(), ["n0", "n1", "n2"]);
+        let error = Bench::try_new::<BipolarTransistor>(r#"{"excess_phase": -1}"#).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "excess_phase must be at least 0, not -1.0"
+        );
+    }
+
     #[test]
     fn the_base_resistance_shape_is_continuous_where_its_series_hands_over() {
         let z = 0.25 - 1e-12;
@@ -1392,8 +1603,13 @@ mod tests {
                 ),
             )
         };
+        let delayed = full.replace('{', r#"{"excess_phase": 30, "#);
         for [collector, base] in [[3.0, 0.7], [0.4, 0.72], [-0.5, 0.1], [0.2, -0.6]] {
             assert_parameter_gradients_match::<BipolarTransistor>(&full, &[collector, base, 0.0]);
+            assert_parameter_gradients_match::<BipolarTransistor>(
+                &delayed,
+                &[collector, base, 0.0, 2e-3, -1e-4],
+            );
             for halfway in ["", r#""base_resistance_current": 1e-4,"#] {
                 let substrate = resistive(halfway).replace(
                     '{',
@@ -1438,6 +1654,10 @@ mod tests {
             assert_jacobians_match::<BipolarTransistor>(
                 &parameters,
                 &[sign * collector, sign * base, 0.0],
+            );
+            assert_jacobians_match::<BipolarTransistor>(
+                &parameters.replace('{', r#"{"excess_phase": 45, "#),
+                &[sign * collector, sign * base, 0.0, 1e-3, -2e-4],
             );
             let resistive = parameters.replace(
                 '{',

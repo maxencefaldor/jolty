@@ -243,6 +243,7 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 | `internal_base_fraction` | `XCJC` | none | 1 |
 | `reverse_transit_time` | `TR` | s | 0 |
 | `depletion_coefficient` | `FC` | none | 0.5 |
+| `excess_phase` | `PTF` | degrees | 0 |
 | `substrate` | `SUBS`, 1 or −1 | `"vertical"` or `"lateral"` | none: no substrate |
 | `substrate_saturation_current`, `substrate_emission_coefficient` | `ISS`, `NS` | A, none | none: no diode, 1 |
 | `substrate_capacitance`, `substrate_potential`, `substrate_grading` | `CJS`, `VJS`, `MJS` | F, V, none | 0, 0.75 V, 0 |
@@ -252,6 +253,10 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 | `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 
 A base, collector or emitter resistance adds an internal node to the unknowns, as `Q1:base`, `Q1:collector` or `Q1:emitter` for a transistor `Q1`; one below 1 Ω, the base's at its minimum, adds its current too, as `Q1:base_current`, `Q1:collector_current` or `Q1:emitter_current`, as a small resistor does.
+
+An excess phase delays the forward transport current, `Ibe / qb`, by `td = PTF · π / 180 · TF` through the second-order Bessel filter `3 / (s² td² + 3 s td + 3)`, the filter ngspice integrates in a transient, so its phase at `1 / (2π · TF)` is nearly `PTF`.
+The filter adds two unknowns, `Q1:delayed_transport` and `Q1:delayed_transport_slope`, and holds in every analysis, so a pole-zero analysis finds its two poles.
+ngspice's AC analysis delays the transconductance by a pure `exp(−jω·td)` instead, so at `1 / (2π · TF)` the two engines' gains differ by the filter's magnitude there, 5 % at a `PTF` of 30°.
 
 A transistor built `"vertical"` or `"lateral"` has a fourth terminal, `substrate`, joined by a junction to its internal collector if vertical or to its internal base if lateral.
 The junction conducts the minimum conductance, as ngspice's does, and a diode's current given a substrate saturation current; its depletion capacitance grows linearly in forward bias.

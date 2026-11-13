@@ -199,12 +199,13 @@ def test_models_inherit_through_ako_and_scale_by_area() -> None:
 
 def test_bipolar_transistors_have_spice_s_substrate() -> None:
     parts = library(
-        ".model QN NPN(BF=50 CJS=1p)\n.model QL PNP(SUBS=1)\n"
+        ".model QN NPN(BF=50 CJS=1p TF=0.3n PTF=40)\n.model QL PNP(SUBS=1)\n"
         ".subckt pair c b e s\nQ1 c b e QN\nQ2 c b e s QL 2\n.ends"
     )
     first, second = parts.component("pair").definition.instances
     assert first.terminals["substrate"] == spice.GROUND
     assert first.parameters["substrate"] == "vertical"
+    assert first.parameters["excess_phase"] == 40.0
     assert second.terminals["substrate"] == "s"
     assert second.parameters["substrate"] == "vertical"
     lateral = library(".model QP PNP\n.subckt one c b e\nQ1 c b e QP\n.ends")

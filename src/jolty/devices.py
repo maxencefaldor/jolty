@@ -694,6 +694,7 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
     internal_base_fraction: float | None = None,
     reverse_transit_time: Quantity | None = None,
     depletion_coefficient: float | None = None,
+    excess_phase: float | None = None,
     substrate: Literal["vertical", "lateral"] | None = None,
     substrate_saturation_current: Quantity | None = None,
     substrate_emission_coefficient: float | None = None,
@@ -722,6 +723,12 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
     junction conducts the minimum conductance, and a diode's current with a substrate
     saturation current; its depletion capacitance grows linearly in forward bias. The
     substrate parameters need a substrate.
+
+    An ``excess_phase``, SPICE's ``PTF`` in degrees, delays the forward transport
+    current by ``PTF · π / 180 · TF`` through a second-order Bessel filter, as
+    ngspice's transient does, so the phase it adds at ``1 / (2π · TF)`` is nearly
+    ``PTF``; the filter's two unknowns are ``delayed_transport`` and
+    ``delayed_transport_slope``.
 
     Away from the nominal temperature, 27 °C unless given, the saturation currents scale
     with the energy gap, 1.11 V unless given, and the temperature exponent, 3 unless
@@ -792,6 +799,7 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
             "base_collector_grading": base_collector_grading,
             "internal_base_fraction": internal_base_fraction,
             "depletion_coefficient": depletion_coefficient,
+            "excess_phase": excess_phase,
             "substrate_emission_coefficient": substrate_emission_coefficient,
             "substrate_grading": substrate_grading,
             "saturation_current_temperature_exponent": (
