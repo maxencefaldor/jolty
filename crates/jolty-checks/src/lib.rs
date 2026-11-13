@@ -35,6 +35,7 @@
 //! ```
 
 mod point;
+pub mod preferred;
 mod rules;
 mod structure;
 
@@ -113,5 +114,6 @@ pub fn check(simulator: &Simulator) -> Vec<Diagnostic> {
     rules::current_cutsets(&structure, &mut diagnostics);
     rules::driver_conflicts(simulator, &mut diagnostics);
     rules::floating_inputs(simulator, &mut diagnostics);
+    rules::non_standard_values(simulator, &mut diagnostics);
     diagnostics
 }

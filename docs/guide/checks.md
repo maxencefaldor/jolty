@@ -11,6 +11,13 @@ A controlled source's control inputs only sense their nodes.
 From that graph alone, the checks find what makes a circuit's equations singular or meaningless: a terminal that connects to nothing, a source shorted by its own net, a loop of voltage sources, or a group of nodes with no DC path to the ground.
 The [rules reference](../reference/rules.md) gives each rule's exact condition.
 
+A check also reads each resistor's, capacitor's and inductor's value against the E series of IEC 60063, the preferred values parts are made in: a resistance in none from E3 to E192, or a capacitance or inductance in none from E3 to E24, is one no standard part has, which the rule `non-standard-value` states:
+
+```text
+warn[non-standard-value]: the resistance of `R1`, 4800.0 Ω, is in no E series from E3 to E192
+  = R1, divider.py:9 in divider()
+```
+
 ## At the operating point
 
 A simulation also checks the circuit at its plan's operating point, solved with the plan's options, and linearized there, before reading any analysis.

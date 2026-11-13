@@ -613,6 +613,14 @@ fn rules() -> Vec<(&'static str, &'static str, &'static str)> {
         .collect()
 }
 
+/// The values of the E series named `series`, such as `"E24"`, in the decade from 1 to 10.
+#[pyfunction]
+fn mantissas(series: &str) -> PyResult<Vec<f64>> {
+    jolty_checks::preferred::Series::named(series)
+        .map(jolty_checks::preferred::Series::mantissas)
+        .ok_or_else(|| PyValueError::new_err(format!("no E series is named `{series}`")))
+}
+
 #[pymodule]
 fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
@@ -620,6 +628,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(rules, module)?)?;
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
     module.add_function(wrap_pyfunction!(constant, module)?)?;
+    module.add_function(wrap_pyfunction!(mantissas, module)?)?;
     module.add("EXPRESSIONS", jolty_expressions::LANGUAGE)?;
     module.add("BOLTZMANN", jolty_models::BOLTZMANN)?;
     module.add("ELEMENTARY_CHARGE", jolty_models::ELEMENTARY_CHARGE)?;

@@ -6,6 +6,7 @@ use jolty_engine::{Endpoint, Location, LogicNet, Placed, Simulator};
 use jolty_models::BranchKind;
 
 use crate::point::{GMIN_DEPENDENCE, MULTIPLE_OPERATING_POINTS, UNSTABLE_POLE};
+use crate::preferred::Series;
 use crate::structure::{Partition, REFERENCE, Structure, ends, index, list};
 use crate::{Diagnostic, Level, Rule};
 
@@ -72,6 +73,14 @@ const DRIVER_CONFLICT: Rule = Rule {
                 levels, the net's level is unknown.",
 };
 
+const NON_STANDARD_VALUE: Rule = Rule {
+    name: "non-standard-value",
+    level: Level::Warn,
+    condition: "A resistor's resistance is in no E series of IEC 60063 from E3 to E192, or a \
+                capacitor's capacitance or an inductor's inductance in none from E3 to E24, \
+                but for rounding: no standard part has the value.",
+};
+
 const FLOATING_INPUT: Rule = Rule {
     name: "floating-input",
     level: Level::Error,
@@ -89,6 +98,7 @@ pub const RULES: &[Rule] = &[
     CURRENT_CUTSET,
     DRIVER_CONFLICT,
     FLOATING_INPUT,
+    NON_STANDARD_VALUE,
     GMIN_DEPENDENCE,
     MULTIPLE_OPERATING_POINTS,
     UNSTABLE_POLE,
@@ -485,6 +495,41 @@ fn drives(device: &Placed, inside: &impl Fn(usize) -> bool) -> bool {
     })
 }
 
+/// Each resistor, capacitor and inductor whose value no E series it comes in holds.
+pub(crate) fn non_standard_values(simulator: &Simulator, diagnostics: &mut Vec<Diagnostic>) {
+    for device in simulator.devices() {
+        let (parameter, unit, densest) = match device.model() {
+            "resistor" => ("resistance", "Ω", Series::E192),
+            "capacitor" => ("capacitance", "F", Series::E24),
+            "inductor" => ("inductance", "H", Series::E24),
+            _ => continue,
+        };
+        let Some(value) = device
+            .parameters()
+            .and_then(|parameters| parameters.get(parameter))
+            .and_then(serde_json::Value::as_f64)
+        else {
+            continue;
+        };
+        let standard = Series::ALL
+            .into_iter()
+            .filter(|series| *series <= densest)
+            .any(|series| series.holds(value));
+        if value > 0.0 && !standard {
+            diagnostics.push(Diagnostic {
+                rule: NON_STANDARD_VALUE.name,
+                message: format!(
+                    "the {parameter} of `{}`, {value:?} {unit}, is in no E series from E3 to \
+                     {densest}",
+                    device.path()
+                ),
+                instances: vec![device.location().clone()],
+                nets: Vec::new(),
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use jolty_engine::{Conditions, Simulator};
@@ -623,6 +668,47 @@ mod tests {
             current("I1", "0", "load"),
         ]);
         assert_eq!(found, []);
+    }
+
+    #[test]
+    fn non_standard_value() {
+        let found = diagnostics(&[
+            voltage("V1", "in", "0"),
+            device(
+                "R1",
+                "resistor",
+                json!({"resistance": 4812.3}),
+                ["in", "out"],
+            ),
+            device(
+                "R2",
+                "resistor",
+                json!({"resistance": 4870.0}),
+                ["out", "0"],
+            ),
+            device(
+                "C1",
+                "capacitor",
+                json!({"capacitance": 4.87e-9}),
+                ["out", "0"],
+            ),
+            device(
+                "L1",
+                "inductor",
+                json!({"inductance": 4.7e-6}),
+                ["out", "0"],
+            ),
+        ]);
+        assert_eq!(rules(&found), ["non-standard-value", "non-standard-value"]);
+        assert_eq!(
+            found[0].message,
+            "the resistance of `R1`, 4812.3 Ω, is in no E series from E3 to E192"
+        );
+        assert_eq!(
+            found[1].message,
+            "the capacitance of `C1`, 4.87e-9 F, is in no E series from E3 to E24"
+        );
+        assert_eq!(found[1].instances[0].path, "C1");
     }
 
     #[test]

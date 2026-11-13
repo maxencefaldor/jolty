@@ -129,6 +129,15 @@ impl Placed {
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
     }
+
+    /// The parameters a model made the device from, or `None` for a connect element.
+    #[must_use]
+    pub fn parameters(&self) -> Option<&Parameters> {
+        match &self.origin {
+            Origin::Model(made) => Some(&made.parameters),
+            Origin::Detector(_) | Origin::Driver => None,
+        }
+    }
 }
 
 /// Where an instance is: its hierarchical path and the source line that placed it.

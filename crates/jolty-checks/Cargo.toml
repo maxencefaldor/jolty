@@ -14,10 +14,10 @@ categories.workspace = true
 [dependencies]
 jolty-engine.workspace = true
 jolty-models.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 jolty-ir.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true

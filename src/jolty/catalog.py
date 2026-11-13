@@ -22,12 +22,13 @@ Examples:
 import bisect
 import math
 from collections.abc import Iterable
+from functools import cache
 from pathlib import Path
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from jolty import ir
+from jolty import _core, ir
 from jolty.units import format_si
 
 type Device = Literal["resistor", "capacitor", "inductor"]
@@ -49,20 +50,8 @@ _SYMBOLS: Final[dict[Device, str]] = {
     "inductor": "H",
 }
 
-_SHORT: Final[dict[Series, tuple[float, ...]]] = {
-    "E3": (1.0, 2.2, 4.7),
-    "E6": (1.0, 1.5, 2.2, 3.3, 4.7, 6.8),
-    "E12": (1.0, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2),
-    "E24": (
-        *(1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.7, 3.0),
-        *(3.3, 3.6, 3.9, 4.3, 4.7, 5.1, 5.6, 6.2, 6.8, 7.5, 8.2, 9.1),
-    ),
-}
 
-_ROUNDED_UP: Final = {("E192", 185): 9.2}
-"""Where IEC 60063 departs from rounding: E192's 186th value is 9.20, not 9.19."""
-
-
+@cache
 def mantissas(series: Series) -> tuple[float, ...]:
     """The values of `series` in the decade from 1 to 10.
 
@@ -73,13 +62,7 @@ def mantissas(series: Series) -> tuple[float, ...]:
         >>> mantissas("E96")[:4]
         (1.0, 1.02, 1.05, 1.07)
     """
-    if series in _SHORT:
-        return _SHORT[series]
-    count = int(series[1:])
-    return tuple(
-        _ROUNDED_UP.get((series, step), round(10 ** (step / count), 2))
-        for step in range(count)
-    )
+    return tuple(_core.mantissas(series))
 
 
 def values(series: Series, low: float, high: float) -> tuple[float, ...]:

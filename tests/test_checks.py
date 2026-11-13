@@ -30,11 +30,13 @@ def raised(top: Component) -> list[str]:
 
 
 @component
-def divider(c: Builder, *, floating: bool = False) -> None:
+def divider(
+    c: Builder, *, floating: bool = False, upper_resistance: Quantity = 1 * kohm
+) -> None:
     """A source across two resistors, the lower one's end left floating if asked."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), id="V1")
-    upper = c.place(devices.resistor(1 * kohm), id="R1")
+    upper = c.place(devices.resistor(upper_resistance), id="R1")
     lower = c.place(devices.resistor(1 * kohm), id="R2")
     c.connect(source.positive, upper.a)
     c.connect(upper.b, lower.a, name="out")
@@ -136,6 +138,11 @@ def test_a_sound_circuit_raises_nothing() -> None:
     assert raised(divider()) == []
 
 
+def test_non_standard_value() -> None:
+    assert raised(divider(upper_resistance=4.8 * kohm)) == ["non-standard-value"]
+    assert raised(divider(upper_resistance=4.87 * kohm)) == []
+
+
 def test_unconnected_terminal() -> None:
     assert raised(divider(floating=True)) == ["unconnected-terminal"]
     assert raised(divider(floating=False)) == []
@@ -184,6 +191,7 @@ def test_driver_conflict_and_floating_input() -> None:
 def test_every_rule_has_a_case_that_raises_it() -> None:
     cases = [
         divider(floating=True),
+        divider(upper_resistance=4.8 * kohm),
         shorted("source"),
         shorted("capacitor"),
         parallel_sources(inductor=False),

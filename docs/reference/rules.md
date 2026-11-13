@@ -14,6 +14,7 @@ The default levels below hold until settings or options set others (see [Checks]
 | [`current-cutset`](#current-cutset) | `error` |
 | [`driver-conflict`](#driver-conflict) | `error` |
 | [`floating-input`](#floating-input) | `error` |
+| [`non-standard-value`](#non-standard-value) | `warn` |
 | [`gmin-dependence`](#gmin-dependence) | `warn` |
 | [`multiple-operating-points`](#multiple-operating-points) | `warn` |
 | [`unstable-pole`](#unstable-pole) | `warn` |
@@ -57,6 +58,10 @@ Wherever they drive different levels, the net's level is unknown.
 
 Logic inputs read a logic net that no output drives, so its level is always unknown.
 A net that a single input joins is left to unconnected-terminal.
+
+## non-standard-value
+
+A resistor's resistance is in no E series of IEC 60063 from E3 to E192, or a capacitor's capacitance or an inductor's inductance in none from E3 to E24, but for rounding: no standard part has the value.
 
 ## gmin-dependence
 
