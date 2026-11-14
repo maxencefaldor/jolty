@@ -27,6 +27,8 @@ use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use faer::sparse::FaerError;
 use num_complex::Complex64;
 
@@ -34,6 +36,7 @@ use self::numeric::{Factorization, Numeric};
 pub use self::ordering::Ordering;
 use self::tree::Scratch;
 use crate::Pattern;
+use crate::reduce::CHUNK;
 
 /// A scalar the sparse solver works in: `f64` for DC and transient analyses, [`Complex64`]
 /// for small-signal analyses.
@@ -255,8 +258,11 @@ impl<T: Scalar> SparseLu<T> {
     }
 
     /// Lets the factorizations and solves of the blocks its ordering dissects run on up to
-    /// `threads` threads of the rayon pool they run in at once, or on the calling thread
-    /// alone for one; their factors and solutions are the same bits either way.
+    /// `threads` threads of the rayon pool they run in at once, and, for two or more, the
+    /// solves' permutations, the copy of the values factored and the check of the
+    /// solutions spread over that pool's threads, in chunks of [`crate::reduce::CHUNK`];
+    /// for one, everything runs on the calling thread alone. The factors and solutions are
+    /// the same bits either way.
     pub fn spread(&mut self, threads: usize) {
         self.threads = threads.max(1);
     }
@@ -356,8 +362,7 @@ impl<T: Scalar> SparseLu<T> {
                     columns: undetermined.to_vec(),
                 });
             }
-            self.factored.clear();
-            self.factored.extend_from_slice(values);
+            copy(&mut self.factored, values, self.threads);
             let counted = match self.numeric.factor(&self.ordering, values, self.threads)? {
                 Factorization::Searched => &mut self.statistics.factorizations,
                 Factorization::Refactored => &mut self.statistics.refactorizations,
@@ -471,7 +476,7 @@ impl<T: Scalar> Shared<'_, T> {
         self.check(rhs, workspace);
         self.numeric
             .solve((self.ordering, self.values), rhs, workspace, self.threads);
-        finite(rhs)
+        finite_on(rhs, self.threads)
     }
 
     /// Solves `Aᵀ x = rhs` and leaves `x` in `rhs`, writing to `workspace` as it goes.
@@ -492,7 +497,7 @@ impl<T: Scalar> Shared<'_, T> {
         self.check(rhs, workspace);
         self.numeric
             .solve_transpose((self.ordering, self.values), rhs, workspace, self.threads);
-        finite(rhs)
+        finite_on(rhs, self.threads)
     }
 
     /// Checks that `rhs` and `workspace` hold one value per row.
@@ -505,6 +510,29 @@ impl<T: Scalar> Shared<'_, T> {
             "a workspace of one value per row"
         );
     }
+}
+
+/// Sets `into` to the values of `from`, in chunks of [`CHUNK`] spread over the current rayon
+/// pool's threads when `threads` is two or more and it holds as many already.
+fn copy<T: Scalar>(into: &mut Vec<T>, from: &[T], threads: usize) {
+    if threads < 2 || into.len() != from.len() {
+        into.clear();
+        into.extend_from_slice(from);
+        return;
+    }
+    into.par_chunks_mut(CHUNK)
+        .zip(from.par_chunks(CHUNK))
+        .for_each(|(into, from)| into.copy_from_slice(from));
+}
+
+/// [`finite`], whose check of the values runs in chunks of [`CHUNK`] spread over the
+/// current rayon pool's threads when `threads` is two or more.
+fn finite_on<T: Scalar>(solution: &[T], threads: usize) -> Result<(), LinearError> {
+    let all = |chunk: &[T]| chunk.iter().all(|&value| value.is_finite());
+    if threads >= 2 && solution.par_chunks(CHUNK).all(all) {
+        return Ok(());
+    }
+    finite(solution)
 }
 
 /// `Ok` when every value of a solution is finite, and else the singular error that names

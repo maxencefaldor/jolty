@@ -1099,6 +1099,71 @@ fn a_dissected_mesh_is_the_same_bits_on_any_number_of_threads() {
     }
 }
 
+/// The equations of a `side` × `side` mesh, as [`mesh`]'s, and of a supply joined to every
+/// third of its nodes, whose voltage a source fixes, its current one more unknown: as a
+/// circuit's supply rail, the supply's equation holds entries above the mesh's block.
+fn supplied(side: usize) -> Matrix<f64> {
+    let mut matrix = mesh(side, 1.0);
+    let nodes = side * side;
+    let (supply, current) = (nodes, nodes + 1);
+    matrix.dimension = nodes + 2;
+    for node in (0..nodes).step_by(3) {
+        for (row, column, value) in [
+            (node, node, 0.5),
+            (supply, supply, 0.5),
+            (node, supply, -0.5),
+            (supply, node, -0.5),
+        ] {
+            matrix.positions.push((row, column));
+            matrix.values.push(value);
+        }
+    }
+    for (row, column) in [(supply, current), (current, supply)] {
+        matrix.positions.push((row, column));
+        matrix.values.push(1.0);
+    }
+    matrix
+}
+
+#[test]
+fn a_supplied_mesh_is_the_same_bits_on_any_number_of_threads() {
+    // A mesh of 2,304 nodes and a supply joined to 768 of them: the supply's equation
+    // holds 768 entries above the mesh's block, and the solves' permutations span three
+    // chunks. Solved whole and dissected into interiors of at most 40, on 1, 2, 3 and 8
+    // threads.
+    let matrix = supplied(48);
+    let dense = matrix.dense();
+    let b: Vec<f64> = rhs(matrix.dimension);
+    let run = |interiors: Option<usize>| {
+        let (mut lu, entries) = match interiors {
+            Some(most) => dissected(&matrix, most),
+            None => solver(&matrix),
+        };
+        assert!(lu.ordering().blocks() >= 3, "the supply's blocks apart");
+        lu.spread(rayon::current_num_threads());
+        let stored = matrix.stored(lu.pattern(), &entries);
+        let (mut x, mut y) = (b.clone(), b.clone());
+        let mut factors = lu.factor(&stored).unwrap();
+        factors.solve(&mut x).unwrap();
+        factors.solve_transpose(&mut y).unwrap();
+        assert!(backward_error(&dense, &x, &b) < 1e-14);
+        (bits(&x), bits(&y))
+    };
+    let pool = |threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+    };
+    for interiors in [None, Some(40)] {
+        let once = pool(1).install(|| run(interiors));
+        for threads in [2, 3, 8] {
+            let found = pool(threads).install(|| run(interiors));
+            assert_eq!(found, once, "{interiors:?}, on {threads} threads");
+        }
+    }
+}
+
 #[test]
 fn delays_a_pivot_its_interior_cannot_take() {
     // A path of three nodes, dissected into interiors of one: node 1 separates nodes 0

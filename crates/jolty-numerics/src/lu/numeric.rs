@@ -13,6 +13,7 @@ use rayon::prelude::*;
 
 use super::tree::Tree;
 use super::{LinearError, Ordering, Scalar, Workspace};
+use crate::reduce::CHUNK;
 
 /// No index: a row not yet a pivot, a row not yet visited.
 const NONE: usize = usize::MAX;
@@ -475,11 +476,14 @@ impl<T: Scalar> Numeric<T> {
                     }
                 }
             }
-            for position in positions {
-                let value = by_position[position];
-                for &(row, slot) in ordering.above(position) {
-                    by_row[row] -= values[slot] * value;
+            // Each row above the block takes in the block's columns in increasing position,
+            // the order in which a pass over the columns would take them in.
+            for (row, entries) in ordering.across(block) {
+                let mut value = by_row[row];
+                for &(position, slot) in entries {
+                    value -= values[slot] * by_position[position];
                 }
+                by_row[row] = value;
             }
         }
         gather(rhs, by_position, ordering.column_positions(), threads);
@@ -543,8 +547,8 @@ impl<T: Scalar> Numeric<T> {
     }
 }
 
-/// Sets each of `into` to the value of `from` at its index in `indices`, spread over up to
-/// `threads` threads.
+/// Sets each of `into` to the value of `from` at its index in `indices`, in chunks of
+/// [`CHUNK`] spread over the current rayon pool's threads when `threads` is two or more.
 fn gather<T: Scalar>(into: &mut [T], from: &[T], indices: &[usize], threads: usize) {
     if threads < 2 {
         for (value, &index) in into.iter_mut().zip(indices) {
@@ -552,9 +556,8 @@ fn gather<T: Scalar>(into: &mut [T], from: &[T], indices: &[usize], threads: usi
         }
         return;
     }
-    let share = into.len().div_ceil(threads).max(1);
-    into.par_chunks_mut(share)
-        .zip(indices.par_chunks(share))
+    into.par_chunks_mut(CHUNK)
+        .zip(indices.par_chunks(CHUNK))
         .for_each(|(values, indices)| {
             for (value, &index) in values.iter_mut().zip(indices) {
                 *value = from[index];

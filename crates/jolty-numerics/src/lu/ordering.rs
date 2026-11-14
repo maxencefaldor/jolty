@@ -59,6 +59,8 @@ pub struct Ordering {
     within: Entries,
     /// The entries of each ordered column above its diagonal block.
     above: Entries,
+    /// The same entries by row, for each block those above it.
+    across: Across,
     /// The most positions of an interior of a dissected block, when the ordering dissects
     /// the blocks larger.
     interiors: Option<usize>,
@@ -91,6 +93,73 @@ impl Entries {
     /// The entries of `column`.
     pub(super) fn of(&self, column: usize) -> &[(usize, usize)] {
         &self.entries[self.starts[column]..self.starts[column + 1]]
+    }
+}
+
+/// The entries above each diagonal block, by row: for each block, each row above it with
+/// an entry in the block's columns, in increasing order, and its entries there, in
+/// increasing position.
+#[derive(Debug)]
+pub(super) struct Across {
+    /// Where each block's rows start in `rows`, then their number.
+    blocks: Vec<usize>,
+    /// Each row, by block.
+    rows: Vec<usize>,
+    /// Where each row's entries start in `entries`, then their number.
+    starts: Vec<usize>,
+    /// Each entry: its column's position and its value's slot.
+    entries: Vec<(usize, usize)>,
+}
+
+impl Across {
+    /// No entry above any of `blocks` blocks.
+    fn empty(blocks: usize) -> Self {
+        Self {
+            blocks: vec![0; blocks + 1],
+            rows: Vec::new(),
+            starts: vec![0],
+            entries: Vec::new(),
+        }
+    }
+
+    /// The entries `above` holds by column, by row, for the blocks that start at each of
+    /// `blocks` but the last, the dimension.
+    fn new(blocks: &[usize], above: &Entries) -> Self {
+        let mut across = Self::empty(0);
+        across.entries.reserve_exact(above.entries.len());
+        let mut found = Vec::new();
+        for block in blocks.windows(2) {
+            found.clear();
+            for position in block[0]..block[1] {
+                found.extend(
+                    above
+                        .of(position)
+                        .iter()
+                        .map(|&(row, slot)| (row, position, slot)),
+                );
+            }
+            // A stable sort, so that each row's entries stay in increasing position.
+            found.sort_by_key(|&(row, _, _)| row);
+            for entries in found.chunk_by(|one, other| one.0 == other.0) {
+                across.rows.push(entries[0].0);
+                across
+                    .entries
+                    .extend(entries.iter().map(|&(_, position, slot)| (position, slot)));
+                across.starts.push(across.entries.len());
+            }
+            across.blocks.push(across.rows.len());
+        }
+        across
+    }
+
+    /// Each row above `block` with an entry in its columns, and its entries there.
+    pub(super) fn of(&self, block: usize) -> impl Iterator<Item = (usize, &[(usize, usize)])> {
+        (self.blocks[block]..self.blocks[block + 1]).map(|index| {
+            (
+                self.rows[index],
+                &self.entries[self.starts[index]..self.starts[index + 1]],
+            )
+        })
     }
 }
 
@@ -145,6 +214,7 @@ impl Ordering {
                     blocks: vec![0, dimension],
                     within: Entries::empty(dimension),
                     above: Entries::empty(dimension),
+                    across: Across::empty(1),
                     interiors,
                     dissections: Vec::new(),
                     dissected: vec![NONE],
@@ -193,6 +263,7 @@ impl Ordering {
                 above.starts.push(above.entries.len());
             }
         }
+        let across = Across::new(&blocks, &above);
         let mut dissected = vec![NONE; blocks.len() - 1];
         let dissections = trees
             .into_iter()
@@ -218,6 +289,7 @@ impl Ordering {
             blocks,
             within,
             above,
+            across,
             interiors,
             dissections,
             dissected,
@@ -287,6 +359,13 @@ impl Ordering {
     /// in the ordered matrix and the slot of its value.
     pub(super) fn above(&self, column: usize) -> &[(usize, usize)] {
         self.above.of(column)
+    }
+
+    /// Each row above the diagonal `block` with an entry in its columns, in increasing
+    /// order, and its entries there in increasing position, each its column's position in
+    /// the ordered matrix and the slot of its value.
+    pub(super) fn across(&self, block: usize) -> impl Iterator<Item = (usize, &[(usize, usize)])> {
+        self.across.of(block)
     }
 
     /// The number of entries above the diagonal blocks.
