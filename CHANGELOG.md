@@ -68,6 +68,7 @@ The first release, 0.1.0.
 
 ### Changed
 
+- A yield's Wilson interval is exact at its ends: its lower end is 0 when no sample passes, and its upper end 1 when every sample does, where they were rounding, such as 1.084e-17 for none of 2,000.
 - jolty requires Python 3.15 or newer, the version CI tests and the one whose lazy modules (PEP 810) start a command without importing matplotlib; the extension is built for the stable ABI of 3.15.
 - Monte Carlo samples are drawn by the engine, each factor from the seed, the sample's index and the name of its part or its lot alone, through ChaCha20, so that sample `i` is the same drawn alone or among any others, on any thread, and a part added leaves every other part's draws as they were.
   A seed therefore draws other samples than it did before, `jolty.variation.sample` takes the seed and the sample's index in place of a numpy generator, and a seed lies from 0 to 2⁶⁴ − 1.

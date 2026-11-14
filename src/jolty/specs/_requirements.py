@@ -676,16 +676,23 @@ _Z: Final = 1.959963984540054
 
 
 def _wilson(passing: int, samples: int) -> tuple[float, float]:
-    """The 95 % Wilson score interval of a proportion of `passing` out of `samples`."""
-    estimate = passing / samples
-    weight = _Z * _Z / samples
-    centre = (estimate + weight / 2) / (1 + weight)
-    half = (
-        _Z
-        * math.sqrt(estimate * (1 - estimate) / samples + weight / (4 * samples))
-        / (1 + weight)
-    )
-    return max(0.0, centre - half), min(1.0, centre + half)
+    """The 95 % Wilson score interval of a proportion of `passing` out of `samples`.
+
+    The lower end, `(p + w/2 - z·s) / (1 + w)` with `w = z²/n`, is computed in its
+    conjugate form `p² / (p + w/2 + z·s)`, which subtracts nothing: it is exactly 0
+    when nothing passes, where the textbook form leaves rounding. The interval is
+    symmetric, so its upper end is one less the lower end of the proportion that
+    fails, exactly 1 when everything passes.
+    """
+
+    def lower(estimate: float) -> float:
+        weight = _Z * _Z / samples
+        spread = _Z * math.sqrt(
+            estimate * (1 - estimate) / samples + weight / (4 * samples)
+        )
+        return estimate * estimate / (estimate + weight / 2 + spread)
+
+    return lower(passing / samples), 1 - lower((samples - passing) / samples)
 
 
 def describe(verdicts: Sequence[Verdict]) -> str:

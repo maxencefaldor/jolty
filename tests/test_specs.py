@@ -656,6 +656,31 @@ def test_noise_reads_a_noise_analysis_within_its_band() -> None:
     )
 
 
+def test_a_yield_of_nothing_or_everything_has_an_exact_end() -> None:
+    """No sample passing puts the Wilson interval's lower end at 0, not at rounding.
+
+    Its ends otherwise agree with the textbook formula to within rounding.
+    """
+    requirement = value("op", "out") <= 2 * V
+    failed, passed = (
+        verdict_of(requirement, point(2.5)),
+        verdict_of(requirement, point(1)),
+    )
+    specs = Specs([requirement])
+    _, none = spread(specs, [(failed,)] * 2000)
+    _, every = spread(specs, [(passed,)] * 2000)
+    assert none.low == 0.0
+    assert every.high == 1.0
+    _, some = spread(specs, [(passed,)] * 37 + [(failed,)] * 163)
+    z, n, p = 1.959963984540054, 200, 37 / 200
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    assert (some.low, some.high) == (
+        pytest.approx(centre - half, rel=1e-14),
+        pytest.approx(centre + half, rel=1e-14),
+    )
+
+
 def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
     poles = np.array([-3e3 + 4e3j, -3e3 - 4e3j, -1e6 + 0j])
     found = results.PolesZeros(UNKNOWNS, poles, None, None, None, None, point(0.0))
