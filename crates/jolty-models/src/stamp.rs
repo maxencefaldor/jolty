@@ -1,10 +1,9 @@
 //! How a device adds itself to the circuit's equations: the entries it claims among its
-//! nodes, the series resistances it places, the voltages it is evaluated at, and the
-//! branches whose currents are unknowns of their own.
+//! nodes, and the branches whose currents are unknowns of their own.
 
 use jolty_numerics::Entry;
 
-use crate::{Binding, Input, Node, NoiseSource, Output, Quantity, Real, Unknown};
+use crate::{Binding, Input, Node, Output, Quantity, Real, Unknown};
 
 /// The local index of a two-terminal element's positive node in its stamp.
 const POSITIVE: usize = 0;
@@ -21,120 +20,6 @@ const PAIR: (usize, usize) = (POSITIVE, NEGATIVE);
 /// for the elements of its second group (Ho, Ruehli and Brennan, 1975); below 1 Ω, gmin
 /// keeps four digits beside the resistance's conductance.
 pub const SMALL_RESISTANCE: f64 = 1.0;
-
-/// A resistance in series with a device's terminal, from the terminal's node to an
-/// internal node behind it.
-#[derive(Debug)]
-pub(crate) enum Series<R: Real> {
-    /// No resistance: the terminal is its own node behind it.
-    None,
-    /// A conductance between the two nodes.
-    Conductance(TerminalPair, R),
-    /// Below [`SMALL_RESISTANCE`], a current of its own, held by Ohm's law, with its
-    /// resistance and the entry at (current, current).
-    Current(CurrentBranch, R, Option<Entry>),
-}
-
-impl<R: Real> Series<R> {
-    /// A series `resistance` from `terminal`, and the node behind it: an internal node
-    /// labelled `label` when the resistance is positive, else the terminal's own. The
-    /// current through a small one is an unknown labelled `label` and `_current`.
-    pub(crate) fn behind(
-        binding: &mut Binding<'_>,
-        terminal: Node,
-        resistance: R,
-        label: &str,
-    ) -> (Self, Node) {
-        let value = resistance.value();
-        if value <= 0.0 {
-            return (Self::None, terminal);
-        }
-        let inner = Some(binding.internal(label, Quantity::Voltage));
-        let series = if value < SMALL_RESISTANCE {
-            let branch =
-                CurrentBranch::new(binding, &format!("{label}_current"), [terminal, inner]);
-            let row = Some(branch.unknown());
-            Self::Current(branch, resistance, binding.entry(row, row))
-        } else {
-            Self::Conductance(
-                TerminalPair::new(binding, terminal, inner),
-                resistance.recip(),
-            )
-        };
-        (series, inner)
-    }
-
-    /// Appends the resistance's thermal noise at `temperature`, named `name`, to `sources`.
-    pub(crate) fn noise(
-        &self,
-        name: &'static str,
-        temperature: f64,
-        sources: &mut Vec<NoiseSource>,
-    ) {
-        sources.push(match self {
-            Self::None => return,
-            Self::Conductance(pair, conductance) => {
-                NoiseSource::thermal(name, pair.nodes(), conductance.value(), temperature)
-            }
-            Self::Current(branch, resistance, _) => NoiseSource::thermal_in_series(
-                name,
-                branch.unknown(),
-                resistance.value(),
-                temperature,
-            ),
-        });
-    }
-
-    /// Adds the resistance's current, and its derivatives, to the circuit's equations.
-    pub(crate) fn add(&self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        match self {
-            Self::None => {}
-            Self::Conductance(pair, conductance) => {
-                pair.add_current(output, *conductance * pair.voltage(input));
-                pair.add_conductance(output, *conductance);
-            }
-            Self::Current(branch, resistance, entry) => {
-                let current = branch.current(input);
-                let residual = R::constant(branch.voltage(input)) - *resistance * current;
-                branch.add(input, output, residual);
-                output.add_conductance(*entry, -*resistance);
-            }
-        }
-    }
-}
-
-/// A device's controlling voltages for one evaluation: those its model is evaluated at,
-/// limited from the last evaluation's, and how far the applied ones lie beyond them. Every
-/// value is extended linearly along that distance, so the Newton step that follows solves
-/// the circuit linearized at the limited voltages.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Bias<const N: usize> {
-    /// The voltages the model is evaluated at.
-    pub(crate) voltages: [f64; N],
-    /// How far each applied voltage lies beyond the one evaluated at.
-    pub(crate) beyond: [f64; N],
-}
-
-impl<const N: usize> Bias<N> {
-    /// The bias of `applied` voltages, evaluated at `voltages`, their limited values.
-    pub(crate) fn new(applied: [f64; N], voltages: [f64; N]) -> Self {
-        Self {
-            voltages,
-            beyond: std::array::from_fn(|index| applied[index] - voltages[index]),
-        }
-    }
-
-    /// How far a value with derivatives `slopes` moves from the voltages evaluated at to
-    /// the applied ones.
-    pub(crate) fn extend<R: Real>(&self, slopes: [R; N]) -> R {
-        slopes
-            .into_iter()
-            .zip(self.beyond)
-            .fold(R::constant(0.0), |moved, (slope, beyond)| {
-                moved + slope * beyond
-            })
-    }
-}
 
 /// The nodes of a device, by local index, with every matrix entry among them claimed, so a
 /// model adds each current or charge between two of its nodes and its derivatives with

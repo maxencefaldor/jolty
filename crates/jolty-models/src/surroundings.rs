@@ -7,7 +7,7 @@ use schemars::{JsonSchema, Schema};
 use serde_json::Value;
 
 use crate::device::{extended, schema};
-use crate::{Binding, Device, Gradient, Interface, Model, ParameterError, Specification};
+use crate::{Binding, Device, Gradient, Instance, Interface, Model, ParameterError, Specification};
 
 /// A model whose every device may run at a temperature of its own, as SPICE's `TEMP` and
 /// `DTEMP` set an instance's: the parameter `temperature`, in kelvins, holds the device
@@ -31,8 +31,8 @@ impl<M: Model> Surrounded<M> {
 
 /// Where a device's temperature comes from: the simulation's, unless its parameters give
 /// one of these.
-#[derive(Debug, Clone, Copy, JsonSchema)]
-struct Own {
+#[derive(Debug, Clone, Copy, Default, PartialEq, JsonSchema)]
+pub(crate) struct Own {
     /// The temperature the device is held at whatever the simulation's, in kelvins; at
     /// least 0. Without it, the device is at the simulation's temperature.
     temperature: Option<f64>,
@@ -95,7 +95,7 @@ impl Own {
     /// # Errors
     ///
     /// Returns [`ParameterError`] when it lies below 0 K.
-    fn temperature(self, simulation: f64) -> Result<f64, ParameterError> {
+    pub(crate) fn temperature(self, simulation: f64) -> Result<f64, ParameterError> {
         let temperature = match (self.temperature, self.temperature_offset) {
             (Some(held), _) => held,
             (None, Some(offset)) => simulation + offset,
@@ -166,6 +166,12 @@ impl Specification for AtOwn {
             }
         }
         Ok(written)
+    }
+
+    fn kernel(&self) -> Option<Instance<'_>> {
+        self.inner
+            .kernel()
+            .map(|instance| instance.at_own(self.own))
     }
 }
 

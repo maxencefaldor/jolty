@@ -14,12 +14,14 @@ categories.workspace = true
 jolty-expressions.workspace = true
 jolty-ir.workspace = true
 jolty-numerics.workspace = true
+rayon.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+allocation-counter.workspace = true
 proptest.workspace = true
 
 [lints]

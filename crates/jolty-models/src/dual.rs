@@ -5,6 +5,14 @@
 //! respect to its voltages, for its Jacobian, also differentiates each of them with respect
 //! to a parameter when it computes with [`crate::Gradient`].
 
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use crate::Real;
@@ -32,16 +40,13 @@ impl<R: Real, const N: usize> Dual<R, N> {
 
     /// The `N` variables at `values`, each the derivative of itself only.
     pub(crate) fn variables(values: [f64; N]) -> [Self; N] {
-        let mut index = 0;
-        values.map(|value| {
-            let mut gradient = [R::constant(0.0); N];
-            gradient[index] = R::constant(1.0);
-            index += 1;
-            Self {
-                value: R::constant(value),
-                gradient,
+        let mut variables = values.map(|value| Self::constant(R::constant(value)));
+        for (index, variable) in variables.iter_mut().enumerate() {
+            if let Some(derivative) = variable.gradient.get_mut(index) {
+                *derivative = R::constant(1.0);
             }
-        })
+        }
+        variables
     }
 
     /// `f(self)`, given `f`'s value and derivative at `self`.
@@ -156,8 +161,9 @@ impl<R: Real, const N: usize> Mul for Dual<R, N> {
 
     fn mul(self, other: Self) -> Self {
         let mut gradient = [R::constant(0.0); N];
-        for (index, derivative) in gradient.iter_mut().enumerate() {
-            *derivative = self.gradient[index] * other.value + self.value * other.gradient[index];
+        let pairs = self.gradient.into_iter().zip(other.gradient);
+        for (derivative, (own, others)) in gradient.iter_mut().zip(pairs) {
+            *derivative = own * other.value + self.value * others;
         }
         Self {
             value: self.value * other.value,
@@ -171,9 +177,9 @@ impl<R: Real, const N: usize> Div for Dual<R, N> {
 
     fn div(self, other: Self) -> Self {
         let mut gradient = [R::constant(0.0); N];
-        for (index, derivative) in gradient.iter_mut().enumerate() {
-            *derivative = (self.gradient[index] * other.value - self.value * other.gradient[index])
-                / (other.value * other.value);
+        let pairs = self.gradient.into_iter().zip(other.gradient);
+        for (derivative, (own, others)) in gradient.iter_mut().zip(pairs) {
+            *derivative = (own * other.value - self.value * others) / (other.value * other.value);
         }
         Self {
             value: self.value / other.value,

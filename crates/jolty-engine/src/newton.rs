@@ -113,6 +113,11 @@ impl Simulator {
     /// an operating point or about one, filling the workspace's residuals, charges and
     /// their derivatives, with their steps limited if `limiting`. Returns whether a device
     /// limited its voltage.
+    ///
+    /// The devices of no kernel add their contributions first, one by one in their order;
+    /// the groups of the instances of kernels then add theirs, in the order of the groups,
+    /// of their instances and of each instance's local unknowns and entries, however many
+    /// threads evaluate them.
     pub(crate) fn evaluate(
         &mut self,
         x: &[f64],
@@ -121,19 +126,45 @@ impl Simulator {
         limiting: bool,
     ) -> bool {
         let previous = self.state.workspace.meter.enter(Activity::Evaluating);
-        let mut output = self
-            .state
+        let state = &mut self.state;
+        let mut output = state
             .workspace
             .contributions
             .output(&self.elaborated.pattern);
         let mut input = Input::new(x, time, gmin);
         input.source_scale = source_scale;
         input.limiting = limiting;
-        for device in &mut self.state.devices {
-            device.evaluate(&input, &mut output);
+        for &index in self.elaborated.groups.legacy() {
+            if let Some(device) = state.devices.get_mut(index) {
+                device.evaluate(&input, &mut output);
+            }
         }
-        let limited = output.is_limited();
-        self.state.workspace.meter.leave(previous);
+        let mut limited = output.is_limited();
+        #[cfg(test)]
+        let prefix = state
+            .check
+            .is_some()
+            .then(|| state.workspace.contributions.clone());
+        let grouped = state.runs.evaluate(
+            &self.elaborated.groups,
+            &input,
+            &mut state.workspace.contributions,
+            state.tasks,
+        );
+        #[cfg(test)]
+        if let (Some(check), Some(prefix)) = (&mut state.check, prefix) {
+            let assembled = (&state.workspace.contributions, state.runs.slab());
+            let input = (&input, grouped);
+            check.compare(
+                &self.elaborated,
+                &mut state.devices,
+                input,
+                &prefix,
+                assembled,
+            );
+        }
+        limited |= grouped;
+        state.workspace.meter.leave(previous);
         limited
     }
 

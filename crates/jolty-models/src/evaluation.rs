@@ -1,6 +1,6 @@
 use jolty_numerics::{Entry, Pattern};
 
-use crate::{Node, Real};
+use crate::{Local, Node, Real};
 
 /// The state a device is evaluated at.
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +57,12 @@ impl<'a> Input<'a> {
     #[must_use]
     pub fn value(&self, node: Node) -> f64 {
         node.map_or(0.0, |unknown| self.x[unknown.index()])
+    }
+
+    /// The state as an instance of a kernel sees it, its local unknowns the unknowns
+    /// `map` gives, as [`Local`] reads them.
+    pub(crate) const fn local<'b>(&'b self, map: &'b [u32]) -> Local<'b> {
+        Local::new(self.x, map, self)
     }
 }
 

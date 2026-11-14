@@ -5,6 +5,14 @@
 //! behaves the same in every model that has one: the diode, the JFET's gate and the
 //! bipolar transistor's base.
 
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
 use crate::{ParameterError, Real};
 
 /// The Boltzmann constant, in joules per kelvin.

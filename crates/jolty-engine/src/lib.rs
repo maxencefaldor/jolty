@@ -70,6 +70,8 @@ mod analysis;
 pub mod batch;
 mod elaborate;
 mod elaborated;
+#[cfg(test)]
+mod kernels;
 mod logic;
 pub mod measure;
 mod newton;

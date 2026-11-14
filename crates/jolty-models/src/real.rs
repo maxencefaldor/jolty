@@ -1,6 +1,14 @@
 //! The numbers a model computes with: plain floats, or floats carried with their exact
 //! derivative with respect to one parameter, so the same equations give both.
 
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 

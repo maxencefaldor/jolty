@@ -1,6 +1,14 @@
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 mod semiempirical;
 
-use jolty_numerics::Entry;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -11,12 +19,11 @@ use crate::junction::{
     BOLTZMANN, Depletion, ELEMENTARY_CHARGE, Temperatures, band_gap, below_one, critical_voltage,
     depletion_charge, junction_current, limit_drain, limit_gate, limit_junction,
 };
+use crate::kernel::parts::{self, Nodes, Series, series_value};
 use crate::noise::Flicker;
-use crate::stamp::{self, Series, Stamp};
 use crate::{
-    Binding, Branch, BranchKind, Device, Heatable, HeatableModel, Input, Interface, NativeDevice,
-    NativeModel, Node, NoiseSource, Output, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real,
-    Unknown,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
+    REFERENCE_TEMPERATURE, Real, Stamp,
 };
 
 /// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,
@@ -104,29 +111,55 @@ pub enum GateMaterial {
 /// an internal node, labelled `drain` or `source`; one below
 /// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) also carries its current as an unknown,
 /// labelled `drain_current` or `source_current`.
-#[derive(Debug)]
-pub struct Mosfet<R: Real = f64> {
-    stamp: Stamp<4>,
+#[derive(Debug, Clone, Copy)]
+pub struct Mosfet;
+
+/// Where a transistor's contributions go among its local unknowns: through its drain and
+/// source resistances, among its gate, bulk and the drain and source behind the
+/// resistances, and through the displacements of its oxide, if it has one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MosfetShape {
+    stamp: Nodes<4>,
+    drain_series: Series,
+    source_series: Series,
+    /// The displacement currents towards the source, the drain and the bulk.
+    displacements: Option<[Displacement; 3]>,
+}
+
+/// A transistor's numbers at its temperature.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedMosfet<R: Real> {
     sign: f64,
-    drain_series: Series<R>,
-    source_series: Series<R>,
+    /// The drain and the source resistances' conductances, or each resistance where its
+    /// current is an unknown.
+    series: [R; 2],
     channel: Law<R>,
     /// The bulk-drain and bulk-source junctions.
     junctions: [BulkJunction<R>; 2],
     /// The gate-source, gate-drain and gate-bulk overlap capacitances.
     overlaps: [R; 3],
     oxide: Option<Oxide<R>>,
-    /// The gate-source, drain-source and bulk-source voltages of the last evaluation, from
-    /// which the next steps are limited, and its threshold.
-    last: [f64; 3],
+    /// The threshold, signed as the channel conducts, from which the first step is limited.
     threshold: f64,
-    /// The values of [`VARIABLE_NAMES`] at the last evaluation.
-    variables: [f64; 5],
     temperature: f64,
     /// The flicker noise of the drain current: each copy's, of its share of the current
     /// over its own gate's area and the oxide capacitance per area squared, summed over
     /// the copies.
     flicker: Flicker,
+}
+
+/// What a transistor remembers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MosfetMemory {
+    /// The gate-source, drain-source and bulk-source voltages of the last evaluation, from
+    /// which the next steps are limited.
+    last: [f64; 3],
+    /// The threshold of the last evaluation, signed as the channel conducts; before the
+    /// first, or since the transistor was prepared at another temperature, its prepared
+    /// one.
+    threshold: Option<f64>,
+    /// The values of [`VARIABLE_NAMES`] at the last evaluation.
+    variables: [f64; 5],
 }
 
 /// The variables a transistor reports: its threshold and saturation voltages, in its own
@@ -594,8 +627,6 @@ struct Oxide<R: Real> {
     /// The oxide's whole capacitance, `Cox`.
     capacitance: R,
     surface_potential: R,
-    /// The displacement currents towards the source, the drain and the bulk.
-    displacements: [Displacement; 3],
 }
 
 impl<R: Real> Oxide<R> {
@@ -647,38 +678,38 @@ impl<R: Real> Oxide<R> {
 }
 
 /// The displacement current through the whole gate oxide towards one node,
-/// `w = Cox · dv/dt`: an unknown of the transistor's own, which Meyer's current between the
-/// gate and the node follows.
-#[derive(Debug, Clone, Copy)]
+/// `w = Cox · dv/dt`: a local unknown of the transistor's own, which Meyer's current between
+/// the gate and the node follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Displacement {
-    unknown: Unknown,
-    /// The local index of the node across the oxide from the gate.
+    unknown: usize,
+    /// The index among the transistor's stamped nodes of the node across the oxide from the
+    /// gate.
     node: usize,
-    /// The entries at (unknown, unknown), (unknown, gate), (unknown, node), (gate, unknown)
-    /// and (node, unknown).
-    entries: [Option<Entry>; 5],
+    /// The local entries at (unknown, unknown), (unknown, gate), (unknown, node),
+    /// (gate, unknown) and (node, unknown).
+    entries: [usize; 5],
 }
 
 impl Displacement {
-    /// Claims an unknown named `label` for the displacement towards `node`, the node at
-    /// local index `index`, from `gate`.
+    /// Claims a local unknown labelled `label` for the displacement towards `node`, the node
+    /// at index `index` among the stamped ones, from `gate`.
     fn new(
-        binding: &mut Binding<'_>,
-        label: &str,
-        gate: Node,
-        (index, node): (usize, Node),
+        layout: &mut Layout,
+        label: &'static str,
+        gate: usize,
+        (index, node): (usize, usize),
     ) -> Self {
-        let unknown = binding.internal(label, Quantity::Displacement);
-        let row = Some(unknown);
+        let unknown = layout.internal(label, Quantity::Displacement);
         Self {
             unknown,
             node: index,
             entries: [
-                binding.entry(row, row),
-                binding.entry(row, gate),
-                binding.entry(row, node),
-                binding.entry(gate, row),
-                binding.entry(node, row),
+                layout.entry(unknown, unknown),
+                layout.entry(unknown, gate),
+                layout.entry(unknown, node),
+                layout.entry(gate, unknown),
+                layout.entry(node, unknown),
             ],
         }
     }
@@ -689,43 +720,38 @@ impl Displacement {
     /// Returns `w`.
     fn add<R: Real>(
         &self,
-        stamp: &Stamp<4>,
+        nodes: &Nodes<4>,
         (oxide, capacitance): (R, R),
-        input: &Input<'_>,
-        output: &mut Output<'_, R>,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
     ) -> f64 {
-        let row = Some(self.unknown);
+        let row = self.unknown;
         let [own, gate, node, from_gate, from_node] = self.entries;
-        let displacement = input.value(row);
-        let voltage = stamp.voltage(input, GATE) - stamp.voltage(input, self.node);
-        output.add_residual(row, R::constant(displacement));
-        output.add_charge(row, -oxide * voltage);
-        output.add_conductance(own, R::constant(1.0));
-        output.add_capacitance(gate, -oxide);
-        output.add_capacitance(node, oxide);
-        output.add_conductance(from_gate, capacitance / oxide);
-        output.add_conductance(from_node, -capacitance / oxide);
+        let displacement = at.value(row);
+        let voltage = nodes.voltage(at, GATE) - nodes.voltage(at, self.node);
+        stamp.add_residual(row, R::constant(displacement));
+        stamp.add_charge(row, -oxide * voltage);
+        stamp.add_conductance(own, R::constant(1.0));
+        stamp.add_capacitance(gate, -oxide);
+        stamp.add_capacitance(node, oxide);
+        stamp.add_conductance(from_gate, capacitance / oxide);
+        stamp.add_conductance(from_node, -capacitance / oxide);
         displacement
     }
 }
 
 /// The gate-source, drain-source and bulk-source voltages of one evaluation, oriented as an
 /// n-channel's.
-type Bias = stamp::Bias<3>;
+type Bias = parts::Bias<3>;
 
-impl NativeModel for Mosfet {
-    type Device<R: Real> = Mosfet<R>;
-}
-
-impl HeatableModel for Mosfet {
-    type Device<R: Real> = Mosfet<R>;
-}
-
-impl<R: Real> NativeDevice<R> for Mosfet<R> {
+impl Kernel for Mosfet {
     const NAME: &'static str = "mosfet";
-    type Parameters = MosfetParameters<R>;
+    type Parameters<R: Real> = MosfetParameters<R>;
+    type Shape = MosfetShape;
+    type Prepared<R: Real> = PreparedMosfet<R>;
+    type Memory = MosfetMemory;
 
-    fn interface(_: &MosfetParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &MosfetParameters<R>) -> Interface {
         Interface::new(
             &["drain", "gate", "source", "bulk"],
             &[
@@ -739,19 +765,19 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
         )
     }
 
-    fn new(
-        parameters: MosfetParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
+    fn prepare<R: Real>(
+        parameters: &MosfetParameters<R>,
+        temperature: R,
+    ) -> Result<PreparedMosfet<R>, ParameterError> {
         let Scaled {
             channel,
             junctions,
             surface_potential,
             threshold,
             temperature,
-        } = parameters.scaled(R::constant(binding.temperature()))?;
+        } = parameters.scaled(temperature)?;
         let process = parameters.process()?;
-        let geometry = Geometry::new(&parameters)?;
+        let geometry = Geometry::new(parameters)?;
         let [drain_resistance, source_resistance] = parameters.series_resistances()?;
         let mut overlaps = [R::constant(0.0); 3];
         for (overlap, (name, per_length, extent)) in overlaps.iter_mut().zip([
@@ -773,25 +799,10 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
         ]) {
             *overlap = ParameterError::non_negative(name, per_length)? * extent;
         }
-
-        let [drain, gate, source, bulk] = [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let (drain_series, inner_drain) = Series::behind(binding, drain, drain_resistance, "drain");
-        let (source_series, inner_source) =
-            Series::behind(binding, source, source_resistance, "source");
-        let stamp = Stamp::new(binding, [gate, bulk, inner_drain, inner_source]);
-        let oxide = process.oxide.map(|per_area| {
-            let mut displacement = |label, node| Displacement::new(binding, label, gate, node);
-            Oxide {
-                capacitance: per_area * geometry.area,
-                surface_potential,
-                displacements: [
-                    displacement("gate_source_displacement", (INNER_SOURCE, inner_source)),
-                    displacement("gate_drain_displacement", (INNER_DRAIN, inner_drain)),
-                    displacement("gate_bulk_displacement", (BULK, bulk)),
-                ],
-            }
+        let oxide = process.oxide.map(|per_area| Oxide {
+            capacitance: per_area * geometry.area,
+            surface_potential,
         });
-        let sign = parameters.channel.sign();
         let oxide_per_area = process
             .oxide
             .map_or(OXIDE_PERMITTIVITY / DEFAULT_OXIDE_THICKNESS, |per_area| {
@@ -805,43 +816,169 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
         let exponent = parameters.flicker_exponent.value();
         let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?
             .scaled(copies.powf(1.0 - exponent) / (gate * oxide_per_area * oxide_per_area));
-        Ok(Self {
-            stamp,
-            sign,
-            drain_series,
-            source_series,
+        Ok(PreparedMosfet {
+            sign: parameters.channel.sign(),
+            series: [
+                series_value(drain_resistance),
+                series_value(source_resistance),
+            ],
             channel,
             junctions,
             overlaps,
             oxide,
-            last: [0.0; 3],
             threshold,
-            variables: [0.0; 5],
             temperature,
             flicker,
         })
     }
-}
 
-impl<R: Real> Heatable<R> for Mosfet<R> {
-    fn heat(
-        &mut self,
+    fn layout<R: Real>(
         parameters: &MosfetParameters<R>,
-        temperature: R,
-    ) -> Result<(), ParameterError> {
-        let scaled = parameters.scaled(temperature)?;
-        self.channel = scaled.channel;
-        self.junctions = scaled.junctions;
-        if let Some(oxide) = &mut self.oxide {
-            oxide.surface_potential = scaled.surface_potential;
+        layout: &mut Layout,
+    ) -> Result<MosfetShape, ParameterError> {
+        let [drain_resistance, source_resistance] = parameters.series_resistances()?;
+        let [drain, gate, source, bulk] = [0, 1, 2, 3];
+        let (drain_series, inner_drain) =
+            Series::behind(layout, drain, drain_resistance, ("drain", "drain_current"));
+        let (source_series, inner_source) = Series::behind(
+            layout,
+            source,
+            source_resistance,
+            ("source", "source_current"),
+        );
+        let stamp = Nodes::new(layout, [gate, bulk, inner_drain, inner_source]);
+        let displacements = parameters.has_oxide().then(|| {
+            let mut displacement = |label, node| Displacement::new(layout, label, gate, node);
+            [
+                displacement("gate_source_displacement", (INNER_SOURCE, inner_source)),
+                displacement("gate_drain_displacement", (INNER_DRAIN, inner_drain)),
+                displacement("gate_bulk_displacement", (BULK, bulk)),
+            ]
+        });
+        Ok(MosfetShape {
+            stamp,
+            drain_series,
+            source_series,
+            displacements,
+        })
+    }
+
+    fn evaluate<R: Real>(
+        shape: &MosfetShape,
+        prepared: &PreparedMosfet<R>,
+        memory: &mut MosfetMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let [drain_series, source_series] = prepared.series;
+        shape.drain_series.add(drain_series, at, stamp);
+        shape.source_series.add(source_series, at, stamp);
+        let bias = prepared.bias(shape, memory, at, stamp);
+        let [vgs, vds, vbs] = Dual::variables(bias.voltages);
+        let conduction = prepared.channel.evaluate([vgs, vds, vbs]);
+        let threshold = conduction.threshold.value.value();
+        memory.threshold = Some(threshold);
+        let sign = prepared.sign;
+        memory.variables = [
+            sign * threshold,
+            sign * conduction.saturation.value.value(),
+            0.0,
+            0.0,
+            0.0,
+        ];
+        let added = Added {
+            stamp: &shape.stamp,
+            sign,
+            bias: &bias,
+        };
+        added.current(stamp, (INNER_DRAIN, INNER_SOURCE), conduction.current);
+
+        let (vgd, vbd) = (vgs - vds, vbs - vds);
+        let [drain, source] = prepared.junctions;
+        for (junction, node, voltage) in [(drain, INNER_DRAIN, vbd), (source, INNER_SOURCE, vbs)] {
+            let (current, charge) = junction.evaluate(voltage, at.gmin);
+            added.current(stamp, (BULK, node), current);
+            added.charge(stamp, (BULK, node), charge);
         }
-        self.threshold = scaled.threshold;
-        self.temperature = scaled.temperature;
-        Ok(())
+
+        let [source_overlap, drain_overlap, bulk_overlap] = prepared.overlaps;
+        added.charge(stamp, (GATE, INNER_SOURCE), vgs.scale(source_overlap));
+        added.charge(stamp, (GATE, INNER_DRAIN), vgd.scale(drain_overlap));
+        added.charge(stamp, (GATE, BULK), (vgs - vbs).scale(bulk_overlap));
+
+        if let (Some(oxide), Some(displacements)) = (&prepared.oxide, &shape.displacements) {
+            let capacitances = if conduction.forward {
+                oxide.meyer(vgs, vgd, &conduction)
+            } else {
+                let [drain, source, bulk] = oxide.meyer(vgd, vgs, &conduction);
+                [source, drain, bulk]
+            };
+            for (variable, capacitance) in memory.variables.iter_mut().skip(2).zip(&capacitances) {
+                *variable = capacitance.value.value();
+            }
+            let whole = oxide.capacitance;
+            for (displacement, capacitance) in displacements.iter().zip(capacitances) {
+                let current = displacement.add(&shape.stamp, (whole, capacitance.value), at, stamp);
+                let meyer = capacitance.scale(R::constant(sign * current) / whole);
+                added.current(stamp, (GATE, displacement.node), meyer);
+            }
+        }
+    }
+
+    /// The prepared threshold, which a transistor's first step is limited from, moves with
+    /// its temperature.
+    fn reheat(memory: &mut MosfetMemory) {
+        memory.threshold = None;
+    }
+
+    fn variable_names() -> &'static [&'static str] {
+        &VARIABLE_NAMES
+    }
+
+    fn variables(memory: &MosfetMemory, values: &mut [f64]) {
+        for (value, &variable) in values.iter_mut().zip(&memory.variables) {
+            *value = variable;
+        }
+    }
+
+    /// The thermal noise of the series resistances and of the channel, `8kT·gm / 3`, and
+    /// the drain current's flicker noise, `KF · |Id|^AF / (f · W · L · Cox²)` over the
+    /// effective gate, every parallel copy's width counted, as ngspice models them, with
+    /// SPICE's oxide thickness of 0.1 µm where none is given.
+    fn noise<R: Real>(
+        shape: &MosfetShape,
+        prepared: &PreparedMosfet<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let temperature = prepared.temperature;
+        let [drain_series, source_series] = prepared.series;
+        shape
+            .drain_series
+            .noise(drain_series, ("drain thermal", temperature), sources);
+        shape
+            .source_series
+            .noise(source_series, ("source thermal", temperature), sources);
+        let stamp = &shape.stamp;
+        let voltages = VARIABLES.map(|(plus, minus)| {
+            prepared.sign * (stamp.voltage(at, plus) - stamp.voltage(at, minus))
+        });
+        let current = prepared.channel.evaluate(Dual::variables(voltages)).current;
+        let channel = [stamp.equation(INNER_DRAIN), stamp.equation(INNER_SOURCE)];
+        let [transconductance, _, _] = current.gradient;
+        let conductance = 2.0 / 3.0 * transconductance.value();
+        sources.push(NoiseSource::thermal(
+            "channel thermal",
+            channel,
+            conductance,
+            temperature,
+        ));
+        prepared
+            .flicker
+            .add(channel, current.value.value(), sources);
     }
 }
 
-/// What a transistor's temperature sets.
 struct Scaled<R: Real> {
     channel: Law<R>,
     junctions: [BulkJunction<R>; 2],
@@ -1123,29 +1260,48 @@ impl<R: Real> MosfetParameters<R> {
     }
 }
 
-impl<R: Real> Mosfet<R> {
-    /// The terminal voltages at `input`, limited from the last evaluation's.
-    fn bias(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) -> Bias {
-        let stamp = &self.stamp;
-        let applied = VARIABLES.map(|(plus, minus)| {
-            self.sign * (stamp.voltage(input, plus) - stamp.voltage(input, minus))
-        });
-        let limited = self.limit(applied).filter(|_| input.limiting);
+impl<R: Real> MosfetParameters<R> {
+    /// Whether the transistor's gate has an oxide, and so Meyer's capacitances: given its
+    /// thickness, or always at level 3, which takes SPICE's by default.
+    fn has_oxide(&self) -> bool {
+        match self.level {
+            Level::One => self.oxide_thickness.is_some(),
+            Level::Three => true,
+        }
+    }
+}
+
+impl<R: Real> PreparedMosfet<R> {
+    /// The terminal voltages at `at`, limited from the last evaluation's, which `memory`
+    /// keeps and takes the new ones.
+    fn bias(
+        &self,
+        shape: &MosfetShape,
+        memory: &mut MosfetMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) -> Bias {
+        let nodes = &shape.stamp;
+        let applied = VARIABLES
+            .map(|(plus, minus)| self.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
+        let limited = self.limit(applied, memory).filter(|_| at.limiting);
         if limited.is_some() {
-            output.mark_limited();
+            stamp.mark_limited();
         }
         let voltages = limited.unwrap_or(applied);
-        self.last = voltages;
+        memory.last = voltages;
         Bias::new(applied, voltages)
     }
 
     /// The `applied` gate-source, drain-source and bulk-source voltages limited from the
-    /// last evaluation's as SPICE limits them: the gate's step around the threshold and the
-    /// drain's, from whichever end acts as the source, then the step of the junction with
-    /// it. Returns `None` when no step needs limiting.
-    fn limit(&self, applied: [f64; 3]) -> Option<[f64; 3]> {
+    /// last evaluation's, which `memory` keeps, as SPICE limits them: the gate's step around
+    /// the threshold and the drain's, from whichever end acts as the source, then the step
+    /// of the junction with it. Returns `None` when no step needs limiting.
+    fn limit(&self, applied: [f64; 3], memory: &MosfetMemory) -> Option<[f64; 3]> {
         let [mut vgs, mut vds, applied_vbs] = applied;
-        let [previous_gate, previous_drain, previous_bulk] = self.last;
+        let [_, applied_drain, _] = applied;
+        let [previous_gate, previous_drain, previous_bulk] = memory.last;
+        let threshold = memory.threshold.unwrap_or(self.threshold);
         let mut limited = false;
         let mut apply = |value: f64, limit: Option<f64>| {
             limited |= limit.is_some();
@@ -1153,13 +1309,13 @@ impl<R: Real> Mosfet<R> {
         };
         let vgd = vgs - vds;
         if previous_drain >= 0.0 {
-            vgs = apply(vgs, limit_gate(vgs, previous_gate, self.threshold));
+            vgs = apply(vgs, limit_gate(vgs, previous_gate, threshold));
             vds = vgs - vgd;
             vds = apply(vds, limit_drain(vds, previous_drain));
         } else {
             let vgd = apply(
                 vgd,
-                limit_gate(vgd, previous_gate - previous_drain, self.threshold),
+                limit_gate(vgd, previous_gate - previous_drain, threshold),
             );
             vds = vgs - vgd;
             vds = -apply(-vds, limit_drain(-vds, -previous_drain));
@@ -1176,7 +1332,7 @@ impl<R: Real> Mosfet<R> {
             apply(applied_vbs, limit)
         } else {
             let (vbd, previous_junction) =
-                (applied_vbs - applied[1], previous_bulk - previous_drain);
+                (applied_vbs - applied_drain, previous_bulk - previous_drain);
             let limit = limit_junction(
                 vbd,
                 previous_junction,
@@ -1187,133 +1343,55 @@ impl<R: Real> Mosfet<R> {
         };
         limited.then_some([vgs, vds, vbs])
     }
-
-    /// Adds `current`, oriented as an n-channel's, from local node `from` to `to`,
-    /// extended to the applied voltages, with its derivatives.
-    fn add_current(
-        &self,
-        (from, to): (usize, usize),
-        current: Dual<R, 3>,
-        bias: &Bias,
-        output: &mut Output<'_, R>,
-    ) {
-        let stamp = &self.stamp;
-        stamp.current(output, from, to, current.extend(bias.beyond) * self.sign);
-        for (variable, derivative) in VARIABLES.into_iter().zip(current.gradient) {
-            stamp.conductance(output, (from, to), variable, derivative);
-        }
-    }
-
-    /// Adds `charge`, oriented as an n-channel's, on local node `on` against `against`,
-    /// extended to the applied voltages, with its derivatives.
-    fn add_charge(
-        &self,
-        (on, against): (usize, usize),
-        charge: Dual<R, 3>,
-        bias: &Bias,
-        output: &mut Output<'_, R>,
-    ) {
-        let stamp = &self.stamp;
-        stamp.charge(output, on, against, charge.extend(bias.beyond) * self.sign);
-        for (variable, derivative) in VARIABLES.into_iter().zip(charge.gradient) {
-            stamp.capacitance(output, (on, against), variable, derivative);
-        }
-    }
 }
 
-impl<R: Real> Device<R> for Mosfet<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        self.drain_series.add(input, output);
-        self.source_series.add(input, output);
-        let bias = self.bias(input, output);
-        let [vgs, vds, vbs] = Dual::variables(bias.voltages);
-        let conduction = self.channel.evaluate([vgs, vds, vbs]);
-        self.threshold = conduction.threshold.value.value();
-        self.variables = [
-            self.sign * self.threshold,
-            self.sign * conduction.saturation.value.value(),
-            0.0,
-            0.0,
-            0.0,
-        ];
-        self.add_current(
-            (INNER_DRAIN, INNER_SOURCE),
-            conduction.current,
-            &bias,
-            output,
+/// How a transistor adds what it computes at one bias: through its stamped nodes, oriented
+/// by its channel's sign, extended to the applied voltages.
+struct Added<'a> {
+    stamp: &'a Nodes<4>,
+    sign: f64,
+    bias: &'a Bias,
+}
+
+impl Added<'_> {
+    /// Adds `current`, oriented as an n-channel's, from the stamped node `from` to `to`,
+    /// with its derivatives.
+    fn current<R: Real>(
+        &self,
+        stamp: &mut Stamp<'_, R>,
+        (from, to): (usize, usize),
+        current: Dual<R, 3>,
+    ) {
+        let nodes = self.stamp;
+        nodes.current(
+            stamp,
+            from,
+            to,
+            current.extend(self.bias.beyond) * self.sign,
         );
-
-        let (vgd, vbd) = (vgs - vds, vbs - vds);
-        let [drain, source] = self.junctions;
-        for (junction, node, voltage) in [(drain, INNER_DRAIN, vbd), (source, INNER_SOURCE, vbs)] {
-            let (current, charge) = junction.evaluate(voltage, input.gmin);
-            self.add_current((BULK, node), current, &bias, output);
-            self.add_charge((BULK, node), charge, &bias, output);
-        }
-
-        let [source_overlap, drain_overlap, bulk_overlap] = self.overlaps;
-        self.add_charge(
-            (GATE, INNER_SOURCE),
-            vgs.scale(source_overlap),
-            &bias,
-            output,
-        );
-        self.add_charge((GATE, INNER_DRAIN), vgd.scale(drain_overlap), &bias, output);
-        self.add_charge((GATE, BULK), (vgs - vbs).scale(bulk_overlap), &bias, output);
-
-        if let Some(oxide) = &self.oxide {
-            let capacitances = if conduction.forward {
-                oxide.meyer(vgs, vgd, &conduction)
-            } else {
-                let [drain, source, bulk] = oxide.meyer(vgd, vgs, &conduction);
-                [source, drain, bulk]
-            };
-            for (variable, capacitance) in self.variables[2..].iter_mut().zip(&capacitances) {
-                *variable = capacitance.value.value();
-            }
-            let whole = oxide.capacitance;
-            for (displacement, capacitance) in oxide.displacements.iter().zip(capacitances) {
-                let current =
-                    displacement.add(&self.stamp, (whole, capacitance.value), input, output);
-                let meyer = capacitance.scale(R::constant(self.sign * current) / whole);
-                self.add_current((GATE, displacement.node), meyer, &bias, output);
-            }
+        for (variable, derivative) in VARIABLES.into_iter().zip(current.gradient) {
+            nodes.conductance(stamp, (from, to), variable, derivative);
         }
     }
 
-    fn variable_names(&self) -> &'static [&'static str] {
-        &VARIABLE_NAMES
-    }
-
-    fn variables(&self, values: &mut [f64]) {
-        values.copy_from_slice(&self.variables);
-    }
-
-    /// The thermal noise of the series resistances and of the channel, `8kT·gm / 3`, and
-    /// the drain current's flicker noise, `KF · |Id|^AF / (f · W · L · Cox²)` over the
-    /// effective gate, every parallel copy's width counted, as ngspice models them, with
-    /// SPICE's oxide thickness of 0.1 µm where none is given.
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        let temperature = self.temperature;
-        self.drain_series
-            .noise("drain thermal", temperature, sources);
-        self.source_series
-            .noise("source thermal", temperature, sources);
-        let stamp = &self.stamp;
-        let voltages = VARIABLES.map(|(plus, minus)| {
-            self.sign * (stamp.voltage(input, plus) - stamp.voltage(input, minus))
-        });
-        let current = self.channel.evaluate(Dual::variables(voltages)).current;
-        let nodes = stamp.nodes();
-        let channel = [nodes[INNER_DRAIN], nodes[INNER_SOURCE]];
-        let conductance = 2.0 / 3.0 * current.gradient[0].value();
-        sources.push(NoiseSource::thermal(
-            "channel thermal",
-            channel,
-            conductance,
-            temperature,
-        ));
-        self.flicker.add(channel, current.value.value(), sources);
+    /// Adds `charge`, oriented as an n-channel's, on the stamped node `on` against
+    /// `against`, with its derivatives.
+    fn charge<R: Real>(
+        &self,
+        stamp: &mut Stamp<'_, R>,
+        (on, against): (usize, usize),
+        charge: Dual<R, 3>,
+    ) {
+        let nodes = self.stamp;
+        nodes.charge(
+            stamp,
+            on,
+            against,
+            charge.extend(self.bias.beyond) * self.sign,
+        );
+        for (variable, derivative) in VARIABLES.into_iter().zip(charge.gradient) {
+            nodes.capacitance(stamp, (on, against), variable, derivative);
+        }
     }
 }
 
@@ -1322,6 +1400,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::KernelDevice;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
         thermal,
@@ -1351,7 +1430,7 @@ mod tests {
     fn drain_current(vgs: f64, vds: f64) -> f64 {
         let parameters = r#"{"threshold_voltage": 1, "transconductance_parameter": 1e-4,
             "saturation_current": 1e-30}"#;
-        Bench::new::<Mosfet>(parameters)
+        Bench::new::<KernelDevice<Mosfet>>(parameters)
             .settle(&[vds, vgs, 0.0, -5.0])
             .residual[0]
     }
@@ -1373,7 +1452,7 @@ mod tests {
     fn the_body_effect_raises_the_threshold() {
         let parameters = r#"{"threshold_voltage": 1, "body_effect": 0.5,
             "surface_potential": 0.7, "saturation_current": 1e-30}"#;
-        let mut bench = Bench::new::<Mosfet>(parameters);
+        let mut bench = Bench::new::<KernelDevice<Mosfet>>(parameters);
         let current = bench.settle(&[5.0, 2.0, 0.0, -1.0]).residual[0];
         let threshold = 1.0 + 0.5 * (1.7_f64.sqrt() - 0.7_f64.sqrt());
         let expected = 2e-5 / 2.0 * (2.0 - threshold) * (2.0 - threshold);
@@ -1384,7 +1463,7 @@ mod tests {
     fn reports_its_threshold_saturation_and_meyer_capacitances() {
         let parameters = r#"{"threshold_voltage": 1, "body_effect": 0.5,
             "surface_potential": 0.7, "saturation_current": 1e-30}"#;
-        let mut bench = Bench::new::<Mosfet>(parameters);
+        let mut bench = Bench::new::<KernelDevice<Mosfet>>(parameters);
         bench.settle(&[5.0, 2.0, 0.0, -1.0]);
         let names = bench.device().variable_names();
         let mut values = vec![0.0; names.len()];
@@ -1395,8 +1474,8 @@ mod tests {
         assert!((values[1] - (2.0 - threshold)).abs() < 1e-15);
         assert_eq!(values[2..], [0.0; 3], "no oxide, no Meyer capacitance");
 
-        let mut n = Bench::new::<Mosfet>(CHARGED);
-        let mut p = Bench::new::<Mosfet>(&p_channel(CHARGED));
+        let mut n = Bench::new::<KernelDevice<Mosfet>>(CHARGED);
+        let mut p = Bench::new::<KernelDevice<Mosfet>>(&p_channel(CHARGED));
         let x = [3.0, 2.0, 0.2, -0.5, 1e-4, -2e-4, 3e-4];
         let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
         n.settle(&x);
@@ -1416,8 +1495,8 @@ mod tests {
 
     #[test]
     fn a_p_channel_mirrors_an_n_channel() {
-        let mut n = Bench::new::<Mosfet>(CHARGED);
-        let mut p = Bench::new::<Mosfet>(&p_channel(CHARGED));
+        let mut n = Bench::new::<KernelDevice<Mosfet>>(CHARGED);
+        let mut p = Bench::new::<KernelDevice<Mosfet>>(&p_channel(CHARGED));
         let x = [3.0, 2.0, 0.2, -0.5, 1e-4, -2e-4, 3e-4];
         let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
         let n_residuals = n.settle(&x).residual;
@@ -1432,7 +1511,7 @@ mod tests {
 
     #[test]
     fn meyers_capacitances_share_the_oxide() {
-        let mut bench = Bench::new::<Mosfet>(CHARGED);
+        let mut bench = Bench::new::<KernelDevice<Mosfet>>(CHARGED);
         // The gate's derivatives with respect to the three displacement currents: Meyer's
         // capacitances as fractions of the oxide's.
         let mut shares = |gate: f64, drain: f64| {
@@ -1451,7 +1530,7 @@ mod tests {
     fn unknowns_follow_the_resistances_and_the_oxide() {
         let parameters = r#"{"drain_resistance": 10, "sheet_resistance": 20,
             "source_squares": 0.5, "oxide_thickness": 1e-7}"#;
-        let bench = Bench::new::<Mosfet>(parameters);
+        let bench = Bench::new::<KernelDevice<Mosfet>>(parameters);
         assert_eq!(
             bench.unknowns(),
             [
@@ -1466,12 +1545,16 @@ mod tests {
                 "device:gate_bulk_displacement"
             ]
         );
-        assert_eq!(Bench::new::<Mosfet>("{}").unknowns().len(), 4);
+        assert_eq!(Bench::new::<KernelDevice<Mosfet>>("{}").unknowns().len(), 4);
     }
 
     #[test]
     fn rejects_inconsistent_parameters() {
-        let error = |parameters| Bench::try_new::<Mosfet>(parameters).unwrap_err().0;
+        let error = |parameters| {
+            Bench::try_new::<KernelDevice<Mosfet>>(parameters)
+                .unwrap_err()
+                .0
+        };
         assert_eq!(
             error(r#"{"substrate_doping": 1e22}"#),
             "substrate_doping needs an oxide_thickness"
@@ -1552,7 +1635,8 @@ mod tests {
                 let heated = every.replace('{', r#"{"thermal": true, "#);
                 let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
                 for rise in [0.0, 40.0] {
-                    let mut plain = Bench::at::<Mosfet>(&every, REFERENCE_TEMPERATURE + rise);
+                    let mut plain =
+                        Bench::at::<KernelDevice<Mosfet>>(&every, REFERENCE_TEMPERATURE + rise);
                     let [d, g, b] = [3.0, 2.0, -0.5].map(|v| sign * v);
                     let hot = bench.settle(&[d, g, 0.0, b, rise, 1e-4, 2e-4, -1e-4]);
                     let reference = plain.settle(&[d, g, 0.0, b, 1e-4, 2e-4, -1e-4]);
@@ -1586,7 +1670,7 @@ mod tests {
             let sign = if p { -1.0 } else { 1.0 };
             let bulk = drain.min(0.0) - reverse;
             let [gs, gd, gb] = displacements;
-            assert_jacobians_match::<Mosfet>(
+            assert_jacobians_match::<KernelDevice<Mosfet>>(
                 &parameters,
                 &[sign * drain, sign * gate, 0.0, sign * bulk, gs, gd, gb],
             );
@@ -1595,7 +1679,7 @@ mod tests {
                 r#"{"drain_resistance": 50, "source_resistance": 20, "#,
             );
             let inner = [sign * 0.9 * drain, sign * 0.01];
-            assert_jacobians_match::<Mosfet>(
+            assert_jacobians_match::<KernelDevice<Mosfet>>(
                 &resistive,
                 &[sign * drain, sign * gate, 0.0, sign * bulk, inner[0], inner[1], gs, gd, gb],
             );
@@ -1624,7 +1708,7 @@ mod tests {
             let parameters = if p { p_channel(&parameters) } else { parameters };
             let sign = if p { -1.0 } else { 1.0 };
             let bulk = drain.min(0.0) - reverse;
-            assert_jacobians_match::<Mosfet>(
+            assert_jacobians_match::<KernelDevice<Mosfet>>(
                 &parameters,
                 &[sign * drain, sign * gate, 0.0, sign * bulk, 1e-4, 2e-4, -1e-4],
             );
@@ -1641,7 +1725,7 @@ mod tests {
             let parameters = r#"{"oxide_thickness": 5e-8, "substrate_doping": 1e22,
                 "surface_state_density": 1e14, "gate_material": "aluminum"}"#;
             let bulk = drain.min(0.0) - reverse;
-            assert_jacobians_match::<Mosfet>(
+            assert_jacobians_match::<KernelDevice<Mosfet>>(
                 parameters,
                 &[drain, gate, 0.0, bulk, 1e-4, 2e-4, -1e-4],
             );
@@ -1660,7 +1744,7 @@ mod tests {
                 "lateral_diffusion": 1e-7, "multiplier": {copies},
                 "flicker_coefficient": 1e-25, "flicker_exponent": 1.2}}"#
             );
-            let mut bench = Bench::new::<Mosfet>(&parameters);
+            let mut bench = Bench::new::<KernelDevice<Mosfet>>(&parameters);
             let x = [5.0, 2.0, 0.0, -5.0];
             let evaluation = bench.settle(&x);
             let (current, gm) = (evaluation.residual[0], evaluation.conductance[0][1]);

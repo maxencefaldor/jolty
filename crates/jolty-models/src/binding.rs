@@ -1,7 +1,5 @@
 use jolty_numerics::{Entry, PatternBuilder, Replay};
 
-use crate::Real;
-
 /// A node voltage or branch current the engine solves for, by its index in the solution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unknown(usize);
@@ -253,16 +251,6 @@ impl<'a> Binding<'a> {
                 *matched &= recorded;
                 Unknown(*first + index)
             }
-        }
-    }
-
-    /// The node behind a terminal's series `resistance`: an internal node labelled `label`
-    /// when the resistance is positive, else the terminal's own node.
-    pub(crate) fn behind<R: Real>(&mut self, terminal: Node, resistance: R, label: &str) -> Node {
-        if resistance.value() > 0.0 {
-            Some(self.internal(label, Quantity::Voltage))
-        } else {
-            terminal
         }
     }
 

@@ -6,6 +6,13 @@
 //! with their derivatives `G = ∂f/∂x` and `C = ∂q/∂x`. Compiled Verilog-A models use the same
 //! form, so native and foundry models plug in alike.
 //!
+//! A [`Kernel`] computes a model one instance at a time, as a pure function of the
+//! instance's prepared parameters, its memory and its local unknowns, which allocates
+//! nothing and never panics. [`Groups`] evaluate the instances of one kernel and one shape
+//! together, on one thread or across a rayon pool's, each into its own block of a slab that
+//! a gather adds to the circuit's equations in a fixed order; a [`KernelDevice`] is one
+//! instance as a device of its own.
+//!
 //! A [`Model`] is a kind of device: it reads an instance's parameters, once, into a
 //! [`Specification`], which names the device's terminals and makes the device bound to its
 //! unknowns, as often as it is made. A [`LogicModel`] is a kind of [`Logic`] device, whose
@@ -22,9 +29,11 @@ mod diode;
 mod dual;
 mod evaluation;
 mod foundry;
+mod group;
 mod heat;
 mod jfet;
 mod junction;
+mod kernel;
 mod logic;
 mod memristor;
 mod mosfet;
@@ -62,10 +71,12 @@ pub use device::{
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Contributions, Input, Output};
 pub use foundry::{FoundryMosfet, FoundryMosfetParameters};
+pub use group::{Changed, Groups, Instance, Runs, Tasks, TooLarge};
 pub use heat::{Heatable, HeatableModel, Heated, Heating, Thermal};
 pub use jfet::{Channel, Jfet, JfetParameters};
 pub use jolty_expressions::Choice;
 pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
+pub use kernel::{Kernel, KernelDevice, Layout, Local, Stamp};
 pub use logic::{
     Change, Detect, Domain, Drive, Electrical, ElectricalParameters, FixedTiming, Level, Logic,
     LogicCell, LogicCellParameters, LogicDriver, LogicDriverParameters, LogicModel, LogicSource,

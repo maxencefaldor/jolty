@@ -17,8 +17,9 @@ use schemars::{JsonSchema, Schema};
 
 use crate::device::{extended, lift, read, schema, written};
 use crate::{
-    Binding, Choice, Contributions, Device, Gradient, Hyper, Input, Interface, Model, NativeDevice,
-    Node, NoiseSource, Output, ParameterError, Quantity, Real, Specification, Unknown, UnknownInfo,
+    Binding, Choice, Contributions, Device, Gradient, Hyper, Input, Instance, Interface, Model,
+    NativeDevice, Node, NoiseSource, Output, ParameterError, Quantity, Real, Specification,
+    Unknown, UnknownInfo,
 };
 
 /// A device whose parameters scale to any temperature.
@@ -37,6 +38,15 @@ pub trait Heatable<R: Real>: NativeDevice<R> {
 pub trait HeatableModel: 'static {
     /// The device, computing with `R`.
     type Device<R: Real>: Heatable<R>;
+
+    /// The instance of a kernel that `parameters` make, when the model's devices are a
+    /// kernel's and do not heat: `None` for a device evaluated on its own.
+    fn instance(
+        parameters: &<Self::Device<f64> as NativeDevice<f64>>::Parameters,
+    ) -> Option<Instance<'_>> {
+        let _ = parameters;
+        None
+    }
 }
 
 /// The parameters of the devices of `M` that compute with `R`.
@@ -237,6 +247,14 @@ impl<M: HeatableModel> Specification for Warmed<M> {
         };
         written.insert("thermal".to_owned(), heats.into());
         Ok(written)
+    }
+
+    /// A device that heats is a system of its own, evaluated on its own.
+    fn kernel(&self) -> Option<Instance<'_>> {
+        match self {
+            Self::Cool(parameters) => M::instance(parameters),
+            Self::Heated(_) => None,
+        }
     }
 }
 
@@ -504,7 +522,8 @@ mod tests {
         assert_eq!(heated.unknowns(), ["n0", "n1", "n2", "device:junction"]);
         let cool = DIODE.replace(r#", "thermal": true"#, "");
         for rise in [0.0, 40.0] {
-            let mut plain = Bench::at::<Diode>(&cool, REFERENCE_TEMPERATURE + rise);
+            let mut plain =
+                Bench::at::<crate::KernelDevice<Diode>>(&cool, REFERENCE_TEMPERATURE + rise);
             let x = [0.72, 0.0, rise, 0.7];
             let hot = heated.settle(&x);
             let reference = plain.settle(&[0.72, 0.0, 0.7]);

@@ -1,19 +1,22 @@
 //! A run's state: everything a run of an elaborated circuit writes.
 //!
-//! A [`State`] holds a run's devices, made for its values, and every buffer its analyses
-//! fill: the sparse solver's factors, Newton iteration's workspace, the logic's events, the
-//! devices made again to be read, and the operating point last solved. Resetting it for
-//! other values keeps every buffer and makes every device again, from its initial memory,
-//! and forgets everything a run leaves behind, so that a run never depends on the run
-//! before it: a state reset equals a state made afresh for the same values, bit for bit.
+//! A [`State`] holds a run's devices, made for its values, the prepared numbers and the
+//! memory of the instances of kernels among them and the slab they write, and every buffer
+//! its analyses fill: the sparse solver's factors, Newton iteration's workspace, the
+//! logic's events, the devices made again to be read, and the operating point last solved.
+//! Resetting it for other values keeps every buffer, makes every device again, prepares
+//! again the instances of kernels whose numbers or temperature change, starts every one
+//! from its initial memory, and forgets everything a run leaves behind, so that a run never
+//! depends on the run before it: a state reset equals a state made afresh for the same
+//! values, bit for bit.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use jolty_models::Device;
+use jolty_models::{Changed, Device, Runs, Tasks};
 
 use crate::elaborate::ElaborationError;
-use crate::elaborated::{Elaborated, Origin, Origins};
+use crate::elaborated::{Devices, Elaborated, Origin, Origins};
 use crate::logic::Events;
 use crate::newton::Workspace;
 use crate::observe::Observer;
@@ -44,8 +47,21 @@ pub(crate) struct Warm {
 pub(crate) struct State {
     /// The devices' temperature, in kelvins.
     pub(crate) temperature: f64,
-    /// The devices, made for the run, in the order of the circuit's.
+    /// The devices, made for the run, in the order of the circuit's. The run evaluates
+    /// those of no kernel one by one; of the instances of kernels, which their groups
+    /// evaluate, it reads what an analysis reads of a device apart from its group, such as
+    /// its noise.
     pub(crate) devices: Vec<Box<dyn Device>>,
+    /// The groups of the instances of kernels: their prepared numbers, their memory and
+    /// the slab they write.
+    pub(crate) runs: Runs,
+    /// How the groups' evaluation splits among threads, or `None` to evaluate them on the
+    /// calling thread alone, the same bits either way.
+    pub(crate) tasks: Option<Tasks>,
+    /// The comparison, at every evaluation, of the groups' assembly with the instances
+    /// evaluated as devices, when a test asks for it.
+    #[cfg(test)]
+    pub(crate) check: Option<crate::kernels::Check>,
     /// What each device whose numbers the run's values replace is made from, by device,
     /// and `None` for the others, made from their own; empty when they replace none.
     pub(crate) patched: Vec<Option<Origin>>,
@@ -79,17 +95,22 @@ pub(crate) struct State {
 }
 
 impl State {
-    /// A state of `elaborated` made afresh, whose `devices` were made at `temperature`,
-    /// those whose numbers a run's values replace from `patched`.
+    /// A state of `elaborated` made afresh, whose `devices` were made at `temperature`, the
+    /// instances of kernels among them prepared, those whose numbers a run's values replace
+    /// from `patched`.
     pub(crate) fn new(
         elaborated: &Elaborated,
-        devices: Vec<Box<dyn Device>>,
+        (devices, runs): Devices,
         patched: Vec<Option<Origin>>,
         temperature: f64,
     ) -> Self {
         Self {
             temperature,
             devices,
+            runs,
+            tasks: None,
+            #[cfg(test)]
+            check: None,
             patched,
             swept: BTreeMap::new(),
             spare: Vec::new(),
@@ -124,15 +145,27 @@ impl State {
         if !made(elaborated, &patched, temperature, &mut devices)? {
             return Ok(None);
         }
-        Ok(Some(Self::new(elaborated, devices, patched, temperature)))
+        let mut runs = elaborated.groups.runs();
+        let changed = |device| changes(elaborated, &patched, device, true);
+        if !prepared(elaborated, (&mut runs, &patched), temperature, changed)? {
+            return Ok(None);
+        }
+        runs.commit();
+        Ok(Some(Self::new(
+            elaborated,
+            (devices, runs),
+            patched,
+            temperature,
+        )))
     }
 
-    /// Makes the run's devices again for `values` and forgets everything the runs before
-    /// it left: the operating point remembered, the sources held, the sparse solver's
-    /// pivots and factors, the meter's counts, the logic's events and traces, and the
-    /// devices made again to be read. Every buffer is kept. Returns whether the devices of
-    /// `values` have the structure of `elaborated`; when they do not, or the values make a
-    /// problem, the state is left as it was.
+    /// Makes the run's devices again for `values`, prepares again the instances of kernels
+    /// whose numbers or temperature they change, and forgets everything the runs before it
+    /// left: the instances' memory and the slab, the operating point remembered, the
+    /// sources held, the sparse solver's pivots and factors, the meter's counts, the logic's
+    /// events and traces, and the devices made again to be read. Every buffer is kept.
+    /// Returns whether the devices of `values` have the structure of `elaborated`; when they
+    /// do not, or the values make a problem, the state is left as it was.
     ///
     /// # Errors
     ///
@@ -145,11 +178,22 @@ impl State {
         let temperature = elaborated.temperature_of(values);
         let patched = elaborated.patch(values)?;
         let mut devices = std::mem::take(&mut self.spare);
-        let replayed = made(elaborated, &patched, temperature, &mut devices);
+        let mut replayed = made(elaborated, &patched, temperature, &mut devices);
+        if matches!(replayed, Ok(true)) {
+            // An instance keeps its numbers unless they or its temperature change.
+            let moved = temperature.to_bits() != self.temperature.to_bits();
+            let old = &self.patched;
+            let changed = |device| {
+                let again = moved || old.get(device).is_some_and(Option::is_some);
+                changes(elaborated, &patched, device, again)
+            };
+            replayed = prepared(elaborated, (&mut self.runs, &patched), temperature, changed);
+        }
         let made_again = matches!(replayed, Ok(true));
         if made_again {
             std::mem::swap(&mut self.devices, &mut devices);
             self.patched = patched;
+            self.runs.commit();
         }
         // The devices not taken, the run's last or those of other values, go.
         devices.clear();
@@ -254,6 +298,65 @@ fn same(a: &[(ParameterId, f64)], b: &[(ParameterId, f64)]) -> bool {
         && a.iter()
             .zip(b)
             .all(|((p, x), (q, y))| p == q && x.to_bits() == y.to_bits())
+}
+
+/// What has changed of the device at `device` of `elaborated` for a run whose values replace
+/// the numbers `patched` gives: its parameters, when the values replace them or the
+/// device's group was made of others, else its numbers when they are `again` prepared, and
+/// otherwise nothing.
+fn changes(
+    elaborated: &Elaborated,
+    patched: &[Option<Origin>],
+    device: usize,
+    again: bool,
+) -> Changed {
+    let replaced = patched.get(device).is_some_and(Option::is_some);
+    let made_otherwise = elaborated
+        .devices
+        .get(device)
+        .is_some_and(|placed| !placed.nominal());
+    if replaced || made_otherwise {
+        Changed::Parameters
+    } else if again {
+        Changed::Numbers
+    } else {
+        Changed::Nothing
+    }
+}
+
+/// Prepares, in `runs`, each instance of a kernel of `elaborated` whose device `changed`
+/// says has changed,
+/// for a run at `temperature`, from its origin of `patched` or its own, keeping the numbers
+/// apart until `runs` commits them. Returns whether each has its group's kernel and shape.
+///
+/// # Errors
+///
+/// Returns the problem of each device whose parameters are out of range.
+fn prepared(
+    elaborated: &Elaborated,
+    (runs, patched): (&mut Runs, &[Option<Origin>]),
+    temperature: f64,
+    changed: impl Fn(usize) -> Changed,
+) -> Result<bool, ElaborationError> {
+    let origins = Origins {
+        elaborated,
+        patched,
+        temperature,
+    };
+    runs.prepare(
+        &elaborated.groups,
+        |device| origins.of(device).kernel(),
+        temperature,
+        changed,
+    )
+    .map_err(|problems| {
+        let problems = problems.into_iter();
+        ElaborationError::new(
+            problems
+                .map(|(device, error)| elaborated.problem(device, error))
+                .collect(),
+        )
+    })
 }
 
 /// Makes every device of `elaborated` for a run at `temperature`, each from its origin of

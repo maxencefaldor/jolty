@@ -20,6 +20,7 @@ jolty-ir = { path = "crates/jolty-ir", version = "0.1.0" }
 jolty-models = { path = "crates/jolty-models", version = "0.1.0" }
 jolty-numerics = { path = "crates/jolty-numerics", version = "0.1.0" }
 
+allocation-counter = "0.8.1"
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 dyn-stack = "0.13"
 faer = { version = "0.24", default-features = false, features = ["std", "sparse-linalg"] }

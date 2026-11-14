@@ -1,3 +1,12 @@
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -5,11 +14,11 @@ use crate::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };
+use crate::kernel::parts::{Pair, Series, series_value};
 use crate::noise::Flicker;
-use crate::stamp::Series;
 use crate::{
-    Binding, Branch, BranchKind, Device, Heatable, HeatableModel, Input, Interface, NativeDevice,
-    NativeModel, NoiseSource, Output, ParameterError, REFERENCE_TEMPERATURE, Real, TerminalPair,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError,
+    REFERENCE_TEMPERATURE, Real, Stamp,
 };
 
 /// A junction diode from terminal `anode` to terminal `cathode`, in the SPICE model.
@@ -26,15 +35,33 @@ use crate::{
 /// Away from its nominal temperature, its saturation current scales with the energy gap,
 /// its junction potential and capacitance with silicon's band gap, and its breakdown
 /// voltage by its temperature coefficient, as ngspice scales them.
-#[derive(Debug)]
-pub struct Diode<R: Real = f64> {
-    series: Series<R>,
-    junction: TerminalPair,
+#[derive(Debug, Clone, Copy)]
+pub struct Diode;
+
+/// Where a diode's contributions go among its local unknowns: through its series
+/// resistance, and across its junction, from the node behind the resistance to the cathode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiodeShape {
+    series: Series,
+    junction: Pair,
+}
+
+/// A diode's numbers at its temperature.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedDiode<R: Real> {
+    /// The series resistance's conductance, or its resistance when its current is an
+    /// unknown.
+    series: R,
     scaled: Scaled<R>,
     transit_time: R,
+    flicker: Flicker,
+}
+
+/// What a diode remembers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DiodeMemory {
     /// The junction voltage of the last evaluation, from which the next step is limited.
     last_voltage: f64,
-    flicker: Flicker,
 }
 
 /// What a diode's temperature sets.
@@ -156,56 +183,108 @@ impl<R: Real> Default for DiodeParameters<R> {
     }
 }
 
-impl NativeModel for Diode {
-    type Device<R: Real> = Diode<R>;
-}
-
-impl HeatableModel for Diode {
-    type Device<R: Real> = Diode<R>;
-}
-
-impl<R: Real> NativeDevice<R> for Diode<R> {
+impl Kernel for Diode {
     const NAME: &'static str = "diode";
-    type Parameters = DiodeParameters<R>;
+    type Parameters<R: Real> = DiodeParameters<R>;
+    type Shape = DiodeShape;
+    type Prepared<R: Real> = PreparedDiode<R>;
+    type Memory = DiodeMemory;
 
-    fn interface(_: &DiodeParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &DiodeParameters<R>) -> Interface {
         Interface::new(
             &["anode", "cathode"],
             &[Branch::new(0, 1, BranchKind::Conductive)],
         )
     }
 
-    fn new(
-        parameters: DiodeParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
+    fn prepare<R: Real>(
+        parameters: &DiodeParameters<R>,
+        temperature: R,
+    ) -> Result<PreparedDiode<R>, ParameterError> {
         let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?;
         let series_resistance =
             ParameterError::non_negative("series_resistance", parameters.series_resistance)?;
         let transit_time = ParameterError::non_negative("transit_time", parameters.transit_time)?;
-        let scaled = parameters.scaled(R::constant(binding.temperature()))?;
-        let (anode, cathode) = (binding.terminal(0), binding.terminal(1));
-        let (series, inner) = Series::behind(binding, anode, series_resistance, "junction");
-        let junction = TerminalPair::new(binding, inner, cathode);
-        Ok(Self {
-            series,
-            junction,
+        let scaled = parameters.scaled(temperature)?;
+        Ok(PreparedDiode {
+            series: series_value(series_resistance),
             scaled,
             transit_time,
-            last_voltage: 0.0,
             flicker,
         })
     }
-}
 
-impl<R: Real> Heatable<R> for Diode<R> {
-    fn heat(
-        &mut self,
+    fn layout<R: Real>(
         parameters: &DiodeParameters<R>,
-        temperature: R,
-    ) -> Result<(), ParameterError> {
-        self.scaled = parameters.scaled(temperature)?;
-        Ok(())
+        layout: &mut Layout,
+    ) -> Result<DiodeShape, ParameterError> {
+        let series_resistance =
+            ParameterError::non_negative("series_resistance", parameters.series_resistance)?;
+        let (anode, cathode) = (0, 1);
+        let (series, inner) = Series::behind(
+            layout,
+            anode,
+            series_resistance,
+            ("junction", "junction_current"),
+        );
+        let junction = Pair::new(layout, inner, cathode);
+        Ok(DiodeShape { series, junction })
+    }
+
+    fn evaluate<R: Real>(
+        shape: &DiodeShape,
+        prepared: &PreparedDiode<R>,
+        memory: &mut DiodeMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        shape.series.add(prepared.series, at, stamp);
+        let applied = shape.junction.voltage(at);
+        let voltage = at
+            .limiting
+            .then(|| prepared.limit(applied, memory.last_voltage))
+            .flatten()
+            .map_or(applied, |limited| {
+                stamp.mark_limited();
+                limited
+            });
+        memory.last_voltage = voltage;
+
+        // Evaluate at the limited voltage and extend linearly to the applied one, so the
+        // Newton step that follows solves the circuit linearized at the limited voltage.
+        let (current, conductance) = prepared.current(voltage);
+        let total_conductance = conductance + at.gmin;
+        let total_current = current + at.gmin * voltage;
+        shape.junction.add_current(
+            stamp,
+            total_current + total_conductance * (applied - voltage),
+        );
+        shape.junction.add_conductance(stamp, total_conductance);
+
+        let (depletion_charge, depletion_capacitance) =
+            depletion_charge(prepared.scaled.depletion.as_ref(), voltage);
+        let charge = depletion_charge + prepared.transit_time * current;
+        let capacitance = depletion_capacitance + prepared.transit_time * conductance;
+        shape
+            .junction
+            .add_charge(stamp, charge + capacitance * (applied - voltage));
+        shape.junction.add_capacitance(stamp, capacitance);
+    }
+
+    /// The series resistance's thermal noise, and the junction current's shot and flicker
+    /// noise.
+    fn noise<R: Real>(
+        shape: &DiodeShape,
+        prepared: &PreparedDiode<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let thermal = ("series thermal", prepared.scaled.temperature);
+        shape.series.noise(prepared.series, thermal, sources);
+        let (current, _) = prepared.current(shape.junction.voltage(at));
+        let nodes = shape.junction.equations();
+        sources.push(NoiseSource::shot("shot", nodes, current.value()));
+        prepared.flicker.add(nodes, current.value(), sources);
     }
 }
 
@@ -285,10 +364,10 @@ impl<R: Real> DiodeParameters<R> {
     }
 }
 
-impl<R: Real> Diode<R> {
-    /// The junction's step to `applied` limited from the last evaluation's, as ngspice
-    /// limits it: about the breakdown voltage when the junction nears it.
-    fn limit(&self, applied: f64) -> Option<f64> {
+impl<R: Real> PreparedDiode<R> {
+    /// The junction's step to `applied` limited from the last evaluation's, `last`, as
+    /// ngspice limits it: about the breakdown voltage when the junction nears it.
+    fn limit(&self, applied: f64, last: f64) -> Option<f64> {
         match self.scaled.breakdown {
             Some(breakdown)
                 if applied
@@ -297,7 +376,7 @@ impl<R: Real> Diode<R> {
                 let (voltage, slope) = (breakdown.voltage.value(), breakdown.slope.value());
                 limit_junction(
                     -(applied + voltage),
-                    -(self.last_voltage + voltage),
+                    -(last + voltage),
                     slope,
                     self.scaled.critical_voltage,
                 )
@@ -305,7 +384,7 @@ impl<R: Real> Diode<R> {
             }
             _ => limit_junction(
                 applied,
-                self.last_voltage,
+                last,
                 self.scaled.slope.value(),
                 self.scaled.critical_voltage,
             ),
@@ -330,57 +409,12 @@ impl<R: Real> Diode<R> {
     }
 }
 
-impl<R: Real> Device<R> for Diode<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        self.series.add(input, output);
-        let applied = self.junction.voltage(input);
-        let voltage = input
-            .limiting
-            .then(|| self.limit(applied))
-            .flatten()
-            .map_or(applied, |limited| {
-                output.mark_limited();
-                limited
-            });
-        self.last_voltage = voltage;
-
-        // Evaluate at the limited voltage and extend linearly to the applied one, so the
-        // Newton step that follows solves the circuit linearized at the limited voltage.
-        let (current, conductance) = self.current(voltage);
-        let total_conductance = conductance + input.gmin;
-        let total_current = current + input.gmin * voltage;
-        self.junction.add_current(
-            output,
-            total_current + total_conductance * (applied - voltage),
-        );
-        self.junction.add_conductance(output, total_conductance);
-
-        let (depletion_charge, depletion_capacitance) =
-            depletion_charge(self.scaled.depletion.as_ref(), voltage);
-        let charge = depletion_charge + self.transit_time * current;
-        let capacitance = depletion_capacitance + self.transit_time * conductance;
-        self.junction
-            .add_charge(output, charge + capacitance * (applied - voltage));
-        self.junction.add_capacitance(output, capacitance);
-    }
-
-    /// The series resistance's thermal noise, and the junction current's shot and flicker
-    /// noise.
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        self.series
-            .noise("series thermal", self.scaled.temperature, sources);
-        let (current, _) = self.current(self.junction.voltage(input));
-        let nodes = self.junction.nodes();
-        sources.push(NoiseSource::shot("shot", nodes, current.value()));
-        self.flicker.add(nodes, current.value(), sources);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::KernelDevice;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
         thermal,
@@ -394,7 +428,7 @@ mod tests {
 
     #[test]
     fn follows_the_shockley_equation() {
-        let mut bench = Bench::new::<Diode>("{}");
+        let mut bench = Bench::new::<KernelDevice<Diode>>("{}");
         let current = bench.settle(&[0.6, 0.0]).residual[0];
         let expected = 1e-14 * ((0.6 / THERMAL_VOLTAGE).exp() - 1.0);
         assert!(
@@ -406,7 +440,7 @@ mod tests {
     #[test]
     fn the_saturation_current_scales_with_temperature() {
         let (hot, emission) = (350.0, 1.5);
-        let mut bench = Bench::at::<Diode>(r#"{"emission_coefficient": 1.5}"#, hot);
+        let mut bench = Bench::at::<KernelDevice<Diode>>(r#"{"emission_coefficient": 1.5}"#, hot);
         let current = bench.settle(&[0.6, 0.0]).residual[0];
         let vt = thermal_voltage(hot);
         let ratio = hot / REFERENCE_TEMPERATURE;
@@ -420,7 +454,7 @@ mod tests {
 
     #[test]
     fn limits_large_steps_until_they_settle() {
-        let mut bench = Bench::new::<Diode>("{}");
+        let mut bench = Bench::new::<KernelDevice<Diode>>("{}");
         let evaluation = bench.evaluate(&[10.0, 0.0]);
         assert!(evaluation.limited);
         assert!(evaluation.residual[0].is_finite());
@@ -430,14 +464,14 @@ mod tests {
 
     #[test]
     fn a_series_resistance_adds_an_internal_node() {
-        let bench = Bench::new::<Diode>(r#"{"series_resistance": 10}"#);
+        let bench = Bench::new::<KernelDevice<Diode>>(r#"{"series_resistance": 10}"#);
         assert_eq!(bench.unknowns(), ["n0", "n1", "device:junction"]);
     }
 
     #[test]
     fn a_small_series_resistance_carries_its_current_as_an_unknown() {
         let small = r#"{"series_resistance": 0.5, "junction_capacitance": 1e-12}"#;
-        let mut bench = Bench::new::<Diode>(small);
+        let mut bench = Bench::new::<KernelDevice<Diode>>(small);
         assert_eq!(
             bench.unknowns(),
             ["n0", "n1", "device:junction", "device:junction_current"]
@@ -446,13 +480,13 @@ mod tests {
         let residual = bench.evaluate(&x).residual;
         assert!((residual[0] - 0.1).abs() < 1e-15, "{residual:?}");
         assert!(residual[3].abs() < 1e-15, "{residual:?}");
-        assert_jacobians_match::<Diode>(small, &x);
+        assert_jacobians_match::<KernelDevice<Diode>>(small, &x);
         assert_parameter_gradients_match::<Diode>(small, &x);
     }
 
     #[test]
     fn breaks_down_at_its_breakdown_current() {
-        let mut bench = Bench::new::<Diode>(
+        let mut bench = Bench::new::<KernelDevice<Diode>>(
             r#"{"breakdown_voltage": 5.1, "breakdown_current": 1e-3, "emission_coefficient": 1.2}"#,
         );
         let current = bench.settle(&[-5.1, 0.0]).residual[0];
@@ -483,7 +517,8 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_parameters() {
-        let error = Bench::try_new::<Diode>(r#"{"grading_coefficient": 1}"#).unwrap_err();
+        let error =
+            Bench::try_new::<KernelDevice<Diode>>(r#"{"grading_coefficient": 1}"#).unwrap_err();
         assert_eq!(
             error.to_string(),
             "grading_coefficient must be at least 0 and below 1, not 1.0"
@@ -495,11 +530,11 @@ mod tests {
         /// charge, on both sides of the depletion threshold.
         #[test]
         fn jacobians_match_finite_differences(voltage in -5.0..0.7f64) {
-            assert_jacobians_match::<Diode>(CHARGED, &[voltage, 0.0]);
+            assert_jacobians_match::<KernelDevice<Diode>>(CHARGED, &[voltage, 0.0]);
             let breaking = CHARGED.replace('{', r#"{"breakdown_voltage": 3, "#);
-            assert_jacobians_match::<Diode>(&breaking, &[voltage, 0.0]);
+            assert_jacobians_match::<KernelDevice<Diode>>(&breaking, &[voltage, 0.0]);
             let with_resistance = CHARGED.replace('{', r#"{"series_resistance": 5, "#);
-            assert_jacobians_match::<Diode>(&with_resistance, &[voltage + 0.01, 0.0, voltage]);
+            assert_jacobians_match::<KernelDevice<Diode>>(&with_resistance, &[voltage + 0.01, 0.0, voltage]);
         }
     }
 
@@ -507,7 +542,7 @@ mod tests {
     fn its_current_makes_shot_and_flicker_noise() {
         let parameters = r#"{"saturation_current": 1e-14, "series_resistance": 10,
             "flicker_coefficient": 1e-12, "flicker_exponent": 1.5}"#;
-        let mut bench = Bench::new::<Diode>(parameters);
+        let mut bench = Bench::new::<KernelDevice<Diode>>(parameters);
         let x = [0.7, 0.0, 0.69];
         // The junction's current leaves through the cathode.
         let current = -bench.settle(&x).residual[1];
@@ -523,7 +558,8 @@ mod tests {
         let series = source(&sources, "series thermal");
         assert_close(&[series.density(1.0)], &[thermal(0.1)]);
         assert_eq!(sources.len(), 3);
-        let quiet = Bench::new::<Diode>(r#"{"saturation_current": 1e-14}"#).noise(&x[..2]);
+        let quiet =
+            Bench::new::<KernelDevice<Diode>>(r#"{"saturation_current": 1e-14}"#).noise(&x[..2]);
         assert_eq!(quiet.len(), 1, "{quiet:?}");
     }
 }

@@ -41,9 +41,9 @@ The Rust workspace, in `crates/`, is ordered.
 Each crate depends only on the crates listed before it:
 
 1. `jolty-ir`: the circuit format, its names and its validation.
-1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, and integration formulas.
+1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, the gather that assembles a system's values in a fixed order, and integration formulas.
 1. `jolty-expressions`: the expression language of behavioral sources, compiled and evaluated with its exact gradient.
-1. `jolty-models`: the interface every device implements, and the standard library of devices.
+1. `jolty-models`: the interface every device implements, the kernels that compute a model one instance at a time, the groups that evaluate a kernel's instances together, serially or across threads, into a slab, and the standard library of devices.
 1. `jolty-engine`: elaboration of a hierarchy, once per structure, into a circuit that every run of it shares, each run making its devices again for the numbers it replaces and binding them to the unknowns elaboration claimed; Newton iteration with SPICE's convergence aids; the analyses, which count their work and, when asked, time it, and spread their frequencies across threads; the measures specs read of their results; and the batch executor, which runs many runs of one circuit across threads, each a pure function of its index.
 1. `jolty-checks`: the rules: structural ones, which read the elaborated circuit through the branches each device declares, and those on the circuit linearized at its operating point.
 1. `jolty-python`: the Python extension module `jolty._core`, which adapts the engine and nothing more.
@@ -86,6 +86,9 @@ Each module imports only from the modules listed before it, and from those liste
   Every model is checked against that source, a closed form, or ngspice.
 - **Determinism:** results are a pure function of the circuit, the plan, the sample index and the options: the same bits for any thread count, shard split or completion order, on the same build and platform.
   Floating-point sums run in a fixed order, random draws depend only on the seed and the sample index, and nothing depends on the order work finishes in.
+- **Kernels:** a device model is a pure function of one instance's prepared parameters, its memory and its local unknowns.
+  It allocates nothing, never panics, and knows nothing of threads, batches or the global matrix.
+  Clippy's `panic` and `indexing_slicing` lints are denied in the kernels' modules, and a test counts a kernel's allocations with `allocation-counter`.
 - **Performance:** `scripts/bench` runs the benchmarks, the fixtures of `perf/` timed in Rust and in Python, and compares their times with a baseline's.
   A change that slows any of them by more than 5% says why in its pull request.
   The benchmarks stay out of `scripts/check`, which must stay fast and deterministic.

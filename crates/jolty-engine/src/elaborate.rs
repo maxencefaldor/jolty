@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use jolty_ir::{Circuit, Component, Name, Of, Parameters, Problem, Role, Source, set_parameter};
 use jolty_models::{
-    Device, Interface, Library, Logic, LogicDriver, LogicDriverParameters, LogicModel, Model,
-    NativeDevice, Node, Pins, Quantity, Specification, ThresholdDetector,
-    ThresholdDetectorParameters, Unknown, UnknownInfo,
+    Interface, Library, Logic, LogicDriver, LogicDriverParameters, LogicModel, Model, NativeDevice,
+    Node, Pins, Quantity, Specification, ThresholdDetector, ThresholdDetectorParameters, Unknown,
+    UnknownInfo,
 };
 
 use crate::Substitute;
-use crate::elaborated::{Binder, Elaborated, Made, Origin, Template};
+use crate::elaborated::{Binder, Devices, Elaborated, Made, Origin, Template};
 use crate::logic::{Endpoint, LogicNet, LogicSystem, PlacedLogic};
 
 /// A terminal of a component instance or a logic device, whose current and charge are those
@@ -318,7 +318,7 @@ pub(crate) fn elaborate(
     library: &Library,
     (substitutes, overrides): Replaced<'_>,
     temperature: f64,
-) -> Result<(Elaborated, Vec<Box<dyn Device>>), ElaborationError> {
+) -> Result<(Elaborated, Devices), ElaborationError> {
     circuit.validate().map_err(|problems| {
         ElaborationError(
             problems

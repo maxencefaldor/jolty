@@ -1,3 +1,12 @@
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -5,11 +14,11 @@ use crate::junction::{
     Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
     limit_junction,
 };
+use crate::kernel::parts::{Bias, Nodes, Series, series_value};
 use crate::noise::Flicker;
-use crate::stamp::{Bias, Series, Stamp};
 use crate::{
-    Binding, Branch, BranchKind, Device, Heatable, HeatableModel, Input, Interface, NativeDevice,
-    NativeModel, NoiseSource, Output, ParameterError, REFERENCE_TEMPERATURE, Real,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError,
+    REFERENCE_TEMPERATURE, Real, Stamp,
 };
 
 /// The channel of a field-effect transistor.
@@ -51,24 +60,42 @@ impl Channel {
 /// the energy gap and their potential and capacitances with silicon's band gap; its
 /// threshold moves, and its transconductance parameter scales, by their own coefficients,
 /// as ngspice scales them.
-#[derive(Debug)]
-pub struct Jfet<R: Real = f64> {
-    stamp: Stamp<3>,
+#[derive(Debug, Clone, Copy)]
+pub struct Jfet;
+
+/// Where a JFET's contributions go among its local unknowns: through its drain and source
+/// resistances, and among its gate and the drain and source behind them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JfetShape {
+    stamp: Nodes<3>,
+    drain_series: Series,
+    source_series: Series,
+}
+
+/// A JFET's numbers at its temperature.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedJfet<R: Real> {
     sign: f64,
+    /// The drain and the source resistances' conductances, or each resistance where its
+    /// current is an unknown.
+    series: [R; 2],
     /// The thermal voltage at the transistor's temperature.
     thermal_voltage: R,
-    drain_series: Series<R>,
-    source_series: Series<R>,
     channel: DrainCurrent<R>,
     saturation_current: R,
     critical_voltage: f64,
     gate_source: Option<Depletion<R>>,
     gate_drain: Option<Depletion<R>>,
+    temperature: f64,
+    flicker: Flicker,
+}
+
+/// What a JFET remembers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JfetMemory {
     /// The gate-source and gate-drain voltages of the last evaluation, from which the next
     /// steps are limited.
     last: [f64; 2],
-    temperature: f64,
-    flicker: Flicker,
 }
 
 /// Local node indices: the gate, then the drain and source behind their resistances, which
@@ -218,19 +245,14 @@ impl<R: Real> DrainCurrent<R> {
     }
 }
 
-impl NativeModel for Jfet {
-    type Device<R: Real> = Jfet<R>;
-}
-
-impl HeatableModel for Jfet {
-    type Device<R: Real> = Jfet<R>;
-}
-
-impl<R: Real> NativeDevice<R> for Jfet<R> {
+impl Kernel for Jfet {
     const NAME: &'static str = "jfet";
-    type Parameters = JfetParameters<R>;
+    type Parameters<R: Real> = JfetParameters<R>;
+    type Shape = JfetShape;
+    type Prepared<R: Real> = PreparedJfet<R>;
+    type Memory = JfetMemory;
 
-    fn interface(_: &JfetParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &JfetParameters<R>) -> Interface {
         Interface::new(
             &["drain", "gate", "source"],
             &[
@@ -241,15 +263,12 @@ impl<R: Real> NativeDevice<R> for Jfet<R> {
         )
     }
 
-    fn new(
-        parameters: JfetParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
+    fn prepare<R: Real>(
+        parameters: &JfetParameters<R>,
+        temperature: R,
+    ) -> Result<PreparedJfet<R>, ParameterError> {
         let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?;
-        let drain_resistance =
-            ParameterError::non_negative("drain_resistance", parameters.drain_resistance)?;
-        let source_resistance =
-            ParameterError::non_negative("source_resistance", parameters.source_resistance)?;
+        let [drain_resistance, source_resistance] = parameters.series_resistances()?;
         let Scaled {
             thermal_voltage,
             channel,
@@ -258,49 +277,159 @@ impl<R: Real> NativeDevice<R> for Jfet<R> {
             gate_source,
             gate_drain,
             temperature,
-        } = parameters.scaled(R::constant(binding.temperature()))?;
-        let (drain, gate, source) = (
-            binding.terminal(0),
-            binding.terminal(1),
-            binding.terminal(2),
-        );
-        let (drain_series, inner_drain) = Series::behind(binding, drain, drain_resistance, "drain");
-        let (source_series, inner_source) =
-            Series::behind(binding, source, source_resistance, "source");
-        let stamp = Stamp::new(binding, [gate, inner_drain, inner_source]);
-        Ok(Self {
-            stamp,
+        } = parameters.scaled(temperature)?;
+        Ok(PreparedJfet {
             sign: parameters.channel.sign(),
+            series: [
+                series_value(drain_resistance),
+                series_value(source_resistance),
+            ],
             thermal_voltage,
-            drain_series,
-            source_series,
             channel,
             saturation_current,
             critical_voltage,
             gate_source,
             gate_drain,
-            last: [0.0; 2],
             temperature,
             flicker,
         })
     }
-}
 
-impl<R: Real> Heatable<R> for Jfet<R> {
-    fn heat(
-        &mut self,
+    fn layout<R: Real>(
         parameters: &JfetParameters<R>,
-        temperature: R,
-    ) -> Result<(), ParameterError> {
-        let scaled = parameters.scaled(temperature)?;
-        self.thermal_voltage = scaled.thermal_voltage;
-        self.channel = scaled.channel;
-        self.saturation_current = scaled.saturation_current;
-        self.critical_voltage = scaled.critical_voltage;
-        self.gate_source = scaled.gate_source;
-        self.gate_drain = scaled.gate_drain;
-        self.temperature = scaled.temperature;
-        Ok(())
+        layout: &mut Layout,
+    ) -> Result<JfetShape, ParameterError> {
+        let [drain_resistance, source_resistance] = parameters.series_resistances()?;
+        let [drain, gate, source] = [0, 1, 2];
+        let (drain_series, inner_drain) =
+            Series::behind(layout, drain, drain_resistance, ("drain", "drain_current"));
+        let (source_series, inner_source) = Series::behind(
+            layout,
+            source,
+            source_resistance,
+            ("source", "source_current"),
+        );
+        let stamp = Nodes::new(layout, [gate, inner_drain, inner_source]);
+        Ok(JfetShape {
+            stamp,
+            drain_series,
+            source_series,
+        })
+    }
+
+    fn evaluate<R: Real>(
+        shape: &JfetShape,
+        prepared: &PreparedJfet<R>,
+        memory: &mut JfetMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let [drain_series, source_series] = prepared.series;
+        shape.drain_series.add(drain_series, at, stamp);
+        shape.source_series.add(source_series, at, stamp);
+        let nodes = &shape.stamp;
+
+        let sign = prepared.sign;
+        let gate = nodes.voltage(at, GATE);
+        let applied = [
+            sign * (gate - nodes.voltage(at, INNER_SOURCE)),
+            sign * (gate - nodes.voltage(at, INNER_DRAIN)),
+        ];
+        let limit = |new: f64, old: f64| {
+            let junction = limit_junction(
+                new,
+                old,
+                prepared.thermal_voltage.value(),
+                prepared.critical_voltage,
+            );
+            let limited = limit_gate(
+                junction.unwrap_or(new),
+                old,
+                prepared.channel.threshold.value(),
+            );
+            limited.or(junction).filter(|_| at.limiting)
+        };
+        let [[applied_source, applied_drain], [last_source, last_drain]] = [applied, memory.last];
+        let limits = [
+            limit(applied_source, last_source),
+            limit(applied_drain, last_drain),
+        ];
+        if limits.iter().any(Option::is_some) {
+            stamp.mark_limited();
+        }
+        let [limit_source, limit_drain] = limits;
+        let limited = [
+            limit_source.unwrap_or(applied_source),
+            limit_drain.unwrap_or(applied_drain),
+        ];
+        memory.last = limited;
+        let Bias {
+            voltages: [vgs, vgd],
+            beyond: [beyond_source, beyond_drain],
+        } = Bias::new(applied, limited);
+
+        // Each gate junction, evaluated at its limited voltage and extended linearly.
+        for (inner, voltage, delta, depletion) in [
+            (
+                INNER_SOURCE,
+                vgs,
+                beyond_source,
+                prepared.gate_source.as_ref(),
+            ),
+            (INNER_DRAIN, vgd, beyond_drain, prepared.gate_drain.as_ref()),
+        ] {
+            let (current, conductance) = junction_current(
+                voltage,
+                prepared.saturation_current,
+                prepared.thermal_voltage,
+            );
+            let conductance = conductance + at.gmin;
+            let current = current + at.gmin * voltage + conductance * delta;
+            nodes.current(stamp, GATE, inner, current * sign);
+            nodes.conductance(stamp, (GATE, inner), (GATE, inner), conductance);
+            let (charge, capacitance) = depletion_charge(depletion, voltage);
+            nodes.charge(stamp, GATE, inner, (charge + capacitance * delta) * sign);
+            nodes.capacitance(stamp, (GATE, inner), (GATE, inner), capacitance);
+        }
+
+        let (current, gm, gds) = prepared.channel.evaluate(vgs, vgs - vgd);
+        let current = current + gm * beyond_source + gds * (beyond_source - beyond_drain);
+        let channel = (INNER_DRAIN, INNER_SOURCE);
+        nodes.current(stamp, INNER_DRAIN, INNER_SOURCE, current * sign);
+        nodes.conductance(stamp, channel, (GATE, INNER_SOURCE), gm);
+        nodes.conductance(stamp, channel, channel, gds);
+    }
+
+    /// The thermal noise of the series resistances and of the channel, `8kT·gm / 3`, and
+    /// the drain current's flicker noise, as SPICE models them.
+    fn noise<R: Real>(
+        shape: &JfetShape,
+        prepared: &PreparedJfet<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let temperature = prepared.temperature;
+        let [drain_series, source_series] = prepared.series;
+        shape
+            .drain_series
+            .noise(drain_series, ("drain thermal", temperature), sources);
+        shape
+            .source_series
+            .noise(source_series, ("source thermal", temperature), sources);
+        let nodes = &shape.stamp;
+        let gate = nodes.voltage(at, GATE);
+        let vgs = prepared.sign * (gate - nodes.voltage(at, INNER_SOURCE));
+        let vgd = prepared.sign * (gate - nodes.voltage(at, INNER_DRAIN));
+        let (current, gm, _) = prepared.channel.evaluate(vgs, vgs - vgd);
+        let channel = [nodes.equation(INNER_DRAIN), nodes.equation(INNER_SOURCE)];
+        let conductance = 2.0 / 3.0 * gm.value();
+        sources.push(NoiseSource::thermal(
+            "channel thermal",
+            channel,
+            conductance,
+            temperature,
+        ));
+        prepared.flicker.add(channel, current.value(), sources);
     }
 }
 
@@ -394,86 +523,13 @@ impl<R: Real> JfetParameters<R> {
     }
 }
 
-impl<R: Real> Device<R> for Jfet<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        self.drain_series.add(input, output);
-        self.source_series.add(input, output);
-        let stamp = &self.stamp;
-
-        let sign = self.sign;
-        let gate = stamp.voltage(input, GATE);
-        let applied = [
-            sign * (gate - stamp.voltage(input, INNER_SOURCE)),
-            sign * (gate - stamp.voltage(input, INNER_DRAIN)),
-        ];
-        let limits = [0, 1].map(|index| {
-            let (new, old) = (applied[index], self.last[index]);
-            let junction = limit_junction(
-                new,
-                old,
-                self.thermal_voltage.value(),
-                self.critical_voltage,
-            );
-            let limited = limit_gate(junction.unwrap_or(new), old, self.channel.threshold.value());
-            limited.or(junction).filter(|_| input.limiting)
-        });
-        if limits.iter().any(Option::is_some) {
-            output.mark_limited();
-        }
-        let limited = [0, 1].map(|index| limits[index].unwrap_or(applied[index]));
-        self.last = limited;
-        let Bias {
-            voltages: [vgs, vgd],
-            beyond,
-        } = Bias::new(applied, limited);
-
-        // Each gate junction, evaluated at its limited voltage and extended linearly.
-        for (inner, voltage, delta, depletion) in [
-            (INNER_SOURCE, vgs, beyond[0], self.gate_source.as_ref()),
-            (INNER_DRAIN, vgd, beyond[1], self.gate_drain.as_ref()),
-        ] {
-            let (current, conductance) =
-                junction_current(voltage, self.saturation_current, self.thermal_voltage);
-            let conductance = conductance + input.gmin;
-            let current = current + input.gmin * voltage + conductance * delta;
-            stamp.current(output, GATE, inner, current * sign);
-            stamp.conductance(output, (GATE, inner), (GATE, inner), conductance);
-            let (charge, capacitance) = depletion_charge(depletion, voltage);
-            stamp.charge(output, GATE, inner, (charge + capacitance * delta) * sign);
-            stamp.capacitance(output, (GATE, inner), (GATE, inner), capacitance);
-        }
-
-        let (current, gm, gds) = self.channel.evaluate(vgs, vgs - vgd);
-        let current = current + gm * beyond[0] + gds * (beyond[0] - beyond[1]);
-        let channel = (INNER_DRAIN, INNER_SOURCE);
-        stamp.current(output, INNER_DRAIN, INNER_SOURCE, current * sign);
-        stamp.conductance(output, channel, (GATE, INNER_SOURCE), gm);
-        stamp.conductance(output, channel, channel, gds);
-    }
-
-    /// The thermal noise of the series resistances and of the channel, `8kT·gm / 3`, and
-    /// the drain current's flicker noise, as SPICE models them.
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        let temperature = self.temperature;
-        self.drain_series
-            .noise("drain thermal", temperature, sources);
-        self.source_series
-            .noise("source thermal", temperature, sources);
-        let stamp = &self.stamp;
-        let gate = stamp.voltage(input, GATE);
-        let vgs = self.sign * (gate - stamp.voltage(input, INNER_SOURCE));
-        let vgd = self.sign * (gate - stamp.voltage(input, INNER_DRAIN));
-        let (current, gm, _) = self.channel.evaluate(vgs, vgs - vgd);
-        let nodes = stamp.nodes();
-        let channel = [nodes[INNER_DRAIN], nodes[INNER_SOURCE]];
-        let conductance = 2.0 / 3.0 * gm.value();
-        sources.push(NoiseSource::thermal(
-            "channel thermal",
-            channel,
-            conductance,
-            temperature,
-        ));
-        self.flicker.add(channel, current.value(), sources);
+impl<R: Real> JfetParameters<R> {
+    /// The drain and source resistances, once each is checked.
+    fn series_resistances(&self) -> Result<[R; 2], ParameterError> {
+        Ok([
+            ParameterError::non_negative("drain_resistance", self.drain_resistance)?,
+            ParameterError::non_negative("source_resistance", self.source_resistance)?,
+        ])
     }
 }
 
@@ -482,6 +538,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::KernelDevice;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
         thermal,
@@ -510,7 +567,7 @@ mod tests {
 
     #[test]
     fn follows_the_square_law_in_saturation() {
-        let mut bench = Bench::new::<Jfet>(r#"{"transconductance_parameter": 1e-3}"#);
+        let mut bench = Bench::new::<KernelDevice<Jfet>>(r#"{"transconductance_parameter": 1e-3}"#);
         let evaluation = bench.settle(&[5.0, 0.0, 0.0]);
         // vgs = 0, vto = −2: β · vgst² = 1e-3 · 4.
         let drain_current = evaluation.residual[0];
@@ -519,8 +576,8 @@ mod tests {
 
     #[test]
     fn a_p_channel_mirrors_an_n_channel() {
-        let mut n = Bench::new::<Jfet>("{}");
-        let mut p = Bench::new::<Jfet>(r#"{"channel": "p"}"#);
+        let mut n = Bench::new::<KernelDevice<Jfet>>("{}");
+        let mut p = Bench::new::<KernelDevice<Jfet>>(r#"{"channel": "p"}"#);
         let n_currents = n.settle(&[3.0, -0.5, 0.0]).residual;
         let p_currents = p.settle(&[-3.0, 0.5, 0.0]).residual;
         for (n_current, p_current) in n_currents.iter().zip(&p_currents) {
@@ -530,7 +587,8 @@ mod tests {
 
     #[test]
     fn series_resistances_add_internal_nodes() {
-        let bench = Bench::new::<Jfet>(r#"{"drain_resistance": 10, "source_resistance": 5}"#);
+        let bench =
+            Bench::new::<KernelDevice<Jfet>>(r#"{"drain_resistance": 10, "source_resistance": 5}"#);
         assert_eq!(
             bench.unknowns(),
             ["n0", "n1", "n2", "device:drain", "device:source"]
@@ -546,7 +604,7 @@ mod tests {
         let heated = every.replace('{', r#"{"thermal": true, "#);
         let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
         for rise in [0.0, 30.0] {
-            let mut plain = Bench::at::<Jfet>(every, REFERENCE_TEMPERATURE + rise);
+            let mut plain = Bench::at::<KernelDevice<Jfet>>(every, REFERENCE_TEMPERATURE + rise);
             let hot = bench.settle(&[5.0, -0.5, 0.0, rise, 4.9]);
             let reference = plain.settle(&[5.0, -0.5, 0.0, 4.9]);
             let electrical = [0, 1, 2, 4].map(|row| hot.residual[row]);
@@ -573,9 +631,9 @@ mod tests {
                 CHARGED.to_owned()
             };
             let sign = if p { -1.0 } else { 1.0 };
-            assert_jacobians_match::<Jfet>(&parameters, &[sign * drain, sign * gate, 0.0]);
+            assert_jacobians_match::<KernelDevice<Jfet>>(&parameters, &[sign * drain, sign * gate, 0.0]);
             let resistive = parameters.replace('{', r#"{"drain_resistance": 50, "source_resistance": 20, "#);
-            assert_jacobians_match::<Jfet>(
+            assert_jacobians_match::<KernelDevice<Jfet>>(
                 &resistive,
                 &[sign * drain, sign * gate, 0.0, sign * 0.9 * drain, sign * 0.01],
             );
@@ -586,7 +644,7 @@ mod tests {
     fn its_channel_makes_thermal_and_flicker_noise() {
         let parameters = r#"{"threshold_voltage": -2, "transconductance_parameter": 1e-3,
             "saturation_current": 1e-30, "flicker_coefficient": 1e-14}"#;
-        let mut bench = Bench::new::<Jfet>(parameters);
+        let mut bench = Bench::new::<KernelDevice<Jfet>>(parameters);
         let x = [5.0, 0.0, 1.0];
         let evaluation = bench.settle(&x);
         let (current, gm) = (evaluation.residual[0], evaluation.conductance[0][1]);

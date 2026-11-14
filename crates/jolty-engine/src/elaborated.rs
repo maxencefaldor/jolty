@@ -18,9 +18,9 @@ use std::sync::{Arc, OnceLock};
 
 use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{
-    Binding, Device, Interface, Library, LogicDriver, LogicDriverParameters, Model, NativeDevice,
-    Node, ParameterError, REFERENCE_TEMPERATURE, Specification, ThresholdDetector,
-    ThresholdDetectorParameters, Unknown, UnknownInfo,
+    Binding, Device, Groups, Instance, Interface, Library, LogicDriver, LogicDriverParameters,
+    Model, NativeDevice, Node, ParameterError, REFERENCE_TEMPERATURE, Runs, Specification,
+    ThresholdDetector, ThresholdDetectorParameters, Unknown, UnknownInfo,
 };
 use jolty_numerics::{Entry, Ordering, Pattern, PatternBuilder, Replay};
 use serde_json::Value;
@@ -68,6 +68,9 @@ pub struct Elaborated {
     /// The diagonal entry of every node voltage's equation, where gmin stepping adds a
     /// conductance to the reference.
     pub(crate) node_diagonals: Vec<(Unknown, Entry)>,
+    /// The groups of the instances of kernels, which every run evaluates together, and the
+    /// devices of no kernel, which it evaluates one by one.
+    pub(crate) groups: Groups,
     /// The devices' temperature, in kelvins, unless a run's values give another.
     pub(crate) temperature: f64,
     /// The terminals of component instances and logic devices, each the sum of device
@@ -157,7 +160,19 @@ impl fmt::Debug for Made {
     }
 }
 
+/// The devices made for a run, in the order of the circuit's, and the run of the groups of
+/// the instances of kernels among them, prepared.
+pub(crate) type Devices = (Vec<Box<dyn Device>>, Runs);
+
 impl Origin {
+    /// The device as an instance of a kernel, if it is one.
+    pub(crate) fn kernel(&self) -> Option<Instance<'_>> {
+        match self {
+            Self::Model(made) => made.specification.kernel(),
+            Self::Detector(_) | Self::Driver => None,
+        }
+    }
+
     /// Makes the device bound through `binding`.
     ///
     /// # Errors
@@ -242,6 +257,12 @@ impl Placed {
         self.variables
     }
 
+    /// Whether the device was made from its own parameters, at its circuit's temperature,
+    /// as a run that replaces none of its numbers makes it.
+    pub(crate) const fn nominal(&self) -> bool {
+        self.nominal
+    }
+
     /// Whether the device is a foundry's, which no analysis solves.
     #[must_use]
     pub fn foundry(&self) -> bool {
@@ -317,13 +338,16 @@ impl Index {
 }
 
 /// What binding devices one after another builds: the unknowns, the entries they claim, the
-/// devices placed and the devices made.
+/// devices placed, the devices made, and the groups of the instances of kernels among them,
+/// with their numbers prepared.
 pub(crate) struct Binder {
     unknowns: Vec<UnknownInfo>,
     builder: PatternBuilder,
     node_diagonals: Vec<(Unknown, Entry)>,
     placed: Vec<Placed>,
     devices: Vec<Box<dyn Device>>,
+    groups: Groups,
+    runs: Runs,
     temperature: f64,
 }
 
@@ -331,7 +355,8 @@ pub(crate) struct Binder {
 pub(crate) struct Bound {
     pub(crate) unknowns: Vec<UnknownInfo>,
     pub(crate) placed: Vec<Placed>,
-    pub(crate) devices: Vec<Box<dyn Device>>,
+    pub(crate) devices: Devices,
+    groups: Groups,
     claims: Vec<(usize, usize)>,
     node_diagonals: Vec<(Unknown, Entry)>,
     pattern: Arc<Pattern>,
@@ -353,6 +378,8 @@ impl Binder {
             node_diagonals,
             placed: Vec::new(),
             devices: Vec::new(),
+            groups: Groups::new(),
+            runs: Runs::default(),
             temperature,
         }
     }
@@ -379,11 +406,20 @@ impl Binder {
             &mut self.builder,
             self.temperature,
         );
-        let device = origin.unwrap_or(&template.origin).make(&mut binding)?;
+        let origin = origin.unwrap_or(&template.origin);
+        let device = origin.make(&mut binding)?;
+        let entries = first_entry..self.builder.positions().len();
+        self.groups.add(
+            &mut self.runs,
+            self.placed.len(),
+            (origin.kernel(), self.temperature),
+            (&template.nodes, first_internal..self.unknowns.len()),
+            Replay::new(self.builder.positions(), entries.clone()),
+        )?;
         self.placed.push(Placed {
             first_internal,
             internals: self.unknowns.len() - first_internal,
-            entries: first_entry..self.builder.positions().len(),
+            entries,
             variables: device.variable_names(),
             nominal,
             template,
@@ -396,10 +432,15 @@ impl Binder {
     ///
     /// # Errors
     ///
-    /// Returns [`ElaborationProblem::TooLarge`] when the ordering does not fit in memory.
-    pub(crate) fn finish(self) -> Result<Bound, ElaborationError> {
+    /// Returns [`ElaborationProblem::TooLarge`] when the ordering does not fit in memory, or
+    /// the groups' slab more places than they index.
+    pub(crate) fn finish(mut self) -> Result<Bound, ElaborationError> {
         let claims = self.builder.positions().to_vec();
         let pattern = Arc::new(self.builder.finish(self.unknowns.len()));
+        let too_large = || ElaborationError::from(ElaborationProblem::TooLarge);
+        self.groups
+            .finish(&mut self.runs, &pattern)
+            .map_err(|_| too_large())?;
         let ordering = Ordering::new(Arc::clone(&pattern))
             .map_err(|_| ElaborationError::from(ElaborationProblem::TooLarge))?;
         let names = self
@@ -410,7 +451,8 @@ impl Binder {
         Ok(Bound {
             unknowns: self.unknowns,
             placed: self.placed,
-            devices: self.devices,
+            devices: (self.devices, self.runs),
+            groups: self.groups,
             claims,
             node_diagonals: self.node_diagonals,
             pattern,
@@ -422,7 +464,7 @@ impl Binder {
 
 /// A circuit elaborated for the structure some values give it, the devices made for them,
 /// and the origins of those whose numbers they replace, by device.
-pub(crate) type Rebound = (Elaborated, Vec<Box<dyn Device>>, Vec<Option<Origin>>);
+pub(crate) type Rebound = (Elaborated, Devices, Vec<Option<Origin>>);
 
 /// What a run's devices are made from: an elaborated circuit, the origins its values
 /// give the devices whose numbers they replace, by device, none when they replace none,
@@ -473,7 +515,7 @@ impl Elaborated {
         bound: Bound,
         (logic, composites, reference): (LogicSystem, Vec<Composite>, Name),
         temperature: f64,
-    ) -> (Self, Vec<Box<dyn Device>>) {
+    ) -> (Self, Devices) {
         let elaborated = Self {
             unknowns: bound.unknowns,
             devices: bound.placed,
@@ -484,6 +526,7 @@ impl Elaborated {
             names: bound.names,
             claims: bound.claims,
             node_diagonals: bound.node_diagonals,
+            groups: bound.groups,
             temperature,
             composites,
             lookup: OnceLock::new(),
@@ -668,6 +711,7 @@ impl Elaborated {
             names: bound.names,
             claims: bound.claims,
             node_diagonals: bound.node_diagonals,
+            groups: bound.groups,
             temperature: self.temperature,
             composites: self.composites.clone(),
             lookup: self.lookup.clone(),
