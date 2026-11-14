@@ -2,38 +2,31 @@
 
 A compiler and simulator for electronic circuits, built for AI agents.
 
-An AI agent writes a circuit as a Python script of reusable components, and jolty builds it the way a compiler builds code.
-Each build checks every device and connection, reports each problem with the script line behind it, and simulates the circuit with a native engine written in Rust.
+An agent writes a circuit as a Python script.
+jolty checks every device and connection, points each problem at the script line behind it, draws the schematic, and simulates the circuit with a native engine written in Rust.
 
-jolty is on its seventh milestone, gradients and discovery: board-level circuits of passive devices, sources, diodes and transistors, simulated at the operating point, over DC sweeps, in frequency and in time, beside logic that an event scheduler simulates.
-Vendors' SPICE macromodels, such as an op-amp's, read as components and agree with ngspice.
-Every build checks the circuit's structure and draws its schematic, and every simulation plots its analyses, so an agent sees what it built.
-Specs state what a circuit must do, and every simulation measures its results against them, at every temperature and corner its plan names, over Monte Carlo samples of its parts' tolerances, and at their worst-case extremes.
-A plan can run a component as a logic cell characterized from its own circuit, as the full adder example runs its nine transistor-level NAND gates, and spot checks hold each cell to its circuit.
-A sensitivity analysis gives the derivative of any unknown with respect to every parameter of every device, at the operating point, along a DC sweep, over frequency or over time.
-A stability analysis gives a feedback loop's gain through a probe, by Middlebrook's double injection, and specs read its phase and gain margins.
-A noise analysis gives the noise density at any output from every device's thermal, shot and flicker noise, each source's share, and the noise referred to an input, a pole-zero analysis the circuit's natural frequencies and a transfer function's zeros, and a transfer function analysis, SPICE's `.tf`, the gain at DC and the resistances the source and the output see.
-A periodic transient finds the steady state a driven circuit settles into, such as a rectifier's or a power converter's, in a few periods by shooting, where a transient would run for many.
-The engine runs on every core: a batch runs a circuit's Monte Carlo samples, corners or any grid of values at once, each run finding the same bits it finds alone, and its devices evaluate in parallel within a run; shards split a batch across machines, and `jolty merge` joins them into the report one machine would write.
-Every result holds the circuit's unknowns at every point, and, for each device a plan records, its terminals' currents and charges, the derivatives of its equations and its model's variables, and a 3D viewer plays any simulation on the circuit's layout.
-A circuit of SKY130 transistors runs its plans in ngspice with the foundry's own models, at its process corners, and its results read as the engine's.
-jolty stops at the circuit: it writes SPICE netlists for ngspice and KiCad netlists for boards, and leaves laying out boards and chips to the tools made for them.
+## What it does
 
-The [documentation](https://maxencefaldor.github.io/jolty/) explains every concept and lists every command.
-Its [gallery](https://maxencefaldor.github.io/jolty/gallery/) shows thirty famous circuits, analog and digital, each simulated by jolty and replicated in ngspice, and its [discovery](https://maxencefaldor.github.io/jolty/discovery/) pages six hard design problems and the circuits an agent found for them with jolty alone.
+- **Builds** circuits from reusable Python components, with units checked: a capacitance passed where a resistance belongs fails on that line.
+- **Simulates** operating points, DC sweeps, AC, transients, periodic steady states, noise, stability, pole-zero, transfer functions and sensitivities, beside event-driven logic.
+- **Checks specs**: every simulation measures its results against the circuit's requirements, at each temperature and corner, over Monte Carlo samples and at worst-case extremes.
+- **Scales** across every core and across machines, with results the same bit for bit on any number of threads.
+- **Works with SPICE**: it reads vendors' SPICE models and agrees with ngspice, writes SPICE and KiCad netlists, and runs SKY130 transistors through ngspice with the foundry's models.
 
-## 🚀 Quick start
+jolty stops at the circuit: board and chip layout is left to the tools made for it.
 
-Building jolty needs [uv](https://docs.astral.sh/uv/), which installs Python 3.15, and a [Rust toolchain](https://rustup.rs/).
+## Quick start
+
+You need [uv](https://docs.astral.sh/uv/) and a [Rust toolchain](https://rustup.rs/).
 
 ```sh
 git clone https://github.com/maxencefaldor/jolty
 cd jolty
-uv sync                                        # builds the Rust engine and installs jolty
+uv sync                                        # builds the engine and installs jolty
 uv run jolty simulate examples/rc_filter.py    # builds the filter and runs its plan
 ```
 
-The command saves the circuit to `examples/rc_filter.jolty.json` and draws it to `examples/rc_filter.schematic.png`, saves the results to `examples/rc_filter.results.npz` and plots them beside it, and prints a report:
+This saves the circuit, its schematic, its results and their plots beside the script, and prints a report:
 
 ```text
 step: transient to 10 µs in 67 steps, 0 rejected
@@ -43,18 +36,14 @@ step: transient to 10 µs in 67 steps, 0 rejected
   V1:current  0 A    -999.5 µA  0 A       -119.6 nA
 ```
 
-## 🤖 Use it with an agent
+## Use it with an agent
 
-An agent reaches jolty through one of two front ends, which share every argument and print the same text:
+- **Command line**, for any harness that runs shell commands: `uv run jolty build` and `uv run jolty simulate`.
+- **MCP server**, for any harness that speaks the Model Context Protocol: `claude mcp add jolty -- uv run --project /path/to/jolty jolty-mcp`.
 
-- **The command line**, for any harness that runs shell commands: `uv run jolty build` and `uv run jolty simulate`.
-- **The MCP server**, for any harness that speaks the Model Context Protocol: `claude mcp add jolty -- uv run --project /path/to/jolty jolty-mcp` adds it to Claude Code.
+Both take the same arguments and print the same text.
 
-Scripts run in a process of their own, with a time limit, so nothing they print reaches the protocol stream.
-
-## ⚡ How it works
-
-A component is a Python function that declares ports, places devices and other components, and connects their terminals:
+## A circuit, its plan and its specs
 
 ```python
 @component
@@ -67,14 +56,8 @@ def low_pass(c: Builder, resistance: Quantity, capacitance: Quantity) -> None:
     c.connect(source, resistor.a)
     c.connect(resistor.b, capacitor.a, output)
     c.connect(capacitor.b, ground)
-```
 
-Calling `low_pass(1 * kohm, 1 * nF)` returns a component that any other component places, so circuits grow into hierarchies of boxes.
-Values carry units, and a capacitance passed where a resistance belongs fails on the line that passed it.
 
-A plan says how to simulate a circuit, apart from the circuit itself:
-
-```python
 def plan() -> Plan:
     return Plan(
         {
@@ -83,11 +66,8 @@ def plan() -> Plan:
             "bode": Ac("V1", decade(1 * kHz, 100 * MHz, 10)),
         }
     )
-```
 
-Specs say what the results must show, and the simulation states the verdict on each requirement, with the value it read:
 
-```python
 def specs() -> Specs:
     return Specs(
         [
@@ -97,20 +77,26 @@ def specs() -> Specs:
     )
 ```
 
-The engine solves the charge-oriented equations `f(x) + d/dt q(x) = 0` of modified nodal analysis by Newton iteration, with SPICE's convergence aids, a sparse LU solver built for circuits' matrices that refactors each new Jacobian with the last one's pivots, and adaptive time steps controlled by the local truncation error.
+A component places devices and other components, so circuits grow into hierarchies.
+The plan says how to simulate the circuit, and the specs what its results must show: each simulation gives a verdict on every requirement, with the value it read.
 
-## 🏗️ Architecture
+## Learn more
 
-The Rust workspace in `crates/` holds the engine, each crate built on the ones before it:
+- [Documentation](https://maxencefaldor.github.io/jolty/): every concept and every command.
+- [Gallery](https://maxencefaldor.github.io/jolty/gallery/): thirty well-known circuits, analog and digital, each simulated by jolty and replicated in ngspice.
+- [Discovery](https://maxencefaldor.github.io/jolty/discovery/): six hard design problems, and the circuits an agent found for them with jolty alone.
 
-1. `jolty-ir`: the circuit format, its names and its validation.
-1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, and integration formulas.
-1. `jolty-models`: the interface every device implements, the kernels that compute a model one instance at a time and the groups that evaluate them together, across threads, and the standard library of devices.
-1. `jolty-engine`: elaboration of a hierarchy, once per structure, into devices bound to unknowns, Newton iteration, the analyses, the measures specs read, and the batch executor that runs many runs of one circuit across threads.
-1. `jolty-python`: the Python extension module `jolty._core`.
+## Architecture
 
-The Python package in `src/jolty` holds everything an agent reads and writes: units, the builder, plans, results, specs, reports, the command line and the MCP server.
+| Part | What it holds |
+| --- | --- |
+| `crates/jolty-ir` | The circuit format and its validation |
+| `crates/jolty-numerics` | Sparse LU for circuit matrices, and integration formulas |
+| `crates/jolty-models` | The device models, each a kernel evaluated in parallel |
+| `crates/jolty-engine` | Elaboration, Newton iteration, the analyses and the batch executor |
+| `crates/jolty-python` | The Python extension module `jolty._core` |
+| `src/jolty` | What an agent reads and writes: units, the builder, plans, specs, results, reports, the command line and the MCP server |
 
-## 📄 License
+## License
 
-jolty is licensed under the [Apache License 2.0](LICENSE).
+[Apache License 2.0](LICENSE).
