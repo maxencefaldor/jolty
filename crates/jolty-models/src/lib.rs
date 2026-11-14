@@ -23,6 +23,7 @@
 mod behavioral;
 mod binding;
 mod bjt;
+mod bsim3;
 mod connect;
 mod controlled;
 mod device;
@@ -60,6 +61,7 @@ pub use behavioral::{
 };
 pub use binding::{Binding, Node, Quantity, Unknown, UnknownInfo};
 pub use bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
+pub use bsim3::{Bsim3, Bsim3Parameters, Charges, Mobility, NoiseModel};
 pub use connect::{
     LogicDriver, LogicDriverParameters, Ramp, ThresholdDetector, ThresholdDetectorParameters,
 };
