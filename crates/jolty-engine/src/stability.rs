@@ -69,50 +69,52 @@ impl Simulator {
         stability: &Stability,
         options: &Options,
     ) -> Result<LoopGain, SimulationError> {
-        self.solvable()?;
-        let not_a_probe = || SimulationError::NotAProbe(stability.probe.clone());
-        let index = self
-            .source_index(&stability.probe)
-            .map_err(|error| match error {
-                SimulationError::NotASource(_) => not_a_probe(),
-                other => other,
-            })?;
-        if self.source_quantity(index) != Quantity::Voltage {
-            return Err(not_a_probe());
-        }
-        let &[Some(entered), Some(_)] = self.elaborated.devices[index].nodes() else {
-            return Err(not_a_probe());
-        };
-        let carried = self
-            .unknown(&format!("{}:current", stability.probe))
-            .ok_or_else(not_a_probe)?;
-        let unknowns = self.elaborated.unknowns.len();
-        let mut level = vec![0.0; unknowns];
-        self.state
-            .runs
-            .excite(&self.elaborated.groups, index, &mut level);
-        let operating_point = self.linearize(&stability.frequencies, options)?;
-        let gains = over_frequencies(
-            Linearization::new(&self.state.solver),
-            &self.state.workspace.contributions,
-            &stability.frequencies,
-            &options.parallelism,
-            &|factors, _, _| {
-                let mut series: Vec<Complex64> =
-                    level.iter().map(|&d| Complex64::new(-d, 0.0)).collect();
-                factors.solve(&mut series)?;
-                let mut shunt = vec![Complex64::default(); unknowns];
-                shunt[entered.index()] = Complex64::new(1.0, 0.0);
-                factors.solve(&mut shunt)?;
-                let u = series[entered.index()] - shunt[carried.index()];
-                Ok(-u / (1.0 + u))
-            },
-        )?;
-        Ok(LoopGain {
-            probe: stability.probe.clone(),
-            operating_point,
-            frequencies: stability.frequencies.clone(),
-            gains,
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            let not_a_probe = || SimulationError::NotAProbe(stability.probe.clone());
+            let index = self
+                .source_index(&stability.probe)
+                .map_err(|error| match error {
+                    SimulationError::NotASource(_) => not_a_probe(),
+                    other => other,
+                })?;
+            if self.source_quantity(index) != Quantity::Voltage {
+                return Err(not_a_probe());
+            }
+            let &[Some(entered), Some(_)] = self.elaborated.devices[index].nodes() else {
+                return Err(not_a_probe());
+            };
+            let carried = self
+                .unknown(&format!("{}:current", stability.probe))
+                .ok_or_else(not_a_probe)?;
+            let unknowns = self.elaborated.unknowns.len();
+            let mut level = vec![0.0; unknowns];
+            self.state
+                .runs
+                .excite(&self.elaborated.groups, index, &mut level);
+            let operating_point = self.linearize(&stability.frequencies, options)?;
+            let gains = over_frequencies(
+                Linearization::new(&self.state.solver),
+                &self.state.workspace.contributions,
+                &stability.frequencies,
+                &options.parallelism,
+                &|factors, _, _| {
+                    let mut series: Vec<Complex64> =
+                        level.iter().map(|&d| Complex64::new(-d, 0.0)).collect();
+                    factors.solve(&mut series)?;
+                    let mut shunt = vec![Complex64::default(); unknowns];
+                    shunt[entered.index()] = Complex64::new(1.0, 0.0);
+                    factors.solve(&mut shunt)?;
+                    let u = series[entered.index()] - shunt[carried.index()];
+                    Ok(-u / (1.0 + u))
+                },
+            )?;
+            Ok(LoopGain {
+                probe: stability.probe.clone(),
+                operating_point,
+                frequencies: stability.frequencies.clone(),
+                gains,
+            })
         })
     }
 }

@@ -48,39 +48,41 @@ impl Simulator {
     /// for no frequency or a negative one, [`SimulationError::Singular`] when the linearized
     /// circuit is singular at a frequency, and the errors of [`Simulator::operating_point`].
     pub fn ac(&mut self, ac: &Ac, options: &Options) -> Result<Response, SimulationError> {
-        self.solvable()?;
-        let index = self.source_index(&ac.source)?;
-        let operating_point = self.linearize(&ac.frequencies, options)?;
-        let mut excitation = vec![0.0; self.elaborated.unknowns.len()];
-        self.state
-            .runs
-            .excite(&self.elaborated.groups, index, &mut excitation);
-        let currents =
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            let index = self.source_index(&ac.source)?;
+            let operating_point = self.linearize(&ac.frequencies, options)?;
+            let mut excitation = vec![0.0; self.elaborated.unknowns.len()];
             self.state
-                .observer
-                .currents(&self.elaborated.groups, &self.state.runs, index);
-        let found = over_frequencies(
-            Linearization::new(&self.state.solver),
-            &self.state.workspace.contributions,
-            &ac.frequencies,
-            &options.parallelism,
-            &|factors, _, frequency| {
-                let mut phasors: Vec<Complex64> = excitation
-                    .iter()
-                    .map(|&d| Complex64::new(-d, 0.0))
-                    .collect();
-                factors.solve(&mut phasors)?;
-                let recorded = currents.at(&phasors, TAU * frequency);
-                Ok((phasors, recorded))
-            },
-        )?;
-        let (values, currents) = found.into_iter().unzip();
-        Ok(Response {
-            source: ac.source.clone(),
-            operating_point,
-            frequencies: ac.frequencies.clone(),
-            values,
-            currents,
+                .runs
+                .excite(&self.elaborated.groups, index, &mut excitation);
+            let currents =
+                self.state
+                    .observer
+                    .currents(&self.elaborated.groups, &self.state.runs, index);
+            let found = over_frequencies(
+                Linearization::new(&self.state.solver),
+                &self.state.workspace.contributions,
+                &ac.frequencies,
+                &options.parallelism,
+                &|factors, _, frequency| {
+                    let mut phasors: Vec<Complex64> = excitation
+                        .iter()
+                        .map(|&d| Complex64::new(-d, 0.0))
+                        .collect();
+                    factors.solve(&mut phasors)?;
+                    let recorded = currents.at(&phasors, TAU * frequency);
+                    Ok((phasors, recorded))
+                },
+            )?;
+            let (values, currents) = found.into_iter().unzip();
+            Ok(Response {
+                source: ac.source.clone(),
+                operating_point,
+                frequencies: ac.frequencies.clone(),
+                values,
+                currents,
+            })
         })
     }
 

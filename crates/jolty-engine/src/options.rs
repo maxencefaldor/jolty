@@ -50,16 +50,19 @@ impl Record {
 /// any result: every one of them is the same bits however the work is split.
 ///
 /// The caller owns the pool and runs the engine inside it, with `ThreadPool::install`; a
-/// run uses at most its `threads`, and a [batch](crate::batch::Batch) runs each of its runs
-/// on one thread whenever it has a run for every thread of its pool. Spreading work costs
-/// the time of waking threads, which a small run's work does not repay, so each kind of
-/// work spreads only once its threshold is set: none is by default, and a run does all its
-/// work on its own thread.
+/// run that spreads its work uses at most its `threads`, on a pool of exactly that many
+/// threads of its own when they are fewer than its caller's pool has, and a
+/// [batch](crate::batch::Batch) runs each of its runs on one thread whenever it has a run
+/// for every thread of its pool. Spreading work costs the time of waking threads, which a
+/// small run's work does not repay, so each kind of work spreads only once its threshold
+/// is set: none is by default, and a run does all its work on its own thread.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Parallelism {
     /// The most threads a run spreads its own work over; none for every thread of the pool
-    /// it runs in, and 1 to run it on one thread alone.
+    /// it runs in, and 1 to run it on one thread alone. A run that may spread its work over
+    /// two or more, fewer than the pool it is called in has, runs on a pool of exactly that
+    /// many threads of its own, which every task it spreads runs on.
     pub threads: Option<usize>,
     /// The fewest frequencies, right-hand sides or parameters' derivatives a task takes
     /// when a run spreads them; none, by default, to take them all on the run's thread.
@@ -82,11 +85,47 @@ impl Parallelism {
         let Some(least) = self.min_solves_per_task else {
             return 1;
         };
+        self.usable().min(items / least.max(1)).max(1)
+    }
+
+    /// The threads a run may spread its work over: its [`Parallelism::threads`], but no
+    /// more than the rayon pool it runs in has.
+    fn usable(&self) -> usize {
         let threads = rayon::current_num_threads();
-        self.threads
-            .map_or(threads, |most| most.min(threads))
-            .min(items / least.max(1))
-            .max(1)
+        self.threads.map_or(threads, |most| most.min(threads))
+    }
+
+    /// Runs `run`, a run's work, on at most its [`Parallelism::threads`]. When the run may
+    /// spread its work, and its threads are two or more but fewer than the pool it is
+    /// called in has, it runs on a pool of exactly that many threads, made for it: rayon
+    /// runs every task that a task of a pool spawns on that pool, so every task the run
+    /// spreads runs on one of them. Else it runs where it is called, and a run that spreads
+    /// nothing on the calling thread alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::Threads`] when the pool's threads cannot be started, and
+    /// else the errors of `run`.
+    pub(crate) fn confined<T: Send>(
+        &self,
+        run: impl FnOnce() -> Result<T, SimulationError> + Send,
+    ) -> Result<T, SimulationError> {
+        // A run that spreads nothing never asks for the pool it is called in, which would
+        // start rayon's global one when it is called in none.
+        let Some(most) = self.threads.filter(|&most| self.spreads() && most >= 2) else {
+            return run();
+        };
+        if most >= rayon::current_num_threads() {
+            return run();
+        }
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(most)
+            .build()
+            .map_err(|error| SimulationError::Threads {
+                threads: most,
+                reason: error.to_string(),
+            })?;
+        pool.install(run)
     }
 
     /// Whether a run may spread any of its work across threads, and so must run inside
@@ -110,8 +149,7 @@ impl Parallelism {
     #[must_use]
     pub fn evaluation(&self, instances: usize, unknowns: usize) -> Option<jolty_models::Tasks> {
         let per_task = NonZeroUsize::new(self.min_instances_per_task?)?;
-        let threads = rayon::current_num_threads();
-        let threads = self.threads.map_or(threads, |most| most.min(threads));
+        let threads = self.usable();
         if threads < 2 || instances <= per_task.get() {
             return None;
         }
@@ -129,8 +167,7 @@ impl Parallelism {
     #[must_use]
     pub(crate) fn inside(&self, unknowns: usize) -> Option<Inside> {
         let least = self.min_unknowns_inside?;
-        let threads = rayon::current_num_threads();
-        let threads = self.threads.map_or(threads, |most| most.min(threads));
+        let threads = self.usable();
         (threads >= 2 && unknowns >= least.max(1)).then_some(Inside { threads })
     }
 

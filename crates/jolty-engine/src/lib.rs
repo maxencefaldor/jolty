@@ -595,6 +595,14 @@ pub enum SimulationError {
     /// The options are out of range.
     #[error("invalid options: {0}")]
     InvalidOptions(String),
+    /// The pool of the threads a run's parallelism confines it to could not be made.
+    #[error("the run's {threads} threads could not be started: {reason}")]
+    Threads {
+        /// The threads the run may use, its parallelism's `threads`.
+        threads: usize,
+        /// Why they could not be started.
+        reason: String,
+    },
     /// The circuit holds a foundry's devices, which ngspice simulates with the foundry's
     /// models, and which the engine does not solve.
     #[error(

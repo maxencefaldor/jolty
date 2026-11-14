@@ -131,88 +131,91 @@ impl Simulator {
         noise: &Noise,
         options: &Options,
     ) -> Result<NoiseSpectrum, SimulationError> {
-        self.solvable()?;
-        let (output, reference, quantity) =
-            self.measured(&noise.output, noise.reference.as_deref())?;
-        let unknowns = self.elaborated.unknowns.len();
-        let (mut input, level) = match &noise.source {
-            Some(path) => {
-                let index = self.source_index(path)?;
-                let mut level = vec![0.0; unknowns];
-                self.state
-                    .runs
-                    .excite(&self.elaborated.groups, index, &mut level);
-                let input = NoiseInput {
-                    source: path.clone(),
-                    quantity: self.source_quantity(index),
-                    gains: Vec::with_capacity(noise.frequencies.len()),
-                };
-                (Some(input), level)
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            let (output, reference, quantity) =
+                self.measured(&noise.output, noise.reference.as_deref())?;
+            let unknowns = self.elaborated.unknowns.len();
+            let (mut input, level) = match &noise.source {
+                Some(path) => {
+                    let index = self.source_index(path)?;
+                    let mut level = vec![0.0; unknowns];
+                    self.state
+                        .runs
+                        .excite(&self.elaborated.groups, index, &mut level);
+                    let input = NoiseInput {
+                        source: path.clone(),
+                        quantity: self.source_quantity(index),
+                        gains: Vec::with_capacity(noise.frequencies.len()),
+                    };
+                    (Some(input), level)
+                }
+                None => (None, Vec::new()),
+            };
+            if let Some(frequency) = noise
+                .frequencies
+                .iter()
+                .find(|frequency| !(**frequency > 0.0 && frequency.is_finite()))
+            {
+                return Err(SimulationError::InvalidAnalysis(format!(
+                    "noise frequencies must be positive, not {frequency:?}"
+                )));
             }
-            None => (None, Vec::new()),
-        };
-        if let Some(frequency) = noise
-            .frequencies
-            .iter()
-            .find(|frequency| !(**frequency > 0.0 && frequency.is_finite()))
-        {
-            return Err(SimulationError::InvalidAnalysis(format!(
-                "noise frequencies must be positive, not {frequency:?}"
-            )));
-        }
-        let operating_point = self.linearize(&noise.frequencies, options)?;
-        let state = Input::new(&operating_point.values, None, options.gmin);
-        let (sources, mut contributions) = self.noise_sources(&state, noise.frequencies.len());
-        let referred = input.is_some();
-        let found = over_frequencies(
-            Linearization::new(&self.state.solver),
-            &self.state.workspace.contributions,
-            &noise.frequencies,
-            &options.parallelism,
-            &|factors, _, frequency| {
-                let mut weights = vec![Complex64::default(); unknowns];
-                for (node, sign) in [(output, 1.0), (reference, -1.0)] {
-                    if let Some(unknown) = node {
-                        weights[unknown.index()] += sign;
+            let operating_point = self.linearize(&noise.frequencies, options)?;
+            let state = Input::new(&operating_point.values, None, options.gmin);
+            let (sources, mut contributions) = self.noise_sources(&state, noise.frequencies.len());
+            let referred = input.is_some();
+            let found = over_frequencies(
+                Linearization::new(&self.state.solver),
+                &self.state.workspace.contributions,
+                &noise.frequencies,
+                &options.parallelism,
+                &|factors, _, frequency| {
+                    let mut weights = vec![Complex64::default(); unknowns];
+                    for (node, sign) in [(output, 1.0), (reference, -1.0)] {
+                        if let Some(unknown) = node {
+                            weights[unknown.index()] += sign;
+                        }
                     }
+                    factors.solve_transpose(&mut weights)?;
+                    let weight =
+                        |node: Node| node.map_or(Complex64::default(), |u| weights[u.index()]);
+                    let mut total = 0.0;
+                    let mut shares = Vec::with_capacity(sources.len());
+                    for source in &sources {
+                        let [positive, negative] = source.equations;
+                        let density = (weight(positive) - weight(negative)).norm_sqr()
+                            * source.density(frequency);
+                        shares.push(density);
+                        total += density;
+                    }
+                    let gain = referred.then(|| {
+                        let gain = weights.iter().zip(&level).map(|(z, &d)| z * d);
+                        -gain.sum::<Complex64>()
+                    });
+                    Ok((total, shares, gain))
+                },
+            )?;
+            let mut densities = Vec::with_capacity(noise.frequencies.len());
+            for (total, shares, gain) in found {
+                densities.push(total);
+                for (contribution, density) in contributions.iter_mut().zip(shares) {
+                    contribution.densities.push(density);
                 }
-                factors.solve_transpose(&mut weights)?;
-                let weight = |node: Node| node.map_or(Complex64::default(), |u| weights[u.index()]);
-                let mut total = 0.0;
-                let mut shares = Vec::with_capacity(sources.len());
-                for source in &sources {
-                    let [positive, negative] = source.equations;
-                    let density = (weight(positive) - weight(negative)).norm_sqr()
-                        * source.density(frequency);
-                    shares.push(density);
-                    total += density;
+                if let (Some(input), Some(gain)) = (&mut input, gain) {
+                    input.gains.push(gain);
                 }
-                let gain = referred.then(|| {
-                    let gain = weights.iter().zip(&level).map(|(z, &d)| z * d);
-                    -gain.sum::<Complex64>()
-                });
-                Ok((total, shares, gain))
-            },
-        )?;
-        let mut densities = Vec::with_capacity(noise.frequencies.len());
-        for (total, shares, gain) in found {
-            densities.push(total);
-            for (contribution, density) in contributions.iter_mut().zip(shares) {
-                contribution.densities.push(density);
             }
-            if let (Some(input), Some(gain)) = (&mut input, gain) {
-                input.gains.push(gain);
-            }
-        }
-        Ok(NoiseSpectrum {
-            output: noise.output.clone(),
-            reference: noise.reference.clone(),
-            quantity,
-            operating_point,
-            frequencies: noise.frequencies.clone(),
-            densities,
-            contributions,
-            input,
+            Ok(NoiseSpectrum {
+                output: noise.output.clone(),
+                reference: noise.reference.clone(),
+                quantity,
+                operating_point,
+                frequencies: noise.frequencies.clone(),
+                densities,
+                contributions,
+                input,
+            })
         })
     }
 }

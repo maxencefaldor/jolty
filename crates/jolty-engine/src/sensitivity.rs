@@ -211,66 +211,68 @@ impl Simulator {
         sensitivity: &Sensitivity,
         options: &Options,
     ) -> Result<Sensitivities, SimulationError> {
-        self.solvable()?;
-        let outputs = sensitivity
-            .outputs
-            .iter()
-            .map(|name| {
-                self.unknown(name)
-                    .ok_or_else(|| SimulationError::UnknownOutput(name.clone()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut twins = self.twins();
-        let (derivatives, result) = match &sensitivity.of {
-            Differentiated::OperatingPoint => {
-                let point = self.operating_point(options)?;
-                let found = self.adjoint(&outputs, &mut twins, &point.values, options)?;
-                (
-                    Derivatives::Real(vec![found]),
-                    Outcome::OperatingPoint(point),
-                )
-            }
-            Differentiated::DcSweep(sweep) => {
-                let result = self.dc_sweep(sweep, options)?;
-                let swept = self.swept(sweep)?;
-                let found =
-                    self.along_sweep(&outputs, &mut twins, (swept, sweep), &result, options);
-                self.hold(swept, None)?;
-                (Derivatives::Real(found?), Outcome::DcSweep(result))
-            }
-            Differentiated::Ac(ac) => {
-                let response = self.ac(ac, options)?;
-                let found = self.over_frequency(&outputs, &mut twins, &response, options)?;
-                (Derivatives::Complex(found), Outcome::Ac(response))
-            }
-            Differentiated::Transient(transient) => {
-                if transient.periodic {
-                    return Err(SimulationError::InvalidAnalysis(
-                        "a sensitivity differentiates a transient from its operating point, \
-                         not a periodic steady state"
-                            .to_owned(),
-                    ));
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            let outputs = sensitivity
+                .outputs
+                .iter()
+                .map(|name| {
+                    self.unknown(name)
+                        .ok_or_else(|| SimulationError::UnknownOutput(name.clone()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut twins = self.twins();
+            let (derivatives, result) = match &sensitivity.of {
+                Differentiated::OperatingPoint => {
+                    let point = self.operating_point(options)?;
+                    let found = self.adjoint(&outputs, &mut twins, &point.values, options)?;
+                    (
+                        Derivatives::Real(vec![found]),
+                        Outcome::OperatingPoint(point),
+                    )
                 }
-                let mut forward = Forward {
-                    outputs,
-                    twins,
-                    tangents: Vec::new(),
-                    found: Vec::new(),
-                };
-                let carried = Carried::Forward(&mut forward);
-                let waveforms = self.transient_with(transient, options, None, carried)?;
-                twins = forward.twins;
-                (
-                    Derivatives::Real(forward.found),
-                    Outcome::Transient(waveforms),
-                )
-            }
-        };
-        Ok(Sensitivities {
-            outputs: sensitivity.outputs.clone(),
-            parameters: twins.into_iter().map(|twin| twin.parameter).collect(),
-            derivatives,
-            result: Box::new(result),
+                Differentiated::DcSweep(sweep) => {
+                    let result = self.dc_sweep(sweep, options)?;
+                    let swept = self.swept(sweep)?;
+                    let found =
+                        self.along_sweep(&outputs, &mut twins, (swept, sweep), &result, options);
+                    self.hold(swept, None)?;
+                    (Derivatives::Real(found?), Outcome::DcSweep(result))
+                }
+                Differentiated::Ac(ac) => {
+                    let response = self.ac(ac, options)?;
+                    let found = self.over_frequency(&outputs, &mut twins, &response, options)?;
+                    (Derivatives::Complex(found), Outcome::Ac(response))
+                }
+                Differentiated::Transient(transient) => {
+                    if transient.periodic {
+                        return Err(SimulationError::InvalidAnalysis(
+                            "a sensitivity differentiates a transient from its operating point, \
+                             not a periodic steady state"
+                                .to_owned(),
+                        ));
+                    }
+                    let mut forward = Forward {
+                        outputs,
+                        twins,
+                        tangents: Vec::new(),
+                        found: Vec::new(),
+                    };
+                    let carried = Carried::Forward(&mut forward);
+                    let waveforms = self.transient_with(transient, options, None, carried)?;
+                    twins = forward.twins;
+                    (
+                        Derivatives::Real(forward.found),
+                        Outcome::Transient(waveforms),
+                    )
+                }
+            };
+            Ok(Sensitivities {
+                outputs: sensitivity.outputs.clone(),
+                parameters: twins.into_iter().map(|twin| twin.parameter).collect(),
+                derivatives,
+                result: Box::new(result),
+            })
         })
     }
 
@@ -288,25 +290,27 @@ impl Simulator {
         &mut self,
         options: &Options,
     ) -> Result<(OperatingPoint, Vec<f64>), SimulationError> {
-        self.solvable()?;
-        let point = self.operating_point(options)?;
-        self.evaluate(&point.values, None, (1.0, 2.0 * options.gmin), false);
-        let doubled = self.state.workspace.contributions.residual.clone();
-        self.evaluate(&point.values, None, (1.0, options.gmin), false);
-        let mut moves: Vec<f64> = self
-            .state
-            .workspace
-            .contributions
-            .residual
-            .iter()
-            .zip(&doubled)
-            .map(|(residual, doubled)| residual - doubled)
-            .collect();
-        self.state
-            .solver
-            .factor(&self.state.workspace.contributions.conductance)?
-            .solve(&mut moves)?;
-        Ok((point, moves))
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            let point = self.operating_point(options)?;
+            self.evaluate(&point.values, None, (1.0, 2.0 * options.gmin), false);
+            let doubled = self.state.workspace.contributions.residual.clone();
+            self.evaluate(&point.values, None, (1.0, options.gmin), false);
+            let mut moves: Vec<f64> = self
+                .state
+                .workspace
+                .contributions
+                .residual
+                .iter()
+                .zip(&doubled)
+                .map(|(residual, doubled)| residual - doubled)
+                .collect();
+            self.state
+                .solver
+                .factor(&self.state.workspace.contributions.conductance)?
+                .solve(&mut moves)?;
+            Ok((point, moves))
+        })
     }
 
     /// A twin of every device, for each number of its parameters its model reads as a

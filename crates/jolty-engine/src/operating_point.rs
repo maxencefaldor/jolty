@@ -215,9 +215,11 @@ impl Simulator {
         &mut self,
         options: &Options,
     ) -> Result<OperatingPoint, SimulationError> {
-        self.solvable()?;
-        self.prepare(options)?;
-        Ok(self.settled_from_zero(options)?.1)
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            self.prepare(options)?;
+            Ok(self.settled_from_zero(options)?.1)
+        })
     }
 
     /// The DC solution from zero and the operating point the logic settled at from it: the
@@ -422,38 +424,40 @@ impl Simulator {
         search: &OperatingPoints,
         options: &Options,
     ) -> Result<Vec<OperatingPoint>, SimulationError> {
-        self.solvable()?;
-        self.prepare(options)?;
-        if search.most == 0 {
-            return Err(SimulationError::InvalidAnalysis(
-                "a search for operating points finds one or more".to_owned(),
-            ));
-        }
-        let (first, point) = self.settled_from_zero(options)?;
-        if search.most == 1 {
-            return Ok(vec![point]);
-        }
-        // The search starts with every logic driver at its unknown level, as the operating
-        // point did, and the logic settles with each solution afresh.
-        self.reset_logic();
-        let mut known = vec![first.values];
-        let mut others = Vec::new();
-        while known.len() < search.most {
-            let Some(solved) = self.another(&known, options) else {
-                break;
-            };
-            known.push(solved.values.clone());
-            others.push(solved);
-        }
-        if others.is_empty() {
-            self.restore(options);
-        }
-        let mut points = vec![point];
-        for solved in others {
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            self.prepare(options)?;
+            if search.most == 0 {
+                return Err(SimulationError::InvalidAnalysis(
+                    "a search for operating points finds one or more".to_owned(),
+                ));
+            }
+            let (first, point) = self.settled_from_zero(options)?;
+            if search.most == 1 {
+                return Ok(vec![point]);
+            }
+            // The search starts with every logic driver at its unknown level, as the operating
+            // point did, and the logic settles with each solution afresh.
             self.reset_logic();
-            points.push(self.settle(solved, options)?);
-        }
-        Ok(points)
+            let mut known = vec![first.values];
+            let mut others = Vec::new();
+            while known.len() < search.most {
+                let Some(solved) = self.another(&known, options) else {
+                    break;
+                };
+                known.push(solved.values.clone());
+                others.push(solved);
+            }
+            if others.is_empty() {
+                self.restore(options);
+            }
+            let mut points = vec![point];
+            for solved in others {
+                self.reset_logic();
+                points.push(self.settle(solved, options)?);
+            }
+            Ok(points)
+        })
     }
 
     /// A DC solution distinct from every one `known`, from zero or else from the

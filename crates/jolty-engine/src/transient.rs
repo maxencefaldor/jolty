@@ -516,11 +516,13 @@ impl Simulator {
         transient: &Transient,
         options: &Options,
     ) -> Result<Waveforms, SimulationError> {
-        self.solvable()?;
-        if transient.periodic {
-            return self.periodic_steady_state(transient, options);
-        }
-        self.transient_with(transient, options, None, Carried::Nothing)
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            if transient.periodic {
+                return self.periodic_steady_state(transient, options);
+            }
+            self.transient_with(transient, options, None, Carried::Nothing)
+        })
     }
 
     /// The longest step `transient` allows, after checking its times.

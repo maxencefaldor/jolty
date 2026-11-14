@@ -82,41 +82,43 @@ impl Simulator {
         sweep: &DcSweep,
         options: &Options,
     ) -> Result<Sweep, SimulationError> {
-        self.solvable()?;
-        self.prepare(options)?;
-        if sweep.levels.is_empty() {
-            return Err(SimulationError::InvalidAnalysis(
-                "a DC sweep needs at least one level".to_owned(),
-            ));
-        }
-        if let Some(level) = sweep.levels.iter().find(|level| !level.is_finite()) {
-            return Err(SimulationError::InvalidAnalysis(format!(
-                "a DC sweep's levels must be finite, not {level:?}"
-            )));
-        }
-        let swept = self.swept(sweep)?;
-        let result = self.sweep_levels(swept, &sweep.levels, options);
-        self.hold(swept, None)?;
-        let points = result?;
-        let mut values = Vec::with_capacity(points.len());
-        let mut observations = Observations::default();
-        let mut logic = Vec::with_capacity(points.len());
-        for point in points {
-            values.push(point.values);
-            observations.push(&point.observation);
-            logic.push(point.logic);
-        }
-        Ok(Sweep {
-            source: sweep.source.clone(),
-            parameter: sweep.parameter.clone(),
-            quantity: sweep
-                .parameter
-                .is_none()
-                .then(|| self.source_quantity(swept.device)),
-            levels: sweep.levels.clone(),
-            values,
-            observations,
-            logic,
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            self.prepare(options)?;
+            if sweep.levels.is_empty() {
+                return Err(SimulationError::InvalidAnalysis(
+                    "a DC sweep needs at least one level".to_owned(),
+                ));
+            }
+            if let Some(level) = sweep.levels.iter().find(|level| !level.is_finite()) {
+                return Err(SimulationError::InvalidAnalysis(format!(
+                    "a DC sweep's levels must be finite, not {level:?}"
+                )));
+            }
+            let swept = self.swept(sweep)?;
+            let result = self.sweep_levels(swept, &sweep.levels, options);
+            self.hold(swept, None)?;
+            let points = result?;
+            let mut values = Vec::with_capacity(points.len());
+            let mut observations = Observations::default();
+            let mut logic = Vec::with_capacity(points.len());
+            for point in points {
+                values.push(point.values);
+                observations.push(&point.observation);
+                logic.push(point.logic);
+            }
+            Ok(Sweep {
+                source: sweep.source.clone(),
+                parameter: sweep.parameter.clone(),
+                quantity: sweep
+                    .parameter
+                    .is_none()
+                    .then(|| self.source_quantity(swept.device)),
+                levels: sweep.levels.clone(),
+                values,
+                observations,
+                logic,
+            })
         })
     }
 

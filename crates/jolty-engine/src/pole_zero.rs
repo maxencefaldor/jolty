@@ -136,72 +136,75 @@ impl Simulator {
         analysis: &PoleZero,
         options: &Options,
     ) -> Result<PolesZeros, SimulationError> {
-        self.solvable()?;
-        let transfer = match (&analysis.source, &analysis.output) {
-            (Some(source), Some(output)) => {
-                let index = self.source_index(source)?;
-                let (output, reference, _) =
-                    self.measured(output, analysis.reference.as_deref())?;
-                Some((index, output, reference))
-            }
-            (None, None) if analysis.reference.is_none() => None,
-            _ => {
-                return Err(SimulationError::InvalidAnalysis(
-                    "a pole-zero analysis's zeros need a source and an output, both or neither"
-                        .to_owned(),
-                ));
-            }
-        };
-        options.check()?;
-        self.pencils_fit(transfer.is_some(), options)?;
-        let operating_point = self.linearized(options)?;
-        let n = self.elaborated.unknowns.len();
-        let (conductance, capacitance) = self.dense_pencil();
-        let poles = roots(n, conductance.clone(), capacitance.clone())?.ok_or_else(everywhere)?;
-        let zeros = match transfer {
-            Some((index, output, reference)) => {
-                let mut level = vec![0.0; n];
-                self.state
-                    .runs
-                    .excite(&self.elaborated.groups, index, &mut level);
-                let mut read = vec![0.0; n];
-                for (node, sign) in [(output, 1.0), (reference, -1.0)] {
-                    if let Some(unknown) = node {
-                        read[unknown.index()] += sign;
-                    }
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            let transfer = match (&analysis.source, &analysis.output) {
+                (Some(source), Some(output)) => {
+                    let index = self.source_index(source)?;
+                    let (output, reference, _) =
+                        self.measured(output, analysis.reference.as_deref())?;
+                    Some((index, output, reference))
                 }
-                let (g, c) = bordered(n, &conductance, &capacitance, &level, &read);
-                let zeros = roots(n + 1, g, c)?.ok_or_else(|| {
-                    SimulationError::InvalidAnalysis(
-                        "the transfer function from the source to the output is zero at every \
-                         frequency, so it has no zeros"
+                (None, None) if analysis.reference.is_none() => None,
+                _ => {
+                    return Err(SimulationError::InvalidAnalysis(
+                        "a pole-zero analysis's zeros need a source and an output, both or neither"
                             .to_owned(),
+                    ));
+                }
+            };
+            options.check()?;
+            self.pencils_fit(transfer.is_some(), options)?;
+            let operating_point = self.linearized(options)?;
+            let n = self.elaborated.unknowns.len();
+            let (conductance, capacitance) = self.dense_pencil();
+            let poles =
+                roots(n, conductance.clone(), capacitance.clone())?.ok_or_else(everywhere)?;
+            let zeros = match transfer {
+                Some((index, output, reference)) => {
+                    let mut level = vec![0.0; n];
+                    self.state
+                        .runs
+                        .excite(&self.elaborated.groups, index, &mut level);
+                    let mut read = vec![0.0; n];
+                    for (node, sign) in [(output, 1.0), (reference, -1.0)] {
+                        if let Some(unknown) = node {
+                            read[unknown.index()] += sign;
+                        }
+                    }
+                    let (g, c) = bordered(n, &conductance, &capacitance, &level, &read);
+                    let zeros = roots(n + 1, g, c)?.ok_or_else(|| {
+                        SimulationError::InvalidAnalysis(
+                            "the transfer function from the source to the output is zero at every \
+                             frequency, so it has no zeros"
+                                .to_owned(),
+                        )
+                    })?;
+                    let largest = poles.iter().chain(&zeros).map(|root| root.norm());
+                    let origin = ORIGIN * largest.fold(0.0, f64::max);
+                    Some(
+                        zeros
+                            .into_iter()
+                            .map(|zero| {
+                                if zero.norm() <= origin {
+                                    Complex64::default()
+                                } else {
+                                    zero
+                                }
+                            })
+                            .collect(),
                     )
-                })?;
-                let largest = poles.iter().chain(&zeros).map(|root| root.norm());
-                let origin = ORIGIN * largest.fold(0.0, f64::max);
-                Some(
-                    zeros
-                        .into_iter()
-                        .map(|zero| {
-                            if zero.norm() <= origin {
-                                Complex64::default()
-                            } else {
-                                zero
-                            }
-                        })
-                        .collect(),
-                )
-            }
-            None => None,
-        };
-        Ok(PolesZeros {
-            source: analysis.source.clone(),
-            output: analysis.output.clone(),
-            reference: analysis.reference.clone(),
-            operating_point,
-            poles,
-            zeros,
+                }
+                None => None,
+            };
+            Ok(PolesZeros {
+                source: analysis.source.clone(),
+                output: analysis.output.clone(),
+                reference: analysis.reference.clone(),
+                operating_point,
+                poles,
+                zeros,
+            })
         })
     }
 
@@ -213,36 +216,38 @@ impl Simulator {
     ///
     /// Returns the errors of [`Simulator::pole_zero`] without a source.
     pub fn growing_modes(&mut self, options: &Options) -> Result<Vec<Mode>, SimulationError> {
-        self.solvable()?;
-        options.check()?;
-        self.pencils_fit(false, options)?;
-        self.linearized(options)?;
-        let n = self.elaborated.unknowns.len();
-        let (conductance, capacitance) = self.dense_pencil();
-        let poles = roots(n, conductance, capacitance)?.ok_or_else(everywhere)?;
-        let mut growing: Vec<Complex64> = poles
-            .into_iter()
-            .filter(|pole| pole.re > GROWING * pole.norm() && pole.im >= 0.0)
-            .collect();
-        growing.sort_by(|x, y| y.re.total_cmp(&x.re));
-        let mut linearization = Linearization::new(&self.state.solver);
-        growing
-            .into_iter()
-            .map(|pole| {
-                let beside = pole * Complex64::new(1.0, BESIDE);
-                let mut factors =
-                    linearization.factor_at(&self.state.workspace.contributions, beside)?;
-                let mut shape = vec![Complex64::new(1.0, 0.0); n];
-                for _ in 0..ITERATIONS {
-                    factors.solve(&mut shape)?;
-                    let largest = shape.iter().map(|value| value.norm()).fold(0.0, f64::max);
-                    for value in &mut shape {
-                        *value /= largest;
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            options.check()?;
+            self.pencils_fit(false, options)?;
+            self.linearized(options)?;
+            let n = self.elaborated.unknowns.len();
+            let (conductance, capacitance) = self.dense_pencil();
+            let poles = roots(n, conductance, capacitance)?.ok_or_else(everywhere)?;
+            let mut growing: Vec<Complex64> = poles
+                .into_iter()
+                .filter(|pole| pole.re > GROWING * pole.norm() && pole.im >= 0.0)
+                .collect();
+            growing.sort_by(|x, y| y.re.total_cmp(&x.re));
+            let mut linearization = Linearization::new(&self.state.solver);
+            growing
+                .into_iter()
+                .map(|pole| {
+                    let beside = pole * Complex64::new(1.0, BESIDE);
+                    let mut factors =
+                        linearization.factor_at(&self.state.workspace.contributions, beside)?;
+                    let mut shape = vec![Complex64::new(1.0, 0.0); n];
+                    for _ in 0..ITERATIONS {
+                        factors.solve(&mut shape)?;
+                        let largest = shape.iter().map(|value| value.norm()).fold(0.0, f64::max);
+                        for value in &mut shape {
+                            *value /= largest;
+                        }
                     }
-                }
-                Ok(Mode { pole, shape })
-            })
-            .collect()
+                    Ok(Mode { pole, shape })
+                })
+                .collect()
+        })
     }
 
     /// Checks that the dense pencils of a pole-zero analysis fit the options' `memory`,
