@@ -142,6 +142,10 @@ pub trait Kernel: Send + Sync + 'static {
     }
 }
 
+/// The local unknowns among the first of which [`Layout::entry`] finds the claim of a pair
+/// again at once, by the pair; it searches the claims for any other pair.
+const INDEXED: usize = 16;
+
 /// The local unknowns and entries an instance claims: its terminals, then each internal
 /// unknown it adds, and each pair of them whose derivative it writes, once.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -149,6 +153,9 @@ pub struct Layout {
     terminals: usize,
     internals: Vec<(&'static str, Quantity)>,
     entries: Vec<(usize, usize)>,
+    /// One more than the local index of the entry claimed at each pair of the first
+    /// [`INDEXED`] local unknowns, row by row, or zero for none.
+    claimed: [[u16; INDEXED]; INDEXED],
 }
 
 impl Layout {
@@ -160,6 +167,7 @@ impl Layout {
             terminals,
             internals: Vec::new(),
             entries: Vec::new(),
+            claimed: [[0; INDEXED]; INDEXED],
         }
     }
 
@@ -168,6 +176,7 @@ impl Layout {
         self.terminals = terminals;
         self.internals.clear();
         self.entries.clear();
+        self.claimed = [[0; INDEXED]; INDEXED];
     }
 
     /// Adds an internal unknown, of `quantity`, labelled `label` after the instance's path,
@@ -182,11 +191,26 @@ impl Layout {
     /// to one pair add in one place, in the order the instance makes them.
     pub fn entry(&mut self, row: usize, column: usize) -> usize {
         let pair = (row, column);
-        if let Some(found) = self.entries.iter().position(|&claimed| claimed == pair) {
+        let index = self
+            .claimed
+            .get_mut(row)
+            .and_then(|columns| columns.get_mut(column));
+        let found = match index.as_deref() {
+            Some(&one_more) if one_more > 0 => Some(usize::from(one_more) - 1),
+            // A pair among the first local unknowns is held there once claimed, while its
+            // claim's index is within reach.
+            Some(_) if self.entries.len() < usize::from(u16::MAX) => None,
+            _ => self.entries.iter().position(|&claimed| claimed == pair),
+        };
+        if let Some(found) = found {
             return found;
         }
         self.entries.push(pair);
-        self.entries.len() - 1
+        let claimed = self.entries.len() - 1;
+        if let (Some(slot), Ok(one_more)) = (index, u16::try_from(claimed + 1)) {
+            *slot = one_more;
+        }
+        claimed
     }
 
     /// The number of terminals.

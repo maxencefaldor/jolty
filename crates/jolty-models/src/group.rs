@@ -19,6 +19,7 @@
 use std::any::{Any, TypeId};
 use std::fmt;
 use std::num::NonZeroUsize;
+use std::sync::OnceLock;
 
 use jolty_numerics::{Entry, GatherMap, Pattern, UNMAPPED};
 use rayon::prelude::*;
@@ -247,11 +248,17 @@ pub struct Groups {
     /// index, or `None` for a device of no kernel.
     places: Vec<Option<(usize, usize)>>,
     /// The sources of each unknown's residual, scale and charge, and of each stored
-    /// entry's conductance and capacitance, among the slab's.
-    rows: GatherMap,
-    slots: GatherMap,
+    /// entry's conductance and capacitance, among the slab's, made the first time a run
+    /// gathers its slab, as a run evaluated serially never does: a function of the rest,
+    /// which they never change.
+    gathers: OnceLock<(GatherMap, GatherMap)>,
+    /// The circuit's unknowns and stored entries, the targets of the gathers.
+    targets: (usize, usize),
     /// The slab's local unknowns and local entries.
     sizes: (usize, usize),
+    /// The layout each instance added claims, and its local unknowns' nodes, kept to be
+    /// used again.
+    scratch: (Layout, Vec<Node>),
 }
 
 /// Why a circuit's groups cannot be made: their slab, or the circuit, has more places than
@@ -289,9 +296,10 @@ impl Groups {
         binding: &mut Binding<'_>,
     ) -> Result<(), ParameterError> {
         let terminals = binding.terminals().len();
-        let mut layout = Layout::new(terminals);
+        let (layout, nodes) = &mut self.scratch;
+        layout.clear(terminals);
         let temperature = instance.own.temperature(temperature)?;
-        let made = (instance.made)(instance.parameters, temperature, &mut layout)?;
+        let made = (instance.made)(instance.parameters, temperature, layout)?;
         let found = self.kernels.iter().position(|group| {
             group.shaped.kernel() == instance.kernel && group.shaped.same(made.shaped())
         });
@@ -309,7 +317,8 @@ impl Groups {
             self.kernels.len() - 1
         });
         runs.groups[index].push(made.into_any());
-        let mut nodes: Vec<Node> = binding.terminals().to_vec();
+        nodes.clear();
+        nodes.extend_from_slice(binding.terminals());
         for &(label, quantity) in layout.internals() {
             nodes.push(Some(binding.internal(label, quantity)));
         }
@@ -362,25 +371,8 @@ impl Groups {
             return Err(TooLarge);
         }
         self.sizes = (rows, stored);
-        let sources = |starts: fn(&Group) -> usize, maps: fn(&Group) -> &[u32]| {
-            self.kernels.iter().flat_map(move |group| {
-                let start = starts(group);
-                maps(group)
-                    .iter()
-                    .enumerate()
-                    .map(move |(offset, &target)| {
-                        (target, u32::try_from(start + offset).unwrap_or(UNMAPPED))
-                    })
-            })
-        };
-        self.rows = GatherMap::new(
-            pattern.dimension(),
-            sources(|group| group.starts.0, |group| &group.nodes),
-        );
-        self.slots = GatherMap::new(
-            pattern.len(),
-            sources(|group| group.starts.1, |group| &group.slots),
-        );
+        self.targets = (pattern.dimension(), pattern.len());
+        self.scratch = (Layout::default(), Vec::new());
         runs.slab = Slab::sized(self.sizes);
         Ok(())
     }
@@ -402,8 +394,32 @@ impl Groups {
     /// unknown's residual, scale and charge, and to each stored entry's conductance and
     /// capacitance, in the order they add.
     #[must_use]
-    pub const fn gathers(&self) -> (&GatherMap, &GatherMap) {
-        (&self.rows, &self.slots)
+    pub fn gathers(&self) -> (&GatherMap, &GatherMap) {
+        let (rows, slots) = self.gathers.get_or_init(|| {
+            let sources = |starts: fn(&Group) -> usize, maps: fn(&Group) -> &[u32]| {
+                self.kernels.iter().flat_map(move |group| {
+                    let start = starts(group);
+                    maps(group)
+                        .iter()
+                        .enumerate()
+                        .map(move |(offset, &target)| {
+                            (target, u32::try_from(start + offset).unwrap_or(UNMAPPED))
+                        })
+                })
+            };
+            let (unknowns, stored) = self.targets;
+            (
+                GatherMap::new(
+                    unknowns,
+                    sources(|group| group.starts.0, |group| &group.nodes),
+                ),
+                GatherMap::new(
+                    stored,
+                    sources(|group| group.starts.1, |group| &group.slots),
+                ),
+            )
+        });
+        (rows, slots)
     }
 
     /// The number of groups of kernels' instances.
@@ -699,21 +715,12 @@ impl Runs {
             let per_task = tasks.targets.get();
             let [residual, scale, charge] = &self.slab.rows;
             let [conductance, capacitance] = &self.slab.entries;
-            groups
-                .rows
-                .add_in_parallel(residual, &mut into.residual, per_task);
-            groups
-                .rows
-                .raise_in_parallel(scale, &mut into.scale, per_task);
-            groups
-                .rows
-                .add_in_parallel(charge, &mut into.charge, per_task);
-            groups
-                .slots
-                .add_in_parallel(conductance, &mut into.conductance, per_task);
-            groups
-                .slots
-                .add_in_parallel(capacitance, &mut into.capacitance, per_task);
+            let (rows, slots) = groups.gathers();
+            rows.add_in_parallel(residual, &mut into.residual, per_task);
+            rows.raise_in_parallel(scale, &mut into.scale, per_task);
+            rows.add_in_parallel(charge, &mut into.charge, per_task);
+            slots.add_in_parallel(conductance, &mut into.conductance, per_task);
+            slots.add_in_parallel(capacitance, &mut into.capacitance, per_task);
         }
         limited
     }
