@@ -68,15 +68,26 @@ impl Method {
         by_charge.max(by_current)
     }
 
-    /// The constant of the leading error term times the factorial that turns a divided
-    /// difference into a derivative: ½ · 2! for backward Euler, 1/12 · 3! for the
-    /// trapezoidal formula and 2/9 · 3! for Gear2.
-    fn constant_times_factorial(self) -> f64 {
+    /// `(p+1)!`, the factorial that turns a divided difference of order `p + 1` into a
+    /// derivative: how many times SPICE's estimate of a step's error, the error constant
+    /// times the divided difference, the error is.
+    #[must_use]
+    pub const fn factorial(self) -> f64 {
         match self {
-            Self::BackwardEuler => 1.0 / 2.0 * 2.0,
-            Self::Trapezoidal => 1.0 / 12.0 * 6.0,
-            Self::Gear2 => 2.0 / 9.0 * 6.0,
+            Self::BackwardEuler => 2.0,
+            Self::Trapezoidal | Self::Gear2 => 6.0,
         }
+    }
+
+    /// The constant of the leading error term times [`Method::factorial`]: ½ · 2! for
+    /// backward Euler, 1/12 · 3! for the trapezoidal formula and 2/9 · 3! for Gear2.
+    fn constant_times_factorial(self) -> f64 {
+        let constant = match self {
+            Self::BackwardEuler => 1.0 / 2.0,
+            Self::Trapezoidal => 1.0 / 12.0,
+            Self::Gear2 => 2.0 / 9.0,
+        };
+        constant * self.factorial()
     }
 
     /// The power of the step in the error of one step, `p + 1`.

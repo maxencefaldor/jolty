@@ -477,11 +477,17 @@ fn rc_step_error(method: Method, options: &Options) -> (f64, usize) {
 }
 
 /// At SPICE's default tolerances, each method stays within its order's accuracy, and every
-/// method converges: tightening the tolerances shrinks the error severalfold.
+/// method converges at its order.
+///
+/// A step of order `p` whose error is held to a tolerance on the charge is as long as that
+/// tolerance to the power `1/(p+1)`, so the error the steps add up to shrinks as the
+/// tolerance to the power `p/(p+1)`. From a relative tolerance of 1e-6 to one of 1e-8, the
+/// tolerances and not the longest step limit every method's steps, and the error shrinks
+/// with an exponent within a tenth of that.
 #[test]
 fn an_rc_charges_exponentially_with_every_method() {
-    let tight = Options {
-        relative_tolerance: 1e-6,
+    let tight = |relative_tolerance| Options {
+        relative_tolerance,
         charge_tolerance: 1e-18,
         ..Options::default()
     };
@@ -491,14 +497,17 @@ fn an_rc_charges_exponentially_with_every_method() {
         (Method::Gear2, 2e-3),
     ] {
         let (loose_error, _) = rc_step_error(method, &Options::default());
-        let (tight_error, steps) = rc_step_error(method, &tight);
         assert!(
             loose_error < bound,
             "{method:?}: error {loose_error:e} at default tolerances"
         );
+        let (tight_error, steps) = rc_step_error(method, &tight(1e-6));
+        let (tighter_error, _) = rc_step_error(method, &tight(1e-8));
+        let order = f64::from(u32::try_from(method.order()).unwrap());
+        let exponent = (tight_error / tighter_error).log10() / 2.0;
         assert!(
-            tight_error < loose_error / 5.0,
-            "{method:?}: {tight_error:e} vs {loose_error:e}"
+            exponent > order / (order + 1.0) - 0.1,
+            "{method:?}: {tight_error:e} at 1e-6, {tighter_error:e} at 1e-8"
         );
         assert!(steps < 2000, "{method:?}: {steps} steps");
     }
@@ -902,6 +911,13 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
     // starts the capacitor's exponential there, with no overshoot. At 1.03 ms the jump
     // comes late in a step of 40 µs, so the first step after it, a tenth of the one before,
     // spans several of the capacitor's 1 µs time constants unless its error is judged.
+    // Judged, it is off by no more than the tolerances allow a step of backward Euler on
+    // the 5 V the capacitor charges to, where an unjudged one would be off by volts.
+    let options = Options::default();
+    let allowed = options.truncation_tolerance
+        * Method::BackwardEuler.factorial()
+        * options.relative_tolerance
+        * 5.0;
     let jumps = [
         (1.0003e-3, ["time > 1.0003e-3", "v(ramp) > 2.50075"]),
         (1.03e-3, ["time > 1.03e-3", "v(ramp) > 2.575"]),
@@ -920,7 +936,7 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
             periodic: false,
         };
         let outcome = simulator
-            .run(&Analysis::Transient(transient), &Options::default())
+            .run(&Analysis::Transient(transient), &options)
             .unwrap();
         let Outcome::Transient(waveforms) = outcome else {
             panic!("a transient outcome")
@@ -933,7 +949,7 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
                 0.0
             };
             assert!(
-                (values[cap] - expected).abs() < 2e-2,
+                (values[cap] - expected).abs() < allowed,
                 "{condition}: at {time} s the capacitor holds {} V, not {expected} V",
                 values[cap]
             );

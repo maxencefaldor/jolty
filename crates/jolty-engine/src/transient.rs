@@ -1178,7 +1178,10 @@ impl Simulator {
     /// `None` while too few points follow the last corner to estimate it.
     ///
     /// A charge's tolerance is the larger of a relative tolerance on the charge itself and one
-    /// on the current it carries over the step, scaled by the truncation tolerance.
+    /// on the current it carries over the step, scaled by the truncation tolerance. That
+    /// tolerance bounds the error as SPICE's `TRTOL` does, as SPICE estimates it: the error
+    /// constant times the divided difference, without the factorial that makes the
+    /// divided difference a derivative, so the error itself may be `(p+1)!` times larger.
     fn judge(
         &mut self,
         method: Method,
@@ -1209,6 +1212,7 @@ impl Simulator {
             })
             .collect();
         let differences = self.filtered(differences, span.alpha);
+        let scale = options.truncation_tolerance * method.factorial();
         let mut worst = Judgement {
             ratio: 0.0,
             worst: 0,
@@ -1226,15 +1230,15 @@ impl Simulator {
                 .max(span.derivative.1[index].abs());
             let current_tolerance =
                 span.length * (options.relative_tolerance * current + absolute_current);
-            let tolerance = options.truncation_tolerance * charge_tolerance.max(current_tolerance);
+            let tolerance = scale * charge_tolerance.max(current_tolerance);
             if error / tolerance > worst.ratio {
                 worst.ratio = error / tolerance;
                 worst.worst = index;
             }
             let longest = method.longest_step(
                 difference,
-                options.truncation_tolerance * charge_tolerance,
-                options.truncation_tolerance * current_tolerance / span.length,
+                scale * charge_tolerance,
+                scale * current_tolerance / span.length,
             );
             worst.longest = worst.longest.min(longest);
         }

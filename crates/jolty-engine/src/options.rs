@@ -63,8 +63,10 @@ pub struct Options {
     pub dc_iterations: usize,
     /// The Newton iterations allowed for one time step before the step is shortened; default 10.
     pub transient_iterations: usize,
-    /// How many times the estimated truncation error may exceed the tolerances before a step
-    /// is rejected; default 7, which accounts for the estimate's pessimism.
+    /// How many times the tolerances a step's truncation error may reach, as SPICE estimates
+    /// the error, before the step is rejected; default 7, SPICE's `TRTOL`. SPICE's estimate
+    /// leaves out a factorial, so the error itself may reach twice as many after a step of
+    /// backward Euler, and six times as many after one of the second-order formulas.
     pub truncation_tolerance: f64,
     /// The gibibytes of numbers an analysis may hold at once: a transient's results, every
     /// unknown's and every device's at each point, and the dense matrices of a pole-zero
