@@ -526,12 +526,20 @@ def _memristor(
     state moves, from an initial condition at the state it was made in; elsewhere, as
     at an operating point and in the analyses about it, a source holds it at that
     state, as jolty's does.
+
+    ngspice differentiates `max(a, b)` as `a - b > 0 ? da : db`, and `min(a, b)` as
+    `a - b < 0 ? da : db`, so where the two are equal it takes the second's slope. Each
+    `max` and `min` here puts second the side whose slope jolty takes there: the state
+    held within its bounds counts its slope at them, the window slows the drive by its
+    exponential at the bound itself, and a drive of zero moves toward on. At a bound,
+    where the window stops the state, ngspice's Newton iteration then has jolty's
+    Jacobian rather than a slope of zero.
     """
     given = _defaulted(model, values)
     made = _number(id, given, "state")
     node = f"_{id}_state"
     state = f"V({node})"
-    held = f"min(max({state},0),1)"
+    held = f"min(1,max(0,{state}))"
     on, off = (_number(id, given, key) for key in ("on_resistance", "off_resistance"))
     conductance = (
         f"(1/({on!r}+{off - on!r}*{held}))"
@@ -552,9 +560,9 @@ def _memristor(
         drive = f"{voltage}*{conductance}/{given['charge']!r}"
     window = given["window"]
     off_distance, on_distance = f"(1-{state})/{window!r}", f"{state}/{window!r}"
-    toward_off = f"(1-exp(-max({off_distance},0))+min({off_distance},0))"
-    toward_on = f"(1-exp(-max({on_distance},0))+min({on_distance},0))"
-    rate = f"max({drive},0)*{toward_off}+min({drive},0)*{toward_on}"
+    toward_off = f"(1-exp(-max(0,{off_distance}))+min({off_distance},0))"
+    toward_on = f"(1-exp(-max(0,{on_distance}))+min({on_distance},0))"
+    rate = f"max({drive},0)*{toward_off}+min(0,{drive})*{toward_on}"
     lines = [
         f"B{id}_state 0 {node} I={{{STATE_CAPACITANCE!r}*({rate})}}",
         f"C{id}_state {node} 0 {STATE_CAPACITANCE!r}",
