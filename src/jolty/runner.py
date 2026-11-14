@@ -98,6 +98,16 @@ _LIBRARIES: Final = tuple(
 """Where code that is not a script lives: jolty, the standard library, packages."""
 
 
+class Thresholds(BaseModel):
+    """The thresholds of the parallelism a job sets in place of its plan's."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    min_solves_per_task: int | None = Field(default=None, ge=1)
+    min_instances_per_task: int | None = Field(default=None, ge=1)
+    min_unknowns_inside: int | None = Field(default=None, ge=1)
+
+
 class Job(BaseModel):
     """What the runner runs."""
 
@@ -127,6 +137,10 @@ class Job(BaseModel):
         default_factory=list,
         description="The unknowns a batch traces for its plots; by default the nets "
         "the top component names, as a plot draws them.",
+    )
+    parallelism: Thresholds = Field(
+        default_factory=Thresholds,
+        description="The thresholds of the plan's parallelism replaced, where given.",
     )
 
 
@@ -252,6 +266,9 @@ def _run(job: Job, directory: Path) -> Built:
         raise ScriptError(message)
     if job.record is not None:
         plan = replace(plan, record=job.record)
+    if given := job.parallelism.model_dump(exclude_none=True):
+        spread = replace(plan.options.parallelism, **given)
+        plan = replace(plan, options=replace(plan.options, parallelism=spread))
     cache: fidelity.Cache = {}
     chosen = fidelity.resolve(built, plan, plan.temperature, cache, plan.process)
     if plan.temperature is not None or plan.process is not None or chosen.matched:

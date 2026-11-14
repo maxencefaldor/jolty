@@ -3,13 +3,15 @@
 
 On the random circuits of `strategies`, an operating point, a frequency response, the
 noise at a net and the sensitivities at the operating point find the same bits on 1, 2,
-3 and 8 threads, as the engine spreads each analysis's frequencies and right-hand sides
-over them. A Monte Carlo sample is a function of its seed, its index and the names of
-its parts alone, so it is the same drawn alone or among others, and a part added leaves
-every other part's draws alone.
+3 and 8 threads, as the engine spreads each analysis's frequencies, right-hand sides,
+device instances and unknowns over them, as on one thread unspread; so does
+``ac_wide``'s response at 10,000 frequencies, run from Python. A Monte Carlo sample is
+a function of its seed, its index and the names of its parts alone, so it is the same
+drawn alone or among others, and a part added leaves every other part's draws alone.
 """
 
 import dataclasses
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -30,13 +32,24 @@ from jolty import (
     ir,
     simulate,
 )
-from jolty.plan import MonteCarlo, decade
+from jolty.files import load_circuit
+from jolty.plan import MonteCarlo, Options, Parallelism, decade
 from jolty.units import GHz, Hz, V, kohm
 from jolty.variation import Varied, sample, toleranced
 from strategies import SETTINGS, circuits
 
 THREADS = (1, 2, 3, 8)
 """The numbers of threads each circuit runs on."""
+
+SPREAD = Options(
+    parallelism=Parallelism(
+        min_solves_per_task=1, min_instances_per_task=1, min_unknowns_inside=1
+    )
+)
+"""Options that spread every kind of a run's work over its threads, however small."""
+
+FIXTURES = Path(__file__).parent.parent / "perf" / "circuits"
+"""The circuits of the benchmarks."""
 
 
 def _bits(found: object) -> object:
@@ -55,8 +68,8 @@ def _bits(found: object) -> object:
     return repr(found)
 
 
-def _simulated(built: ir.Circuit) -> list[object]:
-    """What each analysis finds on `built`, as bits, or why it fails."""
+def _simulated(built: ir.Circuit, options: Options) -> list[object]:
+    """What each analysis finds on `built` with `options`, as bits, or why it fails."""
     simulation = Simulation(built)
     top = built.components[built.top]
     source = next(
@@ -77,7 +90,7 @@ def _simulated(built: ir.Circuit) -> list[object]:
     found: list[object] = []
     for analysis in analyses:
         try:
-            found.append(_bits(simulation.run(analysis)))
+            found.append(_bits(simulation.run(analysis, options)))
         except SimulationError as error:
             found.append(str(error))
     return found
@@ -89,8 +102,31 @@ def test_the_same_circuits_simulate_the_same_on_any_threads(built: ir.Circuit) -
     found = []
     for count in THREADS:
         with simulate.threads(count):
-            found.append(_simulated(built))
-    assert all(each == found[0] for each in found[1:])
+            found.append(_simulated(built, SPREAD))
+    with simulate.threads(1):
+        alone = _simulated(built, Options())
+    assert all(each == alone for each in found)
+
+
+def test_ac_wide_finds_the_same_bits_spread_over_threads() -> None:
+    built = load_circuit(FIXTURES / "bjt_amp.json")
+    # ac_wide's frequencies, as perf/circuits/bjt_amp.py writes them.
+    response = Ac("V1", decade(1 * Hz, 1 * GHz, 1111))
+    spread = Options(parallelism=Parallelism(min_solves_per_task=1))
+    found = []
+    for count in (1, 4):
+        with simulate.threads(count):
+            found.append(_bits(Simulation(built).run(response, spread)))
+    with simulate.threads(1):
+        alone = _bits(Simulation(built).run(response))
+    assert found == [alone, alone]
+
+
+def test_a_threshold_is_a_count_of_one_or_more() -> None:
+    assert Parallelism(min_unknowns_inside=1).to_json() == {"min_unknowns_inside": 1}
+    assert Options().to_json() == {}
+    with pytest.raises(ValueError, match="min_solves_per_task is 1 or more, not 0"):
+        Parallelism(min_solves_per_task=0)
 
 
 @component

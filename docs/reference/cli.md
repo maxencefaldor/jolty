@@ -43,6 +43,9 @@ Build a script's circuit and run a plan's analyses on it.
 | `--plot`, `--no-plot` | `True` | Plot every analysis but operating points and sensitivities beside the results. |
 | `--probes` |  | Unknowns to plot, such as 'out', 'X1/mid' or 'V1:current'; defaults to the nets the top component names, up to eight. |
 | `--record` |  | Instances whose currents, charges, derivatives and variables the results keep beside the unknowns, by path or pattern, such as 'M1', 'X1/**' or '!X1/bias/**', a pattern after ! taking back what earlier ones named; replaces the plan's record. |
+| `--min-solves-per-task` |  | The fewest frequencies or right-hand sides a task takes when a run spreads its small-signal analyses and sensitivities across threads; replaces the plan's. No result depends on it. |
+| `--min-instances-per-task` |  | The device instances a task evaluates when a run spreads its devices' evaluation across threads; replaces the plan's. No result depends on it. |
+| `--min-unknowns-inside` |  | The fewest unknowns a circuit has for a run to spread its Newton iteration's work on each unknown across threads; replaces the plan's. No result depends on it. |
 
 ## `jolty plot`
 

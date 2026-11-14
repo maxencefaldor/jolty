@@ -320,14 +320,59 @@ type Analysis = (
 
 
 @dataclass(frozen=True, slots=True)
+class Parallelism:
+    """How a run spreads its own work across the engine's threads; none by default.
+
+    Each kind of work spreads only once its threshold is set: the frequencies of a
+    run's small-signal analyses and the right-hand sides of its sensitivities, in tasks
+    of at least `min_solves_per_task` each; its device instances, in tasks of
+    `min_instances_per_task`; and the work of its Newton iteration on each unknown, once
+    the circuit has `min_unknowns_inside` unknowns. Spreading work costs the time of
+    waking threads, which a small run's work does not repay, so a run left to the
+    defaults does all its work on its own thread. A batch runs each run on one thread
+    whenever it has a run for every thread. No setting changes any result: every one
+    finds the same bits however the work is split. The threads are the engine's own,
+    the setting `threads` or [`threads`][jolty.simulate.threads].
+
+    Examples:
+        >>> Parallelism(min_solves_per_task=16).to_json()
+        {'min_solves_per_task': 16}
+    """
+
+    min_solves_per_task: int | None = None
+    min_instances_per_task: int | None = None
+    min_unknowns_inside: int | None = None
+
+    def __post_init__(self) -> None:
+        """Checks that each threshold given is a count of one or more.
+
+        Raises:
+            ValueError: When one is below one.
+        """
+        for setting in fields(self):
+            value = getattr(self, setting.name)
+            if value is not None and value < 1:
+                message = f"{setting.name} is 1 or more, not {value}"
+                raise ValueError(message)
+
+    def to_json(self) -> dict[str, JsonValue]:
+        """The thresholds in the engine's format, without those left to defaults."""
+        values = {setting.name: getattr(self, setting.name) for setting in fields(self)}
+        return {name: value for name, value in values.items() if value is not None}
+
+
+@dataclass(frozen=True, slots=True)
 class Options:
     """Numerical settings; each one left out takes the engine's default, SPICE's own.
 
-    Tolerances are in SI base units: volts, amperes and coulombs.
+    Tolerances are in SI base units: volts, amperes and coulombs. The `parallelism`
+    says how a run spreads its own work across threads, which changes no result.
 
     Examples:
         >>> Options(gmin=1e-15).to_json()
         {'gmin': 1e-15}
+        >>> Options(parallelism=Parallelism(min_solves_per_task=16)).to_json()
+        {'parallelism': {'min_solves_per_task': 16}}
     """
 
     relative_tolerance: float | None = None
@@ -342,10 +387,18 @@ class Options:
     profile: bool | None = None
     """Whether a transient measures where its time goes, into its statistics' profile;
     it changes no other result."""
+    parallelism: Parallelism = field(default_factory=Parallelism)
 
     def to_json(self) -> dict[str, JsonValue]:
         """The options in the engine's format, without those left to defaults."""
-        values = {setting.name: getattr(self, setting.name) for setting in fields(self)}
+        values: dict[str, JsonValue] = {
+            setting.name: getattr(self, setting.name)
+            for setting in fields(self)
+            if setting.name != "parallelism"
+        }
+        spread = self.parallelism.to_json()
+        if spread:
+            values["parallelism"] = spread
         return {name: value for name, value in values.items() if value is not None}
 
 

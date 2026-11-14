@@ -58,6 +58,7 @@ The first release, 0.1.0.
 - Variants in `jolty.plan`: `Explicit` runs at listed `Variant`s of numbers and a temperature, a `Grid` of `Axis` values of parameters and the temperature, its lines warm chains if asked, and the `Product` of two, beside `MonteCarlo`; a plan's `variants` run its analyses at its own conditions and at every corner, and the report states the runs, how many failed, each requirement's spread and the yield, with its Wilson interval.
 - A batch plots the distribution of its runs, not each run: `jolty simulate` draws a histogram of each requirement a plan's Monte Carlo samples or variants read, against its bounds, and the envelope of each plotted net along each analysis, its least, median and greatest value, and saves the batches as `<script>.batches.npz`.
 - A DC sweep of a parameter from Python, `DcSweep("R1", levels, parameter="resistance")`, whose result names the parameter and has no quantity; results files are in version 6 of their format, which names it.
+- The engine's parallelism from Python: `Options(parallelism=Parallelism(min_solves_per_task=16))`, and `jolty simulate --min-solves-per-task 16` in place of the plan's, spread a run's frequencies and right-hand sides, its devices' evaluation or its Newton iteration's work on each unknown across the engine's threads once each threshold is set, which none is by default; every setting finds the same bits.
 
 ### Changed
 

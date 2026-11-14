@@ -90,6 +90,19 @@ _PROBES_DESCRIPTION = (
     "Unknowns to plot, such as 'out', 'X1/mid' or 'V1:current'; defaults to the "
     "nets the top component names, up to eight."
 )
+_SOLVES_DESCRIPTION = (
+    "The fewest frequencies or right-hand sides a task takes when a run spreads its "
+    "small-signal analyses and sensitivities across threads; replaces the plan's. "
+    "No result depends on it."
+)
+_INSTANCES_DESCRIPTION = (
+    "The device instances a task evaluates when a run spreads its devices' evaluation "
+    "across threads; replaces the plan's. No result depends on it."
+)
+_INSIDE_DESCRIPTION = (
+    "The fewest unknowns a circuit has for a run to spread its Newton iteration's work "
+    "on each unknown across threads; replaces the plan's. No result depends on it."
+)
 
 
 class _Model(BaseModel):
@@ -278,6 +291,15 @@ class SimulateRequest(_Model):
     )
     probes: list[str] = Field(default_factory=list, description=_PROBES_DESCRIPTION)
     record: list[str] | None = Field(default=None, description=_RECORD_DESCRIPTION)
+    min_solves_per_task: int | None = Field(
+        default=None, ge=1, description=_SOLVES_DESCRIPTION
+    )
+    min_instances_per_task: int | None = Field(
+        default=None, ge=1, description=_INSTANCES_DESCRIPTION
+    )
+    min_unknowns_inside: int | None = Field(
+        default=None, ge=1, description=_INSIDE_DESCRIPTION
+    )
 
 
 class SimulateResult(CommandResult):
@@ -449,6 +471,11 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         record=request.record,
         plot=request.plot,
         probes=request.probes,
+        parallelism=runner.Thresholds(
+            min_solves_per_task=request.min_solves_per_task,
+            min_instances_per_task=request.min_instances_per_task,
+            min_unknowns_inside=request.min_unknowns_inside,
+        ),
     )
     path = request.output or files.circuit_path(request.script)
     target = request.results or files.results_path(request.script)

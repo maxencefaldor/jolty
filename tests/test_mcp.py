@@ -95,6 +95,9 @@ def test_tools_mirror_the_service_requests() -> None:
         "plot",
         "probes",
         "record",
+        "min_solves_per_task",
+        "min_instances_per_task",
+        "min_unknowns_inside",
     }
     assert simulate.input_schema["required"] == ["script"]
     assert simulate.description is not None

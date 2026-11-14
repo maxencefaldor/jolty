@@ -6,7 +6,9 @@ import pytest
 
 from jolty import report, results
 from jolty.files import load_results
-from jolty.runner import RESULTS, Built, Failure, Job, Outcome, run
+from jolty.plan import Analysis, Options, Parallelism
+from jolty.runner import RESULTS, Built, Failure, Job, Outcome, Thresholds, run
+from jolty.simulate import Simulation
 
 DIVIDER = """
 from jolty import Builder, OperatingPoint, Plan, Role, Transient, component, devices
@@ -119,6 +121,34 @@ def _recorded(directory: Path) -> list[tuple[str, ...]]:
         for result in found
         if isinstance(result, results.OperatingPoint | results.Waveforms)
     ]
+
+
+def test_a_job_s_thresholds_replace_the_plan_s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spreading = (
+        "from jolty.plan import Options, Parallelism\n\n\n"
+        "def plan():\n"
+        "    spread = Parallelism(min_solves_per_task=4, min_instances_per_task=8)\n"
+        "    return Plan({'op': OperatingPoint()}, Options(parallelism=spread))"
+    )
+    script = write(tmp_path, f"{DIVIDER}\n\n{spreading}\n")
+    ran: list[Options | None] = []
+    simulated = Simulation.run
+
+    def run_seen(
+        simulation: Simulation, analysis: Analysis, options: Options | None = None
+    ) -> results.Result:
+        ran.append(options)
+        return simulated(simulation, analysis, options)
+
+    monkeypatch.setattr(Simulation, "run", run_seen)
+    # As the command line's --min-solves-per-task gives it.
+    thresholds = Thresholds(min_solves_per_task=2)
+    job = Job(script=script, plan=script, listed=10, parallelism=thresholds)
+    built(run(job, tmp_path))
+    spread = Parallelism(min_solves_per_task=2, min_instances_per_task=8)
+    assert ran == [Options(parallelism=spread)]
 
 
 def test_a_plan_runs_at_its_temperature(tmp_path: Path) -> None:
