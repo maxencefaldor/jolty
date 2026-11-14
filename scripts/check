@@ -32,9 +32,9 @@ check_python() {
     uv run --locked rumdl check .
     uv run --locked pytest
     # Every example script, each defining build(); the modules they share define none.
-    for example in $(grep -l '^def build' examples/*.py); do
-        uv run --locked jolty simulate "$example" > /dev/null
-    done
+    # They run at once, one per processor, and xargs fails when any of them fails.
+    grep -l '^def build' examples/*.py |
+        xargs -n 1 -P "$(getconf _NPROCESSORS_ONLN)" uv run --locked jolty simulate > /dev/null
 }
 
 check_docs() {
