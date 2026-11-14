@@ -2,9 +2,14 @@
 //! the same as solved afresh.
 #![cfg(test)]
 
+use std::fs;
+use std::path::Path;
+
 use jolty_engine::{
-    Ac, Analysis, Conditions, DcSweep, Differentiated, Method, Noise, OperatingPoints, Options,
-    Outcome, PoleZero, Sensitivities, Sensitivity, Simulator, Transient, Work,
+    Ac, Analysis, Conditions, DcSweep, Differentiated, LoopGain, Method, Noise, NoiseSpectrum,
+    Observation, Observations, OperatingPoint, OperatingPoints, Options, Outcome, PoleZero,
+    PolesZeros, Record, Response, Sensitivities, Sensitivity, Simulator, Sweep, Transfer,
+    TransferFunction, Transient, Waveforms, Work,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -38,6 +43,14 @@ fn rectifier() -> Circuit {
     ]))
 }
 
+/// The benchmarks' synchronous buck converter, `perf/circuits/buck.json`: two transistors
+/// switching an inductor, whose sparse solver searches for new pivots as they switch.
+fn buck() -> Circuit {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf/circuits/buck.json");
+    let text = fs::read_to_string(path).expect("the circuit reads");
+    Circuit::from_json(&text).expect("a circuit")
+}
+
 fn simulator(circuit: &Circuit) -> Simulator {
     Simulator::new(circuit, &Library::standard(), &Conditions::default())
         .expect("the circuit elaborates")
@@ -66,6 +79,53 @@ fn apart_from_work(outcome: Outcome) -> Outcome {
     }
 }
 
+/// `outcome` without what it records of the devices.
+fn unrecorded(outcome: Outcome) -> Outcome {
+    let point = |point: OperatingPoint| OperatingPoint {
+        observation: Observation::default(),
+        ..point
+    };
+    match outcome {
+        Outcome::OperatingPoint(found) => Outcome::OperatingPoint(point(found)),
+        Outcome::OperatingPoints(found) => {
+            Outcome::OperatingPoints(found.into_iter().map(point).collect())
+        }
+        Outcome::DcSweep(sweep) => Outcome::DcSweep(Sweep {
+            observations: Observations::default(),
+            ..sweep
+        }),
+        Outcome::Ac(response) => Outcome::Ac(Response {
+            operating_point: point(response.operating_point),
+            currents: Vec::new(),
+            ..response
+        }),
+        Outcome::Transient(waveforms) => Outcome::Transient(Waveforms {
+            observations: Observations::default(),
+            ..waveforms
+        }),
+        Outcome::Sensitivity(found) => Outcome::Sensitivity(Sensitivities {
+            result: Box::new(unrecorded(*found.result)),
+            ..found
+        }),
+        Outcome::Stability(gain) => Outcome::Stability(LoopGain {
+            operating_point: point(gain.operating_point),
+            ..gain
+        }),
+        Outcome::Noise(spectrum) => Outcome::Noise(NoiseSpectrum {
+            operating_point: point(spectrum.operating_point),
+            ..spectrum
+        }),
+        Outcome::PoleZero(found) => Outcome::PoleZero(PolesZeros {
+            operating_point: point(found.operating_point),
+            ..found
+        }),
+        Outcome::TransferFunction(found) => Outcome::TransferFunction(Transfer {
+            operating_point: point(found.operating_point),
+            ..found
+        }),
+    }
+}
+
 /// The Newton iterations of the transient `outcome`, if it is one.
 fn iterations(outcome: &Outcome) -> Option<usize> {
     match outcome {
@@ -88,6 +148,11 @@ fn analyses() -> Vec<Analysis> {
         Analysis::Ac(Ac {
             source: "V1".to_owned(),
             frequencies: frequencies.clone(),
+        }),
+        Analysis::TransferFunction(TransferFunction {
+            source: "V1".to_owned(),
+            output: "out".to_owned(),
+            reference: None,
         }),
         Analysis::Transient(transient.clone()),
         Analysis::Noise(Noise {
@@ -172,6 +237,16 @@ fn options_that_change_the_dc_solution_solve_it_again() {
     assert_eq!(
         point(&mut simulator, &transient),
         afresh(&circuit, &Analysis::OperatingPoint, &transient)
+    );
+    assert_eq!(simulator.operating_point_solves(), 1);
+    // So does what the results record, which is read of the devices there.
+    let recording = Options {
+        record: Record::All,
+        ..Options::default()
+    };
+    assert_eq!(
+        point(&mut simulator, &recording),
+        afresh(&circuit, &Analysis::OperatingPoint, &recording)
     );
     assert_eq!(simulator.operating_point_solves(), 1);
     // Gmin is in the equations.
@@ -265,4 +340,73 @@ fn a_dc_sweep_leaves_the_operating_point_to_the_analyses_after_it() {
     let response = simulator.run(&ac, &options).expect("a response");
     assert_eq!(response, afresh(&circuit, &ac, &options));
     assert_eq!(simulator.operating_point_solves(), 2);
+}
+
+/// What an analysis records is read of the devices at each solution, and changes nothing
+/// else: a plan of analyses finds the same numbers, every unknown's and every one it finds
+/// of them, its work counts among them, recording nothing, every device, or every device
+/// in one of its analyses alone. Before, an analysis that recorded other than the one
+/// before it solved the operating point again rather than take it: the rectifier's
+/// transient after a response that recorded counted the iterations of solving it, and the
+/// buck converter's second transient stepped from the pivots solving it left the sparse
+/// solver, not from those the first transient left, and found other numbers.
+#[test]
+fn what_an_analysis_records_changes_none_of_its_numbers() {
+    let periods = Analysis::Transient(Transient {
+        stop: 2e-5,
+        max_step: None,
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+        periodic: false,
+    });
+    let plans = [
+        (rectifier(), analyses()),
+        (
+            buck(),
+            vec![
+                Analysis::OperatingPoint,
+                periods.clone(),
+                Analysis::OperatingPoint,
+                periods,
+            ],
+        ),
+    ];
+    for (circuit, analyses) in plans {
+        let found = |records: &[Record]| -> Vec<String> {
+            let mut simulator = simulator(&circuit);
+            analyses
+                .iter()
+                .zip(records)
+                .map(|(analysis, record)| {
+                    let options = Options {
+                        record: record.clone(),
+                        ..Options::default()
+                    };
+                    let outcome = simulator.run(analysis, &options);
+                    // Debug writes each number in the shortest form that reads back as
+                    // its bits.
+                    format!("{:?}", outcome.map(unrecorded))
+                })
+                .collect()
+        };
+        let nothing = vec![Record::default(); analyses.len()];
+        let unrecorded = found(&nothing);
+        let mut ways = vec![vec![Record::All; analyses.len()]];
+        for one in 0..analyses.len() {
+            let mut way = nothing.clone();
+            way[one] = Record::All;
+            ways.push(way);
+        }
+        for way in ways {
+            let recorded = found(&way);
+            for (place, (recorded, unrecorded)) in recorded.iter().zip(&unrecorded).enumerate() {
+                assert!(
+                    recorded == unrecorded,
+                    "{}: analysis {place} of {:?} differs, recording {way:?}",
+                    circuit.top,
+                    analyses[place]
+                );
+            }
+        }
+    }
 }

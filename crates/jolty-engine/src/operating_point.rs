@@ -4,10 +4,11 @@
 //!
 //! The simulator remembers the last operating point it solved, and every analysis about an
 //! operating point takes it again while the sources held and the options it was solved
-//! under stay as they were, save the options only a transient reads, so a plan of analyses
-//! and the checks at its operating point solve it once. Every option counts unless it is
-//! known to leave a DC solution alone, so an option added later counts until it is shown
-//! to. Where only Newton iteration's tolerances or its limit differ, a solution Newton
+//! under stay as they were, save the options only a transient reads and what the results
+//! record, which is read of the devices at the solution, so a plan of analyses and the
+//! checks at its operating point solve it once, whatever each records. Every option counts
+//! unless it is known to leave a DC solution alone, so an option added later counts until
+//! it is shown to. Where only Newton iteration's tolerances or its limit differ, a solution Newton
 //! iteration found from zero goes on from where it stopped: from zero, it takes the same
 //! iterates under any tolerances.
 
@@ -98,6 +99,7 @@ pub(crate) struct Remembered {
     options: Options,
     /// The DC solution from zero, before the logic settled with it.
     solved: Solved,
+    /// The operating point, its observation what the options it was solved under record.
     point: OperatingPoint,
     events: Events,
 }
@@ -122,8 +124,9 @@ impl Remembered {
 }
 
 /// `options` as a DC solution reads them: those only a transient reads take their
-/// defaults, so that options alike in every other find the same DC solution and the same
-/// operating point.
+/// defaults, and so does what the results record, which is read of the devices evaluated
+/// at the solution, so that options alike in every other find the same DC solution and the
+/// same operating point.
 fn read_at_dc(options: &Options) -> Options {
     let unread = Options::default();
     Options {
@@ -131,6 +134,7 @@ fn read_at_dc(options: &Options) -> Options {
         transient_iterations: unread.transient_iterations,
         truncation_tolerance: unread.truncation_tolerance,
         memory: unread.memory,
+        record: unread.record,
         profile: unread.profile,
         parallelism: unread.parallelism,
         ..options.clone()
@@ -198,8 +202,9 @@ impl Simulator {
     ///
     /// The simulator remembers the last operating point it found, and takes it again, with
     /// the logic as it left it, while no source is held elsewhere and the options stay as
-    /// they were, save those only a transient reads; under other tolerances or another
-    /// iteration limit alone, Newton iteration goes on from it as from zero it would.
+    /// they were, save those only a transient reads and what they record, which it reads
+    /// of the devices there; under other tolerances or another iteration limit alone,
+    /// Newton iteration goes on from it as from zero it would.
     /// [`Simulator::operating_point_solves`] counts the times it solves.
     ///
     /// # Errors
@@ -218,7 +223,8 @@ impl Simulator {
     /// The DC solution from zero and the operating point the logic settled at from it: the
     /// last ones, if they were solved with the same sources held and under the same
     /// options, as a DC solution reads them, with the logic and the devices left as solving
-    /// them would leave them; or else solved, and remembered.
+    /// them would leave them and what `options` record observed there; or else solved,
+    /// and remembered.
     fn settled_from_zero(
         &mut self,
         options: &Options,
@@ -226,9 +232,10 @@ impl Simulator {
         if let Some(remembered) = &self.state.remembered
             && remembered.solved_under(&self.state.held, options)
         {
-            let found = (remembered.solved.clone(), remembered.point.clone());
+            let (solved, mut point) = (remembered.solved.clone(), remembered.point.clone());
             self.restore(options);
-            return Ok(found);
+            point.observation = self.observe_dc(&point.values, options);
+            return Ok((solved, point));
         }
         self.reset_logic();
         let solved = self.solve_from_zero(options)?;
