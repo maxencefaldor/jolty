@@ -380,8 +380,9 @@ mod tests {
         // least, each of which once made a factorization. The Jacobian, `G + αC`, now changes
         // only with `α`, as the step's length or formula changes: while the first steps grow
         // to the longest, a millionth of a second, on the last, landing on the stop, on each
-        // step tried and rejected, and once as the formula turns from backward Euler, which
-        // starts the run, to the trapezoidal rule.
+        // step tried and rejected, once as the formula turns from backward Euler, which
+        // starts the run, to the trapezoidal rule, and twice on each attempt at the second
+        // step, as it judges the first.
         let sine = json!({"sine": {"offset": 0.0, "amplitude": 1.0, "frequency": 1e3}});
         let mut simulator = ladder(5, &sine, false);
         let options = Options::default();
@@ -414,8 +415,12 @@ mod tests {
         // The lengths up to the longest, the longest's own, and the last's.
         let changes = ramp + 2;
         let formulas = 1;
+        // The start is the run's one corner: each attempt at the second step judges the
+        // first through the first's formula, then itself through its own, each with a
+        // factorization, and a rejected step may be one of those attempts.
+        let judgements = 2 * (1 + steps.rejected);
         assert!(
-            searched + refactored <= changes + steps.rejected + formulas,
+            searched + refactored <= changes + steps.rejected + formulas + judgements,
             "{searched} + {refactored} factorizations over {} steps, {ramp} before the longest",
             steps.accepted
         );

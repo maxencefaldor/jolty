@@ -344,6 +344,8 @@ struct Corner {
 /// derivatives at its end and at its start.
 struct Span<'a> {
     length: f64,
+    /// The coefficient of the new charge in the step's formula.
+    alpha: f64,
     charge: (&'a [f64], &'a [f64]),
     derivative: (&'a [f64], &'a [f64]),
 }
@@ -789,6 +791,7 @@ impl Simulator {
             // The first step after the corner, by the curvature it shares with this one.
             let span = Span {
                 length: pending.length,
+                alpha: pending.formula.alpha,
                 charge: (&stepper.history.last.1, &pending.corner.charge),
                 derivative: (&stepper.history.derivative, &pending.corner.derivative),
             };
@@ -807,6 +810,7 @@ impl Simulator {
         } else {
             let span = Span {
                 length: tried.length,
+                alpha: tried.formula.alpha,
                 charge: (&tried.charge, &stepper.history.last.1),
                 derivative: (&tried.derivative, &stepper.history.derivative),
             };
@@ -1128,13 +1132,13 @@ impl Simulator {
 
     /// Judges `span`, a step by `method`, by its truncation error, estimated from the
     /// divided difference of the charges at the last of `history`'s points and at `new`, as
-    /// many as the method's order and two; `None` while too few points follow the last
-    /// corner to estimate it.
+    /// many as the method's order and two, filtered through the step's own equations;
+    /// `None` while too few points follow the last corner to estimate it.
     ///
     /// A charge's tolerance is the larger of a relative tolerance on the charge itself and one
     /// on the current it carries over the step, scaled by the truncation tolerance.
     fn judge(
-        &self,
+        &mut self,
         method: Method,
         history: &History,
         new: (f64, &[f64]),
@@ -1153,17 +1157,24 @@ impl Simulator {
         }
         times[needed - 1] = new.0;
         let mut samples = [0.0; HISTORY + 1];
+        let differences: Vec<f64> = (0..new.1.len())
+            .map(|index| {
+                for (slot, (_, charge)) in samples.iter_mut().zip(&used) {
+                    *slot = charge[index];
+                }
+                samples[needed - 1] = new.1[index];
+                divided_difference(&times[..needed], &samples[..needed])
+            })
+            .collect();
+        let differences = self.filtered(differences, span.alpha);
         let mut worst = Judgement {
             ratio: 0.0,
             worst: 0,
             longest: f64::INFINITY,
         };
-        for (index, unknown) in self.system.unknowns.iter().enumerate() {
-            for (slot, (_, charge)) in samples.iter_mut().zip(&used) {
-                *slot = charge[index];
-            }
-            samples[needed - 1] = new.1[index];
-            let difference = divided_difference(&times[..needed], &samples[..needed]);
+        for ((index, unknown), &difference) in
+            self.system.unknowns.iter().enumerate().zip(&differences)
+        {
             let error = method.truncation_error(span.length, difference);
             let absolute_current = options.equation_tolerance(unknown.quantity);
             let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
@@ -1186,6 +1197,45 @@ impl Simulator {
             worst.longest = worst.longest.min(longest);
         }
         Some(worst)
+    }
+
+    /// The charges' divided `differences` filtered through the step's equations at its end,
+    /// whose formula's coefficient of the new charge is `alpha`: `C (G + αC)⁻¹ α d`.
+    ///
+    /// An error `e` in the formula's derivative of the charges moves the step's solution by
+    /// `−(G + αC)⁻¹ α e`, so where the capacitances dominate the step's equations, as along
+    /// a smooth waveform, the charges move by `e` itself, while a stiff component, one that
+    /// settles within the step, barely moves: the divided differences read how far it
+    /// settled, which the formula damps, not the formula's error (Shampine, "Implementation
+    /// of implicit formulas for the solution of ODEs", SIAM Journal on Scientific and
+    /// Statistical Computing 1(1), 1980; Hairer and Wanner, "Solving Ordinary Differential
+    /// Equations II", section IV.8). Where the matrix cannot be factored, the differences are
+    /// taken as they are.
+    fn filtered(&mut self, mut differences: Vec<f64>, alpha: f64) -> Vec<f64> {
+        let contributions = &self.workspace.contributions;
+        let matrix: Vec<f64> = contributions
+            .conductance
+            .iter()
+            .zip(&contributions.capacitance)
+            .map(|(conductance, capacitance)| conductance + alpha * capacitance)
+            .collect();
+        let mut moved: Vec<f64> = differences
+            .iter()
+            .map(|difference| alpha * difference)
+            .collect();
+        let solved = self
+            .solver
+            .factor(&matrix)
+            .and_then(|mut factors| factors.solve(&mut moved));
+        if solved.is_ok() {
+            differences.fill(0.0);
+            self.system.pattern.add_product(
+                &self.workspace.contributions.capacitance,
+                &moved,
+                &mut differences,
+            );
+        }
+        differences
     }
 }
 
