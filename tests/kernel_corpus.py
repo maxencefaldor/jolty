@@ -1,14 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""Writes the circuits that hold a kernel's devices, with the runs made of them.
+"""Writes the circuits of the differential corpus and the examples, with the runs made of them.
 
-The engine evaluates the instances of its kernels, the diode, the MOSFET, the bipolar
-transistor and the JFET, together in groups, and checks at every evaluation of a run
-that the groups assemble the circuit's equations as the instances do evaluated one by
-one as devices. It checks them on the circuits this script writes, to
+The engine evaluates every device as a kernel's instance, together with the others of its
+kernel and shape in a group, and checks at every evaluation of a run that the groups
+assemble the circuit's equations as the instances do evaluated one by one, each alone, in
+the order of the devices. It checks them on the circuits this script writes, to
 ``crates/jolty-engine/tests/data/kernels.json``: every circuit of the differential
-corpus, ``tests/test_ngspice.py``, and of the examples, that holds one of those devices,
-each with the analyses its tests or its plan run on it. Run it from the repository root
-after changing either, ``uv run python tests/kernel_corpus.py``.
+corpus, ``tests/test_ngspice.py``, and of the examples, each with the analyses its tests
+or its plan run on it. Run it from the repository root after changing either,
+``uv run python tests/kernel_corpus.py``.
 """
 
 import importlib
@@ -28,9 +28,6 @@ ROOT: Final = Path(__file__).resolve().parent.parent
 
 WRITTEN: Final = ROOT / "crates/jolty-engine/tests/data/kernels.json"
 """Where the circuits are written."""
-
-KERNELS: Final = frozenset({"diode", "mosfet", "bipolar_transistor", "jfet"})
-"""The models whose devices are kernels' instances."""
 
 type Record = dict[str, object]
 """A circuit, what it is elaborated in, and the analyses run on it, as written."""
@@ -124,13 +121,13 @@ def _models(circuit: object) -> set[str]:
 
 
 def main() -> None:
-    """Writes each circuit recorded with a kernel's device, once, with its runs."""
+    """Writes each circuit recorded with a device, once, with its runs."""
     records: list[Record] = []
     _corpus(records)
     _examples(records)
     kept: dict[str, Record] = {}
     for record in records:
-        if not record["runs"] or not KERNELS & _models(record["circuit"]):
+        if not record["runs"] or not _models(record["circuit"]):
             continue
         key = json.dumps(
             {name: record[name] for name in ("circuit", "temperature", "overrides")}

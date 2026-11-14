@@ -1,20 +1,31 @@
-use jolty_numerics::Entry;
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::junction::Temperatures;
+use crate::kernel::parts::SMALL_RESISTANCE;
+use crate::kernel::parts::{CurrentBranch, Pair};
 use crate::noise::Flicker;
-use crate::stamp::{CurrentBranch, SMALL_RESISTANCE};
 use crate::{
-    Binding, Branch, BranchKind, Device, Heatable, HeatableModel, Input, Interface, NativeDevice,
-    NativeModel, Node, NoiseSource, Output, ParameterError, REFERENCE_TEMPERATURE, Real,
-    TerminalPair,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError,
+    REFERENCE_TEMPERATURE, Real, Stamp,
 };
 
 /// The default nominal temperature, at which a passive device's value was measured.
 fn reference_temperature<R: Real>() -> R {
     R::constant(REFERENCE_TEMPERATURE)
 }
+
+/// The local indices of a two-terminal element's terminals, `a` and `b`.
+const TERMINALS: (usize, usize) = (0, 1);
 
 /// A resistor between terminals `a` and `b`, whose resistance drifts with temperature and
 /// changes with its voltage.
@@ -24,24 +35,30 @@ fn reference_temperature<R: Real>() -> R {
 /// negative there. Below [`SMALL_RESISTANCE`], its current is an unknown labelled
 /// `current`. Beside its thermal noise, its current `I` makes flicker noise of
 /// `KF · |I|^AF / f` A²/Hz across it, as ngspice's resistor does.
-#[derive(Debug)]
-pub struct Resistor<R: Real = f64> {
-    form: Form,
-    terminals: [Node; 2],
+#[derive(Debug, Clone, Copy)]
+pub struct Resistor;
+
+/// How a resistor adds its current to its terminals' equations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResistorShape(Form);
+
+/// How a resistor adds its current to its terminals' equations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Form {
+    /// As a conductance between them.
+    Conductance(Pair),
+    /// As an unknown of its own, held by Ohm's law `v − r · f(v) · i = 0`, with the entry
+    /// at (current, current).
+    Current(CurrentBranch, usize),
+}
+
+/// A resistor's numbers at its temperature.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedResistor<R: Real> {
     resistance: R,
     coefficients: VoltageCoefficients<R>,
     flicker: Flicker,
     temperature: f64,
-}
-
-/// How a resistor adds its current to its nodes' equations.
-#[derive(Debug)]
-enum Form {
-    /// As a conductance between them.
-    Conductance(TerminalPair),
-    /// As an unknown of its own, held by Ohm's law `v − r · f(v) · i = 0`, with the entry
-    /// at (current, current).
-    Current(CurrentBranch, Option<Entry>),
 }
 
 /// How a passive device's value changes with its voltage `v`: by `1 + vc1 · v + vc2 · v²`.
@@ -105,48 +122,6 @@ fn one<R: Real>() -> R {
     R::constant(1.0)
 }
 
-impl NativeModel for Resistor {
-    type Device<R: Real> = Resistor<R>;
-}
-
-impl<R: Real> NativeDevice<R> for Resistor<R> {
-    const NAME: &'static str = "resistor";
-    type Parameters = ResistorParameters<R>;
-
-    fn interface(_: &ResistorParameters<R>) -> Interface {
-        Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Conductive)])
-    }
-
-    fn new(
-        parameters: ResistorParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let temperature = binding.temperature();
-        let resistance = parameters.resistance_at(R::constant(temperature))?;
-        let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?;
-        let (a, b) = (binding.terminal(0), binding.terminal(1));
-        let form = if resistance.value().abs() < SMALL_RESISTANCE {
-            let branch = CurrentBranch::new(binding, "current", [a, b]);
-            let row = Some(branch.unknown());
-            let entry = binding.entry(row, row);
-            Form::Current(branch, entry)
-        } else {
-            Form::Conductance(TerminalPair::new(binding, a, b))
-        };
-        Ok(Self {
-            form,
-            terminals: [a, b],
-            resistance,
-            flicker,
-            coefficients: VoltageCoefficients {
-                linear: parameters.voltage_coefficient,
-                quadratic: parameters.quadratic_voltage_coefficient,
-            },
-            temperature,
-        })
-    }
-}
-
 impl<R: Real> ResistorParameters<R> {
     /// The resistance at `temperature`, in kelvins, once each parameter it reads is
     /// checked.
@@ -182,41 +157,75 @@ impl<R: Real> ResistorParameters<R> {
 
 /// A heated resistor keeps the form its resistance at the ambient chose: a current of its
 /// own stays one however hot it runs.
-impl<R: Real> Heatable<R> for Resistor<R> {
-    fn heat(
-        &mut self,
+impl Kernel for Resistor {
+    const NAME: &'static str = "resistor";
+    type Parameters<R: Real> = ResistorParameters<R>;
+    type Shape = ResistorShape;
+    type Prepared<R: Real> = PreparedResistor<R>;
+    type Memory = ();
+
+    fn interface<R: Real>(_: &ResistorParameters<R>) -> Interface {
+        Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Conductive)])
+    }
+
+    fn prepare<R: Real>(
         parameters: &ResistorParameters<R>,
         temperature: R,
-    ) -> Result<(), ParameterError> {
-        self.resistance = parameters.resistance_at(temperature)?;
-        self.temperature = temperature.value();
-        Ok(())
+    ) -> Result<PreparedResistor<R>, ParameterError> {
+        let resistance = parameters.resistance_at(temperature)?;
+        let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?;
+        Ok(PreparedResistor {
+            resistance,
+            coefficients: VoltageCoefficients {
+                linear: parameters.voltage_coefficient,
+                quadratic: parameters.quadratic_voltage_coefficient,
+            },
+            flicker,
+            temperature: temperature.value(),
+        })
     }
-}
 
-impl HeatableModel for Resistor {
-    type Device<R: Real> = Resistor<R>;
-}
+    fn layout<R: Real>(
+        _: &ResistorParameters<R>,
+        prepared: &PreparedResistor<R>,
+        layout: &mut Layout,
+    ) -> Result<ResistorShape, ParameterError> {
+        let (a, b) = TERMINALS;
+        Ok(ResistorShape(
+            if prepared.resistance.value().abs() < SMALL_RESISTANCE {
+                let branch = CurrentBranch::new(layout, "current", [a, b]);
+                let row = branch.unknown();
+                Form::Current(branch, layout.entry(row, row))
+            } else {
+                Form::Conductance(Pair::new(layout, a, b))
+            },
+        ))
+    }
 
-impl<R: Real> Device<R> for Resistor<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        match &self.form {
+    fn evaluate<R: Real>(
+        shape: &ResistorShape,
+        prepared: &PreparedResistor<R>,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        match &shape.0 {
             Form::Conductance(pair) => {
-                let voltage = pair.voltage(input);
-                let (factor, slope) = self.coefficients.factor(voltage);
+                let voltage = pair.voltage(at);
+                let (factor, slope) = prepared.coefficients.factor(voltage);
                 // i = v / (r · f(v)), so di/dv = (f − v · f′) / (r · f²).
-                let conductance = (self.resistance * factor).recip();
-                pair.add_current(output, conductance * voltage);
-                pair.add_conductance(output, conductance * (factor - slope * voltage) / factor);
+                let conductance = (prepared.resistance * factor).recip();
+                pair.add_current(stamp, conductance * voltage);
+                pair.add_conductance(stamp, conductance * (factor - slope * voltage) / factor);
             }
             Form::Current(branch, entry) => {
-                let (voltage, current) = (branch.voltage(input), branch.current(input));
-                let (factor, slope) = self.coefficients.factor(voltage);
-                let resistance = self.resistance * factor;
+                let (voltage, current) = (branch.voltage(at), branch.current(at));
+                let (factor, slope) = prepared.coefficients.factor(voltage);
+                let resistance = prepared.resistance * factor;
                 let residual = R::constant(voltage) - resistance * current;
-                let along = R::constant(1.0) - self.resistance * slope * current;
-                branch.add_sloped(input, output, residual, along);
-                output.add_conductance(*entry, -resistance);
+                let along = R::constant(1.0) - prepared.resistance * slope * current;
+                branch.add_sloped(at, stamp, residual, along);
+                stamp.add_conductance(*entry, -resistance);
             }
         }
     }
@@ -224,34 +233,41 @@ impl<R: Real> Device<R> for Resistor<R> {
     /// The thermal noise of the resistance at its voltage, `r · f(v)`: a current of
     /// `4kT / (r · f(v))` across it, or a voltage of `4kT · r · f(v)` in series with it
     /// where its current is an unknown; and the flicker noise of its current, across it.
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        let temperature = self.temperature;
-        let (thermal, current) = match &self.form {
+    fn noise<R: Real>(
+        shape: &ResistorShape,
+        prepared: &PreparedResistor<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let temperature = prepared.temperature;
+        let (thermal, current) = match &shape.0 {
             Form::Conductance(pair) => {
-                let voltage = pair.voltage(input);
-                let (factor, _) = self.coefficients.factor(voltage);
-                let conductance = (self.resistance * factor).value().recip();
+                let voltage = pair.voltage(at);
+                let (factor, _) = prepared.coefficients.factor(voltage);
+                let conductance = (prepared.resistance * factor).value().recip();
                 (
-                    NoiseSource::thermal("thermal", pair.nodes(), conductance, temperature),
+                    NoiseSource::thermal("thermal", pair.equations(), conductance, temperature),
                     conductance * voltage,
                 )
             }
             Form::Current(branch, _) => {
-                let (factor, _) = self.coefficients.factor(branch.voltage(input));
-                let resistance = (self.resistance * factor).value();
+                let (factor, _) = prepared.coefficients.factor(branch.voltage(at));
+                let resistance = (prepared.resistance * factor).value();
                 (
                     NoiseSource::thermal_in_series(
                         "thermal",
-                        branch.unknown(),
+                        crate::Unknown::new(branch.unknown()),
                         resistance,
                         temperature,
                     ),
-                    branch.current(input),
+                    branch.current(at),
                 )
             }
         };
         sources.push(thermal);
-        self.flicker.add(self.terminals, current, sources);
+        let (a, b) = TERMINALS;
+        let terminals = [Some(crate::Unknown::new(a)), Some(crate::Unknown::new(b))];
+        prepared.flicker.add(terminals, current, sources);
     }
 }
 
@@ -260,9 +276,16 @@ impl<R: Real> Device<R> for Resistor<R> {
 ///
 /// With `v` from `a` to `b`, its capacitance is `c · (1 + vc1 · v + vc2 · v²)`, `c` its
 /// capacitance at that temperature, and its charge that capacitance's integral from 0 V.
-#[derive(Debug)]
-pub struct Capacitor<R: Real = f64> {
-    pair: TerminalPair,
+#[derive(Debug, Clone, Copy)]
+pub struct Capacitor;
+
+/// Where a capacitor's contributions go: across its terminals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapacitorShape(Pair);
+
+/// A capacitor's numbers at its temperature.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedCapacitor<R: Real> {
     capacitance: R,
     coefficients: VoltageCoefficients<R>,
 }
@@ -290,34 +313,27 @@ pub struct CapacitorParameters<R: Real = f64> {
     pub quadratic_voltage_coefficient: R,
 }
 
-impl NativeModel for Capacitor {
-    type Device<R: Real> = Capacitor<R>;
-}
-
-impl<R: Real> NativeDevice<R> for Capacitor<R> {
+impl Kernel for Capacitor {
     const NAME: &'static str = "capacitor";
-    type Parameters = CapacitorParameters<R>;
+    type Parameters<R: Real> = CapacitorParameters<R>;
+    type Shape = CapacitorShape;
+    type Prepared<R: Real> = PreparedCapacitor<R>;
+    type Memory = ();
 
-    fn interface(_: &CapacitorParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &CapacitorParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Capacitive)])
     }
 
-    fn new(
-        parameters: CapacitorParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
+    fn prepare<R: Real>(
+        parameters: &CapacitorParameters<R>,
+        temperature: R,
+    ) -> Result<PreparedCapacitor<R>, ParameterError> {
         let capacitance = ParameterError::non_negative("capacitance", parameters.capacitance)?
-            * Temperatures::new(
-                R::constant(binding.temperature()),
-                parameters.nominal_temperature,
-            )?
-            .polynomial(
+            * Temperatures::new(temperature, parameters.nominal_temperature)?.polynomial(
                 parameters.temperature_coefficient,
                 parameters.quadratic_temperature_coefficient,
             );
-        let (a, b) = (binding.terminal(0), binding.terminal(1));
-        Ok(Self {
-            pair: TerminalPair::new(binding, a, b),
+        Ok(PreparedCapacitor {
             capacitance,
             coefficients: VoltageCoefficients {
                 linear: parameters.voltage_coefficient,
@@ -325,17 +341,30 @@ impl<R: Real> NativeDevice<R> for Capacitor<R> {
             },
         })
     }
-}
 
-impl<R: Real> Device<R> for Capacitor<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let voltage = self.pair.voltage(input);
-        let (factor, _) = self.coefficients.factor(voltage);
-        self.pair.add_charge(
-            output,
-            self.capacitance * self.coefficients.integral(voltage),
+    fn layout<R: Real>(
+        _: &CapacitorParameters<R>,
+        _: &PreparedCapacitor<R>,
+        layout: &mut Layout,
+    ) -> Result<CapacitorShape, ParameterError> {
+        let (a, b) = TERMINALS;
+        Ok(CapacitorShape(Pair::new(layout, a, b)))
+    }
+
+    fn evaluate<R: Real>(
+        CapacitorShape(pair): &CapacitorShape,
+        prepared: &PreparedCapacitor<R>,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let voltage = pair.voltage(at);
+        let (factor, _) = prepared.coefficients.factor(voltage);
+        pair.add_charge(
+            stamp,
+            prepared.capacitance * prepared.coefficients.integral(voltage),
         );
-        self.pair.add_capacitance(output, self.capacitance * factor);
+        pair.add_capacitance(stamp, prepared.capacitance * factor);
     }
 }
 
@@ -344,12 +373,14 @@ impl<R: Real> Device<R> for Capacitor<R> {
 ///
 /// Its current, flowing from `a` through the inductor to `b`, is an unknown labelled
 /// `current`. Its equation is `v_a − v_b − d/dt (L·i) = 0`, so at DC it is a short circuit.
-#[derive(Debug)]
-pub struct Inductor<R: Real = f64> {
+#[derive(Debug, Clone, Copy)]
+pub struct Inductor;
+
+/// Where an inductor's contributions go: its branch, and the entry at (current, current).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InductorShape {
     branch: CurrentBranch,
-    inductance: R,
-    /// The entry at (current, current).
-    entry: Option<Entry>,
+    entry: usize,
 }
 
 /// The parameters of an [`Inductor`].
@@ -369,42 +400,63 @@ pub struct InductorParameters<R: Real = f64> {
     pub nominal_temperature: R,
 }
 
-impl NativeModel for Inductor {
-    type Device<R: Real> = Inductor<R>;
+impl<R: Real> InductorParameters<R> {
+    /// The inductance at `temperature`, in kelvins, once each parameter it reads is
+    /// checked.
+    fn inductance_at(&self, temperature: R) -> Result<R, ParameterError> {
+        Ok(ParameterError::positive("inductance", self.inductance)?
+            * Temperatures::new(temperature, self.nominal_temperature)?.polynomial(
+                self.temperature_coefficient,
+                self.quadratic_temperature_coefficient,
+            ))
+    }
 }
 
-impl<R: Real> NativeDevice<R> for Inductor<R> {
+impl Kernel for Inductor {
     const NAME: &'static str = "inductor";
-    type Parameters = InductorParameters<R>;
+    type Parameters<R: Real> = InductorParameters<R>;
+    type Shape = InductorShape;
+    type Prepared<R: Real> = R;
+    type Memory = ();
 
-    fn interface(_: &InductorParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &InductorParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Inductive)])
     }
 
-    fn new(
-        parameters: InductorParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let inductance = parameters.inductance_at(binding.temperature())?;
-        let terminals = [binding.terminal(0), binding.terminal(1)];
-        let branch = CurrentBranch::new(binding, "current", terminals);
-        let row = Some(branch.unknown());
-        Ok(Self {
+    fn prepare<R: Real>(
+        parameters: &InductorParameters<R>,
+        temperature: R,
+    ) -> Result<R, ParameterError> {
+        parameters.inductance_at(temperature)
+    }
+
+    fn layout<R: Real>(
+        _: &InductorParameters<R>,
+        _: &R,
+        layout: &mut Layout,
+    ) -> Result<InductorShape, ParameterError> {
+        let (a, b) = TERMINALS;
+        let branch = CurrentBranch::new(layout, "current", [a, b]);
+        let row = branch.unknown();
+        Ok(InductorShape {
             branch,
-            inductance,
-            entry: binding.entry(row, row),
+            entry: layout.entry(row, row),
         })
     }
-}
 
-impl<R: Real> Device<R> for Inductor<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
+    fn evaluate<R: Real>(
+        shape: &InductorShape,
+        &inductance: &R,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
         // v = L di/dt: the voltage, and the flux `L i` as the equation's charge, negated.
-        let voltage = self.branch.voltage(input);
-        self.branch.add(input, output, R::constant(voltage));
-        let row = Some(self.branch.unknown());
-        output.add_charge(row, -self.inductance * self.branch.current(input));
-        output.add_capacitance(self.entry, -self.inductance);
+        let branch = &shape.branch;
+        let voltage = branch.voltage(at);
+        branch.add(at, stamp, R::constant(voltage));
+        stamp.add_charge(branch.unknown(), -inductance * branch.current(at));
+        stamp.add_capacitance(shape.entry, -inductance);
     }
 }
 
@@ -417,13 +469,15 @@ impl<R: Real> Device<R> for Inductor<R> {
 /// `v_a{k} − v_b{k} − d/dt Σ M_kj · i_j = 0`. A current into `a{k}` and one into `a{j}`
 /// add their fluxes when `c` is positive, as SPICE's mutual inductance couples the
 /// inductors' first nodes.
-#[derive(Debug)]
-pub struct CoupledInductors<R: Real = f64> {
+#[derive(Debug, Clone, Copy)]
+pub struct CoupledInductors;
+
+/// Where coupled inductors' contributions go: each winding's branch, and the entry at
+/// (current k, current j), row by row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoupledShape {
     branches: Vec<CurrentBranch>,
-    /// The inductance matrix, row by row.
-    inductances: Vec<Vec<R>>,
-    /// The entry at (current k, current j), row by row.
-    entries: Vec<Vec<Option<Entry>>>,
+    entries: Vec<usize>,
 }
 
 /// The parameters of [`CoupledInductors`].
@@ -447,15 +501,15 @@ pub struct Coupling<R: Real = f64> {
     pub coefficient: R,
 }
 
-impl NativeModel for CoupledInductors {
-    type Device<R: Real> = CoupledInductors<R>;
-}
-
-impl<R: Real> NativeDevice<R> for CoupledInductors<R> {
+impl Kernel for CoupledInductors {
     const NAME: &'static str = "coupled_inductors";
-    type Parameters = CoupledInductorsParameters<R>;
+    type Parameters<R: Real> = CoupledInductorsParameters<R>;
+    type Shape = CoupledShape;
+    /// The inductance matrix, row by row.
+    type Prepared<R: Real> = Vec<R>;
+    type Memory = ();
 
-    fn interface(parameters: &CoupledInductorsParameters<R>) -> Interface {
+    fn interface<R: Real>(parameters: &CoupledInductorsParameters<R>) -> Interface {
         let terminals: Vec<String> = (1..=parameters.windings.len())
             .flat_map(|winding| [format!("a{winding}"), format!("b{winding}")])
             .collect();
@@ -466,10 +520,10 @@ impl<R: Real> NativeDevice<R> for CoupledInductors<R> {
         Interface::new(&borrowed, &branches)
     }
 
-    fn new(
-        parameters: CoupledInductorsParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
+    fn prepare<R: Real>(
+        parameters: &CoupledInductorsParameters<R>,
+        temperature: R,
+    ) -> Result<Vec<R>, ParameterError> {
         let count = parameters.windings.len();
         if count < 2 {
             return Err(ParameterError(format!(
@@ -479,22 +533,15 @@ impl<R: Real> NativeDevice<R> for CoupledInductors<R> {
         let own = parameters
             .windings
             .iter()
-            .map(|winding| winding.inductance_at(binding.temperature()))
+            .map(|winding| winding.inductance_at(temperature))
             .collect::<Result<Vec<R>, _>>()?;
-        let mut inductances: Vec<Vec<R>> = (0..count)
-            .map(|row| {
-                (0..count)
-                    .map(|column| {
-                        if row == column {
-                            own[row]
-                        } else {
-                            R::constant(0.0)
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
-        let mut coupled = vec![vec![false; count]; count];
+        let mut inductances = vec![R::constant(0.0); count * count];
+        for (index, &inductance) in own.iter().enumerate() {
+            if let Some(diagonal) = inductances.get_mut(index * count + index) {
+                *diagonal = inductance;
+            }
+        }
+        let mut coupled = vec![false; count * count];
         for coupling in &parameters.couplings {
             let [first, second] = coupling.windings;
             let numbered = |winding: usize| (1..=count).contains(&winding);
@@ -505,7 +552,7 @@ impl<R: Real> NativeDevice<R> for CoupledInductors<R> {
                 )));
             }
             let (row, column) = (first - 1, second - 1);
-            if coupled[row][column] {
+            if coupled.get(row * count + column).copied().unwrap_or(false) {
                 return Err(ParameterError(format!(
                     "windings {first} and {second} are coupled twice"
                 )));
@@ -517,64 +564,67 @@ impl<R: Real> NativeDevice<R> for CoupledInductors<R> {
                     coefficient.value()
                 )));
             }
-            let mutual = coefficient * (own[row] * own[column]).sqrt();
-            inductances[row][column] = mutual;
-            inductances[column][row] = mutual;
-            coupled[row][column] = true;
-            coupled[column][row] = true;
+            let (Some(&along), Some(&across)) = (own.get(row), own.get(column)) else {
+                continue;
+            };
+            let mutual = coefficient * (along * across).sqrt();
+            for (one, other) in [(row, column), (column, row)] {
+                if let Some(slot) = inductances.get_mut(one * count + other) {
+                    *slot = mutual;
+                }
+                if let Some(slot) = coupled.get_mut(one * count + other) {
+                    *slot = true;
+                }
+            }
         }
-        let branches: Vec<CurrentBranch> = (0..count)
+        Ok(inductances)
+    }
+
+    fn layout<R: Real>(
+        parameters: &CoupledInductorsParameters<R>,
+        _: &Vec<R>,
+        layout: &mut Layout,
+    ) -> Result<CoupledShape, ParameterError> {
+        let branches: Vec<CurrentBranch> = (0..parameters.windings.len())
             .map(|winding| {
-                let terminals = [
-                    binding.terminal(2 * winding),
-                    binding.terminal(2 * winding + 1),
-                ];
-                CurrentBranch::new(binding, &format!("current{}", winding + 1), terminals)
+                let label = format!("current{}", winding + 1);
+                CurrentBranch::new(layout, label, [2 * winding, 2 * winding + 1])
             })
             .collect();
         let entries = branches
             .iter()
-            .map(|row| {
+            .flat_map(|row| {
                 branches
                     .iter()
-                    .map(|column| binding.entry(Some(row.unknown()), Some(column.unknown())))
-                    .collect()
+                    .map(move |column| (row.unknown(), column.unknown()))
             })
+            .map(|(row, column)| layout.entry(row, column))
             .collect();
-        Ok(Self {
-            branches,
-            inductances,
-            entries,
-        })
+        Ok(CoupledShape { branches, entries })
     }
-}
 
-impl<R: Real> InductorParameters<R> {
-    /// The inductance at `temperature`, in kelvins, once each parameter it reads is
-    /// checked.
-    fn inductance_at(&self, temperature: f64) -> Result<R, ParameterError> {
-        Ok(ParameterError::positive("inductance", self.inductance)?
-            * Temperatures::new(R::constant(temperature), self.nominal_temperature)?.polynomial(
-                self.temperature_coefficient,
-                self.quadratic_temperature_coefficient,
-            ))
-    }
-}
-
-impl<R: Real> Device<R> for CoupledInductors<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
+    fn evaluate<R: Real>(
+        shape: &CoupledShape,
+        inductances: &Vec<R>,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
         // v_k = d/dt Σ M_kj i_j: each winding's voltage, and its flux as its equation's
         // charge, negated.
-        for (row, branch) in self.branches.iter().enumerate() {
-            let voltage = branch.voltage(input);
-            branch.add(input, output, R::constant(voltage));
+        let count = shape.branches.len();
+        for (row, branch) in shape.branches.iter().enumerate() {
+            let voltage = branch.voltage(at);
+            branch.add(at, stamp, R::constant(voltage));
             let mut flux = R::constant(0.0);
-            for (column, other) in self.branches.iter().enumerate() {
-                let inductance = self.inductances[row][column];
-                flux += inductance * other.current(input);
-                output.add_capacitance(self.entries[row][column], -inductance);
+            for (column, other) in shape.branches.iter().enumerate() {
+                let index = row * count + column;
+                let inductance = inductances.get(index).copied().unwrap_or_default();
+                flux += inductance * other.current(at);
+                let entry = shape.entries.get(index).copied().unwrap_or(usize::MAX);
+                stamp.add_capacitance(entry, -inductance);
             }
-            output.add_charge(Some(branch.unknown()), -flux);
+            stamp.add_charge(branch.unknown(), -flux);
         }
     }
 }
@@ -706,7 +756,7 @@ mod tests {
             TRANSFORMER,
             &[1.0, 0.5, -2.0, 0.0, 0.3, -0.1],
         );
-        let interface = CoupledInductors::<f64>::interface(
+        let interface = CoupledInductors::interface::<f64>(
             &serde_json::from_str(TRANSFORMER).expect("parameters"),
         );
         assert_eq!(interface.terminals, ["a1", "b1", "a2", "b2"]);

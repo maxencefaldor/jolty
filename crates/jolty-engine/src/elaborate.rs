@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use jolty_ir::{Circuit, Component, Name, Of, Parameters, Problem, Role, Source, set_parameter};
 use jolty_models::{
-    Interface, Library, Logic, LogicDriver, LogicDriverParameters, LogicModel, Model, NativeDevice,
-    Node, Pins, Quantity, Specification, ThresholdDetector, ThresholdDetectorParameters, Unknown,
+    Interface, Kernel, Library, Logic, LogicDriver, LogicDriverParameters, LogicModel, Model, Node,
+    Pins, Quantity, Specification, ThresholdDetector, ThresholdDetectorParameters, Unknown,
     UnknownInfo,
 };
 
@@ -793,11 +793,11 @@ impl Elements<'_> {
             capacitance,
         };
         self.detected.push((terminals[0], capacitance));
-        let interface = ThresholdDetector::interface(&parameters);
+        let interface = ThresholdDetector::interface::<f64>(&parameters);
         let origin = Origin::Detector(parameters);
         self.place(
             at,
-            ThresholdDetector::NAME,
+            <ThresholdDetector as Kernel>::NAME,
             interface,
             terminals.to_vec(),
             origin,
@@ -806,13 +806,13 @@ impl Elements<'_> {
 
     /// Places a logic driver at `at` on `terminals`: its output, supply and ground.
     fn driver(&mut self, at: Location, terminals: [Node; 3]) -> usize {
-        let interface = LogicDriver::interface(&LogicDriverParameters {});
+        let interface = LogicDriver::interface::<f64>(&LogicDriverParameters {});
         self.place(
             at,
-            LogicDriver::NAME,
+            <LogicDriver as Kernel>::NAME,
             interface,
             terminals.to_vec(),
-            Origin::Driver,
+            Origin::Driver(LogicDriverParameters {}),
         )
     }
 

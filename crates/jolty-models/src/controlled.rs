@@ -1,12 +1,17 @@
-use jolty_numerics::Entry;
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::stamp::CurrentBranch;
-use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Real,
-};
+use crate::kernel::parts::CurrentBranch;
+use crate::{Branch, BranchKind, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
 
 /// The terminals of a controlled source: an output pair and a control pair.
 const CONTROLLED_TERMINALS: &[&str] = &[
@@ -16,18 +21,29 @@ const CONTROLLED_TERMINALS: &[&str] = &[
     "control_negative",
 ];
 
+/// The local index of a controlled source's terminal `positive`.
+const POSITIVE: usize = 0;
+/// The local index of its terminal `negative`.
+const NEGATIVE: usize = 1;
+/// The local index of its terminal `control_positive`.
+const CONTROL_POSITIVE: usize = 2;
+/// The local index of its terminal `control_negative`.
+const CONTROL_NEGATIVE: usize = 3;
+
 /// A voltage-controlled voltage source.
 ///
 /// It holds `v_positive − v_negative = gain · (v_control_positive − v_control_negative)`. Its
 /// current, flowing from `positive` through the source to `negative`, is an unknown labelled
 /// `current`. The control terminals draw no current.
-#[derive(Debug)]
-pub struct VoltageControlledVoltageSource<R: Real = f64> {
+#[derive(Debug, Clone, Copy)]
+pub struct VoltageControlledVoltageSource;
+
+/// Where a voltage-controlled voltage source's contributions go: through its branch, and
+/// at the entries of its current's equation at each control terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlledVoltageShape {
     branch: CurrentBranch,
-    control: [Node; 2],
-    gain: R,
-    /// The entries at (current, each control terminal).
-    entries: [Option<Entry>; 2],
+    entries: [usize; 2],
 }
 
 /// The parameters of a [`VoltageControlledVoltageSource`].
@@ -38,52 +54,54 @@ pub struct VoltageControlledVoltageSourceParameters<R: Real = f64> {
     pub gain: R,
 }
 
-impl NativeModel for VoltageControlledVoltageSource {
-    type Device<R: Real> = VoltageControlledVoltageSource<R>;
-}
-
-impl<R: Real> NativeDevice<R> for VoltageControlledVoltageSource<R> {
+impl Kernel for VoltageControlledVoltageSource {
     const NAME: &'static str = "voltage_controlled_voltage_source";
-    type Parameters = VoltageControlledVoltageSourceParameters<R>;
+    type Parameters<R: Real> = VoltageControlledVoltageSourceParameters<R>;
+    type Shape = ControlledVoltageShape;
+    type Prepared<R: Real> = R;
+    type Memory = ();
 
-    fn interface(_: &VoltageControlledVoltageSourceParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &VoltageControlledVoltageSourceParameters<R>) -> Interface {
         Interface::new(
             CONTROLLED_TERMINALS,
             &[Branch::new(0, 1, BranchKind::VoltageSource)],
         )
     }
 
-    fn new(
-        parameters: VoltageControlledVoltageSourceParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let [positive, negative, control_positive, control_negative] =
-            [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let branch = CurrentBranch::new(binding, "current", [positive, negative]);
-        let row = Some(branch.unknown());
-        let entries = [
-            binding.entry(row, control_positive),
-            binding.entry(row, control_negative),
-        ];
-        Ok(Self {
-            branch,
-            control: [control_positive, control_negative],
-            gain: parameters.gain,
-            entries,
-        })
+    fn prepare<R: Real>(
+        parameters: &VoltageControlledVoltageSourceParameters<R>,
+        _: R,
+    ) -> Result<R, ParameterError> {
+        Ok(parameters.gain)
     }
-}
 
-impl<R: Real> Device<R> for VoltageControlledVoltageSource<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let [control_positive, control_negative] = self.control;
-        let control = input.value(control_positive) - input.value(control_negative);
-        let voltage = self.branch.voltage(input);
-        self.branch
-            .add(input, output, -(self.gain * control - voltage));
-        let [current_control_positive, current_control_negative] = self.entries;
-        output.add_conductance(current_control_positive, -self.gain);
-        output.add_conductance(current_control_negative, self.gain);
+    fn layout<R: Real>(
+        _: &VoltageControlledVoltageSourceParameters<R>,
+        _: &R,
+        layout: &mut Layout,
+    ) -> Result<ControlledVoltageShape, ParameterError> {
+        let branch = CurrentBranch::new(layout, "current", [POSITIVE, NEGATIVE]);
+        let row = branch.unknown();
+        let entries = [
+            layout.entry(row, CONTROL_POSITIVE),
+            layout.entry(row, CONTROL_NEGATIVE),
+        ];
+        Ok(ControlledVoltageShape { branch, entries })
+    }
+
+    fn evaluate<R: Real>(
+        shape: &ControlledVoltageShape,
+        &gain: &R,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let control = at.value(CONTROL_POSITIVE) - at.value(CONTROL_NEGATIVE);
+        let voltage = shape.branch.voltage(at);
+        shape.branch.add(at, stamp, -(gain * control - voltage));
+        let [current_control_positive, current_control_negative] = shape.entries;
+        stamp.add_conductance(current_control_positive, -gain);
+        stamp.add_conductance(current_control_negative, gain);
     }
 }
 
@@ -91,13 +109,13 @@ impl<R: Real> Device<R> for VoltageControlledVoltageSource<R> {
 ///
 /// It drives `transconductance · (v_control_positive − v_control_negative)` from `positive`
 /// through the source to `negative`. The control terminals draw no current.
-#[derive(Debug)]
-pub struct VoltageControlledCurrentSource<R: Real = f64> {
-    nodes: [Node; 4],
-    transconductance: R,
-    /// The entries joining each output terminal to each control terminal.
-    entries: [Option<Entry>; 4],
-}
+#[derive(Debug, Clone, Copy)]
+pub struct VoltageControlledCurrentSource;
+
+/// Where a voltage-controlled current source's contributions go: at the entries joining
+/// each output terminal to each control terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlledCurrentShape([usize; 4]);
 
 /// The parameters of a [`VoltageControlledCurrentSource`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -107,57 +125,60 @@ pub struct VoltageControlledCurrentSourceParameters<R: Real = f64> {
     pub transconductance: R,
 }
 
-impl NativeModel for VoltageControlledCurrentSource {
-    type Device<R: Real> = VoltageControlledCurrentSource<R>;
-}
-
-impl<R: Real> NativeDevice<R> for VoltageControlledCurrentSource<R> {
+impl Kernel for VoltageControlledCurrentSource {
     const NAME: &'static str = "voltage_controlled_current_source";
-    type Parameters = VoltageControlledCurrentSourceParameters<R>;
+    type Parameters<R: Real> = VoltageControlledCurrentSourceParameters<R>;
+    type Shape = ControlledCurrentShape;
+    type Prepared<R: Real> = R;
+    type Memory = ();
 
-    fn interface(_: &VoltageControlledCurrentSourceParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &VoltageControlledCurrentSourceParameters<R>) -> Interface {
         Interface::new(
             CONTROLLED_TERMINALS,
             &[Branch::new(0, 1, BranchKind::CurrentSource)],
         )
     }
 
-    fn new(
-        parameters: VoltageControlledCurrentSourceParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let nodes = [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let entries = [
-            binding.entry(nodes[0], nodes[2]),
-            binding.entry(nodes[0], nodes[3]),
-            binding.entry(nodes[1], nodes[2]),
-            binding.entry(nodes[1], nodes[3]),
-        ];
-        Ok(Self {
-            nodes,
-            transconductance: parameters.transconductance,
-            entries,
-        })
+    fn prepare<R: Real>(
+        parameters: &VoltageControlledCurrentSourceParameters<R>,
+        _: R,
+    ) -> Result<R, ParameterError> {
+        Ok(parameters.transconductance)
     }
-}
 
-impl<R: Real> Device<R> for VoltageControlledCurrentSource<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let [positive, negative, control_positive, control_negative] = self.nodes;
+    fn layout<R: Real>(
+        _: &VoltageControlledCurrentSourceParameters<R>,
+        _: &R,
+        layout: &mut Layout,
+    ) -> Result<ControlledCurrentShape, ParameterError> {
+        Ok(ControlledCurrentShape([
+            layout.entry(POSITIVE, CONTROL_POSITIVE),
+            layout.entry(POSITIVE, CONTROL_NEGATIVE),
+            layout.entry(NEGATIVE, CONTROL_POSITIVE),
+            layout.entry(NEGATIVE, CONTROL_NEGATIVE),
+        ]))
+    }
+
+    fn evaluate<R: Real>(
+        ControlledCurrentShape(entries): &ControlledCurrentShape,
+        &transconductance: &R,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
         let [
             positive_control_positive,
             positive_control_negative,
             negative_control_positive,
             negative_control_negative,
-        ] = self.entries;
-        let transconductance = self.transconductance;
-        let control = input.value(control_positive) - input.value(control_negative);
-        output.add_residual(positive, transconductance * control);
-        output.add_residual(negative, -transconductance * control);
-        output.add_conductance(positive_control_positive, transconductance);
-        output.add_conductance(positive_control_negative, -transconductance);
-        output.add_conductance(negative_control_positive, -transconductance);
-        output.add_conductance(negative_control_negative, transconductance);
+        ] = *entries;
+        let control = at.value(CONTROL_POSITIVE) - at.value(CONTROL_NEGATIVE);
+        stamp.add_residual(POSITIVE, transconductance * control);
+        stamp.add_residual(NEGATIVE, -transconductance * control);
+        stamp.add_conductance(positive_control_positive, transconductance);
+        stamp.add_conductance(positive_control_negative, -transconductance);
+        stamp.add_conductance(negative_control_positive, -transconductance);
+        stamp.add_conductance(negative_control_negative, transconductance);
     }
 }
 
@@ -168,14 +189,15 @@ impl<R: Real> Device<R> for VoltageControlledCurrentSource<R> {
 /// `negative`. The control current flows from `control_positive` through the port to
 /// `control_negative`, which it holds at the same voltage; it is an unknown labelled
 /// `control`.
-#[derive(Debug)]
-pub struct CurrentControlledCurrentSource<R: Real = f64> {
-    output: [Node; 2],
-    /// The sensing port, whose current is the control.
+#[derive(Debug, Clone, Copy)]
+pub struct CurrentControlledCurrentSource;
+
+/// Where a current-controlled current source's contributions go: through its sensing
+/// port, and at the entries of each output terminal's equation at the control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SensedCurrentShape {
     sense: CurrentBranch,
-    gain: R,
-    /// The entries at (each output terminal, control).
-    entries: [Option<Entry>; 2],
+    entries: [usize; 2],
 }
 
 /// The parameters of a [`CurrentControlledCurrentSource`].
@@ -187,20 +209,19 @@ pub struct CurrentControlledCurrentSourceParameters<R: Real = f64> {
 }
 
 /// Adds a sensing port, a short circuit, and returns the current through it.
-fn add_sense<R: Real>(sense: &CurrentBranch, input: &Input<'_>, output: &mut Output<'_, R>) -> f64 {
-    sense.add(input, output, R::constant(sense.voltage(input)));
-    sense.current(input)
+fn add_sense<R: Real>(sense: &CurrentBranch, at: &Local<'_>, stamp: &mut Stamp<'_, R>) -> f64 {
+    sense.add(at, stamp, R::constant(sense.voltage(at)));
+    sense.current(at)
 }
 
-impl NativeModel for CurrentControlledCurrentSource {
-    type Device<R: Real> = CurrentControlledCurrentSource<R>;
-}
-
-impl<R: Real> NativeDevice<R> for CurrentControlledCurrentSource<R> {
+impl Kernel for CurrentControlledCurrentSource {
     const NAME: &'static str = "current_controlled_current_source";
-    type Parameters = CurrentControlledCurrentSourceParameters<R>;
+    type Parameters<R: Real> = CurrentControlledCurrentSourceParameters<R>;
+    type Shape = SensedCurrentShape;
+    type Prepared<R: Real> = R;
+    type Memory = ();
 
-    fn interface(_: &CurrentControlledCurrentSourceParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &CurrentControlledCurrentSourceParameters<R>) -> Interface {
         Interface::new(
             CONTROLLED_TERMINALS,
             &[
@@ -210,36 +231,40 @@ impl<R: Real> NativeDevice<R> for CurrentControlledCurrentSource<R> {
         )
     }
 
-    fn new(
-        parameters: CurrentControlledCurrentSourceParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let [positive, negative, control_positive, control_negative] =
-            [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let sense = CurrentBranch::new(binding, "control", [control_positive, control_negative]);
-        let control = Some(sense.unknown());
-        let entries = [
-            binding.entry(positive, control),
-            binding.entry(negative, control),
-        ];
-        Ok(Self {
-            output: [positive, negative],
-            sense,
-            gain: parameters.gain,
-            entries,
-        })
+    fn prepare<R: Real>(
+        parameters: &CurrentControlledCurrentSourceParameters<R>,
+        _: R,
+    ) -> Result<R, ParameterError> {
+        Ok(parameters.gain)
     }
-}
 
-impl<R: Real> Device<R> for CurrentControlledCurrentSource<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let current = add_sense(&self.sense, input, output);
-        let [positive, negative] = self.output;
-        let [positive_control, negative_control] = self.entries;
-        output.add_residual(positive, self.gain * current);
-        output.add_residual(negative, -self.gain * current);
-        output.add_conductance(positive_control, self.gain);
-        output.add_conductance(negative_control, -self.gain);
+    fn layout<R: Real>(
+        _: &CurrentControlledCurrentSourceParameters<R>,
+        _: &R,
+        layout: &mut Layout,
+    ) -> Result<SensedCurrentShape, ParameterError> {
+        let sense = CurrentBranch::new(layout, "control", [CONTROL_POSITIVE, CONTROL_NEGATIVE]);
+        let control = sense.unknown();
+        let entries = [
+            layout.entry(POSITIVE, control),
+            layout.entry(NEGATIVE, control),
+        ];
+        Ok(SensedCurrentShape { sense, entries })
+    }
+
+    fn evaluate<R: Real>(
+        shape: &SensedCurrentShape,
+        &gain: &R,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let current = add_sense(&shape.sense, at, stamp);
+        let [positive_control, negative_control] = shape.entries;
+        stamp.add_residual(POSITIVE, gain * current);
+        stamp.add_residual(NEGATIVE, -gain * current);
+        stamp.add_conductance(positive_control, gain);
+        stamp.add_conductance(negative_control, -gain);
     }
 }
 
@@ -250,14 +275,16 @@ impl<R: Real> Device<R> for CurrentControlledCurrentSource<R> {
 /// flows from `control_positive` through the port to `control_negative`, which it holds
 /// at the same voltage; it is an unknown labelled `control`. The output current, from
 /// `positive` through the source to `negative`, is an unknown labelled `current`.
-#[derive(Debug)]
-pub struct CurrentControlledVoltageSource<R: Real = f64> {
-    /// The sensing port, whose current is the control.
+#[derive(Debug, Clone, Copy)]
+pub struct CurrentControlledVoltageSource;
+
+/// Where a current-controlled voltage source's contributions go: through its sensing
+/// port and its output branch, and at the entry of its current's equation at the control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SensedVoltageShape {
     sense: CurrentBranch,
     branch: CurrentBranch,
-    transresistance: R,
-    /// The entry at (current, control).
-    entry: Option<Entry>,
+    entry: usize,
 }
 
 /// The parameters of a [`CurrentControlledVoltageSource`].
@@ -268,15 +295,14 @@ pub struct CurrentControlledVoltageSourceParameters<R: Real = f64> {
     pub transresistance: R,
 }
 
-impl NativeModel for CurrentControlledVoltageSource {
-    type Device<R: Real> = CurrentControlledVoltageSource<R>;
-}
-
-impl<R: Real> NativeDevice<R> for CurrentControlledVoltageSource<R> {
+impl Kernel for CurrentControlledVoltageSource {
     const NAME: &'static str = "current_controlled_voltage_source";
-    type Parameters = CurrentControlledVoltageSourceParameters<R>;
+    type Parameters<R: Real> = CurrentControlledVoltageSourceParameters<R>;
+    type Shape = SensedVoltageShape;
+    type Prepared<R: Real> = R;
+    type Memory = ();
 
-    fn interface(_: &CurrentControlledVoltageSourceParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &CurrentControlledVoltageSourceParameters<R>) -> Interface {
         Interface::new(
             CONTROLLED_TERMINALS,
             &[
@@ -286,31 +312,41 @@ impl<R: Real> NativeDevice<R> for CurrentControlledVoltageSource<R> {
         )
     }
 
-    fn new(
-        parameters: CurrentControlledVoltageSourceParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let [positive, negative, control_positive, control_negative] =
-            [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let sense = CurrentBranch::new(binding, "control", [control_positive, control_negative]);
-        let branch = CurrentBranch::new(binding, "current", [positive, negative]);
-        let entry = binding.entry(Some(branch.unknown()), Some(sense.unknown()));
-        Ok(Self {
+    fn prepare<R: Real>(
+        parameters: &CurrentControlledVoltageSourceParameters<R>,
+        _: R,
+    ) -> Result<R, ParameterError> {
+        Ok(parameters.transresistance)
+    }
+
+    fn layout<R: Real>(
+        _: &CurrentControlledVoltageSourceParameters<R>,
+        _: &R,
+        layout: &mut Layout,
+    ) -> Result<SensedVoltageShape, ParameterError> {
+        let sense = CurrentBranch::new(layout, "control", [CONTROL_POSITIVE, CONTROL_NEGATIVE]);
+        let branch = CurrentBranch::new(layout, "current", [POSITIVE, NEGATIVE]);
+        let entry = layout.entry(branch.unknown(), sense.unknown());
+        Ok(SensedVoltageShape {
             sense,
             branch,
-            transresistance: parameters.transresistance,
             entry,
         })
     }
-}
 
-impl<R: Real> Device<R> for CurrentControlledVoltageSource<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let control = add_sense(&self.sense, input, output);
-        let voltage = self.branch.voltage(input);
-        self.branch
-            .add(input, output, -(self.transresistance * control - voltage));
-        output.add_conductance(self.entry, -self.transresistance);
+    fn evaluate<R: Real>(
+        shape: &SensedVoltageShape,
+        &transresistance: &R,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let control = add_sense(&shape.sense, at, stamp);
+        let voltage = shape.branch.voltage(at);
+        shape
+            .branch
+            .add(at, stamp, -(transresistance * control - voltage));
+        stamp.add_conductance(shape.entry, -transresistance);
     }
 }
 

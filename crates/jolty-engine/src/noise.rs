@@ -103,12 +103,8 @@ impl Simulator {
         let mut contributions = Vec::new();
         for (index, placed) in self.elaborated.devices.iter().enumerate() {
             let before = sources.len();
-            if let Some(device) = &self.state.devices[index] {
-                device.noise(state, &mut sources);
-            } else {
-                let groups = &self.elaborated.groups;
-                self.state.runs.noise(groups, index, state, &mut sources);
-            }
+            let groups = &self.elaborated.groups;
+            self.state.runs.noise(groups, index, state, &mut sources);
             contributions.extend(sources[before..].iter().map(|source| NoiseContribution {
                 device: placed.location().path.clone(),
                 name: source.name,
@@ -143,13 +139,9 @@ impl Simulator {
             Some(path) => {
                 let index = self.source_index(path)?;
                 let mut level = vec![0.0; unknowns];
-                if let Some(source) = self
-                    .state
-                    .device(index)
-                    .and_then(|device| device.as_source())
-                {
-                    source.level_derivative(&mut level);
-                }
+                self.state
+                    .runs
+                    .excite(&self.elaborated.groups, index, &mut level);
                 let input = NoiseInput {
                     source: path.clone(),
                     quantity: self.source_quantity(index),

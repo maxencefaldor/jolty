@@ -834,6 +834,7 @@ impl Kernel for Mosfet {
 
     fn layout<R: Real>(
         parameters: &MosfetParameters<R>,
+        _: &PreparedMosfet<R>,
         layout: &mut Layout,
     ) -> Result<MosfetShape, ParameterError> {
         let [drain_resistance, source_resistance] = parameters.series_resistances()?;
@@ -1400,7 +1401,6 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::KernelDevice;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
         thermal,
@@ -1430,7 +1430,7 @@ mod tests {
     fn drain_current(vgs: f64, vds: f64) -> f64 {
         let parameters = r#"{"threshold_voltage": 1, "transconductance_parameter": 1e-4,
             "saturation_current": 1e-30}"#;
-        Bench::new::<KernelDevice<Mosfet>>(parameters)
+        Bench::new::<Mosfet>(parameters)
             .settle(&[vds, vgs, 0.0, -5.0])
             .residual[0]
     }
@@ -1452,7 +1452,7 @@ mod tests {
     fn the_body_effect_raises_the_threshold() {
         let parameters = r#"{"threshold_voltage": 1, "body_effect": 0.5,
             "surface_potential": 0.7, "saturation_current": 1e-30}"#;
-        let mut bench = Bench::new::<KernelDevice<Mosfet>>(parameters);
+        let mut bench = Bench::new::<Mosfet>(parameters);
         let current = bench.settle(&[5.0, 2.0, 0.0, -1.0]).residual[0];
         let threshold = 1.0 + 0.5 * (1.7_f64.sqrt() - 0.7_f64.sqrt());
         let expected = 2e-5 / 2.0 * (2.0 - threshold) * (2.0 - threshold);
@@ -1463,7 +1463,7 @@ mod tests {
     fn reports_its_threshold_saturation_and_meyer_capacitances() {
         let parameters = r#"{"threshold_voltage": 1, "body_effect": 0.5,
             "surface_potential": 0.7, "saturation_current": 1e-30}"#;
-        let mut bench = Bench::new::<KernelDevice<Mosfet>>(parameters);
+        let mut bench = Bench::new::<Mosfet>(parameters);
         bench.settle(&[5.0, 2.0, 0.0, -1.0]);
         let names = bench.device().variable_names();
         let mut values = vec![0.0; names.len()];
@@ -1474,8 +1474,8 @@ mod tests {
         assert!((values[1] - (2.0 - threshold)).abs() < 1e-15);
         assert_eq!(values[2..], [0.0; 3], "no oxide, no Meyer capacitance");
 
-        let mut n = Bench::new::<KernelDevice<Mosfet>>(CHARGED);
-        let mut p = Bench::new::<KernelDevice<Mosfet>>(&p_channel(CHARGED));
+        let mut n = Bench::new::<Mosfet>(CHARGED);
+        let mut p = Bench::new::<Mosfet>(&p_channel(CHARGED));
         let x = [3.0, 2.0, 0.2, -0.5, 1e-4, -2e-4, 3e-4];
         let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
         n.settle(&x);
@@ -1495,8 +1495,8 @@ mod tests {
 
     #[test]
     fn a_p_channel_mirrors_an_n_channel() {
-        let mut n = Bench::new::<KernelDevice<Mosfet>>(CHARGED);
-        let mut p = Bench::new::<KernelDevice<Mosfet>>(&p_channel(CHARGED));
+        let mut n = Bench::new::<Mosfet>(CHARGED);
+        let mut p = Bench::new::<Mosfet>(&p_channel(CHARGED));
         let x = [3.0, 2.0, 0.2, -0.5, 1e-4, -2e-4, 3e-4];
         let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
         let n_residuals = n.settle(&x).residual;
@@ -1511,7 +1511,7 @@ mod tests {
 
     #[test]
     fn meyers_capacitances_share_the_oxide() {
-        let mut bench = Bench::new::<KernelDevice<Mosfet>>(CHARGED);
+        let mut bench = Bench::new::<Mosfet>(CHARGED);
         // The gate's derivatives with respect to the three displacement currents: Meyer's
         // capacitances as fractions of the oxide's.
         let mut shares = |gate: f64, drain: f64| {
@@ -1530,7 +1530,7 @@ mod tests {
     fn unknowns_follow_the_resistances_and_the_oxide() {
         let parameters = r#"{"drain_resistance": 10, "sheet_resistance": 20,
             "source_squares": 0.5, "oxide_thickness": 1e-7}"#;
-        let bench = Bench::new::<KernelDevice<Mosfet>>(parameters);
+        let bench = Bench::new::<Mosfet>(parameters);
         assert_eq!(
             bench.unknowns(),
             [
@@ -1545,16 +1545,12 @@ mod tests {
                 "device:gate_bulk_displacement"
             ]
         );
-        assert_eq!(Bench::new::<KernelDevice<Mosfet>>("{}").unknowns().len(), 4);
+        assert_eq!(Bench::new::<Mosfet>("{}").unknowns().len(), 4);
     }
 
     #[test]
     fn rejects_inconsistent_parameters() {
-        let error = |parameters| {
-            Bench::try_new::<KernelDevice<Mosfet>>(parameters)
-                .unwrap_err()
-                .0
-        };
+        let error = |parameters| Bench::try_new::<Mosfet>(parameters).unwrap_err().0;
         assert_eq!(
             error(r#"{"substrate_doping": 1e22}"#),
             "substrate_doping needs an oxide_thickness"
@@ -1635,8 +1631,7 @@ mod tests {
                 let heated = every.replace('{', r#"{"thermal": true, "#);
                 let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
                 for rise in [0.0, 40.0] {
-                    let mut plain =
-                        Bench::at::<KernelDevice<Mosfet>>(&every, REFERENCE_TEMPERATURE + rise);
+                    let mut plain = Bench::at::<Mosfet>(&every, REFERENCE_TEMPERATURE + rise);
                     let [d, g, b] = [3.0, 2.0, -0.5].map(|v| sign * v);
                     let hot = bench.settle(&[d, g, 0.0, b, rise, 1e-4, 2e-4, -1e-4]);
                     let reference = plain.settle(&[d, g, 0.0, b, 1e-4, 2e-4, -1e-4]);
@@ -1670,7 +1665,7 @@ mod tests {
             let sign = if p { -1.0 } else { 1.0 };
             let bulk = drain.min(0.0) - reverse;
             let [gs, gd, gb] = displacements;
-            assert_jacobians_match::<KernelDevice<Mosfet>>(
+            assert_jacobians_match::<Mosfet>(
                 &parameters,
                 &[sign * drain, sign * gate, 0.0, sign * bulk, gs, gd, gb],
             );
@@ -1679,7 +1674,7 @@ mod tests {
                 r#"{"drain_resistance": 50, "source_resistance": 20, "#,
             );
             let inner = [sign * 0.9 * drain, sign * 0.01];
-            assert_jacobians_match::<KernelDevice<Mosfet>>(
+            assert_jacobians_match::<Mosfet>(
                 &resistive,
                 &[sign * drain, sign * gate, 0.0, sign * bulk, inner[0], inner[1], gs, gd, gb],
             );
@@ -1708,7 +1703,7 @@ mod tests {
             let parameters = if p { p_channel(&parameters) } else { parameters };
             let sign = if p { -1.0 } else { 1.0 };
             let bulk = drain.min(0.0) - reverse;
-            assert_jacobians_match::<KernelDevice<Mosfet>>(
+            assert_jacobians_match::<Mosfet>(
                 &parameters,
                 &[sign * drain, sign * gate, 0.0, sign * bulk, 1e-4, 2e-4, -1e-4],
             );
@@ -1725,7 +1720,7 @@ mod tests {
             let parameters = r#"{"oxide_thickness": 5e-8, "substrate_doping": 1e22,
                 "surface_state_density": 1e14, "gate_material": "aluminum"}"#;
             let bulk = drain.min(0.0) - reverse;
-            assert_jacobians_match::<KernelDevice<Mosfet>>(
+            assert_jacobians_match::<Mosfet>(
                 parameters,
                 &[drain, gate, 0.0, bulk, 1e-4, 2e-4, -1e-4],
             );
@@ -1744,7 +1739,7 @@ mod tests {
                 "lateral_diffusion": 1e-7, "multiplier": {copies},
                 "flicker_coefficient": 1e-25, "flicker_exponent": 1.2}}"#
             );
-            let mut bench = Bench::new::<KernelDevice<Mosfet>>(&parameters);
+            let mut bench = Bench::new::<Mosfet>(&parameters);
             let x = [5.0, 2.0, 0.0, -5.0];
             let evaluation = bench.settle(&x);
             let (current, gm) = (evaluation.residual[0], evaluation.conductance[0][1]);

@@ -150,11 +150,8 @@ pub trait Specification: fmt::Debug + Send + Sync {
     fn parameters(&self) -> Result<Parameters, ParameterError>;
 
     /// The instance as one of a [kernel](crate::Kernel)'s, which the engine evaluates
-    /// beside the other instances of its kernel and shape: `None` for a device evaluated
-    /// on its own.
-    fn kernel(&self) -> Option<Instance<'_>> {
-        None
-    }
+    /// beside the other instances of its kernel and shape.
+    fn kernel(&self) -> Instance<'_>;
 }
 
 /// A device implemented in Rust, whose parameters deserialize into a typed struct.
@@ -184,14 +181,8 @@ pub trait NativeModel: 'static {
     /// The device, computing with `R`.
     type Device<R: Real>: NativeDevice<R>;
 
-    /// The instance of a kernel that `parameters` make, when the model's devices are a
-    /// kernel's: `None` for a device evaluated on its own.
-    fn instance(
-        parameters: &<Self::Device<f64> as NativeDevice<f64>>::Parameters,
-    ) -> Option<Instance<'_>> {
-        let _ = parameters;
-        None
-    }
+    /// The instance of a kernel that `parameters` make.
+    fn instance(parameters: &<Self::Device<f64> as NativeDevice<f64>>::Parameters) -> Instance<'_>;
 }
 
 /// The parameters of the devices of `M` that compute with `R`.
@@ -270,7 +261,7 @@ impl<M: NativeModel> Specification for Typed<M> {
         written(&self.0)
     }
 
-    fn kernel(&self) -> Option<Instance<'_>> {
+    fn kernel(&self) -> Instance<'_> {
         M::instance(&self.0)
     }
 }

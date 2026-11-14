@@ -9,6 +9,10 @@
 //! temperature is an unknown like any voltage, so Newton's iteration solves the circuit
 //! and its heating together, with every derivative exact.
 
+mod kind;
+
+pub(crate) use kind::HeatedKernel;
+
 use std::borrow::Cow;
 
 use jolty_ir::Parameters;
@@ -39,14 +43,14 @@ pub trait HeatableModel: 'static {
     /// The device, computing with `R`.
     type Device<R: Real>: Heatable<R>;
 
-    /// The instance of a kernel that `parameters` make, when the model's devices are a
-    /// kernel's and do not heat: `None` for a device evaluated on its own.
-    fn instance(
-        parameters: &<Self::Device<f64> as NativeDevice<f64>>::Parameters,
-    ) -> Option<Instance<'_>> {
-        let _ = parameters;
-        None
-    }
+    /// The instance of a kernel that `parameters` make, when it does not heat.
+    fn instance(parameters: &<Self::Device<f64> as NativeDevice<f64>>::Parameters) -> Instance<'_>;
+
+    /// The instance of a kernel that `parameters` make, read as the numbers an instance
+    /// that heats computes with.
+    fn heated(
+        parameters: &<Self::Device<Gradient> as NativeDevice<Gradient>>::Parameters,
+    ) -> Instance<'_>;
 }
 
 /// The parameters of the devices of `M` that compute with `R`.
@@ -249,11 +253,10 @@ impl<M: HeatableModel> Specification for Warmed<M> {
         Ok(written)
     }
 
-    /// A device that heats is a system of its own, evaluated on its own.
-    fn kernel(&self) -> Option<Instance<'_>> {
+    fn kernel(&self) -> Instance<'_> {
         match self {
             Self::Cool(parameters) => M::instance(parameters),
-            Self::Heated(_) => None,
+            Self::Heated(parameters) => M::heated(parameters),
         }
     }
 }
@@ -522,8 +525,7 @@ mod tests {
         assert_eq!(heated.unknowns(), ["n0", "n1", "n2", "device:junction"]);
         let cool = DIODE.replace(r#", "thermal": true"#, "");
         for rise in [0.0, 40.0] {
-            let mut plain =
-                Bench::at::<crate::KernelDevice<Diode>>(&cool, REFERENCE_TEMPERATURE + rise);
+            let mut plain = Bench::at::<Diode>(&cool, REFERENCE_TEMPERATURE + rise);
             let x = [0.72, 0.0, rise, 0.7];
             let hot = heated.settle(&x);
             let reference = plain.settle(&[0.72, 0.0, 0.7]);

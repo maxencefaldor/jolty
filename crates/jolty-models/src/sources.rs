@@ -1,13 +1,19 @@
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 use jolty_ir::Parameters;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::stamp::CurrentBranch;
+use crate::kernel::parts::CurrentBranch;
 use crate::waveform::Waveform;
-use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
-    ParameterError, Real, Source,
-};
+use crate::{Branch, BranchKind, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
 
 /// The parameters of an independent source held at a constant `level`, in volts or
 /// amperes, whatever its waveform: those of a source whose waveform is that level. A DC
@@ -27,140 +33,154 @@ pub struct SourceParameters<R: Real = f64> {
     pub waveform: Waveform<R>,
 }
 
+/// The local indices of a source's terminals, `positive` and `negative`.
+const TERMINALS: [usize; 2] = [0, 1];
+
 /// An independent voltage source from terminal `negative` to terminal `positive`.
 ///
 /// It holds `v_positive − v_negative` at its level. Its current, flowing from `positive`
 /// through the source to `negative`, is an unknown labelled `current`, so a source that
 /// delivers power carries a negative current.
-#[derive(Debug)]
-pub struct VoltageSource<R: Real = f64> {
-    branch: CurrentBranch,
-    waveform: Waveform<R>,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct VoltageSource;
 
-impl NativeModel for VoltageSource {
-    type Device<R: Real> = VoltageSource<R>;
-}
+/// Where a voltage source's contributions go: through its branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoltageSourceShape(CurrentBranch);
 
-impl<R: Real> NativeDevice<R> for VoltageSource<R> {
+impl Kernel for VoltageSource {
     const NAME: &'static str = "voltage_source";
-    type Parameters = SourceParameters<R>;
+    type Parameters<R: Real> = SourceParameters<R>;
+    type Shape = VoltageSourceShape;
+    type Prepared<R: Real> = Waveform<R>;
+    type Memory = ();
 
-    fn interface(_: &SourceParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &SourceParameters<R>) -> Interface {
         Interface::new(
             &["positive", "negative"],
             &[Branch::new(0, 1, BranchKind::VoltageSource)],
         )
     }
 
-    fn new(
-        parameters: SourceParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let terminals = [binding.terminal(0), binding.terminal(1)];
-        Ok(Self {
-            branch: CurrentBranch::new(binding, "current", terminals),
-            waveform: parameters.waveform,
-        })
-    }
-}
-
-impl<R: Real> Device<R> for VoltageSource<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let level = self.waveform.value(input.time) * input.source_scale;
-        let voltage = self.branch.voltage(input);
-        self.branch.add(input, output, -(level - voltage));
+    fn prepare<R: Real>(
+        parameters: &SourceParameters<R>,
+        _: R,
+    ) -> Result<Waveform<R>, ParameterError> {
+        Ok(parameters.waveform.clone())
     }
 
-    fn breakpoints(&self, start: f64, stop: f64, times: &mut Vec<f64>) {
-        self.waveform.breakpoints(start, stop, times);
+    fn layout<R: Real>(
+        _: &SourceParameters<R>,
+        _: &Waveform<R>,
+        layout: &mut Layout,
+    ) -> Result<VoltageSourceShape, ParameterError> {
+        Ok(VoltageSourceShape(CurrentBranch::new(
+            layout, "current", TERMINALS,
+        )))
     }
 
-    fn as_source(&mut self) -> Option<&mut dyn Source> {
-        Some(self)
+    fn evaluate<R: Real>(
+        VoltageSourceShape(branch): &VoltageSourceShape,
+        waveform: &Waveform<R>,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let level = waveform.value(at.time) * at.source_scale;
+        let voltage = branch.voltage(at);
+        branch.add(at, stamp, -(level - voltage));
     }
-}
 
-impl<R: Real> Source for VoltageSource<R> {
-    fn level(&self) -> f64 {
-        self.waveform.value(0.0).value()
+    fn breakpoints<R: Real>(
+        waveform: &Waveform<R>,
+        (start, stop): (f64, f64),
+        times: &mut Vec<f64>,
+    ) {
+        waveform.breakpoints(start, stop, times);
     }
 
-    fn level_derivative(&self, derivative: &mut [f64]) {
-        derivative[self.branch.unknown().index()] -= 1.0;
+    fn level<R: Real>(waveform: &Waveform<R>) -> Option<f64> {
+        Some(waveform.value(0.0).value())
+    }
+
+    /// The residual of the branch's equation, `v − level`, falls by one with the level.
+    fn excite<R: Real>(VoltageSourceShape(branch): &VoltageSourceShape, stamp: &mut Stamp<'_, R>) {
+        stamp.add_residual(branch.unknown(), R::constant(-1.0));
     }
 }
 
 /// An independent current source that drives its level from terminal `positive` through the
 /// source to terminal `negative`, so it pushes current into the `negative` node.
-#[derive(Debug)]
-pub struct CurrentSource<R: Real = f64> {
-    positive: Node,
-    negative: Node,
-    waveform: Waveform<R>,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct CurrentSource;
 
-impl NativeModel for CurrentSource {
-    type Device<R: Real> = CurrentSource<R>;
-}
-
-impl<R: Real> NativeDevice<R> for CurrentSource<R> {
+impl Kernel for CurrentSource {
     const NAME: &'static str = "current_source";
-    type Parameters = SourceParameters<R>;
+    type Parameters<R: Real> = SourceParameters<R>;
+    type Shape = ();
+    type Prepared<R: Real> = Waveform<R>;
+    type Memory = ();
 
-    fn interface(_: &SourceParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &SourceParameters<R>) -> Interface {
         Interface::new(
             &["positive", "negative"],
             &[Branch::new(0, 1, BranchKind::CurrentSource)],
         )
     }
 
-    fn new(
-        parameters: SourceParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        Ok(Self {
-            positive: binding.terminal(0),
-            negative: binding.terminal(1),
-            waveform: parameters.waveform,
-        })
-    }
-}
-
-impl<R: Real> Device<R> for CurrentSource<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let current = self.waveform.value(input.time) * input.source_scale;
-        output.add_residual(self.positive, current);
-        output.add_residual(self.negative, -current);
+    fn prepare<R: Real>(
+        parameters: &SourceParameters<R>,
+        _: R,
+    ) -> Result<Waveform<R>, ParameterError> {
+        Ok(parameters.waveform.clone())
     }
 
-    fn breakpoints(&self, start: f64, stop: f64, times: &mut Vec<f64>) {
-        self.waveform.breakpoints(start, stop, times);
+    fn layout<R: Real>(
+        _: &SourceParameters<R>,
+        _: &Waveform<R>,
+        _: &mut Layout,
+    ) -> Result<(), ParameterError> {
+        Ok(())
     }
 
-    fn as_source(&mut self) -> Option<&mut dyn Source> {
-        Some(self)
+    fn evaluate<R: Real>(
+        (): &(),
+        waveform: &Waveform<R>,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let current = waveform.value(at.time) * at.source_scale;
+        let [positive, negative] = TERMINALS;
+        stamp.add_residual(positive, current);
+        stamp.add_residual(negative, -current);
     }
-}
 
-impl<R: Real> Source for CurrentSource<R> {
-    fn level(&self) -> f64 {
-        self.waveform.value(0.0).value()
+    fn breakpoints<R: Real>(
+        waveform: &Waveform<R>,
+        (start, stop): (f64, f64),
+        times: &mut Vec<f64>,
+    ) {
+        waveform.breakpoints(start, stop, times);
     }
 
-    fn level_derivative(&self, derivative: &mut [f64]) {
-        if let Some(positive) = self.positive {
-            derivative[positive.index()] += 1.0;
-        }
-        if let Some(negative) = self.negative {
-            derivative[negative.index()] -= 1.0;
-        }
+    fn level<R: Real>(waveform: &Waveform<R>) -> Option<f64> {
+        Some(waveform.value(0.0).value())
+    }
+
+    /// The current leaves `positive` and enters `negative`, one ampere for each of the
+    /// level.
+    fn excite<R: Real>((): &(), stamp: &mut Stamp<'_, R>) {
+        let [positive, negative] = TERMINALS;
+        stamp.add_residual(positive, R::constant(1.0));
+        stamp.add_residual(negative, R::constant(-1.0));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Input;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match_at,
     };

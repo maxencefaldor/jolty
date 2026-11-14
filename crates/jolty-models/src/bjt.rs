@@ -14,9 +14,9 @@ use crate::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
 };
+use crate::kernel::parts::SMALL_RESISTANCE;
 use crate::kernel::parts::{self, CurrentBranch, Nodes, Series, series_value};
 use crate::noise::Flicker;
-use crate::stamp::SMALL_RESISTANCE;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
     REFERENCE_TEMPERATURE, Real, Stamp, Unknown,
@@ -1056,6 +1056,7 @@ impl Kernel for BipolarTransistor {
 
     fn layout<R: Real>(
         parameters: &BipolarTransistorParameters<R>,
+        _: &PreparedBipolarTransistor<R>,
         layout: &mut Layout,
     ) -> Result<BipolarTransistorShape, ParameterError> {
         let base_resistance = parameters.base_resistance()?;
@@ -1402,12 +1403,12 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::Input;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
         thermal,
     };
     use crate::{ELEMENTARY_CHARGE, Unknown, thermal_voltage};
-    use crate::{Input, KernelDevice};
 
     const THERMAL_VOLTAGE: f64 = thermal_voltage(REFERENCE_TEMPERATURE);
 
@@ -1424,8 +1425,7 @@ mod tests {
 
     #[test]
     fn its_collector_current_is_beta_times_its_base_current() {
-        let mut bench =
-            Bench::new::<KernelDevice<BipolarTransistor>>(r#"{"saturation_current": 1e-15}"#);
+        let mut bench = Bench::new::<BipolarTransistor>(r#"{"saturation_current": 1e-15}"#);
         let evaluation = bench.settle(&[5.0, 0.65, 0.0]);
         let (collector, base) = (evaluation.residual[0], evaluation.residual[1]);
         let expected = 1e-15 * ((0.65 / THERMAL_VOLTAGE).exp() - 1.0);
@@ -1443,10 +1443,9 @@ mod tests {
 
     #[test]
     fn a_pnp_mirrors_an_npn() {
-        let mut npn = Bench::new::<KernelDevice<BipolarTransistor>>(FULL);
-        let mut pnp = Bench::new::<KernelDevice<BipolarTransistor>>(
-            &FULL.replace('{', r#"{"polarity": "pnp", "#),
-        );
+        let mut npn = Bench::new::<BipolarTransistor>(FULL);
+        let mut pnp =
+            Bench::new::<BipolarTransistor>(&FULL.replace('{', r#"{"polarity": "pnp", "#));
         let n = npn.settle(&[3.0, 0.7, 0.0]);
         let p = pnp.settle(&[-3.0, -0.7, 0.0]);
         for (n, p) in n.residual.iter().zip(&p.residual) {
@@ -1459,7 +1458,7 @@ mod tests {
 
     #[test]
     fn series_resistances_add_internal_nodes() {
-        let bench = Bench::new::<KernelDevice<BipolarTransistor>>(
+        let bench = Bench::new::<BipolarTransistor>(
             r#"{"base_resistance": 100, "collector_resistance": 5, "emitter_resistance": 1}"#,
         );
         assert_eq!(
@@ -1487,7 +1486,7 @@ mod tests {
                 ),
             )
         };
-        let bench = Bench::new::<KernelDevice<BipolarTransistor>>(&small("npn", ""));
+        let bench = Bench::new::<BipolarTransistor>(&small("npn", ""));
         assert_eq!(
             bench.unknowns(),
             [
@@ -1521,7 +1520,7 @@ mod tests {
                         0.03 * base / 0.5,
                     ]
                     .map(|value| sign * value);
-                    assert_jacobians_match::<KernelDevice<BipolarTransistor>>(&parameters, &x);
+                    assert_jacobians_match::<BipolarTransistor>(&parameters, &x);
                     assert_parameter_gradients_match::<BipolarTransistor>(&parameters, &x);
                 }
             }
@@ -1535,8 +1534,8 @@ mod tests {
 
     #[test]
     fn an_excess_phase_delays_the_forward_transport_current_through_two_unknowns() {
-        let mut plain = Bench::new::<KernelDevice<BipolarTransistor>>(FULL);
-        let mut delayed = Bench::new::<KernelDevice<BipolarTransistor>>(&excess());
+        let mut plain = Bench::new::<BipolarTransistor>(FULL);
+        let mut delayed = Bench::new::<BipolarTransistor>(&excess());
         assert_eq!(
             delayed.unknowns(),
             [
@@ -1574,7 +1573,7 @@ mod tests {
     fn its_delay_is_a_second_order_bessel_filter() {
         // Linearized, the delayed current responds to the forward transport current
         // through 3 / (s² td² + 3 s td + 3): solve the two rows at s = jω for a unit drive.
-        let mut delayed = Bench::new::<KernelDevice<BipolarTransistor>>(&excess());
+        let mut delayed = Bench::new::<BipolarTransistor>(&excess());
         let evaluation = delayed.settle(&[3.0, 0.7, 0.0, 1e-3, 0.0]);
         let delay = 30.0 * std::f64::consts::PI / 180.0 * 4e-10;
         for omega in [1e8, 1.0 / delay, 1e10] {
@@ -1614,10 +1613,9 @@ mod tests {
 
     #[test]
     fn an_excess_phase_needs_a_transit_time_and_is_not_negative() {
-        let without = Bench::new::<KernelDevice<BipolarTransistor>>(r#"{"excess_phase": 30}"#);
+        let without = Bench::new::<BipolarTransistor>(r#"{"excess_phase": 30}"#);
         assert_eq!(without.unknowns(), ["n0", "n1", "n2"]);
-        let error = Bench::try_new::<KernelDevice<BipolarTransistor>>(r#"{"excess_phase": -1}"#)
-            .unwrap_err();
+        let error = Bench::try_new::<BipolarTransistor>(r#"{"excess_phase": -1}"#).unwrap_err();
         assert_eq!(
             error.to_string(),
             "excess_phase must be at least 0, not -1.0"
@@ -1631,8 +1629,7 @@ mod tests {
         let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
         let cool = FULL.replace('{', r#"{"base_resistance": 50, "#);
         for rise in [0.0, 35.0] {
-            let mut plain =
-                Bench::at::<KernelDevice<BipolarTransistor>>(&cool, REFERENCE_TEMPERATURE + rise);
+            let mut plain = Bench::at::<BipolarTransistor>(&cool, REFERENCE_TEMPERATURE + rise);
             let hot = bench.settle(&[3.0, 0.7, 0.0, rise, 0.69]);
             let reference = plain.settle(&[3.0, 0.7, 0.0, 0.69]);
             let electrical = [0, 1, 2, 4].map(|row| hot.residual[row]);
@@ -1683,8 +1680,7 @@ mod tests {
 
     #[test]
     fn a_substrate_junction_without_a_diode_conducts_the_minimum_conductance() {
-        let mut bench =
-            Bench::new::<KernelDevice<BipolarTransistor>>(r#"{"substrate": "vertical"}"#);
+        let mut bench = Bench::new::<BipolarTransistor>(r#"{"substrate": "vertical"}"#);
         let (gmin, x) = (1e-12, [2.0, 0.5, 0.0, -3.0]);
         let evaluation = bench.evaluate_with(&Input::new(&x, None, gmin));
         assert!((evaluation.residual[3] - gmin * (x[3] - x[0])).abs() < 1e-24);
@@ -1697,7 +1693,7 @@ mod tests {
         for (construction, joined, forward) in
             [("lateral", BASE, 1.0), ("vertical", COLLECTOR, -1.0)]
         {
-            let mut bench = Bench::new::<KernelDevice<BipolarTransistor>>(&format!(
+            let mut bench = Bench::new::<BipolarTransistor>(&format!(
                 r#"{{"polarity": "pnp", "substrate": "{construction}",
                     "substrate_saturation_current": 1e-15}}"#
             ));
@@ -1714,10 +1710,8 @@ mod tests {
 
     #[test]
     fn substrate_parameters_need_a_substrate() {
-        let error = Bench::try_new::<KernelDevice<BipolarTransistor>>(
-            r#"{"substrate_capacitance": 1e-12}"#,
-        )
-        .unwrap_err();
+        let error =
+            Bench::try_new::<BipolarTransistor>(r#"{"substrate_capacitance": 1e-12}"#).unwrap_err();
         assert_eq!(
             error.to_string(),
             "substrate_capacitance needs a substrate, vertical or lateral"
@@ -1727,8 +1721,7 @@ mod tests {
     #[test]
     fn rejects_out_of_range_parameters() {
         let error =
-            Bench::try_new::<KernelDevice<BipolarTransistor>>(r#"{"forward_early_voltage": 0}"#)
-                .unwrap_err();
+            Bench::try_new::<BipolarTransistor>(r#"{"forward_early_voltage": 0}"#).unwrap_err();
         assert_eq!(
             error.to_string(),
             "forward_early_voltage must be positive, not 0.0"
@@ -1797,11 +1790,11 @@ mod tests {
                 parameters = parameters.replace('{', r#"{"polarity": "pnp", "#);
             }
             let sign = if pnp { -1.0 } else { 1.0 };
-            assert_jacobians_match::<KernelDevice<BipolarTransistor>>(
+            assert_jacobians_match::<BipolarTransistor>(
                 &parameters,
                 &[sign * collector, sign * base, 0.0],
             );
-            assert_jacobians_match::<KernelDevice<BipolarTransistor>>(
+            assert_jacobians_match::<BipolarTransistor>(
                 &parameters.replace('{', r#"{"excess_phase": 45, "#),
                 &[sign * collector, sign * base, 0.0, 1e-3, -2e-4],
             );
@@ -1822,7 +1815,7 @@ mod tests {
                     "substrate_emission_coefficient": 1.2, "substrate_capacitance": 3e-12,
                     "substrate_potential": 0.6, "substrate_grading": 0.4, "#,
             );
-            assert_jacobians_match::<KernelDevice<BipolarTransistor>>(
+            assert_jacobians_match::<BipolarTransistor>(
                 &substrate,
                 &[
                     sign * collector,
@@ -1834,7 +1827,7 @@ mod tests {
                     sign * 0.01,
                 ],
             );
-            assert_jacobians_match::<KernelDevice<BipolarTransistor>>(
+            assert_jacobians_match::<BipolarTransistor>(
                 &resistive,
                 &[
                     sign * collector,
@@ -1852,7 +1845,7 @@ mod tests {
     fn its_currents_make_shot_and_flicker_noise() {
         let parameters = r#"{"saturation_current": 1e-15, "flicker_coefficient": 1e-14,
             "flicker_exponent": 1.2}"#;
-        let mut bench = Bench::new::<KernelDevice<BipolarTransistor>>(parameters);
+        let mut bench = Bench::new::<BipolarTransistor>(parameters);
         let x = [5.0, 0.65, 0.0];
         let evaluation = bench.settle(&x);
         let (collector, base) = (evaluation.residual[0], evaluation.residual[1]);
@@ -1871,7 +1864,7 @@ mod tests {
         // series with its current.
         let resistive = r#"{"saturation_current": 1e-15, "collector_resistance": 20,
             "emitter_resistance": 2, "base_resistance": 0.5}"#;
-        let bench = Bench::new::<KernelDevice<BipolarTransistor>>(resistive);
+        let bench = Bench::new::<BipolarTransistor>(resistive);
         let unknowns = bench.unknowns();
         let at = |name: &str| unknowns.iter().position(|unknown| *unknown == name);
         let base_current = at("device:base_current").expect("the base current");

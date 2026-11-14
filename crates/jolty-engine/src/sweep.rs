@@ -127,9 +127,9 @@ impl Simulator {
             let device = self.source_index(&sweep.source)?;
             let own = self
                 .state
-                .device(device)
-                .and_then(|device| device.as_source())
-                .map_or(0.0, |source| source.level());
+                .runs
+                .level(&self.elaborated.groups, device)
+                .unwrap_or(0.0);
             return Ok(Swept {
                 held: Held::Level(device),
                 device,
@@ -295,8 +295,8 @@ impl Simulator {
             .ok_or_else(|| SimulationError::UnknownSource(path.to_owned()))?;
         if self
             .state
-            .device(index)
-            .and_then(|device| device.as_source())
+            .runs
+            .level(&self.elaborated.groups, index)
             .is_none()
         {
             return Err(SimulationError::NotASource(path.to_owned()));
@@ -353,36 +353,11 @@ impl Simulator {
                 )
             }
         };
-        let own = self
-            .state
-            .patched
-            .get(index)
-            .and_then(Option::as_ref)
-            .unwrap_or(self.elaborated.devices[index].origin());
-        // A kernel's instance is prepared again below, and made as no device.
-        let made = if self.elaborated.groups.of_kernel(index) {
-            None
-        } else {
-            let made = self
-                .elaborated
-                .replay(
-                    index,
-                    origin.as_ref().unwrap_or(own),
-                    self.state.temperature,
-                )
-                .map_err(|error| refused(error.0))?
-                .ok_or_else(|| {
-                    refused(
-                        "it would claim other unknowns or entries, which a sweep cannot".to_owned(),
-                    )
-                })?;
-            Some(made)
-        };
         let previous = match origin {
             Some(origin) => self.state.swept.insert(index, origin),
             None => self.state.swept.remove(&index),
         };
-        // A kernel's instance evaluates what its device is now made of.
+        // Its instance is prepared again from what it is now made of.
         let kept = self
             .state
             .prepare_again(&self.elaborated, index)
@@ -393,11 +368,8 @@ impl Simulator {
                 None => self.state.swept.remove(&index),
             };
             return Err(kept.err().unwrap_or_else(|| {
-                refused("it would change the kernel's shape, which a sweep cannot".to_owned())
+                refused("it would claim other unknowns or entries, which a sweep cannot".to_owned())
             }));
-        }
-        if let Some(made) = made {
-            self.state.devices[index] = Some(made);
         }
         // At its own level, a device held leaves the DC equations as they are.
         match level.filter(|level| level.total_cmp(&swept.own).is_ne()) {

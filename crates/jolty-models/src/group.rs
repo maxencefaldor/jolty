@@ -4,14 +4,12 @@
 //! [`Groups`] holds what a circuit's groups are, built once with its structure and shared:
 //! each group's kernel and shape, its instances, the circuit's unknown of each of their
 //! local unknowns and its stored entry of each of their local entries, and where each
-//! instance's block lies in a slab. The devices that are no kernel's instances it lists
-//! apart, to be evaluated on their own. [`Runs`] holds what one run writes: each instance's
+//! instance's block lies in a slab. [`Runs`] holds what one run writes: each instance's
 //! prepared numbers and memory, and the slab.
 //!
-//! The devices of no kernel add their contributions first, each in place, in the order of
-//! the devices. Each instance then writes its contributions into its own block, and every
-//! value of the circuit's equations adds the blocks' contributions to it in one fixed
-//! order: group after group, instance after instance, local index after local index. A run
+//! Each instance writes its contributions into its own block, and every value of the
+//! circuit's equations adds the blocks' contributions to it in one fixed order: group after
+//! group, instance after instance, local index after local index. A run
 //! evaluated serially adds each instance's block as soon as it is written; one evaluated in
 //! parallel writes every block first, then gathers them through a [`GatherMap`] in the same
 //! order. Either way, the sums are the same bits.
@@ -27,7 +25,8 @@ use rayon::prelude::*;
 use crate::kernel::device::mapped;
 use crate::surroundings::Own;
 use crate::{
-    Binding, Contributions, Input, Kernel, Layout, Node, NoiseSource, ParameterError, Stamp,
+    Binding, Choice, Contributions, Input, Kernel, Layout, Level, Local, Node, NoiseSource,
+    ParameterError, Stamp, Unknown,
 };
 
 /// The parameters of an instance of some kernel, read, as an [`Instance`] holds them.
@@ -66,6 +65,12 @@ impl<'a> Instance<'a> {
     /// surroundings.
     #[must_use]
     pub fn of<K: Kernel>(parameters: &'a K::Parameters<f64>) -> Self {
+        Self::of_kind::<K>(parameters)
+    }
+
+    /// An instance of the kind `K` with `parameters`, at the temperature of its
+    /// surroundings.
+    pub(crate) fn of_kind<K: Kind>(parameters: &'a K::Parameters) -> Self {
         Self {
             kernel: TypeId::of::<K>(),
             name: K::NAME,
@@ -89,8 +94,180 @@ impl<'a> Instance<'a> {
     }
 
     /// The parameters, if the instance is one of `K`.
-    fn parameters<K: Kernel>(&self) -> Option<&'a K::Parameters<f64>> {
+    fn parameters<K: Kind>(&self) -> Option<&'a K::Parameters> {
         self.parameters.downcast_ref()
+    }
+}
+
+/// What a group's instances are, as the groups evaluate them: a [`Kernel`]'s, or those of a
+/// kernel that heat, [`crate::heat::Heated`]. Its numbers are plain ones, whatever numbers
+/// the kernel computes with within.
+pub(crate) trait Kind: Send + Sync + 'static {
+    /// The model's name.
+    const NAME: &'static str;
+    /// The parameters an instance holds.
+    type Parameters: Send + Sync + 'static;
+    /// The structure the parameters give an instance, as [`Kernel::Shape`].
+    type Shape: Clone + fmt::Debug + PartialEq + Send + Sync + 'static;
+    /// The numbers an instance's parameters set, as [`Kernel::Prepared`].
+    type Prepared: Clone + fmt::Debug + Send + Sync;
+    /// What an instance remembers, as [`Kernel::Memory`].
+    type Memory: Clone + fmt::Debug + Default + Send + Sync;
+
+    /// As [`Kernel::prepare`], at `temperature`, in kelvins.
+    fn prepare(
+        parameters: &Self::Parameters,
+        temperature: f64,
+    ) -> Result<Self::Prepared, ParameterError>;
+
+    /// As [`Kernel::layout`].
+    fn layout(
+        parameters: &Self::Parameters,
+        prepared: &Self::Prepared,
+        layout: &mut Layout,
+    ) -> Result<Self::Shape, ParameterError>;
+
+    /// As [`Kernel::memory`].
+    fn memory(shape: &Self::Shape, prepared: &Self::Prepared) -> Self::Memory;
+
+    /// As [`Kernel::evaluate`].
+    fn evaluate(
+        shape: &Self::Shape,
+        prepared: &Self::Prepared,
+        memory: &mut Self::Memory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_>,
+    );
+
+    /// As [`Kernel::noise`], from what the instance remembers, `memory`, too.
+    fn noise(
+        shape: &Self::Shape,
+        prepared: &Self::Prepared,
+        memory: &Self::Memory,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    );
+
+    /// As [`Kernel::variable_names`].
+    fn variable_names() -> &'static [&'static str];
+
+    /// As [`Kernel::variables`].
+    fn variables(memory: &Self::Memory, values: &mut [f64]);
+
+    /// As [`Kernel::breakpoints`].
+    fn breakpoints(prepared: &Self::Prepared, span: (f64, f64), times: &mut Vec<f64>);
+
+    /// As [`Kernel::choices`].
+    fn choices(
+        shape: &Self::Shape,
+        prepared: &Self::Prepared,
+        memory: &mut Self::Memory,
+        at: &Local<'_>,
+        found: &mut Vec<Choice>,
+    );
+
+    /// As [`Kernel::level`].
+    fn level(prepared: &Self::Prepared) -> Option<f64>;
+
+    /// As [`Kernel::excite`].
+    fn excite(shape: &Self::Shape, stamp: &mut Stamp<'_>);
+
+    /// As [`Kernel::drive`].
+    fn drive(memory: &mut Self::Memory, ramp: (f64, Level, f64)) -> Option<f64>;
+
+    /// As [`Kernel::driven`].
+    fn driven(shape: &Self::Shape) -> Option<usize>;
+
+    /// As [`Kernel::sense`].
+    fn sense(shape: &Self::Shape, prepared: &Self::Prepared, at: &Local<'_>) -> Option<(f64, f64)>;
+}
+
+impl<K: Kernel> Kind for K {
+    const NAME: &'static str = K::NAME;
+    type Parameters = K::Parameters<f64>;
+    type Shape = K::Shape;
+    type Prepared = K::Prepared<f64>;
+    type Memory = K::Memory;
+
+    fn prepare(
+        parameters: &K::Parameters<f64>,
+        temperature: f64,
+    ) -> Result<K::Prepared<f64>, ParameterError> {
+        K::prepare(parameters, temperature)
+    }
+
+    fn layout(
+        parameters: &K::Parameters<f64>,
+        prepared: &K::Prepared<f64>,
+        layout: &mut Layout,
+    ) -> Result<K::Shape, ParameterError> {
+        K::layout(parameters, prepared, layout)
+    }
+
+    fn memory(shape: &K::Shape, prepared: &K::Prepared<f64>) -> K::Memory {
+        K::memory(shape, prepared)
+    }
+
+    fn evaluate(
+        shape: &K::Shape,
+        prepared: &K::Prepared<f64>,
+        memory: &mut K::Memory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_>,
+    ) {
+        K::evaluate(shape, prepared, memory, at, stamp);
+    }
+
+    fn noise(
+        shape: &K::Shape,
+        prepared: &K::Prepared<f64>,
+        _: &K::Memory,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        K::noise(shape, prepared, at, sources);
+    }
+
+    fn variable_names() -> &'static [&'static str] {
+        K::variable_names()
+    }
+
+    fn variables(memory: &K::Memory, values: &mut [f64]) {
+        K::variables(memory, values);
+    }
+
+    fn breakpoints(prepared: &K::Prepared<f64>, span: (f64, f64), times: &mut Vec<f64>) {
+        K::breakpoints(prepared, span, times);
+    }
+
+    fn choices(
+        shape: &K::Shape,
+        prepared: &K::Prepared<f64>,
+        memory: &mut K::Memory,
+        at: &Local<'_>,
+        found: &mut Vec<Choice>,
+    ) {
+        K::choices(shape, prepared, memory, at, found);
+    }
+
+    fn level(prepared: &K::Prepared<f64>) -> Option<f64> {
+        K::level(prepared)
+    }
+
+    fn excite(shape: &K::Shape, stamp: &mut Stamp<'_>) {
+        K::excite(shape, stamp);
+    }
+
+    fn drive(memory: &mut K::Memory, ramp: (f64, Level, f64)) -> Option<f64> {
+        K::drive(memory, ramp)
+    }
+
+    fn driven(shape: &K::Shape) -> Option<usize> {
+        K::driven(shape)
+    }
+
+    fn sense(shape: &K::Shape, prepared: &K::Prepared<f64>, at: &Local<'_>) -> Option<(f64, f64)> {
+        K::sense(shape, prepared, at)
     }
 }
 
@@ -105,12 +282,12 @@ trait Made: Send {
 }
 
 /// An instance of `K` prepared and laid out.
-struct Fresh<K: Kernel> {
+struct Fresh<K: Kind> {
     shape: Shape<K>,
-    prepared: K::Prepared<f64>,
+    prepared: K::Prepared,
 }
 
-impl<K: Kernel> Made for Fresh<K> {
+impl<K: Kind> Made for Fresh<K> {
     fn shaped(&self) -> &dyn Shaped {
         &self.shape
     }
@@ -121,16 +298,16 @@ impl<K: Kernel> Made for Fresh<K> {
 }
 
 /// `parameters`, an instance of `K`, prepared at `temperature` and laid out in `layout`.
-fn made<K: Kernel>(
+fn made<K: Kind>(
     parameters: &Erased,
     temperature: f64,
     layout: &mut Layout,
 ) -> Result<Box<dyn Made>, ParameterError> {
     let parameters = parameters
-        .downcast_ref::<K::Parameters<f64>>()
+        .downcast_ref::<K::Parameters>()
         .ok_or_else(|| ParameterError(format!("the parameters of no {}", K::NAME)))?;
     let prepared = K::prepare(parameters, temperature)?;
-    let shape = Shape::<K>(K::layout(parameters, layout)?);
+    let shape = Shape::<K>(K::layout(parameters, &prepared, layout)?);
     Ok(Box::new(Fresh::<K> { shape, prepared }))
 }
 
@@ -153,15 +330,15 @@ trait Shaped: fmt::Debug + Send + Sync {
 }
 
 /// The shape of a group of the kernel `K`.
-struct Shape<K: Kernel>(K::Shape);
+struct Shape<K: Kind>(K::Shape);
 
-impl<K: Kernel> fmt::Debug for Shape<K> {
+impl<K: Kind> fmt::Debug for Shape<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple(K::NAME).field(&self.0).finish()
     }
 }
 
-impl<K: Kernel> Shaped for Shape<K> {
+impl<K: Kind> Shaped for Shape<K> {
     fn kernel(&self) -> TypeId {
         TypeId::of::<K>()
     }
@@ -237,16 +414,14 @@ impl Group {
     }
 }
 
-/// The groups of a circuit's devices: those of a kernel's instances, by kernel and shape in
-/// the order their first instances appear, and the devices of no kernel, which are
-/// evaluated on their own.
+/// The groups of a circuit's devices, each a kernel's instance: by kernel and shape, in the
+/// order their first instances appear.
 #[derive(Debug, Default)]
 pub struct Groups {
     kernels: Vec<Group>,
-    legacy: Vec<usize>,
     /// Each device's group and its index among the group's instances, by the device's
-    /// index, or `None` for a device of no kernel.
-    places: Vec<Option<(usize, usize)>>,
+    /// index.
+    places: Vec<(usize, usize)>,
     /// The sources of each unknown's residual, scale and charge, and of each stored
     /// entry's conductance and capacitance, among the slab's, made the first time a run
     /// gathers its slab, as a run evaluated serially never does: a function of the rest,
@@ -271,12 +446,6 @@ impl Groups {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Adds the next device among the circuit's, of no kernel, to be evaluated on its own.
-    pub fn add_legacy(&mut self) {
-        self.legacy.push(self.places.len());
-        self.places.push(None);
     }
 
     /// Adds the next device among the circuit's, the instance `instance` of a kernel at the
@@ -319,13 +488,13 @@ impl Groups {
         runs.groups[index].push(made.into_any());
         nodes.clear();
         nodes.extend_from_slice(binding.terminals());
-        for &(label, quantity) in layout.internals() {
-            nodes.push(Some(binding.internal(label, quantity)));
+        for (label, quantity) in layout.internals() {
+            nodes.push(Some(binding.internal(label, *quantity)));
         }
         let node = |local: usize| nodes.get(local).copied().flatten();
         let group = &mut self.kernels[index];
         let device = self.places.len();
-        self.places.push(Some((index, group.members.len())));
+        self.places.push((index, group.members.len()));
         group.members.push(device);
         group.nodes.extend(nodes.iter().map(|&node| mapped(node)));
         let claimed = group.claims.len();
@@ -344,7 +513,7 @@ impl Groups {
     /// The instance at the device `device`, if it is a kernel's: its group and its index
     /// among the group's instances.
     fn place(&self, device: usize) -> Option<(usize, usize)> {
-        self.places.get(device).copied().flatten()
+        self.places.get(device).copied()
     }
 
     /// Fixes the groups once every device is added and the circuit's `pattern` is known:
@@ -375,19 +544,6 @@ impl Groups {
         self.scratch = (Layout::default(), Vec::new());
         runs.slab = Slab::sized(self.sizes);
         Ok(())
-    }
-
-    /// The devices of no kernel, evaluated on their own, by index, in order.
-    #[must_use]
-    pub fn legacy(&self) -> &[usize] {
-        &self.legacy
-    }
-
-    /// Whether the device at index `device` is a kernel's instance, which its group
-    /// evaluates.
-    #[must_use]
-    pub fn of_kernel(&self, device: usize) -> bool {
-        self.place(device).is_some()
     }
 
     /// The maps that gather, from a run's [slab](Runs::slab), the contributions to each
@@ -571,6 +727,91 @@ impl Runs {
         }
     }
 
+    /// The instance the device `device` is, if it is a kernel's, and its group's run.
+    fn run_of(&self, groups: &Groups, device: usize) -> Option<(&dyn GroupRun, usize)> {
+        let (group, member) = groups.place(device)?;
+        Some((self.groups.get(group)?.as_ref(), member))
+    }
+
+    /// The level of the instance the device `device` is, if it is an independent source,
+    /// which analyses excite: its waveform's at time zero.
+    #[must_use]
+    pub fn level(&self, groups: &Groups, device: usize) -> Option<f64> {
+        let (run, member) = self.run_of(groups, device)?;
+        run.level(member)
+    }
+
+    /// Adds the derivative of each of the circuit's residuals with respect to the level of
+    /// the instance the device `device` is, if it is an independent source, to
+    /// `derivative`, one value per unknown: how a small-signal analysis excites it.
+    pub fn excite(&self, groups: &Groups, device: usize, derivative: &mut [f64]) {
+        if let Some((group, member)) = groups.place(device)
+            && let (Some(of), Some(run)) = (groups.kernels.get(group), self.groups.get(group))
+        {
+            run.excite(member, of, derivative);
+        }
+    }
+
+    /// Starts the instance the device `device` is, if it is a logic driver, moving to the
+    /// level `level` at `time`, at the rate that swings ground to supply in `transition`
+    /// seconds, and returns when it settles; `None` for an instance that drives no logic.
+    pub fn drive(
+        &mut self,
+        groups: &Groups,
+        device: usize,
+        ramp: (f64, Level, f64),
+    ) -> Option<f64> {
+        let (group, member) = groups.place(device)?;
+        self.groups.get_mut(group)?.drive(member, ramp)
+    }
+
+    /// The unknown of the current through the instance the device `device` is, if it is a
+    /// logic driver, whose equation holds its voltage.
+    #[must_use]
+    pub fn driven(&self, groups: &Groups, device: usize) -> Option<Unknown> {
+        let (group, member) = groups.place(device)?;
+        self.groups
+            .get(group)?
+            .driven(member, groups.kernels.get(group)?)
+    }
+
+    /// How far the input of the instance the device `device` is, if it is a logic input's
+    /// detector, lies above its threshold at `input`, and the voltage of its supply above
+    /// its ground there, in volts.
+    #[must_use]
+    pub fn sense(&self, groups: &Groups, device: usize, input: &Input<'_>) -> Option<(f64, f64)> {
+        let (group, member) = groups.place(device)?;
+        self.groups
+            .get(group)?
+            .sense(member, groups.kernels.get(group)?, input)
+    }
+
+    /// Appends the times in `[start, stop]` where an instance is not smooth to `times`, so
+    /// a transient analysis steps onto them exactly.
+    pub fn breakpoints(&self, span: (f64, f64), times: &mut Vec<f64>) {
+        for run in &self.groups {
+            run.breakpoints(span, times);
+        }
+    }
+
+    /// The earliest fraction of the way from `before` to `after`, the states at the two
+    /// ends of a step, at which an instance's contribution jumps, as a choice its behavior
+    /// turns on changes, located by linear interpolation; `None` when none changes.
+    pub fn first_jump(
+        &mut self,
+        groups: &Groups,
+        (before, after): (&Input<'_>, &Input<'_>),
+    ) -> Option<f64> {
+        let mut found = [Vec::new(), Vec::new()];
+        let mut first: Option<f64> = None;
+        for (group, run) in groups.kernels.iter().zip(&mut self.groups) {
+            if let Some(fraction) = run.first_jump(group, (before, after), &mut found) {
+                first = Some(first.map_or(fraction, |earliest| earliest.min(fraction)));
+            }
+        }
+        first
+    }
+
     /// Evaluates the instance the device `device` is, if it is a kernel's, alone at
     /// `input`, into a block of its own, from what it remembers, which it updates.
     pub fn evaluate_alone(
@@ -615,7 +856,7 @@ impl Runs {
     pub fn prepare<'a>(
         &mut self,
         groups: &Groups,
-        instance: impl Fn(usize) -> Option<Instance<'a>>,
+        instance: impl Fn(usize) -> Instance<'a>,
         temperature: f64,
         changed: impl Fn(usize) -> Changed,
     ) -> Result<bool, Vec<(usize, ParameterError)>> {
@@ -627,9 +868,8 @@ impl Runs {
                     Changed::Numbers => None,
                     Changed::Parameters => Some(&mut self.layout),
                 };
-                let prepared = instance(device).map_or(Ok(false), |instance| {
-                    run.prepare(member, (group, &instance), temperature, checked)
-                });
+                let instance = instance(device);
+                let prepared = run.prepare(member, (group, &instance), temperature, checked);
                 match prepared {
                     Ok(true) => {}
                     Ok(false) => {
@@ -648,11 +888,20 @@ impl Runs {
         }
     }
 
-    /// Takes the numbers [`Runs::prepare`] kept apart, and forgets what every instance
-    /// remembers and what the slab holds, so the run starts as one made afresh.
+    /// Takes the numbers [`Runs::prepare`] kept apart, each instance prepared again
+    /// starting from its initial memory, as one made afresh, and every other keeping what
+    /// it remembers.
     pub fn commit(&mut self) {
         for run in &mut self.groups {
             run.commit();
+        }
+    }
+
+    /// Forgets what every instance remembers and what the slab holds, so the run starts as
+    /// one made afresh.
+    pub fn forget(&mut self) {
+        for run in &mut self.groups {
+            run.forget();
         }
         for values in self.slab.rows.iter_mut().chain(&mut self.slab.entries) {
             values.fill(0.0);
@@ -676,11 +925,11 @@ impl Runs {
         }
     }
 
-    /// Evaluates every instance of `groups` at `input` and adds its contributions to
-    /// `into`, which holds those of the devices of no kernel: serially without `tasks`,
-    /// each instance's block added as soon as it is written, and else in parallel, in the
-    /// tasks `tasks` sets, every block written first and then gathered. Returns whether an
-    /// instance limited its voltages.
+    /// Evaluates every instance of `groups` at `input` and assembles their contributions in
+    /// `into`, which it zeroes first: serially without `tasks`, each instance's block added
+    /// as soon as it is written, and else in parallel, in the tasks `tasks` sets, every
+    /// block written first and then gathered. Returns whether an instance limited its
+    /// voltages.
     pub fn evaluate(
         &mut self,
         groups: &Groups,
@@ -688,6 +937,7 @@ impl Runs {
         into: &mut Contributions,
         tasks: Option<Tasks>,
     ) -> bool {
+        into.clear();
         let [residual, scale, charge] = &mut self.slab.rows;
         let [conductance, capacitance] = &mut self.slab.entries;
         let (mut rows, mut entries) = (
@@ -767,6 +1017,39 @@ trait GroupRun: fmt::Debug + Send {
     /// Writes the variables of the instance `member` at its last evaluation to `values`.
     fn variables(&self, member: usize, values: &mut [f64]);
 
+    /// The level of the instance `member`, if it is an independent source.
+    fn level(&self, member: usize) -> Option<f64>;
+
+    /// Adds the derivative of each residual of the instance `member` of `group`, if it is
+    /// an independent source, with respect to its level to `derivative`, by the circuit's
+    /// unknowns.
+    fn excite(&self, member: usize, group: &Group, derivative: &mut [f64]);
+
+    /// Starts the instance `member`, if it is a logic driver, on the ramp `ramp`, and
+    /// returns when it settles.
+    fn drive(&mut self, member: usize, ramp: (f64, Level, f64)) -> Option<f64>;
+
+    /// The circuit's unknown of the current through the instance `member` of `group`, if
+    /// it is a logic driver.
+    fn driven(&self, member: usize, group: &Group) -> Option<Unknown>;
+
+    /// How far the input of the instance `member` of `group`, if it is a logic input's
+    /// detector, lies above its threshold at `input`, and its supply's swing there.
+    fn sense(&self, member: usize, group: &Group, input: &Input<'_>) -> Option<(f64, f64)>;
+
+    /// Appends the times in `span` where an instance is not smooth to `times`.
+    fn breakpoints(&self, span: (f64, f64), times: &mut Vec<f64>);
+
+    /// The earliest fraction of the way from `before` to `after` at which a choice of an
+    /// instance of `group` changes, as [`Choice::first_jump`] finds it, its choices found
+    /// in `found`.
+    fn first_jump(
+        &mut self,
+        group: &Group,
+        span: (&Input<'_>, &Input<'_>),
+        found: &mut [Vec<Choice>; 2],
+    ) -> Option<f64>;
+
     /// Evaluates the instance `member` of `group` alone at `input`, into `block`, which it
     /// zeroes first. Returns whether it limited its voltages.
     fn evaluate_alone(
@@ -793,8 +1076,12 @@ trait GroupRun: fmt::Debug + Send {
         layout: Option<&mut Layout>,
     ) -> Result<bool, ParameterError>;
 
-    /// Takes the numbers kept apart, and forgets every instance's memory.
+    /// Takes the numbers kept apart, each instance prepared again starting from its
+    /// initial memory.
     fn commit(&mut self);
+
+    /// Forgets every instance's memory.
+    fn forget(&mut self);
 
     /// Forgets the numbers kept apart.
     fn discard(&mut self);
@@ -814,15 +1101,15 @@ trait GroupRun: fmt::Debug + Send {
 }
 
 /// One run of a group of the kernel `K`.
-struct KernelRun<K: Kernel> {
+struct KernelRun<K: Kind> {
     shape: K::Shape,
-    prepared: Vec<Option<K::Prepared<f64>>>,
+    prepared: Vec<Option<K::Prepared>>,
     memory: Vec<K::Memory>,
     /// The numbers prepared and not yet taken, by instance.
-    staged: Vec<(usize, K::Prepared<f64>)>,
+    staged: Vec<(usize, K::Prepared)>,
 }
 
-impl<K: Kernel> fmt::Debug for KernelRun<K> {
+impl<K: Kind> fmt::Debug for KernelRun<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct(K::NAME)
             .field("shape", &self.shape)
@@ -833,11 +1120,14 @@ impl<K: Kernel> fmt::Debug for KernelRun<K> {
     }
 }
 
-impl<K: Kernel> GroupRun for KernelRun<K> {
+impl<K: Kind> GroupRun for KernelRun<K> {
     fn push(&mut self, made: Box<dyn Any>) {
         let prepared = made.downcast::<Fresh<K>>().ok().map(|fresh| fresh.prepared);
+        let memory = prepared
+            .as_ref()
+            .map(|prepared| K::memory(&self.shape, prepared));
+        self.memory.push(memory.unwrap_or_default());
         self.prepared.push(prepared);
-        self.memory.push(K::Memory::default());
     }
 
     fn cloned(&self) -> Box<dyn GroupRun> {
@@ -856,18 +1146,21 @@ impl<K: Kernel> GroupRun for KernelRun<K> {
         input: &Input<'_>,
         sources: &mut Vec<NoiseSource>,
     ) {
-        let (Some(Some(prepared)), Some(map)) = (self.prepared.get(member), group.map_of(member))
-        else {
+        let (Some(Some(prepared)), Some(memory), Some(map)) = (
+            self.prepared.get(member),
+            self.memory.get(member),
+            group.map_of(member),
+        ) else {
             return;
         };
         let start = sources.len();
-        K::noise(&self.shape, prepared, &input.local(map), sources);
+        K::noise(&self.shape, prepared, memory, &input.local(map), sources);
         for source in sources.iter_mut().skip(start) {
             source.equations = source.equations.map(|equation| {
                 equation.and_then(|local| {
                     map.get(local.index())
                         .filter(|&&unknown| unknown != UNMAPPED)
-                        .map(|&unknown| crate::Unknown::new(unknown as usize))
+                        .map(|&unknown| Unknown::new(unknown as usize))
                 })
             });
         }
@@ -877,6 +1170,79 @@ impl<K: Kernel> GroupRun for KernelRun<K> {
         if let Some(memory) = self.memory.get(member) {
             K::variables(memory, values);
         }
+    }
+
+    fn level(&self, member: usize) -> Option<f64> {
+        K::level(self.prepared.get(member)?.as_ref()?)
+    }
+
+    fn excite(&self, member: usize, group: &Group, derivative: &mut [f64]) {
+        let Some(map) = group.map_of(member) else {
+            return;
+        };
+        let (unknowns, stride) = (group.unknowns(), group.stride());
+        let mut rows = [
+            vec![0.0; unknowns],
+            vec![0.0; unknowns],
+            vec![0.0; unknowns],
+        ];
+        let mut entries = [vec![0.0; stride], vec![0.0; stride]];
+        let [residual, scale, charge] = &mut rows;
+        let [conductance, capacitance] = &mut entries;
+        let mut stamp = Stamp::over([residual, scale, charge], [conductance, capacitance]);
+        K::excite(&self.shape, &mut stamp);
+        for (&unknown, &value) in map.iter().zip(&rows[0]) {
+            if let Some(sum) = derivative.get_mut(unknown as usize) {
+                *sum += value;
+            }
+        }
+    }
+
+    fn drive(&mut self, member: usize, ramp: (f64, Level, f64)) -> Option<f64> {
+        K::drive(self.memory.get_mut(member)?, ramp)
+    }
+
+    fn driven(&self, member: usize, group: &Group) -> Option<Unknown> {
+        let local = K::driven(&self.shape)?;
+        let &unknown = group.map_of(member)?.get(local)?;
+        (unknown != UNMAPPED).then(|| Unknown::new(unknown as usize))
+    }
+
+    fn sense(&self, member: usize, group: &Group, input: &Input<'_>) -> Option<(f64, f64)> {
+        let prepared = self.prepared.get(member)?.as_ref()?;
+        K::sense(&self.shape, prepared, &input.local(group.map_of(member)?))
+    }
+
+    fn breakpoints(&self, span: (f64, f64), times: &mut Vec<f64>) {
+        for prepared in self.prepared.iter().flatten() {
+            K::breakpoints(prepared, span, times);
+        }
+    }
+
+    fn first_jump(
+        &mut self,
+        group: &Group,
+        (before, after): (&Input<'_>, &Input<'_>),
+        [earlier, later]: &mut [Vec<Choice>; 2],
+    ) -> Option<f64> {
+        let mut first: Option<f64> = None;
+        let instances = self.prepared.iter().zip(&mut self.memory).enumerate();
+        for (member, (prepared, memory)) in instances {
+            let (Some(prepared), Some(map)) = (prepared, group.map_of(member)) else {
+                continue;
+            };
+            earlier.clear();
+            K::choices(&self.shape, prepared, memory, &before.local(map), earlier);
+            if earlier.is_empty() {
+                continue;
+            }
+            later.clear();
+            K::choices(&self.shape, prepared, memory, &after.local(map), later);
+            if let Some(fraction) = Choice::first_jump(earlier, later) {
+                first = Some(first.map_or(fraction, |earliest| earliest.min(fraction)));
+            }
+        }
+        first
     }
 
     fn evaluate_alone(
@@ -911,7 +1277,7 @@ impl<K: Kernel> GroupRun for KernelRun<K> {
         let prepared = K::prepare(parameters, instance.own.temperature(temperature)?)?;
         if let Some(layout) = layout {
             layout.clear(group.layout.terminals());
-            if K::layout(parameters, layout)? != self.shape {
+            if K::layout(parameters, &prepared, layout)? != self.shape {
                 return Ok(false);
             }
         }
@@ -921,11 +1287,22 @@ impl<K: Kernel> GroupRun for KernelRun<K> {
 
     fn commit(&mut self) {
         for (member, prepared) in self.staged.drain(..) {
+            if let Some(memory) = self.memory.get_mut(member) {
+                *memory = K::memory(&self.shape, &prepared);
+            }
             if let Some(slot) = self.prepared.get_mut(member) {
                 *slot = Some(prepared);
             }
         }
-        self.memory.fill(K::Memory::default());
+    }
+
+    fn forget(&mut self) {
+        for (memory, prepared) in self.memory.iter_mut().zip(&self.prepared) {
+            *memory = prepared
+                .as_ref()
+                .map(|prepared| K::memory(&self.shape, prepared))
+                .unwrap_or_default();
+        }
     }
 
     fn discard(&mut self) {
@@ -994,8 +1371,8 @@ impl<K: Kernel> GroupRun for KernelRun<K> {
 /// numbers.
 type Chunk<'a, K> = (
     Blocks<'a>,
-    &'a mut [<K as Kernel>::Memory],
-    &'a [Option<<K as Kernel>::Prepared<f64>>],
+    &'a mut [<K as Kind>::Memory],
+    &'a [Option<<K as Kind>::Prepared>],
 );
 
 /// Evaluates each instance of a chunk of a group of `shape`, of `sizes` local unknowns and
@@ -1003,7 +1380,7 @@ type Chunk<'a, K> = (
 /// adds each block to `into`, when given, as soon as it is written, through the circuit's
 /// unknowns and stored positions of the instances' local ones, `maps`. Returns whether an
 /// instance limited its voltages.
-fn evaluate_chunk<K: Kernel>(
+fn evaluate_chunk<K: Kind>(
     shape: &K::Shape,
     (unknowns, stride): (usize, usize),
     input: &Input<'_>,

@@ -5,8 +5,8 @@
 //! levels after delays. Its pins join logic nets, which hold a level rather than a voltage,
 //! so the engine jumps from one change to the next instead of integrating. Where a logic pin
 //! joins an electrical net, the engine places a connect element between them: a
-//! [`ThresholdDetector`] turns the net's voltage into the level an input reads, and a
-//! [`LogicDriver`] turns an output's level into a voltage between the device's supply and
+//! [`ThresholdDetector`](crate::ThresholdDetector) turns the net's voltage into the level
+//! an input reads, and a [`LogicDriver`](crate::LogicDriver) turns an output's level into a voltage between the device's supply and
 //! ground.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,17 +14,12 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use jolty_ir::Parameters;
-use jolty_numerics::Entry;
 use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::device::{read, schema, written};
-use crate::stamp::CurrentBranch;
-use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, Node, Output,
-    ParameterError, TerminalPair, Unknown,
-};
+use crate::{Input, ParameterError, Unknown};
 
 /// The most inputs a logic cell may have: its truth table has a row per combination.
 pub const MAX_INPUTS: usize = 16;
@@ -890,193 +885,10 @@ pub trait Detect {
     fn swing(&self, input: &Input<'_>) -> f64;
 }
 
-/// The parameters of a logic driver: none.
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct LogicDriverParameters {}
-
-/// A logic driver: the connect element from a logic output to an electrical net.
-///
-/// Between terminals `output` and `ground` it holds the fraction `s` of the voltage from
-/// `ground` to `supply`, the fraction of the output's level, so `v_output − v_ground =
-/// s (v_supply − v_ground)`. A change of level moves `s` in a ramp. Its current, flowing
-/// from `output` through the driver to `ground`, is an unknown labelled `current`.
-#[derive(Debug)]
-pub struct LogicDriver {
-    /// The branch from the output to the ground, through the driver.
-    branch: CurrentBranch,
-    supply: Node,
-    ground: Node,
-    /// The ramp of `s`: from `(start, from)` to `(end, to)`.
-    ramp: (f64, f64, f64, f64),
-    /// The entries at (current, ground) and (current, supply).
-    entries: [Option<Entry>; 2],
-}
-
-impl LogicDriver {
-    /// The fraction of the supply the driver holds at `time`.
-    #[must_use]
-    pub fn fraction(&self, time: f64) -> f64 {
-        let (start, from, end, to) = self.ramp;
-        if time >= end {
-            to
-        } else if time <= start {
-            from
-        } else {
-            from + (to - from) * (time - start) / (end - start)
-        }
-    }
-}
-
-impl NativeDevice for LogicDriver {
-    const NAME: &'static str = "logic_driver";
-    type Parameters = LogicDriverParameters;
-
-    fn interface(_: &LogicDriverParameters) -> Interface {
-        Interface::new(
-            &["output", "supply", "ground"],
-            &[Branch::new(0, 2, BranchKind::VoltageSource)],
-        )
-    }
-
-    fn new(_: LogicDriverParameters, binding: &mut Binding<'_>) -> Result<Self, ParameterError> {
-        let (output, supply, ground) = (
-            binding.terminal(0),
-            binding.terminal(1),
-            binding.terminal(2),
-        );
-        let branch = CurrentBranch::new(binding, "current", [output, ground]);
-        let row = Some(branch.unknown());
-        let entries = [binding.entry(row, ground), binding.entry(row, supply)];
-        Ok(Self {
-            branch,
-            supply,
-            ground,
-            ramp: (
-                0.0,
-                Level::Unknown.fraction(),
-                0.0,
-                Level::Unknown.fraction(),
-            ),
-            entries,
-        })
-    }
-}
-
-impl Device for LogicDriver {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_>) {
-        // The output held at its fraction of the supply's swing above the ground.
-        let fraction = self.fraction(input.time);
-        let swing = input.value(self.supply) - input.value(self.ground);
-        self.branch
-            .add(input, output, self.branch.voltage(input) - fraction * swing);
-        let [current_ground, current_supply] = self.entries;
-        output.add_conductance(current_ground, fraction);
-        output.add_conductance(current_supply, -fraction);
-    }
-
-    fn as_driver(&mut self) -> Option<&mut dyn Drive> {
-        Some(self)
-    }
-}
-
-impl Drive for LogicDriver {
-    fn drive(&mut self, time: f64, level: Level, transition: f64) {
-        let from = self.fraction(time);
-        let to = level.fraction();
-        self.ramp = (time, from, time + transition * (to - from).abs(), to);
-    }
-
-    fn settles_at(&self) -> f64 {
-        self.ramp.2
-    }
-
-    fn current(&self) -> Unknown {
-        self.branch.unknown()
-    }
-}
-
-/// The parameters of a threshold detector.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ThresholdDetectorParameters {
-    /// The fraction of the supply, from ground, at which the level switches.
-    pub threshold: f64,
-    /// The input's capacitance to ground, in farads.
-    pub capacitance: f64,
-}
-
-/// A threshold detector: the connect element from an electrical net to a logic input.
-///
-/// It reads terminal `input` against the fraction `threshold` of the voltage from `ground`
-/// to `supply`, and loads it with `capacitance` to `ground`.
-#[derive(Debug)]
-pub struct ThresholdDetector {
-    pair: TerminalPair,
-    supply: Node,
-    ground: Node,
-    parameters: ThresholdDetectorParameters,
-}
-
-impl NativeDevice for ThresholdDetector {
-    const NAME: &'static str = "threshold_detector";
-    type Parameters = ThresholdDetectorParameters;
-
-    fn interface(parameters: &ThresholdDetectorParameters) -> Interface {
-        let branches = if parameters.capacitance > 0.0 {
-            &[Branch::new(0, 2, BranchKind::Capacitive)][..]
-        } else {
-            &[]
-        };
-        Interface::new(&["input", "supply", "ground"], branches)
-    }
-
-    fn new(
-        parameters: ThresholdDetectorParameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        ParameterError::non_negative("the capacitance", parameters.capacitance)?;
-        let (input, supply, ground) = (
-            binding.terminal(0),
-            binding.terminal(1),
-            binding.terminal(2),
-        );
-        Ok(Self {
-            pair: TerminalPair::new(binding, input, ground),
-            supply,
-            ground,
-            parameters,
-        })
-    }
-}
-
-impl Device for ThresholdDetector {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_>) {
-        let capacitance = self.parameters.capacitance;
-        self.pair
-            .add_charge(output, capacitance * self.pair.voltage(input));
-        self.pair.add_capacitance(output, capacitance);
-    }
-
-    fn as_detector(&self) -> Option<&dyn Detect> {
-        Some(self)
-    }
-}
-
-impl Detect for ThresholdDetector {
-    fn margin(&self, input: &Input<'_>) -> f64 {
-        self.pair.voltage(input) - self.parameters.threshold * self.swing(input)
-    }
-
-    fn swing(&self, input: &Input<'_>) -> f64 {
-        input.value(self.supply) - input.value(self.ground)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{Bench, assert_close, assert_jacobians_match};
+    use crate::testing::assert_close;
 
     fn cell(parameters: &str) -> Result<LogicCell, ParameterError> {
         LogicCell::new(
@@ -1300,40 +1112,5 @@ mod tests {
             error.0,
             "the changes' times rise from above zero, and 1e-9 follows 2e-9"
         );
-    }
-
-    #[test]
-    fn a_driver_ramps_between_ground_and_supply() {
-        let mut bench = Bench::new::<LogicDriver>("{}");
-        assert_eq!(bench.unknowns(), ["n0", "n1", "n2", "device:current"]);
-        let driver = bench.device().as_driver().unwrap();
-        driver.drive(0.0, Level::Low, 0.0);
-        driver.drive(1.0, Level::High, 2.0);
-        assert_close(&[driver.settles_at()], &[3.0]);
-        // Halfway up the ramp, the output holds half of the 5 V from ground at 1 V.
-        let x = [3.0, 6.0, 1.0, 0.0];
-        let evaluation = bench.evaluate_with(&Input::new(&x, Some(2.0), 0.0));
-        assert!((evaluation.residual[3] - (2.0 - 0.5 * 5.0)).abs() < 1e-12);
-        // Driven back down from halfway, it takes half the transition.
-        let driver = bench.device().as_driver().unwrap();
-        driver.drive(2.0, Level::Low, 2.0);
-        assert_close(&[driver.settles_at()], &[3.0]);
-    }
-
-    #[test]
-    fn a_driver_s_jacobian_matches_finite_differences() {
-        assert_jacobians_match::<LogicDriver>("{}", &[0.3, 5.0, 0.1, 1e-3]);
-    }
-
-    #[test]
-    fn a_detector_reads_its_input_against_a_fraction_of_the_supply() {
-        let mut bench =
-            Bench::new::<ThresholdDetector>(r#"{"threshold": 0.4, "capacitance": 1e-12}"#);
-        let x = [2.5, 5.0, 0.0];
-        let input = Input::new(&x, None, 0.0);
-        let detector = bench.device().as_detector().unwrap();
-        assert!((detector.margin(&input) - 0.5).abs() < 1e-12);
-        assert_close(&[detector.swing(&input)], &[5.0]);
-        assert_close(&bench.evaluate(&x).charge[..1], &[2.5e-12]);
     }
 }

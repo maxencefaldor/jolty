@@ -27,6 +27,7 @@
 pub(crate) mod device;
 pub(crate) mod parts;
 
+use std::borrow::Cow;
 use std::fmt;
 
 use schemars::JsonSchema;
@@ -34,7 +35,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub use self::device::KernelDevice;
-use crate::{Interface, NoiseSource, ParameterError, Quantity, Real};
+use crate::{Choice, Interface, Level, NoiseSource, ParameterError, Quantity, Real};
 
 /// A device model computed one instance at a time, as a pure function of the instance's
 /// prepared parameters, its memory and its local unknowns.
@@ -44,6 +45,10 @@ use crate::{Interface, NoiseSource, ParameterError, Quantity, Real};
 pub trait Kernel: Send + Sync + 'static {
     /// The model's name, such as `diode`.
     const NAME: &'static str;
+
+    /// Whether its instances are a foundry's, which ngspice simulates with the foundry's
+    /// models, as [`crate::Model::foundry`] says.
+    const FOUNDRY: bool = false;
 
     /// The parameters an instance's parameter map deserializes into, each number an `R`,
     /// which write as they read and which a JSON schema describes.
@@ -68,8 +73,8 @@ pub trait Kernel: Send + Sync + 'static {
     type Prepared<R: Real>: Clone + fmt::Debug + Send + Sync;
 
     /// What an instance remembers from one evaluation to the next, such as the junction
-    /// voltage its next step is limited from; its default is an instance's memory before
-    /// its first evaluation.
+    /// voltage its next step is limited from, and the room it evaluates in, sized once;
+    /// [`Kernel::memory`] makes it as it is before the first evaluation.
     type Memory: Clone + fmt::Debug + Default + Send + Sync;
 
     /// The terminals and branches of an instance with `parameters`.
@@ -87,15 +92,24 @@ pub trait Kernel: Send + Sync + 'static {
 
     /// Claims in `layout`, after the instance's terminals, the internal unknowns and the
     /// entries of an instance with `parameters`, whose numbers [`Kernel::prepare`] has
-    /// checked, and returns its shape.
+    /// checked and prepared into `prepared`, and returns its shape.
     ///
     /// # Errors
     ///
     /// Returns [`ParameterError`] when a parameter is out of range.
     fn layout<R: Real>(
         parameters: &Self::Parameters<R>,
+        prepared: &Self::Prepared<R>,
         layout: &mut Layout,
     ) -> Result<Self::Shape, ParameterError>;
+
+    /// What an instance of `shape` with the numbers `prepared` remembers before its first
+    /// evaluation: the memory's default, unless it sizes room of its own.
+    #[must_use]
+    fn memory<R: Real>(shape: &Self::Shape, prepared: &Self::Prepared<R>) -> Self::Memory {
+        let _ = (shape, prepared);
+        Self::Memory::default()
+    }
 
     /// Writes into `stamp` what an instance of `shape`, with the numbers `prepared`,
     /// contributes to the circuit's equations at `at`, from what it remembers, `memory`,
@@ -140,6 +154,78 @@ pub trait Kernel: Send + Sync + 'static {
     ) {
         let _ = (shape, prepared, at, sources);
     }
+
+    /// Appends the times in `[start, stop]` where an instance with the numbers `prepared`
+    /// is not smooth, so a transient analysis steps onto them exactly: none, unless it is.
+    fn breakpoints<R: Real>(
+        prepared: &Self::Prepared<R>,
+        (start, stop): (f64, f64),
+        times: &mut Vec<f64>,
+    ) {
+        let _ = (prepared, start, stop, times);
+    }
+
+    /// Appends to `found` the choices an instance's behavior turns on at `at`, where its
+    /// contribution jumps when one changes, so a transient analysis can step onto each
+    /// change, finding them in room of `memory` that its evaluation does not read: none
+    /// for an instance whose contribution is continuous.
+    fn choices<R: Real>(
+        shape: &Self::Shape,
+        prepared: &Self::Prepared<R>,
+        memory: &mut Self::Memory,
+        at: &Local<'_>,
+        found: &mut Vec<Choice>,
+    ) {
+        let _ = (shape, prepared, memory, at, found);
+    }
+
+    /// The level of an instance that is an independent source, which analyses excite: its
+    /// waveform's at time zero. `None` for an instance that is no independent source.
+    #[must_use]
+    fn level<R: Real>(prepared: &Self::Prepared<R>) -> Option<f64> {
+        let _ = prepared;
+        None
+    }
+
+    /// Adds to `stamp` the derivative of each residual of an instance that is an
+    /// independent source, of `shape`, with respect to its level: how a small-signal
+    /// analysis excites it. Nothing for an instance that is no independent source.
+    fn excite<R: Real>(shape: &Self::Shape, stamp: &mut Stamp<'_, R>) {
+        let _ = (shape, stamp);
+    }
+
+    /// Starts an instance that is a logic driver, from what it remembers, `memory`,
+    /// moving to `level` at `time`, at the rate that swings ground to supply in
+    /// `transition` seconds, at once when it is zero, and returns the time it settles.
+    /// `None`, and nothing done, for an instance that drives no logic.
+    fn drive(
+        memory: &mut Self::Memory,
+        (time, level, transition): (f64, Level, f64),
+    ) -> Option<f64> {
+        let _ = (memory, time, level, transition);
+        None
+    }
+
+    /// The local unknown of the current through an instance of `shape` that is a logic
+    /// driver, whose equation holds its voltage; `None` for one that drives no logic.
+    #[must_use]
+    fn driven(shape: &Self::Shape) -> Option<usize> {
+        let _ = shape;
+        None
+    }
+
+    /// How far the input of an instance of `shape` that is a logic input's detector lies
+    /// above its threshold at `at`, and the voltage of its supply above its ground there,
+    /// the swing of a full edge, in volts; `None` for one that detects no logic.
+    #[must_use]
+    fn sense<R: Real>(
+        shape: &Self::Shape,
+        prepared: &Self::Prepared<R>,
+        at: &Local<'_>,
+    ) -> Option<(f64, f64)> {
+        let _ = (shape, prepared, at);
+        None
+    }
 }
 
 /// The local unknowns among the first of which [`Layout::entry`] finds the claim of a pair
@@ -151,7 +237,7 @@ const INDEXED: usize = 16;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Layout {
     terminals: usize,
-    internals: Vec<(&'static str, Quantity)>,
+    internals: Vec<(Cow<'static, str>, Quantity)>,
     entries: Vec<(usize, usize)>,
     /// One more than the local index of the entry claimed at each pair of the first
     /// [`INDEXED`] local unknowns, row by row, or zero for none.
@@ -181,8 +267,8 @@ impl Layout {
 
     /// Adds an internal unknown, of `quantity`, labelled `label` after the instance's path,
     /// and returns its local index.
-    pub fn internal(&mut self, label: &'static str, quantity: Quantity) -> usize {
-        self.internals.push((label, quantity));
+    pub fn internal(&mut self, label: impl Into<Cow<'static, str>>, quantity: Quantity) -> usize {
+        self.internals.push((label.into(), quantity));
         self.terminals + self.internals.len() - 1
     }
 
@@ -227,7 +313,7 @@ impl Layout {
 
     /// Each internal unknown's label and quantity, in the order of their local indices.
     #[must_use]
-    pub fn internals(&self) -> &[(&'static str, Quantity)] {
+    pub fn internals(&self) -> &[(Cow<'static, str>, Quantity)] {
         &self.internals
     }
 
@@ -283,6 +369,29 @@ impl<'a> Local<'a> {
             .and_then(|&unknown| self.x.get(unknown as usize))
             .copied()
             .unwrap_or(0.0)
+    }
+
+    /// The circuit's unknown of each local unknown, [`jolty_numerics::UNMAPPED`] for one on
+    /// the reference.
+    pub(crate) const fn map(&self) -> &'a [u32] {
+        self.map
+    }
+
+    /// The same state as another instance sees it, whose local unknowns are the circuit's
+    /// that `map` gives, as a device that heats sees the instance it holds.
+    pub(crate) const fn remapped<'b>(&self, map: &'b [u32]) -> Local<'b>
+    where
+        'a: 'b,
+    {
+        Local {
+            x: self.x,
+            map,
+            time: self.time,
+            transient: self.transient,
+            source_scale: self.source_scale,
+            gmin: self.gmin,
+            limiting: self.limiting,
+        }
     }
 }
 

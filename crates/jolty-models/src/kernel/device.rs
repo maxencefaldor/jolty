@@ -8,9 +8,11 @@ use std::fmt;
 use jolty_numerics::{Entry, UNMAPPED};
 
 use super::{Kernel, Layout, Stamp};
+use crate::Gradient;
+use crate::heat::HeatedKernel;
 use crate::{
-    Binding, Device, Heatable, HeatableModel, Input, Instance, Interface, NativeDevice,
-    NativeModel, Node, NoiseSource, Output, ParameterError, Real,
+    Binding, Choice, Device, Drive, Heatable, HeatableModel, Input, Instance, Interface, Level,
+    NativeDevice, NativeModel, Node, NoiseSource, Output, ParameterError, Real, Source, Unknown,
 };
 
 /// One instance of the kernel `K`, computing with `R`, bound to the circuit's unknowns: it
@@ -32,6 +34,8 @@ pub struct KernelDevice<K: Kernel, R: Real = f64> {
     /// after another: empty until the first, as the devices an analysis reads apart from
     /// their groups are never evaluated.
     block: Vec<R>,
+    /// When the instance, a logic driver, settles from its last drive.
+    settles: f64,
 }
 
 impl<K: Kernel, R: Real> fmt::Debug for KernelDevice<K, R> {
@@ -53,6 +57,7 @@ pub(crate) fn mapped(node: Node) -> u32 {
 
 impl<K: Kernel, R: Real> NativeDevice<R> for KernelDevice<K, R> {
     const NAME: &'static str = K::NAME;
+    const FOUNDRY: bool = K::FOUNDRY;
     type Parameters = K::Parameters<R>;
 
     fn interface(parameters: &K::Parameters<R>) -> Interface {
@@ -65,10 +70,10 @@ impl<K: Kernel, R: Real> NativeDevice<R> for KernelDevice<K, R> {
     ) -> Result<Self, ParameterError> {
         let prepared = K::prepare(&parameters, R::constant(binding.temperature()))?;
         let mut layout = Layout::new(binding.terminals().len());
-        let shape = K::layout(&parameters, &mut layout)?;
+        let shape = K::layout(&parameters, &prepared, &mut layout)?;
         let mut nodes = binding.terminals().to_vec();
-        for &(label, quantity) in layout.internals() {
-            nodes.push(Some(binding.internal(label, quantity)));
+        for (label, quantity) in layout.internals() {
+            nodes.push(Some(binding.internal(label, *quantity)));
         }
         let node = |local: usize| nodes.get(local).copied().flatten();
         let entries = layout
@@ -76,14 +81,16 @@ impl<K: Kernel, R: Real> NativeDevice<R> for KernelDevice<K, R> {
             .iter()
             .map(|&(row, column)| binding.entry(node(row), node(column)))
             .collect::<Vec<_>>();
+        let memory = K::memory(&shape, &prepared);
         Ok(Self {
             shape,
+            memory,
             prepared,
-            memory: K::Memory::default(),
             map: nodes.iter().map(|&node| mapped(node)).collect(),
             block: Vec::new(),
             nodes,
             entries,
+            settles: 0.0,
         })
     }
 }
@@ -136,6 +143,23 @@ impl<K: Kernel, R: Real> Device<R> for KernelDevice<K, R> {
         }
     }
 
+    fn breakpoints(&self, start: f64, stop: f64, times: &mut Vec<f64>) {
+        K::breakpoints(&self.prepared, (start, stop), times);
+    }
+
+    fn choices(&mut self, input: &Input<'_>, found: &mut Vec<Choice>) {
+        let at = input.local(&self.map);
+        K::choices(&self.shape, &self.prepared, &mut self.memory, &at, found);
+    }
+
+    fn as_source(&mut self) -> Option<&mut dyn Source> {
+        K::level(&self.prepared).is_some().then_some(self)
+    }
+
+    fn as_driver(&mut self) -> Option<&mut dyn Drive> {
+        K::driven(&self.shape).is_some().then_some(self)
+    }
+
     fn variable_names(&self) -> &'static [&'static str] {
         K::variable_names()
     }
@@ -160,6 +184,47 @@ impl<K: Kernel, R: Real> Device<R> for KernelDevice<K, R> {
     }
 }
 
+impl<K: Kernel, R: Real> Source for KernelDevice<K, R> {
+    fn level(&self) -> f64 {
+        K::level(&self.prepared).unwrap_or(0.0)
+    }
+
+    fn level_derivative(&self, derivative: &mut [f64]) {
+        let (unknowns, stored) = (self.nodes.len(), self.entries.len().max(1));
+        let mut block = vec![R::default(); 3 * unknowns + 2 * stored];
+        let Some([residual, scale, charge, conductance, capacitance]) =
+            split(&mut block, [unknowns, unknowns, unknowns, stored])
+        else {
+            return;
+        };
+        let mut stamp = Stamp::zeroed([residual, scale, charge], [conductance, capacitance]);
+        K::excite(&self.shape, &mut stamp);
+        for (&node, value) in self.nodes.iter().zip(block.iter()) {
+            if let Some(sum) = node.and_then(|unknown| derivative.get_mut(unknown.index())) {
+                *sum += value.value();
+            }
+        }
+    }
+}
+
+impl<K: Kernel, R: Real> Drive for KernelDevice<K, R> {
+    fn drive(&mut self, time: f64, level: Level, transition: f64) {
+        if let Some(settles) = K::drive(&mut self.memory, (time, level, transition)) {
+            self.settles = settles;
+        }
+    }
+
+    fn settles_at(&self) -> f64 {
+        self.settles
+    }
+
+    fn current(&self) -> Unknown {
+        K::driven(&self.shape)
+            .and_then(|local| self.nodes.get(local).copied().flatten())
+            .unwrap_or(Unknown::new(0))
+    }
+}
+
 /// `block` cut into five, the first four of `lengths`, or `None` when it is too short.
 fn split<R>(block: &mut [R], lengths: [usize; 4]) -> Option<[&mut [R]; 5]> {
     let [first, second, third, fourth] = lengths;
@@ -173,15 +238,19 @@ fn split<R>(block: &mut [R], lengths: [usize; 4]) -> Option<[&mut [R]; 5]> {
 impl<K: Kernel> NativeModel for K {
     type Device<R: Real> = KernelDevice<K, R>;
 
-    fn instance(parameters: &K::Parameters<f64>) -> Option<Instance<'_>> {
-        Some(Instance::of::<K>(parameters))
+    fn instance(parameters: &K::Parameters<f64>) -> Instance<'_> {
+        Instance::of::<K>(parameters)
     }
 }
 
 impl<K: Kernel> HeatableModel for K {
     type Device<R: Real> = KernelDevice<K, R>;
 
-    fn instance(parameters: &K::Parameters<f64>) -> Option<Instance<'_>> {
-        Some(Instance::of::<K>(parameters))
+    fn instance(parameters: &K::Parameters<f64>) -> Instance<'_> {
+        Instance::of::<K>(parameters)
+    }
+
+    fn heated(parameters: &K::Parameters<Gradient>) -> Instance<'_> {
+        Instance::of_kind::<HeatedKernel<K>>(parameters)
     }
 }

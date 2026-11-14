@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use jolty_models::{Choice, Input, Level};
+use jolty_models::{Input, Level};
 use jolty_numerics::integration::{Formula, Method, divided_difference};
 use serde::Deserialize;
 
@@ -1061,23 +1061,12 @@ impl Simulator {
     /// its choices that changed between the two points changes, located by linear
     /// interpolation.
     fn first_jump(&mut self, stepper: &Stepper, (end, after): (f64, &[f64])) -> Option<f64> {
-        let (mut before, mut later) = (Vec::new(), Vec::new());
         let start = stepper.time;
-        let mut first: Option<f64> = None;
-        for device in self.state.devices.iter_mut().flatten() {
-            before.clear();
-            device.choices(&Input::new(&stepper.x, Some(start), 0.0), &mut before);
-            if before.is_empty() {
-                continue;
-            }
-            later.clear();
-            device.choices(&Input::new(after, Some(end), 0.0), &mut later);
-            if let Some(fraction) = Choice::first_jump(&before, &later) {
-                let time = start + (end - start) * fraction;
-                first = Some(first.map_or(time, |earlier| earlier.min(time)));
-            }
-        }
-        first
+        let before = Input::new(&stepper.x, Some(start), 0.0);
+        let later = Input::new(after, Some(end), 0.0);
+        let groups = &self.elaborated.groups;
+        let fraction = self.state.runs.first_jump(groups, (&before, &later))?;
+        Some(start + (end - start) * fraction)
     }
 
     /// Moves the logic from the stepper's last point to `end`, where the solution is
@@ -1104,7 +1093,7 @@ impl Simulator {
             .enumerate()
             .filter_map(|(detector, &(element, _))| {
                 crossing(
-                    state.devices[element].as_deref()?,
+                    |input| state.runs.sense(&elaborated.groups, element, input),
                     detector,
                     held[detector],
                     (stepper.time, &stepper.x),
@@ -1159,9 +1148,7 @@ impl Simulator {
     fn breakpoints(&mut self, stop: f64, minimum: f64) -> Vec<f64> {
         let previous = self.state.workspace.meter.enter(Activity::Preparing);
         let mut times = vec![stop];
-        for device in self.state.devices.iter().flatten() {
-            device.breakpoints(0.0, stop, &mut times);
-        }
+        self.state.runs.breakpoints((0.0, stop), &mut times);
         times.retain(|&time| time > minimum);
         times.sort_by(f64::total_cmp);
         times.dedup_by(|later, earlier| *later - *earlier < minimum);

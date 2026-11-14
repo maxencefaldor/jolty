@@ -5,21 +5,36 @@
 //! capacitance stores it as a capacitor stores charge, and a heat source drives it as a
 //! current source drives current, so a network of them is solved as a circuit is.
 
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
-    ParameterError, Real, TerminalPair,
-};
+use crate::kernel::parts::Pair;
+use crate::{Branch, BranchKind, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
+
+/// Where a thermal element's contributions go: across its terminals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThermalShape(Pair);
+
+impl ThermalShape {
+    /// Claims the entries across a thermal element's terminals, `a` and `b`.
+    fn new(layout: &mut Layout) -> Self {
+        Self(Pair::new(layout, 0, 1))
+    }
+}
 
 /// A thermal resistance between thermal terminals `a` and `b`: heat flows through it from
 /// the hotter to the colder at their difference over its resistance.
-#[derive(Debug)]
-pub struct ThermalResistance<R: Real = f64> {
-    pair: TerminalPair,
-    conductance: R,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct ThermalResistance;
 
 /// The parameters of a [`ThermalResistance`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -29,45 +44,50 @@ pub struct ThermalResistanceParameters<R: Real = f64> {
     pub resistance: R,
 }
 
-impl NativeModel for ThermalResistance {
-    type Device<R: Real> = ThermalResistance<R>;
-}
-
-impl<R: Real> NativeDevice<R> for ThermalResistance<R> {
+impl Kernel for ThermalResistance {
     const NAME: &'static str = "thermal_resistance";
-    type Parameters = ThermalResistanceParameters<R>;
+    type Parameters<R: Real> = ThermalResistanceParameters<R>;
+    type Shape = ThermalShape;
+    /// Its conductance.
+    type Prepared<R: Real> = R;
+    type Memory = ();
 
-    fn interface(_: &ThermalResistanceParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &ThermalResistanceParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Conductive)]).thermal()
     }
 
-    fn new(
-        parameters: ThermalResistanceParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let resistance = ParameterError::positive("resistance", parameters.resistance)?;
-        Ok(Self {
-            pair: TerminalPair::new(binding, binding.terminal(0), binding.terminal(1)),
-            conductance: resistance.recip(),
-        })
+    fn prepare<R: Real>(
+        parameters: &ThermalResistanceParameters<R>,
+        _: R,
+    ) -> Result<R, ParameterError> {
+        Ok(ParameterError::positive("resistance", parameters.resistance)?.recip())
     }
-}
 
-impl<R: Real> Device<R> for ThermalResistance<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let difference = self.pair.voltage(input);
-        self.pair.add_current(output, self.conductance * difference);
-        self.pair.add_conductance(output, self.conductance);
+    fn layout<R: Real>(
+        _: &ThermalResistanceParameters<R>,
+        _: &R,
+        layout: &mut Layout,
+    ) -> Result<ThermalShape, ParameterError> {
+        Ok(ThermalShape::new(layout))
+    }
+
+    fn evaluate<R: Real>(
+        ThermalShape(pair): &ThermalShape,
+        &conductance: &R,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let difference = pair.voltage(at);
+        pair.add_current(stamp, conductance * difference);
+        pair.add_conductance(stamp, conductance);
     }
 }
 
 /// A thermal capacitance between thermal terminals `a` and `b`: it stores heat in
 /// proportion to their difference, so it is open in a steady state.
-#[derive(Debug)]
-pub struct ThermalCapacitance<R: Real = f64> {
-    pair: TerminalPair,
-    capacitance: R,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct ThermalCapacitance;
 
 /// The parameters of a [`ThermalCapacitance`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -77,45 +97,50 @@ pub struct ThermalCapacitanceParameters<R: Real = f64> {
     pub capacitance: R,
 }
 
-impl NativeModel for ThermalCapacitance {
-    type Device<R: Real> = ThermalCapacitance<R>;
-}
-
-impl<R: Real> NativeDevice<R> for ThermalCapacitance<R> {
+impl Kernel for ThermalCapacitance {
     const NAME: &'static str = "thermal_capacitance";
-    type Parameters = ThermalCapacitanceParameters<R>;
+    type Parameters<R: Real> = ThermalCapacitanceParameters<R>;
+    type Shape = ThermalShape;
+    /// Its heat capacity.
+    type Prepared<R: Real> = R;
+    type Memory = ();
 
-    fn interface(_: &ThermalCapacitanceParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &ThermalCapacitanceParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::Capacitive)]).thermal()
     }
 
-    fn new(
-        parameters: ThermalCapacitanceParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let capacitance = ParameterError::non_negative("capacitance", parameters.capacitance)?;
-        Ok(Self {
-            pair: TerminalPair::new(binding, binding.terminal(0), binding.terminal(1)),
-            capacitance,
-        })
+    fn prepare<R: Real>(
+        parameters: &ThermalCapacitanceParameters<R>,
+        _: R,
+    ) -> Result<R, ParameterError> {
+        ParameterError::non_negative("capacitance", parameters.capacitance)
     }
-}
 
-impl<R: Real> Device<R> for ThermalCapacitance<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let difference = self.pair.voltage(input);
-        self.pair.add_charge(output, self.capacitance * difference);
-        self.pair.add_capacitance(output, self.capacitance);
+    fn layout<R: Real>(
+        _: &ThermalCapacitanceParameters<R>,
+        _: &R,
+        layout: &mut Layout,
+    ) -> Result<ThermalShape, ParameterError> {
+        Ok(ThermalShape::new(layout))
+    }
+
+    fn evaluate<R: Real>(
+        ThermalShape(pair): &ThermalShape,
+        &capacitance: &R,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let difference = pair.voltage(at);
+        pair.add_charge(stamp, capacitance * difference);
+        pair.add_capacitance(stamp, capacitance);
     }
 }
 
 /// A heat source between thermal terminals `a` and `b`: it drives a constant heat flow
 /// from `a` through itself into `b`, as a part beside a circuit heats the board under it.
-#[derive(Debug)]
-pub struct HeatSource<R: Real = f64> {
-    pair: TerminalPair,
-    power: R,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct HeatSource;
 
 /// The parameters of a [`HeatSource`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -125,38 +150,44 @@ pub struct HeatSourceParameters<R: Real = f64> {
     pub power: R,
 }
 
-impl NativeModel for HeatSource {
-    type Device<R: Real> = HeatSource<R>;
-}
-
-impl<R: Real> NativeDevice<R> for HeatSource<R> {
+impl Kernel for HeatSource {
     const NAME: &'static str = "heat_source";
-    type Parameters = HeatSourceParameters<R>;
+    type Parameters<R: Real> = HeatSourceParameters<R>;
+    type Shape = ThermalShape;
+    /// Its heat flow.
+    type Prepared<R: Real> = R;
+    type Memory = ();
 
-    fn interface(_: &HeatSourceParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &HeatSourceParameters<R>) -> Interface {
         Interface::new(&["a", "b"], &[Branch::new(0, 1, BranchKind::CurrentSource)]).thermal()
     }
 
-    fn new(
-        parameters: HeatSourceParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
+    fn prepare<R: Real>(parameters: &HeatSourceParameters<R>, _: R) -> Result<R, ParameterError> {
         if !parameters.power.value().is_finite() {
             return Err(ParameterError(format!(
                 "power must be finite, not {:?}",
                 parameters.power.value()
             )));
         }
-        Ok(Self {
-            pair: TerminalPair::new(binding, binding.terminal(0), binding.terminal(1)),
-            power: parameters.power,
-        })
+        Ok(parameters.power)
     }
-}
 
-impl<R: Real> Device<R> for HeatSource<R> {
-    fn evaluate(&mut self, _: &Input<'_>, output: &mut Output<'_, R>) {
-        self.pair.add_current(output, self.power);
+    fn layout<R: Real>(
+        _: &HeatSourceParameters<R>,
+        _: &R,
+        layout: &mut Layout,
+    ) -> Result<ThermalShape, ParameterError> {
+        Ok(ThermalShape::new(layout))
+    }
+
+    fn evaluate<R: Real>(
+        ThermalShape(pair): &ThermalShape,
+        &power: &R,
+        (): &mut (),
+        _: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        pair.add_current(stamp, power);
     }
 }
 
@@ -181,7 +212,7 @@ mod tests {
     #[test]
     fn every_terminal_is_thermal_and_values_are_checked() {
         let interface =
-            ThermalResistance::<f64>::interface(&ThermalResistanceParameters { resistance: 1.0 });
+            ThermalResistance::interface::<f64>(&ThermalResistanceParameters { resistance: 1.0 });
         assert_eq!(interface.thermal, [0, 1]);
         for (result, message) in [
             (

@@ -1,10 +1,18 @@
-use jolty_numerics::Entry;
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
-    NoiseSource, Output, ParameterError, Quantity, Real, Unknown,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
+    Real, Stamp, Unknown,
 };
 
 /// The illuminance, in lux, below which a photocell's response to light rounds off to
@@ -24,29 +32,42 @@ const DARKNESS: f64 = 1e-6;
 /// at zero or above, smoothly, below [`DARKNESS`]. With a response time `τ`, `s` lags the
 /// light, `τ · ds/dt = (E/E₀)^γ − s`, as a cadmium sulphide cell's carriers do, and is an
 /// unknown labelled `response`; without one, it follows at once.
-#[derive(Debug)]
-pub struct Photocell<R: Real = f64> {
-    nodes: [Node; 4],
+#[derive(Debug, Clone, Copy)]
+pub struct Photocell;
+
+/// Where a photocell's contributions go, among its local unknowns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhotocellShape {
+    /// The entries joining `a` and `b` to every terminal.
+    entries: [[usize; 4]; 2],
+    lag: Option<Lag>,
+}
+
+/// A photocell's lagging response, and the entries its equation claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Lag {
+    response: usize,
+    /// The entries joining `a` and `b` to the response.
+    terminals: [usize; 2],
+    /// The entries joining the response to `light_positive`, `light_negative` and itself.
+    own: [usize; 3],
+}
+
+/// A photocell's numbers.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedPhotocell<R: Real> {
     conductance: R,
     dark_conductance: R,
     reference: R,
     gamma: R,
-    lag: Option<Lag<R>>,
-    /// The entries joining `a` and `b` to every terminal.
-    entries: [[Option<Entry>; 4]; 2],
+    /// Its response time, zero for none.
+    time: R,
     temperature: f64,
 }
 
-/// A photocell's lagging response, and the entries its equation claims.
-#[derive(Debug)]
-struct Lag<R: Real> {
-    response: Unknown,
-    time: R,
-    /// The entries joining `a` and `b` to the response.
-    terminals: [Option<Entry>; 2],
-    /// The entries joining the response to `light_positive`, `light_negative` and itself.
-    own: [Option<Entry>; 3],
-}
+/// The local indices of a photocell's terminals: `a`, `b`, `light_positive` and
+/// `light_negative`.
+const TERMINALS: [usize; 4] = [0, 1, 2, 3];
 
 /// The parameters of a [`Photocell`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -83,57 +104,7 @@ fn a_million<R: Real>() -> R {
     R::constant(1e6)
 }
 
-impl NativeModel for Photocell {
-    type Device<R: Real> = Photocell<R>;
-}
-
-impl<R: Real> NativeDevice<R> for Photocell<R> {
-    const NAME: &'static str = "photocell";
-    type Parameters = PhotocellParameters<R>;
-
-    fn interface(_: &PhotocellParameters<R>) -> Interface {
-        Interface::new(
-            &["a", "b", "light_positive", "light_negative"],
-            &[Branch::new(0, 1, BranchKind::Conductive)],
-        )
-    }
-
-    fn new(
-        parameters: PhotocellParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let resistance = ParameterError::positive("resistance", parameters.resistance)?;
-        let reference = ParameterError::positive("illuminance", parameters.illuminance)?;
-        let gamma = ParameterError::positive("gamma", parameters.gamma)?;
-        let dark = ParameterError::positive("dark_resistance", parameters.dark_resistance)?;
-        let time = ParameterError::non_negative("response_time", parameters.response_time)?;
-        let nodes = [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let entries =
-            [nodes[0], nodes[1]].map(|row| nodes.map(|column| binding.entry(row, column)));
-        let lag = (time.value() > 0.0).then(|| {
-            let response = binding.internal("response", Quantity::State);
-            let row = Some(response);
-            Lag {
-                response,
-                time,
-                terminals: [nodes[0], nodes[1]].map(|node| binding.entry(node, row)),
-                own: [nodes[2], nodes[3], row].map(|column| binding.entry(row, column)),
-            }
-        });
-        Ok(Self {
-            nodes,
-            conductance: resistance.recip(),
-            dark_conductance: dark.recip(),
-            reference,
-            gamma,
-            lag,
-            entries,
-            temperature: binding.temperature(),
-        })
-    }
-}
-
-impl<R: Real> Photocell<R> {
+impl<R: Real> PreparedPhotocell<R> {
     /// The response `(E/E₀)^γ` the light `light` settles the cell to, and its derivative
     /// with respect to the light.
     fn settled(&self, light: f64) -> (R, R) {
@@ -145,63 +116,126 @@ impl<R: Real> Photocell<R> {
     }
 }
 
-impl<R: Real> Device<R> for Photocell<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let [a, b, light_positive, light_negative] = self.nodes;
-        let voltage = input.value(a) - input.value(b);
-        let light = input.value(light_positive) - input.value(light_negative);
-        let (settled, slope) = self.settled(light);
-        let response = self
+impl Kernel for Photocell {
+    const NAME: &'static str = "photocell";
+    type Parameters<R: Real> = PhotocellParameters<R>;
+    type Shape = PhotocellShape;
+    type Prepared<R: Real> = PreparedPhotocell<R>;
+    type Memory = ();
+
+    fn interface<R: Real>(_: &PhotocellParameters<R>) -> Interface {
+        Interface::new(
+            &["a", "b", "light_positive", "light_negative"],
+            &[Branch::new(0, 1, BranchKind::Conductive)],
+        )
+    }
+
+    fn prepare<R: Real>(
+        parameters: &PhotocellParameters<R>,
+        temperature: R,
+    ) -> Result<PreparedPhotocell<R>, ParameterError> {
+        let resistance = ParameterError::positive("resistance", parameters.resistance)?;
+        let reference = ParameterError::positive("illuminance", parameters.illuminance)?;
+        let gamma = ParameterError::positive("gamma", parameters.gamma)?;
+        let dark = ParameterError::positive("dark_resistance", parameters.dark_resistance)?;
+        let time = ParameterError::non_negative("response_time", parameters.response_time)?;
+        Ok(PreparedPhotocell {
+            conductance: resistance.recip(),
+            dark_conductance: dark.recip(),
+            reference,
+            gamma,
+            time,
+            temperature: temperature.value(),
+        })
+    }
+
+    fn layout<R: Real>(
+        _: &PhotocellParameters<R>,
+        prepared: &PreparedPhotocell<R>,
+        layout: &mut Layout,
+    ) -> Result<PhotocellShape, ParameterError> {
+        let [a, b, light_positive, light_negative] = TERMINALS;
+        let entries = [a, b].map(|row| TERMINALS.map(|column| layout.entry(row, column)));
+        let lag = (prepared.time.value() > 0.0).then(|| {
+            let response = layout.internal("response", Quantity::State);
+            Lag {
+                response,
+                terminals: [a, b].map(|node| layout.entry(node, response)),
+                own: [light_positive, light_negative, response]
+                    .map(|column| layout.entry(response, column)),
+            }
+        });
+        Ok(PhotocellShape { entries, lag })
+    }
+
+    fn evaluate<R: Real>(
+        shape: &PhotocellShape,
+        prepared: &PreparedPhotocell<R>,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let [a, b, light_positive, light_negative] = TERMINALS;
+        let voltage = at.value(a) - at.value(b);
+        let light = at.value(light_positive) - at.value(light_negative);
+        let (settled, slope) = prepared.settled(light);
+        let response = shape
             .lag
             .as_ref()
-            .map_or(settled, |lag| R::constant(input.value(Some(lag.response))));
-        let conductance = self.dark_conductance + self.conductance * response;
+            .map_or(settled, |lag| R::constant(at.value(lag.response)));
+        let conductance = prepared.dark_conductance + prepared.conductance * response;
         let current = conductance * voltage;
-        output.add_residual(a, current);
-        output.add_residual(b, -current);
+        stamp.add_residual(a, current);
+        stamp.add_residual(b, -current);
         // The current's derivatives with respect to a, b, and the light.
-        let light_slope = match &self.lag {
+        let light_slope = match &shape.lag {
             Some(_) => R::constant(0.0),
-            None => self.conductance * slope * voltage,
+            None => prepared.conductance * slope * voltage,
         };
         let derivatives = [conductance, -conductance, light_slope, -light_slope];
-        for (row, sign) in self.entries.iter().zip([1.0, -1.0]) {
+        for (row, sign) in shape.entries.iter().zip([1.0, -1.0]) {
             for (&entry, derivative) in row.iter().zip(derivatives) {
-                output.add_conductance(entry, derivative * sign);
+                stamp.add_conductance(entry, derivative * sign);
             }
         }
-        if let Some(lag) = &self.lag {
-            let row = Some(lag.response);
+        if let Some(lag) = &shape.lag {
+            let row = lag.response;
             for (&entry, sign) in lag.terminals.iter().zip([1.0, -1.0]) {
-                output.add_conductance(entry, self.conductance * voltage * sign);
+                stamp.add_conductance(entry, prepared.conductance * voltage * sign);
             }
             // τ · ds/dt + s − (E/E₀)^γ = 0.
-            output.add_residual(row, response - settled);
-            output.add_charge(row, lag.time * response);
+            stamp.add_residual(row, response - settled);
+            stamp.add_charge(row, prepared.time * response);
             let [positive, negative, own] = lag.own;
-            output.add_conductance(positive, -slope);
-            output.add_conductance(negative, slope);
-            output.add_conductance(own, R::constant(1.0));
-            output.add_capacitance(own, lag.time);
+            stamp.add_conductance(positive, -slope);
+            stamp.add_conductance(negative, slope);
+            stamp.add_conductance(own, R::constant(1.0));
+            stamp.add_capacitance(own, prepared.time);
         }
     }
 
     /// The thermal noise of the conductance its response sets.
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        let [a, b, light_positive, light_negative] = self.nodes;
-        let response = self.lag.as_ref().map_or_else(
+    fn noise<R: Real>(
+        shape: &PhotocellShape,
+        prepared: &PreparedPhotocell<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let [a, b, light_positive, light_negative] = TERMINALS;
+        let response = shape.lag.as_ref().map_or_else(
             || {
-                self.settled(input.value(light_positive) - input.value(light_negative))
+                prepared
+                    .settled(at.value(light_positive) - at.value(light_negative))
                     .0
             },
-            |lag| R::constant(input.value(Some(lag.response))),
+            |lag| R::constant(at.value(lag.response)),
         );
-        let conductance = self.dark_conductance + self.conductance * response;
+        let conductance = prepared.dark_conductance + prepared.conductance * response;
         sources.push(NoiseSource::thermal(
             "thermal",
-            [a, b],
+            [Some(Unknown::new(a)), Some(Unknown::new(b))],
             conductance.value(),
-            self.temperature,
+            prepared.temperature,
         ));
     }
 }

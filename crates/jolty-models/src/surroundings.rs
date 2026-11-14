@@ -168,10 +168,8 @@ impl Specification for AtOwn {
         Ok(written)
     }
 
-    fn kernel(&self) -> Option<Instance<'_>> {
-        self.inner
-            .kernel()
-            .map(|instance| instance.at_own(self.own))
+    fn kernel(&self) -> Instance<'_> {
+        self.inner.kernel().at_own(self.own)
     }
 }
 

@@ -564,12 +564,7 @@ impl Simulator {
         };
         let mut phasors = vec![Complex64::default(); values.len()];
         for &(element, net) in &self.elaborated.logic.drivers {
-            let Some(current) = self
-                .state
-                .device(element)
-                .and_then(|device| device.as_driver())
-                .map(|driver| driver.current())
-            else {
+            let Some(current) = self.state.runs.driven(&self.elaborated.groups, element) else {
                 continue;
             };
             // Raising the driver's voltage by a volt adds -1 to its equation's residual.
@@ -620,12 +615,13 @@ impl Simulator {
                 .detectors
                 .iter()
                 .map(|&(element, _)| {
-                    let sense = self.state.devices[element]
-                        .as_deref()
-                        .and_then(|device| device.as_detector());
                     let input = Input::new(&solved.values, None, 0.0);
-                    sense.map_or(Level::Unknown, |sense| {
-                        detected(sense.margin(&input), Level::Unknown)
+                    let sensed = self
+                        .state
+                        .runs
+                        .sense(&self.elaborated.groups, element, &input);
+                    sensed.map_or(Level::Unknown, |(margin, _)| {
+                        detected(margin, Level::Unknown)
                     })
                 })
                 .collect();
@@ -982,5 +978,38 @@ mod tests {
         let diode = 1e-14 * ((x / slope).exp() - 1.0);
         assert!(x > 0.5, "the node at {x} V");
         assert!(((3.0 - x) / 1e3 + 2e-3 * x - diode).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pseudo_transient_continuation_finds_the_point_source_stepping_folds_short_of() {
+        // A random circuit of 47 devices, shrunk from one whose operating point every other
+        // strategy missed: source stepping stops at a fold of its solutions, at 51 % of the
+        // sources, as ngspice's does, which finds the point only by its transient instead.
+        let circuit = Circuit::from_json(include_str!("../tests/data/folded_sources.json"))
+            .expect("a circuit");
+        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("the circuit elaborates");
+        let options = Options::default();
+        let unknowns = simulator.elaborated.unknowns.len();
+        let mut values = vec![0.0; unknowns];
+        assert!(
+            simulator
+                .source_stepping(&mut values, &options, &[])
+                .is_err()
+        );
+        let mut values = vec![0.0; unknowns];
+        simulator
+            .pseudo_transient(&mut values, &options, &[])
+            .expect("pseudo-transient continuation converges");
+        let voltage = |name: &str| values[simulator.unknown(name).expect("a node").index()];
+        // ngspice's transient operating point, to its printed digits.
+        for (node, expected) in [
+            ("n20", -54.634_247),
+            ("n16", -1.998_355),
+            ("n7", -1.765_709),
+        ] {
+            let found = voltage(node);
+            assert!((found - expected).abs() < 1e-5, "{node} at {found} V");
+        }
     }
 }

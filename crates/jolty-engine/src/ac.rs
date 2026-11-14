@@ -52,13 +52,9 @@ impl Simulator {
         let index = self.source_index(&ac.source)?;
         let operating_point = self.linearize(&ac.frequencies, options)?;
         let mut excitation = vec![0.0; self.elaborated.unknowns.len()];
-        if let Some(source) = self
-            .state
-            .device(index)
-            .and_then(|device| device.as_source())
-        {
-            source.level_derivative(&mut excitation);
-        }
+        self.state
+            .runs
+            .excite(&self.elaborated.groups, index, &mut excitation);
         self.state
             .observer
             .linearize(&operating_point.values, options.gmin);

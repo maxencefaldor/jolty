@@ -4,8 +4,16 @@
 //! at, limited from its last evaluation's.
 
 use super::{Layout, Local, Stamp};
-use crate::stamp::SMALL_RESISTANCE;
 use crate::{NoiseSource, Quantity, Real, Unknown};
+
+/// The resistance below which a resistance carries its current as an unknown, in ohms.
+///
+/// A conductance stamped beside a far smaller one at a node swamps it in floating point: a
+/// node held only by gmin's picosiemens loses them beside a megasiemens, and its equation
+/// turns singular. A current unknown keeps the two apart, as modified nodal analysis does
+/// for the elements of its second group (Ho, Ruehli and Brennan, 1975); below 1 Ω, gmin
+/// keeps four digits beside the resistance's conductance.
+pub const SMALL_RESISTANCE: f64 = 1.0;
 
 /// A local index no instance has: what an index out of a fixed array's range reads as, so
 /// that reading it gives zero and writing it goes nowhere.
@@ -178,7 +186,7 @@ impl CurrentBranch {
     /// `label`.
     pub(crate) fn new(
         layout: &mut Layout,
-        label: &'static str,
+        label: impl Into<std::borrow::Cow<'static, str>>,
         [positive, negative]: [usize; 2],
     ) -> Self {
         let current = layout.internal(label, Quantity::Current);

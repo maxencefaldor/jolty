@@ -1,11 +1,19 @@
-use jolty_numerics::Entry;
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::stamp::CurrentBranch;
+use crate::kernel::parts::CurrentBranch;
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
-    NoiseSource, Output, ParameterError, Real,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Real, Stamp,
+    Unknown,
 };
 
 /// The law by which a switch's control moves its resistance, PSpice's, as the PSpice A/D
@@ -14,7 +22,7 @@ use crate::{
 /// `s`, and `m = s − ½`, the resistance's logarithm is `ln √(r_on · r_off) + L · (3/2 · m −
 /// 2 · m³)`, where `L = ln(r_on / r_off)`: a cubic that reaches each resistance with zero
 /// slope at each end, beyond which the resistance holds.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct Law<R: Real> {
     off: R,
     /// The on value less the off value.
@@ -75,14 +83,21 @@ impl<R: Real> Law<R> {
 /// `negative` that the voltage of `control_positive` over `control_negative` moves smoothly
 /// from the off resistance to the on one, by [PSpice's law](Law). The control terminals
 /// draw no current.
-#[derive(Debug)]
-pub struct VoltageControlledSwitch<R: Real = f64> {
-    nodes: [Node; 4],
+#[derive(Debug, Clone, Copy)]
+pub struct VoltageControlledSwitch;
+
+/// A switch's numbers at its temperature: its law, and the temperature its resistance's
+/// thermal noise is at.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedSwitch<R: Real> {
     law: Law<R>,
-    /// The entries joining each output terminal to every terminal.
-    entries: [[Option<Entry>; 4]; 2],
     temperature: f64,
 }
+
+/// Where a voltage-controlled switch's contributions go: at the entries joining each output
+/// terminal to every terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoltageSwitchShape([[usize; 4]; 2]);
 
 /// The parameters of a [`VoltageControlledSwitch`], with the defaults the PSpice A/D
 /// Reference Guide gives its model `VSWITCH`.
@@ -118,26 +133,28 @@ const SWITCH_TERMINALS: &[&str] = &[
     "control_negative",
 ];
 
-impl NativeModel for VoltageControlledSwitch {
-    type Device<R: Real> = VoltageControlledSwitch<R>;
-}
+/// The local indices of a switch's terminals, in the order of [`SWITCH_TERMINALS`].
+const TERMINALS: [usize; 4] = [0, 1, 2, 3];
 
-impl<R: Real> NativeDevice<R> for VoltageControlledSwitch<R> {
+impl Kernel for VoltageControlledSwitch {
     const NAME: &'static str = "voltage_controlled_switch";
-    type Parameters = VoltageControlledSwitchParameters<R>;
+    type Parameters<R: Real> = VoltageControlledSwitchParameters<R>;
+    type Shape = VoltageSwitchShape;
+    type Prepared<R: Real> = PreparedSwitch<R>;
+    type Memory = ();
 
-    fn interface(_: &VoltageControlledSwitchParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &VoltageControlledSwitchParameters<R>) -> Interface {
         Interface::new(
             SWITCH_TERMINALS,
             &[Branch::new(0, 1, BranchKind::Conductive)],
         )
     }
 
-    fn new(
-        parameters: VoltageControlledSwitchParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let VoltageControlledSwitchParameters {
+    fn prepare<R: Real>(
+        parameters: &VoltageControlledSwitchParameters<R>,
+        temperature: R,
+    ) -> Result<PreparedSwitch<R>, ParameterError> {
+        let &VoltageControlledSwitchParameters {
             on_resistance,
             off_resistance,
             on_voltage,
@@ -148,46 +165,61 @@ impl<R: Real> NativeDevice<R> for VoltageControlledSwitch<R> {
             [on_voltage, off_voltage],
             "voltage",
         )?;
-        let nodes = [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let entries =
-            [nodes[0], nodes[1]].map(|row| nodes.map(|column| binding.entry(row, column)));
-        Ok(Self {
-            nodes,
+        Ok(PreparedSwitch {
             law,
-            entries,
-            temperature: binding.temperature(),
+            temperature: temperature.value(),
         })
     }
-}
 
-impl<R: Real> Device<R> for VoltageControlledSwitch<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let [positive, negative, control_positive, control_negative] = self.nodes;
-        let voltage = input.value(positive) - input.value(negative);
-        let control = input.value(control_positive) - input.value(control_negative);
-        let (conductance, slope) = self.law.conductance(control);
+    fn layout<R: Real>(
+        _: &VoltageControlledSwitchParameters<R>,
+        _: &PreparedSwitch<R>,
+        layout: &mut Layout,
+    ) -> Result<VoltageSwitchShape, ParameterError> {
+        let [positive, negative, ..] = TERMINALS;
+        Ok(VoltageSwitchShape([positive, negative].map(|row| {
+            TERMINALS.map(|column| layout.entry(row, column))
+        })))
+    }
+
+    fn evaluate<R: Real>(
+        VoltageSwitchShape(entries): &VoltageSwitchShape,
+        prepared: &PreparedSwitch<R>,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let [positive, negative, control_positive, control_negative] = TERMINALS;
+        let voltage = at.value(positive) - at.value(negative);
+        let control = at.value(control_positive) - at.value(control_negative);
+        let (conductance, slope) = prepared.law.conductance(control);
         let current = conductance * voltage;
-        output.add_residual(positive, current);
-        output.add_residual(negative, -current);
+        stamp.add_residual(positive, current);
+        stamp.add_residual(negative, -current);
         // With respect to positive, negative, control_positive and control_negative.
         let derivatives = [conductance, -conductance, slope * voltage, -slope * voltage];
-        for (row, sign) in self.entries.iter().zip([1.0, -1.0]) {
+        for (row, sign) in entries.iter().zip([1.0, -1.0]) {
             for (&entry, derivative) in row.iter().zip(derivatives) {
-                output.add_conductance(entry, derivative * sign);
+                stamp.add_conductance(entry, derivative * sign);
             }
         }
     }
 
     /// The thermal noise of the resistance the control sets.
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        let [positive, negative, control_positive, control_negative] = self.nodes;
-        let control = input.value(control_positive) - input.value(control_negative);
-        let (conductance, _) = self.law.conductance(control);
+    fn noise<R: Real>(
+        _: &VoltageSwitchShape,
+        prepared: &PreparedSwitch<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let [positive, negative, control_positive, control_negative] = TERMINALS;
+        let control = at.value(control_positive) - at.value(control_negative);
+        let (conductance, _) = prepared.law.conductance(control);
         sources.push(NoiseSource::thermal(
             "thermal",
-            [positive, negative],
+            [Some(Unknown::new(positive)), Some(Unknown::new(negative))],
             conductance.value(),
-            self.temperature,
+            prepared.temperature,
         ));
     }
 }
@@ -200,15 +232,15 @@ impl<R: Real> Device<R> for VoltageControlledSwitch<R> {
 /// current-controlled source's is: the current flows from `control_positive` through the
 /// port to `control_negative`, which it holds at the same voltage, and is an unknown
 /// labelled `control`.
-#[derive(Debug)]
-pub struct CurrentControlledSwitch<R: Real = f64> {
-    output: [Node; 2],
+#[derive(Debug, Clone, Copy)]
+pub struct CurrentControlledSwitch;
+
+/// Where a current-controlled switch's contributions go: through its sensing port, and at
+/// the entries joining each output terminal to each output terminal and to the control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurrentSwitchShape {
     sense: CurrentBranch,
-    law: Law<R>,
-    /// The entries joining each output terminal to each output terminal and to the
-    /// control.
-    entries: [[Option<Entry>; 3]; 2],
-    temperature: f64,
+    entries: [[usize; 3]; 2],
 }
 
 /// The parameters of a [`CurrentControlledSwitch`], with the defaults the PSpice A/D
@@ -237,15 +269,14 @@ impl<R: Real> Default for CurrentControlledSwitchParameters<R> {
     }
 }
 
-impl NativeModel for CurrentControlledSwitch {
-    type Device<R: Real> = CurrentControlledSwitch<R>;
-}
-
-impl<R: Real> NativeDevice<R> for CurrentControlledSwitch<R> {
+impl Kernel for CurrentControlledSwitch {
     const NAME: &'static str = "current_controlled_switch";
-    type Parameters = CurrentControlledSwitchParameters<R>;
+    type Parameters<R: Real> = CurrentControlledSwitchParameters<R>;
+    type Shape = CurrentSwitchShape;
+    type Prepared<R: Real> = PreparedSwitch<R>;
+    type Memory = ();
 
-    fn interface(_: &CurrentControlledSwitchParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &CurrentControlledSwitchParameters<R>) -> Interface {
         Interface::new(
             SWITCH_TERMINALS,
             &[
@@ -255,11 +286,11 @@ impl<R: Real> NativeDevice<R> for CurrentControlledSwitch<R> {
         )
     }
 
-    fn new(
-        parameters: CurrentControlledSwitchParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let CurrentControlledSwitchParameters {
+    fn prepare<R: Real>(
+        parameters: &CurrentControlledSwitchParameters<R>,
+        temperature: R,
+    ) -> Result<PreparedSwitch<R>, ParameterError> {
+        let &CurrentControlledSwitchParameters {
             on_resistance,
             off_resistance,
             on_current,
@@ -270,51 +301,65 @@ impl<R: Real> NativeDevice<R> for CurrentControlledSwitch<R> {
             [on_current, off_current],
             "current",
         )?;
-        let [positive, negative, control_positive, control_negative] =
-            [0, 1, 2, 3].map(|index| binding.terminal(index));
-        let sense = CurrentBranch::new(binding, "control", [control_positive, control_negative]);
-        let columns = [positive, negative, Some(sense.unknown())];
-        let entries =
-            [positive, negative].map(|row| columns.map(|column| binding.entry(row, column)));
-        Ok(Self {
-            output: [positive, negative],
-            sense,
+        Ok(PreparedSwitch {
             law,
-            entries,
-            temperature: binding.temperature(),
+            temperature: temperature.value(),
         })
     }
-}
 
-impl<R: Real> Device<R> for CurrentControlledSwitch<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
+    fn layout<R: Real>(
+        _: &CurrentControlledSwitchParameters<R>,
+        _: &PreparedSwitch<R>,
+        layout: &mut Layout,
+    ) -> Result<CurrentSwitchShape, ParameterError> {
+        let [positive, negative, control_positive, control_negative] = TERMINALS;
+        let sense = CurrentBranch::new(layout, "control", [control_positive, control_negative]);
+        let columns = [positive, negative, sense.unknown()];
+        let entries =
+            [positive, negative].map(|row| columns.map(|column| layout.entry(row, column)));
+        Ok(CurrentSwitchShape { sense, entries })
+    }
+
+    fn evaluate<R: Real>(
+        shape: &CurrentSwitchShape,
+        prepared: &PreparedSwitch<R>,
+        (): &mut (),
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
         // The port is a short circuit, its current the control.
-        self.sense
-            .add(input, output, R::constant(self.sense.voltage(input)));
-        let control = self.sense.current(input);
-        let [positive, negative] = self.output;
-        let voltage = input.value(positive) - input.value(negative);
-        let (conductance, slope) = self.law.conductance(control);
+        let sense = &shape.sense;
+        sense.add(at, stamp, R::constant(sense.voltage(at)));
+        let control = sense.current(at);
+        let [positive, negative, ..] = TERMINALS;
+        let voltage = at.value(positive) - at.value(negative);
+        let (conductance, slope) = prepared.law.conductance(control);
         let current = conductance * voltage;
-        output.add_residual(positive, current);
-        output.add_residual(negative, -current);
+        stamp.add_residual(positive, current);
+        stamp.add_residual(negative, -current);
         // With respect to positive, negative and the control.
         let derivatives = [conductance, -conductance, slope * voltage];
-        for (row, sign) in self.entries.iter().zip([1.0, -1.0]) {
+        for (row, sign) in shape.entries.iter().zip([1.0, -1.0]) {
             for (&entry, derivative) in row.iter().zip(derivatives) {
-                output.add_conductance(entry, derivative * sign);
+                stamp.add_conductance(entry, derivative * sign);
             }
         }
     }
 
     /// The thermal noise of the resistance the control sets.
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        let (conductance, _) = self.law.conductance(self.sense.current(input));
+    fn noise<R: Real>(
+        shape: &CurrentSwitchShape,
+        prepared: &PreparedSwitch<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let (conductance, _) = prepared.law.conductance(shape.sense.current(at));
+        let [positive, negative, ..] = TERMINALS;
         sources.push(NoiseSource::thermal(
             "thermal",
-            self.output,
+            [Some(Unknown::new(positive)), Some(Unknown::new(negative))],
             conductance.value(),
-            self.temperature,
+            prepared.temperature,
         ));
     }
 }

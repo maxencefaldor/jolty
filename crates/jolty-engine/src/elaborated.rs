@@ -18,9 +18,9 @@ use std::sync::{Arc, OnceLock};
 
 use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{
-    Binding, Device, Groups, Instance, Interface, Library, LogicDriver, LogicDriverParameters,
-    Model, NativeDevice, Node, ParameterError, REFERENCE_TEMPERATURE, Runs, Specification,
-    ThresholdDetector, ThresholdDetectorParameters, Unknown, UnknownInfo,
+    Binding, Device, Groups, Instance, Interface, KernelDevice, Library, LogicDriver,
+    LogicDriverParameters, Model, NativeDevice, Node, ParameterError, REFERENCE_TEMPERATURE, Runs,
+    Specification, ThresholdDetector, ThresholdDetectorParameters, Unknown, UnknownInfo,
 };
 use jolty_numerics::{Entry, Ordering, Pattern, PatternBuilder, Replay};
 use serde_json::Value;
@@ -137,7 +137,7 @@ pub(crate) enum Origin {
     /// A threshold detector, the connect element of a logic input.
     Detector(ThresholdDetectorParameters),
     /// A logic driver, the connect element of a logic output.
-    Driver,
+    Driver(LogicDriverParameters),
 }
 
 /// What a model made a device from: the instance's parameters, read once into the
@@ -160,17 +160,16 @@ impl fmt::Debug for Made {
     }
 }
 
-/// The devices of no kernel made for a run, by the index of each among the circuit's
-/// devices, `None` for a kernel's instance, and the run of the groups of those instances,
-/// prepared.
-pub(crate) type Devices = (Vec<Option<Box<dyn Device>>>, Runs);
+/// The run of the groups of a run's instances, prepared.
+pub(crate) type Devices = Runs;
 
 impl Origin {
-    /// The device as an instance of a kernel, if it is one.
-    pub(crate) fn kernel(&self) -> Option<Instance<'_>> {
+    /// The device as an instance of a kernel.
+    pub(crate) fn kernel(&self) -> Instance<'_> {
         match self {
             Self::Model(made) => made.specification.kernel(),
-            Self::Detector(_) | Self::Driver => None,
+            Self::Detector(parameters) => Instance::of::<ThresholdDetector>(parameters),
+            Self::Driver(parameters) => Instance::of::<LogicDriver>(parameters),
         }
     }
 
@@ -185,11 +184,12 @@ impl Origin {
     ) -> Result<Box<dyn Device>, ParameterError> {
         match self {
             Self::Model(made) => made.specification.instantiate(binding),
-            Self::Detector(parameters) => {
-                Ok(Box::new(ThresholdDetector::new(*parameters, binding)?))
-            }
-            Self::Driver => Ok(Box::new(LogicDriver::new(
-                LogicDriverParameters {},
+            Self::Detector(parameters) => Ok(Box::new(KernelDevice::<ThresholdDetector>::new(
+                *parameters,
+                binding,
+            )?)),
+            Self::Driver(parameters) => Ok(Box::new(KernelDevice::<LogicDriver>::new(
+                *parameters,
                 binding,
             )?)),
         }
@@ -197,11 +197,6 @@ impl Origin {
 }
 
 impl Placed {
-    /// What the device is made from, with its own numbers.
-    pub(crate) fn origin(&self) -> &Origin {
-        &self.template.origin
-    }
-
     /// Where the instance is: its path and the script line that placed it.
     #[must_use]
     pub fn location(&self) -> &Location {
@@ -269,7 +264,7 @@ impl Placed {
     pub fn foundry(&self) -> bool {
         match &self.template.origin {
             Origin::Model(made) => made.model.foundry(),
-            Origin::Detector(_) | Origin::Driver => false,
+            Origin::Detector(_) | Origin::Driver(_) => false,
         }
     }
 
@@ -280,7 +275,7 @@ impl Placed {
     pub fn parameters(&self) -> Option<&Parameters> {
         match &self.template.origin {
             Origin::Model(made) => Some(&made.parameters),
-            Origin::Detector(_) | Origin::Driver => None,
+            Origin::Detector(_) | Origin::Driver(_) => None,
         }
     }
 }
@@ -346,7 +341,6 @@ pub(crate) struct Binder {
     builder: PatternBuilder,
     node_diagonals: Vec<(Unknown, Entry)>,
     placed: Vec<Placed>,
-    devices: Vec<Option<Box<dyn Device>>>,
     groups: Groups,
     runs: Runs,
     temperature: f64,
@@ -378,7 +372,6 @@ impl Binder {
             builder,
             node_diagonals,
             placed: Vec::new(),
-            devices: Vec::new(),
             groups: Groups::new(),
             runs: Runs::default(),
             temperature,
@@ -408,18 +401,11 @@ impl Binder {
             self.temperature,
         );
         let origin = origin.unwrap_or(&template.origin);
-        // A kernel's instance claims its unknowns and entries in its group, and is made
-        // as no device of its own.
-        let (device, variables) = if let Some(instance) = origin.kernel() {
-            self.groups
-                .add(&mut self.runs, (instance, self.temperature), &mut binding)?;
-            (None, instance.variable_names())
-        } else {
-            let device = origin.make(&mut binding)?;
-            self.groups.add_legacy();
-            let variables = device.variable_names();
-            (Some(device), variables)
-        };
+        // Each instance claims its unknowns and entries in its group.
+        let instance = origin.kernel();
+        self.groups
+            .add(&mut self.runs, (instance, self.temperature), &mut binding)?;
+        let variables = instance.variable_names();
         let entries = first_entry..self.builder.positions().len();
         self.placed.push(Placed {
             first_internal,
@@ -429,7 +415,6 @@ impl Binder {
             nominal,
             template,
         });
-        self.devices.push(device);
         Ok(())
     }
 
@@ -456,7 +441,7 @@ impl Binder {
         Ok(Bound {
             unknowns: self.unknowns,
             placed: self.placed,
-            devices: (self.devices, self.runs),
+            devices: self.runs,
             groups: self.groups,
             claims,
             node_diagonals: self.node_diagonals,

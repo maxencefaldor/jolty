@@ -297,6 +297,7 @@ impl Kernel for Jfet {
 
     fn layout<R: Real>(
         parameters: &JfetParameters<R>,
+        _: &PreparedJfet<R>,
         layout: &mut Layout,
     ) -> Result<JfetShape, ParameterError> {
         let [drain_resistance, source_resistance] = parameters.series_resistances()?;
@@ -538,7 +539,6 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::KernelDevice;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
         thermal,
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn follows_the_square_law_in_saturation() {
-        let mut bench = Bench::new::<KernelDevice<Jfet>>(r#"{"transconductance_parameter": 1e-3}"#);
+        let mut bench = Bench::new::<Jfet>(r#"{"transconductance_parameter": 1e-3}"#);
         let evaluation = bench.settle(&[5.0, 0.0, 0.0]);
         // vgs = 0, vto = −2: β · vgst² = 1e-3 · 4.
         let drain_current = evaluation.residual[0];
@@ -576,8 +576,8 @@ mod tests {
 
     #[test]
     fn a_p_channel_mirrors_an_n_channel() {
-        let mut n = Bench::new::<KernelDevice<Jfet>>("{}");
-        let mut p = Bench::new::<KernelDevice<Jfet>>(r#"{"channel": "p"}"#);
+        let mut n = Bench::new::<Jfet>("{}");
+        let mut p = Bench::new::<Jfet>(r#"{"channel": "p"}"#);
         let n_currents = n.settle(&[3.0, -0.5, 0.0]).residual;
         let p_currents = p.settle(&[-3.0, 0.5, 0.0]).residual;
         for (n_current, p_current) in n_currents.iter().zip(&p_currents) {
@@ -587,8 +587,7 @@ mod tests {
 
     #[test]
     fn series_resistances_add_internal_nodes() {
-        let bench =
-            Bench::new::<KernelDevice<Jfet>>(r#"{"drain_resistance": 10, "source_resistance": 5}"#);
+        let bench = Bench::new::<Jfet>(r#"{"drain_resistance": 10, "source_resistance": 5}"#);
         assert_eq!(
             bench.unknowns(),
             ["n0", "n1", "n2", "device:drain", "device:source"]
@@ -604,7 +603,7 @@ mod tests {
         let heated = every.replace('{', r#"{"thermal": true, "#);
         let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
         for rise in [0.0, 30.0] {
-            let mut plain = Bench::at::<KernelDevice<Jfet>>(every, REFERENCE_TEMPERATURE + rise);
+            let mut plain = Bench::at::<Jfet>(every, REFERENCE_TEMPERATURE + rise);
             let hot = bench.settle(&[5.0, -0.5, 0.0, rise, 4.9]);
             let reference = plain.settle(&[5.0, -0.5, 0.0, 4.9]);
             let electrical = [0, 1, 2, 4].map(|row| hot.residual[row]);
@@ -631,9 +630,9 @@ mod tests {
                 CHARGED.to_owned()
             };
             let sign = if p { -1.0 } else { 1.0 };
-            assert_jacobians_match::<KernelDevice<Jfet>>(&parameters, &[sign * drain, sign * gate, 0.0]);
+            assert_jacobians_match::<Jfet>(&parameters, &[sign * drain, sign * gate, 0.0]);
             let resistive = parameters.replace('{', r#"{"drain_resistance": 50, "source_resistance": 20, "#);
-            assert_jacobians_match::<KernelDevice<Jfet>>(
+            assert_jacobians_match::<Jfet>(
                 &resistive,
                 &[sign * drain, sign * gate, 0.0, sign * 0.9 * drain, sign * 0.01],
             );
@@ -644,7 +643,7 @@ mod tests {
     fn its_channel_makes_thermal_and_flicker_noise() {
         let parameters = r#"{"threshold_voltage": -2, "transconductance_parameter": 1e-3,
             "saturation_current": 1e-30, "flicker_coefficient": 1e-14}"#;
-        let mut bench = Bench::new::<KernelDevice<Jfet>>(parameters);
+        let mut bench = Bench::new::<Jfet>(parameters);
         let x = [5.0, 0.0, 1.0];
         let evaluation = bench.settle(&x);
         let (current, gm) = (evaluation.residual[0], evaluation.conductance[0][1]);

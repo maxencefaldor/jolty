@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use jolty_models::{Changed, Device, Runs, Tasks};
+use jolty_models::{Changed, Runs, Tasks};
 
 use crate::elaborate::ElaborationError;
 use crate::elaborated::{Devices, Elaborated, Origin, Origins};
@@ -48,10 +48,6 @@ pub(crate) struct Warm {
 pub(crate) struct State {
     /// The devices' temperature, in kelvins.
     pub(crate) temperature: f64,
-    /// The devices of no kernel, made for the run, by the index of each among the
-    /// circuit's devices, which the run evaluates one by one; `None` for a kernel's
-    /// instance, which its group evaluates.
-    pub(crate) devices: Vec<Option<Box<dyn Device>>>,
     /// The groups of the instances of kernels: their prepared numbers, their memory and
     /// the slab they write.
     pub(crate) runs: Runs,
@@ -68,8 +64,6 @@ pub(crate) struct State {
     /// What each device a DC sweep holds away from the run's values is made from, by the
     /// device's index.
     pub(crate) swept: BTreeMap<usize, Origin>,
-    /// Where a reset makes the devices, before they take the place of the run's.
-    spare: Vec<Option<Box<dyn Device>>>,
     pub(crate) solver: Solver<f64>,
     pub(crate) workspace: Workspace,
     /// The state of the logic nets, as the last analysis left it.
@@ -95,25 +89,22 @@ pub(crate) struct State {
 }
 
 impl State {
-    /// A state of `elaborated` made afresh, whose `devices` were made at `temperature`, the
-    /// instances of kernels among them prepared, those whose numbers a run's values replace
-    /// from `patched`.
+    /// A state of `elaborated` made afresh, whose instances `runs` were prepared at
+    /// `temperature`, those whose numbers a run's values replace from `patched`.
     pub(crate) fn new(
         elaborated: &Elaborated,
-        (devices, runs): Devices,
+        runs: Devices,
         patched: Vec<Option<Origin>>,
         temperature: f64,
     ) -> Self {
         Self {
             temperature,
-            devices,
             runs,
             tasks: None,
             #[cfg(test)]
             check: None,
             patched,
             swept: BTreeMap::new(),
-            spare: Vec::new(),
             solver: Solver::new(
                 Arc::clone(&elaborated.ordering),
                 Arc::clone(&elaborated.names),
@@ -128,9 +119,9 @@ impl State {
         }
     }
 
-    /// A state of `elaborated` for `values`, its devices made through bindings that replay
-    /// the unknowns and entries the circuit holds, or `None` when the values give some
-    /// device others, so another structure.
+    /// A state of `elaborated` for `values`, its instances prepared for them, or `None`
+    /// when the values give some instance another shape, so the circuit another
+    /// structure.
     ///
     /// # Errors
     ///
@@ -141,12 +132,8 @@ impl State {
     ) -> Result<Option<Self>, ElaborationError> {
         let temperature = elaborated.temperature_of(values);
         let patched = elaborated.patch(values)?;
-        let mut devices = Vec::with_capacity(elaborated.devices.len());
-        if !made(elaborated, &patched, temperature, &mut devices)? {
-            return Ok(None);
-        }
         let mut runs = elaborated.groups.runs();
-        let changed = |device| changes(elaborated, &patched, device, true);
+        let changed = |device| changes(elaborated, (&patched, temperature), device, true);
         let swept = BTreeMap::new();
         if !prepared(
             elaborated,
@@ -156,22 +143,18 @@ impl State {
         )? {
             return Ok(None);
         }
+        // Every instance is prepared, so each starts from its initial memory.
         runs.commit();
-        Ok(Some(Self::new(
-            elaborated,
-            (devices, runs),
-            patched,
-            temperature,
-        )))
+        Ok(Some(Self::new(elaborated, runs, patched, temperature)))
     }
 
-    /// Makes the run's devices again for `values`, prepares again the instances of kernels
-    /// whose numbers or temperature they change, and forgets everything the runs before it
-    /// left: the instances' memory and the slab, the operating point remembered, the
-    /// sources held, the sparse solver's pivots and factors, the meter's counts, the logic's
-    /// events and traces, and the devices made again to be read. Every buffer is kept.
-    /// Returns whether the devices of `values` have the structure of `elaborated`; when they
-    /// do not, or the values make a problem, the state is left as it was.
+    /// Prepares again the run's instances whose numbers or temperature `values` change,
+    /// and forgets everything the runs before it left: the instances' memory and the slab,
+    /// the operating point remembered, the sources held, the sparse solver's pivots and
+    /// factors, the meter's counts, the logic's events and traces, and the devices made
+    /// again to be read. Every buffer is kept. Returns whether the instances of `values`
+    /// have the shapes of `elaborated`'s; when they do not, or the values make a problem,
+    /// the state is left as it was.
     ///
     /// # Errors
     ///
@@ -183,35 +166,25 @@ impl State {
     ) -> Result<bool, ElaborationError> {
         let temperature = elaborated.temperature_of(values);
         let patched = elaborated.patch(values)?;
-        let mut devices = std::mem::take(&mut self.spare);
-        let mut replayed = made(elaborated, &patched, temperature, &mut devices);
-        if matches!(replayed, Ok(true)) {
-            // An instance keeps its numbers unless they or its temperature change.
-            let moved = temperature.to_bits() != self.temperature.to_bits();
-            let old = &self.patched;
-            let changed = |device| {
-                let again = moved || old.get(device).is_some_and(Option::is_some);
-                changes(elaborated, &patched, device, again)
-            };
-            replayed = prepared(
-                elaborated,
-                (&mut self.runs, &patched, &self.swept),
-                temperature,
-                changed,
-            );
-        }
-        let made_again = matches!(replayed, Ok(true));
-        if made_again {
-            std::mem::swap(&mut self.devices, &mut devices);
-            self.patched = patched;
-            self.runs.commit();
-        }
-        // The devices not taken, the run's last or those of other values, go.
-        devices.clear();
-        self.spare = devices;
-        if !made_again {
+        // An instance keeps its numbers unless they or its temperature change.
+        let moved = temperature.to_bits() != self.temperature.to_bits();
+        let old = &self.patched;
+        let changed = |device| {
+            let again = moved || old.get(device).is_some_and(Option::is_some);
+            changes(elaborated, (&patched, temperature), device, again)
+        };
+        let replayed = prepared(
+            elaborated,
+            (&mut self.runs, &patched, &self.swept),
+            temperature,
+            changed,
+        );
+        if !matches!(replayed, Ok(true)) {
             return replayed;
         }
+        self.patched = patched;
+        self.runs.commit();
+        self.runs.forget();
         self.temperature = temperature;
         self.swept.clear();
         self.solver.reset();
@@ -223,12 +196,6 @@ impl State {
         self.warm = None;
         self.solves = 0;
         Ok(true)
-    }
-
-    /// The device of no kernel at `index` among the circuit's devices; `None` for a
-    /// kernel's instance.
-    pub(crate) fn device(&mut self, index: usize) -> Option<&mut (dyn Device + 'static)> {
-        self.devices.get_mut(index).and_then(Option::as_deref_mut)
     }
 
     /// Forgets what a run leaves but its devices, the sparse solver's pivots and the
@@ -243,15 +210,16 @@ impl State {
         self.warm = None;
     }
 
-    /// Makes again, for `to`, the devices whose numbers or temperature differ from those
-    /// of `from`, the values the run's devices are made for, and the copies of them the
-    /// observer reads; leaves every other device as it is, its memory among it. Returns
-    /// whether each of them claims the unknowns and entries of `elaborated`; when one does
-    /// not, or the values make a problem, the state is left as it was.
+    /// Prepares again, for `to`, the instances whose numbers or temperature differ from
+    /// those of `from`, the values the run's instances are prepared for, each from its
+    /// initial memory, and makes again the copies of them the observer reads; leaves every
+    /// other instance as it is, its memory among it. Returns whether each of them keeps
+    /// its shape in `elaborated`; when one does not, or the values make a problem, the
+    /// state is left as it was.
     ///
     /// # Errors
     ///
-    /// Returns every problem the values make for the devices made again.
+    /// Returns every problem the values make for the instances prepared again.
     pub(crate) fn move_to(
         &mut self,
         elaborated: &Elaborated,
@@ -278,40 +246,28 @@ impl State {
                     }
                 }
             };
-            // A kernel's instance is prepared again below, and made as no device.
-            if elaborated.groups.of_kernel(index) {
-                made.push((index, origin, None));
-                continue;
-            }
-            let template = elaborated.devices[index].origin();
-            match elaborated.replay(index, origin.as_ref().unwrap_or(template), temperature) {
-                Ok(Some(device)) => made.push((index, origin, Some(device))),
-                Ok(None) => return Ok(false),
-                Err(error) => problems.push(elaborated.problem(index, error)),
-            }
+            made.push((index, origin));
         }
         if !problems.is_empty() {
             return Err(ElaborationError::new(problems));
         }
-        // The kernels' instances among the devices made again are prepared again from the
-        // same origins, so that the groups evaluate what the devices are made of.
-        // The origins of the devices made again replace their old ones, which come back if
-        // the kernels refuse them.
+        // The origins of the instances prepared again replace their old ones, which come
+        // back if the instances refuse them.
         let was_empty = self.patched.is_empty();
-        if was_empty && made.iter().any(|(_, origin, _)| origin.is_some()) {
+        if was_empty && made.iter().any(|(_, origin)| origin.is_some()) {
             self.patched.resize_with(elaborated.devices.len(), || None);
         }
         let mut previous = Vec::with_capacity(made.len());
-        for (index, origin, _) in &mut made {
+        for (index, origin) in &mut made {
             if let Some(slot) = self.patched.get_mut(*index) {
                 previous.push((*index, std::mem::replace(slot, origin.take())));
             }
         }
-        let again: Vec<usize> = made.iter().map(|(index, _, _)| *index).collect();
+        let again: Vec<usize> = made.iter().map(|(index, _)| *index).collect();
         let patched = &self.patched;
         let changed = |device: usize| {
             if again.binary_search(&device).is_ok() {
-                changes(elaborated, patched, device, true)
+                changes(elaborated, (patched, temperature), device, true)
             } else {
                 Changed::Nothing
             }
@@ -333,8 +289,7 @@ impl State {
         }
         self.runs.commit();
         self.temperature = temperature;
-        for (index, _, device) in made {
-            self.devices[index] = device;
+        for index in again {
             let origins = Origins {
                 elaborated,
                 patched: &self.patched,
@@ -363,7 +318,7 @@ impl State {
         let changed = |index: usize| match (index == device, swept) {
             (false, _) => Changed::Nothing,
             (true, true) => Changed::Parameters,
-            (true, false) => changes(elaborated, &self.patched, index, true),
+            (true, false) => changes(elaborated, (&self.patched, self.temperature), index, true),
         };
         let kept = prepared(
             elaborated,
@@ -387,12 +342,14 @@ fn same(a: &[(ParameterId, f64)], b: &[(ParameterId, f64)]) -> bool {
 }
 
 /// What has changed of the device at `device` of `elaborated` for a run whose values replace
-/// the numbers `patched` gives: its parameters, when the values replace them or the
-/// device's group was made of others, else its numbers when they are `again` prepared, and
+/// the numbers `patched` gives, at `temperature`: its parameters, when the values replace
+/// them or the device's group was made of others; else, when its numbers are `again`
+/// prepared, its parameters at another temperature than its group's, which may give it
+/// another shape, as a resistor's crossing 1 Ω does, and its numbers at its group's; and
 /// otherwise nothing.
 fn changes(
     elaborated: &Elaborated,
-    patched: &[Option<Origin>],
+    (patched, temperature): (&[Option<Origin>], f64),
     device: usize,
     again: bool,
 ) -> Changed {
@@ -401,7 +358,8 @@ fn changes(
         .devices
         .get(device)
         .is_some_and(|placed| !placed.nominal());
-    if replaced || made_otherwise {
+    let warmer = temperature.to_bits() != elaborated.temperature.to_bits();
+    if replaced || made_otherwise || (again && warmer) {
         Changed::Parameters
     } else if again {
         Changed::Numbers
@@ -444,48 +402,6 @@ fn prepared(
                 .collect(),
         )
     })
-}
-
-/// Makes every device of `elaborated` of no kernel for a run at `temperature`, each from
-/// its origin of `patched` or its own, through a binding that replays its claims, into
-/// `devices`, `None` in the place of each kernel's instance. Returns whether every one
-/// replayed them; it stops at the first that does not.
-///
-/// # Errors
-///
-/// Returns the problem of each device whose parameters are out of range.
-fn made(
-    elaborated: &Elaborated,
-    patched: &[Option<Origin>],
-    temperature: f64,
-    devices: &mut Vec<Option<Box<dyn Device>>>,
-) -> Result<bool, ElaborationError> {
-    let swept = BTreeMap::new();
-    let origins = Origins {
-        elaborated,
-        patched,
-        swept: &swept,
-        temperature,
-    };
-    let mut problems = Vec::new();
-    for index in 0..elaborated.devices.len() {
-        // A kernel's instance is prepared in its group, which checks its shape, and made
-        // as no device.
-        if elaborated.groups.of_kernel(index) {
-            devices.push(None);
-            continue;
-        }
-        match elaborated.replay(index, origins.of(index), temperature) {
-            Ok(Some(device)) => devices.push(Some(device)),
-            Ok(None) => return Ok(false),
-            Err(error) => problems.push(elaborated.problem(index, error)),
-        }
-    }
-    if problems.is_empty() {
-        Ok(true)
-    } else {
-        Err(ElaborationError::new(problems))
-    }
 }
 
 #[cfg(test)]

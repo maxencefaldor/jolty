@@ -23,6 +23,7 @@
 mod behavioral;
 mod binding;
 mod bjt;
+mod connect;
 mod controlled;
 mod device;
 mod diode;
@@ -42,7 +43,6 @@ mod passive;
 mod photocell;
 mod real;
 mod sources;
-mod stamp;
 mod surroundings;
 mod switch;
 #[cfg(test)]
@@ -59,6 +59,9 @@ pub use behavioral::{
 };
 pub use binding::{Binding, Node, Quantity, Unknown, UnknownInfo};
 pub use bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
+pub use connect::{
+    LogicDriver, LogicDriverParameters, Ramp, ThresholdDetector, ThresholdDetectorParameters,
+};
 pub use controlled::{
     CurrentControlledCurrentSource, CurrentControlledCurrentSourceParameters,
     CurrentControlledVoltageSource, CurrentControlledVoltageSourceParameters,
@@ -76,12 +79,12 @@ pub use heat::{Heatable, HeatableModel, Heated, Heating, Thermal};
 pub use jfet::{Channel, Jfet, JfetParameters};
 pub use jolty_expressions::Choice;
 pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
+pub use kernel::parts::SMALL_RESISTANCE;
 pub use kernel::{Kernel, KernelDevice, Layout, Local, Stamp};
 pub use logic::{
     Change, Detect, Domain, Drive, Electrical, ElectricalParameters, FixedTiming, Level, Logic,
-    LogicCell, LogicCellParameters, LogicDriver, LogicDriverParameters, LogicModel, LogicSource,
-    LogicSourceParameters, MAX_INPUTS, NativeLogic, NativeLogicModel, OutputParameters, Pins,
-    Stimulus, ThresholdDetector, ThresholdDetectorParameters, Timing, TimingParameters,
+    LogicCell, LogicCellParameters, LogicModel, LogicSource, LogicSourceParameters, MAX_INPUTS,
+    NativeLogic, NativeLogicModel, OutputParameters, Pins, Stimulus, Timing, TimingParameters,
 };
 pub use memristor::{
     CurrentControlledMemristor, CurrentControlledMemristorParameters, MemristorLaw,
@@ -97,7 +100,6 @@ pub use photocell::{Photocell, PhotocellParameters};
 pub use real::{Gradient, Hyper, Real};
 pub use schemars::Schema;
 pub use sources::{CurrentSource, SourceParameters, VoltageSource, held_source};
-pub use stamp::{SMALL_RESISTANCE, TerminalPair};
 pub use surroundings::Surrounded;
 pub use switch::{
     CurrentControlledSwitch, CurrentControlledSwitchParameters, VoltageControlledSwitch,

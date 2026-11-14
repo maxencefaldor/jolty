@@ -101,6 +101,19 @@ impl<R: Real> Contributions<R> {
         }
     }
 
+    /// Zeroes every contribution.
+    pub fn clear(&mut self) {
+        for values in [
+            &mut self.residual,
+            &mut self.scale,
+            &mut self.charge,
+            &mut self.conductance,
+            &mut self.capacitance,
+        ] {
+            values.fill(R::default());
+        }
+    }
+
     /// Zeroes every contribution and opens them to the devices' additions over `pattern`.
     ///
     /// # Panics

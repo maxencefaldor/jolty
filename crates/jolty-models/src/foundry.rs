@@ -5,19 +5,23 @@
 //! names it. Its parameters name the process design kit and the kit's model, and give its
 //! size, which a netlist written for ngspice hands the kit's model.
 
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Output,
-    ParameterError, Real,
-};
+use crate::{Branch, BranchKind, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp};
 
 /// A transistor of a foundry's process, between `drain`, `gate`, `source` and `bulk`.
-#[derive(Debug)]
-pub struct FoundryMosfet<R: Real = f64> {
-    parameters: FoundryMosfetParameters<R>,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct FoundryMosfet;
 
 /// The parameters of a [`FoundryMosfet`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -43,24 +47,15 @@ const fn one() -> u32 {
     1
 }
 
-impl<R: Real> FoundryMosfet<R> {
-    /// The device's parameters, as its instance gives them.
-    #[must_use]
-    pub const fn parameters(&self) -> &FoundryMosfetParameters<R> {
-        &self.parameters
-    }
-}
-
-impl NativeModel for FoundryMosfet {
-    type Device<R: Real> = FoundryMosfet<R>;
-}
-
-impl<R: Real> NativeDevice<R> for FoundryMosfet<R> {
+impl Kernel for FoundryMosfet {
     const NAME: &'static str = "foundry_mosfet";
     const FOUNDRY: bool = true;
-    type Parameters = FoundryMosfetParameters<R>;
+    type Parameters<R: Real> = FoundryMosfetParameters<R>;
+    type Shape = ();
+    type Prepared<R: Real> = ();
+    type Memory = ();
 
-    fn interface(_: &FoundryMosfetParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &FoundryMosfetParameters<R>) -> Interface {
         Interface::new(
             &["drain", "gate", "source", "bulk"],
             &[
@@ -74,10 +69,10 @@ impl<R: Real> NativeDevice<R> for FoundryMosfet<R> {
         )
     }
 
-    fn new(
-        parameters: FoundryMosfetParameters<R>,
-        _: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
+    fn prepare<R: Real>(
+        parameters: &FoundryMosfetParameters<R>,
+        _: R,
+    ) -> Result<(), ParameterError> {
         for (name, text) in [("pdk", &parameters.pdk), ("model", &parameters.model)] {
             if text.is_empty() {
                 return Err(ParameterError(format!(
@@ -95,13 +90,20 @@ impl<R: Real> NativeDevice<R> for FoundryMosfet<R> {
                 return Err(ParameterError(format!("{name} must be at least 1, not 0")));
             }
         }
-        Ok(Self { parameters })
+        Ok(())
     }
-}
 
-impl<R: Real> Device<R> for FoundryMosfet<R> {
+    /// Claims nothing: no analysis runs on a circuit that holds a foundry's device.
+    fn layout<R: Real>(
+        _: &FoundryMosfetParameters<R>,
+        (): &(),
+        _: &mut Layout,
+    ) -> Result<(), ParameterError> {
+        Ok(())
+    }
+
     /// Adds nothing: no analysis runs on a circuit that holds a foundry's device.
-    fn evaluate(&mut self, _: &Input<'_>, _: &mut Output<'_, R>) {}
+    fn evaluate<R: Real>((): &(), (): &(), (): &mut (), _: &Local<'_>, _: &mut Stamp<'_, R>) {}
 }
 
 #[cfg(test)]

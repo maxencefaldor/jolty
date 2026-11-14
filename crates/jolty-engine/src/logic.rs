@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BinaryHeap};
 
 use std::sync::Arc;
 
-use jolty_models::{Change, Device, Input, Level, Logic, Node, Pins, Stimulus};
+use jolty_models::{Change, Input, Level, Logic, Node, Pins, Stimulus};
 
 use crate::elaborate::Location;
 use crate::elaborated::Template;
@@ -738,18 +738,18 @@ pub(crate) fn detected(margin: f64, held: Level) -> Level {
     }
 }
 
-/// The crossing of the detector `detector`, the connect element `device`, between the
+/// The crossing of the detector `detector`, whose connect element `sense` reads how far
+/// its input lies above its threshold at a state and its supply's swing there, between the
 /// solutions `before` at `start` and `after` at `end`, if its level changes from `held`.
 pub(crate) fn crossing(
-    device: &dyn Device,
+    sense: impl Fn(&Input<'_>) -> Option<(f64, f64)>,
     detector: usize,
     held: Level,
     (start, before): (f64, &[f64]),
     (end, after): (f64, &[f64]),
 ) -> Option<Crossing> {
-    let sense = device.as_detector()?;
-    let first = sense.margin(&Input::new(before, Some(start), 0.0));
-    let last = sense.margin(&Input::new(after, Some(end), 0.0));
+    let (first, _) = sense(&Input::new(before, Some(start), 0.0))?;
+    let (last, swing) = sense(&Input::new(after, Some(end), 0.0))?;
     let level = detected(last, held);
     if level == held {
         return None;
@@ -761,7 +761,7 @@ pub(crate) fn crossing(
     } else {
         end
     };
-    let swing = sense.swing(&Input::new(after, Some(end), 0.0)).abs();
+    let swing = swing.abs();
     Some(Crossing {
         time,
         detector,

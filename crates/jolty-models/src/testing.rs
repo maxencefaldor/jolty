@@ -3,9 +3,8 @@
 use jolty_numerics::{Pattern, PatternBuilder};
 
 use crate::{
-    BOLTZMANN, Binding, Contributions, Device, Gradient, Input, Model, Native, NativeDevice,
-    NativeModel, Node, NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown,
-    UnknownInfo,
+    BOLTZMANN, Binding, Contributions, Device, Gradient, Input, Kernel, Model, Native, Node,
+    NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown, UnknownInfo,
 };
 
 /// One device whose terminals each connect to an unknown of their own.
@@ -28,31 +27,26 @@ pub(crate) struct Evaluation {
 }
 
 impl Bench {
-    /// A bench for a device of `D` with `parameters`, a JSON object, each of whose
-    /// terminals connects to an unknown of its own.
-    pub(crate) fn new<D: NativeDevice>(parameters: &str) -> Self {
-        Self::at::<D>(parameters, REFERENCE_TEMPERATURE)
+    /// A bench for an instance of the kernel `K` with `parameters`, a JSON object, each of
+    /// whose terminals connects to an unknown of its own.
+    pub(crate) fn new<K: Kernel>(parameters: &str) -> Self {
+        Self::at::<K>(parameters, REFERENCE_TEMPERATURE)
     }
 
-    pub(crate) fn try_new<D: NativeDevice>(parameters: &str) -> Result<Self, ParameterError> {
-        Self::try_at::<D>(parameters, REFERENCE_TEMPERATURE)
+    pub(crate) fn try_new<K: Kernel>(parameters: &str) -> Result<Self, ParameterError> {
+        Self::try_at::<K>(parameters, REFERENCE_TEMPERATURE)
     }
 
-    /// A bench for a device of `D` with `parameters` at `temperature`, in kelvins.
-    pub(crate) fn at<D: NativeDevice>(parameters: &str, temperature: f64) -> Self {
-        Self::try_at::<D>(parameters, temperature).expect("valid parameters")
+    /// A bench for an instance of `K` with `parameters` at `temperature`, in kelvins.
+    pub(crate) fn at<K: Kernel>(parameters: &str, temperature: f64) -> Self {
+        Self::try_at::<K>(parameters, temperature).expect("valid parameters")
     }
 
-    pub(crate) fn try_at<D: NativeDevice>(
+    pub(crate) fn try_at<K: Kernel>(
         parameters: &str,
         temperature: f64,
     ) -> Result<Self, ParameterError> {
-        let parameters = serde_json::from_str(parameters).expect("a JSON object");
-        let typed: D::Parameters = crate::device::read(&parameters)?;
-        let terminals = D::interface(&typed).terminals.len();
-        Self::made(terminals, temperature, |binding| {
-            Ok(Box::new(D::new(typed, binding)?))
-        })
+        Self::of(&Native::<K>::new(), parameters, temperature)
     }
 
     /// A bench for a device of `model` with `parameters`, a JSON object, at `temperature`.
@@ -195,17 +189,17 @@ pub(crate) fn thermal(value: f64) -> f64 {
     4.0 * BOLTZMANN * REFERENCE_TEMPERATURE * value
 }
 
-/// Checks that a device's conductances and capacitances are the derivatives of its residuals
-/// and charges at `x`, by central differences.
-pub(crate) fn assert_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64]) {
-    assert_bench_jacobians_match(&mut Bench::new::<D>(parameters), D::NAME, x);
+/// Checks that an instance's conductances and capacitances are the derivatives of its
+/// residuals and charges at `x`, by central differences.
+pub(crate) fn assert_jacobians_match<K: Kernel>(parameters: &str, x: &[f64]) {
+    assert_bench_jacobians_match(&mut Bench::new::<K>(parameters), K::NAME, x);
 }
 
-/// As [`assert_jacobians_match`], with the device evaluated as a transient analysis
+/// As [`assert_jacobians_match`], with the instance evaluated as a transient analysis
 /// steps through time.
-pub(crate) fn assert_stepping_jacobians_match<D: NativeDevice>(parameters: &str, x: &[f64]) {
-    let mut bench = Bench::new::<D>(parameters).stepping();
-    assert_bench_jacobians_match(&mut bench, D::NAME, x);
+pub(crate) fn assert_stepping_jacobians_match<K: Kernel>(parameters: &str, x: &[f64]) {
+    let mut bench = Bench::new::<K>(parameters).stepping();
+    assert_bench_jacobians_match(&mut bench, K::NAME, x);
 }
 
 /// As [`assert_jacobians_match`], for a device of any `model`.
@@ -384,17 +378,17 @@ fn at<'a>(value: &'a mut serde_json::Value, path: &[String]) -> &'a mut serde_js
 /// respect to each number of `parameters`, a JSON object, match central differences of
 /// the device made again with the number a little above and below, and that their values
 /// are the device's own.
-pub(crate) fn assert_parameter_gradients_match<M: NativeModel>(parameters: &str, x: &[f64]) {
-    assert_model_parameter_gradients_match(&Native::<M>::new(), parameters, x, None);
+pub(crate) fn assert_parameter_gradients_match<K: Kernel>(parameters: &str, x: &[f64]) {
+    assert_model_parameter_gradients_match(&Native::<K>::new(), parameters, x, None);
 }
 
 /// As [`assert_parameter_gradients_match`], in a transient analysis at `time`.
-pub(crate) fn assert_parameter_gradients_match_at<M: NativeModel>(
+pub(crate) fn assert_parameter_gradients_match_at<K: Kernel>(
     parameters: &str,
     x: &[f64],
     time: f64,
 ) {
-    assert_model_parameter_gradients_match(&Native::<M>::new(), parameters, x, Some(time));
+    assert_model_parameter_gradients_match(&Native::<K>::new(), parameters, x, Some(time));
 }
 
 /// As [`assert_parameter_gradients_match`], for a device of any `model`, at `time` in a

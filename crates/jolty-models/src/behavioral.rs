@@ -1,14 +1,19 @@
-use std::marker::PhantomData;
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
 
 use jolty_expressions::{Expression, Variable, Workspace};
-use jolty_numerics::Entry;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::stamp::CurrentBranch;
+use crate::kernel::parts::CurrentBranch;
 use crate::{
-    Binding, Branch, BranchKind, Choice, Device, Input, Interface, NativeDevice, NativeModel, Node,
-    Output, ParameterError, Real, Unknown,
+    Branch, BranchKind, Choice, Interface, Kernel, Layout, Local, ParameterError, Real, Stamp,
 };
 
 /// An expression a behavioral source follows: an [expression](jolty_expressions) of the
@@ -35,7 +40,7 @@ pub struct Behavior {
 /// What one variable reads: the voltage of a terminal over another or over the reference,
 /// by their indices among the terminals; the current through a port, by its index among
 /// the ports; or time.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reading {
     Voltage(usize, Option<usize>),
     Current(usize),
@@ -132,181 +137,234 @@ pub struct BehavioralParameters {
     pub expression: Behavior,
 }
 
-/// A behavior bound to the unknowns it reads and the equations it enters.
-#[derive(Debug)]
-struct Formula {
-    expression: Expression,
-    workspace: Workspace,
-    /// The workspace in which the choices are found, apart from the iterations' own.
-    choosing: Workspace,
-    /// What each variable reads: the difference of two nodes, a port's current, or time.
+/// Where a behavioral source's contributions go, among its local unknowns: the rows its
+/// expression enters, each with the factor it enters with, what each variable reads, its
+/// sensing ports, the entries of each variable's derivative in each row, with their
+/// factors, and a voltage source's own branch. Sources whose expressions read the same
+/// voltages and currents share a shape, whatever their expressions compute.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BehavioralShape {
+    rows: Vec<(usize, f64)>,
     reads: Vec<Read>,
-    /// The sensing ports: short circuits whose currents are unknowns.
     ports: Vec<CurrentBranch>,
-    /// The equations the expression enters, each with the factor it enters with.
-    rows: Vec<(Node, f64)>,
-    /// For each variable, the entries of its derivative in each row, with their factors.
-    entries: Vec<Vec<(Option<Entry>, f64)>>,
+    entries: Vec<Vec<(usize, f64)>>,
+    branch: Option<CurrentBranch>,
+}
+
+/// What one variable of an expression reads: the voltage of a local unknown over another
+/// or over the reference, a port's current, or time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Read {
+    Voltage(usize, Option<usize>),
+    Current(usize),
+    Time,
+}
+
+/// What a behavioral source remembers: its expression's workspaces, one for its iterations
+/// and one, apart, in which its choices are found, and its variables' values and gradient.
+/// None before it is sized for an expression.
+#[derive(Debug, Clone, Default)]
+pub struct BehavioralMemory(Option<Room>);
+
+/// A behavioral source's room to evaluate in.
+#[derive(Debug, Clone)]
+struct Room {
+    workspace: Workspace,
+    choosing: Workspace,
     values: Vec<f64>,
     gradient: Vec<f64>,
 }
 
-/// What one variable of an expression reads.
-#[derive(Debug, Clone, Copy)]
-enum Read {
-    Voltage(Node, Node),
-    Current(Unknown),
-    Time,
-}
-
-impl Formula {
-    /// Binds `behavior`, which enters each of `rows` with its factor.
-    fn new(behavior: Behavior, binding: &mut Binding<'_>, rows: Vec<(Node, f64)>) -> Self {
-        let Behavior {
-            expression,
-            reads: readings,
-            ports: port_ends,
-            ..
-        } = behavior;
-        let ports: Vec<CurrentBranch> = port_ends
+impl BehavioralShape {
+    /// The shape of a source of `behavior`, whose expression enters each of `rows` with
+    /// its factor, after `branch`, a voltage source's own, claimed in `layout`.
+    fn new(
+        behavior: &Behavior,
+        layout: &mut Layout,
+        (rows, branch): (Vec<(usize, f64)>, Option<CurrentBranch>),
+    ) -> Self {
+        let ports: Vec<CurrentBranch> = behavior
+            .ports
             .iter()
-            .map(|(label, ends)| {
-                let nodes = ends.map(|index| binding.terminal(index));
-                CurrentBranch::new(binding, label, nodes)
-            })
+            .map(|(label, ends)| CurrentBranch::new(layout, label.clone(), *ends))
             .collect();
-        let reads: Vec<Read> = readings
+        let reads: Vec<Read> = behavior
+            .reads
             .iter()
             .map(|reading| match *reading {
-                Reading::Voltage(positive, negative) => Read::Voltage(
-                    binding.terminal(positive),
-                    negative.and_then(|index| binding.terminal(index)),
-                ),
-                Reading::Current(port) => Read::Current(ports[port].unknown()),
+                Reading::Voltage(positive, negative) => Read::Voltage(positive, negative),
+                Reading::Current(port) => {
+                    Read::Current(ports.get(port).map_or(usize::MAX, CurrentBranch::unknown))
+                }
                 Reading::Time => Read::Time,
             })
             .collect();
         let entries = reads
             .iter()
             .map(|read| {
-                let columns: Vec<(Node, f64)> = match *read {
-                    Read::Voltage(positive, negative) => vec![(positive, 1.0), (negative, -1.0)],
-                    Read::Current(current) => vec![(Some(current), 1.0)],
+                let columns: Vec<(usize, f64)> = match *read {
+                    Read::Voltage(positive, negative) => std::iter::once((positive, 1.0))
+                        .chain(negative.map(|negative| (negative, -1.0)))
+                        .collect(),
+                    Read::Current(current) => vec![(current, 1.0)],
                     Read::Time => Vec::new(),
                 };
                 let mut entries = Vec::with_capacity(rows.len() * columns.len());
                 for &(row, factor) in &rows {
                     for &(column, sign) in &columns {
-                        entries.push((binding.entry(row, column), factor * sign));
+                        entries.push((layout.entry(row, column), factor * sign));
                     }
                 }
                 entries
             })
             .collect();
-        let count = reads.len();
         Self {
-            workspace: Workspace::new(&expression),
-            choosing: Workspace::new(&expression),
-            expression,
+            rows,
             reads,
             ports,
-            rows,
             entries,
-            values: vec![0.0; count],
-            gradient: vec![0.0; count],
+            branch,
         }
-    }
-
-    /// Reads the expression's variables at `input` into `values`.
-    fn read(&mut self, input: &Input<'_>) {
-        for (value, read) in self.values.iter_mut().zip(&self.reads) {
-            *value = match *read {
-                Read::Voltage(positive, negative) => input.value(positive) - input.value(negative),
-                Read::Current(current) => input.value(Some(current)),
-                Read::Time => input.time,
-            };
-        }
-    }
-
-    /// Appends the choices the expression turns on at `input` to `found`, evaluating it
-    /// afresh, its tables' inputs unlimited.
-    fn choices(&mut self, input: &Input<'_>, found: &mut Vec<Choice>) {
-        self.read(input);
-        self.choosing.forget();
-        self.expression
-            .evaluate(&self.values, &mut self.choosing, &mut self.gradient);
-        self.expression.choices(&self.choosing, found);
     }
 
     /// Adds the expression's value to its rows, with its derivatives, and the ports'
-    /// equations.
-    fn add<R: Real>(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        self.read(input);
-        if !input.limiting {
-            self.workspace.forget();
+    /// equations, with `expression` at `at`, from `memory`, which it updates.
+    fn add<R: Real>(
+        &self,
+        expression: &Expression,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let Some(room) = &mut memory.0 else { return };
+        self.read(at, &mut room.values);
+        if !at.limiting {
+            room.workspace.forget();
         }
-        let value = self
-            .expression
-            .evaluate(&self.values, &mut self.workspace, &mut self.gradient);
-        if self.workspace.limited() {
-            output.mark_limited();
+        let value = expression.evaluate(&room.values, &mut room.workspace, &mut room.gradient);
+        if room.workspace.limited() {
+            stamp.mark_limited();
         }
         for &(row, factor) in &self.rows {
-            output.add_residual(row, R::constant(factor * value));
+            stamp.add_residual(row, R::constant(factor * value));
         }
-        for (entries, derivative) in self.entries.iter().zip(&self.gradient) {
+        for (entries, derivative) in self.entries.iter().zip(&room.gradient) {
             for &(entry, factor) in entries {
-                output.add_conductance(entry, R::constant(factor * derivative));
+                stamp.add_conductance(entry, R::constant(factor * derivative));
             }
         }
         for port in &self.ports {
             // A short circuit: no voltage across it.
-            port.add(input, output, R::constant(port.voltage(input)));
+            port.add(at, stamp, R::constant(port.voltage(at)));
         }
     }
+
+    /// Reads the expression's variables at `at` into `values`.
+    fn read(&self, at: &Local<'_>, values: &mut [f64]) {
+        for (value, read) in values.iter_mut().zip(&self.reads) {
+            *value = match *read {
+                Read::Voltage(positive, negative) => {
+                    at.value(positive) - negative.map_or(0.0, |negative| at.value(negative))
+                }
+                Read::Current(current) => at.value(current),
+                Read::Time => at.time,
+            };
+        }
+    }
+
+    /// Appends the choices `expression` turns on at `at` to `found`, evaluating it afresh in
+    /// the workspace of `memory` apart, its tables' inputs unlimited.
+    fn choices(
+        &self,
+        expression: &Expression,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        found: &mut Vec<Choice>,
+    ) {
+        let Some(room) = &mut memory.0 else { return };
+        self.read(at, &mut room.values);
+        room.choosing.forget();
+        expression.evaluate(&room.values, &mut room.choosing, &mut room.gradient);
+        expression.choices(&room.choosing, found);
+    }
+
+    /// What a source of this shape with `expression` remembers before its first
+    /// evaluation.
+    fn memory(&self, expression: &Expression) -> BehavioralMemory {
+        let count = self.reads.len();
+        BehavioralMemory(Some(Room {
+            workspace: Workspace::new(expression),
+            choosing: Workspace::new(expression),
+            values: vec![0.0; count],
+            gradient: vec![0.0; count],
+        }))
+    }
 }
+
+/// The local indices of a behavioral source's output terminals, `positive` and `negative`.
+const OUTPUT: [usize; 2] = [0, 1];
 
 /// A current source whose current follows an expression of the voltages and currents it
 /// reads: see [`Behavior`].
 ///
 /// It drives the expression's value from `positive` through the source to `negative`.
-#[derive(Debug)]
-pub struct BehavioralCurrentSource<R: Real = f64> {
-    real: PhantomData<fn() -> R>,
-    formula: Formula,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct BehavioralCurrentSource;
 
-impl NativeModel for BehavioralCurrentSource {
-    type Device<R: Real> = BehavioralCurrentSource<R>;
-}
-
-impl<R: Real> NativeDevice<R> for BehavioralCurrentSource<R> {
+impl Kernel for BehavioralCurrentSource {
     const NAME: &'static str = "behavioral_current_source";
-    type Parameters = BehavioralParameters;
+    type Parameters<R: Real> = BehavioralParameters;
+    type Shape = BehavioralShape;
+    type Prepared<R: Real> = Expression;
+    type Memory = BehavioralMemory;
 
-    fn interface(parameters: &BehavioralParameters) -> Interface {
+    fn interface<R: Real>(parameters: &BehavioralParameters) -> Interface {
         parameters.expression.interface(BranchKind::CurrentSource)
     }
 
-    fn new(
-        parameters: BehavioralParameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let rows = vec![(binding.terminal(0), 1.0), (binding.terminal(1), -1.0)];
-        Ok(Self {
-            real: PhantomData,
-            formula: Formula::new(parameters.expression, binding, rows),
-        })
-    }
-}
-
-impl<R: Real> Device<R> for BehavioralCurrentSource<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        self.formula.add(input, output);
+    fn prepare<R: Real>(
+        parameters: &BehavioralParameters,
+        _: R,
+    ) -> Result<Expression, ParameterError> {
+        Ok(parameters.expression.expression.clone())
     }
 
-    fn choices(&mut self, input: &Input<'_>, found: &mut Vec<Choice>) {
-        self.formula.choices(input, found);
+    fn layout<R: Real>(
+        parameters: &BehavioralParameters,
+        _: &Expression,
+        layout: &mut Layout,
+    ) -> Result<BehavioralShape, ParameterError> {
+        let [positive, negative] = OUTPUT;
+        let rows = vec![(positive, 1.0), (negative, -1.0)];
+        Ok(BehavioralShape::new(
+            &parameters.expression,
+            layout,
+            (rows, None),
+        ))
+    }
+
+    fn memory<R: Real>(shape: &BehavioralShape, expression: &Expression) -> BehavioralMemory {
+        shape.memory(expression)
+    }
+
+    fn evaluate<R: Real>(
+        shape: &BehavioralShape,
+        expression: &Expression,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        shape.add(expression, memory, at, stamp);
+    }
+
+    fn choices<R: Real>(
+        shape: &BehavioralShape,
+        expression: &Expression,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        found: &mut Vec<Choice>,
+    ) {
+        shape.choices(expression, memory, at, found);
     }
 }
 
@@ -315,50 +373,68 @@ impl<R: Real> Device<R> for BehavioralCurrentSource<R> {
 ///
 /// It holds `v_positive − v_negative` at the expression's value. Its current, flowing from
 /// `positive` through the source to `negative`, is an unknown labelled `current`.
-#[derive(Debug)]
-pub struct BehavioralVoltageSource<R: Real = f64> {
-    real: PhantomData<fn() -> R>,
-    formula: Formula,
-    branch: CurrentBranch,
-}
+#[derive(Debug, Clone, Copy)]
+pub struct BehavioralVoltageSource;
 
-impl NativeModel for BehavioralVoltageSource {
-    type Device<R: Real> = BehavioralVoltageSource<R>;
-}
-
-impl<R: Real> NativeDevice<R> for BehavioralVoltageSource<R> {
+impl Kernel for BehavioralVoltageSource {
     const NAME: &'static str = "behavioral_voltage_source";
-    type Parameters = BehavioralParameters;
+    type Parameters<R: Real> = BehavioralParameters;
+    type Shape = BehavioralShape;
+    type Prepared<R: Real> = Expression;
+    type Memory = BehavioralMemory;
 
-    fn interface(parameters: &BehavioralParameters) -> Interface {
+    fn interface<R: Real>(parameters: &BehavioralParameters) -> Interface {
         parameters.expression.interface(BranchKind::VoltageSource)
     }
 
-    fn new(
-        parameters: BehavioralParameters,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let terminals = [binding.terminal(0), binding.terminal(1)];
-        let branch = CurrentBranch::new(binding, "current", terminals);
-        let row = Some(branch.unknown());
-        Ok(Self {
-            real: PhantomData,
-            formula: Formula::new(parameters.expression, binding, vec![(row, -1.0)]),
-            branch,
-        })
-    }
-}
-
-impl<R: Real> Device<R> for BehavioralVoltageSource<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        // The branch's voltage, less the formula's value, which the formula adds itself.
-        let voltage = self.branch.voltage(input);
-        self.branch.add(input, output, R::constant(voltage));
-        self.formula.add(input, output);
+    fn prepare<R: Real>(
+        parameters: &BehavioralParameters,
+        _: R,
+    ) -> Result<Expression, ParameterError> {
+        Ok(parameters.expression.expression.clone())
     }
 
-    fn choices(&mut self, input: &Input<'_>, found: &mut Vec<Choice>) {
-        self.formula.choices(input, found);
+    fn layout<R: Real>(
+        parameters: &BehavioralParameters,
+        _: &Expression,
+        layout: &mut Layout,
+    ) -> Result<BehavioralShape, ParameterError> {
+        let branch = CurrentBranch::new(layout, "current", OUTPUT);
+        let rows = vec![(branch.unknown(), -1.0)];
+        Ok(BehavioralShape::new(
+            &parameters.expression,
+            layout,
+            (rows, Some(branch)),
+        ))
+    }
+
+    fn memory<R: Real>(shape: &BehavioralShape, expression: &Expression) -> BehavioralMemory {
+        shape.memory(expression)
+    }
+
+    fn evaluate<R: Real>(
+        shape: &BehavioralShape,
+        expression: &Expression,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        // The branch's voltage, less the expression's value, which the shape adds itself.
+        if let Some(branch) = &shape.branch {
+            let voltage = branch.voltage(at);
+            branch.add(at, stamp, R::constant(voltage));
+        }
+        shape.add(expression, memory, at, stamp);
+    }
+
+    fn choices<R: Real>(
+        shape: &BehavioralShape,
+        expression: &Expression,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        found: &mut Vec<Choice>,
+    ) {
+        shape.choices(expression, memory, at, found);
     }
 }
 

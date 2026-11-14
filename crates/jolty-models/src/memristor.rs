@@ -1,10 +1,26 @@
-use jolty_numerics::Entry;
+//! Memristors: each a resistance between `positive` and `negative` that its state moves,
+//! from its on resistance at 0 to its off resistance at 1, by its [law](MemristorLaw).
+//!
+//! The state is an unknown labelled `state`, which only time moves. At an operating point,
+//! and in the analyses about one, it is the state the memristor was made in, as SPICE's
+//! initial conditions hold a node; in a transient, what drives it moves it, and its window
+//! slows it at either bound.
+
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "a kernel never panics, and reads fixed arrays through `get`"
+    )
+)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node,
-    NoiseSource, Output, ParameterError, Quantity, Real, Unknown,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
+    Real, Stamp, Unknown,
 };
 
 /// How a memristor's resistance follows its state `x`, from its on resistance at 0 to its
@@ -20,7 +36,7 @@ pub enum MemristorLaw {
 }
 
 /// A memristor's resistance law, and the window that slows its state at its bounds.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct Memristance<R: Real> {
     law: MemristorLaw,
     on_resistance: R,
@@ -114,7 +130,7 @@ struct Drive<R: Real> {
 }
 
 /// What moves a memristor's state.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum Control<R: Real> {
     /// VTEAM's voltage thresholds: past `off_voltage`, the state moves toward off at
     /// `off_rate · (v/v_off − 1)^α_off`, and past `on_voltage`, toward on at
@@ -174,29 +190,39 @@ impl<R: Real> Control<R> {
     }
 }
 
-/// A memristor between `positive` and `negative`: a resistance its state moves, from its
-/// on resistance at 0 to its off resistance at 1, by its [law](MemristorLaw).
-///
-/// The state is an unknown labelled `state`, which only time moves. At an operating point,
-/// and in the analyses about one, it is the state the memristor was made in, as SPICE's
-/// initial conditions hold a node; in a transient, [what drives it](Control) moves it,
-/// and its window slows it at either bound.
-#[derive(Debug)]
-struct Memristor<R: Real> {
-    nodes: [Node; 2],
-    state: Unknown,
+/// Where a memristor's contributions go, among its local unknowns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemristorShape {
+    state: usize,
+    /// The entries joining `positive` and `negative` to both terminals and to the state.
+    terminals: [[usize; 3]; 2],
+    /// The entries joining the state to both terminals and to itself.
+    own: [usize; 3],
+}
+
+/// A memristor's numbers.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedMemristor<R: Real> {
     memristance: Memristance<R>,
     control: Control<R>,
     /// The state it was made in.
     initial: R,
-    /// The entries joining `positive` and `negative` to both terminals and to the state.
-    terminals: [[Option<Entry>; 3]; 2],
-    /// The entries joining the state to both terminals and to itself.
-    own: [Option<Entry>; 3],
-    /// The resistance, and the rate at which the state moves, at the last evaluation.
-    variables: [f64; 2],
     temperature: f64,
 }
+
+/// What a memristor remembers: its resistance, and the rate at which its state moves, at
+/// its last evaluation, unknown before the first.
+#[derive(Debug, Clone, Copy)]
+pub struct MemristorMemory([f64; 2]);
+
+impl Default for MemristorMemory {
+    fn default() -> Self {
+        Self([f64::NAN; 2])
+    }
+}
+
+/// The local indices of a memristor's terminals, `positive` and `negative`.
+const POSITIVE_NEGATIVE: [usize; 2] = [0, 1];
 
 /// The terminals of a memristor.
 const TERMINALS: &[&str] = &["positive", "negative"];
@@ -206,12 +232,12 @@ fn interface() -> Interface {
     Interface::new(TERMINALS, &[Branch::new(0, 1, BranchKind::Conductive)])
 }
 
-impl<R: Real> Memristor<R> {
+impl<R: Real> PreparedMemristor<R> {
+    /// A memristor's numbers, made in the state `state`, at `temperature`.
     fn new(
-        memristance: Memristance<R>,
-        control: Control<R>,
+        (memristance, control): (Memristance<R>, Control<R>),
         state: R,
-        binding: &mut Binding<'_>,
+        temperature: R,
     ) -> Result<Self, ParameterError> {
         let initial = ParameterError::non_negative("state", state)?;
         if initial.value() > 1.0 {
@@ -220,66 +246,85 @@ impl<R: Real> Memristor<R> {
                 "state must be at most 1, not {state:?}"
             )));
         }
-        let nodes = [0, 1].map(|index| binding.terminal(index));
-        let state = binding.internal("state", Quantity::State);
-        let columns = [nodes[0], nodes[1], Some(state)];
         Ok(Self {
-            nodes,
-            state,
             memristance,
             control,
             initial,
-            terminals: nodes.map(|row| columns.map(|column| binding.entry(row, column))),
-            own: columns.map(|column| binding.entry(Some(state), column)),
-            variables: [f64::NAN; 2],
-            temperature: binding.temperature(),
+            temperature: temperature.value(),
         })
     }
+}
 
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let [positive, negative] = self.nodes;
-        let voltage = input.value(positive) - input.value(negative);
-        let state = input.value(Some(self.state));
-        let conductance = self.memristance.conductance(state);
+impl MemristorShape {
+    /// Claims a memristor's state and entries in `layout`.
+    fn new(layout: &mut Layout) -> Self {
+        let state = layout.internal("state", Quantity::State);
+        let [positive, negative] = POSITIVE_NEGATIVE;
+        let columns = [positive, negative, state];
+        Self {
+            state,
+            terminals: [positive, negative]
+                .map(|row| columns.map(|column| layout.entry(row, column))),
+            own: columns.map(|column| layout.entry(state, column)),
+        }
+    }
+
+    fn evaluate<R: Real>(
+        &self,
+        prepared: &PreparedMemristor<R>,
+        memory: &mut MemristorMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let [positive, negative] = POSITIVE_NEGATIVE;
+        let voltage = at.value(positive) - at.value(negative);
+        let state = at.value(self.state);
+        let conductance = prepared.memristance.conductance(state);
         let current = conductance.0 * voltage;
-        output.add_residual(positive, current);
-        output.add_residual(negative, -current);
+        stamp.add_residual(positive, current);
+        stamp.add_residual(negative, -current);
         // With respect to positive, negative and the state.
         let derivatives = [conductance.0, -conductance.0, conductance.1 * voltage];
         for (row, sign) in self.terminals.iter().zip([1.0, -1.0]) {
             for (&entry, derivative) in row.iter().zip(derivatives) {
-                output.add_conductance(entry, derivative * sign);
+                stamp.add_conductance(entry, derivative * sign);
             }
         }
-        let rate = self
+        let rate = prepared
             .memristance
-            .rate(state, self.control.drive(voltage, conductance));
-        self.variables = [conductance.0.value().recip(), rate.value.value()];
-        let row = Some(self.state);
+            .rate(state, prepared.control.drive(voltage, conductance));
+        memory.0 = [conductance.0.value().recip(), rate.value.value()];
+        let row = self.state;
         let [on_positive, on_negative, own] = self.own;
-        if input.transient {
+        if at.transient {
             // dx/dt − rate = 0.
-            output.add_residual(row, -rate.value);
-            output.add_charge(row, R::constant(state));
-            output.add_conductance(on_positive, -rate.voltage);
-            output.add_conductance(on_negative, rate.voltage);
-            output.add_conductance(own, -rate.state);
-            output.add_capacitance(own, R::constant(1.0));
+            stamp.add_residual(row, -rate.value);
+            stamp.add_charge(row, R::constant(state));
+            stamp.add_conductance(on_positive, -rate.voltage);
+            stamp.add_conductance(on_negative, rate.voltage);
+            stamp.add_conductance(own, -rate.state);
+            stamp.add_capacitance(own, R::constant(1.0));
         } else {
             // x − x₀ = 0.
-            output.add_residual(row, -self.initial + state);
-            output.add_conductance(own, R::constant(1.0));
+            stamp.add_residual(row, -prepared.initial + state);
+            stamp.add_conductance(own, R::constant(1.0));
         }
     }
 
     /// The thermal noise of the resistance its state sets.
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        let (conductance, _) = self.memristance.conductance(input.value(Some(self.state)));
+    fn noise<R: Real>(
+        &self,
+        prepared: &PreparedMemristor<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let (conductance, _) = prepared.memristance.conductance(at.value(self.state));
+        let [positive, negative] = POSITIVE_NEGATIVE;
         sources.push(NoiseSource::thermal(
             "thermal",
-            self.nodes,
+            [Some(Unknown::new(positive)), Some(Unknown::new(negative))],
             conductance.value(),
-            self.temperature,
+            prepared.temperature,
         ));
     }
 }
@@ -306,8 +351,8 @@ fn a_hundredth<R: Real>() -> R {
 /// `v_off`, and at `−on_rate · (v/v_on − 1)^α_on` below `v_on`, so each rate is the
 /// state's speed at twice its threshold, in full ranges per second; its window slows it
 /// at either bound.
-#[derive(Debug)]
-pub struct VoltageControlledMemristor<R: Real = f64>(Memristor<R>);
+#[derive(Debug, Clone, Copy)]
+pub struct VoltageControlledMemristor;
 
 /// The parameters of a [`VoltageControlledMemristor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -347,23 +392,22 @@ pub struct VoltageControlledMemristorParameters<R: Real = f64> {
     pub window: R,
 }
 
-impl NativeModel for VoltageControlledMemristor {
-    type Device<R: Real> = VoltageControlledMemristor<R>;
-}
-
-impl<R: Real> NativeDevice<R> for VoltageControlledMemristor<R> {
+impl Kernel for VoltageControlledMemristor {
     const NAME: &'static str = "voltage_controlled_memristor";
-    type Parameters = VoltageControlledMemristorParameters<R>;
+    type Parameters<R: Real> = VoltageControlledMemristorParameters<R>;
+    type Shape = MemristorShape;
+    type Prepared<R: Real> = PreparedMemristor<R>;
+    type Memory = MemristorMemory;
 
-    fn interface(_: &VoltageControlledMemristorParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &VoltageControlledMemristorParameters<R>) -> Interface {
         interface()
     }
 
-    fn new(
-        parameters: VoltageControlledMemristorParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let VoltageControlledMemristorParameters {
+    fn prepare<R: Real>(
+        parameters: &VoltageControlledMemristorParameters<R>,
+        temperature: R,
+    ) -> Result<PreparedMemristor<R>, ParameterError> {
+        let &VoltageControlledMemristorParameters {
             on_resistance,
             off_resistance,
             on_voltage,
@@ -391,7 +435,44 @@ impl<R: Real> NativeDevice<R> for VoltageControlledMemristor<R> {
             off_exponent: at_least_one("off_exponent", off_exponent)?,
         };
         let memristance = Memristance::new(law, [on_resistance, off_resistance], window)?;
-        Memristor::new(memristance, control, state, binding).map(Self)
+        PreparedMemristor::new((memristance, control), state, temperature)
+    }
+
+    fn layout<R: Real>(
+        _: &VoltageControlledMemristorParameters<R>,
+        _: &PreparedMemristor<R>,
+        layout: &mut Layout,
+    ) -> Result<MemristorShape, ParameterError> {
+        Ok(MemristorShape::new(layout))
+    }
+
+    fn evaluate<R: Real>(
+        shape: &MemristorShape,
+        prepared: &PreparedMemristor<R>,
+        memory: &mut MemristorMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        shape.evaluate(prepared, memory, at, stamp);
+    }
+
+    fn variable_names() -> &'static [&'static str] {
+        &VARIABLE_NAMES
+    }
+
+    fn variables(memory: &MemristorMemory, values: &mut [f64]) {
+        for (value, &found) in values.iter_mut().zip(&memory.0) {
+            *value = found;
+        }
+    }
+
+    fn noise<R: Real>(
+        shape: &MemristorShape,
+        prepared: &PreparedMemristor<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        shape.noise(prepared, at, sources);
     }
 }
 
@@ -408,31 +489,13 @@ fn at_least_one<R: Real>(parameter: &str, value: R) -> Result<R, ParameterError>
     }
 }
 
-impl<R: Real> Device<R> for VoltageControlledMemristor<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        self.0.evaluate(input, output);
-    }
-
-    fn variable_names(&self) -> &'static [&'static str] {
-        &VARIABLE_NAMES
-    }
-
-    fn variables(&self, values: &mut [f64]) {
-        values.copy_from_slice(&self.0.variables);
-    }
-
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        self.0.noise(input, sources);
-    }
-}
-
 /// A current-controlled memristor, in the linear ion drift model of HP's titanium dioxide
 /// memristor (Strukov, Snider, Stewart and Williams, 2008): its state moves with the
 /// charge through it, from `positive` to `negative` toward off, by `q/Q` for a charge `q`,
 /// where `Q` is the charge that carries it across its whole range; its window slows it at
 /// either bound.
-#[derive(Debug)]
-pub struct CurrentControlledMemristor<R: Real = f64>(Memristor<R>);
+#[derive(Debug, Clone, Copy)]
+pub struct CurrentControlledMemristor;
 
 /// The parameters of a [`CurrentControlledMemristor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -456,23 +519,22 @@ pub struct CurrentControlledMemristorParameters<R: Real = f64> {
     pub window: R,
 }
 
-impl NativeModel for CurrentControlledMemristor {
-    type Device<R: Real> = CurrentControlledMemristor<R>;
-}
-
-impl<R: Real> NativeDevice<R> for CurrentControlledMemristor<R> {
+impl Kernel for CurrentControlledMemristor {
     const NAME: &'static str = "current_controlled_memristor";
-    type Parameters = CurrentControlledMemristorParameters<R>;
+    type Parameters<R: Real> = CurrentControlledMemristorParameters<R>;
+    type Shape = MemristorShape;
+    type Prepared<R: Real> = PreparedMemristor<R>;
+    type Memory = MemristorMemory;
 
-    fn interface(_: &CurrentControlledMemristorParameters<R>) -> Interface {
+    fn interface<R: Real>(_: &CurrentControlledMemristorParameters<R>) -> Interface {
         interface()
     }
 
-    fn new(
-        parameters: CurrentControlledMemristorParameters<R>,
-        binding: &mut Binding<'_>,
-    ) -> Result<Self, ParameterError> {
-        let CurrentControlledMemristorParameters {
+    fn prepare<R: Real>(
+        parameters: &CurrentControlledMemristorParameters<R>,
+        temperature: R,
+    ) -> Result<PreparedMemristor<R>, ParameterError> {
+        let &CurrentControlledMemristorParameters {
             on_resistance,
             off_resistance,
             charge,
@@ -484,25 +546,44 @@ impl<R: Real> NativeDevice<R> for CurrentControlledMemristor<R> {
             charge: ParameterError::positive("charge", charge)?,
         };
         let memristance = Memristance::new(law, [on_resistance, off_resistance], window)?;
-        Memristor::new(memristance, control, state, binding).map(Self)
-    }
-}
-
-impl<R: Real> Device<R> for CurrentControlledMemristor<R> {
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        self.0.evaluate(input, output);
+        PreparedMemristor::new((memristance, control), state, temperature)
     }
 
-    fn variable_names(&self) -> &'static [&'static str] {
+    fn layout<R: Real>(
+        _: &CurrentControlledMemristorParameters<R>,
+        _: &PreparedMemristor<R>,
+        layout: &mut Layout,
+    ) -> Result<MemristorShape, ParameterError> {
+        Ok(MemristorShape::new(layout))
+    }
+
+    fn evaluate<R: Real>(
+        shape: &MemristorShape,
+        prepared: &PreparedMemristor<R>,
+        memory: &mut MemristorMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        shape.evaluate(prepared, memory, at, stamp);
+    }
+
+    fn variable_names() -> &'static [&'static str] {
         &VARIABLE_NAMES
     }
 
-    fn variables(&self, values: &mut [f64]) {
-        values.copy_from_slice(&self.0.variables);
+    fn variables(memory: &MemristorMemory, values: &mut [f64]) {
+        for (value, &found) in values.iter_mut().zip(&memory.0) {
+            *value = found;
+        }
     }
 
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        self.0.noise(input, sources);
+    fn noise<R: Real>(
+        shape: &MemristorShape,
+        prepared: &PreparedMemristor<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        shape.noise(prepared, at, sources);
     }
 }
 

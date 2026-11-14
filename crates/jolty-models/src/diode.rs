@@ -216,6 +216,7 @@ impl Kernel for Diode {
 
     fn layout<R: Real>(
         parameters: &DiodeParameters<R>,
+        _: &PreparedDiode<R>,
         layout: &mut Layout,
     ) -> Result<DiodeShape, ParameterError> {
         let series_resistance =
@@ -414,7 +415,6 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::KernelDevice;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
         thermal,
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn follows_the_shockley_equation() {
-        let mut bench = Bench::new::<KernelDevice<Diode>>("{}");
+        let mut bench = Bench::new::<Diode>("{}");
         let current = bench.settle(&[0.6, 0.0]).residual[0];
         let expected = 1e-14 * ((0.6 / THERMAL_VOLTAGE).exp() - 1.0);
         assert!(
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn the_saturation_current_scales_with_temperature() {
         let (hot, emission) = (350.0, 1.5);
-        let mut bench = Bench::at::<KernelDevice<Diode>>(r#"{"emission_coefficient": 1.5}"#, hot);
+        let mut bench = Bench::at::<Diode>(r#"{"emission_coefficient": 1.5}"#, hot);
         let current = bench.settle(&[0.6, 0.0]).residual[0];
         let vt = thermal_voltage(hot);
         let ratio = hot / REFERENCE_TEMPERATURE;
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn limits_large_steps_until_they_settle() {
-        let mut bench = Bench::new::<KernelDevice<Diode>>("{}");
+        let mut bench = Bench::new::<Diode>("{}");
         let evaluation = bench.evaluate(&[10.0, 0.0]);
         assert!(evaluation.limited);
         assert!(evaluation.residual[0].is_finite());
@@ -464,14 +464,14 @@ mod tests {
 
     #[test]
     fn a_series_resistance_adds_an_internal_node() {
-        let bench = Bench::new::<KernelDevice<Diode>>(r#"{"series_resistance": 10}"#);
+        let bench = Bench::new::<Diode>(r#"{"series_resistance": 10}"#);
         assert_eq!(bench.unknowns(), ["n0", "n1", "device:junction"]);
     }
 
     #[test]
     fn a_small_series_resistance_carries_its_current_as_an_unknown() {
         let small = r#"{"series_resistance": 0.5, "junction_capacitance": 1e-12}"#;
-        let mut bench = Bench::new::<KernelDevice<Diode>>(small);
+        let mut bench = Bench::new::<Diode>(small);
         assert_eq!(
             bench.unknowns(),
             ["n0", "n1", "device:junction", "device:junction_current"]
@@ -480,13 +480,13 @@ mod tests {
         let residual = bench.evaluate(&x).residual;
         assert!((residual[0] - 0.1).abs() < 1e-15, "{residual:?}");
         assert!(residual[3].abs() < 1e-15, "{residual:?}");
-        assert_jacobians_match::<KernelDevice<Diode>>(small, &x);
+        assert_jacobians_match::<Diode>(small, &x);
         assert_parameter_gradients_match::<Diode>(small, &x);
     }
 
     #[test]
     fn breaks_down_at_its_breakdown_current() {
-        let mut bench = Bench::new::<KernelDevice<Diode>>(
+        let mut bench = Bench::new::<Diode>(
             r#"{"breakdown_voltage": 5.1, "breakdown_current": 1e-3, "emission_coefficient": 1.2}"#,
         );
         let current = bench.settle(&[-5.1, 0.0]).residual[0];
@@ -517,8 +517,7 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_parameters() {
-        let error =
-            Bench::try_new::<KernelDevice<Diode>>(r#"{"grading_coefficient": 1}"#).unwrap_err();
+        let error = Bench::try_new::<Diode>(r#"{"grading_coefficient": 1}"#).unwrap_err();
         assert_eq!(
             error.to_string(),
             "grading_coefficient must be at least 0 and below 1, not 1.0"
@@ -530,11 +529,11 @@ mod tests {
         /// charge, on both sides of the depletion threshold.
         #[test]
         fn jacobians_match_finite_differences(voltage in -5.0..0.7f64) {
-            assert_jacobians_match::<KernelDevice<Diode>>(CHARGED, &[voltage, 0.0]);
+            assert_jacobians_match::<Diode>(CHARGED, &[voltage, 0.0]);
             let breaking = CHARGED.replace('{', r#"{"breakdown_voltage": 3, "#);
-            assert_jacobians_match::<KernelDevice<Diode>>(&breaking, &[voltage, 0.0]);
+            assert_jacobians_match::<Diode>(&breaking, &[voltage, 0.0]);
             let with_resistance = CHARGED.replace('{', r#"{"series_resistance": 5, "#);
-            assert_jacobians_match::<KernelDevice<Diode>>(&with_resistance, &[voltage + 0.01, 0.0, voltage]);
+            assert_jacobians_match::<Diode>(&with_resistance, &[voltage + 0.01, 0.0, voltage]);
         }
     }
 
@@ -542,7 +541,7 @@ mod tests {
     fn its_current_makes_shot_and_flicker_noise() {
         let parameters = r#"{"saturation_current": 1e-14, "series_resistance": 10,
             "flicker_coefficient": 1e-12, "flicker_exponent": 1.5}"#;
-        let mut bench = Bench::new::<KernelDevice<Diode>>(parameters);
+        let mut bench = Bench::new::<Diode>(parameters);
         let x = [0.7, 0.0, 0.69];
         // The junction's current leaves through the cathode.
         let current = -bench.settle(&x).residual[1];
@@ -558,8 +557,7 @@ mod tests {
         let series = source(&sources, "series thermal");
         assert_close(&[series.density(1.0)], &[thermal(0.1)]);
         assert_eq!(sources.len(), 3);
-        let quiet =
-            Bench::new::<KernelDevice<Diode>>(r#"{"saturation_current": 1e-14}"#).noise(&x[..2]);
+        let quiet = Bench::new::<Diode>(r#"{"saturation_current": 1e-14}"#).noise(&x[..2]);
         assert_eq!(quiet.len(), 1, "{quiet:?}");
     }
 }

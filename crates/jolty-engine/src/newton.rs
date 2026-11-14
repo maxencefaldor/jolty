@@ -114,9 +114,8 @@ impl Simulator {
     /// their derivatives, with their steps limited if `limiting`. Returns whether a device
     /// limited its voltage.
     ///
-    /// The devices of no kernel add their contributions first, one by one in their order;
-    /// the groups of the instances of kernels then add theirs, in the order of the groups,
-    /// of their instances and of each instance's local unknowns and entries, however many
+    /// The groups of the instances add their contributions in the order of the groups, of
+    /// their instances and of each instance's local unknowns and entries, however many
     /// threads evaluate them.
     pub(crate) fn evaluate(
         &mut self,
@@ -127,26 +126,16 @@ impl Simulator {
     ) -> bool {
         let previous = self.state.workspace.meter.enter(Activity::Evaluating);
         let state = &mut self.state;
-        let mut output = state
-            .workspace
-            .contributions
-            .output(&self.elaborated.pattern);
         let mut input = Input::new(x, time, gmin);
         input.source_scale = source_scale;
         input.limiting = limiting;
-        for &index in self.elaborated.groups.legacy() {
-            if let Some(device) = state.devices.get_mut(index).and_then(Option::as_deref_mut) {
-                device.evaluate(&input, &mut output);
-            }
-        }
-        let mut limited = output.is_limited();
         // The check evaluates each instance alone, from what it remembered before.
         #[cfg(test)]
-        let before = state
-            .check
-            .is_some()
-            .then(|| (state.workspace.contributions.clone(), state.runs.clone()));
-        let grouped = state.runs.evaluate(
+        let before = state.check.is_some().then(|| {
+            let zero = Contributions::new(&self.elaborated.pattern);
+            (zero, state.runs.clone())
+        });
+        let limited = state.runs.evaluate(
             &self.elaborated.groups,
             &input,
             &mut state.workspace.contributions,
@@ -155,10 +144,9 @@ impl Simulator {
         #[cfg(test)]
         if let (Some(check), Some((prefix, mut alone))) = (&mut state.check, before) {
             let assembled = (&state.workspace.contributions, state.runs.slab());
-            let input = (&input, grouped);
+            let input = (&input, limited);
             check.compare(&self.elaborated, &mut alone, input, &prefix, assembled);
         }
-        limited |= grouped;
         state.workspace.meter.leave(previous);
         limited
     }
