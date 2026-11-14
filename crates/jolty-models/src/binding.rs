@@ -1,4 +1,4 @@
-use jolty_numerics::{Entry, PatternBuilder};
+use jolty_numerics::{Entry, PatternBuilder, Replay};
 
 use crate::Real;
 
@@ -25,7 +25,7 @@ impl Unknown {
 pub type Node = Option<Unknown>;
 
 /// What an unknown measures, and so what its equation balances.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Quantity {
     /// A node voltage, whose equation sums the currents leaving the node.
     Voltage,
@@ -59,7 +59,7 @@ impl Quantity {
 }
 
 /// The name and quantity of an unknown.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnknownInfo {
     /// The unknown's name: a net's path, or an instance's path and a label, such as `V1:current`.
     pub name: String,
@@ -70,13 +70,41 @@ pub struct UnknownInfo {
 /// What a device being instantiated reaches: the nodes of its terminals, new internal
 /// unknowns, the matrix pattern it claims entries in, and the temperature it is simulated
 /// at.
+///
+/// A binding either records each claim, of an internal unknown or of a matrix entry, as an
+/// instance is first made, or [replays](Binding::replaying) the claims recorded, as the
+/// instance is made again from other numbers: it hands back the unknowns and the entries
+/// recorded, in the same order, and [`Binding::replayed`] says whether the device claimed
+/// the very same ones.
 #[derive(Debug)]
 pub struct Binding<'a> {
     path: &'a str,
     terminals: &'a [Node],
-    unknowns: &'a mut Vec<UnknownInfo>,
-    pattern: &'a mut PatternBuilder,
+    claims: Claims<'a>,
     temperature: f64,
+}
+
+/// Where a binding's claims go.
+#[derive(Debug)]
+enum Claims<'a> {
+    /// Each claim is recorded: an internal unknown appended to `unknowns`, numbered as if
+    /// they began at `first`, and an entry claimed in `pattern`.
+    Record {
+        first: usize,
+        unknowns: &'a mut Vec<UnknownInfo>,
+        pattern: &'a mut PatternBuilder,
+    },
+    /// Each claim is handed back what was recorded: the internal unknowns `internals`, the
+    /// first at index `first`, of which `claimed` are claimed so far, and the entries of
+    /// `entries`.
+    Replay {
+        first: usize,
+        internals: &'a [UnknownInfo],
+        claimed: usize,
+        entries: Replay<'a>,
+        /// Whether every internal unknown claimed so far is the one recorded.
+        matched: bool,
+    },
 }
 
 impl<'a> Binding<'a> {
@@ -90,12 +118,73 @@ impl<'a> Binding<'a> {
         pattern: &'a mut PatternBuilder,
         temperature: f64,
     ) -> Self {
+        Self::numbered(path, terminals, (0, unknowns), pattern, temperature)
+    }
+
+    /// A binding as [`Binding::new`] makes, but for its internal unknowns, numbered from
+    /// `first` as if `unknowns` began there: those of an instance made apart from the
+    /// others, whose own unknowns follow those before it.
+    pub const fn numbered(
+        path: &'a str,
+        terminals: &'a [Node],
+        (first, unknowns): (usize, &'a mut Vec<UnknownInfo>),
+        pattern: &'a mut PatternBuilder,
+        temperature: f64,
+    ) -> Self {
         Self {
             path,
             terminals,
-            unknowns,
-            pattern,
+            claims: Claims::Record {
+                first,
+                unknowns,
+                pattern,
+            },
             temperature,
+        }
+    }
+
+    /// A binding for the instance at `path`, as [`Binding::new`] makes, that hands back
+    /// the claims recorded when it was first made: the internal unknowns `internals`, the
+    /// first of them at index `first` among the unknowns, and the entries of `entries`, in
+    /// the order they were claimed.
+    #[must_use]
+    pub const fn replaying(
+        path: &'a str,
+        terminals: &'a [Node],
+        (first, internals): (usize, &'a [UnknownInfo]),
+        entries: Replay<'a>,
+        temperature: f64,
+    ) -> Self {
+        Self {
+            path,
+            terminals,
+            claims: Claims::Replay {
+                first,
+                internals,
+                claimed: 0,
+                entries,
+                matched: true,
+            },
+            temperature,
+        }
+    }
+
+    /// Whether the claims made through a binding that replays were those recorded, each
+    /// internal unknown of the same name and quantity and each entry at the same position,
+    /// in the same order, none left over and none more; always, for a binding that records.
+    /// A device whose claims were not those recorded has another structure than the device
+    /// first made, and its unknowns and entries are not those of the pattern recorded.
+    #[must_use]
+    pub const fn replayed(&self) -> bool {
+        match &self.claims {
+            Claims::Record { .. } => true,
+            Claims::Replay {
+                internals,
+                claimed,
+                entries,
+                matched,
+                ..
+            } => *matched && *claimed == internals.len() && entries.replayed(),
         }
     }
 
@@ -134,11 +223,37 @@ impl<'a> Binding<'a> {
 
     /// Adds an internal unknown, named after the instance and `label`.
     pub fn internal(&mut self, label: &str, quantity: Quantity) -> Unknown {
-        self.unknowns.push(UnknownInfo {
-            name: format!("{}:{label}", self.path),
-            quantity,
-        });
-        Unknown(self.unknowns.len() - 1)
+        match &mut self.claims {
+            Claims::Record {
+                first, unknowns, ..
+            } => {
+                unknowns.push(UnknownInfo {
+                    name: format!("{}:{label}", self.path),
+                    quantity,
+                });
+                Unknown(*first + unknowns.len() - 1)
+            }
+            Claims::Replay {
+                first,
+                internals,
+                claimed,
+                matched,
+                ..
+            } => {
+                let index = *claimed;
+                *claimed += 1;
+                let recorded = internals.get(index).is_some_and(|info| {
+                    info.quantity == quantity
+                        && info
+                            .name
+                            .strip_prefix(self.path)
+                            .and_then(|rest| rest.strip_prefix(':'))
+                            == Some(label)
+                });
+                *matched &= recorded;
+                Unknown(*first + index)
+            }
+        }
     }
 
     /// The node behind a terminal's series `resistance`: an internal node labelled `label`
@@ -153,6 +268,10 @@ impl<'a> Binding<'a> {
 
     /// Claims the matrix entry at `row` and `column`, or none when either is the reference.
     pub fn entry(&mut self, row: Node, column: Node) -> Option<Entry> {
-        Some(self.pattern.entry(row?.index(), column?.index()))
+        let (row, column) = (row?.index(), column?.index());
+        Some(match &mut self.claims {
+            Claims::Record { pattern, .. } => pattern.entry(row, column),
+            Claims::Replay { entries, .. } => entries.entry(row, column),
+        })
     }
 }

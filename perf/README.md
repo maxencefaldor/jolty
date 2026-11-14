@@ -44,6 +44,7 @@ The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.
 | Time | What it measures |
 | --- | --- |
 | `rust/<fixture>/setup` | Criterion's median of a setup: the circuit read from its JSON text and elaborated, into a simulator ready to run. |
+| `rust/<fixture>/shared` | Criterion's median of a setup from the circuit elaborated once and shared, as each of many runs of one circuit makes it: its devices made again, and a run's buffers. |
 | `rust/<fixture>/run` | Criterion's median of a run: the setup, then every analysis of the plan in order. |
 | `python/<fixture>` | The median of at least ten runs over at least five seconds, after one to warm up: the circuit, read once from its file, elaborated by `Simulation`, and every analysis run by `Simulation.run`, whose results are made as a script's are. An operating point and a transient also record the instances rated for a current or a power, which the checks read. |
 | `python/monte_carlo/<n> samples, one core`, `..., every core` | The time per sample of the fixture's first `n` samples, drawn from its seed as the runner draws them, each elaborated with its parameters and run as above: on one thread, and on a thread per core, as the runner runs them, the engine releasing the interpreter while it simulates. The suite runs the first 1,000, and `--scale` all of them, on every core. |

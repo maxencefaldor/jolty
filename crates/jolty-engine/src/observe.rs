@@ -22,13 +22,13 @@
 use std::ops::{Add, Range};
 
 use jolty_models::{
-    Binding, Contributions, Device, Input, Level, LogicDriver, LogicDriverParameters, NativeDevice,
-    Node, ParameterError, Quantity, ThresholdDetector, Unknown, UnknownInfo,
+    Binding, Contributions, Device, Input, Level, Node, ParameterError, Quantity, Unknown,
+    UnknownInfo,
 };
 use jolty_numerics::integration::Formula;
 use jolty_numerics::{Complex64, Pattern, PatternBuilder};
 
-use crate::elaborate::{Origin, System};
+use crate::elaborated::{Elaborated, Origins};
 use crate::profile::Activity;
 use crate::{Options, Record, SimulationError, Simulator};
 
@@ -146,7 +146,7 @@ pub struct Recorded {
 
 impl Recorded {
     /// What `record` keeps of `system`'s devices.
-    fn of(system: &System, record: &Record) -> Self {
+    fn of(system: &Elaborated, record: &Record) -> Self {
         Self {
             devices: (0..system.devices.len())
                 .filter(|&index| record.names(system.devices[index].path()))
@@ -163,7 +163,7 @@ impl Simulator {
     /// analysis run with it holds each value.
     #[must_use]
     pub fn recorded(&self, record: &Record) -> Recorded {
-        Recorded::of(&self.system, record)
+        Recorded::of(&self.elaborated, record)
     }
 
     /// Checks `options`, and readies the devices made again to record what they name.
@@ -173,11 +173,16 @@ impl Simulator {
     /// Returns [`SimulationError::InvalidOptions`] for options out of range, and
     /// [`SimulationError::Unrecordable`] when a device to record cannot be made again.
     pub(crate) fn prepare(&mut self, options: &Options) -> Result<(), SimulationError> {
-        let previous = self.workspace.meter.enter(Activity::Preparing);
+        let previous = self.state.workspace.meter.enter(Activity::Preparing);
+        let origins = Origins {
+            elaborated: &self.elaborated,
+            patched: &self.state.patched,
+            temperature: self.state.temperature,
+        };
         let prepared = options
             .check()
-            .and_then(|()| self.observer.select(&self.system, &options.record));
-        self.workspace.meter.leave(previous);
+            .and_then(|()| self.state.observer.select(origins, &options.record));
+        self.state.workspace.meter.leave(previous);
         prepared
     }
 }
@@ -199,10 +204,10 @@ struct Probe {
 }
 
 impl Probe {
-    /// Makes the device at index `placed` of `system`'s devices again, each terminal on its
-    /// own node.
-    fn new(system: &System, placed: usize) -> Result<Self, ParameterError> {
-        let device = &system.devices[placed];
+    /// Makes the device at index `placed` again from what `origins` makes it, each terminal
+    /// on its own node.
+    fn new(origins: Origins<'_>, placed: usize) -> Result<Self, ParameterError> {
+        let device = &origins.elaborated.devices[placed];
         let terminals = device.nodes().len();
         let own: Vec<Node> = (0..terminals)
             .map(|index| Some(Unknown::new(index)))
@@ -219,15 +224,9 @@ impl Probe {
             &own,
             &mut unknowns,
             &mut builder,
-            system.temperature,
+            origins.temperature,
         );
-        let copy: Box<dyn Device> = match &device.origin {
-            Origin::Model(made) => made.specification.instantiate(&mut binding)?,
-            Origin::Detector(parameters) => {
-                Box::new(ThresholdDetector::new(*parameters, &mut binding)?)
-            }
-            Origin::Driver => Box::new(LogicDriver::new(LogicDriverParameters {}, &mut binding)?),
-        };
+        let copy = origins.of(placed).make(&mut binding)?;
         let count = unknowns.len();
         let mut sources = device.nodes().to_vec();
         sources.extend(
@@ -338,13 +337,22 @@ pub(crate) struct Observer {
 
 impl Observer {
     /// An observer of `system`'s devices that records nothing yet.
-    pub(crate) fn new(system: &System) -> Self {
+    pub(crate) fn new(system: &Elaborated) -> Self {
         Self {
             probes: Vec::new(),
             made: vec![None; system.devices.len()],
             selection: Selection::default(),
             history: History::default(),
         }
+    }
+
+    /// Forgets every device made again and what was recorded, as [`Observer::new`] makes
+    /// it, keeping the buffers.
+    pub(crate) fn reset(&mut self) {
+        self.probes.clear();
+        self.made.fill(None);
+        self.selection = Selection::default();
+        self.history = History::default();
     }
 
     /// Records what `record` names of `system` from the next point on, making the devices
@@ -354,10 +362,11 @@ impl Observer {
     ///
     /// Returns [`SimulationError::Unrecordable`] naming every device that cannot be made
     /// again.
-    fn select(&mut self, system: &System, record: &Record) -> Result<(), SimulationError> {
+    fn select(&mut self, origins: Origins<'_>, record: &Record) -> Result<(), SimulationError> {
         if self.selection.record == *record {
             return Ok(());
         }
+        let system = origins.elaborated;
         let recorded = Recorded::of(system, record);
         let mut kept = vec![false; system.devices.len()];
         for &device in &recorded.devices {
@@ -374,7 +383,7 @@ impl Observer {
             if self.made[placed].is_some() {
                 continue;
             }
-            match Probe::new(system, placed) {
+            match Probe::new(origins, placed) {
                 Ok(probe) => {
                     self.made[placed] = Some(self.probes.len());
                     self.probes.push(probe);
@@ -675,11 +684,11 @@ mod tests {
     #[test]
     fn a_point_holds_the_unknowns_and_only_what_is_recorded() {
         let mut simulator = amplifier();
-        let unknowns = simulator.system.unknowns.len();
+        let unknowns = simulator.elaborated.unknowns.len();
         simulator.prepare(&Options::default()).unwrap();
-        assert_eq!(simulator.observer.width(), 0);
+        assert_eq!(simulator.state.observer.width(), 0);
         assert!(
-            simulator.observer.probes.is_empty(),
+            simulator.state.observer.probes.is_empty(),
             "nothing is made again"
         );
         let everything = recording(Record::All);
@@ -687,15 +696,15 @@ mod tests {
         // V1: 2 terminals and its current, 9 derivatives; R1: 2 terminals, 4 derivatives;
         // M1: 4 terminals, 16 derivatives and 5 variables; X1: 2 ports.
         assert_eq!(
-            simulator.observer.width(),
+            simulator.state.observer.width(),
             2 * (8 + 2) + 2 * (9 + 4 + 16) + 5
         );
         let mosfet = recording(Record::Instances(BTreeSet::from(["X1/M1".to_owned()])));
         simulator.prepare(&mosfet).unwrap();
-        assert_eq!(simulator.observer.width(), 2 * 4 + 2 * 16 + 5);
+        assert_eq!(simulator.state.observer.width(), 2 * 4 + 2 * 16 + 5);
         let ports = recording(Record::Instances(BTreeSet::from(["X1".to_owned()])));
         simulator.prepare(&ports).unwrap();
-        assert_eq!(simulator.observer.width(), 2 * 2);
+        assert_eq!(simulator.state.observer.width(), 2 * 2);
         let width = f64::from(u32::try_from(unknowns + 4).unwrap());
         assert_eq!(simulator.point_width().to_bits(), width.to_bits());
     }
@@ -707,15 +716,16 @@ mod tests {
         let point = simulator.operating_point(&ports).unwrap();
         assert_eq!(point.observation.currents.len(), 2);
         let made: Vec<&str> = simulator
+            .state
             .observer
             .probes
             .iter()
-            .map(|probe| simulator.system.devices[probe.placed].path())
+            .map(|probe| simulator.elaborated.devices[probe.placed].path())
             .collect();
         assert_eq!(made, ["X1/R1", "X1/M1"]);
         let source = recording(Record::Instances(BTreeSet::from(["V1".to_owned()])));
         simulator.operating_point(&source).unwrap();
-        assert_eq!(simulator.observer.probes.len(), 3);
-        assert_eq!(simulator.observer.selection.evaluated.len(), 1);
+        assert_eq!(simulator.state.observer.probes.len(), 3);
+        assert_eq!(simulator.state.observer.selection.evaluated.len(), 1);
     }
 }

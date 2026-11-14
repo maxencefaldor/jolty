@@ -7,38 +7,14 @@ use std::sync::Arc;
 
 use jolty_ir::{Circuit, Component, Name, Of, Parameters, Problem, Role, Source, set_parameter};
 use jolty_models::{
-    Binding, Branch, Device, Interface, Library, Logic, LogicDriver, LogicDriverParameters,
-    LogicModel, Model, NativeDevice, Node, Pins, Quantity, Specification, ThresholdDetector,
+    Device, Interface, Library, Logic, LogicDriver, LogicDriverParameters, LogicModel, Model,
+    NativeDevice, Node, Pins, Quantity, Specification, ThresholdDetector,
     ThresholdDetectorParameters, Unknown, UnknownInfo,
 };
-use jolty_numerics::{Entry, Pattern, PatternBuilder};
 
+use crate::Substitute;
+use crate::elaborated::{Binder, Elaborated, Made, Origin, Template};
 use crate::logic::{Endpoint, LogicNet, LogicSystem, PlacedLogic};
-use crate::{Conditions, Substitute};
-
-/// A circuit flattened into devices bound to unknowns, with the pattern of its matrix, and
-/// logic devices joined by logic nets.
-///
-/// The node voltages come first among the unknowns, in the order their nets are first met,
-/// then the devices' internal unknowns. A net that only logic pins join is a logic net; where
-/// a logic pin joins an electrical net, a connect element joins it to a logic net of its own.
-#[derive(Debug)]
-pub(crate) struct System {
-    pub(crate) unknowns: Vec<UnknownInfo>,
-    pub(crate) devices: Vec<Placed>,
-    pub(crate) logic: LogicSystem,
-    /// The name of the reference node: the top component's ground port.
-    pub(crate) reference: Name,
-    pub(crate) pattern: Arc<Pattern>,
-    /// The diagonal entry of every node voltage's equation, where gmin stepping adds a
-    /// conductance to the reference.
-    pub(crate) node_diagonals: Vec<(Unknown, Entry)>,
-    /// The devices' temperature, in kelvins.
-    pub(crate) temperature: f64,
-    /// The terminals of component instances and logic devices, each the sum of device
-    /// terminals.
-    pub(crate) composites: Vec<Composite>,
-}
 
 /// A terminal of a component instance or a logic device, whose current and charge are those
 /// of device terminals summed: a port's are those of every device terminal inside its
@@ -92,120 +68,6 @@ impl Composite {
     #[must_use]
     pub fn members(&self) -> &[(usize, usize)] {
         &self.members
-    }
-}
-
-/// A device placed in the flattened circuit: where its instance is, what model it is, and
-/// the node each of its terminals joins.
-#[derive(Debug)]
-pub struct Placed {
-    location: Location,
-    model: &'static str,
-    interface: Interface,
-    nodes: Vec<Node>,
-    /// What the device was made from, to make it again.
-    pub(crate) origin: Origin,
-    /// How many unknowns there were before the device added its own.
-    pub(crate) first_internal: usize,
-    /// How many internal unknowns the device added.
-    internals: usize,
-    pub(crate) device: Box<dyn Device>,
-}
-
-/// What a device was made from.
-#[derive(Debug)]
-pub(crate) enum Origin {
-    /// A model, from the instance's parameters.
-    Model(Made),
-    /// A threshold detector, the connect element of a logic input.
-    Detector(ThresholdDetectorParameters),
-    /// A logic driver, the connect element of a logic output.
-    Driver,
-}
-
-/// What a model made a device from: the instance's parameters, read once into the
-/// specification that makes the device again, and as the circuit gives them.
-#[derive(Debug)]
-pub(crate) struct Made {
-    pub(crate) specification: Box<dyn Specification>,
-    pub(crate) parameters: Parameters,
-    /// Whether the model is a foundry's.
-    foundry: bool,
-}
-
-impl Placed {
-    /// Where the instance is: its path and the script line that placed it.
-    #[must_use]
-    pub fn location(&self) -> &Location {
-        &self.location
-    }
-
-    /// The instance's path through the hierarchy, such as `amplifier/R1`.
-    #[must_use]
-    pub fn path(&self) -> &str {
-        &self.location.path
-    }
-
-    /// The name of the device's model, such as `resistor`.
-    #[must_use]
-    pub fn model(&self) -> &'static str {
-        self.model
-    }
-
-    /// The names of the device's terminals, in the order of [`Placed::nodes`].
-    #[must_use]
-    pub fn terminals(&self) -> &[String] {
-        &self.interface.terminals
-    }
-
-    /// The device's thermal terminals, by index among [`Placed::terminals`].
-    #[must_use]
-    pub fn thermal(&self) -> &[usize] {
-        &self.interface.thermal
-    }
-
-    /// The device's branches between its terminals.
-    #[must_use]
-    pub fn branches(&self) -> &[Branch] {
-        &self.interface.branches
-    }
-
-    /// The node each terminal joins: a node voltage's unknown, or `None` for the reference.
-    #[must_use]
-    pub fn nodes(&self) -> &[Node] {
-        &self.nodes
-    }
-
-    /// The device's internal unknowns, such as a transistor's internal drain behind its
-    /// series resistance, by index among the unknowns.
-    #[must_use]
-    pub fn internals(&self) -> std::ops::Range<usize> {
-        self.first_internal..self.first_internal + self.internals
-    }
-
-    /// The names of the variables the device computes, such as a transistor's
-    /// `threshold_voltage`.
-    #[must_use]
-    pub fn variable_names(&self) -> &'static [&'static str] {
-        self.device.variable_names()
-    }
-
-    /// Whether the device is a foundry's, which no analysis solves.
-    #[must_use]
-    pub fn foundry(&self) -> bool {
-        match &self.origin {
-            Origin::Model(made) => made.foundry,
-            Origin::Detector(_) | Origin::Driver => false,
-        }
-    }
-
-    /// The parameters a model made the device from, or `None` for a connect element.
-    #[must_use]
-    pub fn parameters(&self) -> Option<&Parameters> {
-        match &self.origin {
-            Origin::Model(made) => Some(&made.parameters),
-            Origin::Detector(_) | Origin::Driver => None,
-        }
     }
 }
 
@@ -298,6 +160,23 @@ pub enum ElaborationProblem {
     UnknownSubstitute(String),
     /// Parameters replace those of an instance the circuit does not have.
     UnknownOverride(String),
+    /// A number replaces one that a device's parameters do not write.
+    UnknownParameter {
+        /// The device.
+        at: Location,
+        /// The number's path among the device's parameters, such as `waveform.dc`.
+        parameter: String,
+    },
+    /// A number replaces one of a logic device's, which elaborating the circuit reads once
+    /// into its logic's structure.
+    LogicParameter {
+        /// The logic device.
+        at: Location,
+        /// The number's path among the device's parameters.
+        parameter: String,
+    },
+    /// A number replaces a parameter the circuit's table does not hold, by its index.
+    NoParameter(usize),
     /// The circuit's system is too large to factor.
     TooLarge,
 }
@@ -312,7 +191,9 @@ impl ElaborationProblem {
             | Self::UnknownTerminal { at, .. }
             | Self::Parameters { at, .. }
             | Self::LogicPinOnElectricalNet { at, .. }
-            | Self::ThermalOnElectricalNet { at, .. } => Some(at),
+            | Self::ThermalOnElectricalNet { at, .. }
+            | Self::UnknownParameter { at, .. }
+            | Self::LogicParameter { at, .. } => Some(at),
             _ => None,
         }
     }
@@ -352,6 +233,16 @@ impl ElaborationProblem {
             Self::UnknownOverride(path) => {
                 format!("the circuit has no device at `{path}`, whose parameters are replaced")
             }
+            Self::UnknownParameter { parameter, .. } => {
+                format!("the override `{parameter}` names no number among the parameters")
+            }
+            Self::LogicParameter { parameter, .. } => format!(
+                "the override `{parameter}` replaces a number of a logic device, which only \
+                 elaborating the circuit with it replaces"
+            ),
+            Self::NoParameter(index) => {
+                format!("the circuit has no parameter {index}, whose number is replaced")
+            }
             Self::TooLarge => "the circuit's system is too large to factor".to_owned(),
         }
     }
@@ -379,6 +270,11 @@ impl From<Problem> for ElaborationProblem {
 pub struct ElaborationError(Vec<ElaborationProblem>);
 
 impl ElaborationError {
+    /// The error of `problems`, which are not none.
+    pub(crate) const fn new(problems: Vec<ElaborationProblem>) -> Self {
+        Self(problems)
+    }
+
     /// The problems, in the order they were found.
     #[must_use]
     pub fn problems(&self) -> &[ElaborationProblem] {
@@ -406,12 +302,23 @@ impl fmt::Display for ElaborationError {
 
 impl std::error::Error for ElaborationError {}
 
-/// Flattens `circuit` and binds each device to its unknowns in `conditions`.
+/// The models that stand in for component instances, by path, and the parameters that
+/// replace devices' own, by path.
+pub(crate) type Replaced<'a> = (
+    &'a BTreeMap<String, Substitute>,
+    &'a BTreeMap<String, Parameters>,
+);
+
+/// Flattens `circuit` and binds each device to its unknowns at `temperature`, in kelvins,
+/// with the models that stand in for some component instances and the parameters that
+/// replace some devices' own, `replaced`, which the circuit then holds as its own. Returns
+/// the elaborated circuit and the devices made.
 pub(crate) fn elaborate(
     circuit: &Circuit,
     library: &Library,
-    conditions: &Conditions,
-) -> Result<System, ElaborationError> {
+    (substitutes, overrides): Replaced<'_>,
+    temperature: f64,
+) -> Result<(Elaborated, Vec<Box<dyn Device>>), ElaborationError> {
     circuit.validate().map_err(|problems| {
         ElaborationError(
             problems
@@ -438,9 +345,9 @@ pub(crate) fn elaborate(
     let mut walk = Walk {
         circuit,
         library,
-        overrides: &conditions.overrides,
+        overrides,
         overridden: BTreeSet::new(),
-        substitutes: &conditions.substitutes,
+        substitutes,
         substituted: BTreeSet::new(),
         nets: Vec::new(),
         named: HashMap::new(),
@@ -467,17 +374,10 @@ pub(crate) fn elaborate(
     } = walk;
 
     problems.extend(mixed_domains(&nets));
-    let (mut unknowns, classes, mut partition) = classify(&nets, ground_name(circuit));
-    let mut builder = PatternBuilder::new();
-    let node_diagonals: Vec<(Unknown, Entry)> = (0..unknowns.len())
-        .map(|index| (Unknown::new(index), builder.entry(index, index)))
-        .collect();
-    let mut placed = Vec::with_capacity(devices.len());
+    let (unknowns, classes, mut partition) = classify(&nets, ground_name(circuit));
     let mut elements = Elements {
-        unknowns: &mut unknowns,
-        builder: &mut builder,
-        placed: &mut placed,
-        temperature: conditions.temperature,
+        binder: Binder::new(unknowns, temperature),
+        templates: Vec::with_capacity(devices.len()),
         detected: Vec::new(),
         pins: Vec::new(),
         partition: &mut partition,
@@ -489,26 +389,27 @@ pub(crate) fn elaborate(
     for pending in logic {
         elements.logic(pending, &classes);
     }
-    let detected = std::mem::take(&mut elements.detected);
-    let pins = std::mem::take(&mut elements.pins);
-    partition.index(&detected, &placed);
-    problems.extend(unclaimed(conditions, &substituted, &overridden));
+    let Elements {
+        binder,
+        templates,
+        detected,
+        pins,
+        ..
+    } = elements;
+    partition.index(&detected, &templates);
+    problems.extend(unclaimed(
+        (substitutes, overrides),
+        &substituted,
+        &overridden,
+    ));
     // Without a single ground, a problem says so.
     let (Some(ground), true) = (ground, problems.is_empty()) else {
         return Err(ElaborationError(problems));
     };
-    let pattern = Arc::new(builder.finish(unknowns.len()));
-    let composites = composites(&ports, &pins, &classes, &placed);
-    Ok(System {
-        unknowns,
-        devices: placed,
-        logic: partition,
-        reference: ground.clone(),
-        pattern,
-        node_diagonals,
-        temperature: conditions.temperature,
-        composites,
-    })
+    let bound = binder.finish()?;
+    let composites = composites(&ports, &pins, &classes, &templates);
+    let parts = (partition, composites, ground.clone());
+    Ok(Elaborated::assemble(bound, parts, temperature))
 }
 
 /// The terminals of every component instance and logic device on a node, electrical or
@@ -519,7 +420,7 @@ fn composites(
     ports: &[PortRecord],
     pins: &[LogicPins],
     classes: &Classes<'_>,
-    placed: &[Placed],
+    templates: &[Arc<Template>],
 ) -> Vec<Composite> {
     let ports = ports
         .iter()
@@ -531,7 +432,7 @@ fn composites(
                 .iter()
                 .flat_map(|&member| match member {
                     Member::Analog { device, terminal } => {
-                        let heat = placed[device].interface.thermal.contains(&terminal);
+                        let heat = templates[device].interface.thermal.contains(&terminal);
                         if heat == thermal {
                             vec![(device, terminal)]
                         } else {
@@ -624,20 +525,18 @@ fn reference(circuit: &Circuit) -> (Option<&Name>, Vec<ElaborationProblem>) {
     }
 }
 
-/// The problem of each substitute and override of `conditions` whose path the walk did not
-/// find: those it `replaced` and `overridden`.
+/// The problem of each substitute and override of `replaced` whose path the walk did not
+/// find: those it `stood_in` and `overridden`.
 fn unclaimed<'a>(
-    conditions: &'a Conditions,
-    replaced: &'a BTreeSet<String>,
+    (substitutes, overrides): Replaced<'a>,
+    stood_in: &'a BTreeSet<String>,
     overridden: &'a BTreeSet<String>,
 ) -> impl Iterator<Item = ElaborationProblem> + 'a {
-    let standing = conditions
-        .substitutes
+    let standing = substitutes
         .keys()
-        .filter(|path| !replaced.contains(path.as_str()))
+        .filter(|path| !stood_in.contains(path.as_str()))
         .map(|path| ElaborationProblem::UnknownSubstitute(path.clone()));
-    let unused = conditions
-        .overrides
+    let unused = overrides
         .keys()
         .filter(|path| !overridden.contains(path.as_str()))
         .map(|path| ElaborationProblem::UnknownOverride(path.clone()));
@@ -722,12 +621,12 @@ impl Classes<'_> {
     }
 }
 
-/// What logic devices and their connect elements are placed into.
+/// What devices, logic devices and their connect elements are placed into.
 struct Elements<'a> {
-    unknowns: &'a mut Vec<UnknownInfo>,
-    builder: &'a mut PatternBuilder,
-    placed: &'a mut Vec<Placed>,
-    temperature: f64,
+    /// The binder of every device placed, in order.
+    binder: Binder,
+    /// What each device placed is, in order, those that failed to bind among them.
+    templates: Vec<Arc<Template>>,
     /// Each detector's input node and capacitance.
     detected: Vec<(Node, f64)>,
     /// Each logic device's pins, in the order the walk found the devices.
@@ -739,39 +638,23 @@ struct Elements<'a> {
 impl Elements<'_> {
     /// Binds the analog device `pending` to the nodes of its terminals.
     fn analog(&mut self, pending: Pending<'_>, classes: &Classes<'_>) {
-        let terminals: Vec<Node> = pending
+        let nodes: Vec<Node> = pending
             .terminals
             .iter()
             .map(|&net| classes.node(net))
             .collect();
-        let first_internal = self.unknowns.len();
-        let mut binding = Binding::new(
-            &pending.at.path,
-            &terminals,
-            self.unknowns,
-            self.builder,
-            self.temperature,
+        let origin = Origin::Model(Made {
+            model: Arc::clone(pending.model),
+            specification: pending.specification,
+            parameters: pending.parameters.into_owned(),
+        });
+        self.place(
+            pending.at,
+            pending.model.name(),
+            pending.interface,
+            nodes,
+            origin,
         );
-        match pending.specification.instantiate(&mut binding) {
-            Ok(device) => self.placed.push(Placed {
-                location: pending.at,
-                model: pending.model.name(),
-                interface: pending.interface,
-                nodes: terminals,
-                origin: Origin::Model(Made {
-                    specification: pending.specification,
-                    parameters: pending.parameters.into_owned(),
-                    foundry: pending.model.foundry(),
-                }),
-                first_internal,
-                internals: self.unknowns.len() - first_internal,
-                device,
-            }),
-            Err(error) => self.problems.push(ElaborationProblem::Parameters {
-                at: pending.at,
-                message: error.0,
-            }),
-        }
     }
 
     /// Places the logic device `pending`: each pin on a net only logic pins join joins its
@@ -912,52 +795,52 @@ impl Elements<'_> {
         self.detected.push((terminals[0], capacitance));
         let interface = ThresholdDetector::interface(&parameters);
         let origin = Origin::Detector(parameters);
-        self.place::<ThresholdDetector>(at, terminals, (interface, origin), parameters)
+        self.place(
+            at,
+            ThresholdDetector::NAME,
+            interface,
+            terminals.to_vec(),
+            origin,
+        )
     }
 
     /// Places a logic driver at `at` on `terminals`: its output, supply and ground.
     fn driver(&mut self, at: Location, terminals: [Node; 3]) -> usize {
-        let parameters = LogicDriverParameters {};
-        let interface = LogicDriver::interface(&parameters);
-        self.place::<LogicDriver>(at, terminals, (interface, Origin::Driver), parameters)
+        let interface = LogicDriver::interface(&LogicDriverParameters {});
+        self.place(
+            at,
+            LogicDriver::NAME,
+            interface,
+            terminals.to_vec(),
+            Origin::Driver,
+        )
     }
 
-    fn place<D: NativeDevice + Device>(
+    /// Places the device at `at` of `model`, with `interface`, its terminals on `nodes`,
+    /// made from `origin`, and binds it; returns its index among the devices.
+    fn place(
         &mut self,
-        at: Location,
-        terminals: [Node; 3],
-        (interface, origin): (Interface, Origin),
-        parameters: D::Parameters,
+        location: Location,
+        model: &'static str,
+        interface: Interface,
+        nodes: Vec<Node>,
+        origin: Origin,
     ) -> usize {
-        let first_internal = self.unknowns.len();
-        let mut binding = Binding::new(
-            &at.path,
-            &terminals,
-            self.unknowns,
-            self.builder,
-            self.temperature,
-        );
-        #[expect(
-            clippy::unreachable,
-            reason = "a connect element refuses only a negative capacitance, and the input \
-                      capacitances it takes were checked non-negative as their logic device \
-                      was read"
-        )]
-        let device: Box<dyn Device> = match D::new(parameters, &mut binding) {
-            Ok(device) => Box::new(device),
-            Err(error) => unreachable!("a connect element's parameters are checked: {error}"),
-        };
-        self.placed.push(Placed {
-            location: at,
-            model: D::NAME,
+        let template = Arc::new(Template {
+            location,
+            model,
             interface,
-            nodes: terminals.to_vec(),
+            nodes,
             origin,
-            first_internal,
-            internals: self.unknowns.len() - first_internal,
-            device,
         });
-        self.placed.len() - 1
+        if let Err(error) = self.binder.bind(Arc::clone(&template), None, true) {
+            self.problems.push(ElaborationProblem::Parameters {
+                at: template.location.clone(),
+                message: error.0,
+            });
+        }
+        self.templates.push(template);
+        self.templates.len() - 1
     }
 }
 
@@ -979,7 +862,7 @@ struct NetRecord {
 /// A device instance found by the walk, waiting for every net to be classified.
 struct Pending<'a> {
     at: Location,
-    model: &'a dyn Model,
+    model: &'a Arc<dyn Model>,
     /// The instance's parameters, with those the conditions replace, read.
     specification: Box<dyn Specification>,
     /// The same parameters, as the circuit and the conditions give them.
@@ -992,8 +875,8 @@ struct Pending<'a> {
 struct PendingLogic<'a> {
     at: Location,
     name: Name,
-    model: &'a dyn LogicModel,
-    device: Box<dyn Logic>,
+    model: &'a Arc<dyn LogicModel>,
+    device: Arc<dyn Logic>,
     pins: Pins,
     /// The net of each pin and terminal, in the order of [`Pins::names`].
     nets: Vec<NetRef>,
@@ -1183,7 +1066,7 @@ impl<'a> Walk<'a> {
     fn analog(
         &mut self,
         placement: Placement<'a, '_>,
-        model: &'a dyn Model,
+        model: &'a Arc<dyn Model>,
         scope: Scope<'_>,
         ports: &BTreeMap<&'a Name, Joined>,
     ) {
@@ -1245,7 +1128,7 @@ impl<'a> Walk<'a> {
     fn logic(
         &mut self,
         placement: Placement<'a, '_>,
-        model: &'a dyn LogicModel,
+        model: &'a Arc<dyn LogicModel>,
         scope: Scope<'_>,
         ports: &BTreeMap<&'a Name, Joined>,
     ) {
@@ -1255,8 +1138,8 @@ impl<'a> Walk<'a> {
             at,
             model: model_name,
         } = placement;
-        let device = match model.instantiate(&parameters) {
-            Ok(device) => device,
+        let device: Arc<dyn Logic> = match model.instantiate(&parameters) {
+            Ok(device) => Arc::from(device),
             Err(error) => {
                 self.problems.push(ElaborationProblem::Parameters {
                     at,
@@ -1374,16 +1257,18 @@ impl<'a> Walk<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use jolty_models::REFERENCE_TEMPERATURE;
 
-    fn elaborate_json(components: &str) -> Result<System, ElaborationError> {
+    use super::*;
+    use crate::elaborated::Placed;
+
+    fn elaborate_json(components: &str) -> Result<Elaborated, ElaborationError> {
         let header = r#""format": "jolty-circuit", "version": 1, "top": "top""#;
         let text = format!(r#"{{{header}, "components": {components}}}"#);
-        elaborate(
-            &Circuit::from_json(&text).unwrap(),
-            &Library::standard(),
-            &Conditions::default(),
-        )
+        let none = (&BTreeMap::new(), &BTreeMap::new());
+        let circuit = Circuit::from_json(&text).unwrap();
+        elaborate(&circuit, &Library::standard(), none, REFERENCE_TEMPERATURE)
+            .map(|(elaborated, _)| elaborated)
     }
 
     #[test]
@@ -1469,25 +1354,30 @@ mod tests {
             ]}
         }}"#;
         let circuit = Circuit::from_json(text).unwrap();
-        let mut conditions = Conditions::default();
-        conditions.overrides.insert(
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
             "X2/R1".to_owned(),
             serde_json::json!({"resistance": -1})
                 .as_object()
                 .cloned()
                 .unwrap(),
         );
-        conditions.overrides.insert(
+        overrides.insert(
             "X1/R1".to_owned(),
             serde_json::json!({"resistance.dc": 2})
                 .as_object()
                 .cloned()
                 .unwrap(),
         );
-        conditions
-            .overrides
-            .insert("X3/R1".to_owned(), Parameters::new());
-        let error = elaborate(&circuit, &Library::standard(), &conditions).unwrap_err();
+        overrides.insert("X3/R1".to_owned(), Parameters::new());
+        let replaced = (&BTreeMap::new(), &overrides);
+        let error = elaborate(
+            &circuit,
+            &Library::standard(),
+            replaced,
+            REFERENCE_TEMPERATURE,
+        )
+        .unwrap_err();
         assert_eq!(
             error.to_string(),
             "instance `X1/R1`: the override `resistance.dc` has no place among the parameters\n\

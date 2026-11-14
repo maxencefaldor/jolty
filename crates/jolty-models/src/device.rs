@@ -118,7 +118,7 @@ pub trait Model: Send + Sync {
 
 /// An instance's parameters, read into its model's typed form: the terminals of its device,
 /// and how to make the device, bound to unknowns, each time it is made.
-pub trait Specification: fmt::Debug + Send {
+pub trait Specification: fmt::Debug + Send + Sync {
     /// The terminals and branches of the device.
     fn interface(&self) -> Interface;
 
@@ -161,7 +161,7 @@ pub trait NativeDevice<R: Real = f64>: Device<R> + Sized + 'static {
     const FOUNDRY: bool = false;
     /// The parameters, deserialized from the instance's parameter map, which write as they
     /// read and which a JSON schema describes.
-    type Parameters: DeserializeOwned + Serialize + JsonSchema + Clone + fmt::Debug + Send;
+    type Parameters: DeserializeOwned + Serialize + JsonSchema + Clone + fmt::Debug + Send + Sync;
 
     /// The terminals and branches of a device with `parameters`.
     fn interface(parameters: &Self::Parameters) -> Interface;

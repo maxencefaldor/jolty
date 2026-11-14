@@ -136,6 +136,13 @@ impl<T: Scalar> Numeric<T> {
         }
     }
 
+    /// Forgets the pivots of the last factorization, so that the next searches for every
+    /// pivot, as a new one's first does: with no pivot kept, a factorization reads nothing
+    /// the last left but its allocations.
+    pub(super) const fn forget(&mut self) {
+        self.complete = false;
+    }
+
     /// The number of entries of `L` below its diagonal and of `U` on and above it.
     pub(super) fn entries(&self) -> usize {
         self.lower.indices.len() + self.upper.indices.len() + self.pivots.len()

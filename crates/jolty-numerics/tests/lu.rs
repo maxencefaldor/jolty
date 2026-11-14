@@ -578,6 +578,28 @@ proptest! {
         prop_assert_eq!(statistics.refactorizations + statistics.fallbacks, 1);
     }
 
+    /// A solver reset factors as one made anew for the same ordering, bit for bit, however
+    /// it factored before: the pivots it kept from other values are forgotten.
+    #[test]
+    fn a_reset_solver_factors_as_a_new_one((first, second) in reshuffled_pair()) {
+        let solved = |lu: &mut SparseLu<f64>, matrix: &Matrix<f64>| {
+            let (_, entries) = matrix.pattern();
+            let stored = matrix.stored(lu.pattern(), &entries);
+            let mut x: Vec<f64> = rhs(matrix.dimension);
+            lu.factor(&stored)?.solve(&mut x)?;
+            Ok::<Vec<u64>, LinearError>(x.into_iter().map(f64::to_bits).collect())
+        };
+        let (mut used, _) = solver(&first);
+        let (mut fresh, _) = solver(&second);
+        let _ = solved(&mut used, &first);
+        let _ = solved(&mut used, &second);
+        used.reset();
+        prop_assert_eq!(used.statistics(), Statistics::default());
+        prop_assert_eq!(solved(&mut used, &second), solved(&mut fresh, &second));
+        prop_assert_eq!(used.statistics(), fresh.statistics());
+        prop_assert_eq!(used.entries(), fresh.entries());
+    }
+
     /// The real and the complex solvers of one pattern share its ordering.
     #[test]
     fn real_and_complex_solvers_share_an_ordering(circuit in circuit()) {

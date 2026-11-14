@@ -225,14 +225,18 @@ impl Simulator {
     /// Reads the meter and the sparse solver as an analysis starts, starting the clock if
     /// the analysis will `profile` and stopping it if not.
     pub(crate) fn read_meter(&mut self, profile: bool) -> Reading {
-        self.workspace.meter.read(profile, self.solver.statistics())
+        self.state
+            .workspace
+            .meter
+            .read(profile, self.state.solver.statistics())
     }
 
     /// The work done since `reading`, and the time spent since, if the clock has run.
     pub(crate) fn metered_since(&mut self, reading: &Reading) -> (Work, Option<Profile>) {
-        self.workspace
+        self.state
+            .workspace
             .meter
-            .since(reading, self.solver.statistics())
+            .since(reading, self.state.solver.statistics())
     }
 }
 

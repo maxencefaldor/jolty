@@ -10,9 +10,12 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BinaryHeap};
 
-use jolty_models::{Change, Input, Level, Logic, Node, Pins, Stimulus};
+use std::sync::Arc;
 
-use crate::elaborate::{Location, Placed};
+use jolty_models::{Change, Device, Input, Level, Logic, Node, Pins, Stimulus};
+
+use crate::elaborate::Location;
+use crate::elaborated::Template;
 
 /// One end of a logic net: a pin of a logic device, or a connect element in the analog
 /// circuit.
@@ -51,7 +54,7 @@ pub struct LogicNet {
 }
 
 /// A logic device placed in the flattened circuit.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PlacedLogic {
     pub(crate) location: Location,
     pub(crate) model: &'static str,
@@ -60,7 +63,7 @@ pub struct PlacedLogic {
     pub(crate) outputs: Vec<usize>,
     /// The nodes of the electrical terminals, `supply` and `ground`, if it has them.
     pub(crate) nodes: Vec<Node>,
-    pub(crate) device: Box<dyn Logic>,
+    pub(crate) device: Arc<dyn Logic>,
 }
 
 impl PlacedLogic {
@@ -157,7 +160,7 @@ impl Excursion {
 }
 
 /// The logic partition of an elaborated circuit.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct LogicSystem {
     pub(crate) nets: Vec<LogicNet>,
     pub(crate) devices: Vec<PlacedLogic>,
@@ -180,9 +183,9 @@ pub(crate) struct LogicSystem {
 impl LogicSystem {
     /// Numbers every source and records what drives and follows each net, once every device
     /// and connect element is placed. `detected` holds each detector's input node and
-    /// capacitance, and `placed` the analog devices, so each logic driver's net carries the
+    /// capacitance, and `devices` the analog devices, so each logic driver's net carries the
     /// load of the detectors on the node it drives.
-    pub(crate) fn index(&mut self, detected: &[(Node, f64)], placed: &[Placed]) {
+    pub(crate) fn index(&mut self, detected: &[(Node, f64)], devices: &[Arc<Template>]) {
         self.drives.clear();
         self.first_drive.clear();
         self.sources = vec![Vec::new(); self.nets.len()];
@@ -201,7 +204,7 @@ impl LogicSystem {
         }
         for (driver, &(element, net)) in self.drivers.iter().enumerate() {
             self.followers[net].push(driver);
-            let output = placed[element].nodes()[0];
+            let output = devices[element].nodes[0];
             self.nets[net].load = detected
                 .iter()
                 .filter(|(node, _)| *node == output)
@@ -365,6 +368,28 @@ impl Events {
             loads: logic.nets.iter().map(|net| net.load).collect(),
             excursions: BTreeMap::new(),
         }
+    }
+
+    /// Forgets everything an analysis left, as [`Events::new`] makes them for `logic`,
+    /// keeping the buffers.
+    pub(crate) fn reset(&mut self, logic: &LogicSystem) {
+        self.levels.fill(Level::Unknown);
+        self.transitions.fill(0.0);
+        self.drives.fill(DriveState {
+            level: Level::Unknown,
+            pending: None,
+            changed: None,
+        });
+        self.queue.clear();
+        self.sequence = 0;
+        for trace in &mut self.traces {
+            trace.clear();
+        }
+        self.commands.clear();
+        self.driven.fill(Level::Unknown);
+        self.loads.clear();
+        self.loads.extend(logic.nets.iter().map(|net| net.load));
+        self.excursions.clear();
     }
 
     /// Records that `device` read `value` of `bound` at `time`, if it lies outside
@@ -713,16 +738,16 @@ pub(crate) fn detected(margin: f64, held: Level) -> Level {
     }
 }
 
-/// The crossing of the detector `detector`, of the device `placed`, between the solutions
-/// `before` at `start` and `after` at `end`, if its level changes from `held`.
+/// The crossing of the detector `detector`, the connect element `device`, between the
+/// solutions `before` at `start` and `after` at `end`, if its level changes from `held`.
 pub(crate) fn crossing(
-    placed: &Placed,
+    device: &dyn Device,
     detector: usize,
     held: Level,
     (start, before): (f64, &[f64]),
     (end, after): (f64, &[f64]),
 ) -> Option<Crossing> {
-    let sense = placed.device.as_detector()?;
+    let sense = device.as_detector()?;
     let first = sense.margin(&Input::new(before, Some(start), 0.0));
     let last = sense.margin(&Input::new(after, Some(end), 0.0));
     let level = detected(last, held);

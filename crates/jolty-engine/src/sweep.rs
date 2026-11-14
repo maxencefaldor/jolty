@@ -91,7 +91,7 @@ impl Simulator {
         options: &Options,
     ) -> Result<Vec<OperatingPoint>, SimulationError> {
         self.reset_logic();
-        let mut values = vec![0.0; self.system.unknowns.len()];
+        let mut values = vec![0.0; self.elaborated.unknowns.len()];
         let mut points = Vec::with_capacity(levels.len());
         let mut previous: Option<f64> = None;
         for &level in levels {
@@ -139,7 +139,7 @@ impl Simulator {
         level: f64,
         options: &Options,
     ) -> Option<Vec<f64>> {
-        let own = self.system.devices[index].device.as_source()?.level();
+        let own = self.state.devices[index].as_source()?.level();
         self.hold_source(index, Some(own));
         let mut values = self.solve_from_zero(options).ok()?.values;
         self.continue_level(index, (own, level), &mut values, options)
@@ -196,12 +196,12 @@ impl Simulator {
     /// The index of the device of the independent source at `path`.
     pub(crate) fn source_index(&mut self, path: &str) -> Result<usize, SimulationError> {
         let index = self
-            .system
+            .elaborated
             .devices
             .iter()
             .position(|placed| placed.path() == path)
             .ok_or_else(|| SimulationError::UnknownSource(path.to_owned()))?;
-        if self.system.devices[index].device.as_source().is_none() {
+        if self.state.devices[index].as_source().is_none() {
             return Err(SimulationError::NotASource(path.to_owned()));
         }
         Ok(index)
@@ -209,7 +209,7 @@ impl Simulator {
 
     /// Whether the source of the device at `index` holds a voltage or drives a current.
     pub(crate) fn source_quantity(&self, index: usize) -> Quantity {
-        let drives_current = self.system.devices[index]
+        let drives_current = self.elaborated.devices[index]
             .branches()
             .iter()
             .any(|branch| branch.kind == BranchKind::CurrentSource);
@@ -223,16 +223,16 @@ impl Simulator {
     /// Holds the source of the device at `index` at `level`, or releases it to its
     /// waveform with `None`, and its copy that the observer reads.
     pub(crate) fn hold_source(&mut self, index: usize, level: Option<f64>) {
-        if let Some(source) = self.system.devices[index].device.as_source() {
+        if let Some(source) = self.state.devices[index].as_source() {
             source.hold(level);
             // At its own level, the level at time zero, a source held leaves the DC
             // equations as they are.
             let own = source.level();
             match level.filter(|level| level.total_cmp(&own).is_ne()) {
-                Some(level) => self.held.insert(index, level),
-                None => self.held.remove(&index),
+                Some(level) => self.state.held.insert(index, level),
+                None => self.state.held.remove(&index),
             };
         }
-        self.observer.hold(index, level);
+        self.state.observer.hold(index, level);
     }
 }

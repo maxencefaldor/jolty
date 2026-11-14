@@ -70,14 +70,14 @@ impl Simulator {
         transient: &Transient,
         options: &Options,
     ) -> Result<Waveforms, SimulationError> {
-        if !self.system.logic.nets.is_empty() {
+        if !self.elaborated.logic.nets.is_empty() {
             return Err(SimulationError::InvalidAnalysis(
                 "a periodic steady state is found for circuits without logic".to_owned(),
             ));
         }
         options.check()?;
         let reading = self.read_meter(options.profile);
-        let unknowns = self.system.unknowns.len();
+        let unknowns = self.elaborated.unknowns.len();
         let size = f64::from(u32::try_from(unknowns).unwrap_or(u32::MAX));
         let dense = DENSE_MATRICES * size * size;
         options.hold("periodic steady state", unknowns, dense)?;
@@ -128,7 +128,7 @@ impl Simulator {
                 .map(|((start, end), tolerance)| (start - end) / tolerance)
                 .collect();
             solve_in_range(&matrix, &mut step, (options.relative_tolerance, 1.0))
-                .map_err(|error| self.solver.name(error))?;
+                .map_err(|error| self.state.solver.name(error))?;
             for ((value, step), tolerance) in start.iter_mut().zip(&step).zip(&tolerances) {
                 *value += step * tolerance;
             }
@@ -140,7 +140,7 @@ impl Simulator {
             worst: worst
                 .into_iter()
                 .take(NAMED_UNKNOWNS)
-                .map(|index| self.system.unknowns[index].name.clone())
+                .map(|index| self.elaborated.unknowns[index].name.clone())
                 .collect(),
         })
     }
@@ -148,7 +148,7 @@ impl Simulator {
     /// The tolerance of each unknown of a period started at `start` and ended at `end`,
     /// which it ends within of where it started if it repeats.
     fn tolerances(&self, start: &[f64], end: &[f64], options: &Options) -> Vec<f64> {
-        self.system
+        self.elaborated
             .unknowns
             .iter()
             .zip(start.iter().zip(end))
@@ -170,8 +170,8 @@ impl Simulator {
         self.evaluate(x, Some(0.0), (1.0, options.gmin), false);
         let unknowns = x.len();
         let mut charges = vec![vec![0.0; unknowns]; unknowns];
-        let capacitances = &self.workspace.contributions.capacitance;
-        for ((row, column), &capacitance) in self.system.pattern.positions().zip(capacitances) {
+        let capacitances = &self.state.workspace.contributions.capacitance;
+        for ((row, column), &capacitance) in self.elaborated.pattern.positions().zip(capacitances) {
             charges[column][row] += capacitance;
         }
         monodromy.tangents = charges.into_iter().map(Tangent::new).collect();
@@ -197,21 +197,21 @@ impl Simulator {
         options: &Options,
     ) -> Result<(), SimulationError> {
         self.evaluate(x, Some(time), (1.0, options.gmin), false);
-        let contributions = &self.workspace.contributions;
+        let contributions = &self.state.workspace.contributions;
         let jacobian: Vec<f64> = contributions
             .conductance
             .iter()
             .zip(&contributions.capacitance)
             .map(|(conductance, capacitance)| conductance + formula.alpha * capacitance)
             .collect();
-        let mut factors = self.solver.factor(&jacobian)?;
+        let mut factors = self.state.solver.factor(&jacobian)?;
         for (tangent, at) in monodromy.tangents.iter_mut().zip(&mut monodromy.at) {
             let history = tangent.history(formula);
             let mut moved: Vec<f64> = history.iter().map(|term| -term).collect();
             factors.solve(&mut moved)?;
             let mut charge = vec![0.0; x.len()];
-            let capacitances = &self.workspace.contributions.capacitance;
-            self.system
+            let capacitances = &self.state.workspace.contributions.capacitance;
+            self.elaborated
                 .pattern
                 .add_product(capacitances, &moved, &mut charge);
             tangent.advance(charge, &history, formula, restarted);

@@ -2,7 +2,7 @@
 
 use jolty_models::{Contributions, Input, Quantity};
 
-use crate::elaborate::System;
+use crate::elaborated::Elaborated;
 use crate::profile::{Activity, Meter};
 use crate::{Options, SimulationError, Simulator};
 
@@ -40,15 +40,40 @@ pub(crate) struct Workspace {
 }
 
 impl Workspace {
-    pub(crate) fn new(system: &System) -> Self {
-        let (unknowns, stored) = (system.unknowns.len(), system.pattern.len());
+    /// Zeroed buffers of the system of `elaborated`, and a meter that has counted nothing.
+    pub(crate) fn new(elaborated: &Elaborated) -> Self {
+        let (unknowns, stored) = (elaborated.unknowns.len(), elaborated.pattern.len());
         Self {
-            contributions: Contributions::new(&system.pattern),
+            contributions: Contributions::new(&elaborated.pattern),
             jacobian: vec![0.0; stored],
             resolution: vec![0.0; unknowns],
             step: vec![0.0; unknowns],
             meter: Meter::default(),
         }
+    }
+
+    /// Zeroes every buffer and the meter, as [`Workspace::new`] makes them.
+    pub(crate) fn reset(&mut self) {
+        let Contributions {
+            residual,
+            scale,
+            charge,
+            conductance,
+            capacitance,
+        } = &mut self.contributions;
+        for values in [
+            residual,
+            scale,
+            charge,
+            conductance,
+            capacitance,
+            &mut self.jacobian,
+            &mut self.resolution,
+            &mut self.step,
+        ] {
+            values.fill(0.0);
+        }
+        self.meter = Meter::default();
     }
 }
 
@@ -95,16 +120,20 @@ impl Simulator {
         (source_scale, gmin): (f64, f64),
         limiting: bool,
     ) -> bool {
-        let previous = self.workspace.meter.enter(Activity::Evaluating);
-        let mut output = self.workspace.contributions.output(&self.system.pattern);
+        let previous = self.state.workspace.meter.enter(Activity::Evaluating);
+        let mut output = self
+            .state
+            .workspace
+            .contributions
+            .output(&self.elaborated.pattern);
         let mut input = Input::new(x, time, gmin);
         input.source_scale = source_scale;
         input.limiting = limiting;
-        for placed in &mut self.system.devices {
-            placed.device.evaluate(&input, &mut output);
+        for device in &mut self.state.devices {
+            device.evaluate(&input, &mut output);
         }
         let limited = output.is_limited();
-        self.workspace.meter.leave(previous);
+        self.state.workspace.meter.leave(previous);
         limited
     }
 
@@ -138,10 +167,10 @@ impl Simulator {
             // A residual within the rounding of the unknowns its equation reads is noise: the
             // step it would drive is one the unknowns cannot record, and chasing it moves
             // the others without end, as a source's current beside a node at megavolts.
-            let previous = self.workspace.meter.enter(Activity::Assembling);
+            let previous = self.state.workspace.meter.enter(Activity::Assembling);
             for index in 0..x.len() {
-                let residual = self.workspace.contributions.residual[index];
-                self.workspace.step[index] = if residual.abs() <= self.rounding(index) {
+                let residual = self.state.workspace.contributions.residual[index];
+                self.state.workspace.step[index] = if residual.abs() <= self.rounding(index) {
                     0.0
                 } else {
                     -residual
@@ -155,10 +184,10 @@ impl Simulator {
                 step,
                 meter,
                 ..
-            } = &mut self.workspace;
+            } = &mut self.state.workspace;
             meter.iterate();
             meter.enter(Activity::Factoring);
-            let solved = self.solver.factor(jacobian).and_then(|mut factors| {
+            let solved = self.state.solver.factor(jacobian).and_then(|mut factors| {
                 meter.enter(Activity::Solving);
                 factors.solve(step)
             });
@@ -167,7 +196,7 @@ impl Simulator {
             if let Mode::Dc { deflated, .. } = mode {
                 self.deflate(x, deflated);
             }
-            for (value, step) in x.iter_mut().zip(&self.workspace.step) {
+            for (value, step) in x.iter_mut().zip(&self.state.workspace.step) {
                 *value += step;
             }
             stepped_within_tolerance = self.step_within_tolerance(x, options);
@@ -183,11 +212,11 @@ impl Simulator {
     /// finding distinct solutions of nonlinear partial differential equations", SIAM
     /// Journal on Scientific Computing 37(4), 2015).
     fn deflate(&mut self, x: &[f64], known: &[Vec<f64>]) {
-        let step = &mut self.workspace.step;
+        let step = &mut self.state.workspace.step;
         let mut slope = 0.0;
         for root in known {
             let (mut distance, mut along) = (0.0, 0.0);
-            for (index, unknown) in self.system.unknowns.iter().enumerate() {
+            for (index, unknown) in self.elaborated.unknowns.iter().enumerate() {
                 if unknown.quantity == Quantity::Voltage {
                     let apart = x[index] - root[index];
                     distance += apart * apart;
@@ -215,15 +244,15 @@ impl Simulator {
             resolution,
             meter,
             ..
-        } = &mut self.workspace;
+        } = &mut self.state.workspace;
         let previous = meter.enter(Activity::Assembling);
         match mode {
             Mode::Dc { shunt, anchor, .. } => {
                 jacobian.copy_from_slice(&contributions.conductance);
                 if shunt > 0.0 {
-                    for &(unknown, entry) in &self.system.node_diagonals {
+                    for &(unknown, entry) in &self.elaborated.node_diagonals {
                         let index = unknown.index();
-                        jacobian[self.system.pattern.slot(entry)] += shunt;
+                        jacobian[self.elaborated.pattern.slot(entry)] += shunt;
                         let held = anchor.map_or(0.0, |anchor| anchor[index]);
                         let current = shunt * (x[index] - held);
                         contributions.residual[index] += current;
@@ -254,7 +283,7 @@ impl Simulator {
             }
         }
         resolution.fill(0.0);
-        for ((row, column), &value) in self.system.pattern.positions().zip(jacobian.iter()) {
+        for ((row, column), &value) in self.elaborated.pattern.positions().zip(jacobian.iter()) {
             resolution[row] += (value * x[column]).abs();
         }
         meter.leave(previous);
@@ -267,9 +296,9 @@ impl Simulator {
 
     /// The last step of unknown `index` as a multiple of its tolerance.
     fn step_error(&self, x: &[f64], index: usize, options: &Options) -> f64 {
-        let step = self.workspace.step[index];
+        let step = self.state.workspace.step[index];
         let magnitude = x[index].abs().max((x[index] - step).abs());
-        let absolute = options.value_tolerance(self.system.unknowns[index].quantity);
+        let absolute = options.value_tolerance(self.elaborated.unknowns[index].quantity);
         step.abs() / (options.relative_tolerance * magnitude + absolute)
     }
 
@@ -277,8 +306,8 @@ impl Simulator {
     /// rounding of the unknowns it depends on. A node's residual is a current; a branch's is a
     /// voltage.
     fn residual_within_tolerance(&self, options: &Options) -> bool {
-        let workspace = &self.workspace;
-        self.system
+        let workspace = &self.state.workspace;
+        self.elaborated
             .unknowns
             .iter()
             .enumerate()
@@ -295,7 +324,7 @@ impl Simulator {
     /// The floating-point resolution of equation `index`'s residual: the rounding of the
     /// unknowns it reads, which no step can resolve.
     fn rounding(&self, index: usize) -> f64 {
-        RESIDUAL_ROUNDINGS * f64::EPSILON * self.workspace.resolution[index]
+        RESIDUAL_ROUNDINGS * f64::EPSILON * self.state.workspace.resolution[index]
     }
 
     /// The names of the `count` unknowns whose last step was largest against its tolerance.
@@ -312,7 +341,7 @@ impl Simulator {
         errors
             .into_iter()
             .take(count)
-            .map(|(_, index)| self.system.unknowns[index].name.clone())
+            .map(|(_, index)| self.elaborated.unknowns[index].name.clone())
             .collect()
     }
 }
@@ -384,7 +413,7 @@ mod tests {
         // second keeps the factors of the first.
         let mut simulator = ladder(5, &json!({"dc": 1.0}), false);
         simulator.operating_point(&Options::default()).unwrap();
-        let statistics = simulator.solver.statistics();
+        let statistics = simulator.state.solver.statistics();
         assert_eq!(work(Statistics::default(), statistics), (1, 0, 1));
     }
 
@@ -392,7 +421,8 @@ mod tests {
     fn a_nonlinear_operating_point_refactors_with_its_first_pivots() {
         let mut simulator = ladder(3, &json!({"dc": 1.0}), true);
         simulator.operating_point(&Options::default()).unwrap();
-        let (searched, refactored, _) = work(Statistics::default(), simulator.solver.statistics());
+        let (searched, refactored, _) =
+            work(Statistics::default(), simulator.state.solver.statistics());
         assert_eq!(searched, 1);
         assert!(refactored >= 2, "{refactored} refactorizations");
     }
@@ -410,7 +440,7 @@ mod tests {
         let mut simulator = ladder(5, &sine, false);
         let options = Options::default();
         simulator.operating_point(&options).unwrap();
-        let before = simulator.solver.statistics();
+        let before = simulator.state.solver.statistics();
         let transient = Transient {
             stop: 1e-3,
             max_step: Some(1e-6),
@@ -419,7 +449,7 @@ mod tests {
             periodic: false,
         };
         let waveforms = simulator.transient(&transient, &options).unwrap();
-        let (searched, refactored, reused) = work(before, simulator.solver.statistics());
+        let (searched, refactored, reused) = work(before, simulator.state.solver.statistics());
         let steps = waveforms.statistics;
         assert!(steps.accepted >= 1000, "{} steps", steps.accepted);
         assert!(steps.iterations >= steps.accepted);

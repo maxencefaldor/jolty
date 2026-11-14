@@ -522,7 +522,7 @@ impl Simulator {
     /// The longest step `transient` allows, after checking its times.
     fn longest_step(&self, transient: &Transient) -> Result<f64, SimulationError> {
         // Without unknowns, nothing analog needs steps, and the logic moves on at once.
-        let longest = if self.system.unknowns.is_empty() {
+        let longest = if self.elaborated.unknowns.is_empty() {
             transient.stop
         } else {
             transient.max_step.unwrap_or(transient.stop / 50.0)
@@ -583,7 +583,7 @@ impl Simulator {
     /// recorded terminals' currents and charges and the recorded devices' derivatives and
     /// variables.
     pub(crate) fn point_width(&self) -> f64 {
-        let width = self.system.unknowns.len() + self.observer.width();
+        let width = self.elaborated.unknowns.len() + self.state.observer.width();
         f64::from(u32::try_from(width).unwrap_or(u32::MAX))
     }
 
@@ -621,7 +621,9 @@ impl Simulator {
         };
         self.start_carried(&mut carried, &initial, options)?;
         self.evaluate(&initial, Some(0.0), (1.0, options.gmin), true);
-        self.events.start(&self.system.logic, transient.stop);
+        self.state
+            .events
+            .start(&self.elaborated.logic, transient.stop);
         let unknowns = initial.len();
         let mut breakpoints =
             Breakpoints::new(&self.breakpoints(transient.stop, shortest), shortest);
@@ -635,7 +637,7 @@ impl Simulator {
             before: None,
             history: History {
                 earlier: VecDeque::with_capacity(HISTORY - 1),
-                last: (0.0, self.workspace.contributions.charge.clone()),
+                last: (0.0, self.state.workspace.contributions.charge.clone()),
                 derivative: vec![0.0; unknowns],
                 ringing: VecDeque::with_capacity(RINGING),
             },
@@ -651,7 +653,7 @@ impl Simulator {
         let mut observed = Observations::default();
         observed.push(&self.record(|observer| observer.start(&stepper.x, options.gmin)));
         while stepper.time < transient.stop {
-            if let Some(change) = self.events.next_analog_change(&self.system.logic) {
+            if let Some(change) = self.state.events.next_analog_change(&self.elaborated.logic) {
                 breakpoints.insert(change);
             }
             let (breakpoint, gap) = breakpoints.after(stepper.time);
@@ -690,16 +692,16 @@ impl Simulator {
             times,
             values,
             observations: observed,
-            logic: self.events.traces().to_vec(),
+            logic: self.state.events.traces().to_vec(),
             statistics,
         })
     }
 
     /// What `read` reads of the recorded devices, its time counted as recording.
     fn record(&mut self, read: impl FnOnce(&mut Observer) -> Observation) -> Observation {
-        let previous = self.workspace.meter.enter(Activity::Recording);
-        let found = read(&mut self.observer);
-        self.workspace.meter.leave(previous);
+        let previous = self.state.workspace.meter.enter(Activity::Recording);
+        let found = read(&mut self.state.observer);
+        self.state.workspace.meter.leave(previous);
         found
     }
 
@@ -769,7 +771,7 @@ impl Simulator {
                 worst: self.furthest_from_converging(&candidate, options, NAMED_UNKNOWNS),
             });
         };
-        let charge = self.workspace.contributions.charge.clone();
+        let charge = self.state.workspace.contributions.charge.clone();
         let derivative: Vec<f64> = charge
             .iter()
             .zip(&stepper.terms)
@@ -785,18 +787,18 @@ impl Simulator {
             charge,
             derivative,
         };
-        let previous = self.workspace.meter.enter(Activity::StepControl);
+        let previous = self.state.workspace.meter.enter(Activity::StepControl);
         let judged = self.judged(stepper, &tried, options);
-        self.workspace.meter.leave(previous);
+        self.state.workspace.meter.leave(previous);
         let Some(next) = judged? else {
             return Ok(Step::Rejected);
         };
         // The logic before a first step moves it on, for going back to the corner.
         let first = stepper.history.len() == 1;
-        let logic = first.then(|| self.events.checkpoint());
-        let previous = self.workspace.meter.enter(Activity::StepControl);
+        let logic = first.then(|| self.state.events.checkpoint());
+        let previous = self.state.workspace.meter.enter(Activity::StepControl);
         let events = self.events_within(stepper, (end, &tried.x), options);
-        self.workspace.meter.leave(previous);
+        self.state.workspace.meter.leave(previous);
         let (commands, jumped) = match events {
             Ok(found) => found,
             Err(early) => {
@@ -859,7 +861,7 @@ impl Simulator {
         if let Some(judged) = own
             && judged.ratio > 1.0
         {
-            let name = &self.system.unknowns[judged.worst].name;
+            let name = &self.elaborated.unknowns[judged.worst].name;
             stepper.reject(next, || Rejection::Inaccurate(name.clone()))?;
             return Ok(None);
         }
@@ -929,9 +931,9 @@ impl Simulator {
             stepper.next = after_corner;
         } else {
             let trapezoidal = method == Method::Trapezoidal;
-            let previous = self.workspace.meter.enter(Activity::StepControl);
+            let previous = self.state.workspace.meter.enter(Activity::StepControl);
             stepper.damp = trapezoidal && self.rings(&stepper.history, &derivative, options);
-            self.workspace.meter.leave(previous);
+            self.state.workspace.meter.leave(previous);
             stepper.before = Some(last);
             stepper.history.accept(end, charge, derivative, trapezoidal);
             stepper.next = next;
@@ -977,7 +979,7 @@ impl Simulator {
         worst: usize,
     ) -> Result<Step, SimulationError> {
         if let Some(Pending { corner, .. }) = stepper.pending.take() {
-            self.events.restore(corner.logic);
+            self.state.events.restore(corner.logic);
             stepper.time = corner.time;
             stepper.x = corner.x;
             stepper.before = None;
@@ -989,7 +991,7 @@ impl Simulator {
             stepper.damp = false;
             stepper.statistics.rejected += 1;
         }
-        let name = &self.system.unknowns[worst].name;
+        let name = &self.elaborated.unknowns[worst].name;
         stepper.reject(next, || Rejection::Inaccurate(name.clone()))
     }
 
@@ -1006,7 +1008,7 @@ impl Simulator {
             return false;
         }
         let (oldest, older) = (&history.ringing[0], &history.ringing[1]);
-        self.system
+        self.elaborated
             .unknowns
             .iter()
             .enumerate()
@@ -1062,18 +1064,14 @@ impl Simulator {
         let (mut before, mut later) = (Vec::new(), Vec::new());
         let start = stepper.time;
         let mut first: Option<f64> = None;
-        for placed in &mut self.system.devices {
+        for device in &mut self.state.devices {
             before.clear();
-            placed
-                .device
-                .choices(&Input::new(&stepper.x, Some(start), 0.0), &mut before);
+            device.choices(&Input::new(&stepper.x, Some(start), 0.0), &mut before);
             if before.is_empty() {
                 continue;
             }
             later.clear();
-            placed
-                .device
-                .choices(&Input::new(after, Some(end), 0.0), &mut later);
+            device.choices(&Input::new(after, Some(end), 0.0), &mut later);
             if let Some(fraction) = Choice::first_jump(&before, &later) {
                 let time = start + (end - start) * fraction;
                 first = Some(first.map_or(time, |earlier| earlier.min(time)));
@@ -1094,8 +1092,10 @@ impl Simulator {
         (end, after): (f64, &[f64]),
         options: &Options,
     ) -> Result<Vec<Command>, f64> {
-        let Self { system, events, .. } = self;
-        let logic = &system.logic;
+        let Self {
+            elaborated, state, ..
+        } = self;
+        let (logic, events) = (&elaborated.logic, &mut state.events);
         let early = |time: f64| stepper.lands_before(time, end, options);
         let held = events.detector_levels(logic);
         let crossings: Vec<Crossing> = logic
@@ -1104,7 +1104,7 @@ impl Simulator {
             .enumerate()
             .filter_map(|(detector, &(element, _))| {
                 crossing(
-                    &system.devices[element],
+                    state.devices[element].as_ref(),
                     detector,
                     held[detector],
                     (stepper.time, &stepper.x),
@@ -1147,7 +1147,7 @@ impl Simulator {
     fn follow(&mut self, commands: &[Command]) -> Vec<f64> {
         let mut settles = Vec::with_capacity(commands.len());
         for command in commands {
-            let element = self.system.logic.drivers[command.driver].0;
+            let element = self.elaborated.logic.drivers[command.driver].0;
             let ramp = (command.time, command.level, command.transition);
             settles.extend(self.drive(element, ramp));
         }
@@ -1157,10 +1157,10 @@ impl Simulator {
     /// The breakpoints of every device in `(0, stop]`, sorted, merged when closer than
     /// `minimum`, and ending at `stop`, so never empty; their time is counted as preparing.
     fn breakpoints(&mut self, stop: f64, minimum: f64) -> Vec<f64> {
-        let previous = self.workspace.meter.enter(Activity::Preparing);
+        let previous = self.state.workspace.meter.enter(Activity::Preparing);
         let mut times = vec![stop];
-        for placed in &self.system.devices {
-            placed.device.breakpoints(0.0, stop, &mut times);
+        for device in &self.state.devices {
+            device.breakpoints(0.0, stop, &mut times);
         }
         times.retain(|&time| time > minimum);
         times.sort_by(f64::total_cmp);
@@ -1168,7 +1168,7 @@ impl Simulator {
         if let Some(last) = times.last_mut() {
             *last = stop;
         }
-        self.workspace.meter.leave(previous);
+        self.state.workspace.meter.leave(previous);
         times
     }
 
@@ -1218,8 +1218,12 @@ impl Simulator {
             worst: 0,
             longest: f64::INFINITY,
         };
-        for ((index, unknown), &difference) in
-            self.system.unknowns.iter().enumerate().zip(&differences)
+        for ((index, unknown), &difference) in self
+            .elaborated
+            .unknowns
+            .iter()
+            .enumerate()
+            .zip(&differences)
         {
             let error = method.truncation_error(span.length, difference);
             let absolute_current = options.equation_tolerance(unknown.quantity);
@@ -1258,7 +1262,7 @@ impl Simulator {
     /// Equations II", section IV.8). Where the matrix cannot be factored, the differences are
     /// taken as they are.
     fn filtered(&mut self, mut differences: Vec<f64>, alpha: f64) -> Vec<f64> {
-        let contributions = &self.workspace.contributions;
+        let contributions = &self.state.workspace.contributions;
         let matrix: Vec<f64> = contributions
             .conductance
             .iter()
@@ -1269,17 +1273,17 @@ impl Simulator {
             .iter()
             .map(|difference| alpha * difference)
             .collect();
-        let meter = &mut self.workspace.meter;
+        let meter = &mut self.state.workspace.meter;
         let previous = meter.enter(Activity::Factoring);
-        let solved = self.solver.factor(&matrix).and_then(|mut factors| {
+        let solved = self.state.solver.factor(&matrix).and_then(|mut factors| {
             meter.enter(Activity::Solving);
             factors.solve(&mut moved)
         });
         meter.leave(previous);
         if solved.is_ok() {
             differences.fill(0.0);
-            self.system.pattern.add_product(
-                &self.workspace.contributions.capacitance,
+            self.elaborated.pattern.add_product(
+                &self.state.workspace.contributions.capacitance,
                 &moved,
                 &mut differences,
             );

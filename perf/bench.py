@@ -324,7 +324,7 @@ def rust(names: Iterable[str], found: Mapping[str, Fixture]) -> dict[str, Timing
     measured = Path(json.loads(metadata.stdout)["target_directory"]) / "criterion"
     timings: dict[str, Timing] = {}
     for name in chosen:
-        for function in ("setup", "run"):
+        for function in ("setup", "shared", "run"):
             new = measured / name / function / "new"
             estimates = json.loads((new / "estimates.json").read_text("utf-8"))
             sample = json.loads((new / "sample.json").read_text("utf-8"))

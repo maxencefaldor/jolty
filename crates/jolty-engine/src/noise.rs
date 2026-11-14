@@ -112,12 +112,12 @@ impl Simulator {
         self.solvable()?;
         let (output, reference, quantity) =
             self.measured(&noise.output, noise.reference.as_deref())?;
-        let unknowns = self.system.unknowns.len();
+        let unknowns = self.elaborated.unknowns.len();
         let (mut input, level) = match &noise.source {
             Some(path) => {
                 let index = self.source_index(path)?;
                 let mut level = vec![0.0; unknowns];
-                if let Some(source) = self.system.devices[index].device.as_source() {
+                if let Some(source) = self.state.devices[index].as_source() {
                     source.level_derivative(&mut level);
                 }
                 let input = NoiseInput {
@@ -142,16 +142,16 @@ impl Simulator {
         let state = Input::new(&operating_point.values, None, options.gmin);
         let mut sources: Vec<NoiseSource> = Vec::new();
         let mut contributions = Vec::new();
-        for placed in &self.system.devices {
+        for (placed, device) in self.elaborated.devices.iter().zip(&self.state.devices) {
             let before = sources.len();
-            placed.device.noise(&state, &mut sources);
+            device.noise(&state, &mut sources);
             contributions.extend(sources[before..].iter().map(|source| NoiseContribution {
                 device: placed.location().path.clone(),
                 name: source.name,
                 densities: Vec::with_capacity(noise.frequencies.len()),
             }));
         }
-        let mut linearization = Linearization::new(&self.solver);
+        let mut linearization = Linearization::new(&self.state.solver);
         let mut densities = Vec::with_capacity(noise.frequencies.len());
         for &frequency in &noise.frequencies {
             let mut weights = vec![Complex64::default(); unknowns];
@@ -161,7 +161,7 @@ impl Simulator {
                 }
             }
             linearization
-                .factor(&self.workspace.contributions, frequency)?
+                .factor(&self.state.workspace.contributions, frequency)?
                 .solve_transpose(&mut weights)?;
             let weight = |node: Node| node.map_or(Complex64::default(), |u| weights[u.index()]);
             let mut total = 0.0;

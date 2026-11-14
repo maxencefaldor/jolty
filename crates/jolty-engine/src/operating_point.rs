@@ -216,8 +216,8 @@ impl Simulator {
         &mut self,
         options: &Options,
     ) -> Result<(Solved, OperatingPoint), SimulationError> {
-        if let Some(remembered) = &self.remembered
-            && remembered.solved_under(&self.held, options)
+        if let Some(remembered) = &self.state.remembered
+            && remembered.solved_under(&self.state.held, options)
         {
             let found = (remembered.solved.clone(), remembered.point.clone());
             self.restore(options);
@@ -226,12 +226,12 @@ impl Simulator {
         self.reset_logic();
         let solved = self.solve_from_zero(options)?;
         let point = self.settle(solved.clone(), options)?;
-        self.remembered = Some(Remembered {
-            held: self.held.clone(),
+        self.state.remembered = Some(Remembered {
+            held: self.state.held.clone(),
             options: read_at_dc(options),
             solved: solved.clone(),
             point: point.clone(),
-            events: self.events.clone(),
+            events: self.state.events.clone(),
         });
         Ok((solved, point))
     }
@@ -241,15 +241,15 @@ impl Simulator {
     /// it was told, and every device evaluated there, so a device that limits its steps
     /// does so from there, as from the last iteration that solved it.
     fn restore(&mut self, options: &Options) {
-        let Some(remembered) = &self.remembered else {
+        let Some(remembered) = &self.state.remembered else {
             return;
         };
         let values = remembered.point.values.clone();
-        self.events = remembered.events.clone();
-        for driver in 0..self.system.logic.drivers.len() {
+        self.state.events = remembered.events.clone();
+        for driver in 0..self.elaborated.logic.drivers.len() {
             let (element, level) = (
-                self.system.logic.drivers[driver].0,
-                self.events.driven()[driver],
+                self.elaborated.logic.drivers[driver].0,
+                self.state.events.driven()[driver],
             );
             self.drive(element, (0.0, level, 0.0));
         }
@@ -268,11 +268,12 @@ impl Simulator {
     /// it is solved anew.
     pub(crate) fn solve_from_zero(&mut self, options: &Options) -> Result<Solved, SimulationError> {
         let start = self
+            .state
             .remembered
             .as_ref()
-            .filter(|remembered| remembered.solves_alike(&self.held, options))
+            .filter(|remembered| remembered.solves_alike(&self.state.held, options))
             .map(|remembered| {
-                let same = remembered.solved_under(&self.held, options);
+                let same = remembered.solved_under(&self.state.held, options);
                 (same, remembered.solved.clone())
             });
         if let Some((true, solved)) = &start {
@@ -281,7 +282,7 @@ impl Simulator {
             self.evaluate(&solved.values, None, (1.0, options.gmin), false);
             return Ok(solved.clone());
         }
-        self.solves += 1;
+        self.state.solves += 1;
         if let Some((_, solved)) = start
             && let Some(taken) = solved.iterations
             && let Some(left) = options.dc_iterations.checked_sub(taken)
@@ -301,7 +302,7 @@ impl Simulator {
                 });
             }
         }
-        self.solve_dc(vec![0.0; self.system.unknowns.len()], options)
+        self.solve_dc(vec![0.0; self.elaborated.unknowns.len()], options)
     }
 
     /// Finds the operating point, then the other DC solutions, up to `search.most` in all,
@@ -360,7 +361,7 @@ impl Simulator {
     /// reflection of a known solution through another, or from beside one, on the
     /// equations they deflate.
     fn another(&mut self, known: &[Vec<f64>], options: &Options) -> Option<Solved> {
-        let zero = vec![0.0; self.system.unknowns.len()];
+        let zero = vec![0.0; self.elaborated.unknowns.len()];
         if let Ok(solved) = self.solve_deflated(zero, options, known)
             && self.distinct(known, &solved.values, options)
         {
@@ -384,7 +385,7 @@ impl Simulator {
             for sign in [1.0, -1.0] {
                 let mut beside = root.clone();
                 let voltages = self
-                    .system
+                    .elaborated
                     .unknowns
                     .iter()
                     .zip(&mut beside)
@@ -427,7 +428,7 @@ impl Simulator {
     /// Whether the solutions `first` and `second` lie within [`DISTINCT`] tolerances of
     /// each other in every unknown.
     fn indistinct(&self, first: &[f64], second: &[f64], options: &Options) -> bool {
-        self.system
+        self.elaborated
             .unknowns
             .iter()
             .zip(first.iter().zip(second))
@@ -441,9 +442,9 @@ impl Simulator {
     /// Forgets the logic's state: every net unknown, every driver at once at its unknown
     /// level.
     pub(crate) fn reset_logic(&mut self) {
-        self.events = Events::new(&self.system.logic);
-        for index in 0..self.system.logic.drivers.len() {
-            let element = self.system.logic.drivers[index].0;
+        self.state.events = Events::new(&self.elaborated.logic);
+        for index in 0..self.elaborated.logic.drivers.len() {
+            let element = self.elaborated.logic.drivers[index].0;
             self.drive(element, (0.0, Level::Unknown, 0.0));
         }
     }
@@ -453,26 +454,25 @@ impl Simulator {
     /// transistors' gates included, read from the driver's small-signal current at
     /// [`LOAD_FREQUENCY`], as a characterization reads an input's capacitance.
     fn measure_loads(&mut self, values: &[f64], options: &Options) {
-        if self.system.logic.drivers.is_empty() {
+        if self.elaborated.logic.drivers.is_empty() {
             return;
         }
         self.evaluate(values, None, (1.0, options.gmin), true);
         let omega = TAU * LOAD_FREQUENCY;
-        let contributions = &self.workspace.contributions;
+        let contributions = &self.state.workspace.contributions;
         let matrix: Vec<Complex64> = contributions
             .conductance
             .iter()
             .zip(&contributions.capacitance)
             .map(|(&conductance, &capacitance)| Complex64::new(conductance, omega * capacitance))
             .collect();
-        let mut solver = self.solver.sharing::<Complex64>();
+        let mut solver = self.state.solver.sharing::<Complex64>();
         let Ok(mut factors) = solver.factor(&matrix) else {
             return;
         };
         let mut phasors = vec![Complex64::default(); values.len()];
-        for &(element, net) in &self.system.logic.drivers {
-            let Some(current) = self.system.devices[element]
-                .device
+        for &(element, net) in &self.elaborated.logic.drivers {
+            let Some(current) = self.state.devices[element]
                 .as_driver()
                 .map(|driver| driver.current())
             else {
@@ -482,7 +482,8 @@ impl Simulator {
             phasors.fill(Complex64::default());
             phasors[current.index()] = Complex64::new(1.0, 0.0);
             if factors.solve(&mut phasors).is_ok() {
-                self.events
+                self.state
+                    .events
                     .load(net, phasors[current.index()].im.abs() / omega);
             }
         }
@@ -492,7 +493,7 @@ impl Simulator {
     /// further from the supply it was measured at than the relative tolerance.
     pub(crate) fn watch_supplies(&mut self, values: &[f64], time: f64, options: &Options) {
         let input = Input::new(values, Some(time), 0.0);
-        for (index, placed) in self.system.logic.devices.iter().enumerate() {
+        for (index, placed) in self.elaborated.logic.devices.iter().enumerate() {
             let (Some(nominal), &[supply, ground]) = (
                 placed.device.domain().and_then(|domain| domain.supply),
                 placed.nodes(),
@@ -502,7 +503,8 @@ impl Simulator {
             let voltage = input.value(supply) - input.value(ground);
             let slack = options.relative_tolerance * nominal;
             let range = (nominal - slack, nominal + slack);
-            self.events
+            self.state
+                .events
                 .watch(index, Bound::Supply, voltage, range, time);
         }
     }
@@ -514,17 +516,17 @@ impl Simulator {
         mut solved: Solved,
         options: &Options,
     ) -> Result<OperatingPoint, SimulationError> {
-        let detectors = self.system.logic.detectors.len();
+        let detectors = self.elaborated.logic.detectors.len();
         let mut previous = vec![Level::Unknown; detectors];
         let mut unsettled = vec![false; detectors];
         for round in 0.. {
             let mut levels: Vec<Level> = self
-                .system
+                .elaborated
                 .logic
                 .detectors
                 .iter()
                 .map(|&(element, _)| {
-                    let sense = self.system.devices[element].device.as_detector();
+                    let sense = self.state.devices[element].as_detector();
                     let input = Input::new(&solved.values, None, 0.0);
                     sense.map_or(Level::Unknown, |sense| {
                         detected(sense.margin(&input), Level::Unknown)
@@ -538,14 +540,14 @@ impl Simulator {
                     *level = Level::Unknown;
                 }
             }
-            self.events.settle(&self.system.logic, &levels);
+            self.state.events.settle(&self.elaborated.logic, &levels);
             previous = levels;
-            let changed = self.events.retarget(&self.system.logic);
+            let changed = self.state.events.retarget(&self.elaborated.logic);
             if changed.is_empty() {
                 break;
             }
             for (driver, level) in changed {
-                let element = self.system.logic.drivers[driver].0;
+                let element = self.elaborated.logic.drivers[driver].0;
                 self.drive(element, (0.0, level, 0.0));
             }
             solved = self.solve_dc(solved.values, options)?;
@@ -553,9 +555,9 @@ impl Simulator {
         self.measure_loads(&solved.values, options);
         self.watch_supplies(&solved.values, 0.0, options);
         Ok(OperatingPoint {
-            observation: self.observer.dc(&solved.values, options.gmin),
+            observation: self.state.observer.dc(&solved.values, options.gmin),
             values: solved.values,
-            logic: self.events.levels().to_vec(),
+            logic: self.state.events.levels().to_vec(),
             strategy: solved.strategy,
         })
     }
@@ -750,7 +752,7 @@ impl Simulator {
             };
             match self.newton(values, mode, options, options.dc_iterations) {
                 Ok(iterations) => {
-                    let settled = values.iter().zip(&last).zip(&self.system.unknowns).all(
+                    let settled = values.iter().zip(&last).zip(&self.elaborated.unknowns).all(
                         |((value, before), unknown)| {
                             let magnitude = value.abs().max(before.abs());
                             (value - before).abs()
@@ -873,7 +875,7 @@ mod tests {
     fn pseudo_transient_continuation_follows_a_circuit_past_its_fold() {
         let mut simulator = folded();
         let options = Options::default();
-        let mut values = vec![0.0; simulator.system.unknowns.len()];
+        let mut values = vec![0.0; simulator.elaborated.unknowns.len()];
         simulator
             .pseudo_transient(&mut values, &options, &[])
             .expect("pseudo-transient continuation converges");

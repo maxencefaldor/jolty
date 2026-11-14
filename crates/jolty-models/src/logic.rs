@@ -125,7 +125,7 @@ pub struct Stimulus {
 }
 
 /// One placed logic device.
-pub trait Logic: fmt::Debug + Send {
+pub trait Logic: fmt::Debug + Send + Sync {
     /// The device's pins.
     fn pins(&self) -> Pins;
 

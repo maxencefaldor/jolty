@@ -2,19 +2,25 @@
 //! and elaborated, then its analyses run in order, end to end.
 //!
 //! For each fixture whose plan runs no Monte Carlo analysis, `<fixture>/setup` measures
-//! the setup alone, from the circuit's JSON text to a simulator ready to run, and
-//! `<fixture>/run` the setup and then every analysis of the plan. `scripts/bench` runs
-//! the suite's fixtures and reads what criterion measured; name others after `--` to run
-//! them, such as `cargo bench -p jolty-engine --bench fixtures -- inverter_chain_5000/`.
+//! the setup alone, from the circuit's JSON text to a simulator ready to run,
+//! `<fixture>/shared` the setup of a run of the circuit elaborated once and shared, as each
+//! of many runs of one circuit makes it, and `<fixture>/run` the setup from the JSON text
+//! and then every analysis of the plan. `scripts/bench` runs the suite's fixtures and reads
+//! what criterion measured; name others after `--` to run them, such as
+//! `cargo bench -p jolty-engine --bench fixtures -- inverter_chain_5000/`.
 
 use std::error::Error;
 use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{Criterion, SamplingMode, criterion_group, criterion_main};
-use jolty_engine::{Analysis, Conditions, Options, Outcome, SimulationError, Simulator};
+use jolty_engine::{
+    Analysis, Conditions, Elaborated, Options, Outcome, SimulationError, Simulator, Structure,
+    Values,
+};
 use jolty_ir::Circuit;
 use jolty_models::Library;
 use serde::Deserialize;
@@ -43,6 +49,12 @@ impl Fixture {
     fn setup(&self, library: &Library) -> Result<Simulator, Box<dyn Error>> {
         let circuit = Circuit::from_json(&self.text)?;
         Ok(Simulator::new(&circuit, library, &Conditions::default())?)
+    }
+
+    /// The circuit elaborated once, read from its JSON text, for runs to share.
+    fn elaborated(&self, library: &Library) -> Result<Arc<Elaborated>, Box<dyn Error>> {
+        let circuit = Circuit::from_json(&self.text)?;
+        Ok(Elaborated::new(&circuit, library, &Structure::default())?)
     }
 
     /// The outcomes of the plan's analyses, run in order on a simulator set up afresh.
@@ -106,6 +118,21 @@ fn benchmark(c: &mut Criterion) {
             .warm_up_time(Duration::from_secs(1))
             .measurement_time(Duration::from_secs(5));
         group.bench_function("setup", |b| b.iter(|| black_box(fixture.setup(&library))));
+        // The circuit is elaborated once, when the benchmark is selected.
+        let mut elaborated = None;
+        group.bench_function("shared", |b| {
+            let elaborated = elaborated.get_or_insert_with(|| {
+                fixture
+                    .elaborated(&library)
+                    .expect("the fixture elaborates")
+            });
+            b.iter(|| {
+                black_box(Simulator::from_elaborated(
+                    Arc::clone(elaborated),
+                    Values::default(),
+                ))
+            });
+        });
         // A fixture selected runs once before it is measured, so that a failure stops the
         // benchmark rather than being measured.
         let mut checked = false;

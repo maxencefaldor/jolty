@@ -1,9 +1,17 @@
 //! The simulation engine of jolty.
 //!
-//! A [`Simulator`] elaborates a circuit once, flattening its hierarchy into devices bound to
-//! unknowns and claiming the sparsity pattern of its matrix, then runs any number of analyses
-//! on it: an [operating point](Simulator::operating_point), a [DC sweep](Simulator::dc_sweep),
-//! a [small-signal frequency response](Simulator::ac), a [transient](Simulator::transient),
+//! A circuit is elaborated once into an [`Elaborated`] circuit, its hierarchy flattened into
+//! devices bound to unknowns, the sparsity pattern of its matrix claimed and its sparse
+//! solver's ordering found, and its devices' numbers listed in a table of parameters. It
+//! never changes after, so threads share it. A [`Simulator`] is one run of it: the
+//! [`Values`] it runs at, which replace some numbers and the temperature, and the state the
+//! run writes, its devices made for those values among it. A simulator
+//! [reset](Simulator::reset) for other values makes its devices again and keeps every
+//! buffer, and runs as one made afresh would, bit for bit.
+//!
+//! A simulator runs any number of analyses: an [operating
+//! point](Simulator::operating_point), a [DC sweep](Simulator::dc_sweep), a [small-signal
+//! frequency response](Simulator::ac), a [transient](Simulator::transient),
 //! [sensitivities](Simulator::sensitivity), the [loop gain](Simulator::stability) through a
 //! probe, the [noise](Simulator::noise) at an output, and the [poles and
 //! zeros](Simulator::pole_zero).
@@ -15,7 +23,7 @@
 //! circuit, joined to it by connect elements where a logic pin meets an electrical net.
 //!
 //! ```
-//! use jolty_engine::{Conditions, Options, Simulator};
+//! use jolty_engine::{Conditions, Elaborated, Options, Simulator, Structure, Values};
 //! use jolty_ir::Circuit;
 //! use jolty_models::Library;
 //!
@@ -38,12 +46,22 @@
 //! let solution = simulator.operating_point(&Options::default())?;
 //! let out = simulator.unknown("out").expect("a net named out");
 //! assert!((solution.values[out.index()] - 2.5).abs() < 1e-9);
+//!
+//! // Elaborated once, the divider runs at the values of each sample of its upper resistor.
+//! let elaborated = Elaborated::new(&circuit, &Library::standard(), &Structure::default())?;
+//! let upper = elaborated.parameter("R1", "resistance").expect("a resistance");
+//! let mut values = Values::default();
+//! values.set(upper, 3000.0);
+//! let mut sample = Simulator::from_elaborated(elaborated, values)?;
+//! let solution = sample.operating_point(&Options::default())?;
+//! assert!((solution.values[out.index()] - 1.25).abs() < 1e-9);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 mod ac;
 mod analysis;
 mod elaborate;
+mod elaborated;
 mod logic;
 pub mod measure;
 mod newton;
@@ -57,20 +75,22 @@ mod profile;
 mod sensitivity;
 mod solver;
 mod stability;
+mod state;
 mod sweep;
 mod transient;
+mod values;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{Level, Library, Node, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
-use jolty_numerics::Ordering;
 use serde::Deserialize;
 
 pub use ac::{Ac, Response};
 pub use analysis::{Analysis, Outcome};
-pub use elaborate::{Composite, ElaborationError, ElaborationProblem, Location, Placed};
+pub use elaborate::{Composite, ElaborationError, ElaborationProblem, Location};
+pub use elaborated::{Elaborated, Placed, Structure, StructureKey};
 pub use jolty_numerics::integration::Method;
 pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
 pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseSpectrum};
@@ -83,18 +103,28 @@ pub use sensitivity::{Derivatives, Differentiated, Parameter, Sensitivities, Sen
 pub use stability::{LoopGain, Stability};
 pub use sweep::{DcSweep, Sweep};
 pub use transient::{Statistics, Transient, Waveforms};
+pub use values::{ParameterId, Values};
 
-use elaborate::System;
-use logic::Events;
-use newton::Workspace;
-use observe::Observer;
-use operating_point::Remembered;
-use solver::Solver;
+use state::State;
+
+// An elaborated circuit is shared by every thread that runs it, and a simulator, holding a
+// run's state, moves to the thread that runs it.
+const _: () = {
+    const fn shared<T: Send + Sync>() {}
+    const fn sent<T: Send>() {}
+    shared::<Elaborated>();
+    sent::<State>();
+    sent::<Simulator>();
+};
 
 /// What a circuit is simulated in, apart from its analyses: its devices' temperature,
 /// parameters that replace the circuit's own for some device instances, as a Monte Carlo
 /// sample's do, and models that stand in for some component instances, as a plan's
 /// fidelity chooses.
+///
+/// The models that stand in are the circuit's [`Structure`], and the temperature and the
+/// numbers the [`Values`] of a run of it; [`Simulator::new`] elaborates the circuit with
+/// all of them, its parameters those the conditions give, for one run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Conditions {
     /// The devices' temperature, in kelvins.
@@ -138,61 +168,21 @@ impl Default for Conditions {
     }
 }
 
-/// A circuit elaborated for simulation, ready to run analyses.
+/// A run of an elaborated circuit, ready to run analyses: the circuit, the values it runs
+/// at, and what the run writes, its devices made for those values among it.
 ///
 /// Every analysis returns [`SimulationError::Foundry`] for a circuit that holds a foundry's
 /// device, which ngspice simulates in the engine's place.
 #[derive(Debug)]
 pub struct Simulator {
-    system: System,
-    solver: Solver<f64>,
-    workspace: Workspace,
-    /// The state of the logic nets, as the last analysis left it.
-    events: Events,
-    /// The devices made again, to read their terminals.
-    observer: Observer,
-    /// The devices and the composite terminals in the order of their paths, made the first
-    /// time a terminal is looked up.
-    index: OnceLock<Index>,
-    /// The last operating point solved, what it was solved under and the state it left,
-    /// which an analysis about the same operating point takes instead of solving it again.
-    /// Once the devices are made, only holding a source and driving the logic change their
-    /// DC equations: the sources held are part of what it was solved under, and an
-    /// operating point starts from the logic reset and leaves the logic and its drivers
-    /// as the one remembered left them.
-    remembered: Option<Remembered>,
-    /// The sources held away from their own levels, at the level each is held at, by the
-    /// index of its device.
-    held: BTreeMap<usize, f64>,
-    /// How many times the simulator has solved for an operating point, or a DC sweep's
-    /// first level, rather than taken the last one's.
-    solves: usize,
-}
-
-/// The devices and the composite terminals of a circuit, each by index, sorted by path and
-/// by name, to find one by either.
-#[derive(Debug)]
-struct Index {
-    devices: Vec<usize>,
-    composites: Vec<usize>,
-}
-
-impl Index {
-    /// The index of `system`'s devices and composite terminals.
-    fn new(system: &System) -> Self {
-        let mut devices: Vec<usize> = (0..system.devices.len()).collect();
-        devices.sort_by(|&a, &b| system.devices[a].path().cmp(system.devices[b].path()));
-        let mut composites: Vec<usize> = (0..system.composites.len()).collect();
-        composites.sort_by(|&a, &b| system.composites[a].name.cmp(&system.composites[b].name));
-        Self {
-            devices,
-            composites,
-        }
-    }
+    elaborated: Arc<Elaborated>,
+    values: Values,
+    state: State,
 }
 
 impl Simulator {
-    /// Elaborates `circuit` with the models of `library`, in `conditions`.
+    /// Elaborates `circuit` with the models of `library`, in `conditions`, for one run: the
+    /// parameters the conditions replace are the elaborated circuit's own.
     ///
     /// # Errors
     ///
@@ -204,25 +194,76 @@ impl Simulator {
         library: &Library,
         conditions: &Conditions,
     ) -> Result<Self, ElaborationError> {
-        let system = elaborate::elaborate(circuit, library, conditions)?;
-        let ordering = Ordering::new(system.pattern.clone())
-            .map_err(|_| ElaborationError::from(ElaborationProblem::TooLarge))?;
-        let names = system.unknowns.iter().map(|unknown| unknown.name.clone());
-        let solver = Solver::new(Arc::new(ordering), names.collect());
-        let workspace = Workspace::new(&system);
-        let events = Events::new(&system.logic);
-        let observer = Observer::new(&system);
+        let replaced = (&conditions.substitutes, &conditions.overrides);
+        let (elaborated, devices) =
+            elaborate::elaborate(circuit, library, replaced, conditions.temperature)?;
+        let state = State::new(&elaborated, devices, Vec::new(), conditions.temperature);
         Ok(Self {
-            system,
-            solver,
-            workspace,
-            events,
-            observer,
-            index: OnceLock::new(),
-            remembered: None,
-            held: BTreeMap::new(),
-            solves: 0,
+            elaborated: Arc::new(elaborated),
+            values: Values::default(),
+            state,
         })
+    }
+
+    /// A run of `elaborated` at `values`: its devices made from the numbers the values
+    /// give, each claiming the unknowns and entries the circuit holds. Where the values
+    /// give a device others, as a resistance below 1 Ω carries its current as an unknown,
+    /// the run is of the circuit [restructured](Elaborated::restructured) for them.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`ElaborationProblem`] the values make: each parameter the circuit
+    /// does not have, and each device whose numbers they put out of range.
+    pub fn from_elaborated(
+        elaborated: Arc<Elaborated>,
+        values: Values,
+    ) -> Result<Self, ElaborationError> {
+        if let Some(state) = State::of(&elaborated, &values)? {
+            return Ok(Self {
+                elaborated,
+                values,
+                state,
+            });
+        }
+        let (restructured, devices, patched) = elaborated.rebind(&values)?;
+        let temperature = restructured.temperature_of(&values);
+        let state = State::new(&restructured, devices, patched, temperature);
+        Ok(Self {
+            elaborated: Arc::new(restructured),
+            values,
+            state,
+        })
+    }
+
+    /// Readies the simulator to run at `values`, as one made [from its elaborated
+    /// circuit](Simulator::from_elaborated) at them would: its devices made again from the
+    /// numbers they give, and everything the runs before left forgotten, its buffers kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`ElaborationProblem`] the values make, and leaves the simulator as it
+    /// was.
+    pub fn reset(&mut self, values: Values) -> Result<(), ElaborationError> {
+        if !self.state.reset(&self.elaborated, &values)? {
+            let (restructured, devices, patched) = self.elaborated.rebind(&values)?;
+            let temperature = restructured.temperature_of(&values);
+            self.state = State::new(&restructured, devices, patched, temperature);
+            self.elaborated = Arc::new(restructured);
+        }
+        self.values = values;
+        Ok(())
+    }
+
+    /// The elaborated circuit the simulator runs.
+    #[must_use]
+    pub fn elaborated(&self) -> &Arc<Elaborated> {
+        &self.elaborated
+    }
+
+    /// The values the simulator runs at.
+    #[must_use]
+    pub fn values(&self) -> &Values {
+        &self.values
     }
 
     /// How many times the simulator has solved for an operating point, or for a DC sweep's
@@ -232,7 +273,7 @@ impl Simulator {
     /// none.
     #[must_use]
     pub fn operating_point_solves(&self) -> usize {
-        self.solves
+        self.state.solves
     }
 
     /// The terminals of every component instance and logic device on an electrical or a
@@ -241,7 +282,7 @@ impl Simulator {
     /// ground, sums its electrical terminals only.
     #[must_use]
     pub fn composites(&self) -> &[Composite] {
-        &self.system.composites
+        &self.elaborated.composites
     }
 
     /// The node that the terminal `terminal` of the device, component instance or logic
@@ -251,30 +292,7 @@ impl Simulator {
     /// thermal net.
     #[must_use]
     pub fn terminal(&self, instance: &str, terminal: &str) -> Option<(Node, bool)> {
-        let index = self.index.get_or_init(|| Index::new(&self.system));
-        let devices = &self.system.devices;
-        if let Ok(found) = index
-            .devices
-            .binary_search_by(|&device| devices[device].path().cmp(instance))
-        {
-            let device = &devices[index.devices[found]];
-            let position = device
-                .terminals()
-                .iter()
-                .position(|name| name == terminal)?;
-            return Some((
-                device.nodes()[position],
-                device.thermal().contains(&position),
-            ));
-        }
-        let name = format!("{instance}.{terminal}");
-        let composites = &self.system.composites;
-        let found = index
-            .composites
-            .binary_search_by(|&composite| composites[composite].name.cmp(&name))
-            .ok()?;
-        let composite = &composites[index.composites[found]];
-        Some((composite.node, composite.thermal))
+        self.elaborated.terminal(instance, terminal)
     }
 
     /// Starts the logic driver at `element` among the devices on a `(time, level,
@@ -285,8 +303,8 @@ impl Simulator {
         element: usize,
         (time, level, transition): (f64, Level, f64),
     ) -> Option<f64> {
-        self.observer.drive(element, time, level, transition);
-        let driver = self.system.devices[element].device.as_driver()?;
+        self.state.observer.drive(element, time, level, transition);
+        let driver = self.state.devices[element].as_driver()?;
         driver.drive(time, level, transition);
         Some(driver.settles_at())
     }
@@ -294,7 +312,7 @@ impl Simulator {
     /// The unknowns, in the order of every solution's values.
     #[must_use]
     pub fn unknowns(&self) -> &[UnknownInfo] {
-        &self.system.unknowns
+        &self.elaborated.unknowns
     }
 
     /// The analog devices, with every component instance unfolded, in the order they were
@@ -302,14 +320,14 @@ impl Simulator {
     /// nets.
     #[must_use]
     pub fn devices(&self) -> &[Placed] {
-        &self.system.devices
+        &self.elaborated.devices
     }
 
     /// The paths of the foundry's devices the circuit holds, which no analysis solves, in
     /// the order they were placed.
     #[must_use]
     pub fn foundry_devices(&self) -> Vec<&str> {
-        self.system
+        self.elaborated
             .devices
             .iter()
             .filter(|placed| placed.foundry())
@@ -337,20 +355,20 @@ impl Simulator {
     /// bound once, with the value furthest outside and when it first left.
     #[must_use]
     pub fn excursions(&self) -> Vec<Excursion> {
-        self.events.excursions()
+        self.state.events.excursions()
     }
 
     /// The number of connect elements among [`Simulator::devices`], all at its end.
     #[must_use]
     pub fn elements(&self) -> usize {
-        self.system.logic.detectors.len() + self.system.logic.drivers.len()
+        self.elaborated.logic.detectors.len() + self.elaborated.logic.drivers.len()
     }
 
     /// The logic devices, with every component instance unfolded, in the order they were
     /// placed.
     #[must_use]
     pub fn logic_devices(&self) -> &[PlacedLogic] {
-        &self.system.logic.devices
+        &self.elaborated.logic.devices
     }
 
     /// The logic nets, in the order of every result's levels: the nets only logic pins join,
@@ -358,20 +376,20 @@ impl Simulator {
     /// elements.
     #[must_use]
     pub fn logic_nets(&self) -> &[LogicNet] {
-        &self.system.logic.nets
+        &self.elaborated.logic.nets
     }
 
     /// The name of the reference node, the net of the top component's ground port.
     #[must_use]
     pub fn reference(&self) -> &str {
-        self.system.reference.as_str()
+        self.elaborated.reference.as_str()
     }
 
     /// The unknown named `name`: a net's path such as `amplifier/mid`, or an instance's path
     /// and label such as `V1:current`.
     #[must_use]
     pub fn unknown(&self, name: &str) -> Option<Unknown> {
-        self.system
+        self.elaborated
             .unknowns
             .iter()
             .position(|unknown| unknown.name == name)

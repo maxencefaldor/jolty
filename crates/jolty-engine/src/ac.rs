@@ -50,12 +50,13 @@ impl Simulator {
         self.solvable()?;
         let index = self.source_index(&ac.source)?;
         let operating_point = self.linearize(&ac.frequencies, options)?;
-        let mut excitation = vec![0.0; self.system.unknowns.len()];
-        if let Some(source) = self.system.devices[index].device.as_source() {
+        let mut excitation = vec![0.0; self.elaborated.unknowns.len()];
+        if let Some(source) = self.state.devices[index].as_source() {
             source.level_derivative(&mut excitation);
         }
-        let mut linearization = Linearization::new(&self.solver);
-        self.observer
+        let mut linearization = Linearization::new(&self.state.solver);
+        self.state
+            .observer
             .linearize(&operating_point.values, options.gmin);
         let mut values = Vec::with_capacity(ac.frequencies.len());
         let mut currents = Vec::with_capacity(ac.frequencies.len());
@@ -65,9 +66,13 @@ impl Simulator {
                 .map(|&d| Complex64::new(-d, 0.0))
                 .collect();
             linearization
-                .factor(&self.workspace.contributions, frequency)?
+                .factor(&self.state.workspace.contributions, frequency)?
                 .solve(&mut phasors)?;
-            currents.push(self.observer.phasors(&phasors, TAU * frequency, index));
+            currents.push(
+                self.state
+                    .observer
+                    .phasors(&phasors, TAU * frequency, index),
+            );
             values.push(phasors);
         }
         Ok(Response {
@@ -128,7 +133,7 @@ impl Simulator {
         }
         let quantity = |node: Option<Unknown>| {
             node.map_or(Quantity::Voltage, |unknown| {
-                self.system.unknowns[unknown.index()].quantity
+                self.elaborated.unknowns[unknown.index()].quantity
             })
         };
         let quantity = match (quantity(found), quantity(base), reference) {

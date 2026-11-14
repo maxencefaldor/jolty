@@ -36,6 +36,11 @@ impl<T: Scalar> Solver<T> {
         self.lu.pattern()
     }
 
+    /// Forgets every factorization, as [`SparseLu::reset`] does.
+    pub(crate) fn reset(&mut self) {
+        self.lu.reset();
+    }
+
     /// How much work the solver has done.
     pub(crate) fn statistics(&self) -> jolty_numerics::Statistics {
         self.lu.statistics()

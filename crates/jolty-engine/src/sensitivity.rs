@@ -32,7 +32,7 @@ use jolty_numerics::{Complex64, Pattern, PatternBuilder};
 use serde::Deserialize;
 
 use crate::ac::Linearization;
-use crate::elaborate::Origin;
+use crate::elaborated::{Origin, Origins};
 use crate::transient::{Carried, Tangent};
 use crate::{Ac, DcSweep, OperatingPoint, Options, Outcome, SimulationError, Simulator, Transient};
 
@@ -264,9 +264,10 @@ impl Simulator {
         self.solvable()?;
         let point = self.operating_point(options)?;
         self.evaluate(&point.values, None, (1.0, 2.0 * options.gmin), false);
-        let doubled = self.workspace.contributions.residual.clone();
+        let doubled = self.state.workspace.contributions.residual.clone();
         self.evaluate(&point.values, None, (1.0, options.gmin), false);
         let mut moves: Vec<f64> = self
+            .state
             .workspace
             .contributions
             .residual
@@ -274,8 +275,9 @@ impl Simulator {
             .zip(&doubled)
             .map(|(residual, doubled)| residual - doubled)
             .collect();
-        self.solver
-            .factor(&self.workspace.contributions.conductance)?
+        self.state
+            .solver
+            .factor(&self.state.workspace.contributions.conductance)?
             .solve(&mut moves)?;
         Ok((point, moves))
     }
@@ -283,27 +285,32 @@ impl Simulator {
     /// A twin of every device, for each number of its parameters its model reads as a
     /// real number, in the devices' order then the numbers'.
     fn twins(&self) -> Vec<Twin> {
+        let origins = Origins {
+            elaborated: &self.elaborated,
+            patched: &self.state.patched,
+            temperature: self.state.temperature,
+        };
         let mut twins = Vec::new();
-        for (index, placed) in self.system.devices.iter().enumerate() {
-            let Origin::Model(made) = &placed.origin else {
+        for (index, placed) in self.elaborated.devices.iter().enumerate() {
+            let Origin::Model(made) = origins.of(index) else {
                 continue;
             };
             for (name, value) in numbers(&made.parameters) {
                 let mut unknowns: Vec<UnknownInfo> =
-                    self.system.unknowns[..placed.first_internal].to_vec();
+                    self.elaborated.unknowns[..placed.first_internal].to_vec();
                 let mut builder = PatternBuilder::new();
                 let mut binding = Binding::new(
                     placed.path(),
                     placed.nodes(),
                     &mut unknowns,
                     &mut builder,
-                    self.system.temperature,
+                    origins.temperature,
                 );
                 let Ok(device) = made.specification.instantiate_gradient(&name, &mut binding)
                 else {
                     continue;
                 };
-                let pattern = builder.finish(self.system.unknowns.len());
+                let pattern = builder.finish(self.elaborated.unknowns.len());
                 twins.push(Twin {
                     device: index,
                     parameter: Parameter {
@@ -331,8 +338,9 @@ impl Simulator {
     ) -> Result<Vec<Vec<f64>>, SimulationError> {
         self.evaluate(x, None, (1.0, options.gmin), false);
         let mut factors = self
+            .state
             .solver
-            .factor(&self.workspace.contributions.conductance)?;
+            .factor(&self.state.workspace.contributions.conductance)?;
         let mut adjoints = Vec::with_capacity(outputs.len());
         for output in outputs {
             let mut adjoint = vec![0.0; x.len()];
@@ -384,8 +392,9 @@ impl Simulator {
         // How the operating point moves with each parameter, and G and C with it.
         self.evaluate(x, None, (1.0, options.gmin), false);
         let mut factors = self
+            .state
             .solver
-            .factor(&self.workspace.contributions.conductance)?;
+            .factor(&self.state.workspace.contributions.conductance)?;
         let mut moved = Vec::with_capacity(twins.len());
         // Each twin stays evaluated at the operating point, which the response reads too.
         for twin in twins.iter_mut() {
@@ -399,11 +408,12 @@ impl Simulator {
             bias.push(self.bias_derivative(x, shift, options));
         }
         self.evaluate(x, None, (1.0, options.gmin), false);
-        let mut linearization = Linearization::new(&self.solver);
+        let mut linearization = Linearization::new(&self.state.solver);
         let mut found = Vec::with_capacity(response.frequencies.len());
         for (&frequency, phasors) in response.frequencies.iter().zip(&response.values) {
             let omega = std::f64::consts::TAU * frequency;
-            let mut factors = linearization.factor(&self.workspace.contributions, frequency)?;
+            let mut factors =
+                linearization.factor(&self.state.workspace.contributions, frequency)?;
             let mut adjoints = Vec::with_capacity(outputs.len());
             for output in outputs {
                 let mut adjoint = vec![Complex64::default(); x.len()];
@@ -417,7 +427,7 @@ impl Simulator {
                 twin.add_product(omega, phasors, &mut product);
                 if let Some((conductance, capacitance)) = moving {
                     for ((row, column), (g, c)) in self
-                        .system
+                        .elaborated
                         .pattern
                         .positions()
                         .zip(conductance.iter().zip(capacitance))
@@ -449,7 +459,7 @@ impl Simulator {
         options: &Options,
     ) -> Option<(Vec<f64>, Vec<f64>)> {
         let largest = self
-            .system
+            .elaborated
             .unknowns
             .iter()
             .zip(shift)
@@ -467,7 +477,7 @@ impl Simulator {
                 .map(|(value, along)| value + sign * step * along)
                 .collect();
             self.evaluate(&moved, None, (1.0, options.gmin), false);
-            let contributions = &self.workspace.contributions;
+            let contributions = &self.state.workspace.contributions;
             *end = (
                 contributions.conductance.clone(),
                 contributions.capacitance.clone(),
@@ -494,8 +504,9 @@ impl Simulator {
     ) -> Result<(), SimulationError> {
         self.evaluate(x, None, (1.0, options.gmin), false);
         let mut factors = self
+            .state
             .solver
-            .factor(&self.workspace.contributions.conductance)?;
+            .factor(&self.state.workspace.contributions.conductance)?;
         let mut at = vec![Vec::with_capacity(forward.twins.len()); forward.outputs.len()];
         let mut shifts = Vec::with_capacity(forward.twins.len());
         for twin in &mut forward.twins {
@@ -514,8 +525,8 @@ impl Simulator {
         for (twin, moved) in forward.twins.iter_mut().zip(&shifts) {
             twin.evaluate(x, Some(0.0), options.gmin);
             let mut charge = twin.charge();
-            let capacitances = &self.workspace.contributions.capacitance;
-            self.system
+            let capacitances = &self.state.workspace.contributions.capacitance;
+            self.elaborated
                 .pattern
                 .add_product(capacitances, moved, &mut charge);
             forward.tangents.push(Tangent::new(charge));
@@ -535,14 +546,15 @@ impl Simulator {
     ) -> Result<(), SimulationError> {
         self.evaluate(x, Some(time), (1.0, options.gmin), false);
         let jacobian: Vec<f64> = self
+            .state
             .workspace
             .contributions
             .conductance
             .iter()
-            .zip(&self.workspace.contributions.capacitance)
+            .zip(&self.state.workspace.contributions.capacitance)
             .map(|(conductance, capacitance)| conductance + formula.alpha * capacitance)
             .collect();
-        let mut factors = self.solver.factor(&jacobian)?;
+        let mut factors = self.state.solver.factor(&jacobian)?;
         let mut at = vec![Vec::with_capacity(forward.twins.len()); forward.outputs.len()];
         for (twin, tangent) in forward.twins.iter_mut().zip(&mut forward.tangents) {
             twin.evaluate(x, Some(time), options.gmin);
@@ -560,8 +572,8 @@ impl Simulator {
                 derivatives.push(moved[output.index()]);
             }
             let mut charge = partial_charge;
-            let capacitances = &self.workspace.contributions.capacitance;
-            self.system
+            let capacitances = &self.state.workspace.contributions.capacitance;
+            self.elaborated
                 .pattern
                 .add_product(capacitances, &moved, &mut charge);
             tangent.advance(charge, &history, formula, restarted);

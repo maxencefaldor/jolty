@@ -171,6 +171,17 @@ impl<T: Scalar> SparseLu<T> {
         }
     }
 
+    /// Forgets every factorization, keeping the allocations: the next [`SparseLu::factor`]
+    /// searches for every pivot, and the statistics count from zero, as a solver made anew
+    /// for the same ordering does, so that it factors every matrix as that one would, bit for
+    /// bit.
+    pub fn reset(&mut self) {
+        self.numeric.forget();
+        self.factored.clear();
+        self.current = false;
+        self.statistics = Statistics::default();
+    }
+
     /// The ordering of the pattern this solver factors.
     #[must_use]
     pub fn ordering(&self) -> &Arc<Ordering> {

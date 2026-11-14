@@ -1,13 +1,14 @@
 //! The Python extension module `jolty._core`.
 //!
-//! It exposes one class, [`Simulator`], that elaborates a circuit from its JSON text, checks
-//! its structure, and runs analyses described in JSON, returning arrays as `NumPy` arrays,
-//! and the table of the structural checks' [`rules`]. Everything an agent or a person reads,
-//! from units to reports, is built on top of it in Python.
+//! It exposes a class, [`Simulator`], that elaborates a circuit from its JSON text, checks
+//! its structure, and runs analyses described in JSON, returning arrays as `NumPy` arrays;
+//! a circuit elaborated once, [`Elaborated`], that simulators made at the [`Values`] of
+//! some parameters share; and the table of the structural checks' [`rules`]. Everything an
+//! agent or a person reads, from units to reports, is built on top of it in Python.
 
 mod measure;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use jolty_engine::{
     Analysis, Derivatives, Location, NoiseSpectrum, Observation, Observations, OperatingPoint,
@@ -28,6 +29,91 @@ create_exception!(
     "A circuit cannot be elaborated. Its only argument lists every problem as a string."
 );
 create_exception!(_core, SimulationError, PyException, "An analysis failed.");
+
+/// A circuit elaborated once, which simulators of it at the values of any parameters share.
+#[pyclass(module = "jolty._core", frozen)]
+struct Elaborated {
+    inner: Arc<jolty_engine::Elaborated>,
+}
+
+/// The values of some parameters of an elaborated circuit, and the temperature, that a
+/// simulator of it runs at.
+#[pyclass(module = "jolty._core", frozen)]
+struct Values {
+    inner: jolty_engine::Values,
+}
+
+/// The structure the values of some parameters give an elaborated circuit, against its
+/// own: equal for values that share a structure.
+#[pyclass(module = "jolty._core", frozen, eq, hash)]
+#[derive(PartialEq, Eq, Hash)]
+struct StructureKey {
+    inner: jolty_engine::StructureKey,
+}
+
+#[pymethods]
+impl Elaborated {
+    /// Elaborates the circuit whose JSON text is `circuit`, with the models of the JSON
+    /// object `substitutes`, each a `model` and its `parameters` by component instance
+    /// path, standing in for them.
+    ///
+    /// A circuit that does not elaborate raises `ElaborationError` as
+    /// [`Simulator`]'s constructor does.
+    #[new]
+    fn new(py: Python<'_>, circuit: &str, substitutes: &str) -> PyResult<Self> {
+        let circuit = Circuit::from_json(circuit).map_err(|error| unreadable(&error))?;
+        let structure = jolty_engine::Structure {
+            substitutes: serde_json::from_str(substitutes).map_err(|error| unreadable(&error))?,
+        };
+        let inner = py
+            .detach(|| jolty_engine::Elaborated::new(&circuit, &Library::standard(), &structure))
+            .map_err(|error| elaboration_error(py, &error))?;
+        Ok(Self { inner })
+    }
+
+    /// The values that replace the numbers of the JSON object `overrides`, by instance path
+    /// then by the number's path among its parameters, at `temperature`, in kelvins.
+    ///
+    /// Raises `ElaborationError` naming every number the circuit's devices do not write.
+    fn values(&self, py: Python<'_>, overrides: &str, temperature: f64) -> PyResult<Values> {
+        let overrides = serde_json::from_str(overrides).map_err(|error| unreadable(&error))?;
+        let inner = self
+            .inner
+            .values(&overrides, Some(temperature))
+            .map_err(|error| elaboration_error(py, &error))?;
+        Ok(Values { inner })
+    }
+
+    /// The structure `values` give the circuit, against its own.
+    ///
+    /// Raises `ElaborationError` naming every device whose numbers they put out of range.
+    fn structure_of(&self, py: Python<'_>, values: &Values) -> PyResult<StructureKey> {
+        let inner = py
+            .detach(|| self.inner.structure_of(&values.inner))
+            .map_err(|error| elaboration_error(py, &error))?;
+        Ok(StructureKey { inner })
+    }
+
+    /// The circuit elaborated for the structure `values` give it, its parameters and
+    /// everything else this one's.
+    ///
+    /// Raises `ElaborationError` as [`Elaborated::structure_of`] does.
+    fn restructured(&self, py: Python<'_>, values: &Values) -> PyResult<Self> {
+        let inner = py
+            .detach(|| self.inner.restructured(&values.inner))
+            .map_err(|error| elaboration_error(py, &error))?;
+        Ok(Self { inner })
+    }
+}
+
+#[pymethods]
+impl StructureKey {
+    /// Whether the values keep the structure of the circuit that found the key.
+    #[getter]
+    fn unchanged(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
 
 /// A circuit elaborated for simulation.
 #[pyclass(module = "jolty._core", frozen)]
@@ -54,6 +140,35 @@ type RecordedDevice = (
 /// logic device, its name and whether it is thermal.
 type Recording = (Vec<RecordedDevice>, Vec<(String, bool)>);
 
+impl Simulator {
+    /// The simulator of `inner`, with what Python reads of it once.
+    fn wrapping(inner: jolty_engine::Simulator) -> Self {
+        let unknowns = inner
+            .unknowns()
+            .iter()
+            .map(|unknown| (unknown.name.clone(), quantity_name(unknown.quantity)))
+            .collect();
+        let nets = inner
+            .logic_nets()
+            .iter()
+            .map(|net| net.name.clone())
+            .collect();
+        let devices = inner.devices().len() - inner.elements() + inner.logic_devices().len();
+        let foundry_devices = inner
+            .foundry_devices()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        Self {
+            inner: Mutex::new(inner),
+            unknowns,
+            nets,
+            devices,
+            foundry_devices,
+        }
+    }
+}
+
 #[pymethods]
 impl Simulator {
     /// Elaborates the circuit whose JSON text is `circuit`, its devices at `temperature`,
@@ -79,33 +194,21 @@ impl Simulator {
             substitutes: serde_json::from_str(substitutes).map_err(|error| unreadable(&error))?,
         };
         let inner = jolty_engine::Simulator::new(&circuit, &Library::standard(), &conditions)
-            .map_err(|error| match problems_to_python(py, &error) {
-                Ok(problems) => ElaborationError::new_err((problems.unbind(),)),
-                Err(error) => error,
-            })?;
-        let unknowns = inner
-            .unknowns()
-            .iter()
-            .map(|unknown| (unknown.name.clone(), quantity_name(unknown.quantity)))
-            .collect();
-        let nets = inner
-            .logic_nets()
-            .iter()
-            .map(|net| net.name.clone())
-            .collect();
-        let devices = inner.devices().len() - inner.elements() + inner.logic_devices().len();
-        let foundry_devices = inner
-            .foundry_devices()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        Ok(Self {
-            inner: Mutex::new(inner),
-            unknowns,
-            nets,
-            devices,
-            foundry_devices,
-        })
+            .map_err(|error| elaboration_error(py, &error))?;
+        Ok(Self::wrapping(inner))
+    }
+
+    /// A simulator of `elaborated` at `values`, its devices made from the numbers they give,
+    /// on the circuit restructured for them where they give some device another structure.
+    ///
+    /// Raises `ElaborationError` naming every device whose numbers they put out of range.
+    #[staticmethod]
+    fn from_elaborated(py: Python<'_>, elaborated: &Elaborated, values: &Values) -> PyResult<Self> {
+        let shared = Arc::clone(&elaborated.inner);
+        let inner = py
+            .detach(|| jolty_engine::Simulator::from_elaborated(shared, values.inner.clone()))
+            .map_err(|error| elaboration_error(py, &error))?;
+        Ok(Self::wrapping(inner))
     }
 
     /// Each unknown's name and quantity, `"voltage"` or `"current"`, in the order of every
@@ -651,6 +754,15 @@ fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Boun
     Ok(result)
 }
 
+/// The error of a circuit that does not elaborate: `ElaborationError` with a list of its
+/// problems, each a dictionary of its `message` and its `instance`.
+fn elaboration_error(py: Python<'_>, error: &jolty_engine::ElaborationError) -> PyErr {
+    match problems_to_python(py, error) {
+        Ok(problems) => ElaborationError::new_err((problems.unbind(),)),
+        Err(error) => error,
+    }
+}
+
 /// The Rust core of jolty.
 /// The terminals of a device of `model` with `parameters`, a JSON object, in the order
 /// the model declares them.
@@ -670,7 +782,7 @@ fn terminals(model: &str, parameters: &str) -> PyResult<Vec<String>> {
 }
 
 /// The analog model of `library` named `name`.
-fn analog<'a>(library: &'a Library, name: &str) -> PyResult<&'a dyn Model> {
+fn analog<'a>(library: &'a Library, name: &str) -> PyResult<&'a Arc<dyn Model>> {
     library
         .get(name)
         .ok_or_else(|| PyValueError::new_err(format!("no model is named `{name}`")))
@@ -790,6 +902,9 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     module.add_class::<Simulator>()?;
     measure::register(module)?;
+    module.add_class::<Elaborated>()?;
+    module.add_class::<Values>()?;
+    module.add_class::<StructureKey>()?;
     module.add_function(wrap_pyfunction!(rules, module)?)?;
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
     module.add_function(wrap_pyfunction!(constant, module)?)?;

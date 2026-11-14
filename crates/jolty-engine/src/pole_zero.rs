@@ -155,13 +155,13 @@ impl Simulator {
         options.check()?;
         self.pencils_fit(transfer.is_some(), options)?;
         let operating_point = self.linearized(options)?;
-        let n = self.system.unknowns.len();
+        let n = self.elaborated.unknowns.len();
         let (conductance, capacitance) = self.dense_pencil();
         let poles = roots(n, conductance.clone(), capacitance.clone())?.ok_or_else(everywhere)?;
         let zeros = match transfer {
             Some((index, output, reference)) => {
                 let mut level = vec![0.0; n];
-                if let Some(source) = self.system.devices[index].device.as_source() {
+                if let Some(source) = self.state.devices[index].as_source() {
                     source.level_derivative(&mut level);
                 }
                 let mut read = vec![0.0; n];
@@ -217,7 +217,7 @@ impl Simulator {
         options.check()?;
         self.pencils_fit(false, options)?;
         self.linearized(options)?;
-        let n = self.system.unknowns.len();
+        let n = self.elaborated.unknowns.len();
         let (conductance, capacitance) = self.dense_pencil();
         let poles = roots(n, conductance, capacitance)?.ok_or_else(everywhere)?;
         let mut growing: Vec<Complex64> = poles
@@ -225,12 +225,13 @@ impl Simulator {
             .filter(|pole| pole.re > GROWING * pole.norm() && pole.im >= 0.0)
             .collect();
         growing.sort_by(|x, y| y.re.total_cmp(&x.re));
-        let mut linearization = Linearization::new(&self.solver);
+        let mut linearization = Linearization::new(&self.state.solver);
         growing
             .into_iter()
             .map(|pole| {
                 let beside = pole * Complex64::new(1.0, BESIDE);
-                let mut factors = linearization.factor_at(&self.workspace.contributions, beside)?;
+                let mut factors =
+                    linearization.factor_at(&self.state.workspace.contributions, beside)?;
                 let mut shape = vec![Complex64::new(1.0, 0.0); n];
                 for _ in 0..ITERATIONS {
                     factors.solve(&mut shape)?;
@@ -247,19 +248,19 @@ impl Simulator {
     /// Checks that the dense pencils of a pole-zero analysis fit the options' `memory`,
     /// `bordered` if it finds zeros too, its matrices a row larger.
     fn pencils_fit(&self, bordered: bool, options: &Options) -> Result<(), SimulationError> {
-        let rows = self.system.unknowns.len() + usize::from(bordered);
+        let rows = self.elaborated.unknowns.len() + usize::from(bordered);
         let size = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
         options.hold("pole-zero analysis", rows, PENCIL_MATRICES * size * size)
     }
 
     /// The matrices `G` and `C` the workspace holds, dense in column-major order.
     fn dense_pencil(&self) -> (Vec<f64>, Vec<f64>) {
-        let n = self.system.unknowns.len();
+        let n = self.elaborated.unknowns.len();
         let mut conductance = vec![0.0; n * n];
         let mut capacitance = vec![0.0; n * n];
-        let contributions = &self.workspace.contributions;
+        let contributions = &self.state.workspace.contributions;
         for (((row, column), &g), &c) in self
-            .system
+            .elaborated
             .pattern
             .positions()
             .zip(&contributions.conductance)

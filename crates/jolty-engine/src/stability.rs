@@ -80,22 +80,23 @@ impl Simulator {
         if self.source_quantity(index) != Quantity::Voltage {
             return Err(not_a_probe());
         }
-        let &[Some(entered), Some(_)] = self.system.devices[index].nodes() else {
+        let &[Some(entered), Some(_)] = self.elaborated.devices[index].nodes() else {
             return Err(not_a_probe());
         };
         let carried = self
             .unknown(&format!("{}:current", stability.probe))
             .ok_or_else(not_a_probe)?;
-        let unknowns = self.system.unknowns.len();
+        let unknowns = self.elaborated.unknowns.len();
         let mut level = vec![0.0; unknowns];
-        if let Some(source) = self.system.devices[index].device.as_source() {
+        if let Some(source) = self.state.devices[index].as_source() {
             source.level_derivative(&mut level);
         }
         let operating_point = self.linearize(&stability.frequencies, options)?;
-        let mut linearization = Linearization::new(&self.solver);
+        let mut linearization = Linearization::new(&self.state.solver);
         let mut gains = Vec::with_capacity(stability.frequencies.len());
         for &frequency in &stability.frequencies {
-            let mut factors = linearization.factor(&self.workspace.contributions, frequency)?;
+            let mut factors =
+                linearization.factor(&self.state.workspace.contributions, frequency)?;
             let mut series: Vec<Complex64> =
                 level.iter().map(|&d| Complex64::new(-d, 0.0)).collect();
             factors.solve(&mut series)?;

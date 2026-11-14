@@ -43,6 +43,7 @@ mod topology;
 pub mod waveform;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub use behavioral::{
     Behavior, BehavioralCurrentSource, BehavioralParameters, BehavioralVoltageSource,
@@ -99,10 +100,13 @@ pub use topology::{Branch, BranchKind, Interface};
 
 /// The models a circuit can use, by name: analog models and logic models, no two of the
 /// same name.
+///
+/// Each model is shared, so that what is elaborated from a library can keep the models it
+/// was made with, to read its instances' parameters again.
 #[derive(Default)]
 pub struct Library {
-    models: BTreeMap<&'static str, Box<dyn Model>>,
-    logic: BTreeMap<&'static str, Box<dyn LogicModel>>,
+    models: BTreeMap<&'static str, Arc<dyn Model>>,
+    logic: BTreeMap<&'static str, Arc<dyn LogicModel>>,
 }
 
 impl Library {
@@ -145,25 +149,25 @@ impl Library {
     pub fn add(&mut self, model: impl Model + 'static) {
         self.logic.remove(model.name());
         self.models
-            .insert(model.name(), Box::new(Surrounded::new(model)));
+            .insert(model.name(), Arc::new(Surrounded::new(model)));
     }
 
     /// Adds the logic model `model`, replacing any model of the same name.
     pub fn add_logic(&mut self, model: impl LogicModel + 'static) {
         self.models.remove(model.name());
-        self.logic.insert(model.name(), Box::new(model));
+        self.logic.insert(model.name(), Arc::new(model));
     }
 
     /// The analog model named `name`.
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<&dyn Model> {
-        self.models.get(name).map(Box::as_ref)
+    pub fn get(&self, name: &str) -> Option<&Arc<dyn Model>> {
+        self.models.get(name)
     }
 
     /// The logic model named `name`.
     #[must_use]
-    pub fn logic(&self, name: &str) -> Option<&dyn LogicModel> {
-        self.logic.get(name).map(Box::as_ref)
+    pub fn logic(&self, name: &str) -> Option<&Arc<dyn LogicModel>> {
+        self.logic.get(name)
     }
 
     /// The names of every model, analog and logic, in alphabetical order.
