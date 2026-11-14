@@ -7,13 +7,11 @@ Items keep their numbers; each leaves this file when it lands on `main`, and its
 
 | # | Item | Waits for |
 | --- | --- | --- |
-| 1 | Step control after a corner: the first step after a breakpoint or a jump is never checked for its error, and is a tenth of whatever step landed there, so on the boost converter a third of the steps are shorter than 10 ns and a located jump can start with too long a step. Check that step's error, then choose each step from how its error scales with it, part of each tolerance growing with the step. | Nothing |
 | 2 | Sensitivity twins local to their devices, so sensitivity costs O(P·k) rather than O(P·n). | Nothing |
-| 3 | The logic drivers' loads measured with one buffer rather than an allocation each. | Nothing |
 | 4 | Batched variants in Rust: one elaboration for every sample, corner and worst-case point, run in parallel, with a setting for the number of threads and the GIL released in every long call. | Nothing |
 | 5 | Spec measurements in Rust, so a batch returns verdicts rather than waveforms. | 4 |
 | 6 | AC, noise, stability and sensitivity solved in parallel across frequencies and columns, and devices evaluated and assembled in parallel, bit for bit the same whatever the number of threads. | 2 and 4 |
-| 7 | Fewer transient steps without heuristics: a checked first step, variable-order BDF, dense output at requested times, each benchmarked against ngspice. | 1 |
+| 7 | Fewer transient steps without heuristics, each benchmarked against ngspice: variable-order BDF and dense output at requested times. With every step's error judged and filtered, jolty takes 1% more steps than ngspice 47 on the buck converter and 7.5% more on the boost, and as many on the oscillators, with fewer Newton iterations everywhere, so neither is yet where the steps are. | A circuit where they are |
 | 8 | A benchmark of what jolty gives an agent: the same tasks done with jolty and with ngspice, compared by success and by iterations. | A design |
 | 9 | The docs' schematics and the gallery drawn again, after the schematic layout's new row order and routing. | Last, once the layout and the engine settle |
 | 10 | Continuous integration. | GitHub Actions minutes |
