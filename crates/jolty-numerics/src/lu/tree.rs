@@ -14,9 +14,11 @@
 //! exact; the root pivots on any row left.
 //!
 //! The subtrees of a node's children share no entry, so they factor at once, as rayon tasks,
-//! as many at a time as the threads given; and every number is computed by the same
+//! as many at a time as the threads given, and a large front's columns spread over them; and every number is computed by the same
 //! operations in the same order however they are spread, so the factors and the solutions
 //! are the same bits on any number of threads.
+
+use rayon::prelude::*;
 
 use super::dissection::{Dissection, Node};
 use super::numeric::{PIVOT_TOLERANCE, Triangle};
@@ -35,7 +37,7 @@ pub(super) struct Tree<T> {
 #[derive(Clone)]
 enum Part<T> {
     Interior(Box<Interior<T>>),
-    Front(Front<T>),
+    Front(Box<Front<T>>),
 }
 
 /// What a node leaves its parent: the Schur complement of the rows and columns it did not
@@ -68,7 +70,7 @@ impl<T: Scalar> Tree<T> {
                 if node.is_interior() {
                     Part::Interior(Box::default())
                 } else {
-                    Part::Front(Front::default())
+                    Part::Front(Box::default())
                 }
             })
             .collect();
@@ -114,23 +116,23 @@ impl<T: Scalar> Tree<T> {
             nodes,
             (root, threads),
             &mut self.parts,
-            &|index, part, below, searched| {
+            &|(index, threads), part, below, searched| {
                 let node = &nodes[index];
-                let base = node.earliest;
+                let below = (below, node.earliest);
                 let searched = searched
                     || !match part {
                         Part::Interior(interior) => {
                             interior.complete && interior.refactor(node, values)
                         }
                         Part::Front(front) => {
-                            front.complete && front.refactor(node, values, below, base)?
+                            front.complete && front.refactor(node, values, below, threads)?
                         }
                     };
                 if searched {
                     match part {
                         Part::Interior(interior) => interior.search(node, values),
                         Part::Front(front) => {
-                            front.search(node, values, below, base, index == root)
+                            front.search(node, values, below, (threads, index == root))
                         }
                     }?;
                 }
@@ -200,7 +202,7 @@ impl<T: Scalar> Tree<T> {
             nodes,
             (root, threads),
             scratch,
-            &|index, space, below, _| {
+            &|(index, _), space, below, _| {
                 let node = &nodes[index];
                 let below = (self.parts.as_slice(), below, node.earliest);
                 match (&self.parts[index], transposed) {
@@ -306,85 +308,90 @@ impl<T> Default for Scratch<T> {
     }
 }
 
-/// Runs `each` on every one of `items`, each with its weight, the size of its work, and
-/// the threads it may use, on up to `threads` threads at once. While there are two items
-/// and two threads or more, the items split where their weights balance, and the threads
-/// in proportion: the two halves run as two tasks, but for a half whose share rounds to no
-/// thread, which runs on the calling thread first. Returns the results in the items'
-/// order.
-fn spread<I: Send, R: Send>(
-    mut items: Vec<(I, usize)>,
-    threads: usize,
-    each: &(impl Fn(I, usize) -> R + Sync),
-) -> Vec<R> {
-    if threads < 2 || items.len() < 2 {
-        return items
-            .into_iter()
-            .map(|(item, _)| each(item, threads.max(1)))
-            .collect();
-    }
-    let total: usize = items.iter().map(|&(_, weight)| weight).sum();
-    let mut before = 0;
-    let mut middle = 1;
-    for (index, &(_, weight)) in items.iter().enumerate().take(items.len() - 1) {
-        before += weight;
+/// Where the subtrees of `children`, consecutive in the nodes' order, split for two tasks
+/// on `threads` threads: the number of the children before the split, the number of their
+/// subtrees' nodes, and the threads their task takes, in proportion to their positions,
+/// the split where the positions balance. A share that rounds to no thread, or to all of
+/// them, leaves one task the calling thread runs first.
+fn split(nodes: &[Node], children: &[usize], threads: usize) -> (usize, usize, usize) {
+    let positions = |child: usize| nodes[child].end - nodes[child].first;
+    let total: usize = children.iter().map(|&child| positions(child)).sum();
+    let (mut before, mut middle) = (0, 1);
+    for (index, &child) in children.iter().enumerate().take(children.len() - 1) {
+        before += positions(child);
         middle = index + 1;
         if 2 * before >= total {
             break;
         }
     }
-    let later = items.split_off(middle);
+    let first = children[0];
+    let last = children[middle - 1];
+    let subtrees = last + 1 - nodes[first].earliest;
     let share = (threads * before + total / 2) / total.max(1);
-    if share == 0 {
-        let mut found = spread(items, 1, each);
-        found.extend(spread(later, threads, each));
-        return found;
-    }
-    if share == threads {
-        let rest = spread(later, 1, each);
-        let mut found = spread(items, threads, each);
-        found.extend(rest);
-        return found;
-    }
-    let (mut found, rest) = rayon::join(
-        || spread(items, share, each),
-        || spread(later, threads - share, each),
-    );
-    found.extend(rest);
-    found
+    (middle, subtrees, share)
 }
 
 /// Runs `visit` on each node of the subtree of `index`, whose nodes' states are `states`,
-/// on up to `threads` threads at once, each node after its children: with its state, its
-/// descendants', from its subtree's earliest node, and whether any visit of them returned
-/// `true`. Returns whether any visit returned `true`, or the error of the first that
-/// failed, in the nodes' order.
+/// on up to `threads` threads at once, each node after its children: with its index and
+/// the threads it may use, its state, its descendants', from its subtree's earliest node,
+/// and whether any visit of them returned `true`. Returns whether any visit returned
+/// `true`, or the error of the first that failed, in the nodes' order.
 fn upward<S: Send, E: Send>(
     nodes: &[Node],
     (index, threads): (usize, usize),
     states: &mut [S],
-    visit: &(impl Fn(usize, &mut S, &[S], bool) -> Result<bool, E> + Sync),
+    visit: &(impl Fn((usize, usize), &mut S, &[S], bool) -> Result<bool, E> + Sync),
 ) -> Result<bool, E> {
-    let node = &nodes[index];
     let Some((state, below)) = states.split_last_mut() else {
         return Ok(false);
     };
-    let mut parts = Vec::with_capacity(node.children.len());
-    let mut rest = &mut *below;
-    for &child in &node.children {
-        let child_node = &nodes[child];
-        let (subtree, after) = rest.split_at_mut(child + 1 - child_node.earliest);
-        parts.push(((child, subtree), child_node.end - child_node.first));
-        rest = after;
+    let any = upward_all(nodes, (&nodes[index].children, threads), below, visit)?;
+    Ok(visit((index, threads), state, below, any)? || any)
+}
+
+/// Runs [`upward`] on the subtree of each of `children`, whose states tile `states` in
+/// their order, on up to `threads` threads at once: those of the children where their
+/// positions balance on a task of their own with their share of the threads, the rest
+/// with the rest, while two threads or more are left.
+fn upward_all<S: Send, E: Send>(
+    nodes: &[Node],
+    (children, threads): (&[usize], usize),
+    states: &mut [S],
+    visit: &(impl Fn((usize, usize), &mut S, &[S], bool) -> Result<bool, E> + Sync),
+) -> Result<bool, E> {
+    match children {
+        [] => return Ok(false),
+        [only] => return upward(nodes, (*only, threads), states, visit),
+        _ => {}
     }
-    let results = spread(parts, threads, &|(child, subtree), threads| {
-        upward(nodes, (child, threads), subtree, visit)
-    });
-    let mut any = false;
-    for result in results {
-        any |= result?;
+    if threads < 2 {
+        let mut any = false;
+        let mut rest = states;
+        for &child in children {
+            let (subtree, after) = rest.split_at_mut(child + 1 - nodes[child].earliest);
+            any |= upward(nodes, (child, 1), subtree, visit)?;
+            rest = after;
+        }
+        return Ok(any);
     }
-    Ok(visit(index, state, below, any)? || any)
+    let (middle, subtrees, share) = split(nodes, children, threads);
+    let (first, later) = children.split_at(middle);
+    let (before, after) = states.split_at_mut(subtrees);
+    let (one, other) = if share == 0 || share == threads {
+        let (before_threads, after_threads) = if share == 0 {
+            (1, threads)
+        } else {
+            (threads, 1)
+        };
+        let one = upward_all(nodes, (first, before_threads), before, visit);
+        (one, upward_all(nodes, (later, after_threads), after, visit))
+    } else {
+        rayon::join(
+            || upward_all(nodes, (first, share), before, visit),
+            || upward_all(nodes, (later, threads - share), after, visit),
+        )
+    };
+    Ok(one? | other?)
 }
 
 /// Runs `visit` on each node of the subtree of `index`, whose nodes' states are `states`,
@@ -397,24 +404,67 @@ fn downward<S: Send, T: Send>(
     solution: &mut [T],
     visit: &(impl Fn(usize, &mut S, &mut [S], &mut [T]) + Sync),
 ) {
-    let node = &nodes[index];
     let Some((state, below)) = states.split_last_mut() else {
         return;
     };
     visit(index, state, below, solution);
-    let mut parts = Vec::with_capacity(node.children.len());
-    let (mut rest, mut written) = (below, solution);
-    for &child in &node.children {
-        let child_node = &nodes[child];
-        let (subtree, after) = rest.split_at_mut(child + 1 - child_node.earliest);
-        let size = child_node.end - child_node.first;
-        let (part, beyond) = written.split_at_mut(size);
-        parts.push(((child, subtree, part), size));
-        (rest, written) = (after, beyond);
+    downward_all(
+        nodes,
+        (&nodes[index].children, threads),
+        below,
+        solution,
+        visit,
+    );
+}
+
+/// Runs [`downward`] on the subtree of each of `children`, whose states tile `states` and
+/// whose positions tile `solution`'s first, in their order, on up to `threads` threads at
+/// once, as [`upward_all`] does.
+fn downward_all<S: Send, T: Send>(
+    nodes: &[Node],
+    (children, threads): (&[usize], usize),
+    states: &mut [S],
+    solution: &mut [T],
+    visit: &(impl Fn(usize, &mut S, &mut [S], &mut [T]) + Sync),
+) {
+    let (Some(&first_child), Some(&last_child)) = (children.first(), children.last()) else {
+        return;
+    };
+    let solution = &mut solution[..nodes[last_child].end - nodes[first_child].first];
+    if let [only] = children {
+        downward(nodes, (*only, threads), states, solution, visit);
+        return;
     }
-    spread(parts, threads, &|(child, subtree, part), threads| {
-        downward(nodes, (child, threads), subtree, part, visit);
-    });
+    if threads < 2 {
+        let (mut rest, mut written) = (states, solution);
+        for &child in children {
+            let node = &nodes[child];
+            let (subtree, after) = rest.split_at_mut(child + 1 - node.earliest);
+            let (part, beyond) = written.split_at_mut(node.end - node.first);
+            downward(nodes, (child, 1), subtree, part, visit);
+            (rest, written) = (after, beyond);
+        }
+        return;
+    }
+    let (middle, subtrees, share) = split(nodes, children, threads);
+    let (first, later) = children.split_at(middle);
+    let (before, after) = states.split_at_mut(subtrees);
+    let boundary = nodes[first[first.len() - 1]].end - nodes[first_child].first;
+    let (written, beyond) = solution.split_at_mut(boundary);
+    if share == 0 || share == threads {
+        let (before_threads, after_threads) = if share == 0 {
+            (1, threads)
+        } else {
+            (threads, 1)
+        };
+        downward_all(nodes, (first, before_threads), before, written, visit);
+        downward_all(nodes, (later, after_threads), after, beyond, visit);
+    } else {
+        rayon::join(
+            || downward_all(nodes, (first, share), before, written, visit),
+            || downward_all(nodes, (later, threads - share), after, beyond, visit),
+        );
+    }
 }
 
 /// The factors of an interior: of its own rows and columns, by columns, its pivots chosen
@@ -886,6 +936,22 @@ impl<T: Scalar> Interior<T> {
     }
 }
 
+/// Has `column` of a frame, dense, take in the `steps` whose columns `earlier` holds, in
+/// order, the columns of `column`'s length: each subtracts its multipliers below its
+/// diagonal times the column's entry in its row.
+fn take_in<T: Scalar>(earlier: &[T], column: &mut [T], steps: std::ops::Range<usize>) {
+    let size = column.len();
+    for step in steps {
+        let multiplier = column[step];
+        if multiplier != T::ZERO {
+            let factors = &earlier[step * size + step + 1..(step + 1) * size];
+            for (value, &factor) in column[step + 1..].iter_mut().zip(factors) {
+                *value -= factor * multiplier;
+            }
+        }
+    }
+}
+
 /// What the elimination of a front did with one of its columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
@@ -917,6 +983,12 @@ struct Front<T> {
     frame: Vec<T>,
     /// What it did with each column, in order.
     operations: Vec<Operation>,
+    /// How many steps each column of the frame has taken in, by slot.
+    applied: Vec<usize>,
+    /// Scratch space: the slot as assembled of each slot of the frame, the slots of a
+    /// child's update in the frame.
+    origins: Vec<usize>,
+    slots: Vec<usize>,
 }
 
 impl<T> Default for Front<T> {
@@ -931,6 +1003,9 @@ impl<T> Default for Front<T> {
             steps: 0,
             frame: Vec::new(),
             operations: Vec::new(),
+            applied: Vec::new(),
+            origins: Vec::new(),
+            slots: Vec::new(),
         }
     }
 }
@@ -1007,14 +1082,14 @@ impl<T: Scalar> Front<T> {
             }
         }
         let mut offset = own;
-        let mut slots = Vec::new();
         for (which, child) in children().enumerate() {
             let update = child.update();
-            slots.clear();
-            slots.extend(Self::child_slots(node, (child, which), offset, delayed_in));
-            for (column, &into) in slots.iter().enumerate() {
+            self.slots.clear();
+            self.slots
+                .extend(Self::child_slots(node, (child, which), offset, delayed_in));
+            for (column, &into) in self.slots.iter().enumerate() {
                 let target = &mut self.frame[into * size..(into + 1) * size];
-                for (row, &at) in slots.iter().enumerate() {
+                for (row, &at) in self.slots.iter().enumerate() {
                     target[at] += update.get(row, column);
                 }
             }
@@ -1023,134 +1098,219 @@ impl<T: Scalar> Front<T> {
         Ok(())
     }
 
-    /// Factors `node`'s frame, searching for every pivot. A column delayed at the root,
-    /// `root`, has no nonzero pivot left.
+    /// Factors `node`'s frame on up to `threads` threads, searching for every pivot, its
+    /// children's parts `below` from their subtree's earliest node. A column delayed at the
+    /// root, `root`, has no nonzero pivot left.
     fn search(
         &mut self,
         node: &Node,
         values: &[T],
-        below: &[Part<T>],
-        base: usize,
-        root: bool,
+        (below, base): (&[Part<T>], usize),
+        (threads, root): (usize, bool),
     ) -> Result<(), LinearError> {
         self.complete = false;
         self.assemble(node, values, below, base)?;
         self.operations.clear();
-        let size = self.rows.len();
-        let (mut step, mut left) = (0, self.fully);
-        while step < left {
-            let column = &self.frame[step * size..(step + 1) * size];
-            let largest = column[step..]
-                .iter()
-                .map(|value| value.magnitude())
-                .fold(0.0, f64::max);
-            let least = PIVOT_TOLERANCE * largest;
-            let (mut best, mut chosen, mut diagonal) = (0.0, NONE, NONE);
-            for (row, value) in column.iter().enumerate().take(self.fully).skip(step) {
-                let magnitude = value.magnitude();
-                if magnitude > best {
-                    (best, chosen) = (magnitude, row);
-                }
-                if self.rows[row] == self.columns[step] {
-                    diagonal = row;
-                }
-            }
-            let operation = if diagonal != NONE
-                && column[diagonal].magnitude() > 0.0
-                && column[diagonal].magnitude() >= least
-            {
-                Operation::Pivot(diagonal)
-            } else if chosen != NONE && best >= least {
-                Operation::Pivot(chosen)
-            } else {
-                Operation::Delay(left - 1)
-            };
-            self.operations.push(operation);
-            match operation {
-                Operation::Pivot(row) => {
-                    self.swap_rows(step, row);
-                    self.eliminate(step);
-                    step += 1;
-                }
-                Operation::Delay(other) => {
-                    left -= 1;
-                    self.swap_columns(step, other);
-                }
-            }
-        }
-        self.finish(step);
-        if root && step < self.fully {
+        let (steps, _) = self.eliminate(false, threads);
+        if root && steps < self.fully {
             return Err(LinearError::Singular {
-                columns: vec![self.columns[step]],
+                columns: vec![self.columns[steps]],
             });
         }
         self.complete = true;
         Ok(())
     }
 
-    /// Factors `node`'s frame with the last factorization's operations. Returns whether
-    /// every pivot reaches the threshold.
+    /// Factors `node`'s frame on up to `threads` threads with the last factorization's
+    /// operations. Returns whether every pivot reaches the threshold.
     fn refactor(
         &mut self,
         node: &Node,
         values: &[T],
-        below: &[Part<T>],
-        base: usize,
+        (below, base): (&[Part<T>], usize),
+        threads: usize,
     ) -> Result<bool, LinearError> {
         self.assemble(node, values, below, base)?;
+        let (_, held) = self.eliminate(true, threads);
+        self.complete = held;
+        Ok(held)
+    }
+
+    /// Eliminates the frame's fully summed columns on up to `threads` threads: choosing
+    /// each pivot, and recording what it did with each column, or, `replay`, doing again
+    /// what the last factorization did. Returns the number of steps, and whether every
+    /// pivot replayed reaches the threshold, the steps stopping at the first that does not.
+    ///
+    /// A column takes in the steps it has not yet taken, in their order, just before it is
+    /// eliminated; and every column after the last step takes them in after each panel of
+    /// steps, the fully summed columns' share of a thread, the panels' columns spread over
+    /// the threads. A row swapped by a later step is swapped in every column at once, which
+    /// moves each entry with its multiplier, so every entry undergoes the same operations
+    /// in the same order whatever the panels: those of a step that eliminated every column
+    /// after it at once.
+    fn eliminate(&mut self, replay: bool, threads: usize) -> (usize, bool) {
         let size = self.rows.len();
-        let mut step = 0;
-        for index in 0..self.operations.len() {
-            match self.operations[index] {
+        let panel = if threads < 2 {
+            self.fully
+        } else {
+            self.fully.div_ceil(threads)
+        }
+        .max(1);
+        self.applied.clear();
+        self.applied.resize(size, 0);
+        let (mut step, mut left, mut done, mut taken) = (0, self.fully, 0, 0);
+        while step < left {
+            self.catch_up(step, step);
+            let operation = if replay {
+                self.operations[done]
+            } else {
+                let chosen = self.choose(step, left);
+                self.operations.push(chosen);
+                chosen
+            };
+            done += 1;
+            match operation {
                 Operation::Pivot(row) => {
                     self.swap_rows(step, row);
-                    let column = &self.frame[step * size..(step + 1) * size];
-                    let largest = column[step..]
-                        .iter()
-                        .map(|value| value.magnitude())
-                        .fold(0.0, f64::max);
-                    let magnitude = column[step].magnitude();
-                    if !(magnitude > 0.0 && magnitude >= PIVOT_TOLERANCE * largest) {
-                        self.complete = false;
-                        return Ok(false);
+                    if replay && !self.holds(step) {
+                        return (step, false);
                     }
-                    self.eliminate(step);
+                    self.divide(step);
                     step += 1;
+                    taken += 1;
+                    if taken == panel {
+                        self.catch_up_after(step, threads);
+                        taken = 0;
+                    }
                 }
-                Operation::Delay(other) => self.swap_columns(step, other),
+                Operation::Delay(other) => {
+                    left -= 1;
+                    self.swap_columns(step, other);
+                    self.applied.swap(step, other);
+                }
             }
         }
+        self.catch_up_after(step, threads);
         self.finish(step);
-        Ok(true)
+        (step, true)
+    }
+
+    /// What to do with the frame's column `step`, all its earlier steps taken in, the
+    /// columns from `left` on delayed: pivot on the row the ordering matched with it, if it
+    /// reaches the threshold, else on the row of the largest magnitude that may be pivoted,
+    /// if it does, and else delay it.
+    fn choose(&self, step: usize, left: usize) -> Operation {
+        let size = self.rows.len();
+        let column = &self.frame[step * size..(step + 1) * size];
+        let largest = column[step..]
+            .iter()
+            .map(|value| value.magnitude())
+            .fold(0.0, f64::max);
+        let least = PIVOT_TOLERANCE * largest;
+        let (mut best, mut chosen, mut diagonal) = (0.0, NONE, NONE);
+        for (row, value) in column.iter().enumerate().take(self.fully).skip(step) {
+            let magnitude = value.magnitude();
+            if magnitude > best {
+                (best, chosen) = (magnitude, row);
+            }
+            if self.rows[row] == self.columns[step] {
+                diagonal = row;
+            }
+        }
+        if diagonal != NONE
+            && column[diagonal].magnitude() > 0.0
+            && column[diagonal].magnitude() >= least
+        {
+            Operation::Pivot(diagonal)
+        } else if chosen != NONE && best >= least {
+            Operation::Pivot(chosen)
+        } else {
+            Operation::Delay(left - 1)
+        }
+    }
+
+    /// Whether the pivot of `step` reaches the threshold: at least a tenth of the largest
+    /// magnitude in its column from its diagonal down, and not zero.
+    fn holds(&self, step: usize) -> bool {
+        let size = self.rows.len();
+        let column = &self.frame[step * size..(step + 1) * size];
+        let largest = column[step..]
+            .iter()
+            .map(|value| value.magnitude())
+            .fold(0.0, f64::max);
+        let magnitude = column[step].magnitude();
+        magnitude > 0.0 && magnitude >= PIVOT_TOLERANCE * largest
+    }
+
+    /// Divides the frame's column `step` below its diagonal by its pivot: `L`'s column.
+    fn divide(&mut self, step: usize) {
+        let size = self.rows.len();
+        let column = &mut self.frame[step * size..(step + 1) * size];
+        let pivot = column[step];
+        for value in &mut column[step + 1..] {
+            *value = *value / pivot;
+        }
+    }
+
+    /// Has the frame's column `column` take in every step before `until` it has not.
+    fn catch_up(&mut self, column: usize, until: usize) {
+        let size = self.rows.len();
+        let (earlier, rest) = self.frame.split_at_mut(column * size);
+        take_in(earlier, &mut rest[..size], self.applied[column]..until);
+        self.applied[column] = until;
+    }
+
+    /// Has every column of the frame from `step` on take in every step before it, the
+    /// columns spread over up to `threads` threads.
+    fn catch_up_after(&mut self, step: usize, threads: usize) {
+        let size = self.rows.len();
+        let (earlier, rest) = self.frame.split_at_mut(step * size);
+        let applied = &mut self.applied[step..];
+        let columns = applied.len();
+        if columns == 0 {
+            return;
+        }
+        let share = columns.div_ceil(threads.max(1));
+        rest.par_chunks_mut(share * size)
+            .zip(applied.par_chunks_mut(share))
+            .for_each(|(columns, applied)| {
+                for (column, taken) in columns.chunks_exact_mut(size).zip(applied) {
+                    take_in(earlier, column, *taken..step);
+                    *taken = step;
+                }
+            });
     }
 
     /// Records the slots, as eliminated, of the frame's rows and columns, after `steps`.
     fn finish(&mut self, steps: usize) {
         self.steps = steps;
         let size = self.rows.len();
-        // The slots each row and column of the frame as assembled went to, by replaying the
+        // The slot each row and column of the frame as assembled went to, by replaying the
         // swaps on the identity.
-        let mut rows: Vec<usize> = (0..size).collect();
-        let mut columns = rows.clone();
-        let mut step = 0;
-        for &operation in &self.operations {
-            match operation {
-                Operation::Pivot(row) => {
-                    rows.swap(step, row);
-                    step += 1;
+        for (slots, rows) in [(&mut self.row_slots, true), (&mut self.column_slots, false)] {
+            self.origins.clear();
+            self.origins.extend(0..size);
+            let mut step = 0;
+            for &operation in &self.operations {
+                match operation {
+                    Operation::Pivot(row) => {
+                        if rows {
+                            self.origins.swap(step, row);
+                        }
+                        step += 1;
+                    }
+                    Operation::Delay(other) => {
+                        if !rows {
+                            self.origins.swap(step, other);
+                        }
+                    }
                 }
-                Operation::Delay(other) => columns.swap(step, other),
             }
-        }
-        self.row_slots.clear();
-        self.row_slots.resize(size, 0);
-        self.column_slots.clear();
-        self.column_slots.resize(size, 0);
-        for (slot, &assembled) in rows.iter().enumerate() {
-            self.row_slots[assembled] = slot;
-        }
-        for (slot, &assembled) in columns.iter().enumerate() {
-            self.column_slots[assembled] = slot;
+            slots.clear();
+            slots.resize(size, 0);
+            for (slot, &assembled) in self.origins.iter().enumerate() {
+                slots[assembled] = slot;
+            }
         }
     }
 
@@ -1175,27 +1335,6 @@ impl<T: Scalar> Front<T> {
         let (left, right) = self.frame.split_at_mut(other * size);
         left[one * size..(one + 1) * size].swap_with_slice(&mut right[..size]);
         self.columns.swap(one, other);
-    }
-
-    /// Eliminates the frame's column `step` on its diagonal, from every row and column
-    /// after it.
-    fn eliminate(&mut self, step: usize) {
-        let size = self.rows.len();
-        let (left, right) = self.frame.split_at_mut((step + 1) * size);
-        let pivot_column = &mut left[step * size..];
-        let pivot = pivot_column[step];
-        for value in &mut pivot_column[step + 1..] {
-            *value = *value / pivot;
-        }
-        let multipliers = &pivot_column[step + 1..];
-        for column in right.chunks_exact_mut(size) {
-            let multiplier = column[step];
-            if multiplier != T::ZERO {
-                for (value, &factor) in column[step + 1..].iter_mut().zip(multipliers) {
-                    *value -= factor * multiplier;
-                }
-            }
-        }
     }
 
     /// The pass up of a solve: from the right-hand side by row in `given` and its

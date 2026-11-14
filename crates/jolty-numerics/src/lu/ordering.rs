@@ -49,6 +49,10 @@ pub struct Ordering {
     rows: Vec<usize>,
     /// The pattern's column at each position of the ordered matrix.
     columns: Vec<usize>,
+    /// The position in the ordered matrix of each of the pattern's rows, and of each of its
+    /// columns.
+    row_positions: Vec<usize>,
+    column_positions: Vec<usize>,
     /// The first position of each diagonal block, then the dimension.
     blocks: Vec<usize>,
     /// The entries of each ordered column within its diagonal block.
@@ -135,7 +139,9 @@ impl Ordering {
                     pattern,
                     undetermined,
                     rows: identity.clone(),
-                    columns: identity,
+                    columns: identity.clone(),
+                    row_positions: identity.clone(),
+                    column_positions: identity,
                     blocks: vec![0, dimension],
                     within: Entries::empty(dimension),
                     above: Entries::empty(dimension),
@@ -198,11 +204,17 @@ impl Ordering {
                 })
             })
             .collect();
+        let mut column_positions = vec![NONE; dimension];
+        for (position, &column) in columns.iter().enumerate() {
+            column_positions[column] = position;
+        }
         Ok(Self {
             pattern,
             undetermined: Vec::new(),
             rows: ordered_rows,
             columns,
+            row_positions: position_of_row,
+            column_positions,
             blocks,
             within,
             above,
@@ -248,6 +260,16 @@ impl Ordering {
     /// The pattern's column at each position of the ordered matrix.
     pub(super) fn columns(&self) -> &[usize] {
         &self.columns
+    }
+
+    /// The position in the ordered matrix of each of the pattern's rows.
+    pub(super) fn row_positions(&self) -> &[usize] {
+        &self.row_positions
+    }
+
+    /// The position in the ordered matrix of each of the pattern's columns.
+    pub(super) fn column_positions(&self) -> &[usize] {
+        &self.column_positions
     }
 
     /// The positions of each diagonal block, as the first of each, then the dimension.

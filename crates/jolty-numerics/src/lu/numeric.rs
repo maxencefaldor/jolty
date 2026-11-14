@@ -9,6 +9,8 @@
 //! in the ordered matrix throughout, and each column's pivot row is recorded, so a
 //! refactorization replays the same eliminations in the same order with neither search.
 
+use rayon::prelude::*;
+
 use super::tree::Tree;
 use super::{LinearError, Ordering, Scalar, Workspace};
 
@@ -444,9 +446,7 @@ impl<T: Scalar> Numeric<T> {
             dissected: scratch,
         } = workspace;
         scratch.resize_with(self.trees.len(), Vec::new);
-        for (value, &row) in by_row.iter_mut().zip(ordering.rows()) {
-            *value = rhs[row];
-        }
+        gather(by_row, rhs, ordering.rows(), threads);
         for (block, range) in ordering.block_starts().windows(2).enumerate().rev() {
             let positions = range[0]..range[1];
             if let Some(dissection) = ordering.dissection(block) {
@@ -482,9 +482,7 @@ impl<T: Scalar> Numeric<T> {
                 }
             }
         }
-        for (&column, &value) in ordering.columns().iter().zip(by_position.iter()) {
-            rhs[column] = value;
-        }
+        gather(rhs, by_position, ordering.column_positions(), threads);
     }
 
     /// Solves `Aᵀ x = rhs` and leaves `x` in `rhs`, as [`Numeric::solve`] does `A x = rhs`.
@@ -501,9 +499,7 @@ impl<T: Scalar> Numeric<T> {
             dissected: scratch,
         } = workspace;
         scratch.resize_with(self.trees.len(), Vec::new);
-        for (value, &column) in by_position.iter_mut().zip(ordering.columns()) {
-            *value = rhs[column];
-        }
+        gather(by_position, rhs, ordering.columns(), threads);
         for (block, range) in ordering.block_starts().windows(2).enumerate() {
             let positions = range[0]..range[1];
             if let Some(dissection) = ordering.dissection(block) {
@@ -543,10 +539,27 @@ impl<T: Scalar> Numeric<T> {
                 by_row[self.pivot_rows[position]] = value;
             }
         }
-        for (&row, &value) in ordering.rows().iter().zip(by_row.iter()) {
-            rhs[row] = value;
-        }
+        gather(rhs, by_row, ordering.row_positions(), threads);
     }
+}
+
+/// Sets each of `into` to the value of `from` at its index in `indices`, spread over up to
+/// `threads` threads.
+fn gather<T: Scalar>(into: &mut [T], from: &[T], indices: &[usize], threads: usize) {
+    if threads < 2 {
+        for (value, &index) in into.iter_mut().zip(indices) {
+            *value = from[index];
+        }
+        return;
+    }
+    let share = into.len().div_ceil(threads).max(1);
+    into.par_chunks_mut(share)
+        .zip(indices.par_chunks(share))
+        .for_each(|(values, indices)| {
+            for (value, &index) in values.iter_mut().zip(indices) {
+                *value = from[index];
+            }
+        });
 }
 
 #[cfg(test)]
