@@ -53,9 +53,7 @@ from run import SIMULATIONS, TRANSCRIPT, VERDICT, default_agent, session
 from transcript import Session, read
 
 from jolty import cli
-
-# jolty's own 95 % interval of a yield's rate, which jolty.specs keeps to itself.
-from jolty.specs._requirements import _wilson as wilson
+from jolty.specs import wilson
 
 BENCHMARKS: Final = Path(__file__).parent
 """The benchmarks, a task's directory each."""

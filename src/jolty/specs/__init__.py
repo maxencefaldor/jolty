@@ -12,7 +12,8 @@ holds at the plan's own conditions and at each of its corners, and its
 and the slack, how far the value lies inside its bounds, negative outside them. Over a
 Monte Carlo analysis's samples, each requirement's [`Spread`][jolty.specs.Spread] states
 the values read, and the [`Yield`][jolty.specs.Yield] how many samples meet every
-requirement, against the specs' yield target.
+requirement, with the [`wilson`][jolty.specs.wilson] interval of their share, against
+the specs' yield target.
 
 A measurement reads a signal, an unknown of the circuit such as the voltage ``out`` or
 the current ``V1:current``, or a voltage relative to the voltage of a ``reference``.
@@ -84,6 +85,7 @@ from jolty.specs._requirements import (
     reading,
     spread,
     spread_of,
+    wilson,
     worst,
 )
 
@@ -137,5 +139,6 @@ __all__ = [
     "spread",
     "spread_of",
     "value",
+    "wilson",
     "worst",
 ]

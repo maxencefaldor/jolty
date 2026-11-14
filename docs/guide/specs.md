@@ -82,7 +82,7 @@ failed: rise time of out in step ≤ 2 µs: read 2.192 µs at the corner hot, sl
 ## Yield
 
 Over a plan's [Monte Carlo](simulation.md#monte-carlo) samples, or the runs of its [variants](simulation.md#variants), each requirement's spread states on how many it passed, and the lowest, highest and mean values read with their standard deviation.
-The yield is the fraction of samples on which every requirement passes, if marginally, with its 95 % Wilson interval:
+The yield is the fraction of samples on which every requirement passes, if marginally, with its 95 % Wilson interval, which `jolty.specs.wilson(passing, samples)` gives of any proportion:
 
 For a divider of a 1 % uniform resistor over a 1 % normal one, with `value("op", "out").within(2.5 * V, 15e-3 * V)` and a target of 90 %:
 

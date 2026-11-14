@@ -496,7 +496,7 @@ def spread(
         for index, requirement in enumerate(specs.requirements)
     )
     passing = sum(all(_passes(verdict) for verdict in verdicts) for verdicts in sampled)
-    low, high = _wilson(passing, len(sampled))
+    low, high = wilson(passing, len(sampled))
     return spreads, Yield(
         samples=len(sampled),
         passing=passing,
@@ -647,7 +647,7 @@ def spread_of(
         if judged
         else samples
     )
-    low, high = _wilson(passing, samples)
+    low, high = wilson(passing, samples)
     return spreads, Yield(
         samples=samples,
         passing=passing,
@@ -676,15 +676,37 @@ _Z: Final = 1.959963984540054
 """The normal distribution's 97.5th percentile: a 95 % interval spans ±_Z deviations."""
 
 
-def _wilson(passing: int, samples: int) -> tuple[float, float]:
+def wilson(passing: int, samples: int) -> tuple[float, float]:
     """The 95 % Wilson score interval of a proportion of `passing` out of `samples`.
 
-    The lower end, `(p + w/2 - z·s) / (1 + w)` with `w = z²/n`, is computed in its
-    conjugate form `p² / (p + w/2 + z·s)`, which subtracts nothing: it is exactly 0
-    when nothing passes, where the textbook form leaves rounding. The interval is
-    symmetric, so its upper end is one less the lower end of the proportion that
-    fails, exactly 1 when everything passes.
+    It is the interval a [`Yield`][jolty.specs.Yield] states (E. B. Wilson,
+    "Probable inference, the law of succession, and statistical inference", Journal
+    of the American Statistical Association 22, 1927), whose coverage stays near 95 %
+    for few samples and for proportions near 0 or 1, where the normal approximation's
+    falls short (L. D. Brown, T. T. Cai and A. DasGupta, "Interval estimation for a
+    binomial proportion", Statistical Science 16, 2001). The lower end,
+    `(p + w/2 - z·s) / (1 + w)` with `w = z²/n`, is computed in its conjugate form
+    `p² / (p + w/2 + z·s)`, which subtracts nothing: it is exactly 0 when nothing
+    passes, where the textbook form leaves rounding. The interval is symmetric, so its
+    upper end is one less the lower end of the proportion that fails, exactly 1 when
+    everything passes.
+
+    Examples:
+        >>> low, high = wilson(37, 200)
+        >>> f"{low:.4f} to {high:.4f}"
+        '0.1373 to 0.2446'
+        >>> wilson(0, 10)[0], wilson(10, 10)[1]
+        (0.0, 1.0)
+
+    Raises:
+        ValueError: When there is no sample, or `passing` is not from 0 to `samples`.
     """
+    if samples < 1:
+        message = f"a proportion is of one sample or more, not {samples}"
+        raise ValueError(message)
+    if not 0 <= passing <= samples:
+        message = f"{passing} of {samples} samples is no proportion"
+        raise ValueError(message)
 
     def lower(estimate: float) -> float:
         weight = _Z * _Z / samples

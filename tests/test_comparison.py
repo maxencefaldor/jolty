@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from differential import SKIP
+from jolty.specs import wilson
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks"
 COST_DOWN = BENCHMARKS / "cost_down"
@@ -200,7 +201,7 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
     tmp_path: Path,
 ) -> None:
     from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from compare import Agent, Report, compare, wilson  # noqa: PLC0415 - importable only once the path holds it
+    from compare import Agent, Report, compare  # noqa: PLC0415 - importable only once the path holds it
 
     work = tmp_path / "work"
     work.mkdir()

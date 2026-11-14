@@ -45,6 +45,7 @@ from jolty.specs import (
     spread,
     spread_of,
     value,
+    wilson,
     worst,
 )
 from jolty.specs import judged as judged_requirement
@@ -679,6 +680,36 @@ def test_a_yield_of_nothing_or_everything_has_an_exact_end() -> None:
         pytest.approx(centre - half, rel=1e-14),
         pytest.approx(centre + half, rel=1e-14),
     )
+
+
+def test_the_wilson_interval_is_the_yield_s_and_refuses_what_is_no_proportion() -> None:
+    """`wilson` is the interval a yield states, of any proportion of samples.
+
+    Its ends agree with the textbook formula to within rounding, as the yield's do.
+    """
+    requirement = value("op", "out") <= 2 * V
+    failed, passed = (
+        verdict_of(requirement, point(2.5)),
+        verdict_of(requirement, point(1)),
+    )
+    _, some = spread(Specs([requirement]), [(passed,)] * 37 + [(failed,)] * 163)
+    assert wilson(37, 200) == (some.low, some.high)
+    z, n, p = 1.959963984540054, 7, 3 / 7
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    assert wilson(3, 7) == (
+        pytest.approx(centre - half, rel=1e-14),
+        pytest.approx(centre + half, rel=1e-14),
+    )
+    assert wilson(0, 1)[0] == 0.0
+    assert wilson(1, 1)[1] == 1.0
+    with pytest.raises(ValueError, match="of one sample or more, not 0"):
+        wilson(0, 0)
+    for passing in (-1, 8):
+        with pytest.raises(
+            ValueError, match=f"{passing} of 7 samples is no proportion"
+        ):
+            wilson(passing, 7)
 
 
 def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
