@@ -23,7 +23,6 @@ whose results ``perf/results`` holds. A working tree with changes to tracked fil
 writes ``<commit>-dirty.json``, which is never taken as a baseline.
 """
 
-import argparse
 import dataclasses
 import functools
 import importlib
@@ -40,7 +39,16 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Final
+from typing import Final, override
+
+from pydantic import Field
+from pydantic_settings import (
+    BaseSettings,
+    CliApp,
+    CliPositionalArg,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from jolty import circuit, ir, results, simulate
 from jolty.plan import Ac, MonteCarlo, OperatingPoint, Plan, Transient
@@ -565,28 +573,65 @@ def read(path: Path) -> dict[str, Timing]:
     return {key: Timing(**value) for key, value in document["timings"].items()}
 
 
+class Bench(BaseSettings):
+    """Time the fixtures, write the times, and compare them with a baseline's."""
+
+    model_config = SettingsConfigDict(
+        cli_prog_name="scripts/bench",
+        cli_kebab_case=True,
+        cli_implicit_flags=True,
+        cli_hide_none_type=True,
+        cli_avoid_json=True,
+    )
+
+    fixtures: CliPositionalArg[list[str]] = Field(
+        default_factory=list,
+        description="The fixtures to time; the suite's by default.",
+    )
+    scale: bool = Field(
+        default=False, description="Time the large fixtures, once each."
+    )
+    ngspice: bool = Field(
+        default=False, description="Time ngspice instead, for context."
+    )
+    baseline: str | None = Field(
+        default=None, description="The commit or results file to compare with."
+    )
+    output: Path | None = Field(default=None, description="The results file to write.")
+
+    @classmethod
+    @override
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Reads the command line only, never the environment."""
+        return (init_settings,)
+
+    def cli_cmd(self) -> None:
+        """Runs the benchmarks."""
+        measure(self)
+
+
 def main(argv: list[str] | None = None) -> None:
+    """Runs the command line, `argv` or the process's own arguments."""
+    CliApp.run(Bench, cli_args=sys.argv[1:] if argv is None else argv)
+
+
+def measure(arguments: Bench) -> None:
     """Times the fixtures, writes the times, and compares them with a baseline's."""
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
-    parser.add_argument(
-        "fixtures", nargs="*", help="the fixtures to time; the suite's by default"
-    )
-    parser.add_argument(
-        "--scale", action="store_true", help="time the large fixtures, once each"
-    )
-    parser.add_argument(
-        "--ngspice", action="store_true", help="time ngspice instead, for context"
-    )
-    parser.add_argument("--baseline", help="the commit or results file to compare with")
-    parser.add_argument("--output", type=Path, help="the results file to write")
-    arguments = parser.parse_args(argv)
     found = fixtures()
     names = arguments.fixtures or (SCALE if arguments.scale else SUITE)
     unknown = [name for name in names if name not in found]
     if unknown:
-        parser.error(
+        message = (
             f"no fixture is named {', '.join(unknown)}; there are {', '.join(found)}"
         )
+        raise SystemExit(message)
     output = arguments.output or results_path()
     against = baseline(arguments.baseline)
     started = time.perf_counter()
