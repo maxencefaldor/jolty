@@ -9,6 +9,10 @@ Scripts run in a child process (see [`jolty.runner`][jolty.runner]) within the
 configured time limit, and what they print is captured and returned.
 """
 
+# jolty's modules load as each command first uses them, so that a command that draws
+# nothing never imports matplotlib.
+__lazy_modules__ = ["jolty"]
+
 import asyncio
 import shutil
 import sys
