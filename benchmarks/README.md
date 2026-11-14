@@ -57,6 +57,7 @@ Roadmap item 8 asks what jolty gives an agent: each task is done in two arms, wh
 
 Each arm's simulator, `jolty` or `ngspice`, is a wrapper on the agent's path that logs every run, `counted.py`, and the runner keeps the log beside the transcript, as `simulations.jsonl`.
 The runner scores the work in a process of its own, through `score.py`, so what an agent's scripts import or change stays there, and keeps the verdict beside them, as `verdict.json`.
+Since scoring runs the agent's scripts, the scorer runs as a session does, in the sandbox and in an environment of its own, which holds no credential, and from an empty directory, so no `pyproject.toml` an agent leaves changes jolty's settings.
 Claude Code prints its session as stream-json events, and `transcript.py` reads its turns, its tool calls by name, what it says it runs with, and its own report of the session's wall time, cost, tokens and end, with its last message.
 
 Every session runs clean and confined, since Claude Code runs with every permission (`--dangerously-skip-permissions`):

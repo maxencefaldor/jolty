@@ -487,17 +487,43 @@ def scored(task: Path, work: Path, arm: Arm) -> Verdict:
     the work, with the last line the scorer wrote to its error stream. That line is
     read, not shown, so Python writes it without colors, whatever the environment
     forces.
+
+    Since it runs the agent's code, it runs as a session does: in the sandbox wherever
+    there is one, reading the benchmarks, the task and jolty, and writing `work` and a
+    home and temporary directory of its own, in an environment that holds nothing of
+    the runner's but its locale and jolty's settings, ``JOLTY_*``. It runs from that
+    empty directory, so no ``pyproject.toml`` the agent left changes jolty's settings.
     """
+    task, work = task.resolve(), work.resolve()
     path = work / VERDICT
     path.unlink(missing_ok=True)
     command = [sys.executable, str(SCORE), str(task), str(work), "--arm", str(arm)]
-    finished = subprocess.run(  # noqa: S603 - the scorer, beside the runner
-        [*command, "--verdict", str(path)],
-        capture_output=True,
-        text=True,
-        check=False,
-        env={**os.environ, "PYTHON_COLORS": "0"},
-    )
+    command += ["--verdict", str(path)]
+    with tempfile.TemporaryDirectory(prefix="jolty-score-") as directory:
+        place = Path(directory)
+        reads = [SCORE.parent, task, *imported(Path(sys.executable))]
+        within = sandbox(reads, [work, place])
+        if within is not None:
+            command = confined(command, within, place)
+        variables = {
+            name: value
+            for name, value in os.environ.items()
+            if name in LOCALE or name.startswith("JOLTY_")
+        }
+        variables |= {
+            "HOME": str(place),
+            "TMPDIR": str(place),
+            "PATH": os.confstr("CS_PATH") or "",
+            "PYTHON_COLORS": "0",
+        }
+        finished = subprocess.run(  # noqa: S603 - the scorer, beside the runner
+            command,
+            cwd=place,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=variables,
+        )
     if path.is_file():
         return Verdict.model_validate_json(path.read_text(encoding="utf-8"))
     last = finished.stderr.strip().splitlines()[-1:] or ["nothing"]

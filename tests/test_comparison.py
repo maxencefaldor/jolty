@@ -669,6 +669,34 @@ def test_a_sandboxed_agent_reads_and_writes_its_own_directory_alone(
     assert not (secret.parent / "new.txt").exists()
 
 
+@sandboxed()
+def test_the_scorer_runs_the_agent_s_code_confined_as_its_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from run import scored  # noqa: PLC0415 - importable only once the path holds it
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a key")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("the user's", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    # The design runs as the scorer builds it, after the agent is gone.
+    (work / "design.py").write_text(
+        "import json, os, pathlib\n"
+        "here = pathlib.Path(__file__).with_name('environ.json')\n"
+        "here.write_text(json.dumps(sorted(os.environ)))\n"
+        f"pathlib.Path({str(secret)!r}).read_text()\n",
+        encoding="utf-8",
+    )
+    verdict = scored(COST_DOWN, work, Arm.JOLTY)
+    (shortfall,) = verdict.shortfalls
+    assert shortfall.kind == "unbuilt"
+    assert "PermissionError" in shortfall.reason
+    found = json.loads((work / "environ.json").read_text(encoding="utf-8"))
+    assert "ANTHROPIC_API_KEY" not in found
+
+
 def test_the_runner_stops_a_session_and_what_it_left_running(tmp_path: Path) -> None:
     from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
     from run import Program, session  # noqa: PLC0415 - importable only once the path holds it
