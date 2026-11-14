@@ -76,13 +76,7 @@ impl NoiseSpectrum {
     #[must_use]
     pub fn referred(&self) -> Option<Vec<f64>> {
         let input = self.input.as_ref()?;
-        Some(
-            self.densities
-                .iter()
-                .zip(&input.gains)
-                .map(|(density, gain)| density / gain.norm_sqr())
-                .collect(),
-        )
+        Some(crate::measure::referred(&self.densities, &input.gains))
     }
 }
 

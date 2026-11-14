@@ -5,6 +5,8 @@
 //! and the table of the structural checks' [`rules`]. Everything an agent or a person reads,
 //! from units to reports, is built on top of it in Python.
 
+mod measure;
+
 use std::sync::Mutex;
 
 use jolty_engine::{
@@ -787,6 +789,7 @@ fn mantissas(series: &str) -> PyResult<Vec<f64>> {
 fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     module.add_class::<Simulator>()?;
+    measure::register(module)?;
     module.add_function(wrap_pyfunction!(rules, module)?)?;
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
     module.add_function(wrap_pyfunction!(constant, module)?)?;

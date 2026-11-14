@@ -45,6 +45,7 @@ mod ac;
 mod analysis;
 mod elaborate;
 mod logic;
+pub mod measure;
 mod newton;
 mod noise;
 mod observe;
