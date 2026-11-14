@@ -10,8 +10,10 @@
 //! refactors each new matrix with the pivots of the last, searching afresh only from a pivot
 //! that has become too small.
 
+mod dissection;
 mod numeric;
 mod ordering;
+mod tree;
 
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
@@ -22,6 +24,7 @@ use num_complex::Complex64;
 
 use self::numeric::{Factorization, Numeric};
 pub use self::ordering::Ordering;
+use self::tree::Scratch;
 use crate::Pattern;
 
 /// A scalar the sparse solver works in: `f64` for DC and transient analyses, [`Complex64`]
@@ -166,6 +169,8 @@ pub struct SparseLu<T: Scalar> {
 pub struct Workspace<T: Scalar> {
     by_row: Vec<T>,
     by_position: Vec<T>,
+    /// Each node's, for the blocks dissected, made at the first solve.
+    dissected: Vec<Vec<Scratch<T>>>,
 }
 
 impl<T: Scalar> Workspace<T> {
@@ -175,6 +180,7 @@ impl<T: Scalar> Workspace<T> {
         Self {
             by_row: vec![T::ZERO; dimension],
             by_position: vec![T::ZERO; dimension],
+            dissected: Vec::new(),
         }
     }
 }
@@ -185,7 +191,7 @@ impl<T: Scalar> SparseLu<T> {
     pub fn new(ordering: Arc<Ordering>) -> Self {
         let dimension = ordering.pattern().dimension();
         Self {
-            numeric: Numeric::new(dimension),
+            numeric: Numeric::new(&ordering),
             ordering,
             factored: Vec::new(),
             current: false,
@@ -240,6 +246,16 @@ impl<T: Scalar> SparseLu<T> {
     #[must_use]
     pub fn entries(&self) -> usize {
         self.numeric.entries() + self.ordering.entries_above()
+    }
+
+    /// The number of columns the last factorization delayed, in the blocks its ordering
+    /// [dissects](Ordering::dissected): each a column whose best pivot among the rows of its
+    /// interior or separator fell short of a tenth of the largest entry below it, moved
+    /// with a row its node did not pivot to the separator above, which pivoted it among
+    /// more rows.
+    #[must_use]
+    pub fn delays(&self) -> usize {
+        self.numeric.delays()
     }
 
     /// Factors the matrix whose stored values, in the pattern's order, are `values`.
@@ -393,12 +409,8 @@ impl<T: Scalar> Shared<'_, T> {
     /// Panics if `rhs` or `workspace` does not hold one value per row.
     pub fn solve(&self, rhs: &mut [T], workspace: &mut Workspace<T>) -> Result<(), LinearError> {
         self.check(rhs, workspace);
-        let Workspace {
-            by_row,
-            by_position,
-        } = workspace;
         self.numeric
-            .solve(self.ordering, self.values, rhs, (by_row, by_position));
+            .solve(self.ordering, self.values, rhs, workspace);
         finite(rhs)
     }
 
@@ -418,12 +430,8 @@ impl<T: Scalar> Shared<'_, T> {
         workspace: &mut Workspace<T>,
     ) -> Result<(), LinearError> {
         self.check(rhs, workspace);
-        let Workspace {
-            by_row,
-            by_position,
-        } = workspace;
         self.numeric
-            .solve_transpose(self.ordering, self.values, rhs, (by_row, by_position));
+            .solve_transpose(self.ordering, self.values, rhs, workspace);
         finite(rhs)
     }
 

@@ -888,3 +888,265 @@ fn a_supply_joining_every_node_fills_nothing() {
     assert!(backward_error(&matrix.dense(), &x, &b) < 1e-15);
     assert_eq!(lu.entries(), lu.pattern().len());
 }
+
+/// A solver for `matrix`'s pattern whose blocks are dissected into interiors of at most
+/// `interiors` positions, and the pattern's entries.
+fn dissected<T: Scalar>(matrix: &Matrix<T>, interiors: usize) -> (SparseLu<T>, Vec<Entry>) {
+    let (pattern, entries) = matrix.pattern();
+    let ordering = Ordering::dissected(pattern, interiors).expect("fits");
+    (SparseLu::new(Arc::new(ordering)), entries)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// Dissected into interiors, matrices whose large entries lie off the diagonal pivot
+    /// within each interior where a tenth of the largest entry below allows, and delay the
+    /// rest to the separators above: they meet the bound the serial solver meets on them,
+    /// whose source is its own test's.
+    #[test]
+    fn dissected_solves_matrices_whose_large_entries_are_off_the_diagonal(
+        matrix in shuffled_dominant(),
+        interiors in 1usize..8,
+    ) {
+        let (mut lu, _) = dissected(&matrix, interiors);
+        check_within(&mut lu, &matrix, 1e-10)?;
+    }
+
+    /// Dissected, matrices without dominance or symmetry meet the serial solver's bound.
+    #[test]
+    fn dissected_solves_random_sparse_matrices(matrix in random_sparse(), interiors in 1usize..8) {
+        let (mut lu, _) = dissected(&matrix, interiors);
+        check(&mut lu, &matrix)?;
+    }
+
+    /// Dissected, the equations of circuits, real and complex, meet the serial solver's
+    /// bound, and refactor with the pivots of the first matrix, searching afresh in the
+    /// nodes whose kept pivots become too small and those above them.
+    #[test]
+    fn dissected_solves_and_refactors_the_equations_of_circuits(
+        circuit in circuit(),
+        alpha in -1.0..3.0f64,
+        interiors in 1usize..8,
+    ) {
+        let first = circuit.matrix(10f64.powf(alpha), false);
+        let second = circuit.matrix(10f64.powf(alpha), true);
+        let (mut lu, _) = dissected(&first, interiors);
+        check(&mut lu, &first)?;
+        check(&mut lu, &second)?;
+        let statistics = lu.statistics();
+        prop_assert_eq!(statistics.factorizations, 1);
+        prop_assert_eq!(statistics.refactorizations + statistics.fallbacks, 1);
+        let complex = circuit.matrix(Complex64::new(0.0, 10f64.powf(alpha)), true);
+        let (mut lu, _) = dissected(&complex, interiors);
+        check(&mut lu, &complex)?;
+    }
+
+    /// Dissected, a refactorization whose kept pivots become too small searches afresh and
+    /// solves as well as a first factorization.
+    #[test]
+    fn dissected_searches_afresh_from_a_kept_pivot_too_small(
+        (first, second) in reshuffled_pair(),
+        interiors in 1usize..8,
+    ) {
+        let (mut lu, _) = dissected(&first, interiors);
+        check(&mut lu, &first)?;
+        check(&mut lu, &second)?;
+        prop_assert_eq!(lu.statistics().factorizations, 1);
+    }
+
+    /// The dissected and the serial solvers' solutions of one system agree within twice
+    /// the bound each meets on its backward error, 10⁻¹², times the matrix's condition
+    /// number: a solution of backward error ε is within κ ε of the exact one, to first order
+    /// (Higham, "Accuracy and Stability of Numerical Algorithms", 2nd edition, 2002,
+    /// Theorem 7.2), their orders of operations differing.
+    #[test]
+    fn dissected_agrees_with_the_serial_solver(circuit in circuit(), interiors in 1usize..8) {
+        let matrix = circuit.matrix(1.0, false);
+        let dense = matrix.dense();
+        let inverted = inverse(&dense).ok_or_else(|| TestCaseError::reject("singular"))?;
+        let condition = norm(&dense) * norm(&inverted);
+        prop_assume!(condition < 1e10, "too ill-conditioned for a sharp check");
+        let solve = |mut lu: SparseLu<f64>, entries: Vec<Entry>| {
+            let stored = matrix.stored(lu.pattern(), &entries);
+            let mut x: Vec<f64> = rhs(matrix.dimension);
+            lu.factor(&stored).expect("regular").solve(&mut x).expect("finite");
+            x
+        };
+        let (serial, entries) = solver(&matrix);
+        let serial = solve(serial, entries);
+        let (partitioned, entries) = dissected(&matrix, interiors);
+        let partitioned = solve(partitioned, entries);
+        let apart: Vec<f64> = serial.iter().zip(&partitioned).map(|(a, b)| a - b).collect();
+        let distance = largest(&apart) / largest(&serial);
+        prop_assert!(distance <= 2e-12 * condition.max(1.0), "{distance:e} apart, of condition {condition:e}");
+    }
+
+    /// The dissected solver's factors, solutions and transposed solutions, after a
+    /// factorization, a refactorization and a search afresh, are the same bits on 1, 2, 4
+    /// and 8 threads.
+    #[test]
+    fn dissected_is_the_same_bits_on_any_number_of_threads(
+        (first, second) in reshuffled_pair(),
+        circuit in circuit(),
+        interiors in 1usize..4,
+    ) {
+        let runs = |matrices: &[Matrix<f64>]| {
+            let (mut lu, entries) = dissected(&matrices[0], interiors);
+            let mut found = Vec::new();
+            for matrix in matrices {
+                let stored = matrix.stored(lu.pattern(), &entries);
+                let b: Vec<f64> = rhs(matrix.dimension);
+                let (mut x, mut y) = (b.clone(), b);
+                let solved = lu.factor(&stored).and_then(|mut factors| {
+                    factors.solve(&mut x)?;
+                    factors.solve_transpose(&mut y)
+                });
+                found.push((solved.is_ok(), bits(&x), bits(&y), lu.delays()));
+            }
+            (found, lu.statistics())
+        };
+        let changed = (circuit.matrix(1.0, false), circuit.matrix(1.0, true));
+        let cases = [vec![first, second], vec![changed.0.clone(), changed.1, changed.0]];
+        for matrices in &cases {
+            let alone = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("a pool");
+            let once = alone.install(|| runs(matrices));
+            for threads in [2, 4, 8] {
+                let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("a pool");
+                prop_assert_eq!(&pool.install(|| runs(matrices)), &once, "on {} threads", threads);
+            }
+        }
+    }
+}
+
+/// The equations of a `side` × `side` mesh of conductances to its neighbours, each node
+/// with a conductance to the reference, some of them shuffled out of order, so that the
+/// matching must find their pivots off the diagonal and the dissection delays some.
+fn mesh(side: usize, scale: f64) -> Matrix<f64> {
+    let mut matrix = Matrix {
+        dimension: side * side,
+        positions: Vec::new(),
+        values: Vec::new(),
+    };
+    let node = |x: usize, y: usize| x + side * y;
+    for y in 0..side {
+        for x in 0..side {
+            let here = node(x, y);
+            let ground = 1e-3 * f64::from(1 + u8::try_from(here % 7).expect("small"));
+            matrix.positions.push((here, here));
+            matrix.values.push(ground);
+            let mut neighbours = Vec::new();
+            if x + 1 < side {
+                neighbours.push(node(x + 1, y));
+            }
+            if y + 1 < side {
+                neighbours.push(node(x, y + 1));
+            }
+            for there in neighbours {
+                let conductance = scale
+                    * f64::from(1 + u8::try_from((here * 31 + there * 17) % 13).expect("small"));
+                for (row, column, value) in [
+                    (here, here, conductance),
+                    (there, there, conductance),
+                    (here, there, -conductance),
+                    (there, here, -conductance),
+                ] {
+                    matrix.positions.push((row, column));
+                    matrix.values.push(value);
+                }
+            }
+        }
+    }
+    matrix
+}
+
+#[test]
+fn a_dissected_mesh_is_the_same_bits_on_any_number_of_threads() {
+    // A mesh of 1,600 nodes dissected into interiors of at most 40: dozens of interiors
+    // and separators, factored, refactored and solved on 1, 2, 4 and 8 threads.
+    let first = mesh(40, 1.0);
+    let second = mesh(40, 3.0);
+    let run = || {
+        let (mut lu, entries) = dissected(&first, 40);
+        let mut found = Vec::new();
+        for matrix in [&first, &second, &first] {
+            let stored = matrix.stored(lu.pattern(), &entries);
+            let mut x: Vec<f64> = rhs(matrix.dimension);
+            let mut y = x.clone();
+            let mut factors = lu.factor(&stored).unwrap();
+            factors.solve(&mut x).unwrap();
+            factors.solve_transpose(&mut y).unwrap();
+            assert!(backward_error(&matrix.dense(), &x, &rhs::<f64>(matrix.dimension)) < 1e-14);
+            found.push((bits(&x), bits(&y)));
+        }
+        (found, lu.statistics(), lu.entries())
+    };
+    let alone = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let once = alone.install(run);
+    assert_eq!(once.1.factorizations, 1);
+    assert_eq!(once.1.refactorizations + once.1.fallbacks, 2);
+    for threads in [2, 4, 8] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        assert_eq!(pool.install(run), once, "on {threads} threads");
+    }
+}
+
+#[test]
+fn delays_a_pivot_its_interior_cannot_take() {
+    // A path of three nodes, dissected into interiors of one: node 1 separates nodes 0
+    // and 2. Column 0's entry in its own row is 10⁻⁶ of its entry in row 1, the
+    // separator's, so its interior cannot pivot it and delays it to the separator, which
+    // pivots it on that entry; the solution is the dense reference's.
+    let matrix = Matrix {
+        dimension: 3,
+        positions: vec![(0, 0), (1, 0), (0, 1), (1, 1), (2, 1), (1, 2), (2, 2)],
+        values: vec![1e-6, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0],
+    };
+    let (mut lu, _) = dissected(&matrix, 1);
+    check(&mut lu, &matrix).unwrap();
+    assert_eq!(lu.delays(), 1);
+    // The same matrix refactors with the delay kept.
+    check(&mut lu, &matrix).unwrap();
+    assert_eq!(lu.delays(), 1);
+}
+
+#[test]
+fn delays_pivots_on_many_random_matrices() {
+    // Over a thousand shuffled dominant matrices dissected into small interiors, the
+    // property test above solves some whose pivots its interiors delay.
+    use proptest::strategy::ValueTree;
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let mut delayed = 0;
+    for _ in 0..1000 {
+        let matrix = shuffled_dominant().new_tree(&mut runner).unwrap().current();
+        let (mut lu, entries) = dissected(&matrix, 2);
+        let stored = matrix.stored(lu.pattern(), &entries);
+        if lu.factor(&stored).is_ok() && lu.delays() > 0 {
+            delayed += 1;
+        }
+    }
+    assert!(delayed > 10, "{delayed} of a thousand delayed a pivot");
+}
+
+#[test]
+fn reports_a_singular_dissected_matrix() {
+    // The mesh with its last column zero: the root separator finds no pivot for it.
+    let mut matrix = mesh(10, 1.0);
+    for (position, value) in matrix.positions.iter().zip(matrix.values.iter_mut()) {
+        if position.1 == 99 {
+            *value = 0.0;
+        }
+    }
+    let (mut lu, entries) = dissected(&matrix, 5);
+    let stored = matrix.stored(lu.pattern(), &entries);
+    assert_eq!(
+        lu.factor(&stored).err(),
+        Some(LinearError::Singular { columns: vec![99] })
+    );
+}

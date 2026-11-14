@@ -9,7 +9,8 @@
 //! in the ordered matrix throughout, and each column's pivot row is recorded, so a
 //! refactorization replays the same eliminations in the same order with neither search.
 
-use super::{LinearError, Ordering, Scalar};
+use super::tree::Tree;
+use super::{LinearError, Ordering, Scalar, Workspace};
 
 /// No index: a row not yet a pivot, a row not yet visited.
 const NONE: usize = usize::MAX;
@@ -26,21 +27,21 @@ const NONE: usize = usize::MAX;
 /// refactorization keeps its pivots less often: in the transients of the examples' buck and
 /// boost converters, one or two factorizations in a hundred search afresh, where with a
 /// thousandth almost none does.
-const PIVOT_TOLERANCE: f64 = 0.1;
+pub(super) const PIVOT_TOLERANCE: f64 = 0.1;
 
 /// A triangular factor stored by columns.
 #[derive(Clone)]
-struct Triangle<T> {
+pub(super) struct Triangle<T> {
     /// Where each column's entries start, then their number.
-    starts: Vec<usize>,
+    pub(super) starts: Vec<usize>,
     /// Each entry's index: a row of the ordered matrix in `L`, a position in `U`.
-    indices: Vec<usize>,
+    pub(super) indices: Vec<usize>,
     /// Each entry's value.
-    values: Vec<T>,
+    pub(super) values: Vec<T>,
 }
 
 impl<T: Scalar> Triangle<T> {
-    fn new(dimension: usize) -> Self {
+    pub(super) fn new(dimension: usize) -> Self {
         let mut starts = Vec::with_capacity(dimension + 1);
         starts.push(0);
         Self {
@@ -51,13 +52,13 @@ impl<T: Scalar> Triangle<T> {
     }
 
     /// The indices and values of `column`'s entries.
-    fn column(&self, column: usize) -> (&[usize], &[T]) {
+    pub(super) fn column(&self, column: usize) -> (&[usize], &[T]) {
         let range = self.starts[column]..self.starts[column + 1];
         (&self.indices[range.clone()], &self.values[range])
     }
 
     /// Keeps the first `columns` columns.
-    fn truncate(&mut self, columns: usize) {
+    pub(super) fn truncate(&mut self, columns: usize) {
         let end = self.starts[columns];
         self.starts.truncate(columns + 1);
         self.indices.truncate(end);
@@ -65,20 +66,20 @@ impl<T: Scalar> Triangle<T> {
     }
 
     /// Makes room for `additional` more entries.
-    fn reserve(&mut self, additional: usize) -> Result<(), LinearError> {
+    pub(super) fn reserve(&mut self, additional: usize) -> Result<(), LinearError> {
         self.indices.try_reserve(additional)?;
         self.values.try_reserve(additional)?;
         Ok(())
     }
 
     /// Adds an entry to the column being built.
-    fn push(&mut self, index: usize, value: T) {
+    pub(super) fn push(&mut self, index: usize, value: T) {
         self.indices.push(index);
         self.values.push(value);
     }
 
     /// Closes the column being built.
-    fn close(&mut self) {
+    pub(super) fn close(&mut self) {
         self.starts.push(self.indices.len());
     }
 }
@@ -96,9 +97,12 @@ pub(super) enum Factorization {
 }
 
 /// The factors `L U` of the rows of an ordered matrix's diagonal blocks, permuted within
-/// each block by its pivots, and the workspace that finds them.
+/// each block by its pivots, and the workspace that finds them: of the blocks the ordering
+/// dissects, by their trees, and of the others, column by column.
 #[derive(Clone)]
 pub(super) struct Numeric<T> {
+    /// The factors of each dissected block, in the ordering's order.
+    trees: Vec<Tree<T>>,
     /// The row of the ordered matrix that is each position's pivot.
     pivot_rows: Vec<usize>,
     /// The position whose pivot each row of the ordered matrix is, or `NONE`.
@@ -123,8 +127,11 @@ pub(super) struct Numeric<T> {
 }
 
 impl<T: Scalar> Numeric<T> {
-    pub(super) fn new(dimension: usize) -> Self {
+    /// No factors yet of the matrices of `ordering`'s pattern.
+    pub(super) fn new(ordering: &Ordering) -> Self {
+        let dimension = ordering.pattern().dimension();
         Self {
+            trees: ordering.dissections().iter().map(Tree::new).collect(),
             pivot_rows: vec![NONE; dimension],
             positions: vec![NONE; dimension],
             lower: Triangle::new(dimension),
@@ -141,8 +148,11 @@ impl<T: Scalar> Numeric<T> {
     /// Forgets the pivots of the last factorization, so that the next searches for every
     /// pivot, as a new one's first does: with no pivot kept, a factorization reads nothing
     /// the last left but its allocations.
-    pub(super) const fn forget(&mut self) {
+    pub(super) fn forget(&mut self) {
         self.complete = false;
+        for tree in &mut self.trees {
+            tree.forget();
+        }
     }
 
     /// Whether the next factorization of any matrix keeps the same pivots, in the same
@@ -159,46 +169,94 @@ impl<T: Scalar> Numeric<T> {
                     && self.lower.indices == other.lower.indices
                     && self.upper.starts == other.upper.starts
                     && self.upper.indices == other.upper.indices
+                    && self
+                        .trees
+                        .iter()
+                        .zip(&other.trees)
+                        .all(|(one, another)| one.pivots_alike(another))
             }
             _ => false,
         }
     }
 
+    /// The number of columns the last factorization delayed from a node of a dissected
+    /// block to its parent.
+    pub(super) fn delays(&self) -> usize {
+        self.trees.iter().map(Tree::delays).sum()
+    }
+
     /// The number of entries of `L` below its diagonal and of `U` on and above it.
     pub(super) fn entries(&self) -> usize {
-        self.lower.indices.len() + self.upper.indices.len() + self.pivots.len()
+        let dissected: usize = self.trees.iter().map(Tree::entries).sum();
+        let positions = self.pivot_rows.iter().filter(|&&row| row != NONE).count();
+        self.lower.indices.len() + self.upper.indices.len() + positions + dissected
     }
 
     /// Factors the matrix of `ordering`'s pattern whose values are `values`, keeping the
     /// last factorization's pivots while each passes, and searching for the pivots from the
-    /// first that does not. Returns how it went.
+    /// first that does not: in each dissected block, in each node whose pivot does not and
+    /// in the nodes above it. Returns how it went.
     pub(super) fn factor(
         &mut self,
         ordering: &Ordering,
         values: &[T],
     ) -> Result<Factorization, LinearError> {
-        let (first, went) = if self.complete {
+        let afresh = !self.complete;
+        let (first, mut went) = if afresh {
+            (Some(0), Factorization::Searched)
+        } else {
             match self.refactor(ordering, values) {
-                None => return Ok(Factorization::Refactored),
-                Some(first) => (first, Factorization::FellBack),
+                None => (None, Factorization::Refactored),
+                Some(first) => (Some(first), Factorization::FellBack),
             }
-        } else {
-            (0, Factorization::Searched)
         };
-        if self.complete {
-            for &row in &self.pivot_rows[first..] {
-                self.positions[row] = NONE;
-            }
-        } else {
-            self.positions.fill(NONE);
-        }
         self.complete = false;
-        self.lower.truncate(first);
-        self.upper.truncate(first);
-        self.marks.fill(NONE);
-        for column in first..self.pivots.len() {
-            self.eliminate(ordering, values, column)?;
+        if let Some(first) = first {
+            if afresh {
+                self.positions.fill(NONE);
+            } else {
+                for &row in &self.pivot_rows[first..] {
+                    if row != NONE {
+                        self.positions[row] = NONE;
+                    }
+                }
+            }
+            self.lower.truncate(first);
+            self.upper.truncate(first);
+            self.marks.fill(NONE);
+            for (block, range) in ordering.block_starts().windows(2).enumerate() {
+                let dissected = ordering.dissection(block).is_some();
+                for column in range[0].max(first)..range[1] {
+                    if dissected {
+                        self.pivot_rows[column] = NONE;
+                        self.lower.close();
+                        self.upper.close();
+                    } else {
+                        self.eliminate(ordering, values, column)?;
+                    }
+                }
+            }
         }
+        for (tree, dissection) in self.trees.iter_mut().zip(ordering.dissections()) {
+            if afresh {
+                tree.forget();
+            }
+            let searched = tree
+                .factor(dissection, values)
+                .map_err(|error| match error {
+                    LinearError::Singular { columns } => LinearError::Singular {
+                        columns: columns
+                            .into_iter()
+                            .map(|position| ordering.columns()[position])
+                            .collect(),
+                    },
+                    LinearError::TooLarge => LinearError::TooLarge,
+                })?;
+            if searched && !afresh {
+                went = Factorization::FellBack;
+            }
+        }
+        debug_assert!(self.trees.iter().all(Tree::is_complete));
         self.complete = true;
         Ok(went)
     }
@@ -207,7 +265,13 @@ impl<T: Scalar> Numeric<T> {
     /// when every pivot reaches its tolerance, and else the first position whose pivot does
     /// not, the factors before it found.
     fn refactor(&mut self, ordering: &Ordering, values: &[T]) -> Option<usize> {
-        for column in 0..self.pivots.len() {
+        let columns = ordering
+            .block_starts()
+            .windows(2)
+            .enumerate()
+            .filter(|&(block, _)| ordering.dissection(block).is_none())
+            .flat_map(|(_, range)| range[0]..range[1]);
+        for column in columns {
             for &(row, slot) in ordering.within(column) {
                 self.work[row] = values[slot];
             }
@@ -364,34 +428,50 @@ impl<T: Scalar> Numeric<T> {
     }
 
     /// Solves `A x = rhs` and leaves `x` in `rhs`, for the matrix of `ordering`'s pattern
-    /// with `values` whose factors these are, with the workspaces `by_row` and
-    /// `by_position`.
+    /// with `values` whose factors these are, writing to `workspace` as it goes.
     pub(super) fn solve(
         &self,
         ordering: &Ordering,
         values: &[T],
         rhs: &mut [T],
-        (by_row, by_position): (&mut [T], &mut [T]),
+        workspace: &mut Workspace<T>,
     ) {
+        let Workspace {
+            by_row,
+            by_position,
+            dissected: scratch,
+        } = workspace;
+        scratch.resize_with(self.trees.len(), Vec::new);
         for (value, &row) in by_row.iter_mut().zip(ordering.rows()) {
             *value = rhs[row];
         }
-        for block in ordering.block_starts().windows(2).rev() {
-            let positions = block[0]..block[1];
-            for position in positions.clone() {
-                let value = by_row[self.pivot_rows[position]];
-                by_position[position] = value;
-                let (indices, factors) = self.lower.column(position);
-                for (&index, &factor) in indices.iter().zip(factors) {
-                    by_row[index] -= factor * value;
+        for (block, range) in ordering.block_starts().windows(2).enumerate().rev() {
+            let positions = range[0]..range[1];
+            if let Some(dissection) = ordering.dissection(block) {
+                let index = ordering.dissected_index(block);
+                self.trees[index].solve(
+                    dissection,
+                    by_row,
+                    &mut by_position[positions.clone()],
+                    &mut scratch[index],
+                    false,
+                );
+            } else {
+                for position in positions.clone() {
+                    let value = by_row[self.pivot_rows[position]];
+                    by_position[position] = value;
+                    let (indices, factors) = self.lower.column(position);
+                    for (&index, &factor) in indices.iter().zip(factors) {
+                        by_row[index] -= factor * value;
+                    }
                 }
-            }
-            for position in positions.clone().rev() {
-                let value = by_position[position] / self.pivots[position];
-                by_position[position] = value;
-                let (indices, factors) = self.upper.column(position);
-                for (&index, &factor) in indices.iter().zip(factors) {
-                    by_position[index] -= factor * value;
+                for position in positions.clone().rev() {
+                    let value = by_position[position] / self.pivots[position];
+                    by_position[position] = value;
+                    let (indices, factors) = self.upper.column(position);
+                    for (&index, &factor) in indices.iter().zip(factors) {
+                        by_position[index] -= factor * value;
+                    }
                 }
             }
             for position in positions {
@@ -412,13 +492,37 @@ impl<T: Scalar> Numeric<T> {
         ordering: &Ordering,
         values: &[T],
         rhs: &mut [T],
-        (by_row, by_position): (&mut [T], &mut [T]),
+        workspace: &mut Workspace<T>,
     ) {
+        let Workspace {
+            by_row,
+            by_position,
+            dissected: scratch,
+        } = workspace;
+        scratch.resize_with(self.trees.len(), Vec::new);
         for (value, &column) in by_position.iter_mut().zip(ordering.columns()) {
             *value = rhs[column];
         }
-        for block in ordering.block_starts().windows(2) {
-            let positions = block[0]..block[1];
+        for (block, range) in ordering.block_starts().windows(2).enumerate() {
+            let positions = range[0]..range[1];
+            if let Some(dissection) = ordering.dissection(block) {
+                for position in positions.clone() {
+                    let mut value = by_position[position];
+                    for &(row, slot) in ordering.above(position) {
+                        value -= values[slot] * by_row[row];
+                    }
+                    by_position[position] = value;
+                }
+                let index = ordering.dissected_index(block);
+                self.trees[index].solve(
+                    dissection,
+                    by_position,
+                    &mut by_row[positions],
+                    &mut scratch[index],
+                    true,
+                );
+                continue;
+            }
             for position in positions.clone() {
                 let mut value = by_position[position];
                 for &(row, slot) in ordering.above(position) {
@@ -488,7 +592,7 @@ mod tests {
             &ordering,
             [[4.0, 0.0, 0.0], [0.0, 1e-14, 1.0], [0.0, 1.0, 1e-14]],
         );
-        let mut numeric = Numeric::new(3);
+        let mut numeric = Numeric::new(&ordering);
         assert_eq!(
             numeric.factor(&ordering, &first),
             Ok(Factorization::Searched)
@@ -504,13 +608,8 @@ mod tests {
         // The factors solve the second matrix's system: its residual is a rounding.
         let wanted = [1.0, -2.0, 3.0];
         let mut x = wanted;
-        let mut workspace = ([0.0; 3], [0.0; 3]);
-        numeric.solve(
-            &ordering,
-            &second,
-            &mut x,
-            (&mut workspace.0, &mut workspace.1),
-        );
+        let mut workspace = Workspace::new(3);
+        numeric.solve(&ordering, &second, &mut x, &mut workspace);
         let mut residual = wanted;
         for ((row, column), value) in ordering.pattern().positions().zip(&second) {
             residual[row] -= value * x[column];
