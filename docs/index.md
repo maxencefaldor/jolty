@@ -82,7 +82,7 @@ The engine solves the circuit's equations as SPICE does, and its results agree w
 
 ## Install
 
-jolty builds from source with [uv](https://docs.astral.sh/uv/), which installs Python 3.14, and a [Rust toolchain](https://rustup.rs/):
+jolty builds from source with [uv](https://docs.astral.sh/uv/), which installs Python 3.15, and a [Rust toolchain](https://rustup.rs/):
 
 ```sh
 git clone https://github.com/maxencefaldor/jolty

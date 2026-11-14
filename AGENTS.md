@@ -14,7 +14,7 @@ A schematic's layout only draws a circuit as feedback; it lays out no board.
 
 ```sh
 scripts/check               # every check below, exactly as CI runs them
-uv sync                     # build the engine, install Python 3.14 and every tool from uv.lock
+uv sync                     # build the engine, install Python 3.15 and every tool from uv.lock
 uv run pytest               # Python tests and doctests; warnings are errors
 uv run ruff format          # format Python
 uv run ruff check           # lint Python, with every rule enabled

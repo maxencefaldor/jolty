@@ -5,7 +5,7 @@ The page installs jolty, writes a first circuit, simulates it and reads the resu
 ## Install
 
 jolty builds from source.
-It needs [uv](https://docs.astral.sh/uv/), which installs Python 3.14, and a [Rust toolchain](https://rustup.rs/), which builds the engine:
+It needs [uv](https://docs.astral.sh/uv/), which installs Python 3.15, and a [Rust toolchain](https://rustup.rs/), which builds the engine:
 
 ```sh
 git clone https://github.com/maxencefaldor/jolty

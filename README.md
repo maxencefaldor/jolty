@@ -23,7 +23,7 @@ Its [gallery](https://maxencefaldor.github.io/jolty/gallery/) shows thirty famou
 
 ## 🚀 Quick start
 
-Building jolty needs [uv](https://docs.astral.sh/uv/), which installs Python 3.14, and a [Rust toolchain](https://rustup.rs/).
+Building jolty needs [uv](https://docs.astral.sh/uv/), which installs Python 3.15, and a [Rust toolchain](https://rustup.rs/).
 
 ```sh
 git clone https://github.com/maxencefaldor/jolty

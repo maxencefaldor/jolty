@@ -23,7 +23,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      # setup-uv tags each release but, since v8, no major version.
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
       - uses: Swatinem/rust-cache@v2
