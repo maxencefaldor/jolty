@@ -247,8 +247,9 @@ impl Simulator {
     }
 
     /// Readies the simulator to run at `values`, as one made [from its elaborated
-    /// circuit](Simulator::from_elaborated) at them would: its devices made again from the
-    /// numbers they give, and everything the runs before left forgotten, its buffers kept.
+    /// circuit](Simulator::from_elaborated) at them would: its instances prepared again for
+    /// the numbers they give, and everything the runs before left forgotten, its buffers
+    /// kept.
     ///
     /// # Errors
     ///
@@ -282,8 +283,8 @@ impl Simulator {
     }
 
     /// Readies the simulator to run at `values` from where its last run left it, as the
-    /// next run of a chain: the devices whose numbers or temperature differ made again,
-    /// every other device as it is, and everything else forgotten as a reset forgets it,
+    /// next run of a chain: the instances whose numbers or temperature differ prepared
+    /// again, every other instance as it is, and everything else forgotten as a reset forgets it,
     /// but for the sparse solver's pivots and the last operating point solved, which the
     /// next operating point starts from. Returns false, and leaves the simulator as it
     /// was, when the values give the circuit another structure, or the last run solved no
@@ -378,14 +379,12 @@ impl Simulator {
     }
 
     /// Starts the logic driver at `element` among the devices on a `(time, level,
-    /// transition)` ramp, and its copy that the observer reads; returns when the ramp
-    /// ends.
+    /// transition)` ramp; returns when the ramp ends.
     fn drive(
         &mut self,
         element: usize,
         (time, level, transition): (f64, Level, f64),
     ) -> Option<f64> {
-        self.state.observer.drive(element, time, level, transition);
         let groups = &self.elaborated.groups;
         self.state
             .runs
@@ -594,10 +593,6 @@ pub enum SimulationError {
     /// The options are out of range.
     #[error("invalid options: {0}")]
     InvalidOptions(String),
-    /// Devices an analysis records cannot be made again, each terminal on a node of its own,
-    /// to be read.
-    #[error("cannot record {}", .0.join("; "))]
-    Unrecordable(Vec<String>),
     /// The circuit holds a foundry's devices, which ngspice simulates with the foundry's
     /// models, and which the engine does not solve.
     #[error(

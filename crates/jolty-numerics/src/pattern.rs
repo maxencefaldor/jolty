@@ -1,9 +1,6 @@
-use std::ops::Range;
-
 use faer::sparse::SymbolicSparseColMat;
 
-/// A claimed position of the system matrix, returned by [`PatternBuilder::entry`], or by
-/// [`Replay::entry`] for a claim made again.
+/// A claimed position of the system matrix, returned by [`PatternBuilder::entry`].
 ///
 /// A device keeps its entries and writes its derivatives through them; [`Pattern::slot`] maps
 /// an entry to the index of its value in the compressed matrix.
@@ -83,56 +80,6 @@ impl PatternBuilder {
         let structure =
             SymbolicSparseColMat::new_checked(dimension, dimension, column_starts, None, rows);
         Pattern { structure, slots }
-    }
-}
-
-/// Claims made again, as a device made afresh makes them: the entries a [`PatternBuilder`]
-/// recorded in a range of its indices, handed back in order, each while it is claimed at the
-/// position it was recorded at.
-///
-/// [`Replay::replayed`] says whether the claims made again were the very claims recorded, no
-/// more and no fewer, so that the entries handed back are those of the pattern recorded.
-#[derive(Debug, Clone)]
-pub struct Replay<'a> {
-    /// The positions recorded, by entry.
-    positions: &'a [(usize, usize)],
-    /// The entry the next claim is handed back.
-    next: usize,
-    /// The end of the range of entries recorded.
-    end: usize,
-    /// Whether every claim so far was at the position recorded for its entry.
-    matched: bool,
-}
-
-impl<'a> Replay<'a> {
-    /// Hands back the entries of `range` among `positions`, a builder's
-    /// [positions](PatternBuilder::positions).
-    #[must_use]
-    pub const fn new(positions: &'a [(usize, usize)], range: Range<usize>) -> Self {
-        Self {
-            positions,
-            next: range.start,
-            end: range.end,
-            matched: true,
-        }
-    }
-
-    /// Claims the position at `row` and `column`: the next entry of the range, which was
-    /// recorded at that position unless [`Replay::replayed`] says otherwise.
-    pub fn entry(&mut self, row: usize, column: usize) -> Entry {
-        let entry = self.next;
-        self.next += 1;
-        if entry >= self.end || self.positions.get(entry) != Some(&(row, column)) {
-            self.matched = false;
-        }
-        Entry(entry)
-    }
-
-    /// Whether every claim was at the position recorded for its entry, and every entry of
-    /// the range was claimed.
-    #[must_use]
-    pub const fn replayed(&self) -> bool {
-        self.matched && self.next == self.end
     }
 }
 
@@ -228,31 +175,6 @@ mod tests {
         let mut into = [1.0, 1.0];
         pattern.add_product(&[1.0, 2.0, 3.0], &[1.0, 10.0], &mut into);
         assert!((into[0] - 32.0).abs() < 1e-15 && (into[1] - 3.0).abs() < 1e-15);
-    }
-
-    #[test]
-    fn a_replay_hands_back_the_entries_recorded_while_the_claims_match() {
-        let mut builder = PatternBuilder::new();
-        builder.entry(0, 0);
-        let first = builder.entry(1, 0);
-        let second = builder.entry(0, 1);
-        let positions = builder.positions();
-        assert_eq!(positions, [(0, 0), (1, 0), (0, 1)]);
-        let mut same = Replay::new(positions, 1..3);
-        assert_eq!([same.entry(1, 0), same.entry(0, 1)], [first, second]);
-        assert!(same.replayed());
-        let mut moved = Replay::new(positions, 1..3);
-        moved.entry(1, 0);
-        moved.entry(1, 1);
-        assert!(!moved.replayed(), "a claim at another position");
-        let mut fewer = Replay::new(positions, 1..3);
-        fewer.entry(1, 0);
-        assert!(!fewer.replayed(), "a claim left over");
-        let mut more = Replay::new(positions, 1..3);
-        more.entry(1, 0);
-        more.entry(0, 1);
-        more.entry(0, 0);
-        assert!(!more.replayed(), "a claim beyond the range");
     }
 
     #[test]

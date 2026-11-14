@@ -1,15 +1,14 @@
 //! An elaborated circuit: what a circuit is, built once per structure and shared by every
-//! run of it, and how each run's devices are made from it.
+//! run of it, and how each run's instances are prepared from it.
 //!
 //! An [`Elaborated`] circuit holds everything elaboration finds that no run changes: the
-//! unknowns, the devices placed and what each is made from, the logic, the matrix's pattern
-//! and the sparse solver's ordering of it, and the table of the instances' numbers. It never
-//! changes once built, so threads share it. Each run makes its devices again from it, with
-//! the numbers its [`Values`] replace, through a binding that replays the claims elaboration
-//! recorded: the same unknowns and the same entries, in the same order, so the devices of a
-//! run are those elaborating the circuit with its numbers would have made. A device that
-//! claims others under the new numbers has another structure, which a circuit elaborated for
-//! those numbers holds, [`Elaborated::restructured`].
+//! unknowns, the devices placed and what each is made from, the groups of their kernels'
+//! instances, the logic, the matrix's pattern and the sparse solver's ordering of it, and
+//! the table of the instances' numbers. It never changes once built, so threads share it.
+//! Each run prepares its instances from it, with the numbers its [`Values`] replace; an
+//! instance whose shape changes under the new numbers claims other unknowns or entries, so
+//! has another structure, which a circuit elaborated for those numbers holds,
+//! [`Elaborated::restructured`].
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -18,11 +17,11 @@ use std::sync::{Arc, OnceLock};
 
 use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{
-    Binding, Device, Groups, Instance, Interface, KernelDevice, Library, LogicDriver,
-    LogicDriverParameters, Model, NativeDevice, Node, ParameterError, REFERENCE_TEMPERATURE, Runs,
-    Specification, ThresholdDetector, ThresholdDetectorParameters, Unknown, UnknownInfo,
+    Binding, Groups, Instance, Interface, Library, LogicDriver, LogicDriverParameters, Model, Node,
+    ParameterError, REFERENCE_TEMPERATURE, Runs, Specification, ThresholdDetector,
+    ThresholdDetectorParameters, Unknown, UnknownInfo,
 };
-use jolty_numerics::{Entry, Ordering, Pattern, PatternBuilder, Replay};
+use jolty_numerics::{Entry, Ordering, Pattern, PatternBuilder};
 use serde_json::Value;
 
 use crate::Substitute;
@@ -63,8 +62,6 @@ pub struct Elaborated {
     pub(crate) ordering: Arc<Ordering>,
     /// The name of every unknown, by index, as the solvers name them.
     pub(crate) names: Arc<[String]>,
-    /// The position of every entry the devices claimed, by entry.
-    claims: Vec<(usize, usize)>,
     /// The diagonal entry of every node voltage's equation, where gmin stepping adds a
     /// conductance to the reference.
     pub(crate) node_diagonals: Vec<(Unknown, Entry)>,
@@ -109,8 +106,6 @@ pub struct Placed {
     pub(crate) first_internal: usize,
     /// How many internal unknowns the device added.
     internals: usize,
-    /// The entries it claimed.
-    entries: Range<usize>,
     /// The names of the variables it computes.
     variables: &'static [&'static str],
     /// Whether it claimed its unknowns and entries as made from its own parameters, at its
@@ -170,28 +165,6 @@ impl Origin {
             Self::Model(made) => made.specification.kernel(),
             Self::Detector(parameters) => Instance::of::<ThresholdDetector>(parameters),
             Self::Driver(parameters) => Instance::of::<LogicDriver>(parameters),
-        }
-    }
-
-    /// Makes the device bound through `binding`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParameterError`] when a parameter is out of range.
-    pub(crate) fn make(
-        &self,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device>, ParameterError> {
-        match self {
-            Self::Model(made) => made.specification.instantiate(binding),
-            Self::Detector(parameters) => Ok(Box::new(KernelDevice::<ThresholdDetector>::new(
-                *parameters,
-                binding,
-            )?)),
-            Self::Driver(parameters) => Ok(Box::new(KernelDevice::<LogicDriver>::new(
-                *parameters,
-                binding,
-            )?)),
         }
     }
 }
@@ -334,8 +307,7 @@ impl Index {
 }
 
 /// What binding devices one after another builds: the unknowns, the entries they claim, the
-/// devices placed, the devices made, and the groups of the instances of kernels among them,
-/// with their numbers prepared.
+/// devices placed, and the groups of their instances, with their numbers prepared.
 pub(crate) struct Binder {
     unknowns: Vec<UnknownInfo>,
     builder: PatternBuilder,
@@ -352,7 +324,6 @@ pub(crate) struct Bound {
     pub(crate) placed: Vec<Placed>,
     pub(crate) devices: Devices,
     groups: Groups,
-    claims: Vec<(usize, usize)>,
     node_diagonals: Vec<(Unknown, Entry)>,
     pattern: Arc<Pattern>,
     ordering: Arc<Ordering>,
@@ -378,9 +349,9 @@ impl Binder {
         }
     }
 
-    /// Makes the device of `template` from `origin`, its template's own unless given, and
-    /// binds it to new internal unknowns and entries; `nominal` when it is made from its own
-    /// parameters at its circuit's temperature.
+    /// Adds the instance of the device of `template` that `origin` makes, its template's own
+    /// unless given, to its group, binding it to new internal unknowns and entries;
+    /// `nominal` when it is made from its own parameters at its circuit's temperature.
     ///
     /// # Errors
     ///
@@ -392,13 +363,11 @@ impl Binder {
         nominal: bool,
     ) -> Result<(), ParameterError> {
         let first_internal = self.unknowns.len();
-        let first_entry = self.builder.positions().len();
         let mut binding = Binding::new(
             &template.location.path,
             &template.nodes,
             &mut self.unknowns,
             &mut self.builder,
-            self.temperature,
         );
         let origin = origin.unwrap_or(&template.origin);
         // Each instance claims its unknowns and entries in its group.
@@ -406,11 +375,9 @@ impl Binder {
         self.groups
             .add(&mut self.runs, (instance, self.temperature), &mut binding)?;
         let variables = instance.variable_names();
-        let entries = first_entry..self.builder.positions().len();
         self.placed.push(Placed {
             first_internal,
             internals: self.unknowns.len() - first_internal,
-            entries,
             variables,
             nominal,
             template,
@@ -425,7 +392,6 @@ impl Binder {
     /// Returns [`ElaborationProblem::TooLarge`] when the ordering does not fit in memory, or
     /// the groups' slab more places than they index.
     pub(crate) fn finish(mut self) -> Result<Bound, ElaborationError> {
-        let claims = self.builder.positions().to_vec();
         let pattern = Arc::new(self.builder.finish(self.unknowns.len()));
         let too_large = || ElaborationError::from(ElaborationProblem::TooLarge);
         self.groups
@@ -443,7 +409,6 @@ impl Binder {
             placed: self.placed,
             devices: self.runs,
             groups: self.groups,
-            claims,
             node_diagonals: self.node_diagonals,
             pattern,
             ordering: Arc::new(ordering),
@@ -514,7 +479,6 @@ impl Elaborated {
             pattern: bound.pattern,
             ordering: bound.ordering,
             names: bound.names,
-            claims: bound.claims,
             node_diagonals: bound.node_diagonals,
             groups: bound.groups,
             temperature,
@@ -637,9 +601,12 @@ impl Elaborated {
                 continue;
             }
             let origin = own.unwrap_or(&placed.template.origin);
-            match self.replay(index, origin, temperature) {
-                Ok(Some(_)) => {}
-                Ok(None) => match self.layout(index, origin, temperature) {
+            match self
+                .groups
+                .keeps_shape(index, (&origin.kernel(), temperature))
+            {
+                Ok(true) => {}
+                Ok(false) => match self.layout(index, origin, temperature) {
                     Ok(layout) => changed.push((index, layout)),
                     Err(error) => problems.push(self.problem(index, error)),
                 },
@@ -699,7 +666,6 @@ impl Elaborated {
             pattern: bound.pattern,
             ordering: bound.ordering,
             names: bound.names,
-            claims: bound.claims,
             node_diagonals: bound.node_diagonals,
             groups: bound.groups,
             temperature: self.temperature,
@@ -884,33 +850,8 @@ impl Elaborated {
         }))
     }
 
-    /// Makes the device at `index` again from `origin` at `temperature`, through a binding
-    /// that replays the unknowns and the entries it claimed here: the device, or `None` when
-    /// it claims others, so has another structure.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParameterError`] when a parameter is out of range.
-    pub(crate) fn replay(
-        &self,
-        index: usize,
-        origin: &Origin,
-        temperature: f64,
-    ) -> Result<Option<Box<dyn Device>>, ParameterError> {
-        let placed = &self.devices[index];
-        let internals = &self.unknowns[placed.internals()];
-        let mut binding = Binding::replaying(
-            placed.path(),
-            &placed.template.nodes,
-            (placed.first_internal, internals),
-            Replay::new(&self.claims, placed.entries.clone()),
-            temperature,
-        );
-        let device = origin.make(&mut binding)?;
-        Ok((binding.replayed() && device.variable_names() == placed.variables).then_some(device))
-    }
-
-    /// What the device at `index` claims when made from `origin` at `temperature`.
+    /// What the device at `index` claims when its instance is made from `origin` at
+    /// `temperature`.
     fn layout(
         &self,
         index: usize,
@@ -925,13 +866,13 @@ impl Elaborated {
             &placed.template.nodes,
             (placed.first_internal, &mut internals),
             &mut builder,
-            temperature,
         );
-        let device = origin.make(&mut binding)?;
+        let instance = origin.kernel();
+        instance.claim(temperature, &mut binding)?;
         Ok(Layout {
             internals,
             entries: builder.positions().to_vec(),
-            variables: device.variable_names(),
+            variables: instance.variable_names(),
         })
     }
 

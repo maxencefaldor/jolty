@@ -3,17 +3,20 @@
 use jolty_numerics::{Pattern, PatternBuilder};
 
 use crate::{
-    BOLTZMANN, Binding, Contributions, Device, Gradient, Groups, Input, Kernel, Model, Native,
-    Node, NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Runs, Unknown,
-    UnknownInfo,
+    BOLTZMANN, Binding, Contributions, Gradient, Groups, Input, Kernel, Model, Native, Node,
+    NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, Runs, Unknown, UnknownInfo,
 };
 
-/// One device whose terminals each connect to an unknown of their own.
+/// One device whose terminals each connect to an unknown of their own, its instance in a
+/// group of its own.
 #[derive(Debug)]
 pub(crate) struct Bench {
-    device: Box<dyn Device>,
+    groups: Groups,
+    runs: Runs,
     pattern: Pattern,
     unknowns: Vec<UnknownInfo>,
+    /// The names of the variables the device computes.
+    variables: &'static [&'static str],
     /// Whether the device is evaluated as a transient analysis steps through time.
     transient: bool,
 }
@@ -25,6 +28,41 @@ pub(crate) struct Evaluation {
     pub(crate) conductance: Vec<Vec<f64>>,
     pub(crate) capacitance: Vec<Vec<f64>>,
     pub(crate) limited: bool,
+}
+
+/// The groups of one device of `model` with `parameters` at `temperature`, each terminal
+/// on an unknown of its own, with the pattern and the unknowns they claim.
+fn grouped(
+    model: &dyn Model,
+    parameters: &jolty_ir::Parameters,
+    temperature: f64,
+) -> Result<(Groups, Runs, Pattern, Vec<UnknownInfo>), ParameterError> {
+    let specification = model.read(parameters)?;
+    let terminals = specification.interface().terminals.len();
+    let nodes: Vec<Node> = (0..terminals)
+        .map(|index| Some(Unknown::new(index)))
+        .collect();
+    let mut unknowns: Vec<UnknownInfo> = (0..terminals)
+        .map(|index| UnknownInfo {
+            name: format!("n{index}"),
+            quantity: Quantity::Voltage,
+        })
+        .collect();
+    let mut builder = PatternBuilder::new();
+    let (mut groups, mut runs) = (Groups::new(), Runs::default());
+    {
+        let mut binding = Binding::new("device", &nodes, &mut unknowns, &mut builder);
+        groups.add(
+            &mut runs,
+            (specification.kernel(), temperature),
+            &mut binding,
+        )?;
+    }
+    let pattern = builder.finish(unknowns.len());
+    groups
+        .finish(&mut runs, &pattern)
+        .map_err(|_| ParameterError("too large".to_owned()))?;
+    Ok((groups, runs, pattern, unknowns))
 }
 
 impl Bench {
@@ -56,43 +94,15 @@ impl Bench {
         parameters: &str,
         temperature: f64,
     ) -> Result<Self, ParameterError> {
-        let specification =
-            model.read(&serde_json::from_str(parameters).expect("a JSON object"))?;
-        let terminals = specification.interface().terminals.len();
-        Self::made(terminals, temperature, |binding| {
-            specification.instantiate(binding)
-        })
-    }
-
-    /// A bench for the device `make` makes through a binding of `terminals`, each on an
-    /// unknown of its own, at `temperature`.
-    fn made(
-        terminals: usize,
-        temperature: f64,
-        make: impl FnOnce(&mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError>,
-    ) -> Result<Self, ParameterError> {
-        let nodes: Vec<Node> = (0..terminals)
-            .map(|index| Some(Unknown::new(index)))
-            .collect();
-        let mut unknowns: Vec<UnknownInfo> = (0..terminals)
-            .map(|index| UnknownInfo {
-                name: format!("n{index}"),
-                quantity: Quantity::Voltage,
-            })
-            .collect();
-        let mut builder = PatternBuilder::new();
-        let device = make(&mut Binding::new(
-            "device",
-            &nodes,
-            &mut unknowns,
-            &mut builder,
-            temperature,
-        ))?;
-        let pattern = builder.finish(unknowns.len());
+        let parameters = serde_json::from_str(parameters).expect("a JSON object");
+        let (groups, runs, pattern, unknowns) = grouped(model, &parameters, temperature)?;
+        let variables = model.read(&parameters)?.kernel().variable_names();
         Ok(Self {
-            device,
+            groups,
+            runs,
             pattern,
             unknowns,
+            variables,
             transient: false,
         })
     }
@@ -134,9 +144,9 @@ impl Bench {
     pub(crate) fn evaluate_with(&mut self, input: &Input<'_>) -> Evaluation {
         let n = self.unknowns.len();
         let mut contributions = Contributions::new(&self.pattern);
-        let mut output = contributions.output(&self.pattern);
-        self.device.evaluate(input, &mut output);
-        let limited = output.is_limited();
+        let limited = self
+            .runs
+            .evaluate(&self.groups, input, &mut contributions, None);
         let Contributions {
             residual,
             charge,
@@ -160,14 +170,37 @@ impl Bench {
         }
     }
 
-    pub(crate) fn device(&mut self) -> &mut dyn Device {
-        self.device.as_mut()
+    /// The names of the variables the device computes.
+    pub(crate) const fn variable_names(&self) -> &'static [&'static str] {
+        self.variables
+    }
+
+    /// The variables the device computed at its last evaluation.
+    pub(crate) fn variables(&self) -> Vec<f64> {
+        let mut values = vec![0.0; self.variables.len()];
+        self.runs.variables(&self.groups, 0, &mut values);
+        values
+    }
+
+    /// The device's excitation, as an independent source's: the derivative of each
+    /// residual with respect to its level.
+    pub(crate) fn excitation(&self) -> Vec<f64> {
+        let mut derivative = vec![0.0; self.unknowns.len()];
+        self.runs.excite(&self.groups, 0, &mut derivative);
+        derivative
+    }
+
+    /// Starts the device, a logic driver, on a `(time, level, transition)` ramp, and
+    /// returns when it settles.
+    pub(crate) fn drive(&mut self, ramp: (f64, crate::Level, f64)) -> Option<f64> {
+        self.runs.drive(&self.groups, 0, ramp)
     }
 
     /// The device's noise sources at `x`.
     pub(crate) fn noise(&self, x: &[f64]) -> Vec<NoiseSource> {
         let mut sources = Vec::new();
-        self.device.noise(&Input::new(x, None, 0.0), &mut sources);
+        self.runs
+            .noise(&self.groups, 0, &Input::new(x, None, 0.0), &mut sources);
         sources
     }
 }
@@ -265,61 +298,34 @@ fn assert_bench_jacobians_match(bench: &mut Bench, name: &str, x: &[f64]) {
     }
 }
 
-/// Evaluates `device`, bound to `pattern`, at `x`, at `time` in a transient analysis or,
-/// with `None`, at an operating point: its residuals, charges and conductances.
-fn residuals_and_charges<R: Real>(
-    device: &mut dyn Device<R>,
-    pattern: &Pattern,
-    (x, time): (&[f64], Option<f64>),
-) -> [Vec<R>; 3] {
-    let mut contributions = Contributions::new(pattern);
-    let mut input = Input::new(x, time, 1e-12);
-    input.limiting = false;
-    device.evaluate(&input, &mut contributions.output(pattern));
-    [
-        contributions.residual,
-        contributions.charge,
-        contributions.conductance,
-    ]
-}
-
 /// A device of a model made from parameters, each of its terminals on an unknown of its
 /// own, at 30 kelvins above the reference temperature.
 struct Rig<'m> {
     model: &'m dyn Model,
-    nodes: Vec<Node>,
 }
 
 impl Rig<'_> {
-    fn binding<'a>(
-        &'a self,
-        unknowns: &'a mut Vec<UnknownInfo>,
-        builder: &'a mut PatternBuilder,
-    ) -> Binding<'a> {
-        unknowns.extend(self.nodes.iter().map(|_| UnknownInfo {
-            name: String::new(),
-            quantity: Quantity::Voltage,
-        }));
-        Binding::new(
-            "device",
-            &self.nodes,
-            unknowns,
-            builder,
-            REFERENCE_TEMPERATURE + 30.0,
-        )
-    }
+    /// The temperature the rig's devices are at.
+    const TEMPERATURE: f64 = REFERENCE_TEMPERATURE + 30.0;
 
     /// The residuals, charges and conductances at `x` of the device made with
-    /// `parameters`.
-    fn plain(&self, parameters: &jolty_ir::Parameters, x: (&[f64], Option<f64>)) -> [Vec<f64>; 3] {
-        let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
-        let mut binding = self.binding(&mut unknowns, &mut builder);
-        let mut device = self
-            .model
-            .read(parameters)
-            .and_then(|specification| specification.instantiate(&mut binding))
-            .expect("valid");
-        residuals_and_charges(device.as_mut(), &builder.finish(x.0.len()), x)
+    /// `parameters`, its steps not limited.
+    fn plain(
+        &self,
+        parameters: &jolty_ir::Parameters,
+        (x, time): (&[f64], Option<f64>),
+    ) -> [Vec<f64>; 3] {
+        let (groups, mut runs, pattern, _) =
+            grouped(self.model, parameters, Self::TEMPERATURE).expect("valid");
+        let mut contributions = Contributions::new(&pattern);
+        let mut input = Input::new(x, time, 1e-12);
+        input.limiting = false;
+        runs.evaluate(&groups, &input, &mut contributions, None);
+        [
+            contributions.residual,
+            contributions.charge,
+            contributions.conductance,
+        ]
     }
 
     /// The residuals, charges and conductances at `x`, with their gradients with respect
@@ -331,20 +337,10 @@ impl Rig<'_> {
         parameter: &str,
         (x, time): (&[f64], Option<f64>),
     ) -> Option<[Vec<Gradient>; 3]> {
+        let (groups, runs, pattern, _) =
+            grouped(self.model, parameters, Self::TEMPERATURE).expect("valid");
         let specification = self.model.read(parameters).expect("valid");
-        let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
-        let (mut groups, mut runs) = (Groups::new(), Runs::default());
-        let temperature = REFERENCE_TEMPERATURE + 30.0;
-        {
-            let mut binding = self.binding(&mut unknowns, &mut builder);
-            let instance = (specification.kernel(), temperature);
-            groups
-                .add(&mut runs, instance, &mut binding)
-                .expect("valid");
-        }
-        let pattern = builder.finish(x.len());
-        groups.finish(&mut runs, &pattern).expect("a small circuit");
-        let instance = (&specification.kernel(), temperature);
+        let instance = (&specification.kernel(), Self::TEMPERATURE);
         let mut twin = runs.twin(&groups, 0, instance, parameter)?;
         let mut input = Input::new(x, time, 1e-12);
         input.limiting = false;
@@ -376,35 +372,14 @@ pub(crate) fn excitation_and_derivative(
     parameters: &str,
     x: &[f64],
 ) -> (Vec<f64>, Vec<f64>) {
-    let grouped = |parameters: &jolty_ir::Parameters| {
-        let specification = model.read(parameters).expect("valid");
-        let terminals = specification.interface().terminals.len();
-        let rig = Rig {
-            model,
-            nodes: (0..terminals)
-                .map(|index| Some(Unknown::new(index)))
-                .collect(),
-        };
-        let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
-        let (mut groups, mut runs) = (Groups::new(), Runs::default());
-        {
-            let mut binding = rig.binding(&mut unknowns, &mut builder);
-            let instance = (specification.kernel(), REFERENCE_TEMPERATURE);
-            groups
-                .add(&mut runs, instance, &mut binding)
-                .expect("valid");
-        }
-        let pattern = builder.finish(x.len());
-        groups.finish(&mut runs, &pattern).expect("a small circuit");
-        (specification, groups, runs)
-    };
     let parameters = serde_json::from_str(parameters).expect("a JSON object");
-    let (_, groups, runs) = grouped(&parameters);
+    let (groups, runs, _, _) = grouped(model, &parameters, REFERENCE_TEMPERATURE).expect("valid");
     let level = runs.level(&groups, 0).expect("a source");
     let mut excitation = vec![0.0; x.len()];
     runs.excite(&groups, 0, &mut excitation);
     let held = crate::held_source(level);
-    let (specification, groups, runs) = grouped(&held);
+    let (groups, runs, _, _) = grouped(model, &held, REFERENCE_TEMPERATURE).expect("valid");
+    let specification = model.read(&held).expect("valid");
     let instance = (&specification.kernel(), REFERENCE_TEMPERATURE);
     let mut twin = runs
         .twin(&groups, 0, instance, "waveform.dc")
@@ -477,18 +452,7 @@ pub(crate) fn assert_model_parameter_gradients_match(
     let object = |value: &serde_json::Value| -> jolty_ir::Parameters {
         value.as_object().cloned().expect("a JSON object")
     };
-    let terminals = model
-        .read(&object(&parameters))
-        .expect("valid")
-        .interface()
-        .terminals
-        .len();
-    let rig = Rig {
-        model,
-        nodes: (0..terminals)
-            .map(|index| Some(Unknown::new(index)))
-            .collect(),
-    };
+    let rig = Rig { model };
     let plain = rig.plain(&object(&parameters), (x, time));
     let mut paths = Vec::new();
     numbers(&parameters, &mut Vec::new(), &mut paths);

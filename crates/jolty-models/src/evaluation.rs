@@ -1,4 +1,4 @@
-use jolty_numerics::{Entry, Pattern};
+use jolty_numerics::Pattern;
 
 use crate::{Local, Node, Real};
 
@@ -36,20 +36,6 @@ impl<'a> Input<'a> {
             source_scale: 1.0,
             gmin,
             limiting: true,
-        }
-    }
-
-    /// The same time, scale, gmin and limiting, at the unknowns `x`: the input of a device
-    /// that another evaluates within itself, on unknowns of its own.
-    #[must_use]
-    pub const fn with_values<'b>(&self, x: &'b [f64]) -> Input<'b> {
-        Input {
-            x,
-            time: self.time,
-            transient: self.transient,
-            source_scale: self.source_scale,
-            gmin: self.gmin,
-            limiting: self.limiting,
         }
     }
 
@@ -112,96 +98,5 @@ impl<R: Real> Contributions<R> {
         ] {
             values.fill(R::default());
         }
-    }
-
-    /// Zeroes every contribution and opens them to the devices' additions over `pattern`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the contributions were not made over a pattern of the same size.
-    pub fn output<'a>(&'a mut self, pattern: &'a Pattern) -> Output<'a, R> {
-        assert!(
-            self.residual.len() == pattern.dimension() && self.conductance.len() == pattern.len(),
-            "contributions sized for another pattern"
-        );
-        for values in [
-            &mut self.residual,
-            &mut self.scale,
-            &mut self.charge,
-            &mut self.conductance,
-            &mut self.capacitance,
-        ] {
-            values.fill(R::default());
-        }
-        Output {
-            pattern,
-            contributions: self,
-            limited: false,
-        }
-    }
-}
-
-/// Where devices add their contributions during one evaluation of the circuit: zeroed
-/// [`Contributions`], open over the pattern that places their conductances and capacitances.
-#[derive(Debug)]
-pub struct Output<'a, R: Real = f64> {
-    pattern: &'a Pattern,
-    contributions: &'a mut Contributions<R>,
-    limited: bool,
-}
-
-impl<R: Real> Output<'_, R> {
-    /// Adds `value` to the residual of `row`'s equation.
-    pub fn add_residual(&mut self, row: Node, value: R) {
-        if let Some(row) = row {
-            let contributions = &mut *self.contributions;
-            contributions.residual[row.index()] += value;
-            let scale = &mut contributions.scale[row.index()];
-            *scale = scale.max(value.abs());
-        }
-    }
-
-    /// Adds `value` to the residual of `row`'s equation, `scale` the largest magnitude of
-    /// the terms it sums, as a device that sums them itself reports them.
-    pub fn add_residual_scaled(&mut self, row: Node, value: R, scale: R) {
-        if let Some(row) = row {
-            let contributions = &mut *self.contributions;
-            contributions.residual[row.index()] += value;
-            let largest = &mut contributions.scale[row.index()];
-            *largest = largest.max(scale.abs());
-        }
-    }
-
-    /// Adds `value` to the charge of `row`'s equation.
-    pub fn add_charge(&mut self, row: Node, value: R) {
-        if let Some(row) = row {
-            self.contributions.charge[row.index()] += value;
-        }
-    }
-
-    /// Adds `value` to the conductance at `entry`.
-    pub fn add_conductance(&mut self, entry: Option<Entry>, value: R) {
-        if let Some(entry) = entry {
-            self.contributions.conductance[self.pattern.slot(entry)] += value;
-        }
-    }
-
-    /// Adds `value` to the capacitance at `entry`.
-    pub fn add_capacitance(&mut self, entry: Option<Entry>, value: R) {
-        if let Some(entry) = entry {
-            self.contributions.capacitance[self.pattern.slot(entry)] += value;
-        }
-    }
-
-    /// Records that a device evaluated at a limited voltage rather than the one it was given,
-    /// so the solution cannot have converged yet.
-    pub fn mark_limited(&mut self) {
-        self.limited = true;
-    }
-
-    /// Whether any device limited its voltage during this evaluation.
-    #[must_use]
-    pub fn is_limited(&self) -> bool {
-        self.limited
     }
 }

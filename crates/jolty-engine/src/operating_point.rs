@@ -647,7 +647,7 @@ impl Simulator {
         self.measure_loads(&solved.values, options);
         self.watch_supplies(&solved.values, 0.0, options);
         Ok(OperatingPoint {
-            observation: self.state.observer.dc(&solved.values, options.gmin),
+            observation: self.observe_dc(&solved.values, options),
             values: solved.values,
             logic: self.state.events.levels().to_vec(),
             strategy: solved.strategy,

@@ -770,10 +770,8 @@ mod tests {
             &[source(&sources, "thermal").density(1.0)],
             &[thermal(conductance)],
         );
-        let device = bench.device();
-        assert_eq!(device.variable_names(), ["resistance", "rate"]);
-        let mut values = [0.0; 2];
-        device.variables(&mut values);
+        assert_eq!(bench.variable_names(), ["resistance", "rate"]);
+        let values = bench.variables();
         // The rate shows at an operating point, which holds the state.
         assert_close(&values, &[conductance.recip(), conductance / 1e-4]);
     }

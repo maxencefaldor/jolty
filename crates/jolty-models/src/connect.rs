@@ -244,18 +244,16 @@ mod tests {
     fn a_driver_ramps_between_ground_and_supply() {
         let mut bench = Bench::new::<LogicDriver>("{}");
         assert_eq!(bench.unknowns(), ["n0", "n1", "n2", "device:current"]);
-        let driver = bench.device().as_driver().unwrap();
-        driver.drive(0.0, Level::Low, 0.0);
-        driver.drive(1.0, Level::High, 2.0);
-        assert_close(&[driver.settles_at()], &[3.0]);
+        bench.drive((0.0, Level::Low, 0.0));
+        let settles = bench.drive((1.0, Level::High, 2.0)).expect("a driver");
+        assert_close(&[settles], &[3.0]);
         // Halfway up the ramp, the output holds half of the 5 V from ground at 1 V.
         let x = [3.0, 6.0, 1.0, 0.0];
         let evaluation = bench.evaluate_with(&Input::new(&x, Some(2.0), 0.0));
         assert!((evaluation.residual[3] - (2.0 - 0.5 * 5.0)).abs() < 1e-12);
         // Driven back down from halfway, it takes half the transition.
-        let driver = bench.device().as_driver().unwrap();
-        driver.drive(2.0, Level::Low, 2.0);
-        assert_close(&[driver.settles_at()], &[3.0]);
+        let settles = bench.drive((2.0, Level::Low, 2.0)).expect("a driver");
+        assert_close(&[settles], &[3.0]);
     }
 
     #[test]

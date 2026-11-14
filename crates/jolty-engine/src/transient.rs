@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::logic::{Checkpoint, Command, Crossing, crossing};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
-use crate::observe::Observer;
+use crate::observe::{Observer, Read};
 use crate::options::NUMBERS_PER_GIB;
 use crate::periodic::Monodromy;
 use crate::profile::Activity;
@@ -352,6 +352,8 @@ struct Pending {
     length: f64,
     /// The Newton iterations that solved it.
     iterations: usize,
+    /// What the recorded devices did at its end.
+    read: Read,
     /// The corner it started from.
     corner: Corner,
 }
@@ -391,6 +393,8 @@ struct Tried {
     x: Vec<f64>,
     charge: Vec<f64>,
     derivative: Vec<f64>,
+    /// What the recorded devices did there, as the evaluation that solved it left them.
+    read: Read,
 }
 
 /// How a step's estimated truncation error compares with its tolerance.
@@ -621,6 +625,7 @@ impl Simulator {
         };
         self.start_carried(&mut carried, &initial, options)?;
         self.evaluate(&initial, Some(0.0), (1.0, options.gmin), true);
+        let start = self.read_recorded();
         self.state
             .events
             .start(&self.elaborated.logic, transient.stop);
@@ -651,7 +656,7 @@ impl Simulator {
         };
         let (mut times, mut values) = (vec![0.0], vec![stepper.x.clone()]);
         let mut observed = Observations::default();
-        observed.push(&self.record(|observer| observer.start(&stepper.x, options.gmin)));
+        observed.push(&self.record(|observer| observer.start(&start)));
         while stepper.time < transient.stop {
             if let Some(change) = self.state.events.next_analog_change(&self.elaborated.logic) {
                 breakpoints.insert(change);
@@ -771,6 +776,9 @@ impl Simulator {
                 worst: self.furthest_from_converging(&candidate, options, NAMED_UNKNOWNS),
             });
         };
+        // The recorded devices are read as the evaluation that solved the step left them,
+        // before any other evaluation.
+        let read = self.read_recorded();
         let charge = self.state.workspace.contributions.charge.clone();
         let derivative: Vec<f64> = charge
             .iter()
@@ -786,6 +794,7 @@ impl Simulator {
             x: candidate,
             charge,
             derivative,
+            read,
         };
         let previous = self.state.workspace.meter.enter(Activity::StepControl);
         let judged = self.judged(stepper, &tried, options);
@@ -889,13 +898,14 @@ impl Simulator {
             x,
             charge,
             derivative,
+            read,
         } = tried;
         let mut points = Vec::with_capacity(2);
         if let Some(pending) = stepper.pending.take() {
             // The first step after the corner, its error now estimated within tolerance.
             let at = (stepper.time, stepper.x.clone());
             let step = (pending.formula, pending.length, pending.iterations);
-            points.push(self.accept(stepper, at, step, false, options));
+            points.push(self.accept(stepper, at, step, (false, &pending.read)));
         }
         let last = (stepper.time, std::mem::replace(&mut stepper.x, x));
         let settles = self.follow(&commands);
@@ -906,6 +916,7 @@ impl Simulator {
                 formula,
                 length,
                 iterations,
+                read,
                 corner: Corner {
                     time: last.0,
                     x: last.1.clone(),
@@ -920,7 +931,7 @@ impl Simulator {
             // error from, and is accepted as SPICE accepts it.
             let at = (end, stepper.x.clone());
             let step = (formula, length, iterations);
-            points.push(self.accept(stepper, at, step, restart.is_some(), options));
+            points.push(self.accept(stepper, at, step, (restart.is_some(), &read)));
         }
         stepper.previous = length;
         stepper.time = end;
@@ -946,19 +957,18 @@ impl Simulator {
     }
 
     /// Accepts the point `(time, x)` that a step reached by `formula` over its length in so
-    /// many Newton iterations; `restarted` when the integration begins afresh from it.
+    /// many Newton iterations, where the recorded devices did what `read` read; `restarted`
+    /// when the integration begins afresh from it.
     fn accept(
         &mut self,
         stepper: &mut Stepper,
         (time, x): (f64, Vec<f64>),
         (formula, length, iterations): (Formula, f64, usize),
-        restarted: bool,
-        options: &Options,
+        (restarted, read): (bool, &Read),
     ) -> Point {
         stepper.statistics.accepted += 1;
         stepper.statistics.iterations += iterations;
-        let found =
-            self.record(|observer| observer.step(&x, time, options.gmin, (&formula, restarted)));
+        let found = self.record(|observer| observer.step(read, (&formula, restarted)));
         Point {
             time,
             x,

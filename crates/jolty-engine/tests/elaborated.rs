@@ -373,7 +373,7 @@ fn factors(count: usize, spread: f64) -> impl Strategy<Value = Vec<f64>> {
 }
 
 /// A network's operating point, its sensitivities there, and its transient, recording
-/// every device, each made again from its numbers to be read.
+/// every device.
 fn network_analyses() -> (Vec<Analysis>, Options) {
     let analyses = vec![
         Analysis::OperatingPoint,
@@ -461,7 +461,7 @@ fn two_values(elaborated: &Elaborated) -> (Values, Values) {
 
 /// A run reset from values A to values B equals a run made afresh for B, bit for bit, its
 /// work counted alike: the operating point remembered, the pivots kept, the meter's counts,
-/// the junctions' last voltages and the devices made again to be read are forgotten.
+/// the junctions' last voltages and what the analyses recorded are forgotten.
 #[test]
 fn a_run_reset_to_other_values_equals_one_made_for_them() {
     let (circuit, analyses, options) = bjt_amp();

@@ -1,15 +1,13 @@
 //! A run's state: everything a run of an elaborated circuit writes.
 //!
-//! A [`State`] holds the prepared numbers and the memory of a run's instances of kernels,
-//! each made once, in its group, for the run's values, and the slab they write; the run's
-//! devices of no kernel, made for its values; and every buffer its analyses fill: the
-//! sparse solver's factors, Newton iteration's workspace, the logic's events, the devices
-//! made again to be read, and the operating point last solved. Resetting it for other
-//! values keeps every buffer, prepares again the instances of kernels whose numbers or
-//! temperature change, makes every device of no kernel again, starts every one from its
-//! initial memory, and forgets everything a run leaves behind, so that a run never depends
-//! on the run before it: a state reset equals a state made afresh for the same values, bit
-//! for bit.
+//! A [`State`] holds the prepared numbers and the memory of a run's devices' instances,
+//! each made once, in its group, for the run's values, and the slab they write; and every
+//! buffer its analyses fill: the sparse solver's factors, Newton iteration's workspace, the
+//! logic's events, what the analyses record of the devices, and the operating point last
+//! solved. Resetting it for other values keeps every buffer, prepares again the instances
+//! whose numbers or temperature change, starts every one from its initial memory, and
+//! forgets everything a run leaves behind, so that a run never depends on the run before
+//! it: a state reset equals a state made afresh for the same values, bit for bit.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -68,7 +66,8 @@ pub(crate) struct State {
     pub(crate) workspace: Workspace,
     /// The state of the logic nets, as the last analysis left it.
     pub(crate) events: Events,
-    /// The devices made again, to read their terminals.
+    /// What the analyses record of the devices, and the charges a transient carries for
+    /// them.
     pub(crate) observer: Observer,
     /// The last operating point solved, what it was solved under and the state it left,
     /// which an analysis about the same operating point takes instead of solving it again.
@@ -111,7 +110,7 @@ impl State {
             ),
             workspace: Workspace::new(elaborated),
             events: Events::new(&elaborated.logic),
-            observer: Observer::new(elaborated),
+            observer: Observer::new(),
             remembered: None,
             held: BTreeMap::new(),
             warm: None,
@@ -151,8 +150,8 @@ impl State {
     /// Prepares again the run's instances whose numbers or temperature `values` change,
     /// and forgets everything the runs before it left: the instances' memory and the slab,
     /// the operating point remembered, the sources held, the sparse solver's pivots and
-    /// factors, the meter's counts, the logic's events and traces, and the devices made
-    /// again to be read. Every buffer is kept. Returns whether the instances of `values`
+    /// factors, the meter's counts, the logic's events and traces, and what the analyses
+    /// record. Every buffer is kept. Returns whether the instances of `values`
     /// have the shapes of `elaborated`'s; when they do not, or the values make a problem,
     /// the state is left as it was.
     ///
@@ -200,7 +199,7 @@ impl State {
 
     /// Forgets what a run leaves but its devices, the sparse solver's pivots and the
     /// meter's counts: the operating point remembered, what a sweep holds, the logic's
-    /// events and traces, and the devices made again to be read.
+    /// events and traces, and what the analyses record.
     pub(crate) fn forget(&mut self, elaborated: &Elaborated) {
         self.swept.clear();
         self.events.reset(&elaborated.logic);
@@ -212,8 +211,7 @@ impl State {
 
     /// Prepares again, for `to`, the instances whose numbers or temperature differ from
     /// those of `from`, the values the run's instances are prepared for, each from its
-    /// initial memory, and makes again the copies of them the observer reads; leaves every
-    /// other instance as it is, its memory among it. Returns whether each of them keeps
+    /// initial memory; leaves every other instance as it is, its memory among it. Returns whether each of them keeps
     /// its shape in `elaborated`; when one does not, or the values make a problem, the
     /// state is left as it was.
     ///
@@ -289,15 +287,6 @@ impl State {
         }
         self.runs.commit();
         self.temperature = temperature;
-        for index in again {
-            let origins = Origins {
-                elaborated,
-                patched: &self.patched,
-                swept: &self.swept,
-                temperature,
-            };
-            self.observer.remake(origins, index);
-        }
         Ok(true)
     }
 
@@ -451,7 +440,7 @@ mod tests {
 
     /// A state reset for some values is the state made afresh for them: its devices and
     /// their memory, the sparse solver's counts, the workspace and its meter, the logic's
-    /// events, the devices made again to be read, the operating point remembered and the
+    /// events, what the analyses record, the operating point remembered and the
     /// sources held, every one as a fresh state has it.
     #[test]
     fn a_state_reset_is_the_state_made_afresh() {

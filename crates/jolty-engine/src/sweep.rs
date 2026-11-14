@@ -9,7 +9,6 @@
 use jolty_models::{BranchKind, Level, Quantity};
 use serde::Deserialize;
 
-use crate::elaborated::Origins;
 use crate::newton::Mode;
 use crate::operating_point::Solved;
 use crate::state::Held;
@@ -317,10 +316,10 @@ impl Simulator {
         }
     }
 
-    /// Holds `swept` at `level`, or releases it to the run's own values with `None`: makes
-    /// its device again, and the copy the observer reads, from the parameters of a source
-    /// of that constant level, or from the device's own with the number replaced. Every
-    /// other device stays as it is.
+    /// Holds `swept` at `level`, or releases it to the run's own values with `None`:
+    /// prepares its instance again from the parameters of a source of that constant level,
+    /// or from the device's own with the number replaced. Every other instance stays as it
+    /// is.
     ///
     /// # Errors
     ///
@@ -376,13 +375,6 @@ impl Simulator {
             Some(level) => self.state.held.insert(swept.held, level),
             None => self.state.held.remove(&swept.held),
         };
-        let origins = Origins {
-            elaborated: &self.elaborated,
-            patched: &self.state.patched,
-            swept: &self.state.swept,
-            temperature: self.state.temperature,
-        };
-        self.state.observer.remake(origins, index);
         Ok(())
     }
 }

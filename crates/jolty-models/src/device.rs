@@ -8,83 +8,15 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::{
-    Binding, Choice, Detect, Drive, Input, Instance, Interface, NoiseSource, Output, Real,
-};
+use crate::{Instance, Interface, Kernel, Real};
 
-/// One placed device, bound to its unknowns, computing with plain numbers or with their
-/// exact derivatives with respect to a parameter.
-pub trait Device<R: Real = f64>: fmt::Debug + Send {
-    /// Adds the device's contribution at `input` to `output`.
-    fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>);
-
-    /// Appends the times in `[start, stop]` where the device's behavior is not smooth, so a
-    /// transient analysis steps onto them exactly.
-    fn breakpoints(&self, start: f64, stop: f64, times: &mut Vec<f64>) {
-        let _ = (start, stop, times);
-    }
-
-    /// Appends to `found` the choices the device's behavior turns on at `input`, where its
-    /// contribution jumps when one changes, so a transient analysis can step onto each
-    /// change: none for a device whose contribution is continuous.
-    fn choices(&mut self, input: &Input<'_>, found: &mut Vec<Choice>) {
-        let _ = (input, found);
-    }
-
-    /// The device as an independent source, if it is one.
-    fn as_source(&mut self) -> Option<&mut dyn Source> {
-        None
-    }
-
-    /// The device as the analog side of a logic output, if it is one.
-    fn as_driver(&mut self) -> Option<&mut dyn Drive> {
-        None
-    }
-
-    /// The device as the analog side of a logic input, if it is one.
-    fn as_detector(&self) -> Option<&dyn Detect> {
-        None
-    }
-
-    /// The names of the quantities the device computes on its way to its currents that
-    /// neither its terminals, nor its unknowns, nor their derivatives show, such as a
-    /// transistor's threshold voltage, in the order of [`Device::variables`].
-    fn variable_names(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// Writes the value of each of [`Device::variable_names`] at the device's last
-    /// evaluation, in SI base units, to `values`.
-    fn variables(&self, values: &mut [f64]) {
-        let _ = values;
-    }
-
-    /// Appends the device's noise at the state `input`, the operating point a noise
-    /// analysis linearizes about, to `sources`: none for a noiseless device.
-    fn noise(&self, input: &Input<'_>, sources: &mut Vec<NoiseSource>) {
-        let _ = (input, sources);
-    }
-}
-
-/// An independent source, whose level analyses excite. A DC sweep holds one at a level
-/// by making it again from the parameters [`held_source`](crate::held_source) gives.
-pub trait Source {
-    /// The source's own level at the operating point: its waveform's at time zero.
-    fn level(&self) -> f64;
-
-    /// Adds the derivative of the residual with respect to the source's level, one value per
-    /// unknown, to `derivative`. A small-signal analysis excites the source through it.
-    fn level_derivative(&self, derivative: &mut [f64]);
-}
-
-/// A kind of device: its name, its parameters, and how to read an instance's into what
-/// makes its device.
+/// A kind of device: its name, its parameters, and how to read an instance's into its
+/// kernel's instance.
 pub trait Model: Send + Sync {
     /// The name circuits refer to the model by, such as `resistor`.
     fn name(&self) -> &'static str;
 
-    /// Reads `parameters`, once, into what makes a device of the model, as often as it is
-    /// made.
+    /// Reads `parameters`, once, into the instance of a kernel they make.
     ///
     /// # Errors
     ///
@@ -114,17 +46,10 @@ pub trait Model: Send + Sync {
 }
 
 /// An instance's parameters, read into its model's typed form: the terminals of its device,
-/// and how to make the device, bound to unknowns, each time it is made.
+/// and the instance of a kernel they make.
 pub trait Specification: fmt::Debug + Send + Sync {
     /// The terminals and branches of the device.
     fn interface(&self) -> Interface;
-
-    /// Makes the device bound through `binding`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParameterError`] when a parameter is out of range.
-    fn instantiate(&self, binding: &mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError>;
 
     /// The parameters, each one left out written with its default, which read back as
     /// they are.
@@ -139,98 +64,60 @@ pub trait Specification: fmt::Debug + Send + Sync {
     fn kernel(&self) -> Instance<'_>;
 }
 
-/// A device implemented in Rust, whose parameters deserialize into a typed struct.
-pub trait NativeDevice<R: Real = f64>: Device<R> + Sized + 'static {
-    /// The model's name.
-    const NAME: &'static str;
-    /// Whether the device is a foundry's, as [`Model::foundry`] says.
-    const FOUNDRY: bool = false;
-    /// The parameters, deserialized from the instance's parameter map, which write as they
-    /// read and which a JSON schema describes.
-    type Parameters: DeserializeOwned + Serialize + JsonSchema + Clone + fmt::Debug + Send + Sync;
+/// The [`Model`] of a [`Kernel`], whose instances give their exact derivatives with respect
+/// to any of their parameters.
+pub struct Native<K>(PhantomData<fn() -> K>);
 
-    /// The terminals and branches of a device with `parameters`.
-    fn interface(parameters: &Self::Parameters) -> Interface;
-
-    /// Checks `parameters` and makes the device bound through `binding`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParameterError`] when a parameter is out of range.
-    fn new(parameters: Self::Parameters, binding: &mut Binding<'_>)
-    -> Result<Self, ParameterError>;
-}
-
-/// A model implemented in Rust, whose devices compute with any [`Real`].
-pub trait NativeModel: 'static {
-    /// The device, computing with `R`.
-    type Device<R: Real>: NativeDevice<R>;
-
-    /// The instance of a kernel that `parameters` make.
-    fn instance(parameters: &<Self::Device<f64> as NativeDevice<f64>>::Parameters) -> Instance<'_>;
-}
-
-/// The parameters of the devices of `M` that compute with `R`.
-pub(crate) type ParametersOf<M, R> = <<M as NativeModel>::Device<R> as NativeDevice<R>>::Parameters;
-
-/// The [`Model`] of a [`NativeModel`], whose devices give their exact derivatives with
-/// respect to any of their parameters.
-pub struct Native<M>(PhantomData<fn() -> M>);
-
-impl<M: NativeModel> Native<M> {
-    /// The model of `M`.
+impl<K: Kernel> Native<K> {
+    /// The model of `K`.
     #[must_use]
     pub fn new() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<M: NativeModel> Default for Native<M> {
+impl<K: Kernel> Default for Native<K> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<M> fmt::Debug for Native<M> {
+impl<K> fmt::Debug for Native<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Native")
     }
 }
 
-impl<M: NativeModel> Model for Native<M> {
+impl<K: Kernel> Model for Native<K> {
     fn name(&self) -> &'static str {
-        <M::Device<f64> as NativeDevice<f64>>::NAME
+        K::NAME
     }
 
     fn read(&self, parameters: &Parameters) -> Result<Box<dyn Specification>, ParameterError> {
-        Ok(Box::new(Typed::<M>(read(parameters)?)))
+        Ok(Box::new(Typed::<K>(read(parameters)?)))
     }
 
     fn schema(&self) -> Schema {
-        schema::<ParametersOf<M, f64>>()
+        schema::<K::Parameters<f64>>()
     }
 
     fn foundry(&self) -> bool {
-        <M::Device<f64> as NativeDevice<f64>>::FOUNDRY
+        K::FOUNDRY
     }
 }
 
-/// The parameters of a device of `M`, read.
-struct Typed<M: NativeModel>(ParametersOf<M, f64>);
+/// The parameters of an instance of `K`, read.
+struct Typed<K: Kernel>(K::Parameters<f64>);
 
-impl<M: NativeModel> fmt::Debug for Typed<M> {
+impl<K: Kernel> fmt::Debug for Typed<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Typed").field(&self.0).finish()
     }
 }
 
-impl<M: NativeModel> Specification for Typed<M> {
+impl<K: Kernel> Specification for Typed<K> {
     fn interface(&self) -> Interface {
-        M::Device::<f64>::interface(&self.0)
-    }
-
-    fn instantiate(&self, binding: &mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError> {
-        Ok(Box::new(M::Device::<f64>::new(self.0.clone(), binding)?))
+        K::interface(&self.0)
     }
 
     fn parameters(&self) -> Result<Parameters, ParameterError> {
@@ -238,7 +125,7 @@ impl<M: NativeModel> Specification for Typed<M> {
     }
 
     fn kernel(&self) -> Instance<'_> {
-        M::instance(&self.0)
+        Instance::of::<K>(&self.0)
     }
 }
 

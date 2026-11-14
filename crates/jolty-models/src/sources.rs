@@ -207,14 +207,8 @@ mod tests {
 
     #[test]
     fn level_derivatives_excite_the_right_rows() {
-        let mut bench = Bench::new::<VoltageSource>(FIVE_VOLTS);
-        let mut derivative = vec![0.0; 3];
-        bench
-            .device()
-            .as_source()
-            .unwrap()
-            .level_derivative(&mut derivative);
-        assert_close(&derivative, &[0.0, 0.0, -1.0]);
+        let bench = Bench::new::<VoltageSource>(FIVE_VOLTS);
+        assert_close(&bench.excitation(), &[0.0, 0.0, -1.0]);
     }
 
     #[test]

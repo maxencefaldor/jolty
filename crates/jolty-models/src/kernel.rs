@@ -13,8 +13,7 @@
 //! A kernel allocates nothing, never panics, and knows nothing of threads, batches or the
 //! global matrix. The groups of the instances of a kernel ([`crate::Groups`]) evaluate it,
 //! serially or in parallel, each instance into a block of a slab of its own, which a gather
-//! in a fixed order assembles; a [`KernelDevice`] evaluates one instance as a device of its
-//! own, wherever the engine still makes devices one by one.
+//! in a fixed order assembles.
 
 #![cfg_attr(
     not(test),
@@ -24,7 +23,6 @@
         reason = "a kernel never panics, and reads fixed arrays through `get`"
     )
 )]
-pub(crate) mod device;
 pub(crate) mod parts;
 
 use std::borrow::Cow;
@@ -34,7 +32,6 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-pub use self::device::KernelDevice;
 use crate::{Choice, Interface, Level, NoiseSource, ParameterError, Quantity, Real};
 
 /// A device model computed one instance at a time, as a pure function of the instance's

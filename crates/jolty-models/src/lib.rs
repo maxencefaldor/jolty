@@ -1,21 +1,21 @@
 //! Device models for jolty: what each kind of device contributes to a circuit's equations.
 //!
 //! A circuit is solved in charge-oriented form, `f(x) + d/dt q(x) = 0`, where `x` holds the
-//! node voltages and branch currents. Each [`Device`] adds its share of the resistive part
-//! `f`, currents and constraint residuals, and of the reactive part `q`, charges and fluxes,
-//! with their derivatives `G = ∂f/∂x` and `C = ∂q/∂x`. Compiled Verilog-A models use the same
+//! node voltages and branch currents. Each device adds its share of the resistive part `f`,
+//! currents and constraint residuals, and of the reactive part `q`, charges and fluxes, with
+//! their derivatives `G = ∂f/∂x` and `C = ∂q/∂x`. Compiled Verilog-A models use the same
 //! form, so native and foundry models plug in alike.
 //!
 //! A [`Kernel`] computes a model one instance at a time, as a pure function of the
 //! instance's prepared parameters, its memory and its local unknowns, which allocates
 //! nothing and never panics. [`Groups`] evaluate the instances of one kernel and one shape
 //! together, on one thread or across a rayon pool's, each into its own block of a slab that
-//! a gather adds to the circuit's equations in a fixed order; a [`KernelDevice`] is one
-//! instance as a device of its own.
+//! a gather adds to the circuit's equations in a fixed order; a [`Twin`] evaluates one
+//! instance with the derivative of every number with respect to one of its parameters.
 //!
 //! A [`Model`] is a kind of device: it reads an instance's parameters, once, into a
-//! [`Specification`], which names the device's terminals and makes the device bound to its
-//! unknowns, as often as it is made. A [`LogicModel`] is a kind of [`Logic`] device, whose
+//! [`Specification`], which names the device's terminals and gives the instance of its
+//! kernel. A [`LogicModel`] is a kind of [`Logic`] device, whose
 //! pins join logic nets that an event scheduler simulates. Every model's parameters write
 //! as they read, with each one left out at its default, and a JSON schema describes them.
 //! A [`Library`] holds the models a circuit can use.
@@ -68,23 +68,21 @@ pub use controlled::{
     VoltageControlledCurrentSource, VoltageControlledCurrentSourceParameters,
     VoltageControlledVoltageSource, VoltageControlledVoltageSourceParameters,
 };
-pub use device::{
-    Device, Model, Native, NativeDevice, NativeModel, ParameterError, Source, Specification,
-};
+pub use device::{Model, Native, ParameterError, Specification};
 pub use diode::{Diode, DiodeParameters};
-pub use evaluation::{Contributions, Input, Output};
+pub use evaluation::{Contributions, Input};
 pub use foundry::{FoundryMosfet, FoundryMosfetParameters};
-pub use group::{Alone, Changed, Groups, Instance, Runs, Tasks, TooLarge, Twin};
-pub use heat::{Heatable, HeatableModel, Heated, Heating, Thermal};
+pub use group::{Alone, Block, Changed, Groups, Instance, Runs, Tasks, TooLarge, Twin};
+pub use heat::{Heating, Thermal};
 pub use jfet::{Channel, Jfet, JfetParameters};
 pub use jolty_expressions::Choice;
 pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
 pub use kernel::parts::SMALL_RESISTANCE;
-pub use kernel::{Kernel, KernelDevice, Layout, Local, Stamp};
+pub use kernel::{Kernel, Layout, Local, Stamp};
 pub use logic::{
-    Change, Detect, Domain, Drive, Electrical, ElectricalParameters, FixedTiming, Level, Logic,
-    LogicCell, LogicCellParameters, LogicModel, LogicSource, LogicSourceParameters, MAX_INPUTS,
-    NativeLogic, NativeLogicModel, OutputParameters, Pins, Stimulus, Timing, TimingParameters,
+    Change, Domain, Electrical, ElectricalParameters, FixedTiming, Level, Logic, LogicCell,
+    LogicCellParameters, LogicModel, LogicSource, LogicSourceParameters, MAX_INPUTS, NativeLogic,
+    NativeLogicModel, OutputParameters, Pins, Stimulus, Timing, TimingParameters,
 };
 pub use memristor::{
     CurrentControlledMemristor, CurrentControlledMemristorParameters, MemristorLaw,

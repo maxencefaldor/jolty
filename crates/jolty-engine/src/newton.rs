@@ -131,6 +131,10 @@ impl Simulator {
         input.limiting = limiting;
         // The check evaluates each instance alone, from what it remembered before.
         #[cfg(test)]
+        if let Some(check) = &mut state.check {
+            check.last = Some((x.to_vec(), time, source_scale, gmin));
+        }
+        #[cfg(test)]
         let before = state.check.is_some().then(|| {
             let zero = Contributions::new(&self.elaborated.pattern);
             (zero, state.runs.clone())

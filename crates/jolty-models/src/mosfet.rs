@@ -1465,9 +1465,8 @@ mod tests {
             "surface_potential": 0.7, "saturation_current": 1e-30}"#;
         let mut bench = Bench::new::<Mosfet>(parameters);
         bench.settle(&[5.0, 2.0, 0.0, -1.0]);
-        let names = bench.device().variable_names();
-        let mut values = vec![0.0; names.len()];
-        bench.device().variables(&mut values);
+        let names = bench.variable_names();
+        let values = bench.variables();
         let threshold = 1.0 + 0.5 * (1.7_f64.sqrt() - 0.7_f64.sqrt());
         assert_eq!(names[..2], ["threshold_voltage", "saturation_voltage"]);
         assert!((values[0] - threshold).abs() < 1e-15);
@@ -1480,9 +1479,7 @@ mod tests {
         let mirrored: Vec<f64> = x.iter().map(|value| -value).collect();
         n.settle(&x);
         p.settle(&mirrored);
-        let (mut n_values, mut p_values) = ([0.0; 5], [0.0; 5]);
-        n.device().variables(&mut n_values);
-        p.device().variables(&mut p_values);
+        let (n_values, p_values) = (n.variables(), p.variables());
         assert!(n_values[0] > 0.0 && n_values[2] > 0.0, "{n_values:?}");
         for (index, (n_value, p_value)) in n_values.iter().zip(&p_values).enumerate() {
             let mirrored = if index < 2 { -p_value } else { *p_value };

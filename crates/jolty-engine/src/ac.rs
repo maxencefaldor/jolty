@@ -55,10 +55,10 @@ impl Simulator {
         self.state
             .runs
             .excite(&self.elaborated.groups, index, &mut excitation);
-        self.state
-            .observer
-            .linearize(&operating_point.values, options.gmin);
-        let currents = self.state.observer.currents(index);
+        let currents =
+            self.state
+                .observer
+                .currents(&self.elaborated.groups, &self.state.runs, index);
         let found = over_frequencies(
             Linearization::new(&self.state.solver),
             &self.state.workspace.contributions,

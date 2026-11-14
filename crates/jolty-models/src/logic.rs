@@ -18,8 +18,8 @@ use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::ParameterError;
 use crate::device::{read, schema, written};
-use crate::{Input, ParameterError, Unknown};
 
 /// The most inputs a logic cell may have: its truth table has a row per combination.
 pub const MAX_INPUTS: usize = 16;
@@ -860,29 +860,6 @@ impl Logic for LogicSource {
                 }),
         );
     }
-}
-
-/// The analog side of a logic output: it drives its terminal to a level's fraction of the
-/// supply, moving there in a ramp.
-pub trait Drive {
-    /// Starts moving to `level` at `time`, at the rate that swings ground to supply in
-    /// `transition` seconds; at once when `transition` is zero.
-    fn drive(&mut self, time: f64, level: Level, transition: f64);
-
-    /// The time the last movement ends.
-    fn settles_at(&self) -> f64;
-
-    /// The unknown current through the driver, whose equation holds its voltage.
-    fn current(&self) -> Unknown;
-}
-
-/// The analog side of a logic input: it reads a voltage against a threshold.
-pub trait Detect {
-    /// How far the input lies above the threshold at `input`, in volts.
-    fn margin(&self, input: &Input<'_>) -> f64;
-
-    /// The supply's voltage above ground at `input`, the swing of a full edge.
-    fn swing(&self, input: &Input<'_>) -> f64;
 }
 
 #[cfg(test)]

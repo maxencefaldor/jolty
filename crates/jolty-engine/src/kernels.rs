@@ -11,7 +11,7 @@ use jolty_models::{Contributions, Input, Library, Runs, Tasks};
 use serde::Deserialize;
 
 use crate::elaborated::Elaborated;
-use crate::{Analysis, Conditions, Options, Simulator, Substitute};
+use crate::{Analysis, Conditions, Options, Record, Simulator, Substitute};
 
 /// How far the groups' assembly of a run's equations has strayed from the devices'.
 #[derive(Debug, Clone, Default)]
@@ -25,6 +25,68 @@ pub(crate) struct Check {
     pub(crate) worst: f64,
     /// The most terms a value sums.
     pub(crate) most: usize,
+    /// The state of the last evaluation: the unknowns, the time, the sources' scale and
+    /// gmin.
+    pub(crate) last: Option<(Vec<f64>, Option<f64>, f64, f64)>,
+    /// The observer's reads compared, and the values compared over them.
+    pub(crate) reads: (usize, usize),
+}
+
+impl Check {
+    /// Compares what the observer read of the slab of `runs`, the run of `elaborated`'s
+    /// groups, for each of the devices `devices`, with the device's instance evaluated
+    /// alone, from what it remembers, at the state of the last evaluation, its steps not
+    /// limited, as the observer once evaluated a copy of each device: the residual and
+    /// the charge of each local unknown, the conductance and the capacitance of each local
+    /// entry, and the variables, bit for bit.
+    pub(crate) fn compare_read(
+        &mut self,
+        elaborated: &Elaborated,
+        runs: &Runs,
+        devices: impl Iterator<Item = usize>,
+    ) {
+        let Some((x, time, scale, gmin)) = &self.last else {
+            return;
+        };
+        let mut input = Input::new(x, *time, *gmin);
+        input.source_scale = *scale;
+        input.limiting = false;
+        let groups = &elaborated.groups;
+        for device in devices {
+            let (Some(block), Some(alone)) = (
+                runs.block(groups, device),
+                runs.clone().evaluate_alone(groups, device, &input),
+            ) else {
+                continue;
+            };
+            let entries = block.entries.len();
+            let bits = |values: &[f64]| {
+                values
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>()
+            };
+            let path = elaborated.devices[device].path();
+            assert_eq!(
+                bits(block.residual),
+                bits(&alone.rows[0]),
+                "{path}'s residuals"
+            );
+            assert_eq!(bits(block.charge), bits(&alone.rows[2]), "{path}'s charges");
+            assert_eq!(
+                bits(block.conductance),
+                bits(&alone.entries[0][..entries]),
+                "{path}'s conductances"
+            );
+            assert_eq!(
+                bits(block.capacitance),
+                bits(&alone.entries[1][..entries]),
+                "{path}'s capacitances"
+            );
+            self.reads.1 += 2 * (block.residual.len() + entries);
+        }
+        self.reads.0 += 1;
+    }
 }
 
 /// The bound on the difference between two sums of the same `terms` terms, of magnitudes
@@ -280,8 +342,15 @@ struct Recorded {
     runs: Vec<(Analysis, Options)>,
 }
 
+/// At every evaluation of every run of the corpus's circuits, each run recording every
+/// device: the groups' assembly against the instances evaluated alone, in the order of the
+/// devices, to within 1e-13 of the magnitudes summed; and what the observer reads of each
+/// device's block of the slab, the currents into its terminals, the charges they hold and
+/// the derivatives of its equations, against its instance evaluated alone at the state of
+/// the evaluation it reads, bit for bit, as the observer once evaluated a copy of each
+/// device it recorded.
 #[test]
-fn every_corpus_circuit_and_example_assembles_as_its_devices_to_within_1e_13() {
+fn every_corpus_circuit_assembles_as_its_devices_and_reads_them_as_they_evaluate() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/kernels.json");
     let text = std::fs::read_to_string(path).expect("the corpus");
     let recorded: Vec<Recorded> = serde_json::from_str(&text).expect("the corpus reads");
@@ -297,8 +366,12 @@ fn every_corpus_circuit_and_example_assembles_as_its_devices_to_within_1e_13() {
             .expect("the circuit elaborates");
         simulator.state.check = Some(Check::default());
         for (analysis, options) in &record.runs {
+            let options = Options {
+                record: Record::All,
+                ..options.clone()
+            };
             // An analysis that fails, as one a test expects to, was checked all the same.
-            let _ = simulator.run(analysis, options);
+            let _ = simulator.run(analysis, &options);
         }
         let check = simulator.state.check.expect("a check");
         assert!(check.evaluations > 0, "{}: no evaluation", circuit.top);
@@ -306,10 +379,13 @@ fn every_corpus_circuit_and_example_assembles_as_its_devices_to_within_1e_13() {
         all.values += check.values;
         all.worst = all.worst.max(check.worst);
         all.most = all.most.max(check.most);
+        all.reads.0 += check.reads.0;
+        all.reads.1 += check.reads.1;
     }
     // Each value sums at most `all.most` contributions, so the bound is at most 1e-13 of
     // their magnitudes for sums of up to 451.
     assert!(bound(all.most, 1.0) <= 1e-13, "{all:?}");
+    assert!(all.reads.0 > 1000, "{all:?}");
 }
 
 #[test]

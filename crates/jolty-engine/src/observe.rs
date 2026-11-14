@@ -3,32 +3,29 @@
 //! unknowns, and the variables they compute on their way.
 //!
 //! The engine solves for node voltages and a few branch currents, so a device's own currents
-//! are not among its unknowns. To read them exactly, each device an analysis records is made
-//! a second time with every terminal on a node of its own, and evaluated at the solution: the
-//! residual of a terminal's own node is then the current into that terminal alone, even
-//! where two of its terminals share a net or one joins the reference, and the charge of that
-//! node the charge the terminal holds. In a transient, the current adds the charge's
-//! derivative, taken by the very integration formula the step was solved with, so the
-//! currents into a node sum to zero as the node's equation does. The same evaluation gives
-//! the derivatives of the device's residuals and charges, its conductances and capacitances,
-//! over its terminals apart and its internal unknowns: the device's own small-signal model,
-//! exactly.
+//! are not among its unknowns. Each device's instance writes its contributions into a block
+//! of its own of the run's slab: a residual and a charge for each of its local unknowns, its
+//! terminals first, and a conductance and a capacitance for each pair of them it claims,
+//! every terminal its own even where two share a net or one joins the reference. So the
+//! current into a terminal is its block's residual there, alone, the charge the terminal
+//! holds its block's charge, and the derivatives of the device's equations its block's
+//! entries, over its terminals apart and its internal unknowns: the device's own
+//! small-signal model, exactly, read from the evaluation that solved the circuit. In a
+//! transient, the current adds the charge's derivative, taken by the very integration
+//! formula the step was solved with, so the currents into a node sum to zero as the node's
+//! equation does.
 //!
 //! An analysis records only what its options' [`Record`] names: a device's terminals,
 //! derivatives and variables, and a component instance's or a logic device's terminals,
-//! each summed from the device terminals behind it, which are evaluated but not kept. With
-//! nothing named, no device is made again or evaluated a second time.
+//! each summed from the device terminals behind it, which are read but not kept.
 
 use std::ops::{Add, Range};
 
-use jolty_models::{
-    Binding, Contributions, Device, Input, Level, Node, ParameterError, Quantity, Unknown,
-    UnknownInfo,
-};
+use jolty_models::{Groups, Runs};
+use jolty_numerics::Complex64;
 use jolty_numerics::integration::Formula;
-use jolty_numerics::{Complex64, Pattern, PatternBuilder};
 
-use crate::elaborated::{Elaborated, Origins};
+use crate::elaborated::Elaborated;
 use crate::profile::Activity;
 use crate::{Options, Record, SimulationError, Simulator};
 
@@ -166,106 +163,57 @@ impl Simulator {
         Recorded::of(&self.elaborated, record)
     }
 
-    /// Checks `options`, and readies the devices made again to record what they name.
+    /// Checks `options`, and readies the observer to record what they name.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidOptions`] for options out of range, and
-    /// [`SimulationError::Unrecordable`] when a device to record cannot be made again.
+    /// Returns [`SimulationError::InvalidOptions`] for options out of range.
     pub(crate) fn prepare(&mut self, options: &Options) -> Result<(), SimulationError> {
         let previous = self.state.workspace.meter.enter(Activity::Preparing);
-        let origins = Origins {
-            elaborated: &self.elaborated,
-            patched: &self.state.patched,
-            swept: &self.state.swept,
-            temperature: self.state.temperature,
-        };
-        let prepared = options
-            .check()
-            .and_then(|()| self.state.observer.select(origins, &options.record));
-        self.state.workspace.meter.leave(previous);
-        prepared
-    }
-}
-
-/// A device made again with each terminal on a node of its own.
-#[derive(Debug)]
-struct Probe {
-    /// The device's index among the simulator's devices.
-    placed: usize,
-    device: Box<dyn Device>,
-    pattern: Pattern,
-    /// The solution's node or unknown for each of the copy's unknowns: its terminals, then
-    /// its internal unknowns.
-    sources: Vec<Node>,
-    /// The number of terminals.
-    terminals: usize,
-    x: Vec<f64>,
-    contributions: Contributions,
-}
-
-impl Probe {
-    /// Makes the device at index `placed` again from what `origins` makes it, each terminal
-    /// on its own node.
-    fn new(origins: Origins<'_>, placed: usize) -> Result<Self, ParameterError> {
-        let device = &origins.elaborated.devices[placed];
-        let terminals = device.nodes().len();
-        let own: Vec<Node> = (0..terminals)
-            .map(|index| Some(Unknown::new(index)))
-            .collect();
-        let mut unknowns: Vec<UnknownInfo> = (0..terminals)
-            .map(|_| UnknownInfo {
-                name: String::new(),
-                quantity: Quantity::Voltage,
-            })
-            .collect();
-        let mut builder = PatternBuilder::new();
-        let mut binding = Binding::new(
-            device.path(),
-            &own,
-            &mut unknowns,
-            &mut builder,
-            origins.temperature,
-        );
-        let copy = origins.of(placed).make(&mut binding)?;
-        let count = unknowns.len();
-        let mut sources = device.nodes().to_vec();
-        sources.extend(
-            (device.first_internal..device.first_internal + count - terminals)
-                .map(|index| Some(Unknown::new(index))),
-        );
-        let pattern = builder.finish(count);
-        Ok(Self {
-            placed,
-            device: copy,
-            sources,
-            terminals,
-            x: vec![0.0; count],
-            contributions: Contributions::new(&pattern),
-            pattern,
-        })
-    }
-
-    /// Evaluates the copy at the solution `x`, at `time` in a transient analysis or, with
-    /// `None`, at an operating point or about one.
-    fn evaluate(&mut self, x: &[f64], time: Option<f64>, gmin: f64) {
-        for (value, source) in self.x.iter_mut().zip(&self.sources) {
-            *value = source.map_or(0.0, |unknown| x[unknown.index()]);
+        let checked = options.check();
+        if checked.is_ok() {
+            self.state
+                .observer
+                .select(&self.elaborated, &options.record);
         }
-        let mut input = Input::new(&self.x, time, gmin);
-        input.limiting = false;
-        self.device
-            .evaluate(&input, &mut self.contributions.output(&self.pattern));
+        self.state.workspace.meter.leave(previous);
+        checked
+    }
+
+    /// What the recorded devices do at the DC solution `x`, every device evaluated there
+    /// first, its steps not limited, when the observer records any.
+    pub(crate) fn observe_dc(&mut self, x: &[f64], options: &Options) -> Observation {
+        if self.state.observer.records() {
+            self.evaluate(x, None, (1.0, options.gmin), false);
+        }
+        let read = self.read_recorded();
+        self.state.observer.dc(&read)
+    }
+
+    /// What the recorded devices did at the last evaluation, as the slab holds it.
+    pub(crate) fn read_recorded(&mut self) -> Read {
+        // The check compares what is read with each device's instance evaluated alone.
+        #[cfg(test)]
+        if let Some(check) = &mut self.state.check {
+            let devices = self.state.observer.selection.evaluated.iter();
+            let devices = devices.map(|&(device, _, _)| device);
+            check.compare_read(&self.elaborated, &self.state.runs, devices);
+        }
+        self.state
+            .observer
+            .read(&self.elaborated.groups, &self.state.runs)
     }
 }
 
-/// A recorded device: its copy, and where its values lie.
+/// A recorded device, and where its values lie.
 #[derive(Debug)]
 struct Slot {
-    /// Its copy, by index among the observer's.
-    probe: usize,
+    /// The device, by its index among the circuit's.
+    device: usize,
     /// Its terminals, by index among the evaluated devices' terminals.
     terminals: Range<usize>,
+    /// Its local unknowns: its terminals, then its internal unknowns.
+    unknowns: usize,
     /// The index of its first derivative among an observation's.
     first_derivative: usize,
     /// Its variables' range among an observation's.
@@ -277,16 +225,16 @@ struct Slot {
 struct Selection {
     /// The record it was made for.
     record: Record,
-    /// The devices evaluated at each point, those recorded and those behind a recorded
-    /// composite terminal, in order: each one's copy, by index among the observer's, and
-    /// the index of its first terminal among the evaluated devices' terminals.
-    evaluated: Vec<(usize, usize)>,
-    /// The number of the evaluated devices' terminals.
+    /// The devices read at each point, those recorded and those behind a recorded composite
+    /// terminal, in order: each one's index among the circuit's devices, the index of its
+    /// first terminal among the read devices' terminals, and its number of terminals.
+    evaluated: Vec<(usize, usize, usize)>,
+    /// The number of the read devices' terminals.
     tracked: usize,
     /// The recorded devices, in order.
     recorded: Vec<Slot>,
-    /// The terminals of each recorded composite terminal, by index among the evaluated
-    /// devices' terminals.
+    /// The terminals of each recorded composite terminal, by index among the read devices'
+    /// terminals.
     sums: Vec<Vec<usize>>,
     /// The terminals an observation holds: the recorded devices' and the composites'.
     terminals: usize,
@@ -297,8 +245,8 @@ struct Selection {
 }
 
 impl Selection {
-    /// The values of the evaluated terminals' `tracked` that an observation holds: the
-    /// recorded devices' terminals, then each recorded composite's sum.
+    /// The values of the read terminals' `tracked` that an observation holds: the recorded
+    /// devices' terminals, then each recorded composite's sum.
     fn gather<T: Copy + Default + Add<Output = T>>(&self, tracked: &[T]) -> Vec<T> {
         let mut found = Vec::with_capacity(self.terminals);
         for slot in &self.recorded {
@@ -313,8 +261,21 @@ impl Selection {
     }
 }
 
-/// The charges of every evaluated terminal at the last accepted point of a transient, and
-/// their derivatives, as the transient's own history keeps the nodes'.
+/// What the recorded devices did at the last evaluation, as their blocks of the slab hold
+/// it: the current into each read terminal, without a charge's derivative, and the charge
+/// each holds, and the recorded devices' derivatives and variables, laid out as an
+/// [`Observation`]'s.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Read {
+    currents: Vec<f64>,
+    charges: Vec<f64>,
+    conductances: Vec<f64>,
+    capacitances: Vec<f64>,
+    variables: Vec<f64>,
+}
+
+/// The charges of every read terminal at the last accepted point of a transient, and their
+/// derivatives, as the transient's own history keeps the nodes'.
 #[derive(Debug, Default)]
 struct History {
     last: Vec<f64>,
@@ -324,50 +285,36 @@ struct History {
     restarted: bool,
 }
 
-/// The devices made again to be read, and what the analyses record of them.
-#[derive(Debug)]
+/// What the analyses record of the devices, and the history of the charges a transient
+/// carries.
+#[derive(Debug, Default)]
 pub(crate) struct Observer {
-    /// Each device made again, once a record first named it or a composite terminal it is
-    /// behind; each copy is held and driven as its device is from then on.
-    probes: Vec<Probe>,
-    /// The index among `probes` of each device's copy, by the device's index, if made.
-    made: Vec<Option<usize>>,
     selection: Selection,
     history: History,
 }
 
 impl Observer {
-    /// An observer of `system`'s devices that records nothing yet.
-    pub(crate) fn new(system: &Elaborated) -> Self {
-        Self {
-            probes: Vec::new(),
-            made: vec![None; system.devices.len()],
-            selection: Selection::default(),
-            history: History::default(),
-        }
+    /// An observer that records nothing yet.
+    pub(crate) fn new() -> Self {
+        Self::default()
     }
 
-    /// Forgets every device made again and what was recorded, as [`Observer::new`] makes
-    /// it, keeping the buffers.
+    /// Forgets what was recorded, as [`Observer::new`] makes it.
     pub(crate) fn reset(&mut self) {
-        self.probes.clear();
-        self.made.fill(None);
         self.selection = Selection::default();
         self.history = History::default();
     }
 
-    /// Records what `record` names of `system` from the next point on, making the devices
-    /// it reads again where they were not.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SimulationError::Unrecordable`] naming every device that cannot be made
-    /// again.
-    fn select(&mut self, origins: Origins<'_>, record: &Record) -> Result<(), SimulationError> {
+    /// Whether the observer reads any device.
+    pub(crate) fn records(&self) -> bool {
+        self.selection.tracked > 0
+    }
+
+    /// Records what `record` names of `system` from the next point on.
+    fn select(&mut self, system: &Elaborated, record: &Record) {
         if self.selection.record == *record {
-            return Ok(());
+            return;
         }
-        let system = origins.elaborated;
         let recorded = Recorded::of(system, record);
         let mut kept = vec![false; system.devices.len()];
         for &device in &recorded.devices {
@@ -379,45 +326,25 @@ impl Observer {
                 needed[device] = true;
             }
         }
-        let mut problems = Vec::new();
-        for placed in (0..system.devices.len()).filter(|&placed| needed[placed]) {
-            if self.made[placed].is_some() {
-                continue;
-            }
-            match Probe::new(origins, placed) {
-                Ok(probe) => {
-                    self.made[placed] = Some(self.probes.len());
-                    self.probes.push(probe);
-                }
-                Err(error) => problems.push(format!(
-                    "{}: {}",
-                    system.devices[placed].location(),
-                    error.0
-                )),
-            }
-        }
-        if !problems.is_empty() {
-            return Err(SimulationError::Unrecordable(problems));
-        }
         let mut firsts = vec![0; system.devices.len()];
         let mut evaluated = Vec::new();
         let mut slots = Vec::with_capacity(recorded.devices.len());
         let (mut tracked, mut derivatives, mut variables) = (0, 0, 0);
         let mut terminals = recorded.composites.len();
-        for (placed, made) in self.made.iter().enumerate() {
-            let (true, Some(probe)) = (needed[placed], *made) else {
+        for (index, device) in system.devices.iter().enumerate() {
+            if !needed[index] {
                 continue;
-            };
-            let device = &system.devices[placed];
+            }
             let count = device.nodes().len();
-            evaluated.push((probe, tracked));
-            firsts[placed] = tracked;
-            if kept[placed] {
+            evaluated.push((index, tracked, count));
+            firsts[index] = tracked;
+            if kept[index] {
                 let unknowns = count + device.internals().len();
                 let named = device.variable_names().len();
                 slots.push(Slot {
-                    probe,
+                    device: index,
                     terminals: tracked..tracked + count,
+                    unknowns,
                     first_derivative: derivatives,
                     variables: variables..variables + named,
                 });
@@ -448,7 +375,6 @@ impl Observer {
             derivatives,
             variables,
         };
-        Ok(())
     }
 
     /// The numbers an observation holds: the currents and the charges of the recorded
@@ -458,62 +384,76 @@ impl Observer {
         2 * (selection.terminals + selection.derivatives) + selection.variables
     }
 
-    /// Makes the copy of the device at `placed` again, if there is one, from what `origins`
-    /// makes the device from, as the device itself was made again. A copy that cannot be
-    /// made forgets every copy, so that the next analysis makes those it records again.
-    pub(crate) fn remake(&mut self, origins: Origins<'_>, placed: usize) {
-        let Some(probe) = self.made.get(placed).copied().flatten() else {
-            return;
+    /// What the recorded devices did at the last evaluation of `runs`, the run of `groups`,
+    /// as their blocks of its slab hold it.
+    pub(crate) fn read(&self, groups: &Groups, runs: &Runs) -> Read {
+        let selection = &self.selection;
+        let tracked = selection.tracked;
+        let mut read = Read {
+            currents: vec![0.0; tracked],
+            charges: vec![0.0; tracked],
+            conductances: vec![0.0; selection.derivatives],
+            capacitances: vec![0.0; selection.derivatives],
+            variables: vec![0.0; selection.variables],
         };
-        match Probe::new(origins, placed) {
-            Ok(made) => self.probes[probe] = made,
-            Err(_) => self.reset(),
+        for &(device, first, terminals) in &selection.evaluated {
+            if let Some(block) = runs.block(groups, device) {
+                let span = first..first + terminals;
+                read.currents[span.clone()].copy_from_slice(&block.residual[..terminals]);
+                read.charges[span].copy_from_slice(&block.charge[..terminals]);
+            }
         }
-    }
-
-    /// Starts the copy of the logic driver at `placed` moving to `level` at `time`, as the
-    /// driver itself does.
-    pub(crate) fn drive(&mut self, placed: usize, time: f64, level: Level, transition: f64) {
-        if let Some(probe) = self.made[placed]
-            && let Some(driver) = self.probes[probe].device.as_driver()
-        {
-            driver.drive(time, level, transition);
+        for slot in &selection.recorded {
+            if let Some(block) = runs.block(groups, slot.device) {
+                let entries = block
+                    .entries
+                    .iter()
+                    .zip(block.conductance.iter().zip(block.capacitance));
+                for (&(row, column), (&conductance, &capacitance)) in entries {
+                    let index = slot.first_derivative + row * slot.unknowns + column;
+                    read.conductances[index] = conductance;
+                    read.capacitances[index] = capacitance;
+                }
+            }
+            runs.variables(
+                groups,
+                slot.device,
+                &mut read.variables[slot.variables.clone()],
+            );
         }
+        read
     }
 
-    /// What the recorded devices do at the DC solution `x`: each current without a charge's
-    /// derivative.
-    pub(crate) fn dc(&mut self, x: &[f64], gmin: f64) -> Observation {
-        let (currents, charges) = self.evaluate(x, None, gmin);
-        self.observation(&currents, &charges)
+    /// What the recorded devices do at a DC solution, as `read` reads them there: each
+    /// current without a charge's derivative.
+    pub(crate) fn dc(&self, read: &Read) -> Observation {
+        self.observation(read, &read.currents)
     }
 
-    /// What the recorded devices do at the DC solution `x` that begins a transient, whose
-    /// charges stand still.
-    pub(crate) fn start(&mut self, x: &[f64], gmin: f64) -> Observation {
-        let (currents, charges) = self.evaluate(x, Some(0.0), gmin);
-        let found = self.observation(&currents, &charges);
+    /// What the recorded devices do at the DC solution that begins a transient, as `read`
+    /// reads them there, whose charges stand still.
+    pub(crate) fn start(&mut self, read: &Read) -> Observation {
+        let found = self.observation(read, &read.currents);
         self.history = History {
-            last: charges.clone(),
-            before: charges.clone(),
-            derivative: vec![0.0; charges.len()],
+            last: read.charges.clone(),
+            before: read.charges.clone(),
+            derivative: vec![0.0; read.charges.len()],
             restarted: true,
         };
         found
     }
 
-    /// What the recorded devices do at the transient's accepted point `x`, at `time`,
-    /// solved by `formula`; `restart` when the integration begins afresh from it.
+    /// What the recorded devices do at a point a transient accepted, as `read` reads them
+    /// there, the point solved by `formula`; `restart` when the integration begins afresh
+    /// from it.
     pub(crate) fn step(
         &mut self,
-        x: &[f64],
-        time: f64,
-        gmin: f64,
+        read: &Read,
         (formula, restart): (&Formula, bool),
     ) -> Observation {
-        let (mut currents, charges) = self.evaluate(x, Some(time), gmin);
         let history = &mut self.history;
-        let derivative: Vec<f64> = charges
+        let derivative: Vec<f64> = read
+            .charges
             .iter()
             .enumerate()
             .map(|(index, &charge)| {
@@ -526,132 +466,91 @@ impl Observer {
                     + formula.history([history.last[index], before], history.derivative[index])
             })
             .collect();
-        for (current, change) in currents.iter_mut().zip(&derivative) {
-            *current += change;
-        }
-        let found = self.observation(&currents, &charges);
+        let currents: Vec<f64> = read
+            .currents
+            .iter()
+            .zip(&derivative)
+            .map(|(current, change)| current + change)
+            .collect();
+        let found = self.observation(read, &currents);
         let history = &mut self.history;
-        history.before = std::mem::replace(&mut history.last, charges);
+        history.before = std::mem::replace(&mut history.last, read.charges.clone());
         history.derivative = derivative;
         history.restarted = restart;
         found
     }
 
-    /// Evaluates every device the recording reads at `x`, at `time` in a transient analysis
-    /// or, with `None`, at an operating point; returns the current into each of their
-    /// terminals, without a charge's derivative, and the charge each holds.
-    fn evaluate(&mut self, x: &[f64], time: Option<f64>, gmin: f64) -> (Vec<f64>, Vec<f64>) {
-        let tracked = self.selection.tracked;
-        let (mut currents, mut charges) = (vec![0.0; tracked], vec![0.0; tracked]);
-        for &(index, first) in &self.selection.evaluated {
-            let probe = &mut self.probes[index];
-            probe.evaluate(x, time, gmin);
-            let terminals = first..first + probe.terminals;
-            currents[terminals.clone()]
-                .copy_from_slice(&probe.contributions.residual[..probe.terminals]);
-            charges[terminals].copy_from_slice(&probe.contributions.charge[..probe.terminals]);
-        }
-        (currents, charges)
-    }
-
-    /// What the recorded devices did at their last evaluation, given the current into each
-    /// evaluated terminal and the charge it holds.
-    fn observation(&self, currents: &[f64], charges: &[f64]) -> Observation {
+    /// What the recorded devices did, as `read` reads them, with the current into each
+    /// read terminal `currents`.
+    fn observation(&self, read: &Read, currents: &[f64]) -> Observation {
         let selection = &self.selection;
-        let mut found = Observation {
+        Observation {
             currents: selection.gather(currents),
-            charges: selection.gather(charges),
-            conductances: vec![0.0; selection.derivatives],
-            capacitances: vec![0.0; selection.derivatives],
-            variables: vec![0.0; selection.variables],
-        };
-        for slot in &selection.recorded {
-            let probe = &self.probes[slot.probe];
-            let count = probe.x.len();
-            let positions = probe.pattern.positions().zip(
-                probe
-                    .contributions
-                    .conductance
-                    .iter()
-                    .zip(&probe.contributions.capacitance),
-            );
-            for ((row, column), (&conductance, &capacitance)) in positions {
-                let index = slot.first_derivative + row * count + column;
-                found.conductances[index] = conductance;
-                found.capacitances[index] = capacitance;
-            }
-            probe
-                .device
-                .variables(&mut found.variables[slot.variables.clone()]);
-        }
-        found
-    }
-
-    /// Readies the small-signal currents around the DC solution `x`.
-    pub(crate) fn linearize(&mut self, x: &[f64], gmin: f64) {
-        for &(index, _) in &self.selection.evaluated {
-            self.probes[index].evaluate(x, None, gmin);
+            charges: selection.gather(&read.charges),
+            conductances: read.conductances.clone(),
+            capacitances: read.capacitances.clone(),
+            variables: read.variables.clone(),
         }
     }
 
-    /// The small-signal currents into the recorded terminals about the DC solution of
-    /// [`Observer::linearize`], with the source at `excited` driven by a unit excitation:
-    /// ready at any frequency, and read by any number of threads at once.
-    pub(crate) fn currents(&mut self, excited: usize) -> Currents<'_> {
+    /// The small-signal currents into the recorded terminals about the DC solution `runs`,
+    /// the run of `groups`, was last evaluated at, with the source at `excited` driven by a
+    /// unit excitation: ready at any frequency, and read by any number of threads at once.
+    pub(crate) fn currents(&self, groups: &Groups, runs: &Runs, excited: usize) -> Currents<'_> {
         let mut excitation = Vec::new();
-        for &(index, first) in &self.selection.evaluated {
-            let probe = &mut self.probes[index];
-            if probe.placed == excited
-                && let Some(source) = probe.device.as_source()
+        let mut linear = Vec::with_capacity(self.selection.evaluated.len());
+        for &(device, first, terminals) in &self.selection.evaluated {
+            let Some(block) = runs.block(groups, device) else {
+                continue;
+            };
+            if device == excited
+                && let Some(local) = runs.excitation(groups, device)
             {
-                let mut derivative = vec![0.0; probe.x.len()];
-                source.level_derivative(&mut derivative);
                 excitation.extend(
-                    derivative[..probe.terminals]
+                    local
                         .iter()
+                        .take(terminals)
                         .enumerate()
                         .map(|(terminal, &value)| (first + terminal, value)),
                 );
             }
+            let entries = block
+                .entries
+                .iter()
+                .zip(block.conductance.iter().zip(block.capacitance));
+            linear.push(Linear {
+                first,
+                entries: entries
+                    .filter(|&(&(row, _), _)| row < terminals)
+                    .map(|(&(row, column), (&conductance, &capacitance))| {
+                        (row, column, conductance, capacitance)
+                    })
+                    .collect(),
+                nodes: block.nodes.to_vec(),
+            });
         }
-        let probes = self
-            .selection
-            .evaluated
-            .iter()
-            .map(|&(index, first)| {
-                let probe = &self.probes[index];
-                Linear {
-                    first,
-                    terminals: probe.terminals,
-                    pattern: &probe.pattern,
-                    contributions: &probe.contributions,
-                    sources: &probe.sources,
-                }
-            })
-            .collect();
         Currents {
-            probes,
+            linear,
             excitation,
             selection: &self.selection,
         }
     }
 }
 
-/// The linearized equations of one copy an observer evaluated.
-struct Linear<'a> {
-    /// The index of its first terminal among the evaluated devices' terminals.
+/// The linearized equations of a read device's terminals: the index of its first terminal
+/// among the read devices' terminals, each entry of a terminal's row with its column, its
+/// conductance and its capacitance, and the circuit's unknown of each local unknown.
+struct Linear {
     first: usize,
-    terminals: usize,
-    pattern: &'a Pattern,
-    contributions: &'a Contributions,
-    sources: &'a [Node],
+    entries: Vec<(usize, usize, f64, f64)>,
+    nodes: Vec<u32>,
 }
 
 /// The small-signal currents into the recorded terminals about a DC solution, with a
 /// source driven by a unit excitation, at any frequency.
 pub(crate) struct Currents<'a> {
-    probes: Vec<Linear<'a>>,
-    /// What the excited source adds to each of its terminals, by index among the evaluated
+    linear: Vec<Linear>,
+    /// What the excited source adds to each of its terminals, by index among the read
     /// devices' terminals.
     excitation: Vec<(usize, f64)>,
     selection: &'a Selection,
@@ -662,27 +561,22 @@ impl Currents<'_> {
     /// for the phasors `values` of the unknowns.
     pub(crate) fn at(&self, values: &[Complex64], omega: f64) -> Vec<Complex64> {
         let mut tracked = vec![Complex64::default(); self.selection.tracked];
-        for probe in &self.probes {
+        for linear in &self.linear {
             let phasor = |column: usize| {
-                probe.sources[column]
-                    .map_or(Complex64::default(), |unknown| values[unknown.index()])
+                linear
+                    .nodes
+                    .get(column)
+                    .and_then(|&unknown| values.get(unknown as usize))
+                    .copied()
+                    .unwrap_or_default()
             };
-            let positions = probe.pattern.positions().zip(
-                probe
-                    .contributions
-                    .conductance
-                    .iter()
-                    .zip(&probe.contributions.capacitance),
-            );
-            for ((row, column), (&conductance, &capacitance)) in positions {
-                if row < probe.terminals {
-                    tracked[probe.first + row] +=
-                        Complex64::new(conductance, omega * capacitance) * phasor(column);
-                }
+            for &(row, column, conductance, capacitance) in &linear.entries {
+                tracked[linear.first + row] +=
+                    Complex64::new(conductance, omega * capacitance) * phasor(column);
             }
         }
         // Each of the excited source's terminals takes its excitation after its own
-        // conductances, which only its own copy adds to it.
+        // conductances, which only its own block adds to it.
         for &(terminal, value) in &self.excitation {
             tracked[terminal] += Complex64::new(value, 0.0);
         }
@@ -744,10 +638,7 @@ mod tests {
         let unknowns = simulator.elaborated.unknowns.len();
         simulator.prepare(&Options::default()).unwrap();
         assert_eq!(simulator.state.observer.width(), 0);
-        assert!(
-            simulator.state.observer.probes.is_empty(),
-            "nothing is made again"
-        );
+        assert!(!simulator.state.observer.records(), "nothing is read");
         let everything = recording(Record::All);
         simulator.prepare(&everything).unwrap();
         // V1: 2 terminals and its current, 9 derivatives; R1: 2 terminals, 4 derivatives;
@@ -767,22 +658,22 @@ mod tests {
     }
 
     #[test]
-    fn devices_are_made_again_only_when_recorded_or_behind_a_recorded_port() {
+    fn devices_are_read_only_when_recorded_or_behind_a_recorded_port() {
         let mut simulator = amplifier();
+        let read = |simulator: &Simulator| -> Vec<String> {
+            let selection = &simulator.state.observer.selection;
+            selection
+                .evaluated
+                .iter()
+                .map(|&(device, _, _)| simulator.elaborated.devices[device].path().to_owned())
+                .collect()
+        };
         let ports = recording(Record::Instances(BTreeSet::from(["X1".to_owned()])));
         let point = simulator.operating_point(&ports).unwrap();
         assert_eq!(point.observation.currents.len(), 2);
-        let made: Vec<&str> = simulator
-            .state
-            .observer
-            .probes
-            .iter()
-            .map(|probe| simulator.elaborated.devices[probe.placed].path())
-            .collect();
-        assert_eq!(made, ["X1/R1", "X1/M1"]);
+        assert_eq!(read(&simulator), ["X1/R1", "X1/M1"]);
         let source = recording(Record::Instances(BTreeSet::from(["V1".to_owned()])));
         simulator.operating_point(&source).unwrap();
-        assert_eq!(simulator.state.observer.probes.len(), 3);
-        assert_eq!(simulator.state.observer.selection.evaluated.len(), 1);
+        assert_eq!(read(&simulator), ["V1"]);
     }
 }

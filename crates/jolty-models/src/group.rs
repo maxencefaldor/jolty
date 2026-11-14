@@ -23,7 +23,6 @@ use jolty_numerics::{Entry, GatherMap, Pattern, UNMAPPED};
 use rayon::prelude::*;
 
 use crate::device::lift;
-use crate::kernel::device::mapped;
 use crate::surroundings::Own;
 use crate::{
     Binding, Choice, Contributions, Gradient, Input, Kernel, Layout, Level, Local, Node,
@@ -92,6 +91,31 @@ impl<'a> Instance<'a> {
     #[must_use]
     pub fn variable_names(&self) -> &'static [&'static str] {
         (self.variables)()
+    }
+
+    /// Claims, through `binding`, which binds the instance's terminals, the internal
+    /// unknowns and the entries the instance's layout at the temperature `temperature` of
+    /// its surroundings claims, as a group claims them for an instance it adds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when the instance's parameters are out of range.
+    pub fn claim(&self, temperature: f64, binding: &mut Binding<'_>) -> Result<(), ParameterError> {
+        let mut layout = Layout::new(binding.terminals().len());
+        (self.made)(
+            self.parameters,
+            self.own.temperature(temperature)?,
+            &mut layout,
+        )?;
+        let mut nodes = binding.terminals().to_vec();
+        for (label, quantity) in layout.internals() {
+            nodes.push(Some(binding.internal(label, *quantity)));
+        }
+        let node = |local: usize| nodes.get(local).copied().flatten();
+        for &(row, column) in layout.entries() {
+            binding.entry(node(row), node(column));
+        }
+        Ok(())
     }
 
     /// The parameters, if the instance is one of `K`.
@@ -559,6 +583,30 @@ impl Groups {
         Ok(())
     }
 
+    /// Whether `instance`, the instance of the device `device` its parameters make at the
+    /// temperature `temperature` of its surroundings, has the kernel and the shape of the
+    /// device's group, and so claims the unknowns and the entries the circuit holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when the instance's parameters are out of range.
+    pub fn keeps_shape(
+        &self,
+        device: usize,
+        (instance, temperature): (&Instance<'_>, f64),
+    ) -> Result<bool, ParameterError> {
+        let Some(group) = self
+            .place(device)
+            .and_then(|(group, _)| self.kernels.get(group))
+        else {
+            return Ok(false);
+        };
+        let mut layout = Layout::new(group.layout.terminals());
+        let temperature = instance.own.temperature(temperature)?;
+        let made = (instance.made)(instance.parameters, temperature, &mut layout)?;
+        Ok(group.shaped.kernel() == instance.kernel && group.shaped.same(made.shaped()))
+    }
+
     /// The instance at the device `device`, if it is a kernel's: its group and its index
     /// among the group's instances.
     fn place(&self, device: usize) -> Option<(usize, usize)> {
@@ -660,6 +708,12 @@ impl Groups {
     }
 }
 
+/// The index among the circuit's unknowns of `node`, or [`UNMAPPED`] for the reference.
+fn mapped(node: Node) -> u32 {
+    node.and_then(|unknown| u32::try_from(unknown.index()).ok())
+        .unwrap_or(UNMAPPED)
+}
+
 /// `slot`, a stored position, as a map holds it, or [`UNMAPPED`] beyond its reach, which
 /// [`Groups::finish`] rules out.
 fn mapped_slot(slot: usize) -> u32 {
@@ -726,6 +780,29 @@ impl Clone for Runs {
             layout: self.layout.clone(),
         }
     }
+}
+
+/// One instance's block of a run's slab, as its last evaluation wrote it: the residual,
+/// scale and charge of each of its local unknowns, its terminals then its internal unknowns,
+/// and the conductance and capacitance of each of its local entries, each the pair of local
+/// unknowns `entries` gives, and the circuit's unknown of each local unknown, or
+/// [`UNMAPPED`] for one on the reference.
+#[derive(Debug, Clone, Copy)]
+pub struct Block<'a> {
+    /// The residual of each local unknown's equation.
+    pub residual: &'a [f64],
+    /// The largest magnitude of a term of each residual.
+    pub scale: &'a [f64],
+    /// The charge of each local unknown's equation.
+    pub charge: &'a [f64],
+    /// The conductance at each local entry.
+    pub conductance: &'a [f64],
+    /// The capacitance at each local entry.
+    pub capacitance: &'a [f64],
+    /// The row and the column of each local entry, local unknowns both.
+    pub entries: &'a [(usize, usize)],
+    /// The circuit's unknown of each local unknown.
+    pub nodes: &'a [u32],
 }
 
 /// One instance's block of contributions, evaluated alone, and where its values go among
@@ -825,11 +902,49 @@ impl Runs {
     /// the instance the device `device` is, if it is an independent source, to
     /// `derivative`, one value per unknown: how a small-signal analysis excites it.
     pub fn excite(&self, groups: &Groups, device: usize, derivative: &mut [f64]) {
-        if let Some((group, member)) = groups.place(device)
-            && let (Some(of), Some(run)) = (groups.kernels.get(group), self.groups.get(group))
-        {
-            run.excite(member, of, derivative);
+        let (Some(local), Some(block)) =
+            (self.excitation(groups, device), self.block(groups, device))
+        else {
+            return;
+        };
+        for (&unknown, &value) in block.nodes.iter().zip(&local) {
+            if let Some(sum) = derivative.get_mut(unknown as usize) {
+                *sum += value;
+            }
         }
+    }
+
+    /// The derivative of each residual of the instance the device `device` is with respect
+    /// to its level, as an independent source's, one value per local unknown: zero for
+    /// each, for an instance that is no independent source.
+    #[must_use]
+    pub fn excitation(&self, groups: &Groups, device: usize) -> Option<Vec<f64>> {
+        let (group, _) = groups.place(device)?;
+        let (of, run) = (groups.kernels.get(group)?, self.groups.get(group)?);
+        Some(run.excitation(of))
+    }
+
+    /// The block of the instance the device `device` is in the slab, as the last evaluation
+    /// wrote it.
+    #[must_use]
+    pub fn block<'a>(&'a self, groups: &'a Groups, device: usize) -> Option<Block<'a>> {
+        let (group, member) = groups.place(device)?;
+        let of = groups.kernels.get(group)?;
+        let (unknowns, stride) = (of.unknowns(), of.stride());
+        let rows = of.starts.0 + member * unknowns..of.starts.0 + (member + 1) * unknowns;
+        let start = of.starts.1 + member * stride;
+        let stored = start..start + of.layout.entries().len();
+        let [residual, scale, charge] = &self.slab.rows;
+        let [conductance, capacitance] = &self.slab.entries;
+        Some(Block {
+            residual: residual.get(rows.clone())?,
+            scale: scale.get(rows.clone())?,
+            charge: charge.get(rows)?,
+            conductance: conductance.get(stored.clone())?,
+            capacitance: capacitance.get(stored)?,
+            entries: of.layout.entries(),
+            nodes: of.map_of(member)?,
+        })
     }
 
     /// Starts the instance the device `device` is, if it is a logic driver, moving to the
@@ -1100,10 +1215,9 @@ trait GroupRun: fmt::Debug + Send {
     /// The level of the instance `member`, if it is an independent source.
     fn level(&self, member: usize) -> Option<f64>;
 
-    /// Adds the derivative of each residual of the instance `member` of `group`, if it is
-    /// an independent source, with respect to its level to `derivative`, by the circuit's
-    /// unknowns.
-    fn excite(&self, member: usize, group: &Group, derivative: &mut [f64]);
+    /// The derivative of each residual of an instance of `group`, as an independent source,
+    /// with respect to its level, one value per local unknown.
+    fn excitation(&self, group: &Group) -> Vec<f64>;
 
     /// Starts the instance `member`, if it is a logic driver, on the ramp `ramp`, and
     /// returns when it settles.
@@ -1266,10 +1380,7 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         K::level(self.prepared.get(member)?.as_ref()?)
     }
 
-    fn excite(&self, member: usize, group: &Group, derivative: &mut [f64]) {
-        let Some(map) = group.map_of(member) else {
-            return;
-        };
+    fn excitation(&self, group: &Group) -> Vec<f64> {
         let (unknowns, stride) = (group.unknowns(), group.stride());
         let mut rows = [
             vec![0.0; unknowns],
@@ -1281,11 +1392,8 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         let [conductance, capacitance] = &mut entries;
         let mut stamp = Stamp::over([residual, scale, charge], [conductance, capacitance]);
         K::excite(&self.shape, &mut stamp);
-        for (&unknown, &value) in map.iter().zip(&rows[0]) {
-            if let Some(sum) = derivative.get_mut(unknown as usize) {
-                *sum += value;
-            }
-        }
+        let [residual, ..] = rows;
+        residual
     }
 
     fn drive(&mut self, member: usize, ramp: (f64, Level, f64)) -> Option<f64> {
