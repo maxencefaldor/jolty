@@ -38,7 +38,7 @@ from typing import Final
 from arms import Arm, given, prompt
 from pydantic import Field
 from pydantic_settings import CliPositionalArg, CliUnknownArgs, SettingsConfigDict
-from verdict import Verdict
+from verdict import Kind, Shortfall, Verdict
 
 from jolty import cli
 
@@ -237,7 +237,7 @@ def scored(task: Path, work: Path, arm: Arm) -> Verdict:
         return Verdict.model_validate_json(path.read_text(encoding="utf-8"))
     last = finished.stderr.strip().splitlines()[-1:] or ["nothing"]
     reason = f"the scorer exited with {finished.returncode}, having written {last[0]}"
-    return Verdict(met=False, reasons=(reason,))
+    return Verdict(met=False, shortfalls=(Shortfall(kind=Kind.SCORER, reason=reason),))
 
 
 def run(task: Path, agent: list[str], work: Path, arm: Arm = Arm.JOLTY) -> int:

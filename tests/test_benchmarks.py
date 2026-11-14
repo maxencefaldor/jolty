@@ -57,25 +57,46 @@ def test_a_cheaper_design_that_meets_the_specs_meets_the_task(tmp_path: Path) ->
 
 def test_the_score_says_why_work_falls_short(tmp_path: Path) -> None:
     from score import score  # noqa: PLC0415 - importable only once the path holds it
+    from verdict import Verdict  # noqa: PLC0415 - importable only once the path holds it
 
-    assert score(COST_DOWN, tmp_path).reasons == (
-        f"there is no {tmp_path / 'design.py'}",
-    )
+    def kinds(verdict: Verdict) -> list[tuple[str, str | None]]:
+        return [(shortfall.kind, shortfall.spec) for shortfall in verdict.shortfalls]
+
+    verdict = score(COST_DOWN, tmp_path)
+    assert verdict.reasons == (f"there is no {tmp_path / 'design.py'}",)
+    assert kinds(verdict) == [("missing", None)]
     design(tmp_path, "0.001")
-    assert score(COST_DOWN, tmp_path).reasons == (
-        "the design costs 0.2, not less than 0.2",
-    )
+    verdict = score(COST_DOWN, tmp_path)
+    assert verdict.reasons == ("the design costs 0.2, not less than 0.2",)
+    assert kinds(verdict) == [("spec", "cost")]
+    # jolty's own reason: every spec passes, but too few samples do.
     design(tmp_path, "0.05")
-    reasons = score(COST_DOWN, tmp_path).reasons
-    assert "the design does not meet the plan of bias.py" in reasons
+    verdict = score(COST_DOWN, tmp_path)
+    assert kinds(verdict) == [("spec", "yield")]
+    assert verdict.reasons[0].startswith("yield: ")
+    assert verdict.reasons[0].endswith("which is below the target 99 %")
     original = (COST_DOWN / "given" / "bias.py").read_text(encoding="utf-8")
+    cheaper = original.replace("TOLERANCE = 0.001", "TOLERANCE = 0.01")
     (tmp_path / "design.py").write_text(
-        original.replace("TOLERANCE = 0.001", "TOLERANCE = 0.01").replace(
-            "voltage_source(5 * V)", "voltage_source(5.1 * V)"
-        ),
+        cheaper.replace("voltage_source(5 * V)", "voltage_source(5.1 * V)"),
         encoding="utf-8",
     )
-    assert "the bench's V1 differs" in score(COST_DOWN, tmp_path).reasons
+    verdict = score(COST_DOWN, tmp_path)
+    assert "the bench's V1 differs" in verdict.reasons
+    assert ("spec", "bench") in kinds(verdict)
+    (tmp_path / "design.py").write_text(
+        cheaper.replace("16.5 * kohm, 1 * kohm", "-16.5 * kohm, 1 * kohm"),
+        encoding="utf-8",
+    )
+    verdict = score(COST_DOWN, tmp_path)
+    assert kinds(verdict) == [("unelaborated", None), ("spec", "catalog")]
+    assert "resistance must be positive" in verdict.reasons[0]
+    (tmp_path / "design.py").write_text(
+        "def build():\n    raise RuntimeError('unfinished')\n", encoding="utf-8"
+    )
+    verdict = score(COST_DOWN, tmp_path)
+    assert kinds(verdict) == [("unbuilt", None)]
+    assert verdict.reasons[0].startswith("the design does not build: ")
 
 
 def test_the_given_transistor_is_excused_by_what_it_is_not_its_name(
@@ -173,6 +194,8 @@ def test_the_cubic_scorer_names_a_forbidden_part(tmp_path: Path) -> None:
     verdict = score(CUBIC, tmp_path)
     assert not verdict.met
     assert "D9 is a diode, which the task forbids" in verdict.reasons
+    (forbidden,) = (each for each in verdict.shortfalls if each.spec == "parts")
+    assert forbidden.kind == "spec"
 
 
 ANALOGCODER = BENCHMARKS / "analogcoder"
@@ -242,6 +265,14 @@ def test_the_analogcoder_scorer_says_why_designs_fail(tmp_path: Path) -> None:
     assert not verdict.met
     assert verdict.measurements["solved"] == 21
     assert "p3: there is no p3.py" in verdict.reasons
+    # Each shortfall names its problem, and the spec of its check.
+    assert sorted(
+        {(each.design, each.kind, each.spec) for each in verdict.shortfalls}
+    ) == [
+        ("p18", "spec", "integrator"),
+        ("p3", "missing", None),
+        ("p7", "spec", "parts"),
+    ]
     assert "p7: E1 is a voltage_controlled_voltage_source, which the task forbids" in (
         verdict.reasons
     )
@@ -386,6 +417,41 @@ def test_a_balun_whose_input_floats_fails_to_simulate(tmp_path: Path) -> None:
     assert len(verdict.reasons) == 5
     assert verdict.reasons[0].startswith("the simulation fails: ")
     assert all("the simulation fails: " in reason for reason in verdict.reasons)
+    assert {shortfall.kind for shortfall in verdict.shortfalls} == {"analysis"}
+
+
+def test_a_shortfall_s_kind_is_where_the_scorer_found_it(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    # A design whose ports are not the bench's does not build on it, where the
+    # scorer used to crash on the port the bench could not join.
+    converter(tmp_path, "")
+    (tmp_path / "design.py").write_text(
+        (tmp_path / "design.py")
+        .read_text(encoding="utf-8")
+        .replace("c.port('minus')", "c.port('minus_')"),
+        encoding="utf-8",
+    )
+    (shortfall,) = score(VOLTAGE_CURRENT, tmp_path).shortfalls
+    assert shortfall.kind == "unbuilt"
+    assert shortfall.reason == (
+        "its ports are ground, minus_, output, plus, vee, not ground, minus, output, "
+        "plus, vee"
+    )
+    # A design the engine cannot elaborate, in every corner.
+    converter(
+        tmp_path,
+        "    load = c.place(devices.resistor(-1 * kohm), id='R1')\n"
+        "    c.connect(load.a, plus)\n"
+        "    c.connect(load.b, output)\n"
+        "    bias = c.place(devices.resistor(1 * kohm), id='R2')\n"
+        "    c.connect(bias.a, minus)\n"
+        "    c.connect(bias.b, vee)\n"
+        "    c.connect(ground)\n",
+    )
+    verdict = score(VOLTAGE_CURRENT, tmp_path)
+    assert {shortfall.kind for shortfall in verdict.shortfalls} == {"unelaborated"}
+    assert "resistance must be positive" in verdict.reasons[0]
 
 
 CUBIC_DISCRETE = BENCHMARKS / "cubic_discrete"
@@ -619,43 +685,49 @@ def test_a_board_sets_its_corner_on_the_bench() -> None:
 
 
 def test_too_few_boards_that_meet_the_task_fall_short() -> None:
-    from scoring import Board, parts, tolerate  # noqa: PLC0415 - importable only once the path holds it
+    from scoring import Board, parts, tolerate, unmet  # noqa: PLC0415 - importable only once the path holds it
+    from verdict import Kind, Shortfall  # noqa: PLC0415 - importable only once the path holds it
 
     def measure(board: Board) -> dict[str, float]:
         return {"resistance": board.parts["X1/R1"]["resistance"]}
 
-    def below(most: float) -> Callable[[dict[str, float]], list[str]]:
-        return lambda found: [] if found["resistance"] <= most else ["it is too high"]
+    def below(most: float) -> Callable[[dict[str, float]], list[Shortfall]]:
+        high = [unmet("resistance", "it is too high")]
+        return lambda found: [] if found["resistance"] <= most else high
 
     spread, reasons = tolerate(circuit(loaded()), measure, below(1005), parts)
     assert 0.6 < spread["yield"] < 0.9
     assert spread["median resistance"] == pytest.approx(1000, abs=2)
     (reason,) = reasons
-    assert reason.endswith("on the first that falls short, it is too high")
+    assert (reason.kind, reason.spec) == (Kind.SPEC, "yield")
+    assert reason.reason.endswith("on the first that falls short, it is too high")
     spread, reasons = tolerate(circuit(loaded()), measure, below(1010), parts)
     assert spread["yield"] == 1
     assert not reasons
 
 
 def test_a_design_must_meet_its_task_in_every_corner() -> None:
-    from scoring import Board, cornered, parts, tolerate  # noqa: PLC0415 - importable only once the path holds it
+    from scoring import Board, cornered, parts, tolerate, unmet  # noqa: PLC0415 - importable only once the path holds it
+    from verdict import Shortfall  # noqa: PLC0415 - importable only once the path holds it
 
     def measure(board: Board) -> dict[str, float]:
         return {"temperature": board.corner.temperature}
 
-    def cool(found: dict[str, float]) -> list[str]:
-        return [] if found["temperature"] < 50 else ["it runs too hot"]
+    def cool(found: dict[str, float]) -> list[Shortfall]:
+        hot = [unmet("temperature", "it runs too hot")]
+        return [] if found["temperature"] < 50 else hot
 
     measurements, reasons = cornered(measure, cool)
     assert measurements["temperature"] == 27
     assert measurements["at 70 °C with the supplies 5 % high: temperature"] == 70
+    # In a corner, a shortfall keeps its spec and names the corner.
     assert reasons == [
-        "at 70 °C with the supplies 5 % low, it runs too hot",
-        "at 70 °C with the supplies 5 % high, it runs too hot",
+        unmet("temperature", "at 70 °C with the supplies 5 % low, it runs too hot"),
+        unmet("temperature", "at 70 °C with the supplies 5 % high, it runs too hot"),
     ]
     spread, (reason,) = tolerate(circuit(loaded()), measure, cool, parts)
     assert spread["yield"] == 0
-    assert reason.endswith("at 70 °C with the supplies 5 % low, it runs too hot")
+    assert reason.reason.endswith("at 70 °C with the supplies 5 % low, it runs too hot")
 
 
 TASKS = sorted(path.parent for path in BENCHMARKS.glob("*/task.md"))
@@ -785,8 +857,8 @@ def test_the_score_says_why_a_netlist_falls_short(tmp_path: Path) -> None:
         in (reasons)
     )
     stage(tmp_path, dict.fromkeys(RESISTORS, 0.05))
-    reasons = score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons
-    assert "the design does not meet the plan of bias.py" in reasons
+    (shortfall,) = score(COST_DOWN, tmp_path, Arm.NGSPICE).shortfalls
+    assert (shortfall.kind, shortfall.spec) == ("spec", "yield")
     stage(tmp_path, {**dict.fromkeys(RESISTORS, 0.01), "R9": 0.01})
     (reason,) = score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons
     assert "tolerances.json names r9, which is no resistor of the stage" in reason

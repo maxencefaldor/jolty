@@ -4,9 +4,11 @@
 It builds the agent's ``design.py``, simulates it with the plan and specs of the given
 ``bias.py``, checks that the bench outside ``X1`` is the original's, and prices ``X1``
 with the given catalog. The work meets the task when the simulation meets its plan and
-the design costs less than the original. The ngspice arm's ``design.cir`` and
-``tolerances.json`` are built as ``netlist.py`` builds them: the original bench, with
-the stage they define in place of the original's.
+the design costs less than the original. Each way it falls short of the plan is jolty's
+own reason, of its kind, such as a requirement that fails or a yield below its target;
+the bench, the catalog and the cost are the specs ``bench``, ``catalog`` and ``cost``.
+The ngspice arm's ``design.cir`` and ``tolerances.json`` are built as ``netlist.py``
+builds them: the original bench, with the stage they define in place of the original's.
 
 A bill leaves out the parts no part of the catalog prices, such as the given
 transistor, so the design's total compares with the original's only when it leaves out
@@ -23,8 +25,8 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from arms import Arm
-from scoring import simulate
-from verdict import Verdict
+from scoring import missing, planned, simulate, unbuilt, unmet
+from verdict import Kind, Shortfall, Verdict
 
 from jolty import Component, catalog, circuit, ir
 from jolty.errors import JoltyError
@@ -46,33 +48,38 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
             return Verdict(
                 met=False,
                 measurements={"baseline": baseline},
-                reasons=(f"there is no {work / design.name}",),
+                shortfalls=(missing(f"there is no {work / design.name}"),),
             )
         try:
             result, built = simulate(design, given / "bias.py")
         except JoltyError as error:
+            # jolty simulate reports what it finds of a circuit, and raises only when
+            # the script makes none: it fails, runs out of time or its process ends.
             return Verdict(
                 met=False,
                 measurements={"baseline": baseline},
-                reasons=(f"the design does not build: {error}",),
+                shortfalls=(unbuilt(f"the design does not build: {error}"),),
             )
-    reasons = []
-    if not result.ok:
-        reasons.append("the design does not meet the plan of bias.py")
+    shortfalls = planned(result)
+    if result.ok == bool(shortfalls):
+        message = "jolty's verdict on the plan and the scorer's reasons disagree"
+        raise RuntimeError(message)
     if not reference.ok:
-        reasons.append("the original does not meet its own plan")
-    reasons.extend(_bench_changes(reference_circuit, built))
+        reason = "the original does not meet its own plan"
+        shortfalls.append(Shortfall(kind=Kind.SCORER, reason=reason))
+    shortfalls += [
+        unmet("bench", each) for each in _bench_changes(reference_circuit, built)
+    ]
     priced = catalog.bill(built, parts, INSTANCE)
     excused = _given(task, arm, reference_circuit, original)
-    reasons.extend(_unpriced(priced, built, excused))
+    shortfalls += _unpriced(priced, built, excused)
     if priced.total >= baseline:
-        reasons.append(
-            f"the design costs {priced.total:.6g}, not less than {baseline:.6g}"
-        )
+        reason = f"the design costs {priced.total:.6g}, not less than {baseline:.6g}"
+        shortfalls.append(unmet("cost", reason))
     return Verdict(
-        met=not reasons,
+        met=not shortfalls,
         measurements={"baseline": baseline, "cost": priced.total},
-        reasons=tuple(reasons),
+        shortfalls=tuple(shortfalls),
         report=result.describe(),
     )
 
@@ -138,11 +145,11 @@ def _given(
 
 def _unpriced(
     priced: catalog.Bill, built: ir.Circuit, excused: Iterable[ir.Instance]
-) -> list[str]:
+) -> list[Shortfall]:
     """Why each part `priced`, the bill of `built`, leaves out is not excused.
 
     Each of `excused` excuses one part that is the same part, whatever its name and
-    wherever it sits.
+    wherever it sits. A part not excused falls short of the spec ``catalog``.
     """
     placed = dict(catalog.built(built, built.top))
     left = [_part(each) for each in excused]
@@ -152,7 +159,9 @@ def _unpriced(
         if part in left:
             left.remove(part)
         else:
-            reasons.append(f"{each.instance} is unpriced: {each.reason}")
+            reasons.append(
+                unmet("catalog", f"{each.instance} is unpriced: {each.reason}")
+            )
     return reasons
 
 

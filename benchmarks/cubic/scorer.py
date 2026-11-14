@@ -24,6 +24,7 @@ from scoring import (
     CORNERS,
     Board,
     Corner,
+    benched,
     cornered,
     count_devices,
     design,
@@ -31,8 +32,9 @@ from scoring import (
     given,
     integrated,
     tolerate,
+    unmet,
 )
-from verdict import Verdict
+from verdict import Shortfall, Verdict
 
 from jolty import Builder, Component, Role, circuit, component, devices
 from jolty.plan import DcSweep, Transient, linear
@@ -47,6 +49,8 @@ ALLOWED = {"resistor", "capacitor"}
 """The devices the design may hold besides the given transistor."""
 SUPPLIES = ("VS",)
 """The bench's supply, which strays within 5 % of its level in the corners."""
+PORTS = ("supply", "reference", "input", "output", "ground")
+"""The design's ports, which the bench joins."""
 
 
 @component
@@ -117,11 +121,13 @@ def measure(
     return measurements
 
 
-def shortfalls(found: dict[str, float]) -> list[str]:
+def shortfalls(found: dict[str, float]) -> list[Shortfall]:
     """Why the measurements `found` fall short of the task, if they do."""
     if found["score"] <= 1:
         return []
-    return [f"the score is {found['score']:.4g}, more than the patent's 1"]
+    return [
+        unmet("score", f"the score is {found['score']:.4g}, more than the patent's 1")
+    ]
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
@@ -129,9 +135,11 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
     patented = runpy.run_path(str(task / "patent.py"))["cubic"]()
     patent = {corner: errors(patented, Board(corner=corner)) for corner in CORNERS}
     made = design(task, work, "design", arm)
-    if isinstance(made, str):
-        return Verdict(met=False, reasons=(made,))
-    built = circuit(bench(made))
+    if isinstance(made, Shortfall):
+        return Verdict(met=False, shortfalls=(made,))
+    built = benched(made, PORTS, lambda: bench(made))
+    if isinstance(built, Shortfall):
+        return Verdict(met=False, shortfalls=(built,))
     reasons = disallowed(built, given(task, arm, "npn"), ALLOWED)
     measured = partial(measure, made, patent)
     measurements, short = cornered(measured, shortfalls)
@@ -144,4 +152,6 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
         for name, error in zip(NAMES, patent[CORNERS[0]], strict=True)
     }
     measurements["devices"] = float(count_devices(built, "X1"))
-    return Verdict(met=not reasons, measurements=measurements, reasons=tuple(reasons))
+    return Verdict(
+        met=not reasons, measurements=measurements, shortfalls=tuple(reasons)
+    )

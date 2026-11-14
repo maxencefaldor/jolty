@@ -37,6 +37,7 @@ import numpy as np
 from arms import Arm
 from scoring import (
     Board,
+    benched,
     cornered,
     count_devices,
     design,
@@ -44,8 +45,9 @@ from scoring import (
     discrete,
     given,
     tolerate,
+    unmet,
 )
-from verdict import Verdict
+from verdict import Shortfall, Verdict
 
 from jolty import (
     Builder,
@@ -64,6 +66,8 @@ ALLOWED = {"resistor", "capacitor"}
 """The devices the design may hold besides the given transistors."""
 SUPPLIES = ("VCC",)
 """The bench's supply, which strays within 5 % of its level in the corners."""
+PORTS = ("input", "in_phase", "out_of_phase", "vcc", "ground")
+"""The design's ports, which the bench joins."""
 GAIN = 0.60
 """The patented circuit's mean absolute error of the difference's gain, in decibels."""
 DISTORTION = -33.9
@@ -161,37 +165,44 @@ def measure(made: Component, board: Board) -> dict[str, float]:
     }
 
 
-def shortfalls(found: dict[str, float]) -> list[str]:
+def shortfalls(found: dict[str, float]) -> list[Shortfall]:
     """Why the measurements `found` fall short of the task, if they do."""
     reasons = []
     if found["difference gain error"] > GAIN:
-        reasons.append(
+        reason = (
             f"the difference's gain is {found['difference gain error']:.4g} dB off "
             f"on average, more than {GAIN} dB"
         )
+        reasons.append(unmet("difference gain error", reason))
     if found["distortion"] > DISTORTION:
-        reasons.append(
+        reason = (
             f"the distortion is {found['distortion']:.4g} dB, above {DISTORTION} dB"
         )
+        reasons.append(unmet("distortion", reason))
     for output in ("in-phase", "out-of-phase"):
-        error = found[f"worst {output} gain error"]
-        if error > TOLERANCE["gain"]:
-            reasons.append(f"the {output} gain is {error:.4g} dB off at worst")
+        name = f"worst {output} gain error"
+        if found[name] > TOLERANCE["gain"]:
+            reason = f"the {output} gain is {found[name]:.4g} dB off at worst"
+            reasons.append(unmet(name, reason))
     for signal in ("in-phase", "out-of-phase", "difference"):
-        error = found[f"worst {signal} phase error"]
-        if error > TOLERANCE["phase"]:
-            reasons.append(f"the {signal} phase is {error:.4g}° off at worst")
+        name = f"worst {signal} phase error"
+        if found[name] > TOLERANCE["phase"]:
+            reason = f"the {signal} phase is {found[name]:.4g}° off at worst"
+            reasons.append(unmet(name, reason))
     if found["offset"] > OFFSET:
-        reasons.append(f"the outputs' DC levels differ by {found['offset']:.4g} V")
+        reason = f"the outputs' DC levels differ by {found['offset']:.4g} V"
+        reasons.append(unmet("offset", reason))
     return reasons
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
     """The verdict on the balun in `work`, as `arm` writes it."""
     made = design(task, work, "design", arm)
-    if isinstance(made, str):
-        return Verdict(met=False, reasons=(made,))
-    built = circuit(bench(made))
+    if isinstance(made, Shortfall):
+        return Verdict(met=False, shortfalls=(made,))
+    built = benched(made, PORTS, lambda: bench(made))
+    if isinstance(built, Shortfall):
+        return Verdict(met=False, shortfalls=(built,))
     reasons = disallowed(built, given(task, arm, "npn", "pnp"), ALLOWED)
     measured = partial(measure, made)
     measurements, short = cornered(measured, shortfalls)
@@ -201,4 +212,6 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
         measurements |= spread
     measurements |= {f"evolved {name}": value for name, value in EVOLVED.items()}
     measurements["devices"] = float(count_devices(built, "X1"))
-    return Verdict(met=not reasons, measurements=measurements, reasons=tuple(reasons))
+    return Verdict(
+        met=not reasons, measurements=measurements, shortfalls=tuple(reasons)
+    )

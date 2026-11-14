@@ -31,6 +31,7 @@ import numpy as np
 from arms import Arm
 from scoring import (
     Board,
+    benched,
     cornered,
     count_devices,
     design,
@@ -38,8 +39,9 @@ from scoring import (
     discrete,
     given,
     tolerate,
+    unmet,
 )
-from verdict import Verdict
+from verdict import Shortfall, Verdict
 
 from jolty import Builder, Component, Role, circuit, component, devices
 from jolty.plan import Transient
@@ -58,6 +60,8 @@ ALLOWED = {"resistor", "capacitor"}
 """The devices the design may hold besides the given transistors."""
 SUPPLIES = ("VEE",)
 """The bench's supply, which strays within 5 % of its level in the corners."""
+PORTS = ("plus", "minus", "output", "vee", "ground")
+"""The design's ports, which the bench joins."""
 STEP = 10e-3
 """The step of ``VS`` the output current must settle after, in volts."""
 SETTLING = ((6.0, 4.0, 0.0), (10.0, 2.0, 1.0), (2.0, 10.0, -1.0))
@@ -194,37 +198,40 @@ def measure(made: Component, board: Board) -> dict[str, float]:
     return measurements
 
 
-def shortfalls(found: dict[str, float]) -> list[str]:
+def shortfalls(found: dict[str, float]) -> list[Shortfall]:
     """Why the measurements `found` fall short of the task, if they do."""
     reasons = []
     if found["fitness"] > 1:
-        reasons.append(
-            f"the fitness is {found['fitness']:.4g}, more than the patent's 1"
-        )
+        reason = f"the fitness is {found['fitness']:.4g}, more than the patent's 1"
+        reasons.append(unmet("fitness", reason))
     for case, (plus, minus, level) in enumerate(SETTLING, start=1):
         swing = found[f"swing {case}"]
         if swing > UNSETTLED:
-            reasons.append(
+            reason = (
                 f"with plus at {plus} V, minus at {minus} V and VS stepped from "
                 f"{level} V, the output current still swings by {swing:.3g} A"
             )
+            reasons.append(unmet(f"swing {case}", reason))
         error = found[f"settled error {case}"]
         if error > SETTLED_ERROR:
-            reasons.append(
+            reason = (
                 f"with plus at {plus} V, minus at {minus} V and VS stepped from "
                 f"{level} V, the output current settles {error:.3g} A from its "
                 f"{TRANSCONDUCTANCE * (plus - minus):.3g} A, more than the patent's "
                 f"largest mean error, {SETTLED_ERROR:.3g} A"
             )
+            reasons.append(unmet(f"settled error {case}", reason))
     return reasons
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
     """The verdict on the voltage-current converter in `work`, as `arm` writes it."""
     made = design(task, work, "design", arm)
-    if isinstance(made, str):
-        return Verdict(met=False, reasons=(made,))
-    built = circuit(bench(made, cases()[0], swing()))
+    if isinstance(made, Shortfall):
+        return Verdict(met=False, shortfalls=(made,))
+    built = benched(made, PORTS, lambda: bench(made, cases()[0], swing()))
+    if isinstance(built, Shortfall):
+        return Verdict(met=False, shortfalls=(built,))
     reasons = disallowed(built, given(task, arm, "npn", "pnp"), ALLOWED)
     measured = partial(measure, made)
     measurements, short = cornered(measured, shortfalls)
@@ -239,4 +246,6 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
         "evolved fitness": EVOLVED,
         "devices": float(count_devices(built, "X1")),
     }
-    return Verdict(met=not reasons, measurements=measurements, reasons=tuple(reasons))
+    return Verdict(
+        met=not reasons, measurements=measurements, shortfalls=tuple(reasons)
+    )

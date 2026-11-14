@@ -10,6 +10,11 @@ must work in: at 0 °C and at 70 °C, the commercial range, with its supplies 5 
 is measured again on boards built of real parts, whose values stray within their
 tolerances, each board in every corner: it meets the task only when enough of those
 boards meet it in all of them.
+
+Each way a design falls short is a `verdict.Shortfall` of the kind its source makes it:
+a missing file, a script or netlist that does not build or read, an error jolty raises
+of its own kind, a part the task forbids, a measurement beyond its bound, a yield too
+low.
 """
 
 import asyncio
@@ -24,14 +29,78 @@ from typing import Final
 
 import numpy as np
 from arms import Arm, libraries
+from verdict import Kind, Shortfall
 
-from jolty import Component, Simulation, devices, files, ir, service, spice, variation
-from jolty.errors import SimulationError
+from jolty import (
+    Component,
+    Simulation,
+    circuit,
+    devices,
+    files,
+    ir,
+    service,
+    spice,
+    variation,
+)
+from jolty.errors import (
+    BuildError,
+    DimensionError,
+    ElaborationError,
+    JoltyError,
+    ScriptError,
+    SimulationError,
+    SpiceError,
+)
+from jolty.report import FailureReport
 from jolty.settings import Settings
 from jolty.units import celsius
 
 
-def script(work: Path, stem: str) -> dict[str, object] | str:
+def missing(reason: str) -> Shortfall:
+    """The shortfall of work that lacks what the task asks for, for `reason`."""
+    return Shortfall(kind=Kind.MISSING, reason=reason)
+
+
+def unbuilt(reason: str) -> Shortfall:
+    """The shortfall of a design that does not build or read, for `reason`."""
+    return Shortfall(kind=Kind.UNBUILT, reason=reason)
+
+
+def unelaborated(problem: str, where: str = "") -> Shortfall:
+    """The shortfall of a design the engine cannot elaborate, for `problem`.
+
+    `where` says where, such as at a corner, before it.
+    """
+    reason = f"{where}the engine cannot elaborate it: {problem}"
+    return Shortfall(kind=Kind.UNELABORATED, reason=reason)
+
+
+def unmet(spec: str, reason: str) -> Shortfall:
+    """The shortfall of a design that falls short of the requirement `spec`."""
+    return Shortfall(kind=Kind.SPEC, spec=spec, reason=reason)
+
+
+def failed(error: JoltyError) -> Shortfall:
+    """The shortfall of a design on which jolty raised `error`, of the error's kind.
+
+    An analysis that fails, a circuit the engine cannot elaborate, and a circuit that
+    cannot be built or read, as jolty's errors of each say.
+
+    Raises:
+        JoltyError: `error` itself, when it is of no kind a design's shortfall is.
+    """
+    match error:
+        case SimulationError():
+            reason = f"the simulation fails: {error}"
+            return Shortfall(kind=Kind.ANALYSIS, reason=reason)
+        case ElaborationError():
+            return unelaborated(str(error))
+        case BuildError() | DimensionError() | ScriptError() | SpiceError():
+            return unbuilt(f"it does not build: {error}")
+    raise error
+
+
+def script(work: Path, stem: str) -> dict[str, object] | Shortfall:
     """What the script `stem`, such as ``design``, of `work` defines, or why it fails.
 
     It runs as a script whose directory is importable, so it may import modules of its
@@ -39,17 +108,17 @@ def script(work: Path, stem: str) -> dict[str, object] | str:
     """
     path = work / f"{stem}.py"
     if not path.is_file():
-        return f"there is no {path.name}"
+        return missing(f"there is no {path.name}")
     if str(work) not in sys.path:
         sys.path.insert(0, str(work))
     try:
         namespace = dict[str, object](runpy.run_path(str(path)))
     except Exception as error:  # noqa: BLE001 - an agent's script may raise anything
-        return f"{path.name} fails: {error!r}"
+        return unbuilt(f"{path.name} fails: {error!r}")
     return namespace
 
 
-def built(namespace: Mapping[str, object], stem: str) -> Component | str:
+def built(namespace: Mapping[str, object], stem: str) -> Component | Shortfall:
     """The component the ``build()`` of `namespace`, script `stem`'s, returns.
 
     Returns why there is none, when it has no ``build()``, or it fails or returns no
@@ -57,13 +126,13 @@ def built(namespace: Mapping[str, object], stem: str) -> Component | str:
     """
     build = namespace.get("build")
     if not callable(build):
-        return f"{stem}.py defines no build()"
+        return unbuilt(f"{stem}.py defines no build()")
     try:
         made = build()
     except Exception as error:  # noqa: BLE001 - an agent's script may raise anything
-        return f"{stem}.py's build() fails: {error!r}"
+        return unbuilt(f"{stem}.py's build() fails: {error!r}")
     if not isinstance(made, Component):
-        return "build() returns no component"
+        return unbuilt("build() returns no component")
     return made
 
 
@@ -81,7 +150,7 @@ def grounded(made: Component) -> Component:
     return Component(made.name, definition, made.children)
 
 
-def netlist(task: Path, work: Path, stem: str) -> Component | str:
+def netlist(task: Path, work: Path, stem: str) -> Component | Shortfall:
     """The subcircuit `stem` of the netlist `stem`, such as ``design.cir``, of `work`.
 
     jolty's SPICE reader reads the netlist after the libraries of `task`'s ngspice arm,
@@ -91,14 +160,14 @@ def netlist(task: Path, work: Path, stem: str) -> Component | str:
     """
     path = work / f"{stem}.cir"
     if not path.is_file():
-        return f"there is no {path.name}"
+        return missing(f"there is no {path.name}")
     try:
         return grounded(spice.load(*libraries(task), path).component(stem))
     except ValueError as error:
-        return f"jolty cannot read {path.name}: {error}"
+        return unbuilt(f"jolty cannot read {path.name}: {error}")
 
 
-def design(task: Path, work: Path, stem: str, arm: Arm) -> Component | str:
+def design(task: Path, work: Path, stem: str, arm: Arm) -> Component | Shortfall:
     """The component the design `stem` of `work` is, as `arm` writes it, or why none.
 
     It is the component the script ``stem.py`` builds, or the subcircuit ``stem`` of
@@ -107,7 +176,24 @@ def design(task: Path, work: Path, stem: str, arm: Arm) -> Component | str:
     if arm is Arm.NGSPICE:
         return netlist(task, work, stem)
     found = script(work, stem)
-    return found if isinstance(found, str) else built(found, stem)
+    return found if isinstance(found, Shortfall) else built(found, stem)
+
+
+def benched(
+    made: Component, ports: Iterable[str], bench: Callable[[], Component]
+) -> ir.Circuit | Shortfall:
+    """The circuit of `made` on its bench, which `bench` places it on, or why none.
+
+    The design's ports must be `ports`, those the bench joins.
+    """
+    found = sorted(port.name for port in made.definition.ports)
+    wanted = sorted(ports)
+    if found != wanted:
+        return unbuilt(f"its ports are {', '.join(found)}, not {', '.join(wanted)}")
+    try:
+        return circuit(bench())
+    except JoltyError as error:
+        return failed(error)
 
 
 _ELEMENTS: Final = {
@@ -241,7 +327,7 @@ class Board:
 
 type Measure = Callable[[Board], dict[str, float]]
 """What a scorer measures on a board of the design, by name."""
-type Shortfalls = Callable[[dict[str, float]], list[str]]
+type Shortfalls = Callable[[dict[str, float]], list[Shortfall]]
 """Why what a scorer measured on a board falls short of the task, if it does."""
 type Spread = Callable[[ir.Instance], dict[str, ir.Tolerance]]
 """How far each parameter of a device instance of the design strays on its boards, by
@@ -317,6 +403,63 @@ def simulate(
         return result, files.load_circuit(saved)
 
 
+PASSING: Final = frozenset({"passed", "marginal"})
+"""The statuses of a requirement that passes, if marginally."""
+
+
+def planned(result: service.SimulateResult) -> list[Shortfall]:
+    """Why `result`, what ``jolty simulate`` found of a design, falls short of its plan.
+
+    They are jolty's own reasons for a result that is not ok, each of its kind: the
+    circuit does not elaborate, at the plan's conditions or a corner; a rule finds an
+    error; an analysis fails, there or at a corner; a requirement fails or goes
+    unmeasured, or fails at its worst-case extremes; the yield of the plan's Monte
+    Carlo analysis, or of its variants, falls below the specs' target; or a model the
+    plan's fidelity chose disagrees with its circuit.
+    """
+    found = [unelaborated(each) for each in result.circuit.problems]
+    if result.report is not None:
+        found += [
+            Shortfall(kind=Kind.RULE, reason=diagnostic.describe())
+            for diagnostic in result.report.diagnostics
+            if diagnostic.level == "error"
+        ]
+    found += [
+        Shortfall(kind=Kind.ANALYSIS, reason=analysis.describe())
+        for analysis in result.analyses
+        if isinstance(analysis, FailureReport)
+    ]
+    for corner in result.corners:
+        found += [
+            unelaborated(each, f"at the corner {corner.name}, ")
+            for each in corner.problems
+        ]
+        found += [
+            Shortfall(
+                kind=Kind.ANALYSIS,
+                reason=f"at the corner {corner.name}, {failure.describe()}",
+            )
+            for failure in corner.failures
+        ]
+    found += [
+        unmet(verdict.requirement, verdict.describe())
+        for verdict in result.specs
+        if verdict.status not in PASSING
+    ]
+    if result.worst_case is not None:
+        found += [
+            unmet(verdict.requirement, f"at its worst case, {verdict.describe()}")
+            for verdict in result.worst_case.verdicts
+            if verdict.status not in PASSING
+        ]
+    for name, batch in (("yield", result.monte_carlo), ("variants", result.variants)):
+        if batch is not None and batch.passing is not None and not batch.passing.met:
+            found.append(unmet(name, batch.passing.describe()))
+    if result.fidelity is not None and not result.fidelity.ok:
+        found.append(unmet("fidelity", result.fidelity.describe()))
+    return found
+
+
 def count_devices(circuit: ir.Circuit, path: str) -> int:
     """How many devices the component instance at `path` holds, at any depth."""
     component = circuit.components[circuit.top]
@@ -341,11 +484,12 @@ def _count(circuit: ir.Circuit, component: ir.Component) -> int:
 
 def disallowed(
     built: ir.Circuit, given: Iterable[devices.Device], allowed: Iterable[str]
-) -> list[str]:
+) -> list[Shortfall]:
     """Why each device below the top of `built` is neither `given` nor `allowed`.
 
     A device of a given part's model must take that part's parameters; any other device
-    must be of an allowed model, such as ``resistor``.
+    must be of an allowed model, such as ``resistor``. Each falls short of the spec
+    ``parts``.
     """
     parts = [(part.model, part.parameters) for part in given]
     models = {model for model, _ in parts}
@@ -360,9 +504,10 @@ def disallowed(
             kind = instance.of.device
             if kind in models:
                 if (kind, instance.parameters) not in parts:
-                    found.append(f"{instance.id} is not a given part")
+                    found.append(unmet("parts", f"{instance.id} is not a given part"))
             elif kind not in permitted:
-                found.append(f"{instance.id} is a {kind}, which the task forbids")
+                reason = f"{instance.id} is a {kind}, which the task forbids"
+                found.append(unmet("parts", reason))
     return found
 
 
@@ -435,22 +580,23 @@ def boards(built: ir.Circuit, spread: Spread) -> list[Board]:
 
 def judge(
     measure: Measure, shortfalls: Shortfalls, board: Board | None = None
-) -> tuple[dict[str, float], list[str]]:
+) -> tuple[dict[str, float], list[Shortfall]]:
     """What `measure` finds on `board`, and why it falls short of the task.
 
     The board is the exact design by default. It falls short where `shortfalls` finds
-    it does, or when a simulation fails.
+    it does, or as `failed` has it when jolty raises an error, such as a simulation
+    that fails.
     """
     try:
         found = measure(board or Board())
-    except SimulationError as error:
-        return {}, [f"the simulation fails: {error}"]
+    except JoltyError as error:
+        return {}, [failed(error)]
     return found, shortfalls(found)
 
 
 def cornered(
     measure: Measure, shortfalls: Shortfalls
-) -> tuple[dict[str, float], list[str]]:
+) -> tuple[dict[str, float], list[Shortfall]]:
     """What `measure` finds on the exact design in every corner, and why it falls short.
 
     It falls short in any corner where it falls short of the task. The measurements
@@ -458,7 +604,7 @@ def cornered(
     ``at 0 °C with the supplies 5 % low: fitness``.
     """
     measurements: dict[str, float] = {}
-    reasons: list[str] = []
+    reasons: list[Shortfall] = []
     for corner in CORNERS:
         found, short = judge(measure, shortfalls, Board(corner=corner))
         named = corner == NOMINAL
@@ -466,20 +612,25 @@ def cornered(
             name if named else f"{corner.describe()}: {name}": value
             for name, value in found.items()
         }
-        reasons += (
-            short if named else [f"{corner.describe()}, {each}" for each in short]
-        )
+        reasons += short if named else [_at(corner, each) for each in short]
     return measurements, reasons
+
+
+def _at(corner: Corner, shortfall: Shortfall) -> Shortfall:
+    """`shortfall`, found in `corner`, which its reason names."""
+    reason = f"{corner.describe()}, {shortfall.reason}"
+    return shortfall.model_copy(update={"reason": reason})
 
 
 def tolerate(
     built: ir.Circuit, measure: Measure, shortfalls: Shortfalls, spread: Spread
-) -> tuple[dict[str, float], list[str]]:
+) -> tuple[dict[str, float], list[Shortfall]]:
     """What `measure` finds on the boards of `built`, and why too few meet the task.
 
     A board meets the task when it meets it in every corner. The measurements are the
     share of boards that do, ``yield``, and the median over the boards of each of
-    `measure`'s in the nominal corner.
+    `measure`'s in the nominal corner. Too few falls short of the spec ``yield``, with
+    the first shortfall of the first board that falls short.
     """
     drawn = boards(built, spread)
     nominal: list[dict[str, float]] = []
@@ -491,9 +642,9 @@ def tolerate(
                 nominal.append(found)
             if reasons:
                 short.append(
-                    reasons[0]
+                    reasons[0].reason
                     if corner == NOMINAL
-                    else f"{corner.describe()}, {reasons[0]}"
+                    else _at(corner, reasons[0]).reason
                 )
                 break
     share = 1 - len(short) / len(drawn)
@@ -507,4 +658,4 @@ def tolerate(
         f"{share:.0%} of {len(drawn)} boards meet the task in every corner, fewer than "
         f"{YIELD:.0%}; on the first that falls short, {short[0]}"
     )
-    return measured, [reason]
+    return measured, [unmet("yield", reason)]

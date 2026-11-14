@@ -317,7 +317,7 @@ def test_each_session_is_scored_in_a_process_of_its_own(tmp_path: Path) -> None:
         verdicts.append(scored(COST_DOWN, work, Arm.JOLTY))
         assert (work / VERDICT).is_file()
     assert [verdict.met for verdict in verdicts] == [True, False]
-    assert "the design does not meet the plan of bias.py" in verdicts[1].reasons
+    assert [shortfall.spec for shortfall in verdicts[1].shortfalls] == ["yield"]
 
 
 def test_a_scorer_that_crashes_fails_the_work(

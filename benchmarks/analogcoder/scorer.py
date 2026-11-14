@@ -39,8 +39,17 @@ from typing import Literal
 
 import numpy as np
 from arms import Arm
-from scoring import built, modeled, netlist, script
-from verdict import Verdict
+from scoring import (
+    built,
+    failed,
+    missing,
+    modeled,
+    netlist,
+    script,
+    unbuilt,
+    unmet,
+)
+from verdict import Shortfall, Verdict
 
 from jolty import Builder, Component, Role, Simulation, circuit, component, devices, ir
 from jolty.errors import JoltyError
@@ -873,7 +882,7 @@ LEVELS = {Arm.JOLTY: "LEVELS", Arm.NGSPICE: "levels.json"}
 
 def loaded(
     task: Path, work: Path, number: int, arm: Arm, declared: Mapping[str, object]
-) -> tuple[Component, dict[str, float]] | str:
+) -> tuple[Component, dict[str, float]] | Shortfall:
     """The design of problem `number` in `work` and its inputs' levels, or why none.
 
     The jolty arm's script declares the levels as ``LEVELS``; the ngspice arm's
@@ -885,21 +894,21 @@ def loaded(
         levels = declared.get(stem, {})
     else:
         namespace = script(work, stem)
-        if isinstance(namespace, str):
+        if isinstance(namespace, Shortfall):
             return namespace
         made = built(namespace, stem)
         levels = namespace.get("LEVELS", {})
-    if isinstance(made, str):
+    if isinstance(made, Shortfall):
         return made
     if not isinstance(levels, Mapping):
-        return f"{LEVELS[arm]} gives {stem} no levels by input"
+        return unbuilt(f"{LEVELS[arm]} gives {stem} no levels by input")
     try:
         return made, {str(port): float(level) for port, level in levels.items()}
     except (TypeError, ValueError) as error:
-        return f"{LEVELS[arm]} gives {stem} a level that is no number: {error}"
+        return unbuilt(f"{LEVELS[arm]} gives {stem} a level that is no number: {error}")
 
 
-def declarations(work: Path, arm: Arm) -> Mapping[str, object] | str:
+def declarations(work: Path, arm: Arm) -> Mapping[str, object] | Shortfall:
     """The levels the ngspice arm's ``levels.json`` declares, or why it declares none.
 
     The jolty arm's scripts declare their own; a missing file declares none.
@@ -910,43 +919,52 @@ def declarations(work: Path, arm: Arm) -> Mapping[str, object] | str:
     try:
         found = json.loads(path.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        return f"{path.name} is no JSON: {error}"
+        return unbuilt(f"{path.name} is no JSON: {error}")
     if not isinstance(found, dict):
-        return f"{path.name} holds no levels by circuit"
+        return unbuilt(f"{path.name} holds no levels by circuit")
     return dict[str, object](found)
 
 
 def judge(
-    found: tuple[Component, dict[str, float]] | str,
+    found: tuple[Component, dict[str, float]] | Shortfall,
     number: int,
     given: Mapping[object, Mapping[str, object]],
     arm: Arm,
-) -> list[str]:
-    """Why the design `found` for problem `number` fails it, if it does."""
-    if isinstance(found, str):
+) -> list[Shortfall]:
+    """Why the design `found` for problem `number` fails it, if it does.
+
+    A part the problem forbids falls short of the spec ``parts``, and a reason
+    AnalogCoder's check gives, of the spec its check is, the problem's kind, such as
+    ``amplifier``.
+    """
+    if isinstance(found, Shortfall):
         return [found]
     made, levels = found
     problem = PROBLEMS[number]
     ports = sorted(port.name for port in made.definition.ports)
     expected = sorted({"vdd", "ground", *problem.inputs, *problem.outputs})
     if ports != expected:
-        return [f"its ports are {', '.join(ports)}, not {', '.join(expected)}"]
-    missing = [port for port in needed(problem) if port not in levels]
-    if missing:
-        return [f"{LEVELS[arm]} gives no level for {', '.join(missing)}"]
+        return [unbuilt(f"its ports are {', '.join(ports)}, not {', '.join(expected)}")]
+    unleveled = [port for port in needed(problem) if port not in levels]
+    if unleveled:
+        return [missing(f"{LEVELS[arm]} gives no level for {', '.join(unleveled)}")]
     try:
-        forbidden = disallowed(made, given)
-        return forbidden or CHECKS[problem.kind](number, made, problem, levels)
+        forbidden = [unmet("parts", reason) for reason in disallowed(made, given)]
+        checked = forbidden or [
+            unmet(problem.kind, reason)
+            for reason in CHECKS[problem.kind](number, made, problem, levels)
+        ]
     except JoltyError as error:
-        return [f"its simulation fails: {error}"]
+        return [failed(error)]
+    return checked
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
     """The verdict on the designs ``p1`` to ``p24`` in `work`, as `arm` writes them."""
     given = transistors(task, arm)
     declared = declarations(work, arm)
-    if isinstance(declared, str):
-        return Verdict(met=False, reasons=(declared,))
+    if isinstance(declared, Shortfall):
+        return Verdict(met=False, shortfalls=(declared,))
     failures = {
         number: judge(loaded(task, work, number, arm, declared), number, given, arm)
         for number in PROBLEMS
@@ -955,7 +973,9 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
     measurements |= {
         f"p{number}": float(not found) for number, found in failures.items()
     }
-    reasons = tuple(
-        f"p{number}: {reason}" for number, found in failures.items() for reason in found
+    shortfalls = tuple(
+        shortfall.model_copy(update={"design": f"p{number}"})
+        for number, found in failures.items()
+        for shortfall in found
     )
-    return Verdict(met=not reasons, measurements=measurements, reasons=reasons)
+    return Verdict(met=not shortfalls, measurements=measurements, shortfalls=shortfalls)

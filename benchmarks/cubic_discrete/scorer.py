@@ -32,6 +32,7 @@ import numpy as np
 from arms import Arm
 from scoring import (
     Board,
+    benched,
     cornered,
     count_devices,
     design,
@@ -39,8 +40,9 @@ from scoring import (
     discrete,
     given,
     tolerate,
+    unmet,
 )
-from verdict import Verdict
+from verdict import Shortfall, Verdict
 
 from jolty import Builder, Component, Role, circuit, component, devices
 from jolty.plan import Transient
@@ -65,6 +67,8 @@ ALLOWED = {"resistor", "capacitor"}
 """The devices the design may hold besides the given transistors."""
 SUPPLIES = ("VCC",)
 """The bench's supply, which strays within 5 % of its level in the corners."""
+PORTS = ("input", "output", "vcc", "ground")
+"""The design's ports, which the bench joins."""
 
 
 def cases() -> list[tuple[Piecewise | Sine | Quantity, float]]:
@@ -132,7 +136,7 @@ def measure(made: Component, board: Board) -> dict[str, float]:
     return measurements
 
 
-def shortfalls(found: dict[str, float]) -> list[str]:
+def shortfalls(found: dict[str, float]) -> list[Shortfall]:
     """Why the measurements `found` fall short of the task, if they do."""
     mean = found["mean absolute error"]
     if mean <= PATENT:
@@ -141,15 +145,17 @@ def shortfalls(found: dict[str, float]) -> list[str]:
         f"the mean absolute error is {mean * 1e3:.4g} mV, more than the patent's "
         f"{PATENT * 1e3:.4g} mV"
     )
-    return [reason]
+    return [unmet("mean absolute error", reason)]
 
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
     """The verdict on the cubic function generator in `work`, as `arm` writes it."""
     made = design(task, work, "design", arm)
-    if isinstance(made, str):
-        return Verdict(met=False, reasons=(made,))
-    built = circuit(bench(made, 3))
+    if isinstance(made, Shortfall):
+        return Verdict(met=False, shortfalls=(made,))
+    built = benched(made, PORTS, lambda: bench(made, 3))
+    if isinstance(built, Shortfall):
+        return Verdict(met=False, shortfalls=(built,))
     reasons = disallowed(built, given(task, arm, "npn", "pnp"), ALLOWED)
     measured = partial(measure, made)
     measurements, short = cornered(measured, shortfalls)
@@ -162,4 +168,6 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
         "evolved mean absolute error": EVOLVED,
         "devices": float(count_devices(built, "X1")),
     }
-    return Verdict(met=not reasons, measurements=measurements, reasons=tuple(reasons))
+    return Verdict(
+        met=not reasons, measurements=measurements, shortfalls=tuple(reasons)
+    )
