@@ -1,4 +1,5 @@
 //! The QZ iteration on pencils whose eigenvalues are known.
+#![cfg(test)]
 
 use jolty_numerics::{Complex64, Eigenvalue, generalized_eigenvalues};
 use proptest::prelude::*;

@@ -29,7 +29,7 @@ cargo clippy --workspace --all-targets -- -D warnings  # lint Rust
 cargo test --workspace      # Rust tests
 ```
 
-A change is done when `scripts/check` passes; CI runs the same script, one group per job, on Linux and on macOS.
+A change is done when `scripts/check` passes; CI runs the same script, one group per job, the Rust and Python groups on Linux and on macOS and the docs group on Linux.
 Enable the pre-push hook once per clone, `git config core.hooksPath .githooks`, so no push reaches CI without passing it.
 `uv sync` rebuilds the engine whenever a Rust source, or the Markdown a crate includes, changes.
 PyO3 builds against the interpreter that `PYO3_PYTHON` names, so set it to `.venv/bin/python` before running cargo.
@@ -69,7 +69,7 @@ Each module imports only from the modules listed before it, and from those liste
 - **Dependencies:** a new one is the established choice in its category, is maintained, and has a license compatible with Apache-2.0.
   Nothing under the GPL is linked into jolty; a GPL tool runs only as a separate program.
 - **Format and lint:** ruff's default format at 88 columns, every ruff rule, every ty rule as an error, rustfmt, clippy's pedantic lints as errors, and Markdown one sentence per line.
-  A rule is switched off for the whole code base only in `pyproject.toml` or `Cargo.toml`, as narrowly as it can be, with its reason beside it.
+  A rule is switched off for the whole code base only in `pyproject.toml` or `Cargo.toml`, or for Markdown's code blocks in `.rumdl.toml`, which rumdl alone reads them from, as narrowly as it can be, with its reason beside it.
   A single site is excused only by a suppression that names the rule and gives its reason beside it, such as `# noqa: S603 - reason` in Python or `#[expect(lint, reason = "...")]` in Rust, never a bare `allow`.
 - **Python:** 3.14 or newer, so annotations are lazy without `from __future__ import annotations`.
   Use modern syntax: PEP 695 generics and `type` aliases.
