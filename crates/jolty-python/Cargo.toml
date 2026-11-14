@@ -21,7 +21,7 @@ jolty-ir.workspace = true
 jolty-models.workspace = true
 mimalloc.workspace = true
 numpy.workspace = true
-pyo3 = { workspace = true, features = ["abi3-py314"] }
+pyo3 = { workspace = true, features = ["abi3-py315"] }
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true

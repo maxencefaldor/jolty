@@ -72,7 +72,7 @@ Each module imports only from the modules listed before it, and from those liste
 - **Format and lint:** ruff's default format at 88 columns, every ruff rule, every ty rule as an error, rustfmt, clippy's pedantic lints as errors, and Markdown one sentence per line.
   A rule is switched off for the whole code base only in `pyproject.toml` or `Cargo.toml`, or for Markdown's code blocks in `.rumdl.toml`, which rumdl alone reads them from, as narrowly as it can be, with its reason beside it.
   A single site is excused only by a suppression that names the rule and gives its reason beside it, such as `# noqa: S603 - reason` in Python or `#[expect(lint, reason = "...")]` in Rust, never a bare `allow`.
-- **Python:** 3.14 or newer, so annotations are lazy without `from __future__ import annotations`.
+- **Python:** 3.15 or newer, so annotations are lazy without `from __future__ import annotations` and modules load lazily through `__lazy_modules__` (PEP 810).
   Use modern syntax: PEP 695 generics and `type` aliases.
 - **Rust:** no `unsafe`; the workspace forbids it, and allowing it in a crate is a change to this file.
   No `unwrap`, `expect`, `panic!` or `unreachable!` outside tests and test helpers, except where the code itself has just established what it asserts, excused as above with the invariant as the reason.

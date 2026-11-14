@@ -59,6 +59,7 @@ The first release, 0.1.0.
 
 ### Changed
 
+- jolty requires Python 3.15 or newer, the version CI tests and the one whose lazy modules (PEP 810) start a command without importing matplotlib; the extension is built for the stable ABI of 3.15.
 - Monte Carlo samples are drawn by the engine, each factor from the seed, the sample's index and the name of its part or its lot alone, through ChaCha20, so that sample `i` is the same drawn alone or among any others, on any thread, and a part added leaves every other part's draws as they were.
   A seed therefore draws other samples than it did before, `jolty.variation.sample` takes the seed and the sample's index in place of a numpy generator, and a seed lies from 0 to 2⁶⁴ − 1.
 - Monte Carlo analyses, corners and worst cases run as batches, one per circuit, the corners that change only the temperature taking it as their runs' values, rather than one simulation at a time on a thread per core.
