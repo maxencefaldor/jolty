@@ -20,8 +20,12 @@ env:
 
 jobs:
   rust:
-    name: Rust format, lints and tests
-    runs-on: ubuntu-24.04
+    name: Rust format, lints and tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -34,9 +38,16 @@ jobs:
         run: scripts/check rust
 
   python:
-    name: Python format, lints, types, Markdown and tests
-    runs-on: ubuntu-24.04
+    name: Python format, lints, types, Markdown and tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      # The differential tests fail, rather than skip, if ngspice is missing.
+      JOLTY_REQUIRE_NGSPICE: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
@@ -44,6 +55,10 @@ jobs:
           enable-cache: true
       - uses: Swatinem/rust-cache@v2
       - name: Install ngspice, the reference simulator of the differential tests
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes ngspice
+      - name: Install ngspice, the reference simulator of the differential tests
+        if: runner.os == 'macOS'
+        run: brew install ngspice
       - name: Check
         run: scripts/check python

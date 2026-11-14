@@ -8,9 +8,10 @@
 #   scripts/check python     Python format, lints, types, Markdown, tests and examples
 #   scripts/check docs       the generated reference pages and the documentation site
 #
-# CI runs each group in a job of its own, after installing what the group needs, so a
-# change that passes here passes there. The Python group's differential tests run when
-# ngspice is installed.
+# CI runs each group in a job of its own, the Rust and Python groups on Linux and on
+# macOS, after installing what the group needs, so a change that passes here passes
+# there. The Python group's differential tests run when ngspice is installed; without
+# it they skip, or fail where JOLTY_REQUIRE_NGSPICE=1, as CI sets.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

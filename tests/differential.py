@@ -4,10 +4,13 @@
 A circuit is written as a SPICE netlist by `jolty.spice.export`; a component read from a
 SPICE library is written as an instance of its subcircuit, the library included. Both
 engines run with tight tolerances, ngspice at the temperature where its thermal voltage
-is jolty's.
+is jolty's. The tests skip where ngspice is not installed, unless the environment sets
+``JOLTY_REQUIRE_NGSPICE=1``, as CI does, when they fail.
 """
 
+import os
 from collections.abc import Mapping
+from typing import Final
 
 import numpy as np
 import numpy.typing as npt
@@ -18,6 +21,7 @@ from jolty.spice import export, ngspice
 from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE
 
 __all__ = [
+    "REQUIRED",
     "SKIP",
     "TIGHT",
     "Values",
@@ -33,8 +37,14 @@ __all__ = [
     "vector",
 ]
 
-SKIP = pytest.mark.skipif(ngspice.EXECUTABLE is None, reason="ngspice is not installed")
-"""Marks tests that need ngspice."""
+REQUIRED: Final = os.environ.get("JOLTY_REQUIRE_NGSPICE") == "1"
+"""Whether ngspice must run, as CI says by setting ``JOLTY_REQUIRE_NGSPICE=1``."""
+
+SKIP = pytest.mark.skipif(
+    ngspice.EXECUTABLE is None and not REQUIRED, reason="ngspice is not installed"
+)
+"""Marks tests that need ngspice: skipped without it, unless it is required, when they
+run and fail."""
 
 type Real = npt.NDArray[np.float64]
 type Values = float | Real | npt.NDArray[np.complex128]
