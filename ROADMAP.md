@@ -11,7 +11,7 @@ Items keep their numbers; each leaves this file when it lands on `main`, and its
 | 4 | Batched variants in Rust: one elaboration for every sample, corner and worst-case point, run in parallel, with a setting for the number of threads and the GIL released in every long call. | Nothing |
 | 5 | Spec measurements in Rust, so a batch returns verdicts rather than waveforms. | 4 |
 | 6 | AC, noise, stability and sensitivity solved in parallel across frequencies and columns, and devices evaluated and assembled in parallel, bit for bit the same whatever the number of threads. | 2 and 4 |
-| 7 | Fewer transient steps without heuristics, each benchmarked against ngspice: variable-order BDF and dense output at requested times. With every step's error judged and filtered, jolty takes 1% more steps than ngspice 47 on the buck converter and 7.5% more on the boost, and as many on the oscillators, with fewer Newton iterations everywhere, so neither is yet where the steps are. | A circuit where they are |
+| 7 | Fewer transient steps without heuristics, each benchmarked against ngspice: variable-order BDF and dense output at requested times. With every step's error judged and filtered, jolty takes 1% more steps than ngspice 47 on the buck converter and 7.5% more on the boost, and as many on the oscillators, with fewer Newton iterations everywhere. On the benchmarks' synchronous buck, jolty accepts 122,587 steps and rejects 32,900 where ngspice keeps 52,982 and rejects 3,642, all of the difference at the four gate edges of each period, and most of it item 17's: at SPICE's truncation tolerance for the trapezoidal rule, jolty accepts 65,606 and rejects 7,807. So neither is yet where the steps are. | A circuit where they are |
 | 8 | A benchmark of what jolty gives an agent: the same tasks done with jolty and with ngspice, compared by success and by iterations. | A design |
 | 9 | The docs' schematics and the gallery drawn again, after the schematic layout's new row order and routing. | Last, once the layout and the engine settle |
 | 10 | Continuous integration. | GitHub Actions minutes |
@@ -26,7 +26,7 @@ Items keep their numbers; each leaves this file when it lands on `main`, and its
 | 14 | Krylov pole-zero, which finds the poles near a region rather than all of them, and matrix-free shooting. |
 | 15 | A free-threaded wheel, which waits for numpy, pydantic and matplotlib. |
 | 16 | Importing matplotlib only when a command draws, which would save about half a second of the command line's start-up but puts imports inside functions, against the lint rules. |
-| 17 | What `truncation_tolerance` means: jolty estimates a step's true local error, while SPICE's estimate leaves out a factorial and is six times smaller for the trapezoidal rule, so at the same value jolty is stricter. |
+| 17 | What `truncation_tolerance` means: jolty estimates a step's true local error, while SPICE's estimate leaves out a factorial and is six times smaller for the trapezoidal rule, so at the same value jolty is stricter. For backward Euler SPICE's estimate is half the true error, so no one value matches SPICE for both formulas. On the benchmarks' synchronous buck, 42, SPICE's value for the trapezoidal rule, halves jolty's steps and its time, from 1.07 s to 0.53 s. |
 | 18 | Retrying a step from its prediction, for steps that follow from the accepted points alone, once Newton iteration no longer converges only linearly where a transistor turns off with nothing else to hold its source. |
 
 ## What ngspice has that jolty does not
