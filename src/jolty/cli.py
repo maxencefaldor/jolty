@@ -122,17 +122,58 @@ class KicadCommand(service.KicadRequest, _Output):
         self.emit(await service.write_kicad(self, Settings.load()))
 
 
-class Jolty(BaseSettings):
-    """Build and simulate electronic circuits written as Python scripts."""
+class CommandLine(BaseSettings):
+    """A command line in jolty's conventions, read from its arguments alone.
+
+    Its options are kebab-case, its flags take no value, an option that may be none
+    shows no type for it, a list is given as ``--option a,b`` or as the option
+    repeated rather than as JSON, and a required option must be given. It never reads
+    the environment: jolty's configuration lives in
+    [`Settings`][jolty.settings.Settings]. A subclass names its program with
+    ``model_config = SettingsConfigDict(cli_prog_name=...)``, declares its options as
+    fields, and does its work in ``cli_cmd``; [`run`][jolty.cli.run] runs it.
+    """
 
     model_config = SettingsConfigDict(
-        cli_prog_name="jolty",
         cli_kebab_case=True,
         cli_implicit_flags=True,
         cli_hide_none_type=True,
         cli_avoid_json=True,
         cli_enforce_required=True,
     )
+
+    @classmethod
+    @override
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Reads the command line only."""
+        return (init_settings,)
+
+
+def run(command: type[CommandLine], arguments: Sequence[str] | None = None) -> None:
+    """Runs `command` on `arguments`, the process's own by default.
+
+    Raises:
+        SystemExit: With 2, having named each invalid option and said what it accepts,
+            when a value is invalid.
+    """
+    given = sys.argv[1:] if arguments is None else list(arguments)
+    try:
+        CliApp.run(command, cli_args=given)
+    except ValidationError as error:
+        _fail(_invalid(error), as_json=False)
+
+
+class Jolty(CommandLine):
+    """Build and simulate electronic circuits written as Python scripts."""
+
+    model_config = SettingsConfigDict(cli_prog_name="jolty")
 
     build: CliSubCommand[BuildCommand] = Field(
         description="Build a script's circuit and elaborate it."
@@ -164,22 +205,6 @@ class Jolty(BaseSettings):
     kicad: CliSubCommand[KicadCommand] = Field(
         description="Write a component of a saved circuit file as a KiCad netlist."
     )
-
-    @classmethod
-    @override
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Reads the command line only.
-
-        Configuration lives in [`Settings`][jolty.settings.Settings].
-        """
-        return (init_settings,)
 
     def cli_cmd(self) -> None:
         """Runs the chosen subcommand."""

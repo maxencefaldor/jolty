@@ -39,18 +39,12 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Final, override
+from typing import Final
 
 from pydantic import Field
-from pydantic_settings import (
-    BaseSettings,
-    CliApp,
-    CliPositionalArg,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-)
+from pydantic_settings import CliPositionalArg, SettingsConfigDict
 
-from jolty import circuit, ir, results, simulate
+from jolty import circuit, cli, ir, results, simulate
 from jolty.plan import Ac, MonteCarlo, OperatingPoint, Plan, Transient
 from jolty.simulate import Elaborated, Simulation
 from jolty.spice import export, ngspice
@@ -573,16 +567,10 @@ def read(path: Path) -> dict[str, Timing]:
     return {key: Timing(**value) for key, value in document["timings"].items()}
 
 
-class Bench(BaseSettings):
+class Bench(cli.CommandLine):
     """Time the fixtures, write the times, and compare them with a baseline's."""
 
-    model_config = SettingsConfigDict(
-        cli_prog_name="scripts/bench",
-        cli_kebab_case=True,
-        cli_implicit_flags=True,
-        cli_hide_none_type=True,
-        cli_avoid_json=True,
-    )
+    model_config = SettingsConfigDict(cli_prog_name="scripts/bench")
 
     fixtures: CliPositionalArg[list[str]] = Field(
         default_factory=list,
@@ -599,19 +587,6 @@ class Bench(BaseSettings):
     )
     output: Path | None = Field(default=None, description="The results file to write.")
 
-    @classmethod
-    @override
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Reads the command line only, never the environment."""
-        return (init_settings,)
-
     def cli_cmd(self) -> None:
         """Runs the benchmarks."""
         measure(self)
@@ -619,7 +594,7 @@ class Bench(BaseSettings):
 
 def main(argv: list[str] | None = None) -> None:
     """Runs the command line, `argv` or the process's own arguments."""
-    CliApp.run(Bench, cli_args=sys.argv[1:] if argv is None else argv)
+    cli.run(Bench, argv)
 
 
 def measure(arguments: Bench) -> None:

@@ -19,18 +19,13 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Final, override
+from typing import Final
 
 import pytest
 from pydantic import Field
-from pydantic_settings import (
-    BaseSettings,
-    CliApp,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-)
+from pydantic_settings import SettingsConfigDict
 
-from jolty import Simulation, _core, simulate
+from jolty import Simulation, _core, cli, simulate
 
 ROOT: Final = Path(__file__).resolve().parent.parent
 """The repository."""
@@ -152,31 +147,14 @@ def recorded() -> str:
     return written + "\n"
 
 
-class Corpus(BaseSettings):
+class Corpus(cli.CommandLine):
     """Write the circuits of the corpus and the examples, with their runs."""
 
-    model_config = SettingsConfigDict(
-        cli_prog_name="tests/kernel_corpus.py",
-        cli_kebab_case=True,
-        cli_implicit_flags=True,
-    )
+    model_config = SettingsConfigDict(cli_prog_name="tests/kernel_corpus.py")
 
     check: bool = Field(
         default=False, description="Fail unless the file holds the circuits."
     )
-
-    @classmethod
-    @override
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Reads the command line only, never the environment."""
-        return (init_settings,)
 
     def cli_cmd(self) -> None:
         """Writes the circuits, or with ``--check`` fails unless the file holds them."""
@@ -193,7 +171,7 @@ class Corpus(BaseSettings):
 
 def main() -> None:
     """Runs the command line."""
-    CliApp.run(Corpus, cli_args=sys.argv[1:])
+    cli.run(Corpus)
 
 
 if __name__ == "__main__":
