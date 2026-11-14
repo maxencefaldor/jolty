@@ -72,6 +72,7 @@ def test_tools_mirror_the_service_requests() -> None:
     assert set(tools) == {
         "build_circuit",
         "simulate_circuit",
+        "merge_shards",
         "plot_results",
         "draw_schematic",
         "write_viewer",
@@ -98,6 +99,8 @@ def test_tools_mirror_the_service_requests() -> None:
         "min_solves_per_task",
         "min_instances_per_task",
         "min_unknowns_inside",
+        "samples",
+        "shards",
     }
     assert simulate.input_schema["required"] == ["script"]
     assert simulate.description is not None

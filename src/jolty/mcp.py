@@ -48,6 +48,9 @@ and sensitivities, and saves every result to a .npz file that
 jolty.files.load_results reads back; plot_results draws other unknowns from it, and
 draw_schematic draws the component inside an instance. Fix the script and run again
 until the report has no errors and the analyses show the intended behavior.
+simulate_circuit with samples, such as "0:1000000", runs only those of the plan's
+Monte Carlo analysis, as a shard, on any machine, and merge_shards merges a directory
+of shards into the report of one run of every sample.
 price_circuit prices the device instances of a component of a saved circuit with a
 catalog file of parts: each resistor, capacitor and inductor takes the cheapest part of
 its value whose tolerance is within its own.
@@ -204,6 +207,13 @@ def create_server(settings: Settings) -> MCPServer:
         service.simulate,
         service.SimulateResult,
         RUNS_CODE,
+    )
+    register(
+        "merge_shards",
+        service.MergeRequest,
+        service.merge,
+        service.MergeResult,
+        WRITES_FILES,
     )
     register(
         "plot_results",

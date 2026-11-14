@@ -1,10 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""Circuit and results files.
+"""Circuit, results, batch and shard files.
 
 A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A batch file holds a
 plan's batches of runs, each a [`Batch`][jolty.files.Batch]: the arrays of its
 [`BatchResult`][jolty.results.BatchResult] under keys such as ``monte-carlo.measured``,
-and a JSON header of the rest. A results file holds the
+and a JSON header of the rest. A shard file holds a [`Shard`][jolty.files.Shard], a
+range of a plan's Monte Carlo samples: the arrays of its batch at each of the plan's
+conditions under keys such as ``1.measured``, for the plan's first corner, and a JSON
+header of the rest, the requirements it measured among it. Every file but a circuit's
+is a NumPy ``.npz`` archive whose bytes are a function of what it holds alone, so a
+shard run again writes the same file. A results file holds the
 results of named analyses as a NumPy ``.npz`` archive: a JSON header that names the
 circuit's unknowns and logic nets, says what the analyses recorded of its devices, each
 recording once however many analyses share it, and says what each analysis is, then
@@ -27,6 +32,7 @@ Examples:
     2.5
 """
 
+import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
@@ -38,7 +44,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from jolty import ir, results
 from jolty.errors import JoltyError
-from jolty.units import Dimension
+from jolty.specs import Measurement, MeasurementError, Reading, Requirement, Specs
+from jolty.units import Dimension, Quantity
 
 CIRCUIT_SUFFIX: Final = ".jolty.json"
 """The suffix of circuit files, such as ``rc_filter.jolty.json``."""
@@ -48,6 +55,15 @@ RESULTS_SUFFIX: Final = ".results.npz"
 
 BATCHES_SUFFIX: Final = ".batches.npz"
 """The suffix of batch files, such as ``rc_filter.batches.npz``."""
+
+SHARDS_SUFFIX: Final = ".shards"
+"""The suffix of the directories that hold a script's shards, such as ``amp.shards``."""
+
+SHARD_PATTERN: Final = "shard-*-*.npz"
+"""The names of shard files, which a merge reads in their directory."""
+
+_EPOCH: Final = (1980, 1, 1, 0, 0, 0)
+"""The date a ZIP archive's entries carry: the earliest it can, the same every time."""
 
 _HEADER: Final = "header"
 
@@ -225,6 +241,31 @@ def results_path(script: Path) -> Path:
     return script.with_name(script.stem + RESULTS_SUFFIX)
 
 
+def shards_path(script: Path) -> Path:
+    """Where a script's shards are written by default: in ``<stem>.shards``."""
+    return script.with_name(script.stem + SHARDS_SUFFIX)
+
+
+def shard_name(start: int, stop: int) -> str:
+    """The name of the file of the samples from `start` up to `stop`.
+
+    Examples:
+        >>> shard_name(0, 1000)
+        'shard-0-1000.npz'
+    """
+    return f"shard-{start}-{stop}.npz"
+
+
+def merged_path(shards: Path) -> Path:
+    """Where the batch merged from the shards in `shards` goes: beside the directory.
+
+    Examples:
+        >>> merged_path(Path("amp.shards")).name
+        'amp.batches.npz'
+    """
+    return shards.with_name(shards.name.removesuffix(SHARDS_SUFFIX) + BATCHES_SUFFIX)
+
+
 def batches_path(results: Path) -> Path:
     """Where the batches go beside their plan's results: ``<stem>.batches.npz``.
 
@@ -237,13 +278,19 @@ def batches_path(results: Path) -> Path:
 
 
 def plot_path(results: Path, analysis: str) -> Path:
-    """Where the plot of `analysis` goes beside its results: ``<stem>.<name>.plot.png``.
+    """Where the plot of `analysis` goes beside its results or its batches.
+
+    It is ``<stem>.<name>.plot.png``.
 
     Examples:
         >>> plot_path(Path("rc.results.npz"), "step").name
         'rc.step.plot.png'
+        >>> plot_path(Path("rc.batches.npz"), "monte-carlo").name
+        'rc.monte-carlo.plot.png'
     """
-    stem = results.name.removesuffix(RESULTS_SUFFIX).removesuffix(".npz")
+    name = results.name
+    stem = name.removesuffix(RESULTS_SUFFIX).removesuffix(BATCHES_SUFFIX)
+    stem = stem.removesuffix(".npz")
     return results.with_name(f"{stem}.{analysis}.plot.png")
 
 
@@ -326,8 +373,23 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
         analyses=entries,
     )
     arrays[_HEADER] = np.array(header.model_dump_json())
-    with path.open("wb") as file:
-        np.savez(file, allow_pickle=False, **arrays)
+    _write(path, arrays)
+
+
+def _write(path: Path, arrays: Mapping[str, np.ndarray]) -> None:
+    """Writes `arrays` to `path` as ``numpy.savez`` does, in bytes they alone decide.
+
+    Each array is an uncompressed ``.npy`` entry of the archive, in the order given, as
+    ``numpy.savez`` writes it, but dated as every entry is, where ``numpy.savez`` dates
+    it with the time it is written.
+    """
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED, allowZip64=True) as archive:
+        for name, array in arrays.items():
+            entry = zipfile.ZipInfo(f"{name}.npy", date_time=_EPOCH)
+            with archive.open(entry, "w", force_zip64=True) as file:
+                np.lib.format.write_array(
+                    file, np.asanyarray(array), allow_pickle=False
+                )
 
 
 def load_results(path: Path) -> dict[str, results.Result]:
@@ -759,42 +821,54 @@ class _Traced(_Model):
     parameter: str | None = None
 
 
-type _Unit = tuple[str, str, str, str, str] | results.Plain | None
+type _Exponents = tuple[str, str, str, str, str]
+"""A dimension's exponents of the base units, as fractions."""
+
+
+type _Unit = _Exponents | results.Plain | None
 """A measurement's unit: a dimension's exponents of the base units, as fractions, a
 plain unit, or none."""
 
 
 def _unit(unit: Dimension | results.Plain | None) -> _Unit:
     """`unit` as a batch file's header holds it."""
-    if isinstance(unit, Dimension):
-        kilogram, metre, second, ampere, kelvin = (
-            str(Fraction(exponent))
-            for exponent in (
-                unit.kilogram,
-                unit.metre,
-                unit.second,
-                unit.ampere,
-                unit.kelvin,
-            )
-        )
-        return kilogram, metre, second, ampere, kelvin
-    return unit
+    return _exponents(unit) if isinstance(unit, Dimension) else unit
 
 
 def _dimension(unit: _Unit) -> Dimension | results.Plain | None:
     """The unit a batch file's header holds as `unit`."""
-    if isinstance(unit, tuple):
-        exponents = [Fraction(exponent) for exponent in unit]
-        return Dimension(
-            *(
-                int(exponent) if exponent.denominator == 1 else exponent
-                for exponent in exponents
-            )
+    return _of_exponents(unit) if isinstance(unit, tuple) else unit
+
+
+def _exponents(dimension: Dimension) -> _Exponents:
+    """The exponents of `dimension`, as a file's header holds them."""
+    kilogram, metre, second, ampere, kelvin = (
+        str(Fraction(exponent))
+        for exponent in (
+            dimension.kilogram,
+            dimension.metre,
+            dimension.second,
+            dimension.ampere,
+            dimension.kelvin,
         )
-    return unit
+    )
+    return kilogram, metre, second, ampere, kelvin
 
 
-class _Batch(_Model):
+def _of_exponents(exponents: _Exponents) -> Dimension:
+    """The dimension whose exponents a file's header holds as `exponents`."""
+    fractions = [Fraction(exponent) for exponent in exponents]
+    return Dimension(
+        *(
+            int(exponent) if exponent.denominator == 1 else exponent
+            for exponent in fractions
+        )
+    )
+
+
+class _Columns(_Model):
+    """What a batch file's header holds of a batch's result besides its arrays."""
+
     analyses: tuple[str, ...]
     parameters: tuple[str, ...]
     measurements: tuple[str, ...]
@@ -803,28 +877,11 @@ class _Batch(_Model):
     problems: dict[int, tuple[str, ...]]
     errors: dict[int, dict[str, str]]
     traced: tuple[_Traced, ...]
-    requirements: tuple[str, ...]
-    bounds: tuple[tuple[float | None, float | None], ...]
 
-
-class _Batches(_Model):
-    format: Literal["jolty-batches"] = "jolty-batches"
-    version: Literal[1] = 1
-    batches: dict[str, _Batch]
-
-
-def save_batches(path: Path, batches: Mapping[str, Batch]) -> None:
-    """Writes `batches`, by name, to `path`."""
-    arrays: dict[str, np.ndarray] = {}
-    entries = {}
-    for name, batch in batches.items():
-        found = batch.result
-        for key in ("values", "ended", "measured", "causes"):
-            arrays[f"{name}.{key}"] = getattr(found, key)
-        for index, traced in enumerate(found.traced):
-            arrays[f"{name}.traced.{index}"] = traced.values
-            arrays[f"{name}.axis.{index}"] = traced.axis
-        entries[name] = _Batch(
+    @classmethod
+    def of(cls, found: results.BatchResult) -> _Columns:
+        """What the header holds of `found`."""
+        return cls(
             analyses=found.analyses,
             parameters=found.parameters,
             measurements=found.measurements,
@@ -843,12 +900,76 @@ def save_batches(path: Path, batches: Mapping[str, Batch]) -> None:
                 )
                 for traced in found.traced
             ),
+        )
+
+    def result(self, name: str, data: Mapping[str, np.ndarray]) -> results.BatchResult:
+        """The result whose arrays `data` holds under keys that start with `name`."""
+        traced = tuple(
+            results.Traced(
+                each.analysis,
+                each.along,
+                data[f"{name}.axis.{index}"],
+                each.unknowns,
+                data[f"{name}.traced.{index}"],
+                each.source,
+                each.quantity,
+                each.parameter,
+            )
+            for index, each in enumerate(self.traced)
+        )
+        return results.BatchResult(
+            self.analyses,
+            self.parameters,
+            data[f"{name}.values"],
+            data[f"{name}.ended"],
+            self.measurements,
+            tuple(_dimension(unit) for unit in self.units),
+            data[f"{name}.measured"],
+            data[f"{name}.causes"],
+            self.reasons,
+            {int(index): tuple(each) for index, each in self.problems.items()},
+            {int(index): dict(each) for index, each in self.errors.items()},
+            traced,
+        )
+
+
+def _arrays(name: str, found: results.BatchResult) -> dict[str, np.ndarray]:
+    """The arrays of `found`, under keys that start with `name`."""
+    arrays = {f"{name}.{key}": getattr(found, key) for key in _ARRAYS}
+    for index, traced in enumerate(found.traced):
+        arrays[f"{name}.traced.{index}"] = traced.values
+        arrays[f"{name}.axis.{index}"] = traced.axis
+    return arrays
+
+
+_ARRAYS: Final = ("values", "ended", "measured", "causes")
+"""The arrays of a batch's result that every batch has."""
+
+
+class _Batch(_Columns):
+    requirements: tuple[str, ...]
+    bounds: tuple[tuple[float | None, float | None], ...]
+
+
+class _Batches(_Model):
+    format: Literal["jolty-batches"] = "jolty-batches"
+    version: Literal[1] = 1
+    batches: dict[str, _Batch]
+
+
+def save_batches(path: Path, batches: Mapping[str, Batch]) -> None:
+    """Writes `batches`, by name, to `path`."""
+    arrays: dict[str, np.ndarray] = {}
+    entries = {}
+    for name, batch in batches.items():
+        arrays |= _arrays(name, batch.result)
+        entries[name] = _Batch(
+            **_Columns.of(batch.result).model_dump(),
             requirements=batch.requirements,
             bounds=batch.bounds,
         )
     arrays[_HEADER] = np.array(_Batches(batches=entries).model_dump_json())
-    with path.open("wb") as file:
-        np.savez(file, allow_pickle=False, **arrays)
+    _write(path, arrays)
 
 
 def load_batches(path: Path) -> dict[str, Batch]:
@@ -863,34 +984,185 @@ def load_batches(path: Path) -> dict[str, Batch]:
         except KeyError, ValidationError:
             message = f"{path} is not a jolty batch file of version 1"
             raise JoltyError(message) from None
-        found = {}
-        for name, entry in header.batches.items():
-            traced = tuple(
-                results.Traced(
-                    each.analysis,
-                    each.along,
-                    data[f"{name}.axis.{index}"],
-                    each.unknowns,
-                    data[f"{name}.traced.{index}"],
-                    each.source,
-                    each.quantity,
-                    each.parameter,
-                )
-                for index, each in enumerate(entry.traced)
-            )
-            result = results.BatchResult(
-                entry.analyses,
-                entry.parameters,
-                data[f"{name}.values"],
-                data[f"{name}.ended"],
-                entry.measurements,
-                tuple(_dimension(unit) for unit in entry.units),
-                data[f"{name}.measured"],
-                data[f"{name}.causes"],
-                entry.reasons,
-                {int(index): tuple(each) for index, each in entry.problems.items()},
-                {int(index): dict(each) for index, each in entry.errors.items()},
-                traced,
-            )
-            found[name] = Batch(result, entry.requirements, entry.bounds)
-        return found
+        return {
+            name: Batch(entry.result(name, data), entry.requirements, entry.bounds)
+            for name, entry in header.batches.items()
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Shard:
+    """The samples from `start` up to `stop` of a plan's Monte Carlo analysis, run.
+
+    The analysis draws `samples` samples from its `seed`, each of the circuit's
+    `toleranced` parameters and the kit's mismatch of its `mismatched` foundry's
+    devices, and runs them at the plan's own conditions, then at its `corners`, by
+    name. `conditions` holds the batch of the shard's samples at each, row 0 its
+    sample `start`, or None where the circuit does not elaborate. `analyses` names
+    every analysis of the plan, and `specs` are those its samples were measured
+    against, if any, each requirement's measurement the batch's measurement at its
+    place. Shards of one run of the analysis share their `fingerprint`, which
+    [`jolty.shards`][jolty.shards] makes.
+    """
+
+    start: int
+    stop: int
+    fingerprint: str
+    samples: int
+    seed: int
+    toleranced: int
+    mismatched: int
+    corners: tuple[str, ...]
+    analyses: tuple[str, ...]
+    specs: Specs | None
+    conditions: tuple[results.BatchResult | None, ...]
+
+
+class _Bound(_Model):
+    value: float
+    unit: _Exponents
+
+
+class _Requirement(_Model):
+    """A requirement as a shard's header states it: its measurement and its bounds."""
+
+    analysis: str
+    description: str
+    plain: results.Plain | None
+    minimum: _Bound | None
+    maximum: _Bound | None
+    margin: _Bound | None
+
+    @classmethod
+    def of(cls, requirement: Requirement) -> _Requirement:
+        """How the header states `requirement`."""
+        measurement = requirement.measurement
+        return cls(
+            analysis=measurement.analysis,
+            description=measurement.description,
+            plain=measurement.plain,
+            minimum=_bound(requirement.minimum),
+            maximum=_bound(requirement.maximum),
+            margin=_bound(requirement.margin),
+        )
+
+    def requirement(self) -> Requirement:
+        """The requirement, whose measurement its shard read: it reads no result."""
+        measurement = Measurement(
+            self.analysis, self.description, self.plain, _read_by_its_shard
+        )
+        return Requirement(
+            measurement,
+            _quantity(self.minimum),
+            _quantity(self.maximum),
+            _quantity(self.margin),
+        )
+
+
+def _read_by_its_shard(result: results.Result) -> Reading:
+    """Reads nothing of `result`: a shard's measurement was read where the shard ran.
+
+    Raises:
+        MeasurementError: Always.
+    """
+    del result
+    message = "a shard's file holds what its measurements read, and reads no result"
+    raise MeasurementError(message)
+
+
+def _bound(quantity: Quantity | None) -> _Bound | None:
+    """`quantity` as a shard's header holds a bound."""
+    if quantity is None:
+        return None
+    return _Bound(value=quantity.value, unit=_exponents(quantity.dimension))
+
+
+def _quantity(bound: _Bound | None) -> Quantity | None:
+    """The quantity a shard's header holds as `bound`."""
+    return None if bound is None else Quantity(bound.value, _of_exponents(bound.unit))
+
+
+class _Shard(_Model):
+    format: Literal["jolty-shard"] = "jolty-shard"
+    version: Literal[1] = 1
+    start: int
+    stop: int
+    fingerprint: str
+    samples: int
+    seed: int
+    toleranced: int
+    mismatched: int
+    corners: tuple[str, ...]
+    analyses: tuple[str, ...]
+    requirements: tuple[_Requirement, ...] | None
+    yield_target: float | None
+    conditions: tuple[_Columns | None, ...]
+
+
+def save_shard(path: Path, shard: Shard) -> None:
+    """Writes `shard` to `path`."""
+    arrays: dict[str, np.ndarray] = {}
+    for place, found in enumerate(shard.conditions):
+        if found is not None:
+            arrays |= _arrays(str(place), found)
+    header = _Shard(
+        start=shard.start,
+        stop=shard.stop,
+        fingerprint=shard.fingerprint,
+        samples=shard.samples,
+        seed=shard.seed,
+        toleranced=shard.toleranced,
+        mismatched=shard.mismatched,
+        corners=shard.corners,
+        analyses=shard.analyses,
+        requirements=None
+        if shard.specs is None
+        else tuple(_Requirement.of(each) for each in shard.specs.requirements),
+        yield_target=None if shard.specs is None else shard.specs.yield_target,
+        conditions=tuple(
+            None if found is None else _Columns.of(found) for found in shard.conditions
+        ),
+    )
+    arrays[_HEADER] = np.array(header.model_dump_json())
+    _write(path, arrays)
+
+
+def load_shard(path: Path) -> Shard:
+    """Reads the shard file at `path`.
+
+    Raises:
+        JoltyError: When the file is not a jolty shard file of this version.
+    """
+    unreadable = f"{path} is not a jolty shard file of version 1"
+    try:
+        archive = np.load(path, allow_pickle=False)
+    except ValueError, OSError, zipfile.BadZipFile:
+        raise JoltyError(unreadable) from None
+    if not isinstance(archive, np.lib.npyio.NpzFile):
+        raise JoltyError(unreadable)
+    with archive as data:
+        try:
+            header = _Shard.model_validate_json(str(data[_HEADER]))
+        except KeyError, ValidationError:
+            raise JoltyError(unreadable) from None
+        requirements = header.requirements
+        return Shard(
+            start=header.start,
+            stop=header.stop,
+            fingerprint=header.fingerprint,
+            samples=header.samples,
+            seed=header.seed,
+            toleranced=header.toleranced,
+            mismatched=header.mismatched,
+            corners=header.corners,
+            analyses=header.analyses,
+            specs=None
+            if requirements is None
+            else Specs(
+                [each.requirement() for each in requirements], header.yield_target
+            ),
+            conditions=tuple(
+                None if entry is None else entry.result(str(place), data)
+                for place, entry in enumerate(header.conditions)
+            ),
+        )

@@ -26,6 +26,7 @@ nav = [
     { "Schematics" = "guide/schematics.md" },
     { "3D viewer" = "guide/viewer.md" },
     { "Simulation" = "guide/simulation.md" },
+    { "Across machines" = "guide/machines.md" },
     { "Results" = "guide/results.md" },
     { "Specs" = "guide/specs.md" },
     { "Fidelity" = "guide/fidelity.md" },

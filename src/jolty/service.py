@@ -14,6 +14,7 @@ configured time limit, and what they print is captured and returned.
 __lazy_modules__ = ["jolty"]
 
 import asyncio
+import secrets
 import shutil
 import sys
 import time
@@ -21,9 +22,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Collection, Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import override
+from typing import Self, override
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_settings import CliPositionalArg
 
 from jolty import (
@@ -36,6 +37,7 @@ from jolty import (
     results,
     runner,
     schematic,
+    shards,
     specs,
     viewer,
 )
@@ -46,6 +48,7 @@ from jolty.report import (
     CornerReport,
     FailureReport,
     MonteCarloReport,
+    ShardReport,
     VariantsReport,
     WorstCaseReport,
 )
@@ -102,6 +105,17 @@ _INSTANCES_DESCRIPTION = (
 _INSIDE_DESCRIPTION = (
     "The fewest unknowns a circuit has for a run to spread its Newton iteration's work "
     "on each unknown across threads; replaces the plan's. No result depends on it."
+)
+_SAMPLES_DESCRIPTION = (
+    "Run only the samples of the plan's Monte Carlo analysis from START up to STOP, "
+    "written START:STOP, such as 0:1000000, as a shard of the analysis: at the plan's "
+    "own conditions and at every corner, running none of its other analyses, into "
+    "the directory of shards, for jolty merge to report with the others. A shard "
+    "draws no schematic and no plot, and traces only the probes named."
+)
+_SHARDS_DESCRIPTION = (
+    "The directory a shard of samples is written to, as shard-START-STOP.npz; "
+    "defaults to <script>.shards."
 )
 
 
@@ -258,6 +272,8 @@ class SimulateRequest(_Model):
     returns jolty Specs: requirements on measurements of the analyses' results, each of
     which passes, is marginal, fails or goes unmeasured, at its worst corner, and a
     yield target for the Monte Carlo samples. It can be the build script itself.
+    Given samples, it runs only those of the Monte Carlo analysis, as a shard, which
+    jolty merge reports with the others as one run of every sample.
     The scripts run as ordinary Python with the user's permissions, in their own process
     with a time limit; that process is not a sandbox.
     """
@@ -300,6 +316,33 @@ class SimulateRequest(_Model):
     min_unknowns_inside: int | None = Field(
         default=None, ge=1, description=_INSIDE_DESCRIPTION
     )
+    samples: str | None = Field(
+        default=None, pattern=r"^[0-9]+:[0-9]+$", description=_SAMPLES_DESCRIPTION
+    )
+    shards: Path | None = Field(default=None, description=_SHARDS_DESCRIPTION)
+
+    @model_validator(mode="after")
+    def _sharded(self) -> Self:
+        """Checks that the samples run from a start up to a later stop, if named.
+
+        Raises:
+            ValueError: When they do not, or a directory of shards takes no samples.
+        """
+        taken = self.taken()
+        if taken is not None and taken.start >= taken.stop:
+            message = f"samples run from a start up to a later stop, not {self.samples}"
+            raise ValueError(message)
+        if self.shards is not None and taken is None:
+            message = "a directory of shards holds samples, which --samples names"
+            raise ValueError(message)
+        return self
+
+    def taken(self) -> range | None:
+        """The samples the request names, None for a run of the whole plan."""
+        if self.samples is None:
+            return None
+        start, stop = self.samples.split(":")
+        return range(int(start), int(stop))
 
 
 class SimulateResult(CommandResult):
@@ -331,6 +374,15 @@ class SimulateResult(CommandResult):
     batches: Path | None = Field(
         description="The saved batches of the plan's Monte Carlo analysis and "
         "variants, at its own conditions; null without them."
+    )
+    shard: ShardReport | None = Field(
+        default=None,
+        description="What the shard of the plan's Monte Carlo samples ran; null "
+        "unless the request names samples.",
+    )
+    shard_file: Path | None = Field(
+        default=None,
+        description="The shard's file; null unless the request names samples.",
     )
     specs: tuple[Verdict, ...] = Field(
         description="The verdict on each requirement of the plan's specs, in order; "
@@ -393,18 +445,14 @@ class SimulateResult(CommandResult):
             self.report.describe() if self.report else "",
             self.output.describe(),
         ]
-        if self.results is not None:
-            blocks.append(f"saved {self.results}")
-        if self.batches is not None:
-            blocks.append(f"saved {self.batches}")
+        saved = (self.results, self.batches, self.shard_file)
+        blocks.extend(f"saved {path}" for path in saved if path is not None)
+        if self.shard is not None:
+            blocks.append(self.shard.describe())
         blocks.extend(analysis.describe() for analysis in self.analyses)
         blocks.extend(corner.describe() for corner in self.corners)
-        if self.monte_carlo is not None:
-            blocks.append(self.monte_carlo.describe())
-        if self.variants is not None:
-            blocks.append(self.variants.describe())
-        if self.worst_case is not None:
-            blocks.append(self.worst_case.describe())
+        batched = (self.monte_carlo, self.variants, self.worst_case)
+        blocks.extend(found.describe() for found in batched if found is not None)
         if self.specs:
             blocks.append(specs.describe(self.specs))
         if self.fidelity is not None:
@@ -463,21 +511,48 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     chosen = _levels(request, settings)
     script = await _existing(request.script)
     plan = script if request.plan is None else await _existing(request.plan)
+    taken = request.taken()
     job = runner.Job(
         script=script,
         plan=plan,
         listed=settings.listed_unknowns,
         check=request.check,
         record=request.record,
-        plot=request.plot,
+        # A shard's outcome is its measurements, and the probes named alone besides.
+        plot=request.plot and (taken is None or bool(request.probes)),
         probes=request.probes,
         parallelism=runner.Thresholds(
             min_solves_per_task=request.min_solves_per_task,
             min_instances_per_task=request.min_instances_per_task,
             min_unknowns_inside=request.min_unknowns_inside,
         ),
+        samples=None if taken is None else (taken.start, taken.stop),
     )
     path = request.output or files.circuit_path(request.script)
+    if taken is not None:
+        directory = request.shards or files.shards_path(request.script)
+        placed = directory / files.shard_name(taken.start, taken.stop)
+        built, output = await _run(job, settings, results=None, shard=placed)
+        circuit = await asyncio.to_thread(_save, built, path)
+        return SimulateResult(
+            circuit=circuit,
+            report=_report(built, request, chosen, settings),
+            results=None,
+            analyses=(),
+            corners=(),
+            monte_carlo=None,
+            variants=None,
+            worst_case=None,
+            batches=None,
+            shard=built.shard,
+            shard_file=placed if built.shard is not None else None,
+            specs=(),
+            fidelity=None,
+            schematic=None,
+            plots=(),
+            output=output,
+            seconds=time.perf_counter() - started,
+        )
     target = request.results or files.results_path(request.script)
     batched = files.batches_path(target)
     built, output = await _run(job, settings, results=target, batches=batched)
@@ -521,6 +596,121 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         output=output,
         seconds=time.perf_counter() - started,
     )
+
+
+class MergeRequest(_Model):
+    """Merge the shards of a plan's Monte Carlo analysis, and report them as one run.
+
+    The shards are the shard-START-STOP.npz files that jolty simulate --samples writes
+    into a directory, each the samples from START up to STOP. The merge refuses shards
+    whose fingerprints differ, as they ran other circuits, plans, options, builds or
+    platforms, and shards whose samples leave a gap or overlap; it joins their batches
+    in the order of their samples, and reports every sample against the specs the
+    shards measured, as a simulation of every sample in one run does, bit for bit. It
+    saves the batch at the plan's own conditions and plots its distribution as a
+    simulation does, and runs no script.
+    """
+
+    shards: CliPositionalArg[Path] = Field(
+        description="The directory of the shards, such as amp.shards."
+    )
+    output: Path | None = Field(
+        default=None,
+        description="Where to save the merged batch; defaults to <name>.batches.npz "
+        "beside the directory, its name without .shards.",
+    )
+    plot: bool = Field(
+        default=True,
+        description="Plot a histogram of each requirement's values, and the envelope "
+        "of each analysis the shards traced, beside the merged batch.",
+    )
+
+
+class MergeResult(CommandResult):
+    """What the merge of a Monte Carlo analysis's shards found."""
+
+    shards: tuple[Path, ...] = Field(
+        description="The shards merged, in the order of their samples."
+    )
+    monte_carlo: MonteCarloReport = Field(
+        description="What the analysis found over every sample."
+    )
+    batches: Path = Field(
+        description="The saved batch of the samples at the plan's own conditions."
+    )
+    plots: tuple[Plot, ...] = Field(
+        description="A histogram of the batch's measurements and an envelope of each "
+        "analysis it traced; empty when plotting is off."
+    )
+    seconds: float = Field(description="Seconds the command took.")
+
+    @property
+    @override
+    def ok(self) -> bool:
+        """Whether the samples' yield reaches the specs' target, if they state one."""
+        passing = self.monte_carlo.passing
+        return passing is None or passing.met
+
+    @override
+    def describe(self) -> str:
+        """The result as text."""
+        blocks = [
+            f"merged {_plural(len(self.shards), 'shard')}",
+            f"saved {self.batches}",
+            self.monte_carlo.describe(),
+        ]
+        if self.plots:
+            blocks.append(_describe_plots(self.plots))
+        blocks.append(f"took {self.seconds:.2f} s")
+        return "\n\n".join(blocks)
+
+    @override
+    def images(self) -> tuple[Path, ...]:
+        """The plots."""
+        return tuple(plot.path for plot in self.plots)
+
+
+async def merge(request: MergeRequest, settings: Settings) -> MergeResult:
+    """Merges the shards in a directory, and saves and plots their batch; no settings.
+
+    Raises:
+        JoltyError: When the directory holds no shard, a file is not one, the shards'
+            fingerprints differ, or their samples leave a gap or overlap.
+    """
+    del settings
+    started = time.perf_counter()
+    if not await asyncio.to_thread(request.shards.is_dir):
+        message = f"no such directory of shards: {request.shards}"
+        raise JoltyError(message)
+    target = request.output or files.merged_path(request.shards)
+    found, merged = await asyncio.to_thread(_merged, request.shards, target)
+    plotted = (
+        await asyncio.to_thread(_plot_batches, target, target) if request.plot else ()
+    )
+    return MergeResult(
+        shards=found,
+        monte_carlo=merged,
+        batches=target,
+        plots=plotted,
+        seconds=time.perf_counter() - started,
+    )
+
+
+def _merged(directory: Path, target: Path) -> tuple[tuple[Path, ...], MonteCarloReport]:
+    """Merges the shards in `directory`, saves their batch at `target`, and reports.
+
+    Returns the shards, in the order of their samples, and what they found.
+
+    Raises:
+        JoltyError: When the shards do not merge.
+    """
+    shard, ordered = shards.merge(sorted(directory.glob(files.SHARD_PATTERN)))
+    analysed, batch = shards.monte_carlo(shard)
+    with TemporaryDirectory(prefix="jolty-") as scratch:
+        written = Path(scratch) / target.name
+        files.save_batches(written, {runner.MONTE_CARLO: batch})
+        _place(written, target)
+    return ordered, analysed
 
 
 class PlotRequest(_Model):
@@ -1151,10 +1341,12 @@ async def _run(
     *,
     results: Path | None,
     batches: Path | None = None,
+    shard: Path | None = None,
 ) -> tuple[runner.Built, ScriptOutput]:
     """Runs `job` in a child process, and moves the results it writes to `results`.
 
-    The batches it writes go to `batches`, when given.
+    The batches it writes go to `batches`, when given, and the shard to `shard`, all at
+    once (see `_place`).
 
     Raises:
         JoltyError: When the job fails, runs out of time, or the child process ends
@@ -1180,6 +1372,8 @@ async def _run(
                     await asyncio.to_thread(_move, directory / runner.RESULTS, results)
                 if batches is not None:
                     await asyncio.to_thread(_move, directory / runner.BATCHES, batches)
+                if shard is not None:
+                    await asyncio.to_thread(_place, directory / runner.SHARD, shard)
                 return built, output
             case runner.Failure() as failure:
                 message = f"the script failed: {failure}"
@@ -1265,9 +1459,37 @@ def _move(source: Path, destination: Path) -> None:
         destination.unlink(missing_ok=True)
 
 
+def _place(source: Path, destination: Path) -> None:
+    """Moves `source` to `destination` at once, or removes `destination` without one.
+
+    A reader of `destination` finds the whole file there, or the one there before,
+    never part of it, even when the move is stopped: the file is copied to a hidden
+    name beside `destination`, then renamed, which a file system does at once. A move
+    killed outright leaves the hidden copy behind, which no merge reads.
+    """
+    if not source.is_file():
+        destination.unlink(missing_ok=True)
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    copy = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}")
+    try:
+        shutil.copyfile(source, copy)
+        copy.replace(destination)
+    except BaseException:
+        copy.unlink(missing_ok=True)
+        raise
+
+
 def _save(built: runner.Built, path: Path) -> CircuitSummary:
+    """Saves the circuit `built` holds at `path`, at once, as `_place` moves a file.
+
+    Shards of one analysis, run at once, each save the same circuit there.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    files.save_circuit(path, built.circuit)
+    with TemporaryDirectory(prefix="jolty-") as scratch:
+        written = Path(scratch) / path.name
+        files.save_circuit(written, built.circuit)
+        _place(written, path)
     return CircuitSummary(
         path=path,
         components=len(built.circuit.components),

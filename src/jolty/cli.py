@@ -58,6 +58,14 @@ class SimulateCommand(service.SimulateRequest, _Output):
         self.emit(await service.simulate(self, Settings.load()))
 
 
+class MergeCommand(service.MergeRequest, _Output):
+    """Merge the shards of a plan's Monte Carlo analysis, and report them as one run."""
+
+    async def cli_cmd(self) -> None:
+        """Runs the command."""
+        self.emit(await service.merge(self, Settings.load()))
+
+
 class PlotCommand(service.PlotRequest, _Output):
     """Plot the analyses of a saved results file."""
 
@@ -132,6 +140,9 @@ class Jolty(BaseSettings):
     simulate: CliSubCommand[SimulateCommand] = Field(
         description="Build a script's circuit and run a plan's analyses on it."
     )
+    merge: CliSubCommand[MergeCommand] = Field(
+        description="Merge the shards of a plan's Monte Carlo analysis into one run."
+    )
     plot: CliSubCommand[PlotCommand] = Field(
         description="Plot the analyses of a saved results file."
     )
@@ -179,10 +190,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Runs the command line.
 
     The exit status is 1 when a circuit does not elaborate, a check finds an error, an
-    analysis fails, no part prices a device instance or a component's netlist cannot be
-    written, and 2 when the arguments or settings are invalid, a command needs a
-    subcommand, or a command fails, as when a script raises. The lone argument
-    ``--version`` prints the version.
+    analysis fails, a merged Monte Carlo analysis's yield misses its target, no part
+    prices a device instance or a component's netlist cannot be written, and 2 when the
+    arguments or settings are invalid, a command needs a subcommand, or a command
+    fails, as when a script raises. The lone argument ``--version`` prints the version.
     """
     arguments = sys.argv[1:] if argv is None else list(argv)
     if arguments == ["--version"]:

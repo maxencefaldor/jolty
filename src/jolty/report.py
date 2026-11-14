@@ -660,6 +660,53 @@ class MonteCarloReport(_Model):
         return "\n".join(lines)
 
 
+LARGE: Final = 10e9
+"""The bytes past which the shards of a Monte Carlo analysis's samples are large: 10 GB,
+past which a shard's report warns."""
+
+
+class ShardReport(_Model):
+    """What a shard of a plan's Monte Carlo analysis ran, and the file it wrote."""
+
+    start: int = Field(description="The first sample the shard ran.")
+    stop: int = Field(description="The sample the shard ran up to, and not.")
+    samples: int = Field(description="The samples of the analysis, in every shard.")
+    corners: tuple[str, ...] = Field(
+        default=(),
+        description="The corners each sample also ran at, after the plan's own "
+        "conditions.",
+    )
+    failed: int = Field(
+        description="Samples of the shard on which the circuit did not elaborate or "
+        "an analysis failed, at the plan's own conditions or a corner."
+    )
+    size: int = Field(description="The bytes of the arrays the shard's file holds.")
+    total: int = Field(
+        description="The bytes of the arrays the shards of every sample hold: as many "
+        "a sample as this shard's."
+    )
+    fingerprint: str = Field(
+        description="The SHA-256 hash of what the shard's numbers depend on, which "
+        "every shard of one analysis shares."
+    )
+
+    def describe(self) -> str:
+        """The report as text."""
+        at = "".join(f", at {name}" for name in self.corners)
+        head = (
+            f"shard: samples {self.start} up to {self.stop} of {self.samples}{at}; "
+            f"{self.failed} failed; {format_si(self.size, 'B')} of arrays, "
+            f"fingerprint {self.fingerprint[:12]}"
+        )
+        if self.total <= LARGE:
+            return head
+        return (
+            f"{head}\nwarning: the shards of every sample hold "
+            f"{format_si(self.total, 'B')} of arrays, more than "
+            f"{format_si(LARGE, 'B')}"
+        )
+
+
 class VariantsReport(_Model):
     """What the runs of a plan's variants found."""
 

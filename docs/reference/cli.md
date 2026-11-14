@@ -46,6 +46,19 @@ Build a script's circuit and run a plan's analyses on it.
 | `--min-solves-per-task` |  | The fewest frequencies or right-hand sides a task takes when a run spreads its small-signal analyses and sensitivities across threads; replaces the plan's. No result depends on it. |
 | `--min-instances-per-task` |  | The device instances a task evaluates when a run spreads its devices' evaluation across threads; replaces the plan's. No result depends on it. |
 | `--min-unknowns-inside` |  | The fewest unknowns a circuit has for a run to spread its Newton iteration's work on each unknown across threads; replaces the plan's. No result depends on it. |
+| `--samples` |  | Run only the samples of the plan's Monte Carlo analysis from START up to STOP, written START:STOP, such as 0:1000000, as a shard of the analysis: at the plan's own conditions and at every corner, running none of its other analyses, into the directory of shards, for jolty merge to report with the others. A shard draws no schematic and no plot, and traces only the probes named. |
+| `--shards` |  | The directory a shard of samples is written to, as shard-START-STOP.npz; defaults to &lt;script&gt;.shards. |
+
+## `jolty merge`
+
+Merge the shards of a plan's Monte Carlo analysis into one run.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
+| `SHARDS` | required | The directory of the shards, such as amp.shards. |
+| `--output` |  | Where to save the merged batch; defaults to &lt;name&gt;.batches.npz beside the directory, its name without .shards. |
+| `--plot`, `--no-plot` | `True` | Plot a histogram of each requirement's values, and the envelope of each analysis the shards traced, beside the merged batch. |
 
 ## `jolty plot`
 

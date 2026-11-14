@@ -56,7 +56,7 @@ Each module imports only from the modules listed before it, and from those liste
 1. `devices`, `builder`, `parts`: the devices a script places, components written as Python functions, and real parts, each a model with its maker's number and ratings.
 1. `spice`: SPICE libraries read into components, model files downloaded and checked, SKY130's transistors and the process design kit that models them, and circuits written as SPICE netlists for ngspice.
 1. `plan`, `checks`, `results`, `specs`, `foundry`, `simulate`, `variation`, `catalog`, `fidelity`: analyses, their options and the variants of many runs, the rules and their diagnostics, results and batches' columns, requirements measured on results, the analyses of circuits of a foundry's devices run in ngspice, the engine's Python face, its batches of runs and circuits elaborated once for many simulations, Monte Carlo samples of tolerances, orderable parts and bills of materials, and logic models characterized from components' circuits.
-1. `files`, `kicad`, `report`, `plots`: circuit, results and batch files, components written as KiCad netlists, what each analysis found as data and as text, and plots of results and of batches' distributions.
+1. `files`, `kicad`, `report`, `plots`, `shards`: circuit, results, batch and shard files, components written as KiCad netlists, what each analysis found as data and as text, plots of results and of batches' distributions, and a Monte Carlo analysis's shards, ranges of its samples that any process runs, fingerprinted and merged in the order of their samples.
 1. `layout`, `schematic`, `viewer`: where a schematic places each instance and runs each wire, the schematic drawn, and the 3D viewer that plays a simulation on the layout.
 1. `runner`, `service`: scripts in child processes, and every command defined once.
 1. `cli`, `mcp`: front ends that only adapt `service`.
@@ -113,7 +113,7 @@ Each module imports only from the modules listed before it, and from those liste
   It is checked against ngspice on a corpus of circuits (`tests/test_ngspice.py`), on vendors' macromodels (`tests/test_vendor.py`), and on random circuits of every device and size, which Hypothesis shrinks to the smallest that disagrees (`tests/test_random_circuits.py`).
   These differential tests skip when ngspice is not installed, except in CI, which installs it and sets `JOLTY_REQUIRE_NGSPICE=1` so a skip fails.
   The same random circuits must simulate the same however they are written (`tests/test_metamorphic.py`).
-  The same circuits must simulate the same however many threads or shards run them (`tests/test_determinism.py`, `crates/jolty-engine/tests/determinism.rs`).
+  The same circuits must simulate the same however many threads or shards run them (`tests/test_determinism.py`, `tests/test_shards.py`, `crates/jolty-engine/tests/determinism.rs`).
   The layout is checked by property tests over random circuits: nets never touch, and wires never cross a symbol.
   A bug fix comes with a test that fails without it.
   A test's tolerance says where it comes from, and is never loosened to let a change pass.
