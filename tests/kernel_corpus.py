@@ -13,16 +13,22 @@ or its plan run on it. Run it from the repository root after changing either,
 when the file is not what it would write, as ``tests/test_kernel_corpus.py`` runs it.
 """
 
-import argparse
 import importlib
 import json
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Final
+from typing import Final, override
 
 import pytest
+from pydantic import Field
+from pydantic_settings import (
+    BaseSettings,
+    CliApp,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from jolty import Simulation, _core, simulate
 
@@ -146,22 +152,48 @@ def recorded() -> str:
     return written + "\n"
 
 
-def main() -> None:
-    """Writes the circuits, or, with ``--check``, fails unless the file holds them."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--check", action="store_true", help="fail unless the file holds the circuits"
+class Corpus(BaseSettings):
+    """Write the circuits of the corpus and the examples, with their runs."""
+
+    model_config = SettingsConfigDict(
+        cli_prog_name="tests/kernel_corpus.py",
+        cli_kebab_case=True,
+        cli_implicit_flags=True,
     )
-    arguments = parser.parse_args()
-    written = recorded()
-    if not arguments.check:
-        WRITTEN.write_text(written, encoding="utf-8")
-    elif WRITTEN.read_text(encoding="utf-8") != written:
-        message = (
-            f"{WRITTEN.relative_to(ROOT)} is not the corpus's circuits and runs: "
-            "write it again with `uv run python tests/kernel_corpus.py`"
-        )
-        raise SystemExit(message)
+
+    check: bool = Field(
+        default=False, description="Fail unless the file holds the circuits."
+    )
+
+    @classmethod
+    @override
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Reads the command line only, never the environment."""
+        return (init_settings,)
+
+    def cli_cmd(self) -> None:
+        """Writes the circuits, or with ``--check`` fails unless the file holds them."""
+        written = recorded()
+        if not self.check:
+            WRITTEN.write_text(written, encoding="utf-8")
+        elif WRITTEN.read_text(encoding="utf-8") != written:
+            message = (
+                f"{WRITTEN.relative_to(ROOT)} is not the corpus's circuits and runs: "
+                "write it again with `uv run python tests/kernel_corpus.py`"
+            )
+            raise SystemExit(message)
+
+
+def main() -> None:
+    """Runs the command line."""
+    CliApp.run(Corpus, cli_args=sys.argv[1:])
 
 
 if __name__ == "__main__":
