@@ -3,7 +3,8 @@
 //! Nothing here knows about circuits. A [`Pattern`] is the sparsity of a square system matrix,
 //! collected once from the positions devices claim; its [`Ordering`] is analyzed once, and
 //! [`SparseLu`] factors and solves matrices of that pattern, real or complex, sharing the
-//! ordering and refactoring each new matrix with the pivots of the last; a [`GatherMap`]
+//! ordering and refactoring each new matrix with the pivots of the last, the blocks an
+//! ordering dissects on any number of threads, the same bits on each; a [`GatherMap`]
 //! assembles a system's values from the contributions a slab holds, each in a fixed order
 //! however many threads gather them; [`reduce`] sums many terms in one fixed order on any
 //! number of threads; [`integration`] holds the formulas that turn charges

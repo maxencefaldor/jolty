@@ -9,6 +9,14 @@
 //! elimination with threshold partial pivoting that prefers the ordering's diagonal, and
 //! refactors each new matrix with the pivots of the last, searching afresh only from a pivot
 //! that has become too small.
+//!
+//! An ordering [dissected](Ordering::dissected) orders each large block by nested dissection
+//! into interiors and the separators between them, and the factorization of such a block is
+//! multifrontal over the tree they make: the interiors factor at once, by the same
+//! left-looking elimination, each pivoting within itself, and each separator factors a
+//! dense front of the updates the parts below it leave, once they are done. The work
+//! spreads over the threads a solver is given, and its factors are the same bits on any
+//! number.
 
 mod dissection;
 mod numeric;
