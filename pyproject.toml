@@ -94,6 +94,9 @@ convention = "google"
 "discovery/**" = ["INP001", "PLR2004", "T201"]
 # Benchmarks run as scripts, outside any package, and print what they found.
 "benchmarks/**/*.py" = ["INP001", "T201"]
+# The fixtures' scripts and their timing run as scripts, outside any package: the
+# fixtures' numbers are their circuits, and the timing prints what it measured.
+"perf/**/*.py" = ["INP001", "PLR2004", "T201"]
 "src/jolty/cli.py" = ["T201"]  # a command line prints
 # A download's digest checks what any scheme returns.
 "src/jolty/spice/download.py" = ["S310"]
@@ -107,13 +110,14 @@ docstring-code-format = true
 all = "error"
 
 [tool.ty.src]
-include = ["src", "tests", "examples", "docs", "benchmarks", "discovery"]
+include = ["src", "tests", "examples", "docs", "benchmarks", "discovery", "perf"]
 
 [tool.ty.environment]
 # The tests import their shared harness, `tests/differential.py`, as pytest does, the
-# benchmarks' scripts, which import each other, as their runs do, and the discoveries
-# the parts the examples share, `examples/common.py`, as their scripts do.
-extra-paths = ["tests", "benchmarks", "examples"]
+# benchmarks' scripts, which import each other, as their runs do, the discoveries the
+# parts the examples share, `examples/common.py`, as their scripts do, and the fixtures'
+# scripts what they share, `perf/circuits/fixture.py`, as their runs do.
+extra-paths = ["tests", "benchmarks", "examples", "perf/circuits"]
 
 [tool.pytest]
 testpaths = ["src", "tests"]

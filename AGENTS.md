@@ -15,6 +15,7 @@ A schematic's layout only draws a circuit as feedback; it lays out no board.
 
 ```sh
 scripts/check               # every check below, exactly as CI runs them
+scripts/bench               # the benchmarks of perf/, against a baseline's times
 uv sync                     # build the engine, install Python 3.15 and every tool from uv.lock
 uv run pytest               # Python tests and doctests; warnings are errors
 uv run ruff format          # format Python
@@ -65,7 +66,7 @@ Each module imports only from the modules listed before it, and from those liste
 ## Conventions
 
 - **Tools:** use the standard, official, established tool in each category.
-  That means uv, ruff, ty, rumdl, pytest with Hypothesis, pydantic and pydantic-settings, numpy for arrays, the official MCP SDK, matplotlib for plots, maturin with PyO3, cargo with clippy and proptest, and faer for dense linear algebra.
+  That means uv, ruff, ty, rumdl, pytest with Hypothesis, pydantic and pydantic-settings, numpy for arrays, the official MCP SDK, matplotlib for plots, maturin with PyO3, cargo with clippy and proptest, criterion for Rust's benchmarks, faer for dense linear algebra, rayon for data parallelism, and `rand` with `rand_chacha` for random sampling.
 - **Dependencies:** a new one is the established choice in its category, is maintained, and has a license compatible with Apache-2.0.
   Nothing under the GPL is linked into jolty; a GPL tool runs only as a separate program.
 - **Format and lint:** ruff's default format at 88 columns, every ruff rule, every ty rule as an error, rustfmt, clippy's pedantic lints as errors, and Markdown one sentence per line.
@@ -85,6 +86,9 @@ Each module imports only from the modules listed before it, and from those liste
   Every model is checked against that source, a closed form, or ngspice.
 - **Determinism:** results are a pure function of the circuit, the plan, the sample index and the options: the same bits for any thread count, shard split or completion order, on the same build and platform.
   Floating-point sums run in a fixed order, random draws depend only on the seed and the sample index, and nothing depends on the order work finishes in.
+- **Performance:** `scripts/bench` runs the benchmarks, the fixtures of `perf/` timed in Rust and in Python, and compares their times with a baseline's.
+  A change that slows any of them by more than 5% says why in its pull request.
+  The benchmarks stay out of `scripts/check`, which must stay fast and deterministic.
 - **One definition:** each command is a request model plus a function in `jolty.service`.
   The command line and the MCP server derive from it and never redefine arguments.
 - **Feedback is facts:** jolty tells the agent what is true about its circuit and never fixes it or says how to.

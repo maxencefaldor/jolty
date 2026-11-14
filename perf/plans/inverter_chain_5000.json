@@ -1,0 +1,18 @@
+{
+  "circuit": "inverter_chain_5000",
+  "analyses": [
+    [
+      "tran",
+      {
+        "transient": {
+          "stop": 4e-08,
+          "method": "trapezoidal"
+        }
+      }
+    ]
+  ],
+  "options": {
+    "memory": 4.0
+  },
+  "monte_carlo": null
+}

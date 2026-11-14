@@ -1,0 +1,16 @@
+{
+  "circuit": "rc_mesh_300",
+  "analyses": [
+    [
+      "tran",
+      {
+        "transient": {
+          "stop": 9.999999999999999e-06,
+          "method": "trapezoidal"
+        }
+      }
+    ]
+  ],
+  "options": {},
+  "monte_carlo": null
+}

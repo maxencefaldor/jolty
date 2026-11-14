@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Copyright 2026 Maxence Faldor
+#
+# The benchmarks: the criterion benchmarks of the engine and a Python timing of the same
+# fixtures, from perf/, written to perf/results/<commit>.json and compared with a
+# baseline's, every change over 5 % flagged. They stay out of scripts/check, which must
+# stay fast and deterministic.
+#
+#   scripts/bench                     the suite, a few minutes, before and after a change
+#   scripts/bench --scale             the large fixtures, each run once
+#   scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
+#   scripts/bench --baseline COMMIT   against COMMIT's results rather than an ancestor's
+#
+# perf/README.md says what each fixture stresses, and holds the baseline.
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+uv sync --locked
+exec uv run --locked python perf/bench.py "$@"

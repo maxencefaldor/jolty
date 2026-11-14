@@ -1,0 +1,16 @@
+{
+  "circuit": "buck",
+  "analyses": [
+    [
+      "tran",
+      {
+        "transient": {
+          "stop": 0.002,
+          "method": "trapezoidal"
+        }
+      }
+    ]
+  ],
+  "options": {},
+  "monte_carlo": null
+}
