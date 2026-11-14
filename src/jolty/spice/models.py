@@ -249,8 +249,8 @@ def own_temperature(
 
 
 NOISE: Final = frozenset({"nlev", "gdsnoi"})
-"""PSpice's choices among a MOSFET's noise equations, which ngspice's level 1 and 3
-ignore, keeping SPICE's own, as jolty does."""
+"""PSpice's choices among a MOSFET's noise equations, which jolty reads past: it keeps
+SPICE's own, which it writes for ngspice 43 and later as `nlev=1`."""
 
 
 @dataclass(frozen=True, slots=True)

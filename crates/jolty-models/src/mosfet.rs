@@ -123,8 +123,9 @@ pub struct Mosfet<R: Real = f64> {
     /// The values of [`VARIABLE_NAMES`] at the last evaluation.
     variables: [f64; 5],
     temperature: f64,
-    /// The flicker noise of the drain current, over the gate's area, every copy's
-    /// counted, and the oxide capacitance per area squared.
+    /// The flicker noise of the drain current: each copy's, of its share of the current
+    /// over its own gate's area and the oxide capacitance per area squared, summed over
+    /// the copies.
     flicker: Flicker,
 }
 
@@ -796,8 +797,14 @@ impl<R: Real> NativeDevice<R> for Mosfet<R> {
             .map_or(OXIDE_PERMITTIVITY / DEFAULT_OXIDE_THICKNESS, |per_area| {
                 per_area.value()
             });
+        // The multiplier's copies are transistors of their own in parallel, each carrying
+        // its share of the drain current and the flicker noise of its own gate, which add:
+        // m · KF (Id/m)^AF / (f W L Cox²), as SPICE defines the multiplier.
+        let copies = geometry.multiplier.value();
+        let gate = geometry.area.value() / copies;
+        let exponent = parameters.flicker_exponent.value();
         let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?
-            .scaled((geometry.area.value() * oxide_per_area * oxide_per_area).recip());
+            .scaled(copies.powf(1.0 - exponent) / (gate * oxide_per_area * oxide_per_area));
         Ok(Self {
             stamp,
             sign,
@@ -1643,7 +1650,8 @@ mod tests {
 
     #[test]
     fn its_channel_makes_thermal_and_flicker_noise() {
-        // SPICE's oxide of 0.1 µm, over the effective gate of every copy.
+        // SPICE's oxide of 0.1 µm; each copy carries its share of the current over its own
+        // effective gate, and the copies' noises add.
         let oxide = OXIDE_PERMITTIVITY / 1e-7;
         for copies in [1.0, 2.0] {
             let parameters = format!(
@@ -1657,8 +1665,8 @@ mod tests {
             let evaluation = bench.settle(&x);
             let (current, gm) = (evaluation.residual[0], evaluation.conductance[0][1]);
             let sources = bench.noise(&x);
-            let gate = copies * 10e-6 * (2e-6 - 2.0 * 1e-7);
-            let flicker = 1e-25 * current.powf(1.2) / (gate * oxide * oxide);
+            let gate = 10e-6 * (2e-6 - 2.0 * 1e-7);
+            let flicker = copies * 1e-25 * (current / copies).powf(1.2) / (gate * oxide * oxide);
             assert_close(
                 &[
                     source(&sources, "channel thermal").density(1.0),

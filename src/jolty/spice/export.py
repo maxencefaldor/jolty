@@ -195,6 +195,17 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
         for key, value in values.items()
         if key not in {"channel", "polarity"}
     }
+    flicker = given.get("flicker_coefficient")
+    if model == "mosfet" and isinstance(flicker, float) and flicker > 0:
+        # jolty's flicker noise is SPICE's, KF (Id/m)^AF over the gate's area and Cox²;
+        # ngspice 43 and later take it with nlev=1, over Cox alone.
+        thickness = given.get("oxide_thickness")
+        oxide = OXIDE_PERMITTIVITY / (
+            thickness if isinstance(thickness, float) else SPICE_OXIDE_THICKNESS
+        )
+        given["flicker_coefficient"] = flicker / oxide
+        names["noise_level"] = ("nlev", 1.0)
+        given["noise_level"] = 1.0
     card = " ".join(
         f"{names[key][0]}={_spice_value(key, value, names[key][1])}"
         for key, value in given.items()
@@ -206,6 +217,14 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
         if key in instance
     )
     return kind, card, element
+
+
+OXIDE_PERMITTIVITY: Final = 3.9 * 8.854214871e-12
+"""Silicon dioxide's permittivity, in farads per meter, as jolty and ngspice take it."""
+
+SPICE_OXIDE_THICKNESS: Final = 1e-7
+"""The oxide SPICE takes for a MOSFET's flicker noise where its card gives none, 0.1 µm,
+as jolty does."""
 
 
 def _spice_value(key: str, value: JsonValue, factor: float) -> str:

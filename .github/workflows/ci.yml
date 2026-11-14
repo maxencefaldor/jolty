@@ -54,11 +54,15 @@ jobs:
         with:
           enable-cache: true
       - uses: Swatinem/rust-cache@v2
+      # ngspice's latest release from Homebrew on both systems: Ubuntu's is 42, whose
+      # MOSFETs' flicker noise, before ngspice 43, is no longer what jolty computes.
       - name: Install ngspice, the reference simulator of the differential tests
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes ngspice
-      - name: Install ngspice, the reference simulator of the differential tests
-        if: runner.os == 'macOS'
-        run: brew install ngspice
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+            dirname "$(command -v brew)" >> "$GITHUB_PATH"
+          fi
+          brew install ngspice
+          ngspice --version | head -2
       - name: Check
         run: scripts/check python
