@@ -149,9 +149,15 @@ pub struct Statistics {
 ///
 /// A clone factors every matrix after as the solver it was cloned from would, bit for bit,
 /// which lets several threads each go on from one solver's pivots.
+///
+/// The blocks its ordering [dissects](Ordering::dissected) factor and solve as rayon tasks,
+/// on as many [threads](SparseLu::spread) at once as it is given, one by default; the
+/// factors and the solutions are the same bits on any number.
 #[derive(Clone)]
 pub struct SparseLu<T: Scalar> {
     ordering: Arc<Ordering>,
+    /// The most threads its dissected blocks' factorizations and solves run on at once.
+    threads: usize,
     numeric: Numeric<T>,
     /// The values of the matrix last factored, which the solves read outside the diagonal
     /// blocks.
@@ -192,6 +198,7 @@ impl<T: Scalar> SparseLu<T> {
         let dimension = ordering.pattern().dimension();
         Self {
             numeric: Numeric::new(&ordering),
+            threads: 1,
             ordering,
             factored: Vec::new(),
             current: false,
@@ -209,6 +216,38 @@ impl<T: Scalar> SparseLu<T> {
         self.factored.clear();
         self.current = false;
         self.statistics = Statistics::default();
+    }
+
+    /// Factors with `ordering`, of the same pattern, from now on, forgetting every
+    /// factorization as [`SparseLu::reset`] does but keeping its counts of work: it factors
+    /// every matrix as a solver made anew for `ordering` would, bit for bit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ordering` is of another pattern.
+    pub fn reorder(&mut self, ordering: Arc<Ordering>) {
+        assert!(
+            Arc::ptr_eq(ordering.pattern(), self.ordering.pattern()),
+            "an ordering of the same pattern"
+        );
+        let (statistics, threads) = (self.statistics, self.threads);
+        *self = Self::new(ordering);
+        self.statistics = statistics;
+        self.threads = threads;
+    }
+
+    /// Lets the factorizations and solves of the blocks its ordering dissects run on up to
+    /// `threads` threads of the rayon pool they run in at once, or on the calling thread
+    /// alone for one; their factors and solutions are the same bits either way.
+    pub fn spread(&mut self, threads: usize) {
+        self.threads = threads.max(1);
+    }
+
+    /// The most threads the factorizations and solves of its dissected blocks run on at
+    /// once.
+    #[must_use]
+    pub fn threads(&self) -> usize {
+        self.threads
     }
 
     /// The ordering of the pattern this solver factors.
@@ -301,7 +340,7 @@ impl<T: Scalar> SparseLu<T> {
             }
             self.factored.clear();
             self.factored.extend_from_slice(values);
-            let counted = match self.numeric.factor(&self.ordering, values)? {
+            let counted = match self.numeric.factor(&self.ordering, values, self.threads)? {
                 Factorization::Searched => &mut self.statistics.factorizations,
                 Factorization::Refactored => &mut self.statistics.refactorizations,
                 Factorization::FellBack => &mut self.statistics.fallbacks,
@@ -314,6 +353,7 @@ impl<T: Scalar> SparseLu<T> {
                 ordering: &self.ordering,
                 numeric: &self.numeric,
                 values: &self.factored,
+                threads: self.threads,
             },
             workspace: &mut self.workspace,
         })
@@ -386,6 +426,8 @@ pub struct Shared<'a, T: Scalar> {
     ordering: &'a Ordering,
     numeric: &'a Numeric<T>,
     values: &'a [T],
+    /// The most threads a solve of its dissected blocks runs on at once.
+    threads: usize,
 }
 
 impl<T: Scalar> fmt::Debug for Shared<'_, T> {
@@ -410,7 +452,7 @@ impl<T: Scalar> Shared<'_, T> {
     pub fn solve(&self, rhs: &mut [T], workspace: &mut Workspace<T>) -> Result<(), LinearError> {
         self.check(rhs, workspace);
         self.numeric
-            .solve(self.ordering, self.values, rhs, workspace);
+            .solve((self.ordering, self.values), rhs, workspace, self.threads);
         finite(rhs)
     }
 
@@ -431,7 +473,7 @@ impl<T: Scalar> Shared<'_, T> {
     ) -> Result<(), LinearError> {
         self.check(rhs, workspace);
         self.numeric
-            .solve_transpose(self.ordering, self.values, rhs, workspace);
+            .solve_transpose((self.ordering, self.values), rhs, workspace, self.threads);
         finite(rhs)
     }
 

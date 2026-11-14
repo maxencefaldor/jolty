@@ -13,12 +13,10 @@
 //! not pivot, to its parent's frame, delayed rather than perturbed, so the factors stay
 //! exact; the root pivots on any row left.
 //!
-//! The subtrees of a node's children share no entry, so they factor at once, each on a
-//! thread of its own when rayon has one free; and every number is computed by the same
+//! The subtrees of a node's children share no entry, so they factor at once, as rayon tasks,
+//! as many at a time as the threads given; and every number is computed by the same
 //! operations in the same order however they are spread, so the factors and the solutions
 //! are the same bits on any number of threads.
-
-use rayon::prelude::*;
 
 use super::dissection::{Dissection, Node};
 use super::numeric::{PIVOT_TOLERANCE, Triangle};
@@ -95,9 +93,9 @@ impl<T: Scalar> Tree<T> {
         })
     }
 
-    /// Factors the block of `values`, the matrix's values by slot: each node keeps its
-    /// pivots while they reach the threshold and its children kept theirs, and else
-    /// searches for them. Returns whether any node searched.
+    /// Factors the block of `values`, the matrix's values by slot, on up to `threads`
+    /// threads at once: each node keeps its pivots while they reach the threshold and its
+    /// children kept theirs, and else searches for them. Returns whether any node searched.
     ///
     /// # Errors
     ///
@@ -108,12 +106,13 @@ impl<T: Scalar> Tree<T> {
         &mut self,
         dissection: &Dissection,
         values: &[T],
+        threads: usize,
     ) -> Result<bool, LinearError> {
         let nodes = &dissection.nodes;
         let root = dissection.root();
         upward(
             nodes,
-            root,
+            (root, threads),
             &mut self.parts,
             &|index, part, below, searched| {
                 let node = &nodes[index];
@@ -183,35 +182,43 @@ impl<T: Scalar> Tree<T> {
             .sum()
     }
 
-    /// Solves the block's system with the scratch space `scratch`: from the right-hand side
-    /// by row of the ordered matrix in `given`, the solution by column in `solution`, the
-    /// block's positions of the ordered matrix; or, `transposed`, from the right-hand side
-    /// by column, the solution by row.
+    /// Solves the block's system with the scratch space `scratch`, on up to `threads`
+    /// threads at once: from the right-hand side by row of the ordered matrix in `given`,
+    /// the solution by column in `solution`, the block's positions of the ordered matrix;
+    /// or, `transposed`, from the right-hand side by column, the solution by row.
     pub(super) fn solve(
         &self,
         dissection: &Dissection,
-        given: &[T],
-        solution: &mut [T],
+        (given, solution): (&[T], &mut [T]),
         scratch: &mut Vec<Scratch<T>>,
-        transposed: bool,
+        (transposed, threads): (bool, usize),
     ) {
         let nodes = &dissection.nodes;
         scratch.resize_with(nodes.len(), Scratch::default);
         let root = dissection.root();
-        let Ok(_) = upward(nodes, root, scratch, &|index, space, below, _| {
-            let node = &nodes[index];
-            let below = (self.parts.as_slice(), below, node.earliest);
-            match (&self.parts[index], transposed) {
-                (Part::Interior(interior), false) => interior.forward(node, given, space),
-                (Part::Interior(interior), true) => interior.forward_transposed(node, given, space),
-                (Part::Front(front), false) => front.forward(node, given, space, below),
-                (Part::Front(front), true) => front.forward_transposed(node, given, space, below),
-            }
-            Ok::<bool, std::convert::Infallible>(false)
-        });
+        let Ok(_) = upward(
+            nodes,
+            (root, threads),
+            scratch,
+            &|index, space, below, _| {
+                let node = &nodes[index];
+                let below = (self.parts.as_slice(), below, node.earliest);
+                match (&self.parts[index], transposed) {
+                    (Part::Interior(interior), false) => interior.forward(node, given, space),
+                    (Part::Interior(interior), true) => {
+                        interior.forward_transposed(node, given, space);
+                    }
+                    (Part::Front(front), false) => front.forward(node, given, space, below),
+                    (Part::Front(front), true) => {
+                        front.forward_transposed(node, given, space, below);
+                    }
+                }
+                Ok::<bool, std::convert::Infallible>(false)
+            },
+        );
         downward(
             nodes,
-            root,
+            (root, threads),
             scratch,
             solution,
             &|index, space, below, solution| {
@@ -299,14 +306,62 @@ impl<T> Default for Scratch<T> {
     }
 }
 
+/// Runs `each` on every one of `items`, each with its weight, the size of its work, and
+/// the threads it may use, on up to `threads` threads at once. While there are two items
+/// and two threads or more, the items split where their weights balance, and the threads
+/// in proportion: the two halves run as two tasks, but for a half whose share rounds to no
+/// thread, which runs on the calling thread first. Returns the results in the items'
+/// order.
+fn spread<I: Send, R: Send>(
+    mut items: Vec<(I, usize)>,
+    threads: usize,
+    each: &(impl Fn(I, usize) -> R + Sync),
+) -> Vec<R> {
+    if threads < 2 || items.len() < 2 {
+        return items
+            .into_iter()
+            .map(|(item, _)| each(item, threads.max(1)))
+            .collect();
+    }
+    let total: usize = items.iter().map(|&(_, weight)| weight).sum();
+    let mut before = 0;
+    let mut middle = 1;
+    for (index, &(_, weight)) in items.iter().enumerate().take(items.len() - 1) {
+        before += weight;
+        middle = index + 1;
+        if 2 * before >= total {
+            break;
+        }
+    }
+    let later = items.split_off(middle);
+    let share = (threads * before + total / 2) / total.max(1);
+    if share == 0 {
+        let mut found = spread(items, 1, each);
+        found.extend(spread(later, threads, each));
+        return found;
+    }
+    if share == threads {
+        let rest = spread(later, 1, each);
+        let mut found = spread(items, threads, each);
+        found.extend(rest);
+        return found;
+    }
+    let (mut found, rest) = rayon::join(
+        || spread(items, share, each),
+        || spread(later, threads - share, each),
+    );
+    found.extend(rest);
+    found
+}
+
 /// Runs `visit` on each node of the subtree of `index`, whose nodes' states are `states`,
-/// each after its children: with its state, its descendants', from its subtree's first
-/// node, and whether any visit of them returned `true`. The children's subtrees run at once.
-/// Returns whether any visit returned `true`, or the error of the first that failed, in the
-/// nodes' order.
+/// on up to `threads` threads at once, each node after its children: with its state, its
+/// descendants', from its subtree's earliest node, and whether any visit of them returned
+/// `true`. Returns whether any visit returned `true`, or the error of the first that
+/// failed, in the nodes' order.
 fn upward<S: Send, E: Send>(
     nodes: &[Node],
-    index: usize,
+    (index, threads): (usize, usize),
     states: &mut [S],
     visit: &(impl Fn(usize, &mut S, &[S], bool) -> Result<bool, E> + Sync),
 ) -> Result<bool, E> {
@@ -317,14 +372,14 @@ fn upward<S: Send, E: Send>(
     let mut parts = Vec::with_capacity(node.children.len());
     let mut rest = &mut *below;
     for &child in &node.children {
-        let (subtree, after) = rest.split_at_mut(child + 1 - nodes[child].earliest);
-        parts.push((child, subtree));
+        let child_node = &nodes[child];
+        let (subtree, after) = rest.split_at_mut(child + 1 - child_node.earliest);
+        parts.push(((child, subtree), child_node.end - child_node.first));
         rest = after;
     }
-    let results: Vec<Result<bool, E>> = parts
-        .into_par_iter()
-        .map(|(child, subtree)| upward(nodes, child, subtree, visit))
-        .collect();
+    let results = spread(parts, threads, &|(child, subtree), threads| {
+        upward(nodes, (child, threads), subtree, visit)
+    });
     let mut any = false;
     for result in results {
         any |= result?;
@@ -333,11 +388,11 @@ fn upward<S: Send, E: Send>(
 }
 
 /// Runs `visit` on each node of the subtree of `index`, whose nodes' states are `states`,
-/// each before its children: with its state, its descendants' to write to, and the part of
-/// `solution` at its subtree's positions. The children's subtrees run at once.
+/// on up to `threads` threads at once, each node before its children: with its state, its
+/// descendants' to write to, and the part of `solution` at its subtree's positions.
 fn downward<S: Send, T: Send>(
     nodes: &[Node],
-    index: usize,
+    (index, threads): (usize, usize),
     states: &mut [S],
     solution: &mut [T],
     visit: &(impl Fn(usize, &mut S, &mut [S], &mut [T]) + Sync),
@@ -352,13 +407,14 @@ fn downward<S: Send, T: Send>(
     for &child in &node.children {
         let child_node = &nodes[child];
         let (subtree, after) = rest.split_at_mut(child + 1 - child_node.earliest);
-        let (part, beyond) = written.split_at_mut(child_node.end - child_node.first);
-        parts.push((child, subtree, part));
+        let size = child_node.end - child_node.first;
+        let (part, beyond) = written.split_at_mut(size);
+        parts.push(((child, subtree, part), size));
         (rest, written) = (after, beyond);
     }
-    parts
-        .into_par_iter()
-        .for_each(|(child, subtree, part)| downward(nodes, child, subtree, part, visit));
+    spread(parts, threads, &|(child, subtree, part), threads| {
+        downward(nodes, (child, threads), subtree, part, visit);
+    });
 }
 
 /// The factors of an interior: of its own rows and columns, by columns, its pivots chosen

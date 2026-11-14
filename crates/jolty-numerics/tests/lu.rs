@@ -993,6 +993,7 @@ proptest! {
     ) {
         let runs = |matrices: &[Matrix<f64>]| {
             let (mut lu, entries) = dissected(&matrices[0], interiors);
+            lu.spread(rayon::current_num_threads());
             let mut found = Vec::new();
             for matrix in matrices {
                 let stored = matrix.stored(lu.pattern(), &entries);
@@ -1068,6 +1069,7 @@ fn a_dissected_mesh_is_the_same_bits_on_any_number_of_threads() {
     let second = mesh(40, 3.0);
     let run = || {
         let (mut lu, entries) = dissected(&first, 40);
+        lu.spread(rayon::current_num_threads());
         let mut found = Vec::new();
         for matrix in [&first, &second, &first] {
             let stored = matrix.stored(lu.pattern(), &entries);

@@ -200,6 +200,7 @@ impl<T: Scalar> Numeric<T> {
         &mut self,
         ordering: &Ordering,
         values: &[T],
+        threads: usize,
     ) -> Result<Factorization, LinearError> {
         let afresh = !self.complete;
         let (first, mut went) = if afresh {
@@ -241,17 +242,17 @@ impl<T: Scalar> Numeric<T> {
             if afresh {
                 tree.forget();
             }
-            let searched = tree
-                .factor(dissection, values)
-                .map_err(|error| match error {
-                    LinearError::Singular { columns } => LinearError::Singular {
-                        columns: columns
-                            .into_iter()
-                            .map(|position| ordering.columns()[position])
-                            .collect(),
-                    },
-                    LinearError::TooLarge => LinearError::TooLarge,
-                })?;
+            let searched =
+                tree.factor(dissection, values, threads)
+                    .map_err(|error| match error {
+                        LinearError::Singular { columns } => LinearError::Singular {
+                            columns: columns
+                                .into_iter()
+                                .map(|position| ordering.columns()[position])
+                                .collect(),
+                        },
+                        LinearError::TooLarge => LinearError::TooLarge,
+                    })?;
             if searched && !afresh {
                 went = Factorization::FellBack;
             }
@@ -428,13 +429,14 @@ impl<T: Scalar> Numeric<T> {
     }
 
     /// Solves `A x = rhs` and leaves `x` in `rhs`, for the matrix of `ordering`'s pattern
-    /// with `values` whose factors these are, writing to `workspace` as it goes.
+    /// with `values` whose factors these are, writing to `workspace` as it goes, its
+    /// dissected blocks on up to `threads` threads at once.
     pub(super) fn solve(
         &self,
-        ordering: &Ordering,
-        values: &[T],
+        (ordering, values): (&Ordering, &[T]),
         rhs: &mut [T],
         workspace: &mut Workspace<T>,
+        threads: usize,
     ) {
         let Workspace {
             by_row,
@@ -451,10 +453,9 @@ impl<T: Scalar> Numeric<T> {
                 let index = ordering.dissected_index(block);
                 self.trees[index].solve(
                     dissection,
-                    by_row,
-                    &mut by_position[positions.clone()],
+                    (by_row, &mut by_position[positions.clone()]),
                     &mut scratch[index],
-                    false,
+                    (false, threads),
                 );
             } else {
                 for position in positions.clone() {
@@ -489,10 +490,10 @@ impl<T: Scalar> Numeric<T> {
     /// Solves `Aᵀ x = rhs` and leaves `x` in `rhs`, as [`Numeric::solve`] does `A x = rhs`.
     pub(super) fn solve_transpose(
         &self,
-        ordering: &Ordering,
-        values: &[T],
+        (ordering, values): (&Ordering, &[T]),
         rhs: &mut [T],
         workspace: &mut Workspace<T>,
+        threads: usize,
     ) {
         let Workspace {
             by_row,
@@ -516,10 +517,9 @@ impl<T: Scalar> Numeric<T> {
                 let index = ordering.dissected_index(block);
                 self.trees[index].solve(
                     dissection,
-                    by_position,
-                    &mut by_row[positions],
+                    (by_position, &mut by_row[positions]),
                     &mut scratch[index],
-                    true,
+                    (true, threads),
                 );
                 continue;
             }
@@ -594,14 +594,14 @@ mod tests {
         );
         let mut numeric = Numeric::new(&ordering);
         assert_eq!(
-            numeric.factor(&ordering, &first),
+            numeric.factor(&ordering, &first, 1),
             Ok(Factorization::Searched)
         );
         assert_eq!(numeric.pivot_rows, [0, 1, 2]);
         assert_eq!(numeric.refactor(&ordering, &first), None);
         assert_eq!(numeric.refactor(&ordering, &second), Some(1));
         assert_eq!(
-            numeric.factor(&ordering, &second),
+            numeric.factor(&ordering, &second, 1),
             Ok(Factorization::FellBack)
         );
         assert_eq!(numeric.pivot_rows, [0, 2, 1]);
@@ -609,7 +609,7 @@ mod tests {
         let wanted = [1.0, -2.0, 3.0];
         let mut x = wanted;
         let mut workspace = Workspace::new(3);
-        numeric.solve(&ordering, &second, &mut x, &mut workspace);
+        numeric.solve((&ordering, &second), &mut x, &mut workspace, 1);
         let mut residual = wanted;
         for ((row, column), value) in ordering.pattern().positions().zip(&second) {
             residual[row] -= value * x[column];
