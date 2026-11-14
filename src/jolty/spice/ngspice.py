@@ -194,8 +194,19 @@ def runs(
         except subprocess.TimeoutExpired:
             message = f"ngspice ran for more than {TIMEOUT} s"
             raise JoltyError(message) from None
-        raw = directory / "result.raw"
         printed = done.stdout + done.stderr
+        # What ngspice printed is read first: a transient it aborted still writes every
+        # step it took, which can be hundreds of megabytes of results it has disowned.
+        if _ABORTED in printed:
+            message = f"ngspice aborted the analysis:\n{printed}"
+            raise JoltyError(message)
+        if _TRANSIENT_OPERATING_POINT in printed:
+            message = (
+                "ngspice found no operating point but by a transient of fixed length, "
+                f"whose end it does not check to be one:\n{printed}"
+            )
+            raise JoltyError(message)
+        raw = directory / "result.raw"
         if not raw.is_file():
             message = f"ngspice wrote no results:\n{printed}"
             raise JoltyError(message)
@@ -204,15 +215,6 @@ def runs(
         result.plot == "Constant values" for result in found
     ):
         message = f"ngspice ran no analysis:\n{printed}"
-        raise JoltyError(message)
-    if _ABORTED in printed:
-        message = f"ngspice aborted the analysis:\n{printed}"
-        raise JoltyError(message)
-    if _TRANSIENT_OPERATING_POINT in printed:
-        message = (
-            "ngspice found no operating point but by a transient of fixed length, "
-            f"whose end it does not check to be one:\n{printed}"
-        )
         raise JoltyError(message)
     return found
 
