@@ -594,18 +594,75 @@ impl Observer {
         }
     }
 
-    /// The small-signal current into each recorded terminal at angular frequency `omega`,
-    /// for the phasors `values` of the unknowns, with the source at `excited` driven by a
-    /// unit excitation, after [`Observer::linearize`].
-    pub(crate) fn phasors(
-        &mut self,
-        values: &[Complex64],
-        omega: f64,
-        excited: usize,
-    ) -> Vec<Complex64> {
-        let mut tracked = vec![Complex64::default(); self.selection.tracked];
+    /// The small-signal currents into the recorded terminals about the DC solution of
+    /// [`Observer::linearize`], with the source at `excited` driven by a unit excitation:
+    /// ready at any frequency, and read by any number of threads at once.
+    pub(crate) fn currents(&mut self, excited: usize) -> Currents<'_> {
+        let mut excitation = Vec::new();
         for &(index, first) in &self.selection.evaluated {
             let probe = &mut self.probes[index];
+            if probe.placed == excited
+                && let Some(source) = probe.device.as_source()
+            {
+                let mut derivative = vec![0.0; probe.x.len()];
+                source.level_derivative(&mut derivative);
+                excitation.extend(
+                    derivative[..probe.terminals]
+                        .iter()
+                        .enumerate()
+                        .map(|(terminal, &value)| (first + terminal, value)),
+                );
+            }
+        }
+        let probes = self
+            .selection
+            .evaluated
+            .iter()
+            .map(|&(index, first)| {
+                let probe = &self.probes[index];
+                Linear {
+                    first,
+                    terminals: probe.terminals,
+                    pattern: &probe.pattern,
+                    contributions: &probe.contributions,
+                    sources: &probe.sources,
+                }
+            })
+            .collect();
+        Currents {
+            probes,
+            excitation,
+            selection: &self.selection,
+        }
+    }
+}
+
+/// The linearized equations of one copy an observer evaluated.
+struct Linear<'a> {
+    /// The index of its first terminal among the evaluated devices' terminals.
+    first: usize,
+    terminals: usize,
+    pattern: &'a Pattern,
+    contributions: &'a Contributions,
+    sources: &'a [Node],
+}
+
+/// The small-signal currents into the recorded terminals about a DC solution, with a
+/// source driven by a unit excitation, at any frequency.
+pub(crate) struct Currents<'a> {
+    probes: Vec<Linear<'a>>,
+    /// What the excited source adds to each of its terminals, by index among the evaluated
+    /// devices' terminals.
+    excitation: Vec<(usize, f64)>,
+    selection: &'a Selection,
+}
+
+impl Currents<'_> {
+    /// The small-signal current into each recorded terminal at angular frequency `omega`,
+    /// for the phasors `values` of the unknowns.
+    pub(crate) fn at(&self, values: &[Complex64], omega: f64) -> Vec<Complex64> {
+        let mut tracked = vec![Complex64::default(); self.selection.tracked];
+        for probe in &self.probes {
             let phasor = |column: usize| {
                 probe.sources[column]
                     .map_or(Complex64::default(), |unknown| values[unknown.index()])
@@ -619,19 +676,15 @@ impl Observer {
             );
             for ((row, column), (&conductance, &capacitance)) in positions {
                 if row < probe.terminals {
-                    tracked[first + row] +=
+                    tracked[probe.first + row] +=
                         Complex64::new(conductance, omega * capacitance) * phasor(column);
                 }
             }
-            if probe.placed == excited
-                && let Some(source) = probe.device.as_source()
-            {
-                let mut derivative = vec![0.0; probe.x.len()];
-                source.level_derivative(&mut derivative);
-                for (terminal, &value) in derivative[..probe.terminals].iter().enumerate() {
-                    tracked[first + terminal] += Complex64::new(value, 0.0);
-                }
-            }
+        }
+        // Each of the excited source's terminals takes its excitation after its own
+        // conductances, which only its own copy adds to it.
+        for &(terminal, value) in &self.excitation {
+            tracked[terminal] += Complex64::new(value, 0.0);
         }
         self.selection.gather(&tracked)
     }

@@ -24,7 +24,7 @@ use jolty_models::Quantity;
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::ac::Linearization;
+use crate::ac::{Linearization, over_frequencies};
 use crate::{OperatingPoint, Options, SimulationError, Simulator};
 
 /// A stability analysis: the loop gain through a probe, at each frequency.
@@ -92,20 +92,22 @@ impl Simulator {
             source.level_derivative(&mut level);
         }
         let operating_point = self.linearize(&stability.frequencies, options)?;
-        let mut linearization = Linearization::new(&self.state.solver);
-        let mut gains = Vec::with_capacity(stability.frequencies.len());
-        for &frequency in &stability.frequencies {
-            let mut factors =
-                linearization.factor(&self.state.workspace.contributions, frequency)?;
-            let mut series: Vec<Complex64> =
-                level.iter().map(|&d| Complex64::new(-d, 0.0)).collect();
-            factors.solve(&mut series)?;
-            let mut shunt = vec![Complex64::default(); unknowns];
-            shunt[entered.index()] = Complex64::new(1.0, 0.0);
-            factors.solve(&mut shunt)?;
-            let u = series[entered.index()] - shunt[carried.index()];
-            gains.push(-u / (1.0 + u));
-        }
+        let gains = over_frequencies(
+            Linearization::new(&self.state.solver),
+            &self.state.workspace.contributions,
+            &stability.frequencies,
+            &options.parallelism,
+            &|factors, _, _| {
+                let mut series: Vec<Complex64> =
+                    level.iter().map(|&d| Complex64::new(-d, 0.0)).collect();
+                factors.solve(&mut series)?;
+                let mut shunt = vec![Complex64::default(); unknowns];
+                shunt[entered.index()] = Complex64::new(1.0, 0.0);
+                factors.solve(&mut shunt)?;
+                let u = series[entered.index()] - shunt[carried.index()];
+                Ok(-u / (1.0 + u))
+            },
+        )?;
         Ok(LoopGain {
             probe: stability.probe.clone(),
             operating_point,

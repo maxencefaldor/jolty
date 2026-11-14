@@ -28,10 +28,10 @@
 use jolty_ir::numbers;
 use jolty_models::{Binding, Contributions, Device, Gradient, Input, Unknown, UnknownInfo};
 use jolty_numerics::integration::Formula;
-use jolty_numerics::{Complex64, Pattern, PatternBuilder};
+use jolty_numerics::{Complex64, Pattern, PatternBuilder, Workspace};
 use serde::Deserialize;
 
-use crate::ac::Linearization;
+use crate::ac::{Linearization, over_frequencies};
 use crate::elaborated::{Origin, Origins};
 use crate::state::Held;
 use crate::sweep::Swept;
@@ -142,15 +142,21 @@ impl Twin {
     fn charge(&self) -> Vec<f64> {
         derivatives(&self.contributions.charge)
     }
+}
 
-    /// Adds `(∂G/∂p + jω ∂C/∂p) x` to `product`, as last evaluated.
-    fn add_product(&self, omega: f64, x: &[Complex64], product: &mut [Complex64]) {
-        let entries = self.contributions.conductance.iter();
-        let stored = entries.zip(&self.contributions.capacitance);
-        for ((row, column), (conductance, capacitance)) in self.pattern.positions().zip(stored) {
-            let value = Complex64::new(conductance.derivative, omega * capacitance.derivative);
-            product[row] += value * x[column];
-        }
+/// Adds `(∂G/∂p + jω ∂C/∂p) x` to `product`, at `(ω, x)`, from a twin's `contributions` of
+/// `pattern`, as last evaluated.
+fn add_product(
+    pattern: &Pattern,
+    contributions: &Contributions<Gradient>,
+    (omega, x): (f64, &[Complex64]),
+    product: &mut [Complex64],
+) {
+    let entries = contributions.conductance.iter();
+    let stored = entries.zip(&contributions.capacitance);
+    for ((row, column), (conductance, capacitance)) in pattern.positions().zip(stored) {
+        let value = Complex64::new(conductance.derivative, omega * capacitance.derivative);
+        product[row] += value * x[column];
     }
 }
 
@@ -362,27 +368,46 @@ impl Simulator {
         options: &Options,
     ) -> Result<Vec<Vec<f64>>, SimulationError> {
         self.evaluate(x, None, (1.0, options.gmin), false);
-        let mut factors = self
+        let factors = self
             .state
             .solver
             .factor(&self.state.workspace.contributions.conductance)?;
-        let mut adjoints = Vec::with_capacity(outputs.len());
-        for output in outputs {
-            let mut adjoint = vec![0.0; x.len()];
-            adjoint[output.index()] = 1.0;
-            factors.solve_transpose(&mut adjoint)?;
-            adjoints.push(adjoint);
-        }
-        let mut found = vec![Vec::with_capacity(twins.len()); outputs.len()];
-        for twin in twins {
-            let residual = if twin.fixed {
-                vec![0.0; x.len()]
-            } else {
-                twin.evaluate(x, None, options.gmin);
-                twin.residual()
-            };
-            for (adjoint, derivatives) in adjoints.iter().zip(&mut found) {
-                derivatives.push(-dot(adjoint, &residual));
+        let shared = factors.shared();
+        let parallelism = &options.parallelism;
+        let dimension = x.len();
+        let adjoints = parallelism.spread(
+            &mut outputs.to_vec(),
+            || Workspace::new(dimension),
+            |workspace, output| {
+                let mut adjoint = vec![0.0; dimension];
+                adjoint[output.index()] = 1.0;
+                shared.solve_transpose(&mut adjoint, workspace)?;
+                Ok(adjoint)
+            },
+        );
+        let adjoints = adjoints
+            .into_iter()
+            .collect::<Result<Vec<Vec<f64>>, SimulationError>>()?;
+        let by_twin = parallelism.spread(
+            twins,
+            || (),
+            |(), twin| {
+                let residual = if twin.fixed {
+                    vec![0.0; dimension]
+                } else {
+                    twin.evaluate(x, None, options.gmin);
+                    twin.residual()
+                };
+                adjoints
+                    .iter()
+                    .map(|adjoint| -dot(adjoint, &residual))
+                    .collect::<Vec<f64>>()
+            },
+        );
+        let mut found = vec![Vec::with_capacity(by_twin.len()); outputs.len()];
+        for derivatives in by_twin {
+            for (of_output, derivative) in found.iter_mut().zip(derivatives) {
+                of_output.push(derivative);
             }
         }
         Ok(found)
@@ -429,62 +454,74 @@ impl Simulator {
         let x = &response.operating_point.values;
         // How the operating point moves with each parameter, and G and C with it.
         self.evaluate(x, None, (1.0, options.gmin), false);
-        let mut factors = self
+        let factors = self
             .state
             .solver
             .factor(&self.state.workspace.contributions.conductance)?;
-        let mut moved = Vec::with_capacity(twins.len());
+        let shared = factors.shared();
+        let dimension = x.len();
         // Each twin stays evaluated at the operating point, which the response reads too.
-        for twin in twins.iter_mut() {
-            twin.evaluate(x, None, options.gmin);
-            let mut shift: Vec<f64> = twin.residual().iter().map(|value| -value).collect();
-            factors.solve(&mut shift)?;
-            moved.push(shift);
-        }
+        let moved = options.parallelism.spread(
+            twins,
+            || Workspace::new(dimension),
+            |workspace, twin| {
+                twin.evaluate(x, None, options.gmin);
+                let mut shift: Vec<f64> = twin.residual().iter().map(|value| -value).collect();
+                shared.solve(&mut shift, workspace)?;
+                Ok(shift)
+            },
+        );
+        let moved = moved
+            .into_iter()
+            .collect::<Result<Vec<Vec<f64>>, SimulationError>>()?;
         let mut bias = Vec::with_capacity(twins.len());
         for shift in &moved {
             bias.push(self.bias_derivative(x, shift, options));
         }
         self.evaluate(x, None, (1.0, options.gmin), false);
-        let mut linearization = Linearization::new(&self.state.solver);
-        let mut found = Vec::with_capacity(response.frequencies.len());
-        for (&frequency, phasors) in response.frequencies.iter().zip(&response.values) {
-            let omega = std::f64::consts::TAU * frequency;
-            let mut factors =
-                linearization.factor(&self.state.workspace.contributions, frequency)?;
-            let mut adjoints = Vec::with_capacity(outputs.len());
-            for output in outputs {
-                let mut adjoint = vec![Complex64::default(); x.len()];
-                adjoint[output.index()] = Complex64::new(1.0, 0.0);
-                factors.solve_transpose(&mut adjoint)?;
-                adjoints.push(adjoint);
-            }
-            let mut at = vec![Vec::with_capacity(twins.len()); outputs.len()];
-            for (twin, moving) in twins.iter().zip(&bias) {
-                let mut product = vec![Complex64::default(); x.len()];
-                twin.add_product(omega, phasors, &mut product);
-                if let Some((conductance, capacitance)) = moving {
-                    for ((row, column), (g, c)) in self
-                        .elaborated
-                        .pattern
-                        .positions()
-                        .zip(conductance.iter().zip(capacitance))
-                    {
-                        product[row] += Complex64::new(*g, omega * c) * phasors[column];
+        let products: Vec<(&Pattern, &Contributions<Gradient>)> = twins
+            .iter()
+            .map(|twin| (&twin.pattern, &twin.contributions))
+            .collect();
+        let pattern = &self.elaborated.pattern;
+        over_frequencies(
+            Linearization::new(&self.state.solver),
+            &self.state.workspace.contributions,
+            &response.frequencies,
+            &options.parallelism,
+            &|factors, index, frequency| {
+                let phasors = &response.values[index];
+                let omega = std::f64::consts::TAU * frequency;
+                let mut adjoints = Vec::with_capacity(outputs.len());
+                for output in outputs {
+                    let mut adjoint = vec![Complex64::default(); dimension];
+                    adjoint[output.index()] = Complex64::new(1.0, 0.0);
+                    factors.solve_transpose(&mut adjoint)?;
+                    adjoints.push(adjoint);
+                }
+                let mut at = vec![Vec::with_capacity(products.len()); outputs.len()];
+                for (&(twin_pattern, contributions), moving) in products.iter().zip(&bias) {
+                    let mut product = vec![Complex64::default(); dimension];
+                    add_product(twin_pattern, contributions, (omega, phasors), &mut product);
+                    if let Some((conductance, capacitance)) = moving {
+                        for ((row, column), (g, c)) in
+                            pattern.positions().zip(conductance.iter().zip(capacitance))
+                        {
+                            product[row] += Complex64::new(*g, omega * c) * phasors[column];
+                        }
+                    }
+                    for (adjoint, derivatives) in adjoints.iter().zip(&mut at) {
+                        let total: Complex64 = adjoint
+                            .iter()
+                            .zip(&product)
+                            .map(|(lambda, value)| lambda * value)
+                            .sum();
+                        derivatives.push(-total);
                     }
                 }
-                for (adjoint, derivatives) in adjoints.iter().zip(&mut at) {
-                    let total: Complex64 = adjoint
-                        .iter()
-                        .zip(&product)
-                        .map(|(lambda, value)| lambda * value)
-                        .sum();
-                    derivatives.push(-total);
-                }
-            }
-            found.push(at);
-        }
-        Ok(found)
+                Ok(at)
+            },
+        )
     }
 
     /// The derivatives of `G` and `C`, by stored position, as the operating point `x` moves

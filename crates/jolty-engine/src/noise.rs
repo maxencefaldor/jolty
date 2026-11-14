@@ -13,7 +13,7 @@ use jolty_models::{Input, Node, NoiseSource, Quantity};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::ac::Linearization;
+use crate::ac::{Linearization, over_frequencies};
 use crate::{OperatingPoint, Options, SimulationError, Simulator};
 
 /// A noise analysis: the noise density at an output, at each frequency, and how much each
@@ -151,31 +151,45 @@ impl Simulator {
                 densities: Vec::with_capacity(noise.frequencies.len()),
             }));
         }
-        let mut linearization = Linearization::new(&self.state.solver);
-        let mut densities = Vec::with_capacity(noise.frequencies.len());
-        for &frequency in &noise.frequencies {
-            let mut weights = vec![Complex64::default(); unknowns];
-            for (node, sign) in [(output, 1.0), (reference, -1.0)] {
-                if let Some(unknown) = node {
-                    weights[unknown.index()] += sign;
+        let referred = input.is_some();
+        let found = over_frequencies(
+            Linearization::new(&self.state.solver),
+            &self.state.workspace.contributions,
+            &noise.frequencies,
+            &options.parallelism,
+            &|factors, _, frequency| {
+                let mut weights = vec![Complex64::default(); unknowns];
+                for (node, sign) in [(output, 1.0), (reference, -1.0)] {
+                    if let Some(unknown) = node {
+                        weights[unknown.index()] += sign;
+                    }
                 }
-            }
-            linearization
-                .factor(&self.state.workspace.contributions, frequency)?
-                .solve_transpose(&mut weights)?;
-            let weight = |node: Node| node.map_or(Complex64::default(), |u| weights[u.index()]);
-            let mut total = 0.0;
-            for (source, contribution) in sources.iter().zip(&mut contributions) {
-                let [positive, negative] = source.equations;
-                let density =
-                    (weight(positive) - weight(negative)).norm_sqr() * source.density(frequency);
-                contribution.densities.push(density);
-                total += density;
-            }
+                factors.solve_transpose(&mut weights)?;
+                let weight = |node: Node| node.map_or(Complex64::default(), |u| weights[u.index()]);
+                let mut total = 0.0;
+                let mut shares = Vec::with_capacity(sources.len());
+                for source in &sources {
+                    let [positive, negative] = source.equations;
+                    let density = (weight(positive) - weight(negative)).norm_sqr()
+                        * source.density(frequency);
+                    shares.push(density);
+                    total += density;
+                }
+                let gain = referred.then(|| {
+                    let gain = weights.iter().zip(&level).map(|(z, &d)| z * d);
+                    -gain.sum::<Complex64>()
+                });
+                Ok((total, shares, gain))
+            },
+        )?;
+        let mut densities = Vec::with_capacity(noise.frequencies.len());
+        for (total, shares, gain) in found {
             densities.push(total);
-            if let Some(input) = &mut input {
-                let gain = weights.iter().zip(&level).map(|(z, &d)| z * d);
-                input.gains.push(-gain.sum::<Complex64>());
+            for (contribution, density) in contributions.iter_mut().zip(shares) {
+                contribution.densities.push(density);
+            }
+            if let (Some(input), Some(gain)) = (&mut input, gain) {
+                input.gains.push(gain);
             }
         }
         Ok(NoiseSpectrum {

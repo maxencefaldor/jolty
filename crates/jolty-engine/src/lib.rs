@@ -96,7 +96,7 @@ pub use logic::{Bound, Endpoint, Excursion, LogicNet, PlacedLogic};
 pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseSpectrum};
 pub use observe::{Observation, Observations, Observed, Recorded};
 pub use operating_point::{OperatingPoint, OperatingPoints, Strategy};
-pub use options::{Options, Record};
+pub use options::{Options, Parallelism, Record};
 pub use pole_zero::{Mode, PoleZero, PolesZeros};
 pub use profile::{Profile, Work};
 pub use sensitivity::{Derivatives, Differentiated, Parameter, Sensitivities, Sensitivity};

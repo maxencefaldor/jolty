@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use jolty_models::Quantity;
+use rayon::prelude::*;
 use serde::Deserialize;
 
 use crate::SimulationError;
@@ -39,6 +40,71 @@ impl Record {
             Self::All => true,
             Self::Instances(paths) => paths.contains(path),
         }
+    }
+}
+
+/// How a run spreads its own work across the threads of the rayon pool it runs in: the
+/// frequencies of its small-signal analyses, the right-hand sides of its sensitivities, and,
+/// once its devices evaluate in parallel, their instances and its unknowns. No setting
+/// changes any result: every one of them is the same bits however the work is split.
+///
+/// The caller owns the pool and runs the engine inside it, with `ThreadPool::install`; a
+/// run uses at most its `threads`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Parallelism {
+    /// The most threads a run spreads its own work over; none for every thread of the pool
+    /// it runs in, and 1 to run it on one thread alone.
+    pub threads: Option<usize>,
+    /// The fewest device instances a task evaluates, when devices evaluate in parallel;
+    /// none until they do.
+    pub min_instances_per_task: Option<usize>,
+    /// The fewest unknowns a circuit has for its Newton iteration's work on each unknown to
+    /// run in parallel; none until it does.
+    pub min_unknowns_inside: Option<usize>,
+}
+
+impl Default for Parallelism {
+    /// Every thread of the pool, and nothing that does not yet run in parallel.
+    fn default() -> Self {
+        Self {
+            threads: None,
+            min_instances_per_task: None,
+            min_unknowns_inside: None,
+        }
+    }
+}
+
+impl Parallelism {
+    /// How many tasks a run splits work of `items` independent items into: one per thread
+    /// it may use, no more than there are items, and at least one.
+    #[must_use]
+    pub fn tasks(&self, items: usize) -> usize {
+        let threads = rayon::current_num_threads();
+        self.threads
+            .map_or(threads, |most| most.min(threads))
+            .min(items)
+            .max(1)
+    }
+
+    /// `each` of every one of `items`, in their order, spread over [`Parallelism::tasks`]
+    /// tasks of consecutive items, each task with scratch space of its own that `scratch`
+    /// makes. Each item's result is the same whichever task finds it.
+    pub(crate) fn spread<T: Send, S, R: Send>(
+        &self,
+        items: &mut [T],
+        scratch: impl Fn() -> S + Sync,
+        each: impl Fn(&mut S, &mut T) -> R + Sync,
+    ) -> Vec<R> {
+        let size = items.len().div_ceil(self.tasks(items.len())).max(1);
+        let parts: Vec<Vec<R>> = items
+            .par_chunks_mut(size)
+            .map(|part| {
+                let mut space = scratch();
+                part.iter_mut().map(|item| each(&mut space, item)).collect()
+            })
+            .collect();
+        parts.into_iter().flatten().collect()
     }
 }
 
@@ -81,6 +147,9 @@ pub struct Options {
     /// default not, as the clock adds about a tenth to a small circuit's transient. It
     /// changes no other result.
     pub profile: bool,
+    /// How a run spreads its own work across threads, which changes no result; by default
+    /// over every thread of the pool it runs in.
+    pub parallelism: Parallelism,
 }
 
 impl Default for Options {
@@ -97,6 +166,7 @@ impl Default for Options {
             memory: 2.0,
             record: Record::default(),
             profile: false,
+            parallelism: Parallelism::default(),
         }
     }
 }
@@ -177,6 +247,17 @@ impl Options {
             return Err(SimulationError::InvalidOptions(
                 "iteration limits must be at least 1".to_owned(),
             ));
+        }
+        let parallelism = &self.parallelism;
+        let counts = [
+            ("threads", parallelism.threads),
+            ("min_instances_per_task", parallelism.min_instances_per_task),
+            ("min_unknowns_inside", parallelism.min_unknowns_inside),
+        ];
+        if let Some((name, _)) = counts.into_iter().find(|&(_, count)| count == Some(0)) {
+            return Err(SimulationError::InvalidOptions(format!(
+                "parallelism's {name} must be at least 1, not 0"
+            )));
         }
         Ok(())
     }

@@ -5,12 +5,13 @@
 use std::fmt;
 use std::sync::Arc;
 
-use jolty_numerics::{LinearError, Ordering, Pattern, Scalar, SparseLu};
+use jolty_numerics::{LinearError, Ordering, Pattern, Scalar, SparseLu, Workspace};
 
 use crate::SimulationError;
 use crate::newton::NAMED_UNKNOWNS;
 
 /// A sparse LU solver of the circuit's matrices, whose failures name the unknowns.
+#[derive(Clone)]
 pub(crate) struct Solver<T: Scalar> {
     lu: SparseLu<T>,
     /// The name of every unknown, by index.
@@ -44,6 +45,12 @@ impl<T: Scalar> Solver<T> {
     /// How much work the solver has done.
     pub(crate) fn statistics(&self) -> jolty_numerics::Statistics {
         self.lu.statistics()
+    }
+
+    /// Whether this solver factors every matrix from now on as `other` would, bit for bit,
+    /// as [`SparseLu::factors_alike`] says.
+    pub(crate) fn factors_alike(&self, other: &Self) -> bool {
+        self.lu.factors_alike(&other.lu)
     }
 
     /// Factors the matrix whose stored values are `values`, as [`SparseLu::factor`] does.
@@ -82,7 +89,7 @@ pub(crate) struct Factors<'a, T: Scalar> {
     names: &'a [String],
 }
 
-impl<T: Scalar> Factors<'_, T> {
+impl<'a, T: Scalar> Factors<'a, T> {
     /// Solves `A x = rhs` and leaves `x` in `rhs`.
     ///
     /// # Errors
@@ -104,6 +111,59 @@ impl<T: Scalar> Factors<'_, T> {
     pub(crate) fn solve_transpose(&mut self, rhs: &mut [T]) -> Result<(), SimulationError> {
         self.factors
             .solve_transpose(rhs)
+            .map_err(|error| named(error, self.names))
+    }
+
+    /// The factors, to solve with from several threads at once, each with a workspace of
+    /// its own, as [`jolty_numerics::Factors::shared`] says.
+    pub(crate) fn shared(&self) -> Shared<'a, T> {
+        Shared {
+            factors: self.factors.shared(),
+            names: self.names,
+        }
+    }
+}
+
+/// The LU factors of one of the circuit's matrices, which several threads solve with at
+/// once, each with a workspace of its own.
+#[derive(Clone, Copy)]
+pub(crate) struct Shared<'a, T: Scalar> {
+    factors: jolty_numerics::Shared<'a, T>,
+    names: &'a [String],
+}
+
+impl<T: Scalar> Shared<'_, T> {
+    /// Solves `A x = rhs` and leaves `x` in `rhs`, as [`Factors::solve`] does, writing to
+    /// `workspace` as it goes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::Singular`] when the solution is not finite, naming the
+    /// unknowns whose values are not.
+    pub(crate) fn solve(
+        &self,
+        rhs: &mut [T],
+        workspace: &mut Workspace<T>,
+    ) -> Result<(), SimulationError> {
+        self.factors
+            .solve(rhs, workspace)
+            .map_err(|error| named(error, self.names))
+    }
+
+    /// Solves `Aᵀ x = rhs` and leaves `x` in `rhs`, as [`Factors::solve_transpose`] does,
+    /// writing to `workspace` as it goes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::Singular`] when the solution is not finite, naming the
+    /// unknowns whose values are not.
+    pub(crate) fn solve_transpose(
+        &self,
+        rhs: &mut [T],
+        workspace: &mut Workspace<T>,
+    ) -> Result<(), SimulationError> {
+        self.factors
+            .solve_transpose(rhs, workspace)
             .map_err(|error| named(error, self.names))
     }
 }

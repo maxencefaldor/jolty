@@ -127,6 +127,7 @@ fn read_at_dc(options: &Options) -> Options {
         truncation_tolerance: unread.truncation_tolerance,
         memory: unread.memory,
         profile: unread.profile,
+        parallelism: unread.parallelism,
         ..options.clone()
     }
 }
