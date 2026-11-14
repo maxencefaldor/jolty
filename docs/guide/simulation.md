@@ -288,6 +288,8 @@ responses = found.traced[1].values_of("out")  # a row per run, a column per freq
 The result holds its columns as NumPy arrays, one row per run, which the engine writes at each run's row as it ends: the values each run took, whether each analysis ended, what each [measurement](specs.md#measurements) read and why one read nothing, and the values of the unknowns `traced` names at each point of an operating point, a DC sweep, a response and a transient that names its `times`, which it steps onto.
 The engine reads every measurement of `jolty.specs` itself, without Python; a measurement a script writes is read under the interpreter's lock as each run ends, as is the function given as `each`, which sees every analysis's result.
 Each run finds what a simulation at its values alone finds, bit for bit.
+`runs=range(start, stop)` runs only those runs, row 0 the run at `start`: the result holds the rows of the whole batch's that the range names, and `BatchResult.joined` joins the results of ranges that tile the runs into the whole batch's, as `rows` cuts one into ranges.
+A result's reasons are each named once, in the order its rows first name them, so that a range's and a join's are those of a batch of their runs.
 A run whose values give the circuit another structure, as a resistance below 1 Ω carries its current as an unknown, runs on the circuit elaborated once for that structure, and its measurements read the unknowns of the names they read.
 A run whose values put a device out of range, or one of whose analyses fails, says why, and the batch goes on.
 The threads are the engine's: the setting `threads`, or `jolty.simulate.threads(count)` for a block of code.

@@ -247,6 +247,7 @@ class Simulator:
         self,
         analyses: list[tuple[str, str]],
         variants: Variants,
+        runs: tuple[int, int],
         measures: list[tuple[int, Measure]],
         traced: list[tuple[int, list[int]]],
         pool: Pool,

@@ -1169,8 +1169,11 @@ class BatchResult:
     order; `ended` says whether each analysis of each run ended. `measured` holds what
     each of the `measurements` read on each run, in its unit among `units`, and not a
     number where it read none, `causes` then indexing `reasons`, the words that say why,
-    and -1 where it read a number. `traced` holds the unknowns a batch traced along its
-    analyses. Every row is a pure function of its run's index, whatever the threads.
+    each once, in the order the cells first name them, row by row, and -1 where it read
+    a number. `traced` holds the unknowns a batch traced along its analyses. Every row
+    is a pure function of its run's index, whatever the threads, and the reasons a
+    function of the rows, so the rows of a range of runs, and the runs of results joined
+    one after another, hold what a batch of those runs alone holds.
     """
 
     analyses: tuple[str, ...]
@@ -1190,6 +1193,16 @@ class BatchResult:
     errors: dict[int, dict[str, str]] = field(default_factory=dict)
     """Why each analysis that failed on a run failed, by the run's index then name."""
     traced: tuple[Traced, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Keeps each reason once, in the order the cells of `causes` first name them.
+
+        Raises:
+            ValueError: When a cause names no reason.
+        """
+        causes, reasons = _canonical(self.causes, self.reasons)
+        object.__setattr__(self, "causes", causes)
+        object.__setattr__(self, "reasons", reasons)
 
     @property
     def runs(self) -> int:
@@ -1224,6 +1237,85 @@ class BatchResult:
         """
         found = _find(list(self.parameters), name, "the variants vary no parameter")
         return self.values[:, found]
+
+    @staticmethod
+    def joined(parts: Sequence[BatchResult]) -> BatchResult:
+        """The runs of `parts`, one after another, as one result: the inverse of `rows`.
+
+        Each part's runs follow the part's before it, each measurement in the unit its
+        parts read it in, and its reasons are those of every part.
+
+        Raises:
+            ValueError: When there is no part; or the parts ran other analyses, varied
+                other numbers, read other measurements or traced other unknowns or
+                points, naming the first part that differs from the first, by its place;
+                or read a measurement in other units, naming them.
+        """
+        if not parts:
+            message = "a batch joins one part or more"
+            raise ValueError(message)
+        first, *rest = parts
+        for place, part in enumerate(rest, start=1):
+            if (part.analyses, part.parameters, part.measurements) != (
+                first.analyses,
+                first.parameters,
+                first.measurements,
+            ) or not _alike(first.traced, part.traced):
+                message = (
+                    f"part {place} ran other analyses, varied other numbers, read "
+                    "other measurements or traced otherwise than part 0"
+                )
+                raise ValueError(message)
+        units = tuple(
+            _unit_of(measurement, [part.units[column] for part in parts])
+            for column, measurement in enumerate(first.measurements)
+        )
+        texts: dict[str, int] = {}
+        causes = []
+        problems: dict[int, tuple[str, ...]] = {}
+        errors: dict[int, dict[str, str]] = {}
+        offset = 0
+        for part in parts:
+            table = np.array(
+                [texts.setdefault(reason, len(texts)) for reason in part.reasons]
+                + [-1],
+                dtype=np.int32,
+            )
+            causes.append(table[part.causes])
+            problems.update(
+                (offset + index, found) for index, found in part.problems.items()
+            )
+            errors.update(
+                (offset + index, found) for index, found in part.errors.items()
+            )
+            offset += part.runs
+        traced = tuple(
+            Traced(
+                each.analysis,
+                each.along,
+                each.axis,
+                each.unknowns,
+                np.concatenate([part.traced[index].values for part in parts]),
+                each.source,
+                each.quantity,
+                each.parameter,
+            )
+            for index, each in enumerate(first.traced)
+        )
+        return BatchResult(
+            first.analyses,
+            first.parameters,
+            np.concatenate([part.values for part in parts]),
+            np.concatenate([part.ended for part in parts]),
+            first.measurements,
+            units,
+            np.concatenate([part.measured for part in parts]),
+            np.concatenate(causes),
+            tuple(texts),
+            problems,
+            errors,
+            traced,
+        )
 
     def rows(self, start: int, stop: int) -> BatchResult:
         """The runs from `start` up to `stop`, from 0, as a result of their own."""
@@ -1261,3 +1353,62 @@ class BatchResult:
                 for traced in self.traced
             ),
         )
+
+
+def _canonical(
+    causes: npt.NDArray[np.int32], reasons: tuple[str, ...]
+) -> tuple[npt.NDArray[np.int32], tuple[str, ...]]:
+    """`reasons`, each text once, in the order the cells of `causes` first name them.
+
+    Returns `causes` renumbered with them, unchanged when they already are.
+
+    Raises:
+        ValueError: When a cause names no reason.
+    """
+    named = causes.ravel()
+    named = named[named >= 0]
+    if named.size and int(named.max()) >= len(reasons):
+        message = f"a cause names reason {int(named.max())} of {len(reasons)}"
+        raise ValueError(message)
+    found, first = np.unique(named, return_index=True)
+    texts: dict[str, int] = {}
+    table = np.full(len(reasons) + 1, -1, dtype=np.int32)
+    for old in found[np.argsort(first, kind="stable")]:
+        table[old] = texts.setdefault(reasons[old], len(texts))
+    if tuple(texts) == reasons and bool((table[:-1] == np.arange(len(reasons))).all()):
+        return causes, reasons
+    # A cause of -1 reads the table's last entry, -1 too.
+    return table[causes], tuple(texts)
+
+
+def _alike(traced: tuple[Traced, ...], other: tuple[Traced, ...]) -> bool:
+    """Whether `other` traces the unknowns `traced` does, along the same points."""
+    return len(traced) == len(other) and all(
+        (one.analysis, one.along, one.unknowns, one.source, one.quantity, one.parameter)
+        == (
+            two.analysis,
+            two.along,
+            two.unknowns,
+            two.source,
+            two.quantity,
+            two.parameter,
+        )
+        and np.array_equal(one.axis, two.axis)
+        for one, two in zip(traced, other, strict=True)
+    )
+
+
+def _unit_of(
+    measurement: str, units: Sequence[Dimension | Plain | None]
+) -> Dimension | Plain | None:
+    """The one unit among `units` of the parts that read `measurement`, if any read it.
+
+    Raises:
+        ValueError: When parts read it in different units.
+    """
+    read = list(dict.fromkeys(unit for unit in units if unit is not None))
+    if len(read) > 1:
+        listed = ", ".join(repr(str(unit)) for unit in read)
+        message = f"the parts read {measurement} in different units: {listed}"
+        raise ValueError(message)
+    return read[0] if read else None

@@ -2,13 +2,15 @@
 //! and its batch executor, which `jolty._core.Simulator.batch` runs through a sink that
 //! writes each run's numbers straight into `NumPy` arrays, at the run's row.
 //!
-//! The arrays hold, one row per run: the values of the numbers the variants vary, what each
-//! measure read or why it read nothing, whether each analysis ended, and the values of the
-//! unknowns traced at each point of their analyses. A run's row is its index, so the order
-//! the runs end in never shows. A function Python gives sees each run's results too, under
+//! The arrays hold, one row per run of the range of runs asked for: the values of the
+//! numbers the variants vary, what each measure read or why it read nothing, whether each
+//! analysis ended, and the values of the unknowns traced at each point of their analyses.
+//! A run's row is its index less the range's start, so the order the runs end in never
+//! shows. A function Python gives sees each run's results too, under
 //! the interpreter's lock, as each run ends.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use jolty_engine::batch::{Batch, Measured, Outcome, Sink, Unmeasured, Variants as _};
@@ -418,7 +420,7 @@ enum Cause {
 }
 
 /// What the sink has written, behind its lock: the arrays, one row per run, the causes
-/// measures read nothing for, and why each run that failed failed.
+/// measures read nothing for, and why each run that failed failed, by its row.
 struct Written<'a> {
     values: &'a mut [f64],
     measured: &'a mut [f64],
@@ -433,9 +435,11 @@ struct Written<'a> {
     errors: BTreeMap<u64, Vec<(usize, String)>>,
 }
 
-/// A sink that writes each run's numbers into the arrays of a batch at the run's row, and
-/// hands each run's results to a Python function, if given, under the interpreter's lock.
+/// A sink that writes each run's numbers into the arrays of a batch at the run's row, its
+/// index less the `first` run's, and hands each run's results to a Python function, if
+/// given, under the interpreter's lock.
 struct Columns<'a> {
+    first: u64,
     varied: &'a [Column],
     nominal: &'a [f64],
     temperature: f64,
@@ -535,7 +539,7 @@ impl Each {
 
 impl Sink for Columns<'_> {
     fn accept(&self, index: u64, outcome: Outcome) {
-        let Ok(row) = usize::try_from(index) else {
+        let Ok(row) = usize::try_from(index - self.first) else {
             return;
         };
         let values: Vec<f64> = self
@@ -603,9 +607,11 @@ impl Sink for Columns<'_> {
                 }
             }
             if let Some(problems) = &outcome.problems {
-                written.problems.insert(index, problems.clone());
+                written
+                    .problems
+                    .insert(index - self.first, problems.clone());
             } else if !errors.is_empty() {
-                written.errors.insert(index, errors);
+                written.errors.insert(index - self.first, errors);
             }
         }
         self.hand(index, outcome);
@@ -695,11 +701,13 @@ fn slice<'a, T: numpy::Element>(array: &'a mut PyReadwriteArray1<'_, T>) -> PyRe
 }
 
 /// A batch as Python asks for it: the analyses each run runs, in order, each the JSON
-/// texts of an analysis and its options; the measures it reads, each the index of the
-/// analysis it reads and the measure; what it traces, each the index of an analysis and the
-/// indices of the unknowns it traces; and the function each run's results are handed to.
+/// texts of an analysis and its options; the runs it runs, by their indices among the
+/// variants'; the measures it reads, each the index of the analysis it reads and the
+/// measure; what it traces, each the index of an analysis and the indices of the unknowns
+/// it traces; and the function each run's results are handed to.
 pub(crate) struct Request {
     pub(crate) analyses: Vec<(String, String)>,
+    pub(crate) runs: Range<u64>,
     pub(crate) measures: Vec<(usize, Py<measure::Measure>)>,
     pub(crate) traced: Vec<(usize, Vec<usize>)>,
     pub(crate) each: Option<Py<PyAny>>,
@@ -721,10 +729,11 @@ enum Traces<'py> {
     Complex(Bound<'py, PyArray1<Complex64>>),
 }
 
-/// What a batch runs, read from what Python asked for: the batch, what it traces, and how
-/// many analyses and measures it has.
+/// What a batch runs, read from what Python asked for: the batch, the runs it runs, what
+/// it traces, and how many analyses and measures it has.
 struct Prepared {
     batch: Batch,
+    runs: Range<u64>,
     traced: Vec<Traced>,
     analyses: usize,
     measures: usize,
@@ -768,6 +777,7 @@ fn prepare(elaborated: &Arc<jolty_engine::Elaborated>, request: &Request) -> PyR
         Batch::new(Arc::clone(elaborated), analyses, reads).map_err(|error| unreadable(&error))?;
     Ok(Prepared {
         batch,
+        runs: request.runs.clone(),
         traced,
         analyses: count,
         measures: width,
@@ -845,7 +855,14 @@ pub(crate) fn run<'py>(
         base,
         varied: &variants.varied,
     };
-    let runs = usize::try_from(based.len())
+    let Range { start, end } = prepared.runs;
+    if start > end || end > based.len() {
+        return Err(PyValueError::new_err(format!(
+            "the runs from {start} up to {end} do not lie within the {} runs of the variants",
+            based.len()
+        )));
+    }
+    let runs = usize::try_from(end - start)
         .map_err(|_| PyValueError::new_err("more runs than an array holds"))?;
     let columns = &variants.columns;
     let arrays = Arrays::new(py, runs, columns.len(), &prepared);
@@ -873,7 +890,7 @@ struct Found {
 
 impl Found {
     /// Adds what it holds to `found`: each reason as `(name, numbers, message)`, the
-    /// problems by run, and each failed analysis's index and error by run.
+    /// problems by row, and each failed analysis's index and error by row.
     fn into_python(self, found: &Bound<'_, PyDict>) -> PyResult<()> {
         let py = found.py();
         let told = PyList::empty(py);
@@ -938,6 +955,7 @@ fn write(
         }
     }
     let sink = Columns {
+        first: prepared.runs.start,
         varied: columns,
         nominal: elaborated.nominal(),
         temperature: elaborated.temperature(),
@@ -963,7 +981,7 @@ fn write(
     };
     let ran = py.detach(|| {
         pool.inner
-            .install(|| prepared.batch.run(variants, 0..variants.len(), &sink))
+            .install(|| prepared.batch.run(variants, prepared.runs.clone(), &sink))
     });
     ran.map_err(|error| unreadable(&error))?;
     let Columns { written, each, .. } = sink;

@@ -622,9 +622,15 @@ class Simulation:
         measurements: Sequence[specs.Measurement] = (),
         traced: Sequence[str] = (),
         each: Callable[[results.Run], object] | None = None,
+        runs: range | None = None,
     ) -> results.BatchResult:
         """Runs `analyses`, by name, on each run of `variants`, as one batch.
 
+        It runs the variants' runs `runs`, or every one, row 0 the run at the range's
+        start, so that a batch of a range holds the rows of the whole batch that the
+        range names, bit for bit, but for the unit of a measurement Python reads, none
+        where the range reads none, and the batches of ranges that tile the runs join
+        into it ([`BatchResult.joined`][jolty.results.BatchResult.joined]).
         Run `i` takes the values of the variants' run `i` in place of the simulation's,
         and runs each analysis in order with `options`, finding what
         [`run`][jolty.simulate.Simulation.run] finds at those values, bit for bit,
@@ -644,13 +650,20 @@ class Simulation:
             ElaborationError: When the variants name a number the circuit's devices do
                 not write.
             KeyError: When `traced` names no unknown.
+            ValueError: When `runs` steps by other than one, or does not lie within the
+                variants' runs.
         """
         chosen = Options() if options is None else options
         planned = _Planned.of(self, analyses, chosen, measurements, traced)
+        ran = self._variants(variants)
+        taken = range(len(ran)) if runs is None else runs
+        if taken.step != 1 or not 0 <= taken.start <= taken.stop <= len(ran):
+            message = f"{taken} is not a range of the variants' {len(ran)} runs"
+            raise ValueError(message)
         found = (
-            planned.in_ngspice(variants, each)
+            planned.in_ngspice(ran, taken, each)
             if self.foundry
-            else planned.in_engine(variants, each)
+            else planned.in_engine(ran, taken, each)
         )
         return planned.result(found)
 
@@ -1294,16 +1307,13 @@ class _Planned:
                 self.read[index, place] = str(error.args[0])
 
     def in_engine(
-        self, variants: Variants, each: Callable[[results.Run], object] | None
+        self,
+        ran: _core.Variants,
+        runs: range,
+        each: Callable[[results.Run], object] | None,
     ) -> _core.BatchOutcome:
-        """What the engine finds on the runs of `variants`, each handed to `each`.
-
-        Raises:
-            ElaborationError: When the variants name a number the circuit's devices do
-                not write.
-        """
+        """What the engine finds on the runs `runs` of `ran`, each handed to `each`."""
         simulation = self.simulation
-        ran = simulation._variants(variants)  # noqa: SLF001 - one simulation's own
         measures = [
             (self.engine[reading.measurement.analysis], reading.native.measure)
             for reading in self.readings
@@ -1325,7 +1335,7 @@ class _Planned:
                     simulation._view(structure),  # noqa: SLF001 - one simulation's own
                 )
             run = self._run(view, index, problems, outcomes)
-            self._readings(index, run)
+            self._readings(index - runs.start, run)
             if each is not None:
                 each(run)
 
@@ -1333,6 +1343,7 @@ class _Planned:
         found = simulation._core.batch(  # noqa: SLF001 - one simulation's own
             self.settings,
             ran,
+            (runs.start, runs.stop),
             measures,
             traced,
             _engine(),
@@ -1366,23 +1377,19 @@ class _Planned:
         return results.Run(index, found, ordered)
 
     def in_ngspice(
-        self, variants: Variants, each: Callable[[results.Run], object] | None
+        self,
+        ran: _core.Variants,
+        runs: range,
+        each: Callable[[results.Run], object] | None,
     ) -> _core.BatchOutcome:
-        """What ngspice finds on the runs of `variants`, each handed to `each`.
+        """What ngspice finds on the runs `runs` of `ran`, each handed to `each`.
 
         The runs go as many at once as the engine has threads, each waiting on its own
         ngspice, and are handed to `each` in order.
-
-        Raises:
-            ElaborationError: When the variants name a number the circuit's devices do
-                not write.
         """
         simulation = self.simulation
-        ran = simulation._variants(variants)  # noqa: SLF001 - one simulation's own
         with ThreadPoolExecutor(_engine().threads) as executor:
-            found = list(
-                executor.map(functools.partial(self._ngspice, ran), range(len(ran)))
-            )
+            found = list(executor.map(functools.partial(self._ngspice, ran), runs))
         count = len(found)
         ended = np.zeros((count, len(self.names)), dtype=np.bool_)
         problems: dict[int, list[_core.ProblemOutcome]] = {}
@@ -1391,21 +1398,23 @@ class _Planned:
         for name, columns in self.traced:
             unknowns = [simulation.unknowns[column] for column in columns]
             analysis = self.analyses[name]
-            rows = [
-                _at(run.results.get(name), analysis, unknowns) for run, _, _ in found
-            ]
-            if isinstance(analysis, Ac):
-                traced.append(np.stack(rows).astype(np.complex128))
-            else:
-                traced.append(np.stack(rows).astype(np.float64))
-        for index, (run, problem, _) in enumerate(found):
-            self._readings(index, run)
+            shape = (count, _points(analysis), len(unknowns))
+            traces: results.Real | results.Complex = (
+                np.empty(shape, dtype=np.complex128)
+                if isinstance(analysis, Ac)
+                else np.empty(shape)
+            )
+            for row, (run, _, _) in enumerate(found):
+                traces[row] = _at(run.results.get(name), analysis, unknowns)
+            traced.append(traces)
+        for row, (run, problem, _) in enumerate(found):
+            self._readings(row, run)
             if problem is not None:
-                problems[index] = problem
+                problems[row] = problem
             for name in run.results:
-                ended[index, self.names.index(name)] = True
+                ended[row, self.names.index(name)] = True
             if run.errors:
-                errors[index] = [
+                errors[row] = [
                     (self.names.index(name), error)
                     for name, error in run.errors.items()
                 ]

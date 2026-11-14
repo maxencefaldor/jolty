@@ -14,7 +14,9 @@ in the engine and read by no parser, so its draws are compared with
 `jolty.variation.sample`'s.
 """
 
+import itertools
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -46,8 +48,8 @@ from jolty.plan import (
     runs,
 )
 from jolty.simulate import Elaborated
-from jolty.specs import Measurement, Reading, gain, maximum, value
-from jolty.units import VOLTAGE, Hz, MHz, V, celsius, kHz, kohm, nF, ohm, us
+from jolty.specs import Measurement, MeasurementError, Reading, gain, maximum, value
+from jolty.units import CURRENT, VOLTAGE, Hz, MHz, V, celsius, kHz, kohm, nF, ohm, us
 from jolty.variation import sample, toleranced
 from jolty.waveforms import Pulse
 
@@ -173,6 +175,101 @@ def test_a_batch_finds_the_same_on_any_number_of_threads() -> None:
         for mine, theirs in zip(other.traced, first.traced, strict=True):
             assert np.array_equal(_bits(mine.values), _bits(theirs.values))
         assert other.reasons == first.reasons
+
+
+def _same(found: results.BatchResult, other: results.BatchResult) -> None:
+    """Checks that two batch results hold the same bits, and the same of the rest."""
+    for array in ("values", "measured", "causes", "ended"):
+        mine, theirs = getattr(found, array), getattr(other, array)
+        assert mine.shape == theirs.shape, array
+        assert np.array_equal(_bits(mine), _bits(theirs)), array
+    for mine, theirs in zip(found.traced, other.traced, strict=True):
+        assert np.array_equal(_bits(mine.values), _bits(theirs.values))
+        assert np.array_equal(_bits(mine.axis), _bits(theirs.axis))
+    rest = ("analyses", "parameters", "measurements", "units", "reasons")
+    for name in (*rest, "problems", "errors"):
+        assert getattr(found, name) == getattr(other, name), name
+
+
+def _peak(result: results.Result) -> Reading:
+    """The output's highest voltage, unread above 0.656 V, why naming the voltage."""
+    if not isinstance(result, results.Waveforms):
+        raise TypeError(result)
+    volts = float(result.voltage("out").max())
+    if volts > 0.656:  # About half the samples' peaks lie above.
+        message = f"out peaks at {volts:.6f} V"
+        raise MeasurementError(message)
+    return Reading(volts, VOLTAGE)
+
+
+def test_ranges_of_a_batch_hold_its_rows_and_join_into_it() -> None:
+    simulation = Simulation(clipper())
+    variants = Product(
+        MonteCarlo(15, seed=5),
+        Explicit([Variant(), Variant({"R1": {"resistance": -1.0}})]),
+    )
+    measurements = [
+        *MEASUREMENTS,
+        Measurement("step", "peak of out", None, _peak),
+        value("op", "nowhere"),
+    ]
+
+    def batch(taken: range | None = None) -> results.BatchResult:
+        return simulation.batch(
+            ANALYSES, variants, measurements=measurements, traced=["out"], runs=taken
+        )
+
+    whole = batch()
+    # Every other run fails, and some of the others read no peak, each for a reason of
+    # its own.
+    assert whole.failed.tolist() == [False, True] * 15
+    assert len(whole.reasons) > 4
+    cuts = [0, 4, 11, 15, 16, 30]
+    parts = []
+    for start, stop in itertools.pairwise(cuts):
+        part = batch(range(start, stop))
+        # A measurement Python reads takes the unit of its first reading: none where
+        # a range reads none.
+        assert all(
+            mine in {None, theirs}
+            for mine, theirs in zip(part.units, whole.units, strict=True)
+        )
+        _same(part, replace(whole.rows(start, stop), units=part.units))
+        parts.append(part)
+    _same(results.BatchResult.joined(parts), whole)
+    _same(results.BatchResult.joined([whole.rows(0, 7), whole.rows(7, 30)]), whole)
+    with pytest.raises(ValueError, match="is not a range of the variants' 30 runs"):
+        batch(range(20, 31))
+
+
+def test_a_batch_names_its_reasons_in_the_order_its_runs_first_meet_them() -> None:
+    found = results.BatchResult(
+        ("op",),
+        (),
+        np.empty((3, 0)),
+        np.ones((3, 1), dtype=np.bool_),
+        ("a in op", "b in op"),
+        (None, None),
+        np.full((3, 2), np.nan),
+        np.array([[-1, 2], [0, 2], [3, -1]], dtype=np.int32),
+        ("first", "unused", "second", "first"),
+    )
+    assert found.reasons == ("second", "first")
+    assert found.causes.tolist() == [[-1, 0], [1, 0], [1, -1]]
+    assert found.rows(2, 3).reasons == ("first",)
+    other = results.BatchResult(
+        ("op",),
+        (),
+        np.empty((1, 0)),
+        np.ones((1, 1), dtype=np.bool_),
+        ("a in op", "b in op"),
+        (VOLTAGE, None),
+        np.full((1, 2), np.nan),
+        np.full((1, 2), -1, dtype=np.int32),
+        (),
+    )
+    with pytest.raises(ValueError, match="read a in op in different units: 'V', 'A'"):
+        results.BatchResult.joined([other, replace(other, units=(CURRENT, None))])
 
 
 def test_a_batch_draws_the_samples_variation_draws() -> None:

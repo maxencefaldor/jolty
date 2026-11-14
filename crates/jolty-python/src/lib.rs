@@ -280,9 +280,10 @@ impl Simulator {
         }
     }
 
-    /// Runs many runs of the circuit, each at the simulator's values with those of the
-    /// run's variant of `variants` in their place, releasing the interpreter while they
-    /// run on the threads of `pool`, each run a pure function of its index.
+    /// Runs the runs `runs` of the circuit, from its start up to its stop, each at the
+    /// simulator's values with those of the run's variant of `variants` in their place,
+    /// releasing the interpreter while they run on the threads of `pool`, each run a pure
+    /// function of its index.
     ///
     /// Each run runs `analyses` in order, each the JSON texts of an analysis and of its
     /// options; reads `measures`, each the index of the analysis it reads and the measure;
@@ -295,15 +296,17 @@ impl Simulator {
     /// `reasons` of why it read none, each `("failed", [], "")` where the analysis did not
     /// end, or a `MeasureError`'s reason, numbers and message; `ended`, whether each
     /// analysis ended; and each traced array, runs × points × unknowns, among `traced`.
-    /// `problems` holds, by run, the problems its values made, as `ElaborationError`'s, and
-    /// `errors`, by run, the index of each analysis that failed and why.
+    /// `problems` holds, by row, the problems its run's values made, as
+    /// `ElaborationError`'s, and `errors`, by row, the index of each analysis that failed
+    /// and why. The run at `runs`' start is row 0.
     ///
     /// `each`, if given, is called under the interpreter's lock as each run ends, in no
     /// particular order, with the run's index, the simulator of its structure when its
     /// values gave the circuit another, its problems, if any, and each analysis's outcome,
     /// as `run` returns it, or why it failed; the first exception it raises is raised once
-    /// every run has ended. Raises `ValueError` for input the engine cannot read.
-    #[pyo3(signature = (analyses, variants, measures, traced, pool, each = None))]
+    /// every run has ended. Raises `ValueError` for input the engine cannot read, or runs
+    /// that do not lie within the variants'.
+    #[pyo3(signature = (analyses, variants, runs, measures, traced, pool, each = None))]
     #[expect(
         clippy::too_many_arguments,
         reason = "a batch is its runs, its analyses, its measures, what it traces, its \
@@ -314,6 +317,7 @@ impl Simulator {
         py: Python<'py>,
         analyses: Vec<(String, String)>,
         variants: &batch::Variants,
+        runs: (u64, u64),
         measures: Vec<(usize, Py<measure::Measure>)>,
         traced: Vec<(usize, Vec<usize>)>,
         pool: &Pool,
@@ -328,6 +332,7 @@ impl Simulator {
         };
         let request = batch::Request {
             analyses,
+            runs: runs.0..runs.1,
             measures,
             traced,
             each,
