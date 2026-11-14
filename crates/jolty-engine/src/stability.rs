@@ -88,7 +88,11 @@ impl Simulator {
             .ok_or_else(not_a_probe)?;
         let unknowns = self.elaborated.unknowns.len();
         let mut level = vec![0.0; unknowns];
-        if let Some(source) = self.state.devices[index].as_source() {
+        if let Some(source) = self
+            .state
+            .device(index)
+            .and_then(|device| device.as_source())
+        {
             source.level_derivative(&mut level);
         }
         let operating_point = self.linearize(&stability.frequencies, options)?;

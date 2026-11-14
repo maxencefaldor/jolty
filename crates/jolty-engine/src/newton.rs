@@ -135,16 +135,17 @@ impl Simulator {
         input.source_scale = source_scale;
         input.limiting = limiting;
         for &index in self.elaborated.groups.legacy() {
-            if let Some(device) = state.devices.get_mut(index) {
+            if let Some(device) = state.devices.get_mut(index).and_then(Option::as_deref_mut) {
                 device.evaluate(&input, &mut output);
             }
         }
         let mut limited = output.is_limited();
+        // The check evaluates each instance alone, from what it remembered before.
         #[cfg(test)]
-        let prefix = state
+        let before = state
             .check
             .is_some()
-            .then(|| state.workspace.contributions.clone());
+            .then(|| (state.workspace.contributions.clone(), state.runs.clone()));
         let grouped = state.runs.evaluate(
             &self.elaborated.groups,
             &input,
@@ -152,16 +153,10 @@ impl Simulator {
             state.tasks,
         );
         #[cfg(test)]
-        if let (Some(check), Some(prefix)) = (&mut state.check, prefix) {
+        if let (Some(check), Some((prefix, mut alone))) = (&mut state.check, before) {
             let assembled = (&state.workspace.contributions, state.runs.slab());
             let input = (&input, grouped);
-            check.compare(
-                &self.elaborated,
-                &mut state.devices,
-                input,
-                &prefix,
-                assembled,
-            );
+            check.compare(&self.elaborated, &mut alone, input, &prefix, assembled);
         }
         limited |= grouped;
         state.workspace.meter.leave(previous);

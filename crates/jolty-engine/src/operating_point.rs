@@ -564,8 +564,10 @@ impl Simulator {
         };
         let mut phasors = vec![Complex64::default(); values.len()];
         for &(element, net) in &self.elaborated.logic.drivers {
-            let Some(current) = self.state.devices[element]
-                .as_driver()
+            let Some(current) = self
+                .state
+                .device(element)
+                .and_then(|device| device.as_driver())
                 .map(|driver| driver.current())
             else {
                 continue;
@@ -618,7 +620,9 @@ impl Simulator {
                 .detectors
                 .iter()
                 .map(|&(element, _)| {
-                    let sense = self.state.devices[element].as_detector();
+                    let sense = self.state.devices[element]
+                        .as_deref()
+                        .and_then(|device| device.as_detector());
                     let input = Input::new(&solved.values, None, 0.0);
                     sense.map_or(Level::Unknown, |sense| {
                         detected(sense.margin(&input), Level::Unknown)

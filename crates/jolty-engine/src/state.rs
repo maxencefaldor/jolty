@@ -1,14 +1,15 @@
 //! A run's state: everything a run of an elaborated circuit writes.
 //!
-//! A [`State`] holds a run's devices, made for its values, the prepared numbers and the
-//! memory of the instances of kernels among them and the slab they write, and every buffer
-//! its analyses fill: the sparse solver's factors, Newton iteration's workspace, the
-//! logic's events, the devices made again to be read, and the operating point last solved.
-//! Resetting it for other values keeps every buffer, makes every device again, prepares
-//! again the instances of kernels whose numbers or temperature change, starts every one
-//! from its initial memory, and forgets everything a run leaves behind, so that a run never
-//! depends on the run before it: a state reset equals a state made afresh for the same
-//! values, bit for bit.
+//! A [`State`] holds the prepared numbers and the memory of a run's instances of kernels,
+//! each made once, in its group, for the run's values, and the slab they write; the run's
+//! devices of no kernel, made for its values; and every buffer its analyses fill: the
+//! sparse solver's factors, Newton iteration's workspace, the logic's events, the devices
+//! made again to be read, and the operating point last solved. Resetting it for other
+//! values keeps every buffer, prepares again the instances of kernels whose numbers or
+//! temperature change, makes every device of no kernel again, starts every one from its
+//! initial memory, and forgets everything a run leaves behind, so that a run never depends
+//! on the run before it: a state reset equals a state made afresh for the same values, bit
+//! for bit.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -47,11 +48,10 @@ pub(crate) struct Warm {
 pub(crate) struct State {
     /// The devices' temperature, in kelvins.
     pub(crate) temperature: f64,
-    /// The devices, made for the run, in the order of the circuit's. The run evaluates
-    /// those of no kernel one by one; of the instances of kernels, which their groups
-    /// evaluate, it reads what an analysis reads of a device apart from its group, such as
-    /// its noise.
-    pub(crate) devices: Vec<Box<dyn Device>>,
+    /// The devices of no kernel, made for the run, by the index of each among the
+    /// circuit's devices, which the run evaluates one by one; `None` for a kernel's
+    /// instance, which its group evaluates.
+    pub(crate) devices: Vec<Option<Box<dyn Device>>>,
     /// The groups of the instances of kernels: their prepared numbers, their memory and
     /// the slab they write.
     pub(crate) runs: Runs,
@@ -69,7 +69,7 @@ pub(crate) struct State {
     /// device's index.
     pub(crate) swept: BTreeMap<usize, Origin>,
     /// Where a reset makes the devices, before they take the place of the run's.
-    spare: Vec<Box<dyn Device>>,
+    spare: Vec<Option<Box<dyn Device>>>,
     pub(crate) solver: Solver<f64>,
     pub(crate) workspace: Workspace,
     /// The state of the logic nets, as the last analysis left it.
@@ -225,6 +225,12 @@ impl State {
         Ok(true)
     }
 
+    /// The device of no kernel at `index` among the circuit's devices; `None` for a
+    /// kernel's instance.
+    pub(crate) fn device(&mut self, index: usize) -> Option<&mut (dyn Device + 'static)> {
+        self.devices.get_mut(index).and_then(Option::as_deref_mut)
+    }
+
     /// Forgets what a run leaves but its devices, the sparse solver's pivots and the
     /// meter's counts: the operating point remembered, what a sweep holds, the logic's
     /// events and traces, and the devices made again to be read.
@@ -272,9 +278,14 @@ impl State {
                     }
                 }
             };
+            // A kernel's instance is prepared again below, and made as no device.
+            if elaborated.groups.of_kernel(index) {
+                made.push((index, origin, None));
+                continue;
+            }
             let template = elaborated.devices[index].origin();
             match elaborated.replay(index, origin.as_ref().unwrap_or(template), temperature) {
-                Ok(Some(device)) => made.push((index, origin, device)),
+                Ok(Some(device)) => made.push((index, origin, Some(device))),
                 Ok(None) => return Ok(false),
                 Err(error) => problems.push(elaborated.problem(index, error)),
             }
@@ -435,9 +446,10 @@ fn prepared(
     })
 }
 
-/// Makes every device of `elaborated` for a run at `temperature`, each from its origin of
-/// `patched` or its own, through a binding that replays its claims, into `devices`.
-/// Returns whether every one replayed them; it stops at the first that does not.
+/// Makes every device of `elaborated` of no kernel for a run at `temperature`, each from
+/// its origin of `patched` or its own, through a binding that replays its claims, into
+/// `devices`, `None` in the place of each kernel's instance. Returns whether every one
+/// replayed them; it stops at the first that does not.
 ///
 /// # Errors
 ///
@@ -446,7 +458,7 @@ fn made(
     elaborated: &Elaborated,
     patched: &[Option<Origin>],
     temperature: f64,
-    devices: &mut Vec<Box<dyn Device>>,
+    devices: &mut Vec<Option<Box<dyn Device>>>,
 ) -> Result<bool, ElaborationError> {
     let swept = BTreeMap::new();
     let origins = Origins {
@@ -457,8 +469,14 @@ fn made(
     };
     let mut problems = Vec::new();
     for index in 0..elaborated.devices.len() {
+        // A kernel's instance is prepared in its group, which checks its shape, and made
+        // as no device.
+        if elaborated.groups.of_kernel(index) {
+            devices.push(None);
+            continue;
+        }
         match elaborated.replay(index, origins.of(index), temperature) {
-            Ok(Some(device)) => devices.push(device),
+            Ok(Some(device)) => devices.push(Some(device)),
             Ok(None) => return Ok(false),
             Err(error) => problems.push(elaborated.problem(index, error)),
         }

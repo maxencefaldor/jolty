@@ -160,9 +160,10 @@ impl fmt::Debug for Made {
     }
 }
 
-/// The devices made for a run, in the order of the circuit's, and the run of the groups of
-/// the instances of kernels among them, prepared.
-pub(crate) type Devices = (Vec<Box<dyn Device>>, Runs);
+/// The devices of no kernel made for a run, by the index of each among the circuit's
+/// devices, `None` for a kernel's instance, and the run of the groups of those instances,
+/// prepared.
+pub(crate) type Devices = (Vec<Option<Box<dyn Device>>>, Runs);
 
 impl Origin {
     /// The device as an instance of a kernel, if it is one.
@@ -345,7 +346,7 @@ pub(crate) struct Binder {
     builder: PatternBuilder,
     node_diagonals: Vec<(Unknown, Entry)>,
     placed: Vec<Placed>,
-    devices: Vec<Box<dyn Device>>,
+    devices: Vec<Option<Box<dyn Device>>>,
     groups: Groups,
     runs: Runs,
     temperature: f64,
@@ -407,20 +408,24 @@ impl Binder {
             self.temperature,
         );
         let origin = origin.unwrap_or(&template.origin);
-        let device = origin.make(&mut binding)?;
+        // A kernel's instance claims its unknowns and entries in its group, and is made
+        // as no device of its own.
+        let (device, variables) = if let Some(instance) = origin.kernel() {
+            self.groups
+                .add(&mut self.runs, (instance, self.temperature), &mut binding)?;
+            (None, instance.variable_names())
+        } else {
+            let device = origin.make(&mut binding)?;
+            self.groups.add_legacy();
+            let variables = device.variable_names();
+            (Some(device), variables)
+        };
         let entries = first_entry..self.builder.positions().len();
-        self.groups.add(
-            &mut self.runs,
-            self.placed.len(),
-            (origin.kernel(), self.temperature),
-            (&template.nodes, first_internal..self.unknowns.len()),
-            Replay::new(self.builder.positions(), entries.clone()),
-        )?;
         self.placed.push(Placed {
             first_internal,
             internals: self.unknowns.len() - first_internal,
             entries,
-            variables: device.variable_names(),
+            variables,
             nominal,
             template,
         });

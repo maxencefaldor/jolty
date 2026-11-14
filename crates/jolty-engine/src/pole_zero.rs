@@ -161,7 +161,11 @@ impl Simulator {
         let zeros = match transfer {
             Some((index, output, reference)) => {
                 let mut level = vec![0.0; n];
-                if let Some(source) = self.state.devices[index].as_source() {
+                if let Some(source) = self
+                    .state
+                    .device(index)
+                    .and_then(|device| device.as_source())
+                {
                     source.level_derivative(&mut level);
                 }
                 let mut read = vec![0.0; n];

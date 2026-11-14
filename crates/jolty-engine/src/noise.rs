@@ -92,6 +92,32 @@ pub struct NoiseContribution {
 }
 
 impl Simulator {
+    /// Every device's noise sources at `state`, in the order of the devices, and what
+    /// each adds to the output's density, its densities ready for `frequencies` of them.
+    fn noise_sources(
+        &self,
+        state: &Input<'_>,
+        frequencies: usize,
+    ) -> (Vec<NoiseSource>, Vec<NoiseContribution>) {
+        let mut sources: Vec<NoiseSource> = Vec::new();
+        let mut contributions = Vec::new();
+        for (index, placed) in self.elaborated.devices.iter().enumerate() {
+            let before = sources.len();
+            if let Some(device) = &self.state.devices[index] {
+                device.noise(state, &mut sources);
+            } else {
+                let groups = &self.elaborated.groups;
+                self.state.runs.noise(groups, index, state, &mut sources);
+            }
+            contributions.extend(sources[before..].iter().map(|source| NoiseContribution {
+                device: placed.location().path.clone(),
+                name: source.name,
+                densities: Vec::with_capacity(frequencies),
+            }));
+        }
+        (sources, contributions)
+    }
+
     /// Linearizes the circuit at its operating point and finds the noise density at the
     /// output at each frequency, with each device noise source's share, and the gain from
     /// the source, if any, that refers it back there.
@@ -117,7 +143,11 @@ impl Simulator {
             Some(path) => {
                 let index = self.source_index(path)?;
                 let mut level = vec![0.0; unknowns];
-                if let Some(source) = self.state.devices[index].as_source() {
+                if let Some(source) = self
+                    .state
+                    .device(index)
+                    .and_then(|device| device.as_source())
+                {
                     source.level_derivative(&mut level);
                 }
                 let input = NoiseInput {
@@ -140,17 +170,7 @@ impl Simulator {
         }
         let operating_point = self.linearize(&noise.frequencies, options)?;
         let state = Input::new(&operating_point.values, None, options.gmin);
-        let mut sources: Vec<NoiseSource> = Vec::new();
-        let mut contributions = Vec::new();
-        for (placed, device) in self.elaborated.devices.iter().zip(&self.state.devices) {
-            let before = sources.len();
-            device.noise(&state, &mut sources);
-            contributions.extend(sources[before..].iter().map(|source| NoiseContribution {
-                device: placed.location().path.clone(),
-                name: source.name,
-                densities: Vec::with_capacity(noise.frequencies.len()),
-            }));
-        }
+        let (sources, mut contributions) = self.noise_sources(&state, noise.frequencies.len());
         let referred = input.is_some();
         let found = over_frequencies(
             Linearization::new(&self.state.solver),

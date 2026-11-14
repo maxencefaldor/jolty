@@ -19,21 +19,22 @@
 use std::any::{Any, TypeId};
 use std::fmt;
 use std::num::NonZeroUsize;
-use std::ops::Range;
 
-use jolty_numerics::{Entry, GatherMap, Pattern, Replay, UNMAPPED};
+use jolty_numerics::{Entry, GatherMap, Pattern, UNMAPPED};
 use rayon::prelude::*;
 
 use crate::kernel::device::mapped;
 use crate::surroundings::Own;
-use crate::{Contributions, Input, Kernel, Layout, Node, ParameterError, Stamp};
+use crate::{
+    Binding, Contributions, Input, Kernel, Layout, Node, NoiseSource, ParameterError, Stamp,
+};
 
 /// The parameters of an instance of some kernel, read, as an [`Instance`] holds them.
 type Erased = dyn Any + Send + Sync;
 
-/// What claims an instance's layout, from its parameters, and returns the typed half of
-/// the group of its shape.
-type ShapedBy = fn(&Erased, &mut Layout) -> Result<Box<dyn Shaped>, ParameterError>;
+/// What prepares an instance at a temperature, in kelvins, from its parameters, and claims
+/// its layout: its shape and its numbers, typed.
+type MadeBy = fn(&Erased, f64, &mut Layout) -> Result<Box<dyn Made>, ParameterError>;
 
 /// One instance of a kernel, as its specification reads it: its parameters and its own
 /// temperature, which group it with the other instances of its kernel and its shape, and
@@ -43,8 +44,10 @@ pub struct Instance<'a> {
     kernel: TypeId,
     name: &'static str,
     parameters: &'a Erased,
-    /// Claims the instance's layout and returns the typed half of the group of its shape.
-    shaped: ShapedBy,
+    /// Prepares the instance and claims its layout.
+    made: MadeBy,
+    /// The names of the variables the kernel computes.
+    variables: fn() -> &'static [&'static str],
     own: Own,
 }
 
@@ -66,7 +69,8 @@ impl<'a> Instance<'a> {
             kernel: TypeId::of::<K>(),
             name: K::NAME,
             parameters,
-            shaped: shaped::<K>,
+            made: made::<K>,
+            variables: K::variable_names,
             own: Own::default(),
         }
     }
@@ -76,22 +80,57 @@ impl<'a> Instance<'a> {
         Self { own, ..self }
     }
 
+    /// The names of the variables the instance computes on its way to its currents, as
+    /// [`Kernel::variable_names`] gives them.
+    #[must_use]
+    pub fn variable_names(&self) -> &'static [&'static str] {
+        (self.variables)()
+    }
+
     /// The parameters, if the instance is one of `K`.
     fn parameters<K: Kernel>(&self) -> Option<&'a K::Parameters<f64>> {
         self.parameters.downcast_ref()
     }
 }
 
-/// The typed half of the group of `parameters`, an instance of `K`, whose layout it
-/// claims in `layout`.
-fn shaped<K: Kernel>(
+/// An instance prepared and laid out, before it joins its group: its shape and its
+/// numbers, typed.
+trait Made: Send {
+    /// The shape, as the typed half of a group of it.
+    fn shaped(&self) -> &dyn Shaped;
+
+    /// The instance as [`Any`], for its group's run to take its numbers.
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+}
+
+/// An instance of `K` prepared and laid out.
+struct Fresh<K: Kernel> {
+    shape: Shape<K>,
+    prepared: K::Prepared<f64>,
+}
+
+impl<K: Kernel> Made for Fresh<K> {
+    fn shaped(&self) -> &dyn Shaped {
+        &self.shape
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+/// `parameters`, an instance of `K`, prepared at `temperature` and laid out in `layout`.
+fn made<K: Kernel>(
     parameters: &Erased,
+    temperature: f64,
     layout: &mut Layout,
-) -> Result<Box<dyn Shaped>, ParameterError> {
+) -> Result<Box<dyn Made>, ParameterError> {
     let parameters = parameters
         .downcast_ref::<K::Parameters<f64>>()
         .ok_or_else(|| ParameterError(format!("the parameters of no {}", K::NAME)))?;
-    Ok(Box::new(Shape::<K>(K::layout(parameters, layout)?)))
+    let prepared = K::prepare(parameters, temperature)?;
+    let shape = Shape::<K>(K::layout(parameters, layout)?);
+    Ok(Box::new(Fresh::<K> { shape, prepared }))
 }
 
 /// What a group is of: a kernel and a shape, and how a run of the group starts.
@@ -104,6 +143,9 @@ trait Shaped: fmt::Debug + Send + Sync {
 
     /// The shape as [`Any`], for [`Shaped::same`] to compare.
     fn as_any(&self) -> &dyn Any;
+
+    /// The shape, boxed, as the group of it holds it.
+    fn boxed(&self) -> Box<dyn Shaped>;
 
     /// A run of a group of `members` instances, none prepared yet.
     fn run(&self, members: usize) -> Box<dyn GroupRun>;
@@ -132,6 +174,10 @@ impl<K: Kernel> Shaped for Shape<K> {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn boxed(&self) -> Box<dyn Shaped> {
+        Box::new(Self(self.0.clone()))
     }
 
     fn run(&self, members: usize) -> Box<dyn GroupRun> {
@@ -176,6 +222,18 @@ impl Group {
     fn stride(&self) -> usize {
         self.layout.entries().len().max(1)
     }
+
+    /// The circuit's unknown of each local unknown of the instance `member`.
+    fn map_of(&self, member: usize) -> Option<&[u32]> {
+        let unknowns = self.unknowns();
+        self.nodes.get(member * unknowns..(member + 1) * unknowns)
+    }
+
+    /// The stored position of each local entry of the instance `member`, a stride of them.
+    fn slots_of(&self, member: usize) -> Option<&[u32]> {
+        let stride = self.stride();
+        self.slots.get(member * stride..(member + 1) * stride)
+    }
 }
 
 /// The groups of a circuit's devices: those of a kernel's instances, by kernel and shape in
@@ -185,6 +243,9 @@ impl Group {
 pub struct Groups {
     kernels: Vec<Group>,
     legacy: Vec<usize>,
+    /// Each device's group and its index among the group's instances, by the device's
+    /// index, or `None` for a device of no kernel.
+    places: Vec<Option<(usize, usize)>>,
     /// The sources of each unknown's residual, scale and charge, and of each stored
     /// entry's conductance and capacitance, among the slab's.
     rows: GatherMap,
@@ -205,69 +266,40 @@ impl Groups {
         Self::default()
     }
 
-    /// Adds the device at index `device` among the circuit's devices, the next one: to
-    /// the group of its kernel and shape when `instance` says it is a kernel's, made the
-    /// first time a kernel and shape appear, its numbers prepared in `runs` at the
-    /// temperature `temperature` of its surroundings, and else among the devices evaluated
-    /// on their own. Its terminals join `terminals`, its internal unknowns are `internals`
-    /// among the circuit's, and its entries are those `claims` hands back, as its device
-    /// claimed them.
+    /// Adds the next device among the circuit's, of no kernel, to be evaluated on its own.
+    pub fn add_legacy(&mut self) {
+        self.legacy.push(self.places.len());
+        self.places.push(None);
+    }
+
+    /// Adds the next device among the circuit's, the instance `instance` of a kernel at the
+    /// temperature `temperature` of its surroundings, to the group of its kernel and shape,
+    /// made the first time a kernel and shape appear: its numbers are prepared in `runs`,
+    /// and its internal unknowns and its entries claimed through `binding`, which binds
+    /// its terminals.
     ///
     /// # Errors
     ///
-    /// Returns [`ParameterError`] when the instance's parameters are out of range, or its
-    /// device claimed other unknowns or entries than its kernel's layout says; nothing is
-    /// added.
+    /// Returns [`ParameterError`] when the instance's parameters are out of range; nothing
+    /// is added.
     pub fn add(
         &mut self,
         runs: &mut Runs,
-        device: usize,
-        (instance, temperature): (Option<Instance<'_>>, f64),
-        (terminals, internals): (&[Node], Range<usize>),
-        mut claims: Replay<'_>,
+        (instance, temperature): (Instance<'_>, f64),
+        binding: &mut Binding<'_>,
     ) -> Result<(), ParameterError> {
-        let Some(instance) = instance else {
-            self.legacy.push(device);
-            return Ok(());
-        };
-        let mut layout = Layout::new(terminals.len());
-        let shaped = (instance.shaped)(instance.parameters, &mut layout)?;
-        if layout.internals().len() != internals.len() {
-            return Err(ParameterError(format!(
-                "a {} claimed {} internal unknowns, not the {} of its layout",
-                instance.name,
-                internals.len(),
-                layout.internals().len()
-            )));
-        }
-        let nodes: Vec<Node> = terminals
-            .iter()
-            .copied()
-            .chain(internals.map(|index| Some(crate::Unknown::new(index))))
-            .collect();
-        let node = |local: usize| nodes.get(local).copied().flatten();
-        let entries: Vec<Option<Entry>> = layout
-            .entries()
-            .iter()
-            .map(|&(row, column)| {
-                let (row, column) = (node(row)?, node(column)?);
-                Some(claims.entry(row.index(), column.index()))
-            })
-            .collect();
-        if !claims.replayed() {
-            return Err(ParameterError(format!(
-                "a {} claimed other entries than its layout says",
-                instance.name
-            )));
-        }
+        let terminals = binding.terminals().len();
+        let mut layout = Layout::new(terminals);
+        let temperature = instance.own.temperature(temperature)?;
+        let made = (instance.made)(instance.parameters, temperature, &mut layout)?;
         let found = self.kernels.iter().position(|group| {
-            group.shaped.kernel() == instance.kernel && group.shaped.same(&*shaped)
+            group.shaped.kernel() == instance.kernel && group.shaped.same(made.shaped())
         });
         let index = found.unwrap_or_else(|| {
-            runs.groups.push(shaped.run(0));
+            runs.groups.push(made.shaped().run(0));
             self.kernels.push(Group {
-                shaped,
-                layout,
+                shaped: made.shaped().boxed(),
+                layout: layout.clone(),
                 members: Vec::new(),
                 nodes: Vec::new(),
                 claims: Vec::new(),
@@ -276,21 +308,34 @@ impl Groups {
             });
             self.kernels.len() - 1
         });
-        if let Err(error) = runs.groups[index].push(&instance, temperature) {
-            if found.is_none() {
-                self.kernels.pop();
-                runs.groups.pop();
-            }
-            return Err(error);
+        runs.groups[index].push(made.into_any());
+        let mut nodes: Vec<Node> = binding.terminals().to_vec();
+        for &(label, quantity) in layout.internals() {
+            nodes.push(Some(binding.internal(label, quantity)));
         }
+        let node = |local: usize| nodes.get(local).copied().flatten();
         let group = &mut self.kernels[index];
+        let device = self.places.len();
+        self.places.push(Some((index, group.members.len())));
         group.members.push(device);
         group.nodes.extend(nodes.iter().map(|&node| mapped(node)));
-        group.claims.extend(&entries);
-        if entries.is_empty() {
+        let claimed = group.claims.len();
+        group.claims.extend(
+            layout
+                .entries()
+                .iter()
+                .map(|&(row, column)| binding.entry(node(row), node(column))),
+        );
+        if group.claims.len() == claimed {
             group.claims.push(None);
         }
         Ok(())
+    }
+
+    /// The instance at the device `device`, if it is a kernel's: its group and its index
+    /// among the group's instances.
+    fn place(&self, device: usize) -> Option<(usize, usize)> {
+        self.places.get(device).copied().flatten()
     }
 
     /// Fixes the groups once every device is added and the circuit's `pattern` is known:
@@ -344,6 +389,13 @@ impl Groups {
     #[must_use]
     pub fn legacy(&self) -> &[usize] {
         &self.legacy
+    }
+
+    /// Whether the device at index `device` is a kernel's instance, which its group
+    /// evaluates.
+    #[must_use]
+    pub fn of_kernel(&self, device: usize) -> bool {
+        self.place(device).is_some()
     }
 
     /// The maps that gather, from a run's [slab](Runs::slab), the contributions to each
@@ -445,7 +497,97 @@ pub struct Runs {
     layout: Layout,
 }
 
+impl Clone for Runs {
+    fn clone(&self) -> Self {
+        Self {
+            groups: self.groups.iter().map(|run| run.cloned()).collect(),
+            slab: self.slab.clone(),
+            layout: self.layout.clone(),
+        }
+    }
+}
+
+/// One instance's block of contributions, evaluated alone, and where its values go among
+/// the circuit's: the residual, scale and charge of each local unknown, the conductance and
+/// capacitance of each local entry, the circuit's unknown of each local unknown, or
+/// [`UNMAPPED`] for one on the reference, and the stored position of each local entry, or
+/// [`UNMAPPED`] for none.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Alone {
+    /// The residual, the scale and the charge of each local unknown.
+    pub rows: [Vec<f64>; 3],
+    /// The conductance and the capacitance of each local entry.
+    pub entries: [Vec<f64>; 2],
+    /// The circuit's unknown of each local unknown.
+    pub nodes: Vec<u32>,
+    /// The stored position of each local entry.
+    pub slots: Vec<u32>,
+    /// Whether the instance limited its voltages.
+    pub limited: bool,
+}
+
 impl Runs {
+    /// Appends the noise of the instance the device `device` is, if it is a kernel's, at
+    /// `input`, the operating point a noise analysis linearizes about, to `sources`, each
+    /// source's equations the circuit's.
+    pub fn noise(
+        &self,
+        groups: &Groups,
+        device: usize,
+        input: &Input<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        if let Some((group, member)) = groups.place(device)
+            && let (Some(of), Some(run)) = (groups.kernels.get(group), self.groups.get(group))
+        {
+            run.noise(member, of, input, sources);
+        }
+    }
+
+    /// Writes the variables of the instance the device `device` is, if it is a kernel's,
+    /// as its last evaluation left them, to `values`, one per name of
+    /// [`Instance::variable_names`].
+    pub fn variables(&self, groups: &Groups, device: usize, values: &mut [f64]) {
+        if let Some((group, member)) = groups.place(device)
+            && let Some(run) = self.groups.get(group)
+        {
+            run.variables(member, values);
+        }
+    }
+
+    /// Evaluates the instance the device `device` is, if it is a kernel's, alone at
+    /// `input`, into a block of its own, from what it remembers, which it updates.
+    pub fn evaluate_alone(
+        &mut self,
+        groups: &Groups,
+        device: usize,
+        input: &Input<'_>,
+    ) -> Option<Alone> {
+        let (group, member) = groups.place(device)?;
+        let (of, run) = (groups.kernels.get(group)?, self.groups.get_mut(group)?);
+        let (unknowns, stride) = (of.unknowns(), of.stride());
+        let mut alone = Alone {
+            rows: [
+                vec![0.0; unknowns],
+                vec![0.0; unknowns],
+                vec![0.0; unknowns],
+            ],
+            entries: [vec![0.0; stride], vec![0.0; stride]],
+            nodes: of.map_of(member)?.to_vec(),
+            slots: of.slots_of(member)?.to_vec(),
+            limited: false,
+        };
+        let [residual, scale, charge] = &mut alone.rows;
+        let [conductance, capacitance] = &mut alone.entries;
+        alone.limited = run.evaluate_alone(
+            member,
+            of,
+            input,
+            ([residual, scale, charge], [conductance, capacitance]),
+        );
+        Some(alone)
+    }
+
     /// Prepares again each instance of `groups` whose device `changed` says has changed,
     /// from the instance `instance` gives of it, at the temperature `temperature` of its
     /// surroundings, keeping the numbers apart until [`Runs::commit`] takes them. Returns
@@ -599,13 +741,34 @@ type Blocks<'a> = ([&'a mut [f64]; 3], [&'a mut [f64]; 2]);
 
 /// What one run of a group writes: its instances' prepared numbers and memory.
 trait GroupRun: fmt::Debug + Send {
-    /// Adds an instance, the `instance` of the group's kernel and shape, prepared at the
-    /// temperature `temperature` of its surroundings.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParameterError`] when its parameters are out of range; nothing is added.
-    fn push(&mut self, instance: &Instance<'_>, temperature: f64) -> Result<(), ParameterError>;
+    /// Adds an instance of the group's kernel and shape, `made` as [`Made`] makes it.
+    fn push(&mut self, made: Box<dyn Any>);
+
+    /// The run, cloned.
+    fn cloned(&self) -> Box<dyn GroupRun>;
+
+    /// Appends the noise of the instance `member` of `group` at `input` to `sources`, each
+    /// source's equations the circuit's.
+    fn noise(
+        &self,
+        member: usize,
+        group: &Group,
+        input: &Input<'_>,
+        sources: &mut Vec<NoiseSource>,
+    );
+
+    /// Writes the variables of the instance `member` at its last evaluation to `values`.
+    fn variables(&self, member: usize, values: &mut [f64]);
+
+    /// Evaluates the instance `member` of `group` alone at `input`, into `block`, which it
+    /// zeroes first. Returns whether it limited its voltages.
+    fn evaluate_alone(
+        &mut self,
+        member: usize,
+        group: &Group,
+        input: &Input<'_>,
+        block: Blocks<'_>,
+    ) -> bool;
 
     /// Prepares the instance `member` of the group, the `instance` of its device, at the
     /// temperature `temperature` of its surroundings, keeping the numbers apart; with a
@@ -664,14 +827,68 @@ impl<K: Kernel> fmt::Debug for KernelRun<K> {
 }
 
 impl<K: Kernel> GroupRun for KernelRun<K> {
-    fn push(&mut self, instance: &Instance<'_>, temperature: f64) -> Result<(), ParameterError> {
-        let parameters = instance
-            .parameters::<K>()
-            .ok_or_else(|| ParameterError(format!("the parameters of no {}", K::NAME)))?;
-        let prepared = K::prepare(parameters, instance.own.temperature(temperature)?)?;
-        self.prepared.push(Some(prepared));
+    fn push(&mut self, made: Box<dyn Any>) {
+        let prepared = made.downcast::<Fresh<K>>().ok().map(|fresh| fresh.prepared);
+        self.prepared.push(prepared);
         self.memory.push(K::Memory::default());
-        Ok(())
+    }
+
+    fn cloned(&self) -> Box<dyn GroupRun> {
+        Box::new(Self {
+            shape: self.shape.clone(),
+            prepared: self.prepared.clone(),
+            memory: self.memory.clone(),
+            staged: self.staged.clone(),
+        })
+    }
+
+    fn noise(
+        &self,
+        member: usize,
+        group: &Group,
+        input: &Input<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let (Some(Some(prepared)), Some(map)) = (self.prepared.get(member), group.map_of(member))
+        else {
+            return;
+        };
+        let start = sources.len();
+        K::noise(&self.shape, prepared, &input.local(map), sources);
+        for source in sources.iter_mut().skip(start) {
+            source.equations = source.equations.map(|equation| {
+                equation.and_then(|local| {
+                    map.get(local.index())
+                        .filter(|&&unknown| unknown != UNMAPPED)
+                        .map(|&unknown| crate::Unknown::new(unknown as usize))
+                })
+            });
+        }
+    }
+
+    fn variables(&self, member: usize, values: &mut [f64]) {
+        if let Some(memory) = self.memory.get(member) {
+            K::variables(memory, values);
+        }
+    }
+
+    fn evaluate_alone(
+        &mut self,
+        member: usize,
+        group: &Group,
+        input: &Input<'_>,
+        ([residual, scale, charge], [conductance, capacitance]): Blocks<'_>,
+    ) -> bool {
+        let (Some(Some(prepared)), Some(memory), Some(map)) = (
+            self.prepared.get(member),
+            self.memory.get_mut(member),
+            group.map_of(member),
+        ) else {
+            return false;
+        };
+        let mut stamp = Stamp::zeroed([residual, scale, charge], [conductance, capacitance]);
+        K::evaluate(&self.shape, prepared, memory, &input.local(map), &mut stamp);
+        stamp.is_limited()
     }
 
     fn prepare(

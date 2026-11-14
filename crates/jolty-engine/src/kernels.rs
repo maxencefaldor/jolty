@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use jolty_ir::{Circuit, Parameters};
-use jolty_models::{Contributions, Device, Input, Library, Tasks};
+use jolty_models::{Contributions, Input, Library, Runs, Tasks};
 use serde::Deserialize;
 
 use crate::elaborated::Elaborated;
@@ -47,47 +47,24 @@ pub(crate) type Slab<'a> = ([&'a [f64]; 3], [&'a [f64]; 2]);
 impl Check {
     /// Compares `assembled`, the contributions the groups added from `slab` to `prefix`,
     /// those of the devices of no kernel, with the instances of `elaborated`'s groups
-    /// evaluated at `input` as the devices `devices` holds, one by one in the order of the
-    /// circuit's devices, each into contributions of its own, added to `prefix`; `limited`
-    /// says whether the groups' evaluation limited a voltage.
+    /// evaluated at `input` each alone, from what `alone`, the groups' run before the
+    /// evaluation, holds, one by one in the order of the circuit's devices, each one's
+    /// local sums added to `prefix` as a device of its own adds them; `limited` says
+    /// whether the groups' evaluation limited a voltage.
     ///
     /// Both sum the same terms: the value of `prefix`, and each instance's contributions
     /// to the value, which its block of the slab holds. The groups add them one by one in
     /// the order of the groups, of their instances and of each instance's local indices;
-    /// the devices each instance's own sum, in the order of the devices.
+    /// the instances alone each one's own sum, in the order of the devices.
     pub(crate) fn compare(
         &mut self,
         elaborated: &Elaborated,
-        devices: &mut [Box<dyn Device>],
+        alone: &mut Runs,
         (input, limited): (&Input<'_>, bool),
         prefix: &Contributions,
         (assembled, slab): (&Contributions, Slab<'_>),
     ) {
-        let pattern = &elaborated.pattern;
-        let mut members: Vec<usize> = elaborated.groups.members().flatten().copied().collect();
-        members.sort_unstable();
-        let mut sums = prefix.clone();
-        let mut scratch = Contributions::new(pattern);
-        let mut one_by_one = false;
-        for &member in &members {
-            let mut output = scratch.output(pattern);
-            devices[member].evaluate(input, &mut output);
-            one_by_one |= output.is_limited();
-            for (scale, own) in sums.scale.iter_mut().zip(&scratch.scale) {
-                *scale = scale.max(*own);
-            }
-            let planes = [
-                (&mut sums.residual, &scratch.residual),
-                (&mut sums.charge, &scratch.charge),
-                (&mut sums.conductance, &scratch.conductance),
-                (&mut sums.capacitance, &scratch.capacitance),
-            ];
-            for (plane, own) in planes {
-                for (sum, value) in plane.iter_mut().zip(own) {
-                    *sum += value;
-                }
-            }
-        }
+        let (sums, one_by_one) = alone_sums(elaborated, alone, input, prefix);
         assert_eq!(limited, one_by_one, "whether a voltage was limited");
         let bits = |values: &[f64]| {
             values
@@ -164,6 +141,55 @@ impl Check {
         }
         self.evaluations += 1;
     }
+}
+
+/// The contributions of the instances of `elaborated`'s groups evaluated at `input` each
+/// alone, from what `alone` holds, one by one in the order of the circuit's devices, each
+/// one's local sums added to `prefix` as a device of its own adds them, and whether one
+/// limited its voltages.
+fn alone_sums(
+    elaborated: &Elaborated,
+    alone: &mut Runs,
+    input: &Input<'_>,
+    prefix: &Contributions,
+) -> (Contributions, bool) {
+    let mut members: Vec<usize> = elaborated.groups.members().flatten().copied().collect();
+    members.sort_unstable();
+    let mut sums = prefix.clone();
+    let mut one_by_one = false;
+    for &member in &members {
+        let Some(block) = alone.evaluate_alone(&elaborated.groups, member, input) else {
+            continue;
+        };
+        one_by_one |= block.limited;
+        let [residual, scale, charge] = &block.rows;
+        let [conductance, capacitance] = &block.entries;
+        let rows = residual.iter().zip(scale).zip(charge);
+        for (&row, ((&residual, &scale), &charge)) in block.nodes.iter().zip(rows) {
+            let row = row as usize;
+            if let (Some(sum), Some(largest), Some(held)) = (
+                sums.residual.get_mut(row),
+                sums.scale.get_mut(row),
+                sums.charge.get_mut(row),
+            ) {
+                *sum += residual;
+                *largest = largest.max(scale);
+                *held += charge;
+            }
+        }
+        let stored = conductance.iter().zip(capacitance);
+        for (&slot, (&conductance, &capacitance)) in block.slots.iter().zip(stored) {
+            let slot = slot as usize;
+            if let (Some(sum), Some(held)) = (
+                sums.conductance.get_mut(slot),
+                sums.capacitance.get_mut(slot),
+            ) {
+                *sum += conductance;
+                *held += capacitance;
+            }
+        }
+    }
+    (sums, one_by_one)
 }
 
 /// A fixture of the benchmarks: its circuit and the analyses of its plan, with its

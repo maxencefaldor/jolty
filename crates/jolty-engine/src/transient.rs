@@ -1064,7 +1064,7 @@ impl Simulator {
         let (mut before, mut later) = (Vec::new(), Vec::new());
         let start = stepper.time;
         let mut first: Option<f64> = None;
-        for device in &mut self.state.devices {
+        for device in self.state.devices.iter_mut().flatten() {
             before.clear();
             device.choices(&Input::new(&stepper.x, Some(start), 0.0), &mut before);
             if before.is_empty() {
@@ -1104,7 +1104,7 @@ impl Simulator {
             .enumerate()
             .filter_map(|(detector, &(element, _))| {
                 crossing(
-                    state.devices[element].as_ref(),
+                    state.devices[element].as_deref()?,
                     detector,
                     held[detector],
                     (stepper.time, &stepper.x),
@@ -1159,7 +1159,7 @@ impl Simulator {
     fn breakpoints(&mut self, stop: f64, minimum: f64) -> Vec<f64> {
         let previous = self.state.workspace.meter.enter(Activity::Preparing);
         let mut times = vec![stop];
-        for device in &self.state.devices {
+        for device in self.state.devices.iter().flatten() {
             device.breakpoints(0.0, stop, &mut times);
         }
         times.retain(|&time| time > minimum);

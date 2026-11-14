@@ -386,7 +386,7 @@ impl Simulator {
         (time, level, transition): (f64, Level, f64),
     ) -> Option<f64> {
         self.state.observer.drive(element, time, level, transition);
-        let driver = self.state.devices[element].as_driver()?;
+        let driver = self.state.device(element)?.as_driver()?;
         driver.drive(time, level, transition);
         Some(driver.settles_at())
     }

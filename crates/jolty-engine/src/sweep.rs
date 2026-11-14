@@ -125,8 +125,10 @@ impl Simulator {
     pub(crate) fn swept(&mut self, sweep: &DcSweep) -> Result<Swept, SimulationError> {
         let Some(name) = &sweep.parameter else {
             let device = self.source_index(&sweep.source)?;
-            let own = self.state.devices[device]
-                .as_source()
+            let own = self
+                .state
+                .device(device)
+                .and_then(|device| device.as_source())
                 .map_or(0.0, |source| source.level());
             return Ok(Swept {
                 held: Held::Level(device),
@@ -291,7 +293,12 @@ impl Simulator {
             .iter()
             .position(|placed| placed.path() == path)
             .ok_or_else(|| SimulationError::UnknownSource(path.to_owned()))?;
-        if self.state.devices[index].as_source().is_none() {
+        if self
+            .state
+            .device(index)
+            .and_then(|device| device.as_source())
+            .is_none()
+        {
             return Err(SimulationError::NotASource(path.to_owned()));
         }
         Ok(index)
@@ -352,17 +359,25 @@ impl Simulator {
             .get(index)
             .and_then(Option::as_ref)
             .unwrap_or(self.elaborated.devices[index].origin());
-        let made = self
-            .elaborated
-            .replay(
-                index,
-                origin.as_ref().unwrap_or(own),
-                self.state.temperature,
-            )
-            .map_err(|error| refused(error.0))?
-            .ok_or_else(|| {
-                refused("it would claim other unknowns or entries, which a sweep cannot".to_owned())
-            })?;
+        // A kernel's instance is prepared again below, and made as no device.
+        let made = if self.elaborated.groups.of_kernel(index) {
+            None
+        } else {
+            let made = self
+                .elaborated
+                .replay(
+                    index,
+                    origin.as_ref().unwrap_or(own),
+                    self.state.temperature,
+                )
+                .map_err(|error| refused(error.0))?
+                .ok_or_else(|| {
+                    refused(
+                        "it would claim other unknowns or entries, which a sweep cannot".to_owned(),
+                    )
+                })?;
+            Some(made)
+        };
         let previous = match origin {
             Some(origin) => self.state.swept.insert(index, origin),
             None => self.state.swept.remove(&index),
@@ -381,7 +396,9 @@ impl Simulator {
                 refused("it would change the kernel's shape, which a sweep cannot".to_owned())
             }));
         }
-        self.state.devices[index] = made;
+        if let Some(made) = made {
+            self.state.devices[index] = Some(made);
+        }
         // At its own level, a device held leaves the DC equations as they are.
         match level.filter(|level| level.total_cmp(&swept.own).is_ne()) {
             Some(level) => self.state.held.insert(swept.held, level),
