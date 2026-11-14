@@ -355,7 +355,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `resistance` | required | The resistance at the reference illuminance, in ohms; positive. |
 | `dark_resistance` | `1000000` | The resistance in darkness, in ohms; positive; default 1e6. |
 | `gamma` | `0.7` | How steeply the resistance falls with the illuminance, `γ`, the slope of its logarithm against the illuminance's; positive; default 0.7. |
-| `illuminance` | `10` | The reference illuminance, in lux; positive; default 10, as datasheets give it. |
+| `illuminance` | `10` | The reference illuminance, in lux; positive; default 10, as datasheets give it, such as Senba's of its GL55 series. |
 | `response_time` | `0` | The time constant of the response, in seconds; zero or more; default 0. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |

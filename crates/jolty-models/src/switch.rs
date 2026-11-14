@@ -8,11 +8,12 @@ use crate::{
     NoiseSource, Output, ParameterError, Real,
 };
 
-/// The law by which a switch's control moves its resistance, PSpice's: with the
-/// control's fraction of the way from its off value to its on value `s`, and `m = s − ½`,
-/// the resistance's logarithm is `ln √(r_on · r_off) + L · (3/2 · m − 2 · m³)`, where
-/// `L = ln(r_on / r_off)`: a cubic that reaches each resistance with zero slope at each
-/// end, beyond which the resistance holds.
+/// The law by which a switch's control moves its resistance, PSpice's, as the PSpice A/D
+/// Reference Guide states it for its switches `S` and `W`: with the control's fraction of
+/// the way from its off value to its on value `s`, and `m = s − ½`, the resistance's
+/// logarithm is `ln √(r_on · r_off) + L · (3/2 · m − 2 · m³)`, where `L = ln(r_on / r_off)`:
+/// a cubic that reaches each resistance with zero slope at each end, beyond which the
+/// resistance holds.
 #[derive(Debug)]
 struct Law<R: Real> {
     off: R,
@@ -83,7 +84,8 @@ pub struct VoltageControlledSwitch<R: Real = f64> {
     temperature: f64,
 }
 
-/// The parameters of a [`VoltageControlledSwitch`], with PSpice's defaults.
+/// The parameters of a [`VoltageControlledSwitch`], with the defaults the PSpice A/D
+/// Reference Guide gives its model `VSWITCH`.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct VoltageControlledSwitchParameters<R: Real = f64> {
@@ -209,7 +211,8 @@ pub struct CurrentControlledSwitch<R: Real = f64> {
     temperature: f64,
 }
 
-/// The parameters of a [`CurrentControlledSwitch`], with PSpice's defaults.
+/// The parameters of a [`CurrentControlledSwitch`], with the defaults the PSpice A/D
+/// Reference Guide gives its model `ISWITCH`.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct CurrentControlledSwitchParameters<R: Real = f64> {

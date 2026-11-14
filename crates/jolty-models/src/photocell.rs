@@ -12,7 +12,10 @@ use crate::{
 const DARKNESS: f64 = 1e-6;
 
 /// A photocell, or light-dependent resistor, as its maker's datasheet gives one: its
-/// resistance between `a` and `b` falls as a power of the illuminance on it.
+/// resistance between `a` and `b` falls as a power of the illuminance on it. Datasheets,
+/// such as Senba's of its GL55 series of cadmium sulphide cells, state the resistance at
+/// 10 lux and `γ = lg(R₁₀ / R₁₀₀)`, the slope of the resistance's logarithm against the
+/// illuminance's from 10 to 100 lux.
 ///
 /// The voltage of `light_positive` over `light_negative` is the illuminance, 1 V for each
 /// lux, and those terminals draw no current. With `r` the resistance at the reference
@@ -51,7 +54,8 @@ struct Lag<R: Real> {
 pub struct PhotocellParameters<R: Real = f64> {
     /// The resistance at the reference illuminance, in ohms; positive.
     pub resistance: R,
-    /// The reference illuminance, in lux; positive; default 10, as datasheets give it.
+    /// The reference illuminance, in lux; positive; default 10, as datasheets give it,
+    /// such as Senba's of its GL55 series.
     #[serde(default = "ten::<R>")]
     pub illuminance: R,
     /// How steeply the resistance falls with the illuminance, `γ`, the slope of its
