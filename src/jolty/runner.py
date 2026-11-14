@@ -38,7 +38,6 @@ stops a script or an analysis that runs too long, and a crash ends only the runn
 # never imports matplotlib.
 __lazy_modules__ = ["jolty"]
 
-import hashlib
 import json
 import runpy
 import sys
@@ -812,9 +811,11 @@ def _described(
 
     It is the analyses and the options, but for the parallelism, which changes no
     result; the fidelity's models, by scope; the samples and their seed; each
-    condition's corner, temperature, process corner, and the SHA-256 hash of its
-    circuit in the circuit format, none where it does not elaborate; the requirements
-    of `specs`, in words, and their yield target; and the unknowns `traced` names.
+    condition's corner, temperature, process corner, and the
+    [`circuit_hash`][jolty.shards.circuit_hash] of its circuit, which leaves out the
+    script lines that placed its instances, none where it does not elaborate; the
+    requirements of `specs`, in words, and their yield target; and the unknowns
+    `traced` names.
     """
     hashed: dict[int, str] = {}
 
@@ -823,8 +824,7 @@ def _described(
         if chosen is None:
             return None
         if id(chosen.built) not in hashed:
-            text = chosen.built.model_dump_json().encode()
-            hashed[id(chosen.built)] = hashlib.sha256(text).hexdigest()
+            hashed[id(chosen.built)] = shards.circuit_hash(chosen.built)
         return hashed[id(chosen.built)]
 
     options = plan.options.to_json()

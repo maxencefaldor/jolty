@@ -11,8 +11,9 @@ of its own, which a failed shard runs again; it writes a
 reports the shards of a directory as one run of every sample reports them.
 
 Each shard carries a [`fingerprint`][jolty.shards.fingerprint] of what its numbers
-depend on, and the merge refuses shards whose fingerprints differ, or whose samples
-leave a gap or overlap.
+depend on, which leaves out where the scripts that built its circuits lie, and the
+merge refuses shards whose fingerprints differ, or whose samples leave a gap or
+overlap.
 """
 
 import functools
@@ -29,7 +30,7 @@ from typing import Final
 import numpy as np
 from pydantic import JsonValue
 
-from jolty import _core, files, report
+from jolty import _core, files, ir, report
 from jolty import specs as specs_module
 from jolty.errors import JoltyError
 from jolty.results import BatchResult
@@ -57,6 +58,37 @@ def fingerprint(described: Mapping[str, JsonValue]) -> str:
         "platform": platform(),
     }
     text = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def circuit_hash(circuit: ir.Circuit) -> str:
+    """A SHA-256 hash, in hexadecimal, of what a simulation reads of `circuit`.
+
+    It hashes the circuit in the circuit format without each instance's
+    [`Source`][jolty.ir.Source], the script line that placed it, which names where a
+    problem lies and which no simulation reads: the same circuit built by scripts in two
+    places, or on two machines, hashes alike.
+
+    Examples:
+        >>> from jolty.ir import Circuit, Component, DeviceOf, Instance, Source
+        >>> def placed(file: str, resistance: float) -> Circuit:
+        ...     resistor = Instance(
+        ...         id="R1",
+        ...         of=DeviceOf(device="resistor"),
+        ...         parameters={"resistance": resistance},
+        ...         terminals={"a": "in", "b": "out"},
+        ...         source=Source(file=file, line=3),
+        ...     )
+        ...     return Circuit(
+        ...         top="top", components={"top": Component(instances=(resistor,))}
+        ...     )
+        >>> circuit_hash(placed("a.py", 1e3)) == circuit_hash(placed("b/a.py", 1e3))
+        True
+        >>> circuit_hash(placed("a.py", 1e3)) == circuit_hash(placed("a.py", 2e3))
+        False
+    """
+    sourceless = {"components": {"__all__": {"instances": {"__all__": {"source"}}}}}
+    text = circuit.model_dump_json(exclude=sourceless)
     return hashlib.sha256(text.encode()).hexdigest()
 
 

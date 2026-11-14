@@ -3,14 +3,16 @@
 
 Merging the shards of 1, 3 and 7 ranges of a plan's samples, run on three threads,
 gives the report and the batch file of one run of every sample on one thread, bit for
-bit, and the same batches at every condition. Shards of other fingerprints, and shards
-whose samples leave a gap or overlap, do not merge, and the error names them. A shard
+bit, and the same batches at every condition. Shards of one circuit built by scripts
+in two places merge. Shards of other fingerprints, and shards whose samples leave a gap
+or overlap, do not merge, and the error names them. A shard
 killed while it runs leaves no file, and run again writes the same file each time.
 """
 
 import importlib.util
 import itertools
 import os
+import runpy
 import signal
 import subprocess
 import sys
@@ -22,6 +24,7 @@ import pytest
 from pydantic import ValidationError
 
 from jolty import files, results, runner, shards, simulate
+from jolty.builder import circuit
 from jolty.cli import main
 from jolty.errors import JoltyError
 from jolty.report import ShardReport
@@ -203,6 +206,37 @@ def test_shards_of_other_fingerprints_do_not_merge(tmp_path: Path) -> None:
         "fingerprints differ: shard-0-35.npz has "
     )
     assert "; shard-35-70.npz has " in message
+
+
+def test_shards_of_one_circuit_built_in_two_places_merge(tmp_path: Path) -> None:
+    directory = tmp_path / "divider.shards"
+    places = []
+    for name in ("one", "two"):
+        (tmp_path / name).mkdir()
+        places.append(_script(tmp_path / name))
+    # Each instance's source names the script that placed it, in its own directory.
+    built = [circuit(runpy.run_path(str(place))["build"]()) for place in places]
+    resistors = [each.find("R1") for each in built]
+    assert [each.source.file for each in resistors if each and each.source] == [
+        "one/divider.py",
+        "two/divider.py",
+    ]
+    assert shards.circuit_hash(built[0]) == shards.circuit_hash(built[1])
+    first = _shard(places[0], directory, 0, 35)
+    second = _shard(places[1], directory, 35, SAMPLES)
+    shard, ordered = shards.merge([first, second])
+    assert ordered == (first, second)
+    assert (shard.start, shard.stop) == (0, SAMPLES)
+    # A value changed is another circuit, wherever its script lies.
+    text = places[0].read_text(encoding="utf-8")
+    assert "capacitor(1 * nF" in text
+    changed = tmp_path / "one" / "changed.py"
+    changed.write_text(
+        text.replace("capacitor(1 * nF", "capacitor(2 * nF"), encoding="utf-8"
+    )
+    other = _shard(changed, tmp_path / "changed.shards", 35, SAMPLES)
+    with pytest.raises(JoltyError, match="as their fingerprints differ"):
+        shards.merge([first, other])
 
 
 def test_gaps_and_overlaps_name_the_shards(tmp_path: Path) -> None:
