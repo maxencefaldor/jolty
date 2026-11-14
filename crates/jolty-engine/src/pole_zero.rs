@@ -67,9 +67,9 @@ const ITERATIONS: usize = 2;
 
 /// The most dense real matrices a pole-zero analysis holds at once, each of a row per
 /// unknown, and one more where it borders them for the zeros: the circuit's `G` and `C`,
-/// and, for the pencil it solves, the two it equilibrates, the two its QZ algorithm
-/// flushes and the two complex ones it iterates on, each the size of two real ones.
-const PENCIL_MATRICES: f64 = 10.0;
+/// and, for the pencil it solves, the two it equilibrates and the two complex ones its QZ
+/// iteration works on, each the size of two real ones.
+const PENCIL_MATRICES: f64 = 8.0;
 
 /// A pole-zero analysis: the poles of the circuit linearized at its operating point, and,
 /// given a source and an output, the zeros of the transfer function between them.
@@ -319,7 +319,6 @@ fn roots(
     equilibrate(n, &mut g, &mut c);
     let eigenvalues = generalized_eigenvalues(n, &g, &c).map_err(|error| match error {
         PencilError::Unconverged => SimulationError::Unconverged,
-        PencilError::TooLarge => SimulationError::TooLarge,
     })?;
     // A pencil whose determinant vanishes everywhere has an eigenvalue 0/0.
     if eigenvalues

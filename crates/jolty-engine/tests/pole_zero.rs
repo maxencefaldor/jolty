@@ -286,7 +286,7 @@ fn a_qz_iteration_that_stalls_is_taken_again_on_the_reversed_pencil() {
 #[test]
 fn a_pencil_that_would_fill_the_memory_fails_at_once() {
     // A low-pass of three unknowns: in, V1:current and out, and the bordered pencil a row
-    // more, of ten dense matrices of 16 numbers each.
+    // more, of eight dense matrices of 16 numbers each, 1,024 bytes.
     let circuit = circuit(&json!([
         source("V1", "in"),
         resistor("R1", 1e3, "in", "out"),
@@ -311,13 +311,13 @@ fn a_pencil_that_would_fill_the_memory_fails_at_once() {
         SimulationError::TooMuchMemory {
             analysis: "pole-zero analysis",
             rows: 4,
-            needed: 160.0 / 134_217_728.0,
+            needed: 128.0 / 134_217_728.0,
             memory: 1e-9,
         }
     );
     assert_eq!(
         error.to_string(),
-        "the pole-zero analysis's dense matrices of 4 rows would hold 1.1920928955078125e-6 \
+        "the pole-zero analysis's dense matrices of 4 rows would hold 9.5367431640625e-7 \
          GiB, more than its `memory` option's 1e-9 GiB"
     );
     // The poles alone take the pencil of the unknowns, and so do the modes that grow.

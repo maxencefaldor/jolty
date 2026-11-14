@@ -161,9 +161,9 @@ Plan({"pz": PoleZero(source="V1", output="out")})
 
 Linearized at its operating point, the circuit's small-signal equations are `(G + sC) x = −u·b` at the complex frequency `s`, where `u` is the source's level.
 The poles are the `s` at which `G + sC` is singular, the finite generalized eigenvalues of the pencil `(G, −C)`, and the zeros those at which the transfer function vanishes, the finite eigenvalues of the pencil bordered by the source's excitation and the output's reading.
-The engine solves both pencils, dense, by the QZ algorithm, after scaling the frequency by the circuit's own and equilibrating their rows and columns; an eigenvalue beyond 10¹² times the circuit's frequency is infinite, and a zero within 10⁻¹⁰ times the largest pole or zero lies at the origin, as a coupling capacitor's does.
+The engine solves both pencils, dense, by the QZ algorithm (Moler and Stewart, 1973) in complex arithmetic, as LAPACK's ZGGHRD and ZHGEQZ, after scaling the frequency by the circuit's own and equilibrating their rows and columns; an eigenvalue beyond 10¹² times the circuit's frequency is infinite, and a zero within 10⁻¹⁰ times the largest pole or zero lies at the origin, as a coupling capacitor's does.
 The circuit has an operating point, so no pole lies at the origin.
-The pencils hold up to ten dense matrices of a row per unknown, a row more for the zeros, so an analysis whose matrices would pass the `memory` option fails before it begins.
+The pencils hold up to eight dense matrices of a row per unknown, a row more for the zeros, so an analysis whose matrices would pass the `memory` option fails before it begins.
 A natural frequency the source cannot excite, or the output cannot see, is both a pole and a zero, as ngspice reports it too.
 
 The result's `poles` and `zeros` are complex frequencies in radians per second, by increasing magnitude, a conjugate pair's upper member first, and `natural_frequencies(roots)` and `dampings(roots)` read each as a frequency in hertz, its magnitude over 2π, and a damping ratio, minus its real part over its magnitude: 1 for a real root in the left half-plane, between 0 and 1 for a pair that rings, and negative for a pole in the right half-plane, which grows.
