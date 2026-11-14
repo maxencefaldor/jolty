@@ -14,9 +14,9 @@
 //! exact; the root pivots on any row left.
 //!
 //! The subtrees of a node's children share no entry, so they factor at once, as rayon tasks,
-//! as many at a time as the threads given, and a large front's columns spread over them; and every number is computed by the same
-//! operations in the same order however they are spread, so the factors and the solutions
-//! are the same bits on any number of threads.
+//! as many at a time as the threads given, and a front's columns spread over its threads;
+//! every number is computed by the same operations in the same order however they are
+//! spread, so the factors and the solutions are the same bits on any number of threads.
 
 use rayon::prelude::*;
 

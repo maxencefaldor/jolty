@@ -8,7 +8,8 @@
 //! Software 5(3), 1979): the vertices of that level next to the level beyond it separate
 //! the vertices before them from those after. Each component the separator leaves is a
 //! part again, until a part holds no more than the interiors may, or has too few levels to
-//! split. The separators and the interiors make a tree, each separator the parent of the
+//! split; components small enough to be interiors share one while together they are. The
+//! separators and the interiors make a tree, each separator the parent of the
 //! parts it separates, laid out in postorder: every subtree's positions are consecutive,
 //! a node's own after its children's, so that no entry joins two subtrees of one node and
 //! each subtree factors on its own.
@@ -155,10 +156,27 @@ impl Dissector<'_> {
             members.sort_unstable();
             components.push(members);
         }
-        let children = components
-            .into_iter()
-            .map(|component| self.dissect(component, most))
-            .collect();
+        // Consecutive components small enough to be interiors share one while together
+        // they are, so that the small parts a separator also cuts off, such as a
+        // transistor's internal unknowns, take no node of their own.
+        let mut children = Vec::new();
+        let mut shared: Vec<usize> = Vec::new();
+        for component in components {
+            if component.len() > most {
+                if !shared.is_empty() {
+                    children.push(self.leaf(std::mem::take(&mut shared)));
+                }
+                children.push(self.dissect(component, most));
+            } else {
+                if shared.len() + component.len() > most {
+                    children.push(self.leaf(std::mem::take(&mut shared)));
+                }
+                shared.extend(component);
+            }
+        }
+        if !shared.is_empty() {
+            children.push(self.leaf(shared));
+        }
         self.found.push(Found {
             vertices: separator,
             children,
@@ -454,7 +472,7 @@ mod tests {
                 "postorder"
             );
             if !node.children.is_empty() {
-                prop_assert!(node.children.len() >= 2, "a separator separates");
+                prop_assert!(!node.vertices.is_empty(), "a separator separates");
             }
         }
         prop_assert!(
