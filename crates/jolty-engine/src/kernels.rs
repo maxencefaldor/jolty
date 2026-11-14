@@ -330,9 +330,10 @@ fn the_groups_assemble_what_their_instances_do_as_devices() {
     }
 }
 
-/// A circuit of the differential corpus or of an example that holds a kernel's devices,
-/// what it is elaborated in, and the runs its tests or its plan make of it, as
-/// `tests/kernel_corpus.py` writes them.
+/// A circuit of the differential corpus or of an example that holds a device, what it is
+/// elaborated in, and the runs its tests or its plan make of it, as
+/// `tests/kernel_corpus.py` writes them, and `tests/test_kernel_corpus.py` checks they
+/// still are.
 #[derive(Deserialize)]
 struct Recorded {
     circuit: serde_json::Value,

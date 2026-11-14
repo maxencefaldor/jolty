@@ -1,16 +1,19 @@
 # Copyright 2026 Maxence Faldor
-"""Writes the circuits of the differential corpus and the examples, with the runs made of them.
+"""Writes the circuits of the differential corpus and the examples, with their runs.
 
-The engine evaluates every device as a kernel's instance, together with the others of its
-kernel and shape in a group, and checks at every evaluation of a run that the groups
-assemble the circuit's equations as the instances do evaluated one by one, each alone, in
-the order of the devices. It checks them on the circuits this script writes, to
+The engine evaluates every device as a kernel's instance, together with the others of
+its kernel and shape in a group, and checks at every evaluation of a run that the groups
+assemble the circuit's equations as the instances do evaluated one by one, each alone,
+in the order of the devices, and that what the observer reads of each is what the
+instance alone gives. It checks them on the circuits this script writes, to
 ``crates/jolty-engine/tests/data/kernels.json``: every circuit of the differential
 corpus, ``tests/test_ngspice.py``, and of the examples, each with the analyses its tests
 or its plan run on it. Run it from the repository root after changing either,
-``uv run python tests/kernel_corpus.py``.
+``uv run python tests/kernel_corpus.py``; with ``--check``, it writes nothing, and fails
+when the file is not what it would write, as ``tests/test_kernel_corpus.py`` runs it.
 """
 
+import argparse
 import importlib
 import json
 import sys
@@ -120,8 +123,8 @@ def _models(circuit: object) -> set[str]:
     }
 
 
-def main() -> None:
-    """Writes each circuit recorded with a device, once, with its runs."""
+def recorded() -> str:
+    """Each circuit recorded with a device, once, with its runs, as written."""
     records: list[Record] = []
     _corpus(records)
     _examples(records)
@@ -140,7 +143,25 @@ def main() -> None:
         assert isinstance(recorded, list)
         runs.extend(run for run in recorded if run not in runs)
     written = json.dumps(list(kept.values()), separators=(",", ":"), allow_nan=False)
-    WRITTEN.write_text(written + "\n", encoding="utf-8")
+    return written + "\n"
+
+
+def main() -> None:
+    """Writes the circuits, or, with ``--check``, fails unless the file holds them."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--check", action="store_true", help="fail unless the file holds the circuits"
+    )
+    arguments = parser.parse_args()
+    written = recorded()
+    if not arguments.check:
+        WRITTEN.write_text(written, encoding="utf-8")
+    elif WRITTEN.read_text(encoding="utf-8") != written:
+        message = (
+            f"{WRITTEN.relative_to(ROOT)} is not the corpus's circuits and runs: "
+            "write it again with `uv run python tests/kernel_corpus.py`"
+        )
+        raise SystemExit(message)
 
 
 if __name__ == "__main__":
