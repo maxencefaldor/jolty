@@ -82,6 +82,18 @@ impl<T: Scalar> Triangle<T> {
     }
 }
 
+/// How a factorization went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Factorization {
+    /// It searched for every pivot, there being no pivots to keep.
+    Searched,
+    /// It kept every pivot of the last factorization.
+    Refactored,
+    /// It kept the pivots of the last factorization up to one that had become too small,
+    /// and searched for the pivots from that one on.
+    FellBack,
+}
+
 /// The factors `L U` of the rows of an ordered matrix's diagonal blocks, permuted within
 /// each block by its pivots, and the workspace that finds them.
 pub(super) struct Numeric<T> {
@@ -131,19 +143,19 @@ impl<T: Scalar> Numeric<T> {
 
     /// Factors the matrix of `ordering`'s pattern whose values are `values`, keeping the
     /// last factorization's pivots while each passes, and searching for the pivots from the
-    /// first that does not. Returns whether it searched.
+    /// first that does not. Returns how it went.
     pub(super) fn factor(
         &mut self,
         ordering: &Ordering,
         values: &[T],
-    ) -> Result<bool, LinearError> {
-        let first = if self.complete {
-            self.refactor(ordering, values)
+    ) -> Result<Factorization, LinearError> {
+        let (first, went) = if self.complete {
+            match self.refactor(ordering, values) {
+                None => return Ok(Factorization::Refactored),
+                Some(first) => (first, Factorization::FellBack),
+            }
         } else {
-            Some(0)
-        };
-        let Some(first) = first else {
-            return Ok(false);
+            (0, Factorization::Searched)
         };
         if self.complete {
             for &row in &self.pivot_rows[first..] {
@@ -160,7 +172,7 @@ impl<T: Scalar> Numeric<T> {
             self.eliminate(ordering, values, column)?;
         }
         self.complete = true;
-        Ok(true)
+        Ok(went)
     }
 
     /// Refactors with the pivots and patterns of the last factorization. Returns `None`
@@ -449,11 +461,17 @@ mod tests {
             [[4.0, 0.0, 0.0], [0.0, 1e-14, 1.0], [0.0, 1.0, 1e-14]],
         );
         let mut numeric = Numeric::new(3);
-        assert_eq!(numeric.factor(&ordering, &first), Ok(true));
+        assert_eq!(
+            numeric.factor(&ordering, &first),
+            Ok(Factorization::Searched)
+        );
         assert_eq!(numeric.pivot_rows, [0, 1, 2]);
         assert_eq!(numeric.refactor(&ordering, &first), None);
         assert_eq!(numeric.refactor(&ordering, &second), Some(1));
-        assert_eq!(numeric.factor(&ordering, &second), Ok(true));
+        assert_eq!(
+            numeric.factor(&ordering, &second),
+            Ok(Factorization::FellBack)
+        );
         assert_eq!(numeric.pivot_rows, [0, 2, 1]);
         // The factors solve the second matrix's system: its residual is a rounding.
         let wanted = [1.0, -2.0, 3.0];

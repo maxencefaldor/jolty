@@ -523,7 +523,8 @@ proptest! {
         check(&mut lu, &first)?;
         check(&mut lu, &second)?;
         let statistics = lu.statistics();
-        prop_assert_eq!(statistics.factorizations + statistics.refactorizations, 2);
+        prop_assert_eq!(statistics.factorizations, 1);
+        prop_assert_eq!(statistics.refactorizations + statistics.fallbacks, 1);
     }
 
     /// The equations of circuits: voltage sources' equations with nothing on their
@@ -555,7 +556,8 @@ proptest! {
         check(&mut lu, &second)?;
         check(&mut lu, &second)?;
         let statistics = lu.statistics();
-        prop_assert_eq!(statistics.factorizations + statistics.refactorizations, 2);
+        prop_assert_eq!(statistics.factorizations, 1);
+        prop_assert_eq!(statistics.refactorizations + statistics.fallbacks, 1);
         prop_assert_eq!(statistics.reuses, 1);
     }
 
@@ -572,7 +574,8 @@ proptest! {
         check(&mut lu, &first)?;
         check(&mut lu, &second)?;
         let statistics = lu.statistics();
-        prop_assert_eq!(statistics.factorizations + statistics.refactorizations, 2);
+        prop_assert_eq!(statistics.factorizations, 1);
+        prop_assert_eq!(statistics.refactorizations + statistics.fallbacks, 1);
     }
 
     /// The real and the complex solvers of one pattern share its ordering.
@@ -638,8 +641,9 @@ fn falls_back_to_a_search_when_a_kept_pivot_becomes_too_small() {
     assert_eq!(
         lu.statistics(),
         Statistics {
-            factorizations: 2,
+            factorizations: 1,
             refactorizations: 0,
+            fallbacks: 1,
             reuses: 0
         }
     );
@@ -770,6 +774,7 @@ fn keeps_the_factors_of_the_very_matrix_last_factored() {
         Statistics {
             factorizations: 1,
             refactorizations: 1,
+            fallbacks: 0,
             reuses: 1
         }
     );

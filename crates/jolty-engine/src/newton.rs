@@ -344,11 +344,11 @@ mod tests {
             .expect("an elaborated circuit")
     }
 
-    /// The factorizations that searched for pivots, the refactorizations and the reuses of
-    /// factors, from `before` to `after`.
+    /// The factorizations that searched for pivots, from the first or from a pivot too
+    /// small, the refactorizations and the reuses of factors, from `before` to `after`.
     fn work(before: Statistics, after: Statistics) -> (usize, usize, usize) {
         (
-            after.factorizations - before.factorizations,
+            after.factorizations + after.fallbacks - before.factorizations - before.fallbacks,
             after.refactorizations - before.refactorizations,
             after.reuses - before.reuses,
         )

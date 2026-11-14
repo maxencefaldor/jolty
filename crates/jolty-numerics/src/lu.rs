@@ -20,7 +20,7 @@ use std::sync::Arc;
 use faer::sparse::FaerError;
 use num_complex::Complex64;
 
-use self::numeric::Numeric;
+use self::numeric::{Factorization, Numeric};
 pub use self::ordering::Ordering;
 use crate::Pattern;
 
@@ -125,11 +125,13 @@ impl From<std::collections::TryReserveError> for LinearError {
 /// How much work a [`SparseLu`] has done, by kind, over the factorizations that succeeded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Statistics {
-    /// Factorizations that searched for pivots: the first, one after a failure, and one
-    /// whose matrix made a pivot of the last too small, which searched from that pivot on.
+    /// Factorizations that searched for every pivot: the first, and one after a failure.
     pub factorizations: usize,
     /// Factorizations that kept every pivot of the last, with no search.
     pub refactorizations: usize,
+    /// Factorizations that kept the pivots of the last up to one their matrix made too
+    /// small, and searched for the pivots from that one on.
+    pub fallbacks: usize,
     /// Calls given the very matrix last factored, which kept its factors.
     pub reuses: usize,
 }
@@ -238,11 +240,12 @@ impl<T: Scalar> SparseLu<T> {
             }
             self.factored.clear();
             self.factored.extend_from_slice(values);
-            if self.numeric.factor(&self.ordering, values)? {
-                self.statistics.factorizations += 1;
-            } else {
-                self.statistics.refactorizations += 1;
-            }
+            let counted = match self.numeric.factor(&self.ordering, values)? {
+                Factorization::Searched => &mut self.statistics.factorizations,
+                Factorization::Refactored => &mut self.statistics.refactorizations,
+                Factorization::FellBack => &mut self.statistics.fallbacks,
+            };
+            *counted += 1;
             self.current = true;
         }
         Ok(Factors {
