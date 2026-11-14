@@ -911,13 +911,14 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
     // starts the capacitor's exponential there, with no overshoot. At 1.03 ms the jump
     // comes late in a step of 40 µs, so the first step after it, a tenth of the one before,
     // spans several of the capacitor's 1 µs time constants unless its error is judged.
-    // Judged, it is off by no more than the tolerances allow a step of backward Euler on
-    // the 5 V the capacitor charges to, where an unjudged one would be off by volts.
-    let options = Options::default();
-    let allowed = options.truncation_tolerance
-        * Method::BackwardEuler.factorial()
-        * options.relative_tolerance
-        * 5.0;
+    // Judged, at a tenth of the default relative tolerance the steps after it hold the
+    // capacitor within 20 mV of its exponential, where an unjudged one would be off by
+    // volts at any tolerance; at the default one, backward Euler's steps after the jump,
+    // held to SPICE's truncation tolerance, are off by 46 mV.
+    let options = Options {
+        relative_tolerance: 1e-4,
+        ..Options::default()
+    };
     let jumps = [
         (1.0003e-3, ["time > 1.0003e-3", "v(ramp) > 2.50075"]),
         (1.03e-3, ["time > 1.03e-3", "v(ramp) > 2.575"]),
@@ -949,7 +950,7 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
                 0.0
             };
             assert!(
-                (values[cap] - expected).abs() < allowed,
+                (values[cap] - expected).abs() < 2e-2,
                 "{condition}: at {time} s the capacitor holds {} V, not {expected} V",
                 values[cap]
             );
