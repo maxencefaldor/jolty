@@ -243,7 +243,7 @@ Results read the heat flowing into a thermal terminal as its current, `current(i
 
 ### Self-heating
 
-`device.heated()` heats a resistor, a diode, a JFET, a bipolar transistor or a MOSFET by the power it dissipates: a terminal `thermal` joins it to a thermal net, or to the ground, the ambient.
+`device.heated()` heats a resistor, a diode, a JFET, a bipolar transistor, a MOSFET or a VDMOS by the power it dissipates: a terminal `thermal` joins it to a thermal net, or to the ground, the ambient.
 The device runs at the simulation's temperature raised by that net's, every parameter scaled to it as the sections below say, and the power its electrical terminals take, each one's voltage times the current into it, flows into the net as heat.
 So a transistor whose junction a thermal resistance holds to the ambient settles where the heat it makes flows away, and a thermal capacitance beside it sets how fast it gets there:
 
@@ -256,7 +256,7 @@ c.connect(mount.b, ground)
 
 Every analysis sees the heating: an operating point balances it, a transient follows it, and a small-signal response carries its thermal poles, below which a resistor with a temperature coefficient takes a resistance of its own.
 A heated device keeps the form its value took at the simulation's temperature: a resistor below 1 Ω there carries its current as an unknown however hot it runs.
-ngspice heats no such device, so a circuit that holds one is not written as a SPICE netlist.
+ngspice heats no device on a thermal network, and its VDMOS only on a network of its own, whose nodes are in degrees Celsius, so a circuit that holds a heated device is not written as a SPICE netlist.
 
 ## Diode
 
@@ -446,3 +446,66 @@ With the bulk forward-biased, ngspice's small-signal model and Newton steps take
 
 In a [noise analysis](simulation.md#noise), the resistances make thermal noise, the channel thermal noise of `8kT·gm/3` A²/Hz, and the drain current `Id` flicker noise of `m·KF·(|Id|/m)^AF/(f·W·Leff·Cox²)`: each of the `m` parallel copies carries its share of the current over its own effective gate, and their noises add, with an oxide 0.1 µm thick unless given, as in SPICE.
 A netlist written for ngspice gives it as ngspice's `nlev=1`, `KF/Cox` its coefficient, which ngspice 43 and later read.
+
+## Power MOSFET
+
+`vdmos(...)` is a vertical double-diffused power MOSFET between `drain`, `gate` and `source`, in ngspice's VDMOS model, as ngspice 47 implements it and its manual's section "Power MOSFET model (VDMOS)" describes it, which reads the cards of LTspice's power MOSFETs.
+The channel follows the square law without a body effect, its overdrive softened below the threshold, so the current falls exponentially there; the gate holds a constant charge against the source and one against the drain whose capacitance runs from its minimum, far below the drain, to its maximum, far above it; and a body diode, whose breakdown is the transistor's, joins the source to the drain.
+Every parameter is optional:
+
+| Parameter | SPICE | Unit | Default |
+| --- | --- | --- | --- |
+| `channel` | `VDMOS`, `VDMOS pchan` | `"n"` or `"p"` | `"n"` |
+| `multiplier` | `M` | none | 1 |
+| `threshold_voltage` | `VTO` | V | 3 V, or −3 V for a p-channel |
+| `transconductance_parameter` | `KP` | A/V² | 20 A/V², or 10 A/V² for a p-channel |
+| `channel_length_modulation` | `LAMBDA` | V⁻¹ | 0 |
+| `mobility_modulation` | `THETA` | V⁻¹ | 0 |
+| `triode_conductance_multiplier` | `MTRIODE` | none | 1 |
+| `subthreshold_slope`, `subthreshold_shift` | `KSUBTHRES`, `SUBSHIFT` | V | 0.1 V, 0 |
+| `drain_resistance`, `source_resistance`, `gate_resistance` | `RD`, `RS`, `RG` | Ω | 0 |
+| `quasi_saturation_resistance`, `quasi_saturation_voltage` | `RQ`, `VQ` | Ω, V | none: no quasi-saturation |
+| `drain_source_resistance` | `RDS` | Ω | none: 1 fS from drain to source |
+| `gate_source_capacitance` | `CGS` | F | 1.4 nF |
+| `max_gate_drain_capacitance`, `min_gate_drain_capacitance` | `CGDMAX`, `CGDMIN` | F | 2 nF, 20 pF |
+| `gate_drain_capacitance_coefficient` | `A` | V⁻¹ | 1 |
+| `saturation_current`, `emission_coefficient` | `IS`, `N` | A, none | 10 fA, 1 |
+| `body_resistance` | `RB` | Ω | 0 |
+| `junction_capacitance`, `junction_potential`, `grading_coefficient` | `CJO`, `VJ`, `M` | F, V, none | 0.5 nF, 0.8 V, 0.5 |
+| `depletion_coefficient` | `FC` | none | 0.5 |
+| `transit_time` | `TT` | s | 0 |
+| `breakdown_voltage` | `BV` | V | none: no breakdown |
+| `breakdown_current`, `breakdown_emission_coefficient` | `IBV`, `NBV` | A, none | 0.1 nA, 1 |
+| `energy_gap`, `saturation_current_temperature_exponent` | `EG`, `XTI` | V, none | 1.11 V, 3 |
+| `nominal_temperature` | `TNOM` | K | 27 °C |
+| `threshold_temperature_coefficient` | `TCVTH`, `VTOTC` | V/K | 0 |
+| `transconductance_temperature_exponent` | `MU`, `BEX` | none | −1.5 |
+| `subthreshold_slope_temperature_coefficient`, `subthreshold_slope_quadratic_temperature_coefficient` | `TKSUBTHRES1`, `TKSUBTHRES2` | K⁻¹, K⁻² | 0 |
+| `drain_resistance_temperature_exponent` | `TEXP0` | none | none: the drain's coefficients |
+| `drain_resistance_temperature_coefficient`, `drain_resistance_quadratic_temperature_coefficient` | `TRD1`, `TRD2` | K⁻¹, K⁻² | 0 |
+| `quasi_saturation_temperature_exponent` | `TEXP1` | none | 0.3 |
+| `source_resistance_temperature_coefficient`, `source_resistance_quadratic_temperature_coefficient` | `TRS1`, `TRS2` | K⁻¹, K⁻² | 0 |
+| `gate_resistance_temperature_coefficient`, `gate_resistance_quadratic_temperature_coefficient` | `TRG1`, `TRG2` | K⁻¹, K⁻² | 0 |
+| `body_resistance_temperature_coefficient`, `body_resistance_quadratic_temperature_coefficient` | `TRB1`, `TRB2` | K⁻¹, K⁻² | 0 |
+| `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
+
+The defaults of the threshold, the transconductance parameter and the gate's and the body diode's capacitances are ngspice's, an IRF540's and an IRF9540's.
+With `vgst = vgs − vto` and `k` the subthreshold slope, the overdrive is `vgst' = k · ln(1 + exp((vgst − SUBSHIFT) / k))`; with `β' = KP · M · (1 + λ · vds) / (1 + θ · max(vgst, 0))`, the drain current is `β' · vgst'² / 2` in saturation, where `vgst' ≤ vdss`, and `β' · vdss · (vgst' − vdss / 2)` below it, `vdss` the drain-source voltage times `MTRIODE`.
+With the drain below the source, the drain acts as the source, and the channel-length modulation reads the drain-source voltage with its sign, `1 + λ · vds`, as ngspice's does.
+Given both `RQ` and `VQ`, which need a drain resistance, the drain resistance grows with the voltage `vds` from the drain terminal to the source terminal while the drain is at or above the source, to `RD + RQ · vds / (vds + VQ)`, as ngspice's quasi-saturation does; either alone changes nothing, as in ngspice.
+
+The gate-drain capacitance is `s · atan(A · vgd) + y` with the gate below the drain and `s · tanh(A · vgd) + y` above it, with `s = (CGDMAX − CGDMIN) / (1 + π/2)` and `y = CGDMAX − s`.
+jolty holds its charge, the capacitance's integral, where ngspice integrates the capacitance by the trapezoidal rule from one time point to the next, so jolty's gate charge is conserved and the two agree as their steps shrink.
+The body diode is a diode from the source, behind `RB`, to the drain terminal, with the diode's junction and breakdown; its saturation current, junction capacitance and the gate's capacitances scale with the multiplier, and its breakdown current does not, as in ngspice.
+A depletion threshold `FC · VJ` above 2.5 V at the transistor's temperature, where ngspice replaces the junction potential and its depletion charge jumps, is refused.
+
+Away from the nominal temperature, the transconductance parameter scales as `(T/Tn)^MU`, the threshold moves by `TCVTH`, the subthreshold slope by its coefficients, the drain resistance as `(T/Tn)^TEXP0` given that exponent and by `TRD1` and `TRD2` otherwise, the quasi-saturation resistance as `(T/Tn)^TEXP1`, the other resistances by their coefficients, and the body diode as a diode, as in ngspice.
+A heated VDMOS runs at its thermal net's temperature, as any device that [heats](#self-heating) does; ngspice's own thermal network, `RTHJC`, `RTHCA` and `CTHJ`, heats only an element that says `thermal`, which the SPICE reader does not read.
+
+A drain, source, gate or body resistance adds an internal node to the unknowns, as `M1:drain`, `M1:source`, `M1:gate` or `M1:body_diode` for a transistor `M1`; one below 1 Ω adds its current too, as `M1:drain_current`, `M1:source_current`, `M1:gate_current` or `M1:body_diode_current`, as a small resistor does.
+jolty keeps every derivative exact: ngspice's Newton steps and small-signal model leave out the quasi-saturating resistance's slope and the mobility degradation's below the threshold, and give the reverse channel-length modulation's the opposite sign, so there its frequency response differs from jolty's, the exact slope of the DC model, while their operating points agree.
+
+In a [noise analysis](simulation.md#noise), the drain and source resistances make thermal noise, the channel thermal noise of `8kT·gm/3` A²/Hz, and the drain current `Id` flicker noise of `KF·|Id|^AF/(f·Cox²)`, with `Cox` an oxide's of 0.1 µm per area, 0.35 mF/m², as in ngspice, whose VDMOS gives its gate and body resistances and its body diode no noise.
+
+The SPICE reader reads a `.model` card of type `VDMOS`, a p-channel's with `pchan` in it, and reads past what ngspice reads past: the annotations `MFG`, `VDS`, `RON` and `QG` of LTspice's cards; `PHI`, which only ngspice's distortion analysis reads; and the thermal network.
+Its `M` element joins three nodes, drain, gate and source, before its model, as vendors write it, or four or five, the last two ngspice's thermal nodes, which join nothing.

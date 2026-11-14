@@ -7,7 +7,8 @@ flattened into devices whose ids and nets join their paths with underscores, suc
 subcircuits. [`jolty.spice.ngspice`][jolty.spice.ngspice] runs those lines, and
 [`vector`][jolty.spice.export.vector] names the ngspice vector of a jolty unknown.
 Logic devices and thermal networks have no SPICE element, and ngspice heats no device by
-what it dissipates, so a circuit that holds one cannot be written.
+what it dissipates into a thermal network, so a circuit that holds one cannot be
+written.
 """
 
 import json
@@ -124,6 +125,7 @@ ELEMENTS = {
     "jfet": Element("J", ("drain", "gate", "source")),
     "bipolar_transistor": Element("Q", ("collector", "base", "emitter", "substrate")),
     "mosfet": Element("M", ("drain", "gate", "source", "bulk")),
+    "vdmos": Element("M", ("drain", "gate", "source")),
     "foundry_mosfet": Element("X", ("drain", "gate", "source", "bulk")),
     "behavioral_voltage_source": Element("B", ("positive", "negative")),
     "behavioral_current_source": Element("B", ("positive", "negative")),
@@ -186,6 +188,9 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
                 "level": ("level", 1.0),
             }
             instance = _spice(models.MOSFET_INSTANCE)
+        case "vdmos":
+            kind, names = "VDMOS", _spice(models.VDMOS)
+            instance = _spice(models.VDMOS_INSTANCE)
         case _:
             message = f"a {model} has no model card"
             raise _unwritable(message)
@@ -211,6 +216,9 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
         for key, value in given.items()
         if key not in instance
     )
+    # ngspice reads a VDMOS card's polarity from the word `pchan` within it.
+    if model == "vdmos" and _defaulted(model, values)["channel"] == "p":
+        card = f"pchan {card}".rstrip()
     element = " ".join(
         f"{instance[key][0]}={_spice_value(key, value, instance[key][1])}"
         for key, value in given.items()
@@ -252,7 +260,8 @@ def element(instance: ir.Instance) -> str:
         raise _unwritable(message)
     if instance.parameters.get("thermal") is True:
         message = (
-            f"{instance.id} is a heated {instance.of.device}, which ngspice has not"
+            f"{instance.id} is a heated {instance.of.device}, and ngspice heats no "
+            "device on a thermal network"
         )
         raise _unwritable(message)
     return ELEMENTS[instance.of.device].letter + instance.id
@@ -278,6 +287,7 @@ _WARMED: Final = frozenset(
         "jfet",
         "bipolar_transistor",
         "mosfet",
+        "vdmos",
     }
 )
 """The devices whose SPICE elements take a temperature of their own."""
@@ -410,7 +420,7 @@ def _device(
             nodes = " ".join(output)
             (number,) = values.values()
             value = f"{sense} {number!r}"
-        case "diode" | "jfet" | "bipolar_transistor" | "mosfet":
+        case "diode" | "jfet" | "bipolar_transistor" | "mosfet" | "vdmos":
             kind, card, parameters = _model_card(model, values)
             lines.append(f".model M{instance.id} {kind}({card})")
             value = f"M{instance.id} {parameters}".rstrip()

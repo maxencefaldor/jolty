@@ -245,6 +245,18 @@ def test_bipolar_transistors_have_spice_s_substrate() -> None:
         (".subckt a x\nR1 x 0 1k TC=1m,2u,3n\n.ends", "two coefficients at most"),
         (".subckt a x\nF1 x 0 Vmissing 2\n.ends", "`Vmissing` is no source in `a`"),
         (".subckt a x\nE1 x 0 POLY(2) x 0 1\n.ends", r"POLY\(2\) reads 2 controls"),
+        (
+            ".model P VDMOS\n.subckt a d g s t c\nM1 d g s t c P thermal\n.ends",
+            "no `THERMAL` VDMOS",
+        ),
+        (".model P VDMOS(PHI=0)\n.subckt a x\nM1 x x 0 P\n.ends", "`PHI`"),
+        (".model P VDMOS(VP=1)\n.subckt a x\nM1 x x 0 P\n.ends", "counterpart to `VP`"),
+        (".model P VDMOS\n.subckt a x\nM1 x x 0 P 2\n.ends", "a VDMOS takes no `2`"),
+        (
+            ".model P VDMOS\n.subckt a x\nM1 x x 0 x x x P\n.ends",
+            "a VDMOS joins at most 5 nodes",
+        ),
+        (".model P VDMOS\n.subckt a x\nM1 x x 0 P W=1u\n.ends", "counterpart to `W`"),
     ],
 )
 def test_what_jolty_cannot_read_is_an_error_where_it_is(
@@ -340,6 +352,81 @@ def test_a_current_controlled_switch_senses_its_source_in_series() -> None:
     assert source.terminals["positive"] == "V1.sense1"
     with pytest.raises(SpiceError, match="names its source and its model"):
         library(".subckt a x\nV1 x 0 1\nW1 x 0 SW\n.ends").component("a")
+
+
+def test_a_vdmos_card_reads_as_ngspice_reads_it() -> None:
+    """Its polarity from `pchan` or its type, its parameters, and three to five nodes.
+
+    ngspice reads past a card's annotations of its part, its `PHI` and its thermal
+    network, and an element's fourth and fifth nodes, its thermal ones, where it does
+    not heat.
+    """
+    parts = library(
+        ".model PX VDMOS(pchan Rg=3 Vto=-4 mfg=Some-Maker_Inc. Vds=-60 Ron=10m Qg=20n\n"
+        "+ PHI=0.7 RTHJC=1 CTHJ=1m KSUBTHRES=120m VTOTC=-2m BEX=-1.2 M=0.4)\n"
+        ".model NX VDMOS Nchan Vds=100\n+ Rd=44m RQ=0.5 VQ=20 TCVTH=-3m MU=-1.4\n"
+        ".model PY VDMOSP(Vto=-2)\n"
+        ".subckt a d g s t\nM1 d g s PX\nM2 d g s s NX m=2\nM3 d g s t s PY off\n.ends"
+    )
+    first, second, third = parts.component("a").definition.instances
+    assert [instance.of for instance in (first, second, third)] == [
+        ir.DeviceOf(device="vdmos")
+    ] * 3
+    assert first.parameters == {
+        "gate_resistance": 3.0,
+        "threshold_voltage": -4.0,
+        "subthreshold_slope": 0.12,
+        "threshold_temperature_coefficient": -2e-3,
+        "transconductance_temperature_exponent": -1.2,
+        "grading_coefficient": 0.4,
+        "channel": "p",
+    }
+    assert second.parameters == {
+        "drain_resistance": 0.044,
+        "quasi_saturation_resistance": 0.5,
+        "quasi_saturation_voltage": 20.0,
+        "threshold_temperature_coefficient": -3e-3,
+        "transconductance_temperature_exponent": -1.4,
+        "multiplier": 2.0,
+        "channel": "n",
+    }
+    assert third.parameters == {"threshold_voltage": -2.0, "channel": "p"}
+    for instance in (first, second, third):
+        assert instance.terminals == {"drain": "d", "gate": "g", "source": "s"}
+
+
+def test_a_vdmos_is_written_for_ngspice_as_its_card_reads_back() -> None:
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        supply = c.place(devices.voltage_source(-5 * V), id="V1")
+        transistor = c.place(
+            devices.vdmos(
+                channel="p",
+                threshold_voltage=-4 * V,
+                drain_resistance=0.02 * ohm,
+                multiplier=2,
+                junction_capacitance=1e-9 * C / V,
+            ).warmer_by(10 * K),
+            id="M1",
+        )
+        c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
+        c.connect(supply.negative, transistor.source, ground)
+
+    lines = netlist(circuit(bench()))
+    card = next(line for line in lines if line.startswith(".model"))
+    assert card == (".model MM1 VDMOS(pchan vto=-4.0 rd=0.02 cjo=1e-09)"), card
+    element = next(line for line in lines if line.startswith("MM1"))
+    assert element.startswith("MM1 d d 0 MM1 m=2 dtemp=")
+    read = library(f"{card}\n.subckt a d\nM1 d d 0 MM1 m=2\n.ends")
+    (instance,) = read.component("a").definition.instances
+    assert instance.parameters == {
+        "threshold_voltage": -4.0,
+        "drain_resistance": 0.02,
+        "junction_capacitance": 1e-9,
+        "multiplier": 2.0,
+        "channel": "p",
+    }
 
 
 def test_parameters_that_change_nothing_are_left_out() -> None:
@@ -520,6 +607,7 @@ def _every_model() -> list[devices.Device]:
         devices.logic_gate("nand", rise=1 * ns, transition=1 * ns, electrical=True),
         devices.logic_source(0, [(1 * ns, 1)], transition=1 * ns),
         devices.mosfet(level=3, oxide_thickness=10 * nm),
+        devices.vdmos(channel="p", breakdown_voltage=60 * V),
         devices.photocell(10 * kohm),
         devices.resistor(1 * kohm).held_at(celsius(85)),
         devices.thermal_capacitance(1 * J / K),

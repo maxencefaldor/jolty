@@ -145,7 +145,7 @@ class Device:
         The device runs at the simulation's temperature raised by that net's, and the
         power its electrical terminals take, each one's voltage times the current into
         it, flows into the net as heat. A resistor, a diode, a JFET, a bipolar
-        transistor and a MOSFET heat.
+        transistor, a MOSFET and a VDMOS heat.
 
         Examples:
             >>> diode().heated().terminals
@@ -1291,6 +1291,191 @@ def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
         {"level": level, "channel": channel, "gate_material": gate_material},
     )
     return device("mosfet", parameters)
+
+
+def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
+    *,
+    channel: Literal["n", "p"] | None = None,
+    multiplier: float | None = None,
+    threshold_voltage: Quantity | None = None,
+    transconductance_parameter: Quantity | None = None,
+    channel_length_modulation: Quantity | None = None,
+    mobility_modulation: Quantity | None = None,
+    triode_conductance_multiplier: float | None = None,
+    subthreshold_slope: Quantity | None = None,
+    subthreshold_shift: Quantity | None = None,
+    drain_resistance: Quantity | None = None,
+    source_resistance: Quantity | None = None,
+    gate_resistance: Quantity | None = None,
+    quasi_saturation_resistance: Quantity | None = None,
+    quasi_saturation_voltage: Quantity | None = None,
+    drain_source_resistance: Quantity | None = None,
+    gate_source_capacitance: Quantity | None = None,
+    max_gate_drain_capacitance: Quantity | None = None,
+    min_gate_drain_capacitance: Quantity | None = None,
+    gate_drain_capacitance_coefficient: Quantity | None = None,
+    saturation_current: Quantity | None = None,
+    emission_coefficient: float | None = None,
+    body_resistance: Quantity | None = None,
+    junction_capacitance: Quantity | None = None,
+    junction_potential: Quantity | None = None,
+    grading_coefficient: float | None = None,
+    depletion_coefficient: float | None = None,
+    transit_time: Quantity | None = None,
+    breakdown_voltage: Quantity | None = None,
+    breakdown_current: Quantity | None = None,
+    breakdown_emission_coefficient: float | None = None,
+    energy_gap: Quantity | None = None,
+    saturation_current_temperature_exponent: float | None = None,
+    nominal_temperature: Quantity | None = None,
+    threshold_temperature_coefficient: Quantity | None = None,
+    transconductance_temperature_exponent: float | None = None,
+    subthreshold_slope_temperature_coefficient: Quantity | None = None,
+    subthreshold_slope_quadratic_temperature_coefficient: Quantity | None = None,
+    drain_resistance_temperature_exponent: float | None = None,
+    drain_resistance_temperature_coefficient: Quantity | None = None,
+    drain_resistance_quadratic_temperature_coefficient: Quantity | None = None,
+    quasi_saturation_temperature_exponent: float | None = None,
+    source_resistance_temperature_coefficient: Quantity | None = None,
+    source_resistance_quadratic_temperature_coefficient: Quantity | None = None,
+    gate_resistance_temperature_coefficient: Quantity | None = None,
+    gate_resistance_quadratic_temperature_coefficient: Quantity | None = None,
+    body_resistance_temperature_coefficient: Quantity | None = None,
+    body_resistance_quadratic_temperature_coefficient: Quantity | None = None,
+    flicker_coefficient: float | None = None,
+    flicker_exponent: float | None = None,
+) -> Device:
+    """A vertical power MOSFET between ``drain``, ``gate`` and ``source``: VDMOS.
+
+    It follows ngspice's VDMOS model, which reads the power MOSFETs' cards of LTspice:
+    Shichman and Hodges's square law without a body effect, its overdrive softened below
+    the threshold by the subthreshold slope, the mobility degraded by the gate's field,
+    and given both quasi-saturation parameters, a drain resistance that grows with the
+    drain voltage. The gate holds a constant capacitance to the source and one to the
+    drain that runs from its minimum, far below the drain, to its maximum, far above
+    it. A body diode with parameters of its own, its breakdown the transistor's, joins
+    the source to the drain. Parameters left out take ngspice's defaults, an IRF540's
+    or an IRF9540's where ngspice takes them from one.
+
+    Away from the nominal temperature, the transconductance parameter scales by its
+    temperature exponent, the threshold, the subthreshold slope and the resistances by
+    their temperature coefficients, and the body diode as a diode does, as in ngspice.
+
+    A drain, source, gate or body resistance adds an internal node, the unknown
+    ``drain``, ``source``, ``gate`` or ``body_diode``. The drain and source resistances
+    make thermal noise, and the channel thermal noise of ``8kT · gm / 3`` A²/Hz; with a
+    flicker coefficient ``KF``, its drain current ``Id`` also makes flicker noise of
+    ``KF · |Id|^AF / (f · Cox²)`` A²/Hz, ``Cox`` an oxide's of 0.1 µm per area, as
+    ngspice models it.
+
+    Examples:
+        >>> from jolty.units import V, ohm
+        >>> vdmos(threshold_voltage=4 * V, drain_resistance=0.044 * ohm).parameters
+        {'threshold_voltage': 4.0, 'drain_resistance': 0.044}
+    """
+    parameters = _parameters(
+        {
+            "threshold_voltage": (threshold_voltage, VOLTAGE),
+            "transconductance_parameter": (
+                transconductance_parameter,
+                TRANSCONDUCTANCE_PARAMETER,
+            ),
+            "channel_length_modulation": (channel_length_modulation, PER_VOLT),
+            "mobility_modulation": (mobility_modulation, PER_VOLT),
+            "subthreshold_slope": (subthreshold_slope, VOLTAGE),
+            "subthreshold_shift": (subthreshold_shift, VOLTAGE),
+            "drain_resistance": (drain_resistance, RESISTANCE),
+            "source_resistance": (source_resistance, RESISTANCE),
+            "gate_resistance": (gate_resistance, RESISTANCE),
+            "quasi_saturation_resistance": (quasi_saturation_resistance, RESISTANCE),
+            "quasi_saturation_voltage": (quasi_saturation_voltage, VOLTAGE),
+            "drain_source_resistance": (drain_source_resistance, RESISTANCE),
+            "gate_source_capacitance": (gate_source_capacitance, CAPACITANCE),
+            "max_gate_drain_capacitance": (max_gate_drain_capacitance, CAPACITANCE),
+            "min_gate_drain_capacitance": (min_gate_drain_capacitance, CAPACITANCE),
+            "gate_drain_capacitance_coefficient": (
+                gate_drain_capacitance_coefficient,
+                PER_VOLT,
+            ),
+            "saturation_current": (saturation_current, CURRENT),
+            "body_resistance": (body_resistance, RESISTANCE),
+            "junction_capacitance": (junction_capacitance, CAPACITANCE),
+            "junction_potential": (junction_potential, VOLTAGE),
+            "transit_time": (transit_time, TIME),
+            "breakdown_voltage": (breakdown_voltage, VOLTAGE),
+            "breakdown_current": (breakdown_current, CURRENT),
+            "energy_gap": (energy_gap, VOLTAGE),
+            "nominal_temperature": (nominal_temperature, TEMPERATURE),
+            "threshold_temperature_coefficient": (
+                threshold_temperature_coefficient,
+                VOLTS_PER_KELVIN,
+            ),
+            "subthreshold_slope_temperature_coefficient": (
+                subthreshold_slope_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "subthreshold_slope_quadratic_temperature_coefficient": (
+                subthreshold_slope_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "drain_resistance_temperature_coefficient": (
+                drain_resistance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "drain_resistance_quadratic_temperature_coefficient": (
+                drain_resistance_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "source_resistance_temperature_coefficient": (
+                source_resistance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "source_resistance_quadratic_temperature_coefficient": (
+                source_resistance_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "gate_resistance_temperature_coefficient": (
+                gate_resistance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "gate_resistance_quadratic_temperature_coefficient": (
+                gate_resistance_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "body_resistance_temperature_coefficient": (
+                body_resistance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "body_resistance_quadratic_temperature_coefficient": (
+                body_resistance_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+        },
+        {
+            "multiplier": multiplier,
+            "triode_conductance_multiplier": triode_conductance_multiplier,
+            "emission_coefficient": emission_coefficient,
+            "grading_coefficient": grading_coefficient,
+            "depletion_coefficient": depletion_coefficient,
+            "breakdown_emission_coefficient": breakdown_emission_coefficient,
+            "saturation_current_temperature_exponent": (
+                saturation_current_temperature_exponent
+            ),
+            "transconductance_temperature_exponent": (
+                transconductance_temperature_exponent
+            ),
+            "drain_resistance_temperature_exponent": (
+                drain_resistance_temperature_exponent
+            ),
+            "quasi_saturation_temperature_exponent": (
+                quasi_saturation_temperature_exponent
+            ),
+            "flicker_coefficient": flicker_coefficient,
+            "flicker_exponent": flicker_exponent,
+        },
+        {"channel": channel},
+    )
+    return device("vdmos", parameters)
 
 
 type LogicLevel = Literal[0, 1] | None

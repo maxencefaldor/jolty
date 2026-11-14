@@ -13,6 +13,7 @@ the devices, the waveforms and the numerics against the reference simulator.
 
 import math
 from collections.abc import Callable
+from pathlib import Path
 from typing import Final, Literal
 
 import numpy as np
@@ -45,6 +46,7 @@ from jolty import (
     component,
     devices,
     results,
+    spice,
 )
 from jolty.plan import decade, linear
 from jolty.units import (
@@ -73,11 +75,13 @@ from jolty.units import (
     nm,
     ns,
     ohm,
+    pA,
     pF,
     s,
     uA,
     uC,
     uF,
+    uH,
     um,
     uS,
     us,
@@ -1242,6 +1246,202 @@ def current_switched(c: Builder) -> None:
     )
 
 
+def _power(
+    *,
+    quasi_saturating: bool = False,
+    flicker_coefficient: float | None = None,
+    flicker_exponent: float | None = None,
+) -> devices.Device:
+    """An n-channel VDMOS after LTspice's IRF540, with every part of its model in play.
+
+    It quasi-saturates only if asked, as ngspice's small-signal model leaves out the
+    slope of a quasi-saturating drain resistance.
+    """
+    return devices.vdmos(
+        threshold_voltage=4 * V,
+        transconductance_parameter=20 * A / V**2,
+        channel_length_modulation=0.003 / V,
+        mobility_modulation=0.05 / V,
+        triode_conductance_multiplier=0.8,
+        subthreshold_slope=0.12 * V,
+        subthreshold_shift=0.05 * V,
+        drain_resistance=0.044 * ohm,
+        source_resistance=0.015 * ohm,
+        gate_resistance=3 * ohm,
+        quasi_saturation_resistance=0.5 * ohm if quasi_saturating else None,
+        quasi_saturation_voltage=20 * V if quasi_saturating else None,
+        drain_source_resistance=10 * Mohm,
+        gate_source_capacitance=1.5 * nF,
+        max_gate_drain_capacitance=1.7 * nF,
+        min_gate_drain_capacitance=0.25 * nF,
+        gate_drain_capacitance_coefficient=0.5 / V,
+        saturation_current=88 * pA,
+        emission_coefficient=1.05,
+        body_resistance=0.024 * ohm,
+        junction_capacitance=1.1 * nF,
+        junction_potential=0.7 * V,
+        grading_coefficient=0.45,
+        transit_time=30 * ns,
+        breakdown_voltage=100 * V,
+        breakdown_current=250 * uA,
+        breakdown_emission_coefficient=4,
+        threshold_temperature_coefficient=-4 * mV / K,
+        transconductance_temperature_exponent=-1.3,
+        subthreshold_slope_temperature_coefficient=1e-3 / K,
+        drain_resistance_temperature_coefficient=4e-3 / K,
+        source_resistance_temperature_coefficient=3e-3 / K,
+        body_resistance_temperature_coefficient=2e-3 / K,
+        flicker_coefficient=flicker_coefficient,
+        flicker_exponent=flicker_exponent,
+    )
+
+
+_QUASI_SATURATING = _power(quasi_saturating=True)
+"""The n-channel, its drain resistance quasi-saturating."""
+
+_P_POWER = devices.vdmos(
+    channel="p",
+    threshold_voltage=-4 * V,
+    transconductance_parameter=10 * A / V**2,
+    channel_length_modulation=0.007 / V,
+    triode_conductance_multiplier=0.3,
+    subthreshold_slope=0.12 * V,
+    drain_resistance=0.02 * ohm,
+    source_resistance=0.01 * ohm,
+    gate_resistance=2 * ohm,
+    quasi_saturation_resistance=0.5 * ohm,
+    quasi_saturation_voltage=100 * V,
+    drain_source_resistance=200 * Mohm,
+    gate_source_capacitance=5 * nF,
+    max_gate_drain_capacitance=6 * nF,
+    min_gate_drain_capacitance=100 * pF,
+    gate_drain_capacitance_coefficient=0.25 / V,
+    saturation_current=2 * uA,
+    body_resistance=0.02 * ohm,
+    junction_capacitance=9 * nF,
+    transit_time=260 * ns,
+    breakdown_voltage=200 * V,
+    breakdown_current=250 * uA,
+    breakdown_emission_coefficient=4,
+    drain_resistance_temperature_exponent=1.5,
+    quasi_saturation_temperature_exponent=0.4,
+)
+"""A p-channel VDMOS after David Zan's IXTH48P20P, of ngspice's examples, whose
+quasi-saturation exaggerates its datasheet's."""
+
+
+type Switch = Component | devices.Device
+"""A power MOSFET placed as a device, or a part read from a SPICE library."""
+
+
+@component
+def power_curves(
+    c: Builder,
+    transistor: Switch,
+    sign: Literal[1, -1] = 1,
+    pins: tuple[str, str, str] = ("drain", "gate", "source"),
+) -> None:
+    """A power MOSFET's output and transfer curves: its gate at `V1`, its drain at `V2`.
+
+    Its drain, gate and source are its `pins`, and `sign` its channel's, 1 for an
+    n-channel and -1 for a p-channel. The drain sweeps from where its body diode
+    conducts to where it breaks down, and the gate from below the threshold to the full
+    channel.
+    """
+    drain, gate, source = pins
+    ground = c.port("ground", Role.GROUND)
+    bias = c.place(devices.voltage_source(sign * 6 * V), id="V1")
+    supply = c.place(devices.voltage_source(sign * 10 * V), id="V2")
+    placed = c.place(transistor, id="M1")
+    c.connect(bias.positive, placed[gate], name="gate")
+    c.connect(supply.positive, placed[drain], name="drain")
+    c.connect(bias.negative, supply.negative, placed[source], ground)
+
+
+def n_power_curves() -> Component:
+    """The quasi-saturating n-channel's curves."""
+    return power_curves(_QUASI_SATURATING)
+
+
+def p_power_curves() -> Component:
+    """The p-channel's curves."""
+    return power_curves(_P_POWER, -1)
+
+
+@component
+def power_stage(c: Builder) -> None:
+    """A VDMOS amplifier: about an ampere through 10 Ω, its gate fed through 1 kΩ."""
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(24 * V), id="V2")
+    signal = Sine(
+        offset=5.3 * V, amplitude=0.05 * V, frequency=200 * kHz, phase=math.pi / 2
+    )
+    source = c.place(devices.voltage_source(signal), id="V1")
+    feed = c.place(devices.resistor(1 * kohm), id="RG")
+    transistor = c.place(
+        _power(flicker_coefficient=1e-25, flicker_exponent=1.2),
+        id="M1",
+    )
+    load = c.place(devices.resistor(10 * ohm), id="RD")
+    degeneration = c.place(devices.resistor(1 * ohm), id="RS")
+    c.connect(source.positive, feed.a, name="in")
+    c.connect(feed.b, transistor.gate, name="gate")
+    c.connect(supply.positive, load.a, name="supply")
+    c.connect(load.b, transistor.drain, name="out")
+    c.connect(transistor.source, degeneration.a, name="tail")
+    c.connect(source.negative, supply.negative, degeneration.b, ground)
+
+
+@component
+def synchronous_buck(
+    c: Builder,
+    high: Switch,
+    low: Switch,
+    pins: tuple[str, str, str] = ("drain", "gate", "source"),
+) -> None:
+    """A synchronous buck from 12 V: `high`, a p-channel VDMOS, and `low`, an n-channel.
+
+    Each switch's drain, gate and source are its `pins`, and its drain the switching
+    node, through 10 µH into 10 µF and 5 Ω. Sines at 250 kHz drive the gates, the high
+    side's source-gate voltage `3 + 7 sin` and the low side's gate-source voltage
+    `3 - 7 sin`, so each conducts in its half of the period and neither while the sine
+    crosses zero, when the low side's body diode carries the inductor's current.
+    Smooth drives keep ngspice converging at its tight tolerances, which it does not
+    where a pulse's corners switch a gate behind a resistance.
+    """
+    drain, gate, source = pins
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(12 * V), id="V1")
+    high_drive = Sine(offset=9 * V, amplitude=-7 * V, frequency=250 * kHz)
+    low_drive = Sine(offset=3 * V, amplitude=-7 * V, frequency=250 * kHz)
+    high_gate = c.place(devices.voltage_source(high_drive), id="VH")
+    low_gate = c.place(devices.voltage_source(low_drive), id="VL")
+    upper = c.place(high, id="MH")
+    lower = c.place(low, id="ML")
+    inductor = c.place(devices.inductor(10 * uH), id="L1")
+    capacitor = c.place(devices.capacitor(10 * uF), id="C1")
+    load = c.place(devices.resistor(5 * ohm), id="RL")
+    c.connect(supply.positive, upper[source], name="supply")
+    c.connect(high_gate.positive, upper[gate], name="high_gate")
+    c.connect(low_gate.positive, lower[gate], name="low_gate")
+    c.connect(upper[drain], lower[drain], inductor.a, name="switch")
+    c.connect(inductor.b, capacitor.a, load.a, name="out")
+    c.connect(
+        supply.negative,
+        high_gate.negative,
+        low_gate.negative,
+        lower[source],
+        capacitor.b,
+        load.b,
+        ground,
+    )
+
+
+def vdmos_buck() -> Component:
+    """The buck of the corpus's two VDMOS."""
+    return synchronous_buck(_P_POWER, _QUASI_SATURATING)
+
+
 @component
 def flickering(c: Builder) -> None:
     """Five devices with flicker noise, their currents meeting at the output.
@@ -1348,6 +1548,9 @@ def flickering(c: Builder) -> None:
         level_three_stage,
         level_three_curves,
         cmos_inverter,
+        n_power_curves,
+        p_power_curves,
+        power_stage,
         behavioral,
         switched,
         curved,
@@ -1423,6 +1626,9 @@ TEMPERATURES = {"cold": celsius(-40), "hot": celsius(125)}
         nmos_stage,
         level_three_stage,
         cmos_inverter,
+        n_power_curves,
+        p_power_curves,
+        power_stage,
         drifting,
         drifting_apart,
         curved,
@@ -1448,6 +1654,10 @@ def test_operating_points_agree_across_temperatures(
         (pnp_mirror, "V1", linear(0 * V, 12 * V, 61)),
         (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
         (level_three_curves, "V1", linear(-0.5 * V, 3 * V, 71)),
+        (n_power_curves, "V2", linear(-1 * V, 101 * V, 103)),
+        (n_power_curves, "V1", linear(0 * V, 8 * V, 81)),
+        (p_power_curves, "V2", linear(-201 * V, 1 * V, 102)),
+        (p_power_curves, "V1", linear(-8 * V, 0 * V, 81)),
         (drifting, "V1", linear(0 * V, 15 * V, 76)),
         (drifting_apart, "V1", linear(0 * V, 15 * V, 76)),
     ],
@@ -1474,7 +1684,9 @@ def test_dc_sweeps_agree_across_temperatures(
 
 
 @pytest.mark.parametrize("temperature", TEMPERATURES.values(), ids=TEMPERATURES.keys())
-@pytest.mark.parametrize("top", [bjt_amplifier, nmos_stage, drifting, drifting_apart])
+@pytest.mark.parametrize(
+    "top", [bjt_amplifier, nmos_stage, power_stage, drifting, drifting_apart]
+)
 def test_ac_responses_agree_across_temperatures(
     top: Callable[[], Component], temperature: Quantity
 ) -> None:
@@ -1529,6 +1741,11 @@ def test_loop_gains_agree() -> None:
         (level_three_curves, "V2", linear(-3 * V, 5 * V, 81)),
         (level_three_curves, "V1", linear(-0.5 * V, 3 * V, 71)),
         (cmos_inverter, "V1", linear(0 * V, 3.3 * V, 67)),
+        (n_power_curves, "V2", linear(-1 * V, 101 * V, 103)),
+        (n_power_curves, "V1", linear(0 * V, 8 * V, 81)),
+        (p_power_curves, "V2", linear(-201 * V, 1 * V, 102)),
+        (p_power_curves, "V1", linear(-8 * V, 0 * V, 81)),
+        (power_stage, "V1", linear(3 * V, 6 * V, 61)),
         (behavioral, "V1", linear(-3 * V, 3 * V, 61)),
         (switched, "V1", linear(0 * V, 3 * V, 61)),
         (curved, "V1", linear(-3 * V, 3 * V, 61)),
@@ -1565,6 +1782,7 @@ def test_dc_sweeps_agree(
         nmos_stage,
         level_three_stage,
         cmos_inverter,
+        power_stage,
         behavioral,
         switched,
         current_switched,
@@ -1599,6 +1817,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
         (integrated_stage, "V1"),
         (nmos_stage, "V1"),
         (level_three_stage, "V1"),
+        (power_stage, "V1"),
         (flickering, "V1"),
     ],
 )
@@ -1711,6 +1930,8 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
         (nmos_stage, 2 * us, 1 * ns),
         (level_three_stage, 2 * us, 1 * ns),
         (cmos_inverter, 160 * ns, 0.01 * ns),
+        (power_stage, 20 * us, 20 * ns),
+        (vdmos_buck, 16 * us, 10 * ns),
         (behavioral, 300 * us, 0.5 * us),
         (switched, 200 * us, 0.2 * us),
         (current_switched, 200 * us, 0.2 * us),
@@ -1734,3 +1955,109 @@ def test_transients_agree(
             waveforms.times, waveforms.values[:, column], times, spice, step.value
         )
         compare(jolty, spice, unknown, scale=size(spice), tolerance=1e-3)
+
+
+VENDOR_CARDS: Final = """\
+* Two power MOSFETs' VDMOS cards, as ngspice 47's examples/vdmos give them:
+* International Rectifier's IRFZ48Z, as LTspice's library holds it, and David Zan's
+* IXTH48P20P, with the quasi-saturation ngspice's example adds.
+.model IRFZ48Z VDMOS (Rg = 1.77 Vto=4 Rd=1.85m Rs=0.0m Rb=3.75m Kp=25 Cgdmax=2.1n
++ Cgdmin=0.05n Cgs=1.8n Cjo=0.55n Is=2.5p tt=20n ksubthres=0.1
++ mfg=International_Rectifier Vds=55 Ron=8.6m Qg=43n)
+.MODEL IXTH48P20P VDMOS Pchan Vds=200
++ VTO=-4 KP=10
++ Lambda=7m ; the example's, the original's 5m
++ Mtriode=0.3
++ Ksubthres=120m
++ Rs=10m Rd=20m Rds=200e6
++ Cgdmax=6000p Cgdmin=100p A=0.25
++ Cgs=5000p Cjo=9000p
++ Is=2e-6 Rb=20m
++ BV=200 IBV=250e-6
++ NBV=4
++ TT=260e-9
++ vq=100
++ rq=0.5
+.subckt irfz48z d g s
+M1 d g s IRFZ48Z
+.ends
+.subckt ixth48p20p d g s
+M1 d g s s IXTH48P20P
+.ends
+"""
+"""A library of the two parts, each a subcircuit of its transistor as a vendor's
+library places it, the p-channel's with its fourth node on its source."""
+
+_PINS: Final = ("d", "g", "s")
+"""The vendor parts' drain, gate and source."""
+
+
+@pytest.fixture(scope="module")
+def vendor_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The library of `VENDOR_CARDS`, as a file both engines read."""
+    path = tmp_path_factory.mktemp("vendor") / "vdmos.lib"
+    path.write_text(VENDOR_CARDS, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("part", "sign", "source", "levels"),
+    [
+        ("irfz48z", 1, "V2", linear(-1 * V, 60 * V, 62)),
+        ("irfz48z", 1, "V1", linear(0 * V, 8 * V, 81)),
+        ("ixth48p20p", -1, "V2", linear(-201 * V, 1 * V, 102)),
+        ("ixth48p20p", -1, "V1", linear(-8 * V, 0 * V, 81)),
+    ],
+)
+def test_vendors_cards_sweep_as_in_ngspice(
+    vendor_cards: Path,
+    part: str,
+    sign: Literal[1, -1],
+    source: str,
+    levels: list[Quantity],
+) -> None:
+    """A vendor's VDMOS card, read by the SPICE reader, against ngspice reading it."""
+    read = spice.load(vendor_cards).component(part)
+    simulation = Simulation(power_curves(read, sign, _PINS))
+    sweep = simulation.run(DcSweep(source, levels), TIGHT)
+    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    step = (last - first) / (len(levels) - 1)
+    command = f"dc V{source} {first!r} {last!r} {step!r}"
+    raw = ngspice.run(netlist(simulation.circuit), command, libraries=(vendor_cards,))
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown))
+        compare(
+            sweep.values[:, column],
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=1e-6,
+        )
+
+
+def test_vendors_cards_switch_as_in_ngspice(vendor_cards: Path) -> None:
+    """The synchronous buck of the two parts, read by the SPICE reader, as ngspice."""
+    library = spice.load(vendor_cards)
+    top = synchronous_buck(
+        library.component("ixth48p20p"), library.component("irfz48z"), _PINS
+    )
+    simulation = Simulation(top)
+    stop, step = 16 * us, 10 * ns
+    waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
+    command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}"
+    raw = ngspice.run(
+        netlist(simulation.circuit, transient=True),
+        command,
+        libraries=(vendor_cards,),
+    )
+    times = raw.real("time")
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown))
+        jolty = closest(
+            waveforms.times,
+            waveforms.values[:, column],
+            times,
+            spice_values,
+            step.value,
+        )
+        compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)

@@ -3,9 +3,10 @@
 
 Each SPICE parameter maps to a jolty device's parameter, converted to SI base units
 where SPICE writes centimeters, and the nominal temperature ``TNOM`` from degrees
-Celsius to kelvins. Parameters that only matter to noise change nothing jolty computes
-and are left out; any other parameter jolty does not model is an error, never silently
-dropped.
+Celsius to kelvins. Parameters that change nothing jolty computes are left out: those
+that only choose among noise equations, and of a VDMOS card, its part's annotations, its
+``PHI`` and its thermal network, as the reader's tables say. Any other parameter jolty
+does not model is an error, never silently dropped.
 """
 
 import re
@@ -181,6 +182,76 @@ MOSFET_INSTANCE: Final[Table] = {
     "ps": ("source_perimeter", 1.0),
 }
 
+VDMOS: Final[Table] = {
+    "vto": ("threshold_voltage", 1.0),
+    "vth0": ("threshold_voltage", 1.0),
+    "kp": ("transconductance_parameter", 1.0),
+    "lambda": ("channel_length_modulation", 1.0),
+    "theta": ("mobility_modulation", 1.0),
+    "mtriode": ("triode_conductance_multiplier", 1.0),
+    "ksubthres": ("subthreshold_slope", 1.0),
+    "subshift": ("subthreshold_shift", 1.0),
+    "rd": ("drain_resistance", 1.0),
+    "rs": ("source_resistance", 1.0),
+    "rg": ("gate_resistance", 1.0),
+    "rq": ("quasi_saturation_resistance", 1.0),
+    "vq": ("quasi_saturation_voltage", 1.0),
+    "rds": ("drain_source_resistance", 1.0),
+    "cgs": ("gate_source_capacitance", 1.0),
+    "cgdmax": ("max_gate_drain_capacitance", 1.0),
+    "cgdmin": ("min_gate_drain_capacitance", 1.0),
+    "a": ("gate_drain_capacitance_coefficient", 1.0),
+    "is": ("saturation_current", 1.0),
+    "n": ("emission_coefficient", 1.0),
+    "rb": ("body_resistance", 1.0),
+    "cjo": ("junction_capacitance", 1.0),
+    "vj": ("junction_potential", 1.0),
+    "m": ("grading_coefficient", 1.0),
+    "fc": ("depletion_coefficient", 1.0),
+    "tt": ("transit_time", 1.0),
+    "bv": ("breakdown_voltage", 1.0),
+    "ibv": ("breakdown_current", 1.0),
+    "nbv": ("breakdown_emission_coefficient", 1.0),
+    "eg": ("energy_gap", 1.0),
+    "xti": ("saturation_current_temperature_exponent", 1.0),
+    "tcvth": ("threshold_temperature_coefficient", 1.0),
+    "vtotc": ("threshold_temperature_coefficient", 1.0),
+    "mu": ("transconductance_temperature_exponent", 1.0),
+    "bex": ("transconductance_temperature_exponent", 1.0),
+    "tksubthres1": ("subthreshold_slope_temperature_coefficient", 1.0),
+    "tksubthres2": ("subthreshold_slope_quadratic_temperature_coefficient", 1.0),
+    "texp0": ("drain_resistance_temperature_exponent", 1.0),
+    "trd1": ("drain_resistance_temperature_coefficient", 1.0),
+    "trd2": ("drain_resistance_quadratic_temperature_coefficient", 1.0),
+    "texp1": ("quasi_saturation_temperature_exponent", 1.0),
+    "trs1": ("source_resistance_temperature_coefficient", 1.0),
+    "trs2": ("source_resistance_quadratic_temperature_coefficient", 1.0),
+    "trg1": ("gate_resistance_temperature_coefficient", 1.0),
+    "trg2": ("gate_resistance_quadratic_temperature_coefficient", 1.0),
+    "trb1": ("body_resistance_temperature_coefficient", 1.0),
+    "trb2": ("body_resistance_quadratic_temperature_coefficient", 1.0),
+    **FLICKER,
+}
+"""ngspice's VDMOS, the power MOSFETs' model of LTspice's cards."""
+
+VDMOS_INSTANCE: Final[Table] = {"m": ("multiplier", 1.0)}
+"""A VDMOS's own parameters: the number of transistors in parallel."""
+
+VDMOS_KINDS: Final = frozenset({"vdmosn", "vdmosp"})
+"""A VDMOS card's types, as the reader gives them: of its channel's polarity."""
+
+VDMOS_ANNOTATIONS: Final = frozenset({"mfg", "vds", "ron", "qg"})
+"""What LTspice's VDMOS cards say of their part, its maker, ratings and gate charge,
+which ngspice reads past, and the reader with it."""
+
+VDMOS_SELF_HEATING: Final = frozenset({"rthjc", "rthca", "cthj"})
+"""A VDMOS card's thermal network, which ngspice heats a transistor on only where its
+instance says ``thermal``: elsewhere it changes nothing, and jolty reads no such
+instance."""
+
+_CHANNEL: Final = re.compile(r"\b([np])chan\b", re.IGNORECASE)
+"""A VDMOS card's polarity, ``nchan`` or ``pchan``, a word anywhere in its card."""
+
 CONSTRUCTIONS: Final = {1.0: "vertical", -1.0: "lateral"}
 """The construction of a bipolar transistor of each value of SPICE's ``SUBS``."""
 
@@ -290,12 +361,42 @@ def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
     word = re.match(r"\w*", rest)
     kind = "" if word is None else rest[: word.end()]
     body = rest[len(kind) :].strip()
+    resolved = kind.casefold() or (base.kind if base else "")
+    if resolved.startswith("vdmos"):
+        resolved, body = _vdmos_card(resolved, body)
     if body.startswith("(") and body.endswith(")"):
         body = body[1:-1]
+    words = tokens(body)
+    if resolved in VDMOS_KINDS:
+        words = _annotations_removed(words)
     parameters = dict(base.parameters) if base else {}
-    parameters |= assignments(statement, tokens(body))
-    resolved = kind.casefold() or (base.kind if base else "")
+    parameters |= assignments(statement, words)
     return ModelCard(name, resolved, parameters, statement)
+
+
+def _vdmos_card(kind: str, body: str) -> tuple[str, str]:
+    """A VDMOS card's type, of its channel's polarity, and its body without it.
+
+    As ngspice reads a card, ``VDMOS`` is an n-channel's, and a p-channel's given
+    ``pchan`` anywhere in its card or the type ``VDMOSP``.
+    """
+    flags = {flag.casefold() for flag in _CHANNEL.findall(body)}
+    polarity = "p" if "p" in flags or kind == "vdmosp" else "n"
+    return f"vdmos{polarity}", _CHANNEL.sub(" ", body).strip()
+
+
+def _annotations_removed(words: list[str]) -> list[str]:
+    """A VDMOS card's words without its part's annotations, `VDMOS_ANNOTATIONS`."""
+    kept: list[str] = []
+    position = 0
+    while position < len(words):
+        assigned = words[position + 1 : position + 2] == ["="]
+        if assigned and words[position].casefold() in VDMOS_ANNOTATIONS:
+            position += 3
+            continue
+        kept.append(words[position])
+        position += 1
+    return kept
 
 
 def assignments(statement: Statement, words: list[str]) -> dict[str, Expression]:
@@ -379,29 +480,35 @@ def _device(
             values = _scaled(values, area, ("is", "cjo", "cj0", "cj"), ("rs",))
             # ngspice multiplies the breakdown current by the multiplier, not the area.
             values = _scaled(values, instance.get("m", 1.0), ("ibv",), ())
-            return Made("diode", _mapped(card, values, DIODE, statement))
+            made = Made("diode", _mapped(card, values, DIODE, statement))
         case "npn" | "pnp":
-            return Made(
+            made = Made(
                 "bipolar_transistor", _bipolar(card, values, instance, statement)
             )
         case "njf" | "pjf":
             area = instance.get("area", 1.0) * instance.get("m", 1.0)
             values = _scaled(values, area, ("beta", "is", "cgs", "cgd"), ("rd", "rs"))
             parameters = _mapped(card, values, JFET, statement)
-            return Made("jfet", {"channel": card.kind[0], **parameters})
+            made = Made("jfet", {"channel": card.kind[0], **parameters})
         case "nmos" | "pmos":
-            return Made("mosfet", _mosfet(card, values, instance, statement))
+            made = Made("mosfet", _mosfet(card, values, instance, statement))
+        case "vdmosn" | "vdmosp":
+            made = Made("vdmos", _vdmos(card, values, instance, statement))
         case "vswitch":
-            return Made(
+            made = Made(
                 "voltage_controlled_switch", _mapped(card, values, SWITCH, statement)
             )
         case "iswitch":
-            return Made(
+            made = Made(
                 "current_controlled_switch",
                 _mapped(card, values, CURRENT_SWITCH, statement),
             )
-    message = f"jolty has no device for `{card.name}`, a model of type `{card.kind}`"
-    raise statement.fail(message)
+        case _:
+            message = (
+                f"jolty has no device for `{card.name}`, a model of type `{card.kind}`"
+            )
+            raise statement.fail(message)
+    return made
 
 
 def unmatched(card: ModelCard, parameter: str, statement: Statement) -> SpiceError:
@@ -522,4 +629,29 @@ def _mosfet(
             message = f"`TPG` is 1, -1 or 0, not {gate!r}"
             raise statement.fail(message)
         parameters["gate_material"] = GATE_TYPES[gate]
+    return parameters
+
+
+def _vdmos(
+    card: ModelCard,
+    values: dict[str, float],
+    instance: Mapping[str, float],
+    statement: Statement,
+) -> dict[str, JsonValue]:
+    """A VDMOS's parameters, from its model card and its instance's.
+
+    ``PHI`` feeds only ngspice's distortion analysis, which jolty has not, and its
+    thermal network only an instance that heats, so both change nothing jolty computes
+    and are left out; ngspice refuses a ``PHI`` that is not positive, and so does jolty.
+
+    Raises:
+        SpiceError: When a parameter has no jolty counterpart.
+    """
+    potential = values.pop("phi", None)
+    if potential is not None and potential <= 0:
+        message = f"`PHI` of `{card.name}` must be positive, not {potential!r}"
+        raise statement.fail(message)
+    parameters = _mapped(card, values, VDMOS, statement, VDMOS_SELF_HEATING)
+    parameters |= _mapped(card, dict(instance), VDMOS_INSTANCE, statement)
+    parameters["channel"] = card.kind[-1]
     return parameters

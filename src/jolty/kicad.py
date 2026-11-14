@@ -40,6 +40,7 @@ PREFIXES: Final[Mapping[str, str]] = {
     "bipolar_transistor": "Q",
     "jfet": "Q",
     "mosfet": "Q",
+    "vdmos": "Q",
 }
 """The prefix of the reference designator of each device's part, the letter IEEE 315
 gives it; any other part's is U."""

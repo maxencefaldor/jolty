@@ -393,6 +393,63 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
 
+## `vdmos`
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `body_resistance` | `0` | The body diode's series resistance, `RB`, in ohms; default 0. |
+| `body_resistance_quadratic_temperature_coefficient` | `0` | The body resistance's quadratic temperature coefficient, `TRB2`, per square kelvin; default 0. |
+| `body_resistance_temperature_coefficient` | `0` | The body resistance's linear temperature coefficient, `TRB1`, per kelvin; default 0. |
+| `breakdown_current` | `1e-10` | The current at the breakdown voltage, `IBV`, in amperes, whatever the multiplier; default 1e-10. |
+| `breakdown_emission_coefficient` | `1` | The breakdown emission coefficient, `NBV`; default 1. |
+| `breakdown_voltage` |  | The drain-source breakdown voltage, `BV`, in volts, positive; without it, the body diode never breaks down. |
+| `channel` | `n` | The channel, `VDMOS` or `VDMOS pchan`; default `n`. One of `n`, `p`. |
+| `channel_length_modulation` | `0` | The channel-length modulation, `LAMBDA`, per volt; default 0. |
+| `depletion_coefficient` | `0.5` | The fraction of the body diode's junction potential above which its depletion capacitance is extended linearly, `FC`, below 1; default 0.5. |
+| `drain_resistance` | `0` | The drain resistance, `RD`, in ohms; default 0. |
+| `drain_resistance_quadratic_temperature_coefficient` | `0` | The drain resistance's quadratic temperature coefficient, `TRD2`, per square kelvin; default 0. |
+| `drain_resistance_temperature_coefficient` | `0` | The drain resistance's linear temperature coefficient, `TRD1`, per kelvin; default 0. |
+| `drain_resistance_temperature_exponent` |  | The exponent of the temperature ratio that scales the drain resistance, `TEXP0`; default none, for the drain resistance's temperature coefficients. |
+| `drain_source_resistance` |  | The drain-source shunt resistance, `RDS`, in ohms; default none, for ngspice's conductance of 1 fS whatever the multiplier. |
+| `emission_coefficient` | `1` | The body diode's emission coefficient, `N`; default 1. |
+| `energy_gap` | `1.11` | The energy gap that scales the body diode's saturation current with temperature, `EG`, in volts; default 1.11, silicon's. |
+| `flicker_coefficient` | `0` | The flicker noise coefficient of the drain current, `KF`; default 0, no flicker noise. |
+| `flicker_exponent` | `1` | The power of the drain current in the flicker noise, `AF`; default 1. |
+| `gate_drain_capacitance_coefficient` | `1` | How fast the gate-drain capacitance moves with the gate-drain voltage, `A`, per volt; default 1. |
+| `gate_resistance` | `0` | The gate resistance, `RG`, in ohms; default 0. |
+| `gate_resistance_quadratic_temperature_coefficient` | `0` | The gate resistance's quadratic temperature coefficient, `TRG2`, per square kelvin; default 0. |
+| `gate_resistance_temperature_coefficient` | `0` | The gate resistance's linear temperature coefficient, `TRG1`, per kelvin; default 0. |
+| `gate_source_capacitance` | `1.4e-09` | The gate-source capacitance, `CGS`, in farads; default 1.4 nF. |
+| `grading_coefficient` | `0.5` | The body diode's grading coefficient, `M`, below 1; default 0.5. |
+| `junction_capacitance` | `5e-10` | The body diode's zero-bias junction capacitance, `CJO`, in farads; default 0.5 nF. |
+| `junction_potential` | `0.8` | The body diode's junction potential, `VJ`, in volts; default 0.8. |
+| `max_gate_drain_capacitance` | `2e-09` | The gate-drain capacitance far above the drain, `CGDMAX`, in farads; default 2 nF. |
+| `min_gate_drain_capacitance` | `2e-11` | The gate-drain capacitance far below the drain, `CGDMIN`, in farads; default 20 pF. |
+| `mobility_modulation` | `0` | The gate field's degradation of the mobility, `THETA`, per volt; default 0. |
+| `multiplier` | `1` | The number of identical transistors in parallel, `M`; default 1. |
+| `nominal_temperature` | `300.15` | The temperature the parameters were measured at, `TNOM`, in kelvins; default 27 °C. |
+| `quasi_saturation_resistance` |  | The quasi-saturation resistance, `RQ`, in ohms, which the drain resistance grows towards with the drain voltage; default none, for no quasi-saturation. |
+| `quasi_saturation_temperature_exponent` | `0.3` | The exponent of the temperature ratio that scales the quasi-saturation resistance, `TEXP1`; default 0.3. |
+| `quasi_saturation_voltage` |  | The quasi-saturation voltage, `VQ`, in volts, at which the drain resistance has grown by half the quasi-saturation resistance; default none, for no quasi-saturation. |
+| `saturation_current` | `1e-14` | The body diode's saturation current, `IS`, in amperes; default 1e-14. |
+| `saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the body diode's saturation current's scaling, `XTI`; default 3. |
+| `source_resistance` | `0` | The source resistance, `RS`, in ohms; default 0. |
+| `source_resistance_quadratic_temperature_coefficient` | `0` | The source resistance's quadratic temperature coefficient, `TRS2`, per square kelvin; default 0. |
+| `source_resistance_temperature_coefficient` | `0` | The source resistance's linear temperature coefficient, `TRS1`, per kelvin; default 0. |
+| `subthreshold_shift` | `0` | The shift of the softened overdrive along the gate voltage, `SUBSHIFT`, in volts; default 0. |
+| `subthreshold_slope` | `0.1` | The slope of the overdrive's softening below the threshold, `KSUBTHRES`, in volts; default 0.1. |
+| `subthreshold_slope_quadratic_temperature_coefficient` | `0` | The subthreshold slope's quadratic temperature coefficient, `TKSUBTHRES2`, per square kelvin; default 0. |
+| `subthreshold_slope_temperature_coefficient` | `0` | The subthreshold slope's linear temperature coefficient, `TKSUBTHRES1`, per kelvin; default 0. |
+| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
+| `threshold_temperature_coefficient` | `0` | How fast the threshold voltage moves with temperature, `TCVTH` or `VTOTC`, in volts per kelvin; default 0. |
+| `threshold_voltage` |  | The threshold voltage, `VTO`, in volts; default 3 for an n-channel and −3 for a p-channel, an IRF540's and an IRF9540's. |
+| `transconductance_parameter` |  | The transconductance parameter, `KP`, in amperes per square volt; default 20 for an n-channel and 10 for a p-channel. |
+| `transconductance_temperature_exponent` | `-1.5` | The exponent of the temperature ratio that scales the transconductance parameter, `MU` or `BEX`; default −1.5. |
+| `transit_time` | `0` | The body diode's transit time, `TT`, in seconds; default 0. |
+| `triode_conductance_multiplier` | `1` | The factor on the drain-source voltage below saturation, `MTRIODE`; default 1. |
+
 ## `voltage_controlled_current_source`
 
 | Parameter | Default | Description |

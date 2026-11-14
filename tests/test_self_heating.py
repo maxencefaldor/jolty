@@ -329,7 +329,8 @@ def test_only_devices_that_heat_take_a_thermal_terminal() -> None:
 
 def test_spice_has_no_heated_device() -> None:
     with pytest.raises(
-        JoltyError, match="R1 is a heated resistor, which ngspice has not"
+        JoltyError,
+        match="R1 is a heated resistor, and ngspice heats no device on a thermal",
     ):
         netlist(circuit(_warmed(devices.voltage_source(1 * V))))
 

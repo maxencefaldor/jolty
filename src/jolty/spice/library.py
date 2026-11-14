@@ -888,6 +888,73 @@ def _semiconductor(
     return translated
 
 
+_MOSFET: Final = _semiconductor(
+    ("drain", "gate", "source", "bulk"), frozenset({"nmos", "pmos"})
+)
+"""The translation of a level 1 or level 3 MOSFET."""
+
+_VDMOS_TERMINALS: Final = ("drain", "gate", "source")
+"""A VDMOS's terminals, in its element's order."""
+
+_VDMOS_NODES: Final = 5
+"""The most nodes a VDMOS joins: its terminals, then a thermal junction and case, which
+join nothing unless it heats."""
+
+
+def _transistor(translation: _Translation, statement: Statement) -> None:
+    """The translation of an `M` element: a MOSFET, or a VDMOS, as its model card says.
+
+    As in ngspice, the element names its model after its nodes, the first word from the
+    fourth node on that names a model: a MOSFET joins four nodes, and a VDMOS three,
+    its drain, gate and source, and a fourth and a fifth, its thermal nodes, which join
+    nothing where the element does not heat by ngspice's ``thermal``, and jolty reads
+    no element that does. A VDMOS takes its number of copies, ``M``, and no area.
+
+    Raises:
+        SpiceError: When no model follows the nodes, or the element is not one jolty
+            reads.
+    """
+    positional, assigned = _keywords(tokens(statement.text))
+    library, cards = translation.library, translation.models
+    first = len(_VDMOS_TERMINALS) + 1
+    named = next(
+        (
+            position
+            for position in range(first, len(positional))
+            if library.model(positional[position], cards) is not None
+        ),
+        None,
+    )
+    card = None if named is None else library.model(positional[named], cards)
+    if named is None or card is None or card.kind not in models.VDMOS_KINDS:
+        _MOSFET(translation, statement)
+        return
+    nodes, rest = positional[1:named], positional[named + 1 :]
+    if len(nodes) > _VDMOS_NODES:
+        message = f"a VDMOS joins at most {_VDMOS_NODES} nodes, then names its model"
+        raise statement.fail(message)
+    for word in rest:
+        if word.casefold() == "thermal":
+            message = (
+                "jolty reads no `THERMAL` VDMOS: a vdmos heats through a thermal "
+                "terminal of its own, joined to a thermal network"
+            )
+            raise statement.fail(message)
+        # An initial state, `OFF`, only guides the search for the operating point.
+        if word.casefold() != "off":
+            message = f"a VDMOS takes no `{word}`"
+            raise statement.fail(message)
+    instance = {
+        key: translation.value(values[0]) for key, values in assigned.items() if values
+    }
+    made = models.device(card, translation.scope, instance, statement)
+    joined = {
+        terminal: translation.net(node)
+        for terminal, node in zip(_VDMOS_TERMINALS, nodes, strict=False)
+    }
+    translation.add(statement, made.model, made.parameters, joined)
+
+
 def _controlled(output: str) -> Callable[[_Translation, Statement], None]:
     """The translation of an E, F, G or H source, whose output is a `output`."""
 
@@ -1238,9 +1305,7 @@ _ELEMENTS: Final[dict[str, Callable[[_Translation, Statement], None]]] = {
     "d": _semiconductor(("anode", "cathode"), frozenset({"d"})),
     "q": _semiconductor(("collector", "base", "emitter"), frozenset({"npn", "pnp"})),
     "j": _semiconductor(("drain", "gate", "source"), frozenset({"njf", "pjf"})),
-    "m": _semiconductor(
-        ("drain", "gate", "source", "bulk"), frozenset({"nmos", "pmos"})
-    ),
+    "m": _transistor,
     "e": _controlled("voltage"),
     "f": _controlled("current"),
     "g": _controlled("current"),
