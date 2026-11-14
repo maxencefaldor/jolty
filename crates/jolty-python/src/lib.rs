@@ -27,6 +27,13 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use serde::Deserialize;
 
+/// Every allocation of the engine's runs, which many threads make at once in a batch,
+/// goes to mimalloc and its heaps of each thread: the system's allocator, shared by the
+/// threads, made each run of a batch on eight threads take about a third more time than
+/// on one, where eight processes each running one take a tenth more.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 create_exception!(
     _core,
     ElaborationError,
