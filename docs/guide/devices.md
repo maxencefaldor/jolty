@@ -214,7 +214,9 @@ A charge `q` from `positive` to `negative` moves the state toward off by `q/Q`, 
 Its `on_resistance`, `off_resistance`, `law`, `state` and `window` are as above.
 
 Written for ngspice, a memristor is a behavioral current whose state is the voltage of a node of its own.
-In a transient's netlist, that node is over 1 F, charged by a behavioral current at the state's rate, with an initial condition that starts the transient from the state it was made in; in any other analysis's netlist, a source holds the node at that state, as jolty holds it at an operating point and in the analyses about one.
+In a transient's netlist, a behavioral current charges that node at the state's rate, from an initial condition at the state it was made in.
+The node's capacitance is the ratio of ngspice's current and voltage tolerances, 10 µF, so that ngspice holds the state's rate to its voltage tolerance, as jolty does.
+In any other analysis's netlist, a source holds the node at that state, as jolty holds it at an operating point and in the analyses about one.
 
 ## Thermal networks
 

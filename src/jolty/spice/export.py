@@ -22,7 +22,7 @@ from jolty import _core, ir
 from jolty.errors import JoltyError
 from jolty.ir import Role
 from jolty.spice import models, sky130
-from jolty.spice.ngspice import spice_celsius
+from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE, spice_celsius
 from jolty.unknowns import Unknown
 
 
@@ -498,6 +498,19 @@ def _photocell(
     return conductance, lines
 
 
+STATE_CAPACITANCE: Final = CURRENT_TOLERANCE / VOLTAGE_TOLERANCE
+"""The capacitance, in farads, of the node whose voltage is a memristor's state.
+
+It is the ratio of ngspice's absolute tolerances on currents and on voltages, so that
+its tolerance on the current that charges the node is its voltage tolerance on the
+rate the state moves, as jolty's tolerance on a state's equation is. Over 1 F, the
+rates of two states one rounding apart, near a bound where a window steepens the rate,
+differed by a thousand times the current tolerance: Newton iteration then converged
+only when the state repeated to its last bit, and ngspice, built without fused
+multiply-adds, as for x86-64, stalled in steps of 1e-16 s.
+"""
+
+
 def _memristor(
     id: str,
     model: str,
@@ -509,9 +522,10 @@ def _memristor(
     """A memristor's conductance as an ngspice expression, and the lines that move it.
 
     Its state is the voltage of a node of its own. In a `transient`'s lines, that node
-    is over 1 F, which a behavioral current charges at the rate the state moves, from an
-    initial condition at the state it was made in; elsewhere, as at an operating point
-    and in the analyses about it, a source holds it at that state, as jolty's does.
+    is over `STATE_CAPACITANCE`, which a behavioral current charges at the rate the
+    state moves, from an initial condition at the state it was made in; elsewhere, as
+    at an operating point and in the analyses about it, a source holds it at that
+    state, as jolty's does.
     """
     given = _defaulted(model, values)
     made = _number(id, given, "state")
@@ -542,8 +556,8 @@ def _memristor(
     toward_on = f"(1-exp(-max({on_distance},0))+min({on_distance},0))"
     rate = f"max({drive},0)*{toward_off}+min({drive},0)*{toward_on}"
     lines = [
-        f"B{id}_state 0 {node} I={{{rate}}}",
-        f"C{id}_state {node} 0 1",
+        f"B{id}_state 0 {node} I={{{STATE_CAPACITANCE!r}*({rate})}}",
+        f"C{id}_state {node} 0 {STATE_CAPACITANCE!r}",
         f".ic {state}={made!r}",
     ]
     return conductance, lines
