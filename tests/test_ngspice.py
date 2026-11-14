@@ -12,7 +12,8 @@ the devices, the waveforms and the numerics against the reference simulator.
 """
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from fractions import Fraction
 from pathlib import Path
 from typing import Final, Literal
 
@@ -2061,3 +2062,549 @@ def test_vendors_cards_switch_as_in_ngspice(vendor_cards: Path) -> None:
             step.value,
         )
         compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
+
+
+# BSIM3v3.3: the transistors of the processes from 0.8 µm to 0.13 µm.
+
+_ROOT_VOLT: Final = V ** Fraction(1, 2)
+"""A square-root volt, the unit of BSIM3's body effects."""
+
+_MOBILITY: Final = m**2 / (V * s)
+"""A square meter per volt-second, the unit of a mobility."""
+
+
+def _bsim3(  # noqa: PLR0913 - the transistor's channel, length and choices of model
+    channel: Literal["n", "p"],
+    length: Quantity,
+    *,
+    mobmod: Literal[1, 2, 3] | None = None,
+    capmod: Literal[0, 1, 2, 3] | None = None,
+    noimod: Literal[1, 2, 3, 4, 5, 6] | None = None,
+    xpart: float | None = None,
+    more: Mapping[str, Quantity | float] | None = None,
+) -> devices.Device:
+    """A BSIM3 transistor 10 µm wide and `length` long of a 0.35 µm process.
+
+    Its threshold, body effect, short-channel effects, poly depletion, parasitic
+    resistance, non-saturation, output resistance, substrate current and bias-dependent
+    overlaps are set off their defaults, and its diffusions and sheet resistance given;
+    a p-channel's threshold is negative and its mobility lower. Its models are
+    `mobmod`, `capmod`, `noimod` and `xpart`, and its other parameters `more`.
+    """
+    sign = 1 if channel == "n" else -1
+    card: dict[str, Quantity | float] = {
+        "tox": 7.6 * nm,
+        "nch": 1.7e23 / m**3,
+        "vth0": sign * 0.55 * V,
+        "u0": (0.04 if channel == "n" else 0.012) * _MOBILITY,
+        "k1": 0.6 * _ROOT_VOLT,
+        "k2": -0.02,
+        "k3": 20.0,
+        "dvt0": 2.5,
+        "rdsw": 600 * ohm,
+        "prwg": 0.1 / V,
+        "pclm": 1.2,
+        "pdiblc2": 0.005,
+        "alpha0": 1e-6 * m / V,
+        "beta0": 20 * V,
+        "ngate": 3e26 / m**3,
+        "a1": 0.1 / V,
+        "a2": 0.9,
+        "pvag": 0.5,
+        "keta": -0.03 / V,
+        "cit": 1e-4 * F / m**2,
+        "lint": 20 * nm,
+        "wint": 30 * nm,
+        "cgsl": 1e-10 * F / m,
+        "cgdl": 1e-10 * F / m,
+        "rsh": 5 * ohm,
+        "cj": 1e-3 * F / m**2,
+        "cjsw": 3e-10 * F / m,
+        "cjswg": 2e-10 * F / m,
+        "js": 1e-5 * A / m**2,
+    }
+    card.update(more or {})
+    return devices.bsim3(
+        channel=channel,
+        width=10 * um,
+        length=length,
+        mobmod=mobmod,
+        capmod=capmod,
+        noimod=noimod,
+        xpart=xpart,
+        drain_area=10 * um**2,
+        source_area=10 * um**2,
+        drain_perimeter=22 * um,
+        source_perimeter=22 * um,
+        card=card,
+    )
+
+
+BSIM3_TRANSISTORS: Final = {
+    "short-n": _bsim3("n", 0.35 * um),
+    "long-n": _bsim3("n", 5 * um, mobmod=2),
+    "short-p": _bsim3(
+        "p", 0.35 * um, mobmod=3, more={"uc": -0.05 / V, "uc1": -0.06 / V}
+    ),
+    "long-p": _bsim3("p", 5 * um, capmod=1),
+}
+"""BSIM3 transistors of each channel, a short one and a long one, of each mobmod."""
+
+
+def bsim3_kelvins(temperature: Quantity) -> float:
+    """The temperature to run ngspice at so its BSIM3 runs at jolty's `temperature`.
+
+    BSIM3 computes with constants of its own, Boltzmann's over the electron's charge
+    among them, so ngspice's BSIM3 matches jolty's at the same kelvins.
+    """
+    return ngspice.same_kelvins(temperature.value)
+
+
+@component
+def bsim3_curves(c: Builder, transistor: devices.Device) -> None:
+    """A BSIM3 transistor's curves: its gate at `V1`, its drain at `V2`.
+
+    Its bulk, at `V3`, lies 0.5 V behind its source in reverse.
+    """
+    ground = c.port("ground", Role.GROUND)
+    sign = 1 if transistor.parameters.get("channel", "n") == "n" else -1
+    bias = c.place(devices.voltage_source(sign * 2 * V), id="V1")
+    drain = c.place(devices.voltage_source(sign * 2 * V), id="V2")
+    body = c.place(devices.voltage_source(sign * -0.5 * V), id="V3")
+    placed = c.place(transistor, id="M1")
+    c.connect(bias.positive, placed.gate, name="gate")
+    c.connect(drain.positive, placed.drain, name="drain")
+    c.connect(body.positive, placed.bulk, name="body")
+    c.connect(bias.negative, drain.negative, body.negative, placed.source, ground)
+
+
+@component
+def bsim3_stage(c: Builder, transistor: devices.Device) -> None:
+    """A common-source stage of a BSIM3 n-channel, which steps up at 1 µs.
+
+    Its gate is fed through 100 kΩ from `V1` at 1.2 V, and its drain loaded by 2 kΩ
+    from 3.3 V and by 0.5 pF.
+    """
+    ground = c.port("ground", Role.GROUND)
+    step = Piecewise([(1 * us, 1.2 * V), (1 * us + 5 * ns, 1.4 * V)])
+    source = c.place(devices.voltage_source(step), id="V1")
+    supply = c.place(devices.voltage_source(3.3 * V), id="V2")
+    gate = c.place(devices.resistor(100 * kohm), id="RG")
+    load = c.place(devices.resistor(2 * kohm), id="RD")
+    capacitance = c.place(devices.capacitor(0.5 * pF), id="CL")
+    placed = c.place(transistor, id="M1")
+    c.connect(source.positive, gate.a, name="in")
+    c.connect(gate.b, placed.gate, name="gate")
+    c.connect(supply.positive, load.a, name="supply")
+    c.connect(load.b, capacitance.a, placed.drain, name="out")
+    c.connect(
+        source.negative,
+        supply.negative,
+        capacitance.b,
+        placed.source,
+        placed.bulk,
+        ground,
+    )
+
+
+@component
+def bsim3_inverter(c: Builder, lower: devices.Device, upper: devices.Device) -> None:
+    """A CMOS inverter of BSIM3 transistors at 3.3 V, loaded by 20 fF.
+
+    A pulse drives its gates through 10 kΩ.
+    """
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(3.3 * V), id="V2")
+    pulse = Pulse(
+        initial=0 * V,
+        pulsed=3.3 * V,
+        delay=2 * ns,
+        rise=1 * ns,
+        fall=1 * ns,
+        width=8 * ns,
+        period=20 * ns,
+    )
+    source = c.place(devices.voltage_source(pulse), id="V1")
+    driver = c.place(devices.resistor(10 * kohm), id="RIN")
+    load = c.place(devices.capacitor(20 * fF), id="CL")
+    n = c.place(lower, id="MN")
+    p = c.place(upper, id="MP")
+    c.connect(source.positive, driver.a, name="in")
+    c.connect(driver.b, n.gate, p.gate, name="gate")
+    c.connect(supply.positive, p.source, p.bulk, name="supply")
+    c.connect(n.drain, p.drain, load.a, name="out")
+    c.connect(source.negative, supply.negative, n.source, n.bulk, load.b, ground)
+
+
+def _bsim3_sweep(
+    simulation: Simulation, source: str, levels: list[Quantity], kelvins: float
+) -> None:
+    """Asserts a DC sweep of `source` over `levels` agrees with ngspice's."""
+    sweep = simulation.run(DcSweep(source, levels), TIGHT)
+    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    step = (last - first) / (len(levels) - 1)
+    command = f"dc V{source} {first!r} {last!r} {step!r}"
+    raw = ngspice.run(netlist(simulation.circuit), command, temperature=kelvins)
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown))
+        compare(
+            sweep.values[:, column],
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=1e-6,
+        )
+
+
+@pytest.mark.parametrize(
+    "temperature",
+    [celsius(27), *TEMPERATURES.values()],
+    ids=["nominal", *TEMPERATURES.keys()],
+)
+@pytest.mark.parametrize("name", BSIM3_TRANSISTORS)
+@pytest.mark.parametrize("source", ["V1", "V2"])
+def test_bsim3_curves_agree(name: str, source: str, temperature: Quantity) -> None:
+    """A BSIM3 transistor's output and transfer curves, in both modes, as ngspice's.
+
+    The drain sweeps from 1 V behind the source, the bulk junction forward and the
+    channel reversed, to 3.3 V; the gate from below the threshold to 3.3 V.
+    """
+    transistor = BSIM3_TRANSISTORS[name]
+    sign = 1 if name.endswith("-n") else -1
+    simulation = Simulation(bsim3_curves(transistor), temperature)
+    bounds = (-1.0, 3.3) if source == "V2" else (-0.5, 3.3)
+    levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 87)
+    _bsim3_sweep(simulation, source, levels, bsim3_kelvins(temperature))
+
+
+_PARTITIONED: Final[list[tuple[Literal[0, 1, 2, 3], float]]] = [
+    (0, 0.0),
+    (1, 0.0),
+    (2, 0.0),
+    (3, 0.0),
+    (3, 0.5),
+    (0, 1.0),
+    (2, 1.0),
+    (1, -1.0),
+]
+"""Each charge model, at the partition 40/60, and with others: 50/50, 0/100 and none."""
+
+_STAGES: Final = {
+    f"capmod-{capmod}-xpart-{xpart}": _bsim3(
+        "n",
+        0.5 * um,
+        capmod=capmod,
+        xpart=xpart,
+        more={"ngate": 0 / m**3} if capmod == 0 else None,
+    )
+    for capmod, xpart in _PARTITIONED
+}
+"""The stage's transistor in each charge model and partition.
+
+`capmod` 0's has no poly depletion: ngspice's capacitances of `capmod` 0 multiply by the
+depletion's slope of the gate voltage twice, which leaves its AC response 2.5e-4 of the
+signal from the derivative of its own charge, which jolty's is."""
+
+
+@pytest.mark.parametrize("name", _STAGES)
+def test_bsim3_ac_responses_agree(name: str) -> None:
+    """A BSIM3 stage's operating point and AC response, as ngspice's.
+
+    Its transistor's charges follow each charge model and partition.
+    """
+    simulation = Simulation(bsim3_stage(_STAGES[name]))
+    kelvins = bsim3_kelvins(celsius(27))
+    point = simulation.run(OperatingPoint(), TIGHT)
+    raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
+    for column, unknown in compared(simulation):
+        spice_value = raw.real(vector(simulation.circuit, unknown))[0]
+        compare(
+            point.values[column],
+            spice_value,
+            unknown,
+            scale=abs(spice_value),
+            tolerance=1e-6,
+        )
+    response = simulation.run(Ac("V1", decade(10 * Hz, 10 * GHz, 10)), TIGHT)
+    lines = netlist(simulation.circuit, excited="V1")
+    raw = ngspice.run(lines, "ac dec 10 10 10g", temperature=kelvins)
+    for column, unknown in compared(simulation):
+        spice_values = raw.vectors[vector(simulation.circuit, unknown)]
+        compare(
+            response.values[:, column],
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=1e-6,
+        )
+
+
+@pytest.mark.parametrize("noimod", [1, 2, 3, 4, 5, 6])
+def test_bsim3_noise_agrees(noimod: Literal[1, 2, 3, 4, 5, 6]) -> None:
+    """A BSIM3 stage's noise at its output and at its input, as ngspice's.
+
+    Its transistor's noise follows each noise model: SPICE2's or BSIM3's thermal and
+    flicker noise.
+    """
+    transistor = _bsim3(
+        "n", 0.5 * um, noimod=noimod, more={"kf": 1e-26, "af": 1.2, "ef": 0.9}
+    )
+    simulation = Simulation(bsim3_stage(transistor))
+    spectrum = simulation.run(
+        Noise("out", decade(1 * Hz, 100 * MHz, 5), source="V1"), TIGHT
+    )
+    lines = netlist(simulation.circuit, excited="V1")
+    command = "noise v(out) VV1 dec 5 1 100meg\nsetplot noise1"
+    raw = ngspice.run(lines, command, temperature=bsim3_kelvins(celsius(27)))
+    np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
+    np.testing.assert_allclose(
+        np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.sqrt(spectrum.referred()), raw.real("inoise_spectrum"), rtol=1e-5
+    )
+
+
+@pytest.mark.parametrize(
+    ("top", "stop", "step"),
+    [
+        (lambda: bsim3_stage(_STAGES["capmod-3-xpart-0.0"]), 2 * us, 1 * ns),
+        (
+            lambda: bsim3_inverter(
+                BSIM3_TRANSISTORS["short-n"], BSIM3_TRANSISTORS["short-p"]
+            ),
+            40 * ns,
+            0.01 * ns,
+        ),
+    ],
+    ids=["stage", "inverter"],
+)
+def test_bsim3_transients_agree(
+    top: Callable[[], Component], stop: Quantity, step: Quantity
+) -> None:
+    """A BSIM3 stage's step response and a CMOS inverter's switching, as ngspice's."""
+    simulation = Simulation(top())
+    waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
+    command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}"
+    raw = ngspice.run(
+        netlist(simulation.circuit, transient=True),
+        command,
+        temperature=bsim3_kelvins(celsius(27)),
+    )
+    times = raw.real("time")
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown))
+        jolty = closest(
+            waveforms.times,
+            waveforms.values[:, column],
+            times,
+            spice_values,
+            step.value,
+        )
+        compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
+
+
+BERKELEY_CARDS: Final = """\
+* UC Berkeley's BSIM3v3.3.0 model cards of a 0.35 um process, modelcard.nmos and
+* modelcard.pmos of its release (bsim.berkeley.edu, ftpv330.zip), as ngspice 47's
+* examples/mos give them, and transistors as its nmos_pmos_BSIM330.sp places them.
+.model N1 NMOS
++Level=        8 version=3.3.0
++Tnom=27.0
++Nch= 2.498E+17  Tox=9E-09 Xj=1.00000E-07
++Lint=9.36e-8 Wint=1.47e-7
++Vth0= .6322    K1= .756  K2= -3.83e-2  K3= -2.612
++Dvt0= 2.812  Dvt1= 0.462  Dvt2=-9.17e-2
++Nlx= 3.52291E-08  W0= 1.163e-6
++K3b= 2.233
++Vsat= 86301.58  Ua= 6.47e-9  Ub= 4.23e-18  Uc=-4.706281E-11
++Rdsw= 650  U0= 388.3203 wr=1
++A0= .3496967 Ags=.1    B0=0.546    B1= 1
++Dwg = -6.0E-09 Dwb = -3.56E-09 Prwb = -.213
++Keta=-3.605872E-02  A1= 2.778747E-02  A2= .9
++Voff=-6.735529E-02  NFactor= 1.139926  Cit= 1.622527E-04
++Cdsc=-2.147181E-05
++Cdscb= 0  Dvt0w =  0 Dvt1w =  0 Dvt2w =  0
++Cdscd =  0 Prwg =  0
++Eta0= 1.0281729E-02  Etab=-5.042203E-03
++Dsub= .31871233
++Pclm= 1.114846  Pdiblc1= 2.45357E-03  Pdiblc2= 6.406289E-03
++Drout= .31871233  Pscbe1= 5000000  Pscbe2= 5E-09 Pdiblcb = -.234
++Pvag= 0 delta=0.01
++Wl =  0 Ww = -1.420242E-09 Wwl =  0
++Wln =  0 Wwn =  .2613948 Ll =  1.300902E-10
++Lw =  0 Lwl =  0 Lln =  .316394
++Lwn =  0
++kt1=-.3  kt2=-.051
++At= 22400
++Ute=-1.48
++Ua1= 3.31E-10  Ub1= 2.61E-19 Uc1= -3.42e-10
++Kt1l=0 Prt=764.3
++vgs_max=4 vds_max=4 vbs_max=4
+.model P1 PMOS
++Level=        8 version=3.3.0
++Tnom=27.0
++Nch= 3.533024E+17  Tox=9E-09 Xj=1.00000E-07
++Lint=6.23e-8 Wint=1.22e-7
++Vth0=-.6732829 K1= .8362093  K2=-8.606622E-02  K3= 1.82
++Dvt0= 1.903801  Dvt1= .5333922  Dvt2=-.1862677
++Nlx= 1.28e-8  W0= 2.1e-6
++K3b= -0.24 Prwg=-0.001 Prwb=-0.323
++Vsat= 103503.2  Ua= 1.39995E-09  Ub= 1.e-19  Uc=-2.73e-11
++Rdsw= 460  U0= 138.7609
++A0= .4716551 Ags=0.12
++Keta=-1.871516E-03  A1= .3417965  A2= 0.83
++Voff=-.074182  NFactor= 1.54389  Cit=-1.015667E-03
++Cdsc= 8.937517E-04
++Cdscb= 1.45e-4  Cdscd=1.04e-4
++Dvt0w=0.232 Dvt1w=4.5e6 Dvt2w=-0.0023
++Eta0= 6.024776E-02  Etab=-4.64593E-03
++Dsub= .23222404
++Pclm= .989  Pdiblc1= 2.07418E-02  Pdiblc2= 1.33813E-3
++Drout= .3222404  Pscbe1= 118000  Pscbe2= 1E-09
++Pvag= 0
++kt1= -0.25  kt2= -0.032 prt=64.5
++At= 33000
++Ute= -1.5
++Ua1= 4.312e-9 Ub1= 6.65e-19  Uc1= 0
++Kt1l=0
++vgs_max=4 vds_max=4 vbs_max=4
+.subckt nfet d g s b
+M1 d g s b n1 W=1u L=0.35u Pd=1.5u Ps=1.5u ad=1.5p as=1.5p
+.ends
+.subckt pfet d g s b
+M1 d g s b p1 W=2.5u L=0.35u Pd=3u Ps=3u ad=2.5p as=2.5p
+.ends
+"""
+"""A library of Berkeley's published cards, each transistor a subcircuit of its own."""
+
+
+@pytest.fixture(scope="module")
+def berkeley_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The library of `BERKELEY_CARDS`, as a file both engines read."""
+    path = tmp_path_factory.mktemp("bsim3") / "berkeley.lib"
+    path.write_text(BERKELEY_CARDS, encoding="utf-8")
+    return path
+
+
+@component
+def part_curves(c: Builder, part: Component, sign: Literal[1, -1]) -> None:
+    """A library's transistor's curves: its gate at `V1`, its drain at `V2`.
+
+    Its bulk, at `V3`, lies 0.5 V behind its source in reverse.
+    """
+    ground = c.port("ground", Role.GROUND)
+    bias = c.place(devices.voltage_source(sign * 2 * V), id="V1")
+    drain = c.place(devices.voltage_source(sign * 2 * V), id="V2")
+    body = c.place(devices.voltage_source(sign * -0.5 * V), id="V3")
+    placed = c.place(part, id="X1")
+    c.connect(bias.positive, placed["g"], name="gate")
+    c.connect(drain.positive, placed["d"], name="drain")
+    c.connect(body.positive, placed["b"], name="body")
+    c.connect(bias.negative, drain.negative, body.negative, placed["s"], ground)
+
+
+@pytest.mark.parametrize(
+    "temperature",
+    [celsius(27), *TEMPERATURES.values()],
+    ids=["nominal", *TEMPERATURES.keys()],
+)
+@pytest.mark.parametrize(("part", "sign"), [("nfet", 1), ("pfet", -1)])
+@pytest.mark.parametrize("source", ["V1", "V2"])
+def test_published_bsim3_cards_sweep_as_in_ngspice(
+    berkeley_cards: Path,
+    part: str,
+    sign: Literal[1, -1],
+    source: str,
+    temperature: Quantity,
+) -> None:
+    """Berkeley's published BSIM3v3.3 cards, read by the reader, as ngspice reads them.
+
+    The drain sweeps from 1 V behind the source to 3.3 V, and the gate from below the
+    threshold.
+    """
+    read = spice.load(berkeley_cards).component(part)
+    simulation = Simulation(part_curves(read, sign), temperature)
+    bounds = (-1.0, 3.3) if source == "V2" else (-0.5, 3.3)
+    levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 87)
+    sweep = simulation.run(DcSweep(source, levels), TIGHT)
+    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    step = (last - first) / (len(levels) - 1)
+    raw = ngspice.run(
+        netlist(simulation.circuit),
+        f"dc V{source} {first!r} {last!r} {step!r}",
+        libraries=(berkeley_cards,),
+        temperature=bsim3_kelvins(temperature),
+    )
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown))
+        compare(
+            sweep.values[:, column],
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=1e-6,
+        )
+
+
+BINNED_CARDS: Final = """\
+* A binned n-channel in two bins of length, either side of 1 um, of ngspice's binunit 1:
+* each dependence per micrometer of the effective length or width, the doping per cubic
+* centimeter and the mobility in cm^2/(V s), as a foundry writes them.
+.model nch.1 nmos (level=49 version=3.3.0 lmin=0.3u lmax=1u wmin=1u wmax=100u
++ tox=7.6n nch=1.7e17 lnch=2e16 vth0=0.5 lvth0=0.02 wvth0=-0.01 pvth0=0.002
++ u0=420 lu0=-30 wu0=5 k1=0.6 k2=-0.02 lk2=0.005 rdsw=500 wrdsw=100
++ vsat=8e4 lvsat=1e4 pclm=1.2 lpclm=0.1 cgsl=1e-10 lint=20n)
+.model nch.2 nmos (level=49 version=3.3.0 lmin=1u lmax=10u wmin=1u wmax=100u
++ tox=7.6n nch=1.7e17 vth0=0.55 lvth0=-0.05 u0=430 lu0=20 k1=0.6 k2=-0.02
++ rdsw=500 vsat=8e4 pclm=1.3 cgsl=1e-10 lint=20n)
+.subckt short d g s b
+M1 d g s b nch W=10u L=0.5u
+.ends
+.subckt long d g s b
+M1 d g s b nch W=10u L=2u
+.ends
+.subckt edge d g s b
+M1 d g s b nch W=10u L=1u
+.ends
+"""
+"""A binned card in two bins, and transistors each bin takes: on its bound, the bin
+ngspice defines last."""
+
+
+@pytest.fixture(scope="module")
+def binned_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The library of `BINNED_CARDS`, as a file both engines read."""
+    path = tmp_path_factory.mktemp("binned") / "binned.lib"
+    path.write_text(BINNED_CARDS, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("part", ["short", "long", "edge"])
+@pytest.mark.parametrize("source", ["V1", "V2"])
+def test_binned_bsim3_cards_sweep_as_in_ngspice(
+    binned_cards: Path, part: str, source: str
+) -> None:
+    """A binned BSIM3 card's transistors, each of the bin it takes, as ngspice's."""
+    read = spice.load(binned_cards).component(part)
+    simulation = Simulation(part_curves(read, 1))
+    bounds = (-1.0, 3.3) if source == "V2" else (-0.5, 3.3)
+    levels = linear(bounds[0] * V, bounds[1] * V, 87)
+    sweep = simulation.run(DcSweep(source, levels), TIGHT)
+    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    step = (last - first) / (len(levels) - 1)
+    raw = ngspice.run(
+        netlist(simulation.circuit),
+        f"dc V{source} {first!r} {last!r} {step!r}",
+        libraries=(binned_cards,),
+        temperature=bsim3_kelvins(celsius(27)),
+    )
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown))
+        compare(
+            sweep.values[:, column],
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=1e-6,
+        )

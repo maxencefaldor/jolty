@@ -132,6 +132,7 @@ impl Library {
         library.add(Native::<BehavioralCurrentSource>::new());
         library.add(Native::<BehavioralVoltageSource>::new());
         library.add(Thermal::<BipolarTransistor>::new());
+        library.add(Thermal::<Bsim3>::new());
         library.add(Thermal::<Resistor>::new());
         library.add(Native::<Capacitor>::new());
         library.add(Native::<Inductor>::new());
@@ -215,6 +216,7 @@ mod tests {
     /// Devices of every model, between them giving each kind of parameter there is: every
     /// shape of waveform, a device's own temperature and its heating, and a logic cell's
     /// electrical pins.
+    #[expect(clippy::too_many_lines, reason = "one example of each model, or two")]
     fn examples() -> Vec<(&'static str, Value)> {
         let mosfet = json!({"level": 3, "channel": "p", "oxide_thickness": 1e-8,
             "gate_material": "aluminum", "temperature": 350});
@@ -246,6 +248,12 @@ mod tests {
                 "bipolar_transistor",
                 json!({"polarity": "pnp", "forward_early_voltage": 50, "substrate": "lateral",
                     "substrate_saturation_current": 1e-15, "thermal": true}),
+            ),
+            (
+                "bsim3",
+                json!({"channel": "p", "vth0": -0.6, "lvth0": 1e-8, "capmod": 2,
+                    "mobmod": 3, "noimod": 2, "paramchk": true, "xpart": 0.5,
+                    "temperature": 350}),
             ),
             (
                 "capacitor",
@@ -416,6 +424,7 @@ mod tests {
                 "behavioral_current_source",
                 "behavioral_voltage_source",
                 "bipolar_transistor",
+                "bsim3",
                 "capacitor",
                 "coupled_inductors",
                 "current_controlled_current_source",

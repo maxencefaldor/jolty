@@ -56,6 +56,22 @@ def spice_celsius(temperature: float) -> float:
     return thermal_voltage / _SPICE_THERMAL_VOLTAGE_PER_KELVIN - 273.15
 
 
+def same_kelvins(temperature: float) -> float:
+    """The temperature to give [`run`][jolty.spice.ngspice.run] to run at `temperature`.
+
+    `run` runs ngspice where its thermal voltage is jolty's at the temperature it is
+    given; given this one, it runs it at `temperature` itself, in kelvins. A model that
+    computes with constants of its own, as BSIM3 does with Boltzmann's over the
+    electron's charge, agrees with ngspice's at the same kelvins.
+
+    Examples:
+        >>> round(spice_celsius(same_kelvins(300.15)), 9)
+        27.0
+    """
+    jolty = _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
+    return temperature * _SPICE_THERMAL_VOLTAGE_PER_KELVIN / jolty
+
+
 @dataclass(frozen=True)
 class Raw:
     """The vectors of one ngspice analysis, by lowercase name.

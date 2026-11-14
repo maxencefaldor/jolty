@@ -90,6 +90,13 @@ fn a_kernels_evaluation_allocates_nothing() {
                 "quasi_saturation_voltage": 10, "breakdown_voltage": 30, "thermal": true}"#,
             &[-12.0, -6.0, 0.0, 5.0],
         ),
+        ("bsim3", "{}", &[3.0, 2.0, 0.0, 0.0]),
+        (
+            "bsim3",
+            r#"{"channel": "p", "rsh": 20, "source_squares": 0.02, "capmod": 0,
+                "noimod": 2, "thermal": true}"#,
+            &[-3.0, -2.0, 0.0, 0.0],
+        ),
         ("bipolar_transistor", "{}", &[5.0, 0.7, 0.0]),
         (
             "bipolar_transistor",

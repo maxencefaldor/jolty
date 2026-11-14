@@ -243,7 +243,7 @@ Results read the heat flowing into a thermal terminal as its current, `current(i
 
 ### Self-heating
 
-`device.heated()` heats a resistor, a diode, a JFET, a bipolar transistor, a MOSFET or a VDMOS by the power it dissipates: a terminal `thermal` joins it to a thermal net, or to the ground, the ambient.
+`device.heated()` heats a resistor, a diode, a JFET, a bipolar transistor, a MOSFET, a BSIM3 or a VDMOS by the power it dissipates: a terminal `thermal` joins it to a thermal net, or to the ground, the ambient.
 The device runs at the simulation's temperature raised by that net's, every parameter scaled to it as the sections below say, and the power its electrical terminals take, each one's voltage times the current into it, flows into the net as heat.
 So a transistor whose junction a thermal resistance holds to the ambient settles where the heat it makes flows away, and a thermal capacitance beside it sets how fast it gets there:
 
@@ -446,6 +446,49 @@ With the bulk forward-biased, ngspice's small-signal model and Newton steps take
 
 In a [noise analysis](simulation.md#noise), the resistances make thermal noise, the channel thermal noise of `8kT·gm/3` A²/Hz, and the drain current `Id` flicker noise of `m·KF·(|Id|/m)^AF/(f·W·Leff·Cox²)`: each of the `m` parallel copies carries its share of the current over its own effective gate, and their noises add, with an oxide 0.1 µm thick unless given, as in SPICE.
 A netlist written for ngspice gives it as ngspice's `nlev=1`, `KF/Cox` its coefficient, which ngspice 43 and later read.
+
+## BSIM3
+
+`bsim3(...)` is a MOSFET between `drain`, `gate`, `source` and `bulk` in BSIM3v3.3, the Berkeley short-channel model of the CMOS processes from 0.8 µm to 0.13 µm, SPICE's level 8 and 49, as ngspice 47 implements it after the BSIM3v3.3 manual of Weidong Liu, Xuemei Xi and others (UC Berkeley, 2005).
+The drain current folds in the threshold's short-channel, narrow-width and drain-induced barrier lowering terms, the poly gate's depletion, the mobility's degradation by the gate field of `mobmod` 1 to 3, the carriers' velocity saturation, the channel-length modulation, the barrier lowering's and the substrate current's effects on the output resistance, and the source and drain resistance `rdsw`; the impact ionization's substrate current flows from the drain to the bulk.
+The charges under the gate follow `capmod` 0 to 3, the drain's share of the channel's charge `xpart`, beside the overlaps' charges, and two diodes join the bulk to the drain and the source, each with its depletion charge.
+The transistor is symmetric: with the drain below the source, the two swap.
+
+Its instance takes a MOSFET's geometry, and a card of the manual's parameters by their names, `card={"vth0": 0.5 * V, "tox": 7.6 * nm, ...}`:
+
+| Parameter | SPICE | Unit | Default |
+| --- | --- | --- | --- |
+| `channel` | `NMOS`, `PMOS` | `"n"` or `"p"` | `"n"` |
+| `width`, `length` | `W`, `L` | m | 5 µm, 5 µm |
+| `multiplier` | `M` | none | 1 |
+| `drain_area`, `source_area` | `AD`, `AS` | m² | 0 |
+| `drain_perimeter`, `source_perimeter` | `PD`, `PS` | m | 0 |
+| `drain_squares`, `source_squares` | `NRD`, `NRS` | none | 1, 1 |
+| `delvto`, `mulu0` | `DELVTO`, `MULU0` | V, none | 0, 1 |
+| `mobmod`, `capmod`, `noimod` | `MOBMOD`, `CAPMOD`, `NOIMOD` | 1 to 3, 0 to 3, 1 to 6 | 1, 3, 1 |
+| `paramchk` | `PARAMCHK = 1` | `True` or `False` | `False` |
+| `xpart` | `XPART` | none | 0 |
+| `nominal_temperature` | `TNOM` | K | 27 °C |
+| `card` | each by its name | SI | ngspice's |
+
+Each parameter of the card takes a quantity of its dimension in SI units, which `devices.bsim3_dimension(name)` gives, or a plain number where it has none, and a parameter whose default derives from others, such as `vth0` from `vfb`, `k1` from `gamma1` and `gamma2`, or `cgso` from `dlc`, derives as ngspice derives it.
+Each binnable parameter has its length, width and area dependences, named after it with `l`, `w` and `p` before, each a coefficient of the reciprocal of the effective length, width or their product in meters: jolty's `lvth0` is a SPICE card's in volt-micrometers times 1e-6, its `BINUNIT = 1`.
+SPICE writes `NCH`, `NGATE` and `NSUB` per cubic centimeter, `NCH` above 1e20 and `NGATE` above 1e24 per cubic meter, and a `U0` above 1 in cm²/(V·s); jolty takes SI units, and `rdsw` and `prt` in ohms, the resistance of a channel 1 µm wide, as a card gives them.
+`ll`, `lw`, `lwl`, `wl`, `ww`, `wwl` and their charges' counterparts are plain numbers, of meters to the powers their exponents `lln`, `lwn`, `wln` and `wwn` set, and `noia`, `noib` and `noic` are in the manual's units.
+
+Away from the nominal temperature, the mobility scales as `(T/Tn)^ute`, `ua`, `ub`, `uc`, `vsat` and `rdsw` by their coefficients, the threshold by `kt1`, `kt1l` and `kt2`, and the junctions' saturation currents by `xti`, their capacitances and potentials by `tcj`, `tpb` and the sidewalls' counterparts, as in ngspice.
+BSIM3 computes with constants of its own, Boltzmann's over the electron's charge among them, so a netlist written for ngspice gives its nominal temperature in the same kelvins, and ngspice's BSIM3 agrees with jolty's at the same temperature, not where ngspice's thermal voltage is jolty's as for its other devices.
+A heated BSIM3 runs at its thermal net's temperature, as any device that [heats](#self-heating) does.
+
+The parameters ngspice stops on are refused, and those it clamps with a warning are clamped: `pb`, `pbsw` and `pbswg` below 0.1 V rise to it, and with `paramchk`, `a2` outside 0.01 to 1, a negative `rdsw` and negative overlaps.
+A sheet resistance `rsh` adds an internal node to the unknowns, as `M1:drain` or `M1:source` for a transistor `M1`; one below 1 Ω adds its current too, as `M1:drain_current` or `M1:source_current`, as a small resistor does.
+jolty keeps every derivative exact, the derivative of the current and charge it computes: ngspice's derivative of the effective bulk voltage drops the slope of its clamp in forward bias, and its capacitances of `capmod` 0 count the poly depletion's slope of the gate voltage twice, so there its frequency response differs from jolty's while their operating points and transients agree.
+
+In a [noise analysis](simulation.md#noise), the sheet resistances make thermal noise, and the channel the thermal and flicker noise of `noimod`: SPICE2's thermal noise of `8kT·|gm + gds + gmbs|/3` A²/Hz at `noimod` 1, 3 and, corrected below saturation, 5 and 6, and BSIM3's of the inversion charge at 2 and 4; SPICE2's flicker noise of `kf·|Id|^af/(f^ef·Leff²·Cox)` at `noimod` 1, 4 and 5, and BSIM3's of the oxide traps `noia`, `noib` and `noic` at 2, 3 and 6, each of the `m` copies' noise added, as in ngspice.
+
+The SPICE reader reads a `.model` card of type `NMOS` or `PMOS` and `LEVEL` 8 or 49 of version 3.3, or of none, which ngspice reads as 3.3; ngspice runs a card of version 3.0, 3.1 or 3.2 with other models, which jolty does not have, so it refuses one.
+An element whose model names no card takes, as ngspice's bins do, the last defined card named after it with a dot and a number, such as `nch.2`, whose `LMIN`, `LMAX`, `WMIN` and `WMAX` hold the length and width the element gives, a bound within 1 nm counted in.
+The reader reads past what changes nothing ngspice computes: the bins' ranges, the safe operating area's `VGS_MAX` and the rest, and the parameters of the non-quasi-static models and HSPICE's area calculation, `ELM`, `ACM`'s and `GEO`, which it refuses on, as jolty models neither: a card or instance with `NQSMOD`, `ACNQSMOD` or `ACM` other than 0 is refused.
 
 ## Power MOSFET
 

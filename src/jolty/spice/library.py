@@ -176,6 +176,31 @@ class Library:
         key = name.casefold()
         return local.get(key) or self._models.get(key)
 
+    def binned(
+        self,
+        name: str,
+        local: Mapping[str, ModelCard],
+        instance: Mapping[str, float],
+        scope: Mapping[str, float],
+    ) -> ModelCard | None:
+        """The bin of the model `name` an `instance` takes, as ngspice selects it.
+
+        A bin is a BSIM3 card named `name` then a dot and a whole number, which holds
+        the instance's length and width, both given on its element, as
+        [`holds`][jolty.spice.models.holds] says; the last defined is taken first, in a
+        subcircuit's body, then globally.
+        """
+        if "l" not in instance or "w" not in instance:
+            return None
+        bins = re.compile(rf"{re.escape(name.casefold())}\.\d+")
+        for cards in (local, self._models):
+            for key, card in reversed(list(cards.items())):
+                if bins.fullmatch(key) and models.holds(
+                    card, scope, (instance["l"], instance["w"])
+                ):
+                    return card
+        return None
+
     def subcircuit(self, name: str) -> Subcircuit | None:
         """The subcircuit `name`."""
         return self._subcircuits.get(name.casefold())
@@ -860,18 +885,20 @@ def _semiconductor(
         if len(nodes) != len(terminals) or not rest:
             message = f"the element joins {len(terminals)} nodes, then names its model"
             raise statement.fail(message)
+        instance = {
+            key: translation.value(values[0])
+            for key, values in assigned.items()
+            if values
+        }
         card = library.model(rest[0], cards)
+        if card is None and "nmos" in kinds:
+            card = library.binned(rest[0], cards, instance, translation.scope)
         if card is None:
             message = f"no model is named `{rest[0]}`"
             raise statement.fail(message)
         if card.kind not in kinds:
             message = f"`{card.name}` is a model of type `{card.kind}`"
             raise statement.fail(message)
-        instance = {
-            key: translation.value(values[0])
-            for key, values in assigned.items()
-            if values
-        }
         # An initial state, `OFF`, only guides the search for the operating point.
         areas = [word for word in rest[1:] if word.casefold() not in {"off", "on"}]
         if areas:

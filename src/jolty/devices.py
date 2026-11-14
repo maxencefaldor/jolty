@@ -15,11 +15,13 @@ Examples:
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from typing import Final, Literal
 
 from pydantic import JsonValue
 
 from jolty import _core, ir
+from jolty.errors import DimensionError
 from jolty.units import (
     CAPACITANCE,
     CHARGE,
@@ -145,7 +147,7 @@ class Device:
         The device runs at the simulation's temperature raised by that net's, and the
         power its electrical terminals take, each one's voltage times the current into
         it, flows into the net as heat. A resistor, a diode, a JFET, a bipolar
-        transistor, a MOSFET and a VDMOS heat.
+        transistor, a MOSFET, a BSIM3 and a VDMOS heat.
 
         Examples:
             >>> diode().heated().terminals
@@ -1476,6 +1478,377 @@ def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
         {"channel": channel},
     )
     return device("vdmos", parameters)
+
+
+_HALF: Final = Fraction(1, 2)
+
+BSIM3_CARD: Final[Mapping[str, Dimension | Literal["uc"] | None]] = {
+    "tox": LENGTH,
+    "toxm": LENGTH,
+    "xj": LENGTH,
+    "nch": LENGTH**-3,
+    "nsub": LENGTH**-3,
+    "ngate": LENGTH**-3,
+    "gamma1": VOLTAGE**_HALF,
+    "gamma2": VOLTAGE**_HALF,
+    "vbx": VOLTAGE,
+    "vbm": VOLTAGE,
+    "xt": LENGTH,
+    "vth0": VOLTAGE,
+    "vfb": VOLTAGE,
+    "k1": VOLTAGE**_HALF,
+    "k2": None,
+    "k3": None,
+    "k3b": PER_VOLT,
+    "w0": LENGTH,
+    "nlx": LENGTH,
+    "dvt0": None,
+    "dvt1": None,
+    "dvt2": PER_VOLT,
+    "dvt0w": None,
+    "dvt1w": LENGTH**-1,
+    "dvt2w": PER_VOLT,
+    "dsub": None,
+    "eta0": None,
+    "etab": PER_VOLT,
+    "u0": MOBILITY,
+    "ua": LENGTH / VOLTAGE,
+    "ub": LENGTH**2 / VOLTAGE**2,
+    "uc": "uc",
+    "vsat": LENGTH / TIME,
+    "a0": None,
+    "ags": PER_VOLT,
+    "a1": PER_VOLT,
+    "a2": None,
+    "b0": LENGTH,
+    "b1": LENGTH,
+    "keta": PER_VOLT,
+    "voff": VOLTAGE,
+    "nfactor": None,
+    "cdsc": CAPACITANCE / LENGTH**2,
+    "cdscb": CAPACITANCE / (VOLTAGE * LENGTH**2),
+    "cdscd": CAPACITANCE / (VOLTAGE * LENGTH**2),
+    "cit": CAPACITANCE / LENGTH**2,
+    "pclm": None,
+    "pdiblc1": None,
+    "pdiblc2": None,
+    "pdiblcb": PER_VOLT,
+    "drout": None,
+    "pscbe1": VOLTAGE / LENGTH,
+    "pscbe2": LENGTH / VOLTAGE,
+    "pvag": None,
+    "delta": VOLTAGE,
+    "rdsw": RESISTANCE,
+    "prwg": PER_VOLT,
+    "prwb": VOLTAGE**-_HALF,
+    "wr": None,
+    "dwg": LENGTH / VOLTAGE,
+    "dwb": LENGTH / VOLTAGE**_HALF,
+    "alpha0": LENGTH / VOLTAGE,
+    "alpha1": PER_VOLT,
+    "beta0": VOLTAGE,
+    "kt1": VOLTAGE,
+    "kt1l": VOLTAGE * LENGTH,
+    "kt2": None,
+    "ute": None,
+    "ua1": LENGTH / VOLTAGE,
+    "ub1": LENGTH**2 / VOLTAGE**2,
+    "uc1": "uc",
+    "at": LENGTH / TIME,
+    "prt": RESISTANCE,
+    "cgsl": CAPACITANCE / LENGTH,
+    "cgdl": CAPACITANCE / LENGTH,
+    "ckappa": VOLTAGE,
+    "cf": CAPACITANCE / LENGTH,
+    "clc": LENGTH,
+    "cle": None,
+    "vfbcv": VOLTAGE,
+    "acde": LENGTH / VOLTAGE,
+    "moin": None,
+    "noff": None,
+    "voffcv": VOLTAGE,
+    "cgso": CAPACITANCE / LENGTH,
+    "cgdo": CAPACITANCE / LENGTH,
+    "cgbo": CAPACITANCE / LENGTH,
+    "lint": LENGTH,
+    "ll": None,
+    "lln": None,
+    "lw": None,
+    "lwn": None,
+    "lwl": None,
+    "llc": None,
+    "lwc": None,
+    "lwlc": None,
+    "wint": LENGTH,
+    "wl": None,
+    "wln": None,
+    "ww": None,
+    "wwn": None,
+    "wwl": None,
+    "wlc": None,
+    "wwc": None,
+    "wwlc": None,
+    "dlc": LENGTH,
+    "dwc": LENGTH,
+    "xl": LENGTH,
+    "xw": LENGTH,
+    "rsh": RESISTANCE,
+    "js": CURRENT / LENGTH**2,
+    "jsw": CURRENT / LENGTH,
+    "ijth": CURRENT,
+    "nj": None,
+    "xti": None,
+    "cj": CAPACITANCE / LENGTH**2,
+    "cjsw": CAPACITANCE / LENGTH,
+    "cjswg": CAPACITANCE / LENGTH,
+    "mj": None,
+    "mjsw": None,
+    "mjswg": None,
+    "pb": VOLTAGE,
+    "pbsw": VOLTAGE,
+    "pbswg": VOLTAGE,
+    "tpb": VOLTAGE / TEMPERATURE,
+    "tpbsw": VOLTAGE / TEMPERATURE,
+    "tpbswg": VOLTAGE / TEMPERATURE,
+    "tcj": TEMPERATURE**-1,
+    "tcjsw": TEMPERATURE**-1,
+    "tcjswg": TEMPERATURE**-1,
+    "noia": None,
+    "noib": None,
+    "noic": None,
+    "em": VOLTAGE / LENGTH,
+    "ef": None,
+    "af": None,
+    "kf": None,
+    "lintnoi": LENGTH,
+}
+"""The parameters of a BSIM3 card, by the BSIM3v3.3 manual's names, and the dimension of
+each, in SI units: ``None`` for a plain number, as for ``ll``, whose unit follows
+``lln``, and ``"uc"`` for ``uc`` and ``uc1``, whose unit follows ``mobmod``."""
+
+BSIM3_BINNED: Final = frozenset(
+    {
+        "xj",
+        "nch",
+        "nsub",
+        "ngate",
+        "gamma1",
+        "gamma2",
+        "vbx",
+        "vbm",
+        "xt",
+        "vth0",
+        "vfb",
+        "k1",
+        "k2",
+        "k3",
+        "k3b",
+        "w0",
+        "nlx",
+        "dvt0",
+        "dvt1",
+        "dvt2",
+        "dvt0w",
+        "dvt1w",
+        "dvt2w",
+        "dsub",
+        "eta0",
+        "etab",
+        "u0",
+        "ua",
+        "ub",
+        "uc",
+        "vsat",
+        "a0",
+        "ags",
+        "a1",
+        "a2",
+        "b0",
+        "b1",
+        "keta",
+        "voff",
+        "nfactor",
+        "cdsc",
+        "cdscb",
+        "cdscd",
+        "cit",
+        "pclm",
+        "pdiblc1",
+        "pdiblc2",
+        "pdiblcb",
+        "drout",
+        "pscbe1",
+        "pscbe2",
+        "pvag",
+        "delta",
+        "rdsw",
+        "prwg",
+        "prwb",
+        "wr",
+        "dwg",
+        "dwb",
+        "alpha0",
+        "alpha1",
+        "beta0",
+        "kt1",
+        "kt1l",
+        "kt2",
+        "ute",
+        "ua1",
+        "ub1",
+        "uc1",
+        "at",
+        "prt",
+        "cgsl",
+        "cgdl",
+        "ckappa",
+        "cf",
+        "clc",
+        "cle",
+        "vfbcv",
+        "acde",
+        "moin",
+        "noff",
+        "voffcv",
+    }
+)
+"""The BSIM3 parameters that bin: each has a length, a width and an area dependence,
+its name after ``l``, ``w`` and ``p``, its unit times meters or square meters."""
+
+
+def bsim3_dimension(name: str, mobmod: int | None = None) -> Dimension | None:
+    """The dimension of BSIM3's parameter `name`, ``None`` for a plain number.
+
+    A binned dependence's is its parameter's times meters, or square meters for the
+    area's, and ``uc``'s and ``uc1``'s per square volt times meters, or per volt at
+    `mobmod` 3.
+
+    Examples:
+        >>> bsim3_dimension("lvth0") == VOLTAGE * LENGTH, bsim3_dimension("k2")
+        (True, None)
+
+    Raises:
+        ValueError: When BSIM3 has no parameter `name`.
+    """
+    base, extent = name, DIMENSIONLESS
+    if name not in BSIM3_CARD:
+        prefix, base = name[:1], name[1:]
+        if prefix not in {"l", "w", "p"} or base not in BSIM3_BINNED:
+            message = f"BSIM3 has no parameter `{name}`"
+            raise ValueError(message)
+        extent = LENGTH**2 if prefix == "p" else LENGTH
+    dimension = BSIM3_CARD[base]
+    if dimension == "uc":
+        dimension = PER_VOLT if mobmod == 3 else LENGTH / VOLTAGE**2  # noqa: PLR2004 - mobmod 3's body effect
+    if dimension is None:
+        return None if extent == DIMENSIONLESS else extent
+    return dimension * extent
+
+
+def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selectors
+    *,
+    channel: Literal["n", "p"] | None = None,
+    width: Quantity | None = None,
+    length: Quantity | None = None,
+    multiplier: float | None = None,
+    drain_area: Quantity | None = None,
+    source_area: Quantity | None = None,
+    drain_perimeter: Quantity | None = None,
+    source_perimeter: Quantity | None = None,
+    drain_squares: float | None = None,
+    source_squares: float | None = None,
+    delvto: Quantity | None = None,
+    mulu0: float | None = None,
+    mobmod: Literal[1, 2, 3] | None = None,
+    capmod: Literal[0, 1, 2, 3] | None = None,
+    noimod: Literal[1, 2, 3, 4, 5, 6] | None = None,
+    paramchk: bool | None = None,
+    xpart: float | None = None,
+    nominal_temperature: Quantity | None = None,
+    card: Mapping[str, Quantity | float] | None = None,
+) -> Device:
+    """A MOSFET in BSIM3v3.3 between ``drain``, ``gate``, ``source`` and ``bulk``.
+
+    It follows the BSIM3v3.3 model of short channels (W. Liu, X. Xi and others, UC
+    Berkeley, 2005), SPICE's level 8 and 49, as ngspice 47 implements it. The keywords
+    before `card` are the instance's: its drawn geometry, its diffusions, a shift of
+    its threshold and a factor of its mobility, then the card's models of the mobility,
+    the charges and the noise, whether its sizes are checked and clamped, and the
+    drain's share of the channel's charge. Each entry of `card` is a parameter of the
+    BSIM3v3.3 manual by its name, such as ``vth0``, ``tox`` or ``lvth0``, in SI units:
+    a quantity where it has a dimension, as
+    [`bsim3_dimension`][jolty.devices.bsim3_dimension] says, and a number where it has
+    none. Parameters left out take ngspice's defaults.
+
+    The drain current folds in the threshold's short-channel, narrow-width and
+    drain-induced barrier lowering terms, the poly gate's depletion, the mobility's
+    degradation by the gate field, velocity saturation, the output resistance's
+    channel-length modulation, barrier lowering and substrate current, and the source
+    and drain resistance ``rdsw``, that of a channel 1 µm wide; the impact ionization's
+    substrate current flows into the bulk. The charges under the gate follow `capmod`,
+    the overlaps' charges beside them, and two diodes join the bulk to the drain and the
+    source. A binned card's ``l``, ``w`` and ``p`` dependences are on the reciprocal of
+    the effective length, width and their product in meters, not micrometers, and every
+    parameter scales with the temperature as ngspice scales it. A sheet resistance
+    ``rsh`` adds an internal node behind the drain and the source, the unknowns
+    ``drain`` and ``source``.
+
+    Its sheet resistances make thermal noise, and its channel the thermal and flicker
+    noise of `noimod`: SPICE2's or BSIM3's.
+
+    Examples:
+        >>> from jolty.units import V, nm, um
+        >>> transistor = bsim3(
+        ...     width=2 * um,
+        ...     length=0.35 * um,
+        ...     card={"tox": 7.6 * nm, "vth0": 0.5 * V, "k2": -0.02},
+        ... )
+        >>> transistor.parameters["tox"], transistor.parameters["k2"]
+        (7.6e-09, -0.02)
+
+    Raises:
+        DimensionError: When a parameter has the wrong dimension.
+        ValueError: When BSIM3 has no parameter of a name in `card`, or a value is not
+            finite.
+    """
+    parameters = _parameters(
+        {
+            "width": (width, LENGTH),
+            "length": (length, LENGTH),
+            "drain_area": (drain_area, LENGTH**2),
+            "source_area": (source_area, LENGTH**2),
+            "drain_perimeter": (drain_perimeter, LENGTH),
+            "source_perimeter": (source_perimeter, LENGTH),
+            "delvto": (delvto, VOLTAGE),
+            "nominal_temperature": (nominal_temperature, TEMPERATURE),
+        },
+        {
+            "multiplier": multiplier,
+            "drain_squares": drain_squares,
+            "source_squares": source_squares,
+            "mulu0": mulu0,
+            "xpart": xpart,
+        },
+        {"channel": channel, "mobmod": mobmod, "capmod": capmod, "noimod": noimod},
+    )
+    if paramchk is not None:
+        parameters["paramchk"] = paramchk
+    for name, value in (card or {}).items():
+        dimension = bsim3_dimension(name, mobmod)
+        match value:
+            case Quantity() if dimension is not None:
+                parameters[name] = value.to(dimension, name)
+            case int() | float() if dimension is None:
+                parameters[name] = finite(value, name)
+            case _:
+                unit = (
+                    "a plain number"
+                    if dimension is None
+                    else f"a quantity in {dimension}"
+                )
+                message = f"{name} takes {unit}, not {value!r}"
+                raise DimensionError(message)
+    return device("bsim3", parameters)
 
 
 type LogicLevel = Literal[0, 1] | None

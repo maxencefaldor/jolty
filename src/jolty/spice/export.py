@@ -20,10 +20,12 @@ from typing import Final
 from pydantic import JsonValue, TypeAdapter
 
 from jolty import _core, ir
+from jolty.devices import BSIM3_CARD
 from jolty.errors import JoltyError
 from jolty.ir import Role
 from jolty.spice import models, sky130
 from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE, spice_celsius
+from jolty.units import ZERO_CELSIUS
 from jolty.unknowns import Unknown
 
 
@@ -126,6 +128,7 @@ ELEMENTS = {
     "bipolar_transistor": Element("Q", ("collector", "base", "emitter", "substrate")),
     "mosfet": Element("M", ("drain", "gate", "source", "bulk")),
     "vdmos": Element("M", ("drain", "gate", "source")),
+    "bsim3": Element("M", ("drain", "gate", "source", "bulk")),
     "foundry_mosfet": Element("X", ("drain", "gate", "source", "bulk")),
     "behavioral_voltage_source": Element("B", ("positive", "negative")),
     "behavioral_current_source": Element("B", ("positive", "negative")),
@@ -173,6 +176,8 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
     """The SPICE type and parameters of a device's model card, and its instance's."""
     instance: dict[str, tuple[str, float]] = {}
     match model:
+        case "bsim3":
+            return _bsim3_card(values)
         case "diode":
             kind, names = "D", _spice(models.DIODE)
         case "jfet":
@@ -225,6 +230,56 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
         if key in instance
     )
     return kind, card, element
+
+
+def _bsim3_card(values: dict[str, JsonValue]) -> tuple[str, str, str]:
+    """A BSIM3 transistor's SPICE type, card and instance's parameters.
+
+    The card is of ngspice's level 8 at version 3.3.0, its bins' dependences in SI
+    units, ``binunit = 2``; its concentrations are per cubic centimeter, but where that
+    number would exceed ngspice's bound, above which it reads one per cubic meter. BSIM3
+    computes with constants of its own, Boltzmann's over the electron's charge among
+    them, so its nominal temperature is written in the same kelvins as jolty's, given
+    or not, rather than where ngspice's thermal voltage is jolty's.
+    """
+    defaulted = _defaulted("bsim3", values)
+    kind = f"{defaulted['channel']}mos".upper()
+    element = _spice(models.BSIM3_INSTANCE)
+    nominal = _number("bsim3", defaulted, "nominal_temperature")
+    card = ["level=8", "version=3.3.0", "binunit=2", f"tnom={nominal - ZERO_CELSIUS!r}"]
+    written: list[str] = []
+    for key, value in values.items():
+        match key, value:
+            case "channel", _:
+                continue
+            case _, int() | float() if key in element:
+                spice, factor = element[key]
+                written.append(f"{spice}={float(value) * factor!r}")
+            case "nominal_temperature", _:
+                continue
+            case _, bool():
+                card.append(f"{key}={int(value)}")
+            case _, int():
+                card.append(f"{key}={value}")
+            case _, float():
+                card.append(f"{key}={_bsim3_value(key, value)!r}")
+            case _:
+                message = f"no SPICE value for {key} = {value}"
+                raise _unwritable(message)
+    return kind, " ".join(card), " ".join(written)
+
+
+def _bsim3_value(key: str, value: float) -> float:
+    """The number a BSIM3 card writes for its parameter `key`, `value` in SI units."""
+    base = key if key in BSIM3_CARD else key[1:]
+    if base in models.BSIM3_DENSITIES:
+        per_centimeter = value * 1e-6
+        return (
+            value if per_centimeter > models.BSIM3_DENSITIES[base] else per_centimeter
+        )
+    if base == "nsub":
+        return value * 1e-6
+    return value
 
 
 OXIDE_PERMITTIVITY: Final = 3.9 * 8.854214871e-12
@@ -363,10 +418,10 @@ def netlist(
         for instance in top.instances
         if isinstance(instance.of, ir.DeviceOf)
     }
-    if {"mosfet", "foundry_mosfet"} <= placed:
+    if "foundry_mosfet" in placed and placed & {"mosfet", "bsim3"}:
         message = (
-            "a level-1 or level-3 MOSFET stands beside a foundry's, whose kit scales "
-            "the sizes of every MOSFET"
+            "a level-1, level-3 or BSIM3 MOSFET stands beside a foundry's, whose kit "
+            "scales the sizes of every MOSFET"
         )
         raise _unwritable(message)
     lines = [f"* {circuit.top}"]
@@ -420,7 +475,7 @@ def _device(
             nodes = " ".join(output)
             (number,) = values.values()
             value = f"{sense} {number!r}"
-        case "diode" | "jfet" | "bipolar_transistor" | "mosfet" | "vdmos":
+        case "diode" | "jfet" | "bipolar_transistor" | "mosfet" | "vdmos" | "bsim3":
             kind, card, parameters = _model_card(model, values)
             lines.append(f".model M{instance.id} {kind}({card})")
             value = f"M{instance.id} {parameters}".rstrip()

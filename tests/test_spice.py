@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,6 +13,7 @@ from pydantic import JsonValue
 from jolty import (
     Builder,
     Component,
+    DimensionError,
     DownloadError,
     JoltyError,
     OperatingPoint,
@@ -29,7 +31,25 @@ from jolty.spice import sky130
 from jolty.spice.export import netlist
 from jolty.spice.expressions import evaluate, number, parse, translate
 from jolty.spice.netlist import statements, tokens
-from jolty.units import A, C, H, J, K, V, W, celsius, kohm, mA, nm, ns, ohm, s, uF, um
+from jolty.units import (
+    A,
+    C,
+    H,
+    J,
+    K,
+    V,
+    W,
+    celsius,
+    kohm,
+    m,
+    mA,
+    nm,
+    ns,
+    ohm,
+    s,
+    uF,
+    um,
+)
 
 
 def library(text: str) -> spice.Library:
@@ -429,6 +449,182 @@ def test_a_vdmos_is_written_for_ngspice_as_its_card_reads_back() -> None:
     }
 
 
+def test_a_bsim3_card_reads_in_si_units_as_ngspice_reads_it() -> None:
+    """A level 8 or 49 card makes a BSIM3, each parameter by its name in SI units.
+
+    As ngspice reads them, `NCH` is per cubic centimeter up to 1e20 and per cubic meter
+    above, `NSUB` per cubic centimeter, a `U0` above 1 in cm²/(V·s) with its
+    dependences, and with `BINUNIT` 1, its default, each length and width dependence
+    per micrometer; its bins' ranges, its safe operating area and the area
+    calculation's parameters, which change nothing, are read past.
+    """
+    parts = library(
+        ".model N1 NMOS(level=8 version=3.3.0 tnom=50 nch=2.5e17 lnch=1e16 nsub=1e17\n"
+        "+ u0=400 lu0=-20 vth0=0.6 lvth0=0.02 pvth0=0.003 capmod=2 mobmod=3\n"
+        "+ paramchk=1 xpart=0.5 lmin=0.1u vgs_max=4 ld=1n elm=3)\n"
+        ".model P1 PMOS(level=49 binunit=2 nch=3e23 u0=0.02 lvth0=1e-8)\n"
+        ".subckt a d g\nM1 d g 0 0 N1 W=2u L=0.5u nrd=2 delvto=0.1\n"
+        "M2 d g 0 0 P1 L=1u off\n.ends"
+    )
+    first, second = parts.component("a").definition.instances
+    assert first.of == second.of == ir.DeviceOf(device="bsim3")
+    assert first.parameters == pytest.approx(
+        {
+            "channel": "n",
+            "nominal_temperature": celsius(50).value,
+            "nch": 2.5e23,
+            "lnch": 1e16,
+            "nsub": 1e23,
+            "u0": 0.04,
+            "lu0": -2e-9,
+            "vth0": 0.6,
+            "lvth0": 2e-8,
+            "pvth0": 3e-15,
+            "capmod": 2,
+            "mobmod": 3,
+            "paramchk": True,
+            "xpart": 0.5,
+            "width": 2e-6,
+            "length": 5e-7,
+            "drain_squares": 2.0,
+            "delvto": 0.1,
+        }
+    )
+    assert second.parameters == {
+        "channel": "p",
+        "nch": 3e23,
+        "u0": 0.02,
+        "lvth0": 1e-8,
+        "length": 1e-6,
+    }
+
+
+@pytest.mark.parametrize(
+    ("card", "error"),
+    [
+        ("level=49 version=3.1", "`N1` is a BSIM3 card of version 3.1"),
+        ("level=8 nqsmod=1", "jolty models BSIM3 with `NQSMOD` 0 alone"),
+        ("level=8 acnqsmod=1", "jolty models BSIM3 with `ACNQSMOD` 0 alone"),
+        ("level=8 acm=2", "jolty models BSIM3 with `ACM` 0 alone"),
+        ("level=8 capmod=1.5", "`CAPMOD` of `N1` is a whole number, not 1.5"),
+        ("level=8 vto=1", "no counterpart to `VTO` of `N1`"),
+        ("level=8 lvto=1", "no counterpart to `LVTO` of `N1`"),
+    ],
+)
+def test_a_bsim3_card_jolty_cannot_run_as_ngspice_does_is_refused(
+    card: str, error: str
+) -> None:
+    parts = library(f".model N1 NMOS({card})\n.subckt a d\nM1 d d 0 0 N1\n.ends")
+    with pytest.raises(SpiceError, match=re.escape(error)):
+        parts.component("a")
+
+
+def test_an_element_takes_the_bin_of_its_length_and_width() -> None:
+    """As ngspice's INPgetModBin takes a bin, the last defined that holds them.
+
+    A bin is a card named after its model and a dot and a number, whose ranges hold the
+    length and the width given on the element, each within 1 nm of a bound counted in.
+    """
+    parts = library(
+        ".model nch.1 nmos(level=49 lmin=0.1u lmax=1u wmin=1u wmax=10u vth0=0.4)\n"
+        ".model nch.2 nmos(level=49 lmin=1u lmax=10u wmin=1u wmax=10u vth0=0.5)\n"
+        ".model nch.x nmos(level=49 lmin=0 lmax=1 wmin=0 wmax=1 vth0=0.6)\n"
+        ".subckt a d\nM1 d d 0 0 nch L=0.5u W=2u\nM2 d d 0 0 nch L=2u W=2u\n"
+        "M3 d d 0 0 nch L=1.0000000005u W=2u\n.ends\n"
+        ".subckt wide d\nM1 d d 0 0 nch L=0.5u W=20u\n.ends\n"
+        ".subckt unsized d\nM1 d d 0 0 nch\n.ends"
+    )
+    thresholds = [
+        instance.parameters["vth0"]
+        for instance in parts.component("a").definition.instances
+    ]
+    assert thresholds == [0.4, 0.5, 0.5]
+    for name in ("wide", "unsized"):
+        with pytest.raises(SpiceError, match="no model is named `nch`"):
+            parts.component(name)
+
+
+def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        supply = c.place(devices.voltage_source(3 * V), id="V1")
+        transistor = c.place(
+            devices.bsim3(
+                channel="p",
+                width=2 * um,
+                length=0.5 * um,
+                capmod=1,
+                paramchk=True,
+                nominal_temperature=celsius(50),
+                card={
+                    "vth0": -0.6 * V,
+                    "nch": 1.7e23 / m**3,
+                    "lnch": 1e30 / m**2,
+                    "nsub": 6e22 / m**3,
+                    "lvth0": 1e-8 * m * V,
+                    "k2": -0.02,
+                },
+            ),
+            id="M1",
+        )
+        c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
+        c.connect(supply.negative, transistor.source, transistor.bulk, ground)
+
+    lines = netlist(circuit(bench()))
+    card = next(line for line in lines if line.startswith(".model"))
+    assert card == (
+        ".model MM1 PMOS(level=8 version=3.3.0 binunit=2 tnom=50.0 capmod=1 "
+        "paramchk=1 vth0=-0.6 nch=1.7e+17 lnch=1e+30 nsub=6e+16 lvth0=1e-08 k2=-0.02)"
+    ), card
+    element = next(line for line in lines if line.startswith("MM1"))
+    assert element == "MM1 d d 0 0 MM1 w=2e-06 l=5e-07", element
+    read = library(
+        f"{card}\n.subckt a d\n{element.replace('MM1 d d', 'M1 d d', 1)}\n.ends"
+    )
+    (instance,) = read.component("a").definition.instances
+    assert instance.parameters == pytest.approx(
+        {
+            "channel": "p",
+            "nominal_temperature": celsius(50).value,
+            "capmod": 1,
+            "paramchk": True,
+            "vth0": -0.6,
+            "nch": 1.7e23,
+            "lnch": 1e30,
+            "nsub": 6e22,
+            "lvth0": 1e-8,
+            "k2": -0.02,
+            "width": 2e-6,
+            "length": 5e-7,
+        }
+    )
+    with pytest.raises(JoltyError, match="at its own temperature"):
+        netlist(circuit(bench_held()))
+
+
+@component
+def bench_held(c: Builder) -> None:
+    """A BSIM3 held at 85 °C, which ngspice's has no temperature of its own for."""
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(3 * V), id="V1")
+    transistor = c.place(devices.bsim3().held_at(celsius(85)), id="M1")
+    c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
+    c.connect(supply.negative, transistor.source, transistor.bulk, ground)
+
+
+def test_a_bsim3s_parameters_take_their_dimensions() -> None:
+    with pytest.raises(DimensionError, match="vth0 takes a quantity in V"):
+        devices.bsim3(card={"vth0": 0.5})
+    with pytest.raises(DimensionError, match="k2 takes a plain number"):
+        devices.bsim3(card={"k2": 0.5 * V})
+    with pytest.raises(ValueError, match="BSIM3 has no parameter `vto`"):
+        devices.bsim3(card={"vto": 0.5 * V})
+    assert devices.bsim3(mobmod=3, card={"uc": -0.05 / V}).parameters["uc"] == -0.05
+    with pytest.raises(DimensionError, match="uc takes a quantity in kg"):
+        devices.bsim3(card={"uc": -0.05 / V})
+
+
 def test_parameters_that_change_nothing_are_left_out() -> None:
     parts = library(
         ".model NX NMOS(VTO=1 NLEV=2 GDSNOI=1)\n"
@@ -608,6 +804,9 @@ def _every_model() -> list[devices.Device]:
         devices.logic_source(0, [(1 * ns, 1)], transition=1 * ns),
         devices.mosfet(level=3, oxide_thickness=10 * nm),
         devices.vdmos(channel="p", breakdown_voltage=60 * V),
+        devices.bsim3(
+            channel="p", capmod=0, card={"vth0": -0.6 * V, "lvth0": 1e-8 * m * V}
+        ),
         devices.photocell(10 * kohm),
         devices.resistor(1 * kohm).held_at(celsius(85)),
         devices.thermal_capacitance(1 * J / K),

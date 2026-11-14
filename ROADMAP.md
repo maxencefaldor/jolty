@@ -15,7 +15,7 @@ Items keep their numbers; each leaves this file when it lands on `main`, and its
 ## What ngspice has that jolty does not
 
 1. Verilog-A compact models compiled by OpenVAF and loaded as OSDI libraries: BSIM-CMG, BSIM-BULK, PSP, HiSIM, HICUM, EKV and the rest of the foundries' models.
-1. SPICE3's built-in compact models beyond jolty's: BSIM3, BSIM4, BSIM-SOI, VBIC, MESFETs and the higher MOSFET levels.
+1. SPICE3's built-in compact models beyond jolty's: BSIM4, BSIM-SOI, BSIM3's non-quasi-static mode and versions before 3.3, VBIC, MESFETs and the higher MOSFET levels.
 1. Native process design kits: jolty runs SKY130's transistors through ngspice, and has no flow yet for GF180MCU or IHP's SG13G2.
 1. Transmission lines: lossless, lossy (LTRA), and coupled lines.
 1. XSPICE's code models, analog and digital, and its mixed-signal interface.

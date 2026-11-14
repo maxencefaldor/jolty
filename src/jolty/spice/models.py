@@ -4,9 +4,11 @@
 Each SPICE parameter maps to a jolty device's parameter, converted to SI base units
 where SPICE writes centimeters, and the nominal temperature ``TNOM`` from degrees
 Celsius to kelvins. Parameters that change nothing jolty computes are left out: those
-that only choose among noise equations, and of a VDMOS card, its part's annotations, its
-``PHI`` and its thermal network, as the reader's tables say. Any other parameter jolty
-does not model is an error, never silently dropped.
+that only choose among noise equations, of a VDMOS card, its part's annotations, its
+``PHI`` and its thermal network, and of a BSIM3 card, its bins' ranges, its safe
+operating area and what only its non-quasi-static and area calculation models read
+where they are off, as the reader's tables say. Any other parameter jolty does not
+model is an error, never silently dropped.
 """
 
 import re
@@ -16,6 +18,7 @@ from typing import Final
 
 from pydantic import JsonValue
 
+from jolty.devices import BSIM3_BINNED, BSIM3_CARD
 from jolty.errors import SpiceError
 from jolty.spice.expressions import Expression, Number, evaluate, number, parse
 from jolty.spice.netlist import Statement, tokens
@@ -252,6 +255,43 @@ instance."""
 _CHANNEL: Final = re.compile(r"\b([np])chan\b", re.IGNORECASE)
 """A VDMOS card's polarity, ``nchan`` or ``pchan``, a word anywhere in its card."""
 
+BSIM3_LEVELS: Final = frozenset({8, 49})
+"""The levels of a BSIM3 card, ngspice's 8 and HSPICE's 49."""
+
+BSIM3_INSTANCE: Final[Table] = {
+    **MOSFET_INSTANCE,
+    "delvto": ("delvto", 1.0),
+    "mulu0": ("mulu0", 1.0),
+}
+"""A BSIM3 instance's own parameters: a MOSFET's, a shift of its threshold and a factor
+of its mobility."""
+
+BSIM3_SELECTORS: Final = ("mobmod", "capmod", "noimod")
+"""A BSIM3 card's choices among its equations, each a whole number."""
+
+BSIM3_OFF: Final = ("nqsmod", "acnqsmod", "acm")
+"""BSIM3's non-quasi-static models, of the transient and of the small signal, and
+HSPICE's area calculation method, which jolty does not model: a card or an instance
+reads only with each off."""
+
+BSIM3_UNREAD: Final = frozenset(
+    {
+        *("lmin", "lmax", "wmin", "wmax"),
+        *("elm", "lelm", "welm", "pelm", "calcacm", "geo"),
+        *("hdif", "ldif", "ld", "rd", "rs", "rdc", "rsc", "wmlt"),
+        *("vgs_max", "vgd_max", "vgb_max", "vds_max", "vbs_max", "vbd_max"),
+        *("vgsr_max", "vgdr_max", "vgbr_max", "vbsr_max", "vbdr_max"),
+    }
+)
+"""What a BSIM3 card says that changes nothing ngspice computes with the
+non-quasi-static models and the area calculation off: its bin's ranges, which only
+select it, the non-quasi-static model's Elmore constant, the area calculation's
+parameters, and the safe operating area, which only ngspice's checks read."""
+
+BSIM3_DENSITIES: Final = {"nch": 1e20, "ngate": 1.000001e24}
+"""The concentrations of a BSIM3 card that ngspice reads per cubic meter above a bound,
+and per cubic centimeter below it, as its ``b3mpar.c`` reads each."""
+
 CONSTRUCTIONS: Final = {1.0: "vertical", -1.0: "lateral"}
 """The construction of a bipolar transistor of each value of SPICE's ``SUBS``."""
 
@@ -336,6 +376,8 @@ class ModelCard:
     kind: str
     parameters: Mapping[str, Expression]
     statement: Statement = field(repr=False)
+    version: str | None = None
+    """The model's version, as a BSIM card names the equations it is of, if given."""
 
 
 def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
@@ -369,9 +411,20 @@ def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
     words = tokens(body)
     if resolved in VDMOS_KINDS:
         words = _annotations_removed(words)
+    version, words = _version_taken(words)
+    if version is None and base is not None:
+        version = base.version
     parameters = dict(base.parameters) if base else {}
     parameters |= assignments(statement, words)
-    return ModelCard(name, resolved, parameters, statement)
+    return ModelCard(name, resolved, parameters, statement, version)
+
+
+def _version_taken(words: list[str]) -> tuple[str | None, list[str]]:
+    """A card's ``VERSION``, as written, such as ``3.3.0``, and its words without it."""
+    for position in range(len(words) - 2):
+        if words[position].casefold() == "version" and words[position + 1] == "=":
+            return words[position + 2], words[:position] + words[position + 3 :]
+    return None, words
 
 
 def _vdmos_card(kind: str, body: str) -> tuple[str, str]:
@@ -490,6 +543,8 @@ def _device(
             values = _scaled(values, area, ("beta", "is", "cgs", "cgd"), ("rd", "rs"))
             parameters = _mapped(card, values, JFET, statement)
             made = Made("jfet", {"channel": card.kind[0], **parameters})
+        case "nmos" | "pmos" if values.get("level") in BSIM3_LEVELS:
+            made = Made("bsim3", _bsim3(card, values, instance, statement))
         case "nmos" | "pmos":
             made = Made("mosfet", _mosfet(card, values, instance, statement))
         case "vdmosn" | "vdmosp":
@@ -655,3 +710,158 @@ def _vdmos(
     parameters |= _mapped(card, dict(instance), VDMOS_INSTANCE, statement)
     parameters["channel"] = card.kind[-1]
     return parameters
+
+
+BIN_TOLERANCE: Final = 1e-9
+"""How near a bound of a bin's range a length or a width counts as on it, in meters, as
+ngspice's ``INPgetModBin`` counts it."""
+
+
+def holds(
+    card: ModelCard, scope: Mapping[str, float], size: tuple[float, float]
+) -> bool:
+    """Whether a BSIM3 `card` is a bin for an instance of `size`, its length and width.
+
+    As ngspice selects a bin, a card that gives ``LMIN``, ``LMAX``, ``WMIN`` and
+    ``WMAX`` holds an instance whose length lies between the first two and whose width
+    between the others, on a bound counted in; its expressions are evaluated in
+    `scope`.
+    """
+    bounds = [card.parameters.get(name) for name in ("lmin", "lmax", "wmin", "wmax")]
+    level = card.parameters.get("level")
+    if level is None or evaluate(level, scope) not in BSIM3_LEVELS:
+        return False
+    if any(bound is None for bound in bounds):
+        return False
+    lmin, lmax, wmin, wmax = (evaluate(bound, scope) for bound in bounds if bound)
+    length, width = size
+    return _within(length, lmin, lmax) and _within(width, wmin, wmax)
+
+
+def _within(value: float, low: float, high: float) -> bool:
+    """Whether `value` is between `low` and `high`, or within `BIN_TOLERANCE` of one."""
+    return (
+        abs(value - low) < BIN_TOLERANCE
+        or abs(value - high) < BIN_TOLERANCE
+        or low < value < high
+    )
+
+
+def _bsim3(
+    card: ModelCard,
+    values: dict[str, float],
+    instance: Mapping[str, float],
+    statement: Statement,
+) -> dict[str, JsonValue]:
+    """A BSIM3 transistor's parameters, from its model card and its instance's.
+
+    Each parameter keeps its name, in SI units: a concentration per cubic meter, where
+    the card's ``nch`` and ``ngate`` are per cubic centimeter up to ngspice's bounds and
+    per cubic meter above them, and its ``nsub`` per cubic centimeter; a mobility in
+    square meters per volt-second, where a card's ``u0`` above 1, and its dependences
+    with it, are in square centimeters per volt-second; and, with ngspice's default
+    ``binunit = 1``, each length and width dependence per micrometer, and each area
+    dependence per square micrometer, of the effective length and width.
+
+    Raises:
+        SpiceError: When the card is not of BSIM3's version 3.3, which ngspice runs
+            other models for, a non-quasi-static model or the area calculation is on,
+            or a parameter has no jolty counterpart.
+    """
+    values.pop("level")
+    own = _bsim3_off(card, values, dict(instance), statement)
+    channel = card.kind[0]
+    parameters: dict[str, JsonValue] = {"channel": channel}
+    parameters |= _bsim3_card(card, values, statement)
+    parameters |= _mapped(card, own, BSIM3_INSTANCE, statement)
+    return parameters
+
+
+def _bsim3_off(
+    card: ModelCard,
+    values: dict[str, float],
+    instance: dict[str, float],
+    statement: Statement,
+) -> dict[str, float]:
+    """A BSIM3 instance's parameters, once its card is checked of version 3.3.
+
+    The models jolty has not, `BSIM3_OFF`, must be off in both: the card's are taken
+    from `values`, the instance's from what it returns.
+
+    Raises:
+        SpiceError: When the card's version or one of the models is not.
+    """
+    version = card.version
+    if version is not None and not version.startswith("3.3"):
+        message = (
+            f"`{card.name}` is a BSIM3 card of version {version}, whose equations "
+            "ngspice runs another model for; jolty models version 3.3"
+        )
+        raise statement.fail(message)
+    for name in BSIM3_OFF:
+        for given in (values, instance):
+            if given.pop(name, 0.0) != 0:
+                message = f"jolty models BSIM3 with `{name.upper()}` 0 alone"
+                raise statement.fail(message)
+    instance.pop("geo", None)
+    return instance
+
+
+def _bsim3_card(
+    card: ModelCard, values: dict[str, float], statement: Statement
+) -> dict[str, JsonValue]:
+    """A BSIM3 card's parameters but its level, in SI units.
+
+    Raises:
+        SpiceError: When a parameter has no jolty counterpart.
+    """
+    binned = 1e-6 if values.pop("binunit", 1.0) == 1 else 1.0
+    mobility = values.get("u0", 0.067 if card.kind[0] == "n" else 0.025)
+    # ngspice reads a binned u0 above 1 in cm²/(V·s), as its b3temp.c does.
+    centimeters = 1e-4 if mobility > 1 else 1.0
+    parameters: dict[str, JsonValue] = {}
+    for name, value in values.items():
+        if name in BSIM3_UNREAD or name in NOISE:
+            continue
+        if name in NOMINAL_TEMPERATURES:
+            parameters["nominal_temperature"] = celsius(value).value
+        elif name in BSIM3_SELECTORS:
+            parameters[name] = _whole(card, name, value, statement)
+        elif name in {"paramchk", "xpart"}:
+            parameters[name] = value == 1 if name == "paramchk" else value
+        elif name in BSIM3_CARD:
+            parameters[name] = value * _bsim3_factor(name, value, centimeters)
+        elif name[:1] in {"l", "w", "p"} and name[1:] in BSIM3_BINNED:
+            extent = binned * binned if name[0] == "p" else binned
+            factor = _bsim3_factor(name[1:], value, centimeters)
+            parameters[name] = value * factor * extent
+        else:
+            raise unmatched(card, name, statement)
+    return parameters
+
+
+def _bsim3_factor(name: str, value: float, centimeters: float) -> float:
+    """The factor that takes BSIM3's parameter `name`, or a dependence of it, to SI.
+
+    A density's factor follows its `value`, and a mobility's is `centimeters`, the
+    card's.
+    """
+    if name in BSIM3_DENSITIES:
+        return 1.0 if value > BSIM3_DENSITIES[name] else 1e6
+    if name == "nsub":
+        return 1e6
+    if name == "u0":
+        return centimeters
+    return 1.0
+
+
+def _whole(card: ModelCard, name: str, value: float, statement: Statement) -> int:
+    """A model selector's `value`, a whole number.
+
+    Raises:
+        SpiceError: When it is not one.
+    """
+    if not value.is_integer():
+        message = f"`{name.upper()}` of `{card.name}` is a whole number, not {value!r}"
+        raise statement.fail(message)
+    return int(value)
