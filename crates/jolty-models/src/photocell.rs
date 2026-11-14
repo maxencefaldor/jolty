@@ -59,10 +59,11 @@ pub struct PhotocellParameters<R: Real = f64> {
     #[serde(default = "ten::<R>")]
     pub illuminance: R,
     /// How steeply the resistance falls with the illuminance, `γ`, the slope of its
-    /// logarithm against the illuminance's; positive; default 0.7.
-    #[serde(default = "seven_tenths::<R>")]
+    /// logarithm against the illuminance's; positive; default 0.6, which with the default
+    /// dark resistance is Senba's GL5528, the most common cell of its GL55 series.
+    #[serde(default = "six_tenths::<R>")]
     pub gamma: R,
-    /// The resistance in darkness, in ohms; positive; default 1e6.
+    /// The resistance in darkness, in ohms; positive; default 1e6, the GL5528's.
     #[serde(default = "a_million::<R>")]
     pub dark_resistance: R,
     /// The time constant of the response, in seconds; zero or more; default 0.
@@ -74,8 +75,8 @@ fn ten<R: Real>() -> R {
     R::constant(10.0)
 }
 
-fn seven_tenths<R: Real>() -> R {
-    R::constant(0.7)
+fn six_tenths<R: Real>() -> R {
+    R::constant(0.6)
 }
 
 fn a_million<R: Real>() -> R {

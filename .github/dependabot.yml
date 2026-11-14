@@ -1,0 +1,12 @@
+# Dependabot keeps the actions the workflows use up to date: those pinned to a major
+# version as it moves, and those pinned to an exact one, such as setup-uv, which tags no
+# majors, as each is released. Every update comes in one weekly pull request.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

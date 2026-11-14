@@ -9,11 +9,11 @@ use crate::{
 };
 
 /// The law by which a switch's control moves its resistance, PSpice's, as the PSpice A/D
-/// Reference Guide states it for its switches `S` and `W`: with the control's fraction of
-/// the way from its off value to its on value `s`, and `m = s − ½`, the resistance's
-/// logarithm is `ln √(r_on · r_off) + L · (3/2 · m − 2 · m³)`, where `L = ln(r_on / r_off)`:
-/// a cubic that reaches each resistance with zero slope at each end, beyond which the
-/// resistance holds.
+/// Reference Guide states it for its switches `S` and `W` in "Voltage-controlled switch
+/// equations": with the control's fraction of the way from its off value to its on value
+/// `s`, and `m = s − ½`, the resistance's logarithm is `ln √(r_on · r_off) + L · (3/2 · m −
+/// 2 · m³)`, where `L = ln(r_on / r_off)`: a cubic that reaches each resistance with zero
+/// slope at each end, beyond which the resistance holds.
 #[derive(Debug)]
 struct Law<R: Real> {
     off: R,

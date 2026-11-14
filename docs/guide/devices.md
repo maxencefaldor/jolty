@@ -176,9 +176,11 @@ With a response time `τ`, `s` lags the light, `τ · ds/dt = (E/E₀)^γ − s`
 | --- | --- | --- |
 | `resistance` | Ω, at the reference illuminance | none |
 | `illuminance` | lux, a number | 10 |
-| `gamma` | a number | 0.7 |
+| `gamma` | a number | 0.6 |
 | `dark_resistance` | Ω | 1 MΩ |
 | `response_time` | s | 0: the cell follows the light at once |
+
+The defaults of `gamma` and `dark_resistance` are those of Senba's GL5528, the most common cell of its GL55 series, whose resistance at 10 lux is 10 to 20 kΩ.
 
 SPICE has no photocell; written for ngspice, it is a behavioral current whose response lags through 1 Ω and a capacitance of its response time.
 
