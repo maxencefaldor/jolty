@@ -49,6 +49,12 @@ impl<T: Scalar> Solver<T> {
         self.lu.pattern()
     }
 
+    /// Takes on `other`'s ordering, pivots and factors, keeping its own counts of work and
+    /// threads, as [`SparseLu::adopt`] does.
+    pub(crate) fn adopt(&mut self, other: &Self) {
+        self.lu.adopt(&other.lu);
+    }
+
     /// Forgets every factorization, as [`SparseLu::reset`] does.
     pub(crate) fn reset(&mut self) {
         self.lu.reset();

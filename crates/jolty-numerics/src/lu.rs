@@ -244,6 +244,16 @@ impl<T: Scalar> SparseLu<T> {
         self.threads = threads;
     }
 
+    /// Takes on `other`'s ordering, pivots and factors, keeping its own counts of work and
+    /// the threads it spreads over, as [`SparseLu::reorder`] keeps them: from now on it
+    /// factors every matrix as `other` would, bit for bit, and counts the work as its own.
+    pub fn adopt(&mut self, other: &Self) {
+        let (statistics, threads) = (self.statistics, self.threads);
+        self.clone_from(other);
+        self.statistics = statistics;
+        self.threads = threads;
+    }
+
     /// Lets the factorizations and solves of the blocks its ordering dissects run on up to
     /// `threads` threads of the rayon pool they run in at once, or on the calling thread
     /// alone for one; their factors and solutions are the same bits either way.

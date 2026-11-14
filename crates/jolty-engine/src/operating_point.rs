@@ -21,6 +21,7 @@ use serde::Deserialize;
 
 use crate::logic::{Bound, Events, detected};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
+use crate::solver::Solver;
 use crate::state::{Held, Warm};
 use crate::{Observation, Options, Parallelism, ParameterId, SimulationError, Simulator, Values};
 
@@ -102,6 +103,9 @@ pub(crate) struct Remembered {
     /// The operating point, its observation what the options it was solved under record.
     point: OperatingPoint,
     events: Events,
+    /// The sparse solver as solving the point left it: its pivots and its factors, which
+    /// the analyses after an operating point factor from.
+    solver: Solver<f64>,
 }
 
 impl Remembered {
@@ -252,20 +256,24 @@ impl Simulator {
             solved: solved.clone(),
             point: point.clone(),
             events: self.state.events.clone(),
+            solver: self.state.solver.clone(),
         });
         Ok((solved, point))
     }
 
-    /// Leaves the logic and the devices as solving the remembered operating point left
-    /// them: the logic nets in the state it settled them in, each logic driver at the level
-    /// it was told, and every device evaluated there, so a device that limits its steps
-    /// does so from there, as from the last iteration that solved it.
+    /// Leaves the logic, the devices and the sparse solver as solving the remembered
+    /// operating point left them: the logic nets in the state it settled them in, each
+    /// logic driver at the level it was told, every device evaluated there, so a device
+    /// that limits its steps does so from there, as from the last iteration that solved
+    /// it, and the solver with the pivots and factors it had, so the analyses after it
+    /// factor as after solving it afresh, whatever ran in between.
     fn restore(&mut self, options: &Options) {
         let Some(remembered) = &self.state.remembered else {
             return;
         };
         let values = remembered.point.values.clone();
         self.state.events = remembered.events.clone();
+        self.state.solver.adopt(&remembered.solver);
         for driver in 0..self.elaborated.logic.drivers.len() {
             let (element, level) = (
                 self.elaborated.logic.drivers[driver].0,

@@ -410,3 +410,37 @@ fn what_an_analysis_records_changes_none_of_its_numbers() {
         }
     }
 }
+
+#[test]
+fn an_analysis_after_the_operating_point_again_factors_as_after_it_first() {
+    // The buck's transient leaves its sparse solver other pivots than the operating
+    // point's, which the second transient, from the operating point taken again, factored
+    // from; it found other numbers in their last digits than the first.
+    let periods = Analysis::Transient(Transient {
+        stop: 2e-5,
+        max_step: None,
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+        periodic: false,
+    });
+    let circuit = buck();
+    let options = Options::default();
+    let mut simulator = simulator(&circuit);
+    let plan = [
+        Analysis::OperatingPoint,
+        periods.clone(),
+        Analysis::OperatingPoint,
+        periods,
+    ];
+    // Debug writes each number in the shortest form that reads back as its bits.
+    let found: Vec<String> = plan
+        .iter()
+        .map(|analysis| format!("{:?}", simulator.run(analysis, &options)))
+        .collect();
+    assert_eq!(simulator.operating_point_solves(), 1);
+    assert!(found[2] == found[0], "the operating point taken again");
+    assert!(
+        found[3] == found[1],
+        "the transient after it, its work among it"
+    );
+}
