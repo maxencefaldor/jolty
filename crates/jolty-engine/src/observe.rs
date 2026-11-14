@@ -163,14 +163,21 @@ impl Simulator {
         Recorded::of(&self.elaborated, record)
     }
 
-    /// Checks `options`, and readies the observer to record what they name.
+    /// Checks `options`, gives the solver the ordering and the threads their parallelism
+    /// asks for, and readies the observer to record what they name.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidOptions`] for options out of range.
+    /// Returns [`SimulationError::InvalidOptions`] for options out of range, and
+    /// [`SimulationError::TooLarge`] when a dissected ordering does not fit in memory.
     pub(crate) fn prepare(&mut self, options: &Options) -> Result<(), SimulationError> {
         let previous = self.state.workspace.meter.enter(Activity::Preparing);
-        let checked = options.check();
+        let checked = options.check().and_then(|()| {
+            let (interiors, threads) = options.parallelism.factorization();
+            let ordering = self.elaborated.ordering(interiors)?;
+            self.state.solver.order(&ordering, threads);
+            Ok(())
+        });
         if checked.is_ok() {
             self.state
                 .observer

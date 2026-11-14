@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::logic::{Bound, Events, detected};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
 use crate::state::{Held, Warm};
-use crate::{Observation, Options, ParameterId, SimulationError, Simulator, Values};
+use crate::{Observation, Options, Parallelism, ParameterId, SimulationError, Simulator, Values};
 
 /// The largest conductance gmin stepping starts from, in siemens.
 const FIRST_STEPPED: f64 = 1e-2;
@@ -124,9 +124,10 @@ impl Remembered {
 }
 
 /// `options` as a DC solution reads them: those only a transient reads take their
-/// defaults, and so does what the results record, which is read of the devices evaluated
-/// at the solution, so that options alike in every other find the same DC solution and the
-/// same operating point.
+/// defaults, and so do what the results record, which is read of the devices evaluated at
+/// the solution, and the parallelism, but for the interiors its factorization is dissected
+/// into, which order its operations; so that options alike in every other find the same DC
+/// solution and the same operating point.
 fn read_at_dc(options: &Options) -> Options {
     let unread = Options::default();
     Options {
@@ -136,7 +137,10 @@ fn read_at_dc(options: &Options) -> Options {
         memory: unread.memory,
         record: unread.record,
         profile: unread.profile,
-        parallelism: unread.parallelism,
+        parallelism: Parallelism {
+            max_unknowns_per_interior: options.parallelism.max_unknowns_per_interior,
+            ..unread.parallelism
+        },
         ..options.clone()
     }
 }

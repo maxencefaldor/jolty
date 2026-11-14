@@ -314,7 +314,7 @@ A circuit of a foundry's devices runs each run in ngspice instead, as many at on
 | `truncation_tolerance` | 7 | how much the time step's truncation error, as SPICE estimates it, may exceed the tolerances, as SPICE's `TRTOL` |
 | `memory` | 2 GiB | how much an analysis may hold at once, rather than fill the memory: a transient's results, past which it stops, and the dense matrices of a pole-zero analysis or a periodic steady state, past which it fails before it begins |
 | `profile` | off | whether a transient measures where its time goes, into its statistics' `profile`; the clock adds about a tenth to a small circuit's transient, and changes no other result |
-| `parallelism` | none | how a run spreads its own work across the engine's threads, a `Parallelism` of thresholds; no setting changes any result |
+| `parallelism` | none | how a run spreads its own work across the engine's threads, a `Parallelism` of thresholds; no setting changes any result but `max_unknowns_per_interior`, in the last digits |
 
 A `Parallelism` spreads each kind of a run's work once its threshold is set, and none is by default, since waking threads costs more than a small run's work repays:
 
@@ -323,6 +323,7 @@ A `Parallelism` spreads each kind of a run's work once its threshold is set, and
 | `min_solves_per_task` | the frequencies of a response, a noise or a stability analysis and the right-hand sides of sensitivities, in tasks of at least so many |
 | `min_instances_per_task` | the evaluation of the devices, in tasks of so many instances |
 | `min_unknowns_inside` | the Newton iteration's work on each unknown, once the circuit has so many |
+| `max_unknowns_per_interior` | the factorization of the matrix: each block of more unknowns is ordered by nested dissection into interiors of at most so many, which factor at once, and the separators between them, each once the parts it separates are done |
 
 ```python
 from jolty.plan import Options, Parallelism
@@ -331,6 +332,7 @@ options = Options(parallelism=Parallelism(min_solves_per_task=16))
 ```
 
 A batch runs each of its runs on one thread whenever it has a run for every thread, so the thresholds matter for one run, or for fewer runs than threads.
+The dissected factorization orders its operations otherwise than the one on a single thread, so a run with `max_unknowns_per_interior` set finds the same bits on any number of threads, but its results differ from those without it in their last digits, within the factorization's rounding.
 `jolty simulate` takes each threshold too, as `--min-solves-per-task` and its kin, in place of the plan's.
 
 The unknowns cost a transient a number each at every point, eight bytes; a device recorded costs its terminals' currents and charges, the square of its unknowns twice over for its derivatives, and its variables: 12 numbers for a resistor, and 111 for a MOSFET whose gate oxide adds three unknowns to its four terminals.

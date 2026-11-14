@@ -354,13 +354,18 @@ class Parallelism:
     Each kind of work spreads only once its threshold is set: the frequencies of a
     run's small-signal analyses and the right-hand sides of its sensitivities, in tasks
     of at least `min_solves_per_task` each; its device instances, in tasks of
-    `min_instances_per_task`; and the work of its Newton iteration on each unknown, once
-    the circuit has `min_unknowns_inside` unknowns. Spreading work costs the time of
-    waking threads, which a small run's work does not repay, so a run left to the
-    defaults does all its work on its own thread. A batch runs each run on one thread
-    whenever it has a run for every thread. No setting changes any result: every one
-    finds the same bits however the work is split. The threads are the engine's own,
-    the setting `threads` or [`threads`][jolty.simulate.threads].
+    `min_instances_per_task`; the work of its Newton iteration on each unknown, once
+    the circuit has `min_unknowns_inside` unknowns; and the factorization of its
+    matrix, each block of more than `max_unknowns_per_interior` unknowns ordered by
+    nested dissection into interiors of at most as many and the separators between
+    them. Spreading work costs the time of waking threads, which a small run's work
+    does not repay, so a run left to the defaults does all its work on its own thread.
+    A batch runs each run on one thread whenever it has a run for every thread. Every
+    result is the same bits however the work is split, and no setting but
+    `max_unknowns_per_interior` changes any: that one orders the factorization's
+    operations otherwise, so results agree with those of the serial factorization to
+    within its rounding. The threads are the engine's own, the setting `threads` or
+    [`threads`][jolty.simulate.threads].
 
     Examples:
         >>> Parallelism(min_solves_per_task=16).to_json()
@@ -370,6 +375,7 @@ class Parallelism:
     min_solves_per_task: int | None = None
     min_instances_per_task: int | None = None
     min_unknowns_inside: int | None = None
+    max_unknowns_per_interior: int | None = None
 
     def __post_init__(self) -> None:
         """Checks that each threshold given is a count of one or more.
@@ -394,7 +400,8 @@ class Options:
     """Numerical settings; each one left out takes the engine's default, SPICE's own.
 
     Tolerances are in SI base units: volts, amperes and coulombs. The `parallelism`
-    says how a run spreads its own work across threads, which changes no result.
+    says how a run spreads its own work across threads, which changes no result but
+    for the last digits its dissected factorization's order of operations gives.
 
     Examples:
         >>> Options(gmin=1e-15).to_json()

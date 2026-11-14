@@ -4,8 +4,10 @@
 On the random circuits of `strategies`, an operating point, a frequency response, the
 noise at a net and the sensitivities at the operating point find the same bits on 1, 2,
 3 and 8 threads, as the engine spreads each analysis's frequencies, right-hand sides,
-device instances and unknowns over them, as on one thread unspread; so does
-``ac_wide``'s response at 10,000 frequencies, run from Python. A Monte Carlo sample is
+device instances and unknowns over them, as on one thread unspread; and the same bits
+again on each, their factorizations dissected into interiors of one unknown, as on one
+thread dissected; so does ``ac_wide``'s response at 10,000 frequencies, run from
+Python. A Monte Carlo sample is
 a function of its seed, its index and the names of its parts alone, so it is the same
 drawn alone or among others, and a part added leaves every other part's draws alone.
 """
@@ -47,6 +49,11 @@ SPREAD = Options(
     )
 )
 """Options that spread every kind of a run's work over its threads, however small."""
+
+DISSECTED = Options(
+    parallelism=dataclasses.replace(SPREAD.parallelism, max_unknowns_per_interior=1)
+)
+"""The options of `SPREAD`, the factorization dissected as far as each block splits."""
 
 FIXTURES = Path(__file__).parent.parent / "perf" / "circuits"
 """The circuits of the benchmarks."""
@@ -100,12 +107,15 @@ def _simulated(built: ir.Circuit, options: Options) -> list[object]:
 @given(circuits())
 def test_the_same_circuits_simulate_the_same_on_any_threads(built: ir.Circuit) -> None:
     found = []
+    dissected = []
     for count in THREADS:
         with simulate.threads(count):
             found.append(_simulated(built, SPREAD))
+            dissected.append(_simulated(built, DISSECTED))
     with simulate.threads(1):
         alone = _simulated(built, Options())
     assert all(each == alone for each in found)
+    assert all(each == dissected[0] for each in dissected)
 
 
 def test_ac_wide_finds_the_same_bits_spread_over_threads() -> None:

@@ -106,6 +106,12 @@ _INSIDE_DESCRIPTION = (
     "The fewest unknowns a circuit has for a run to spread its Newton iteration's work "
     "on each unknown across threads; replaces the plan's. No result depends on it."
 )
+_INTERIORS_DESCRIPTION = (
+    "The most unknowns of an interior when a run factors its matrix in parallel, each "
+    "large block ordered by nested dissection into interiors and the separators "
+    "between them; replaces the plan's. It orders the factorization's operations, so "
+    "results depend on it in their last digits, but not on the threads."
+)
 _SAMPLES_DESCRIPTION = (
     "Run only the samples of the plan's Monte Carlo analysis from START up to STOP, "
     "written START:STOP, such as 0:1000000, as a shard of the analysis: at the plan's "
@@ -316,6 +322,9 @@ class SimulateRequest(_Model):
     min_unknowns_inside: int | None = Field(
         default=None, ge=1, description=_INSIDE_DESCRIPTION
     )
+    max_unknowns_per_interior: int | None = Field(
+        default=None, ge=1, description=_INTERIORS_DESCRIPTION
+    )
     samples: str | None = Field(
         default=None, pattern=r"^[0-9]+:[0-9]+$", description=_SAMPLES_DESCRIPTION
     )
@@ -525,6 +534,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
             min_solves_per_task=request.min_solves_per_task,
             min_instances_per_task=request.min_instances_per_task,
             min_unknowns_inside=request.min_unknowns_inside,
+            max_unknowns_per_interior=request.max_unknowns_per_interior,
         ),
         samples=None if taken is None else (taken.start, taken.stop),
     )

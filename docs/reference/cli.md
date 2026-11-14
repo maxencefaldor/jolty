@@ -46,6 +46,7 @@ Build a script's circuit and run a plan's analyses on it.
 | `--min-solves-per-task` |  | The fewest frequencies or right-hand sides a task takes when a run spreads its small-signal analyses and sensitivities across threads; replaces the plan's. No result depends on it. |
 | `--min-instances-per-task` |  | The device instances a task evaluates when a run spreads its devices' evaluation across threads; replaces the plan's. No result depends on it. |
 | `--min-unknowns-inside` |  | The fewest unknowns a circuit has for a run to spread its Newton iteration's work on each unknown across threads; replaces the plan's. No result depends on it. |
+| `--max-unknowns-per-interior` |  | The most unknowns of an interior when a run factors its matrix in parallel, each large block ordered by nested dissection into interiors and the separators between them; replaces the plan's. It orders the factorization's operations, so results depend on it in their last digits, but not on the threads. |
 | `--samples` |  | Run only the samples of the plan's Monte Carlo analysis from START up to STOP, written START:STOP, such as 0:1000000, as a shard of the analysis: at the plan's own conditions and at every corner, running none of its other analyses, into the directory of shards, for jolty merge to report with the others. A shard draws no schematic and no plot, and traces only the probes named. |
 | `--shards` |  | The directory a shard of samples is written to, as shard-START-STOP.npz; defaults to &lt;script&gt;.shards. |
 

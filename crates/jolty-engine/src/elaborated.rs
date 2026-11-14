@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Range;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{
@@ -24,10 +24,10 @@ use jolty_models::{
 use jolty_numerics::{Entry, Ordering, Pattern, PatternBuilder};
 use serde_json::Value;
 
-use crate::Substitute;
 use crate::elaborate::{self, Composite, ElaborationError, ElaborationProblem, Location};
 use crate::logic::LogicSystem;
 use crate::values::{ParameterId, Table, Values, each_number, each_number_mut};
+use crate::{SimulationError, Substitute};
 
 /// The structural half of the conditions a circuit is elaborated in: the models that stand
 /// in for some component instances, as a plan's fidelity chooses. The temperature and the
@@ -77,6 +77,10 @@ pub struct Elaborated {
     /// either is read, as a single run of a circuit from its JSON text reads neither: a
     /// function of the rest, which they never change.
     lookup: OnceLock<Lookup>,
+    /// The orderings of the pattern dissected into interiors of at most so many unknowns,
+    /// by that number, each made the first time a run factors with it: a function of the
+    /// pattern, which it never changes.
+    dissected: Mutex<BTreeMap<usize, Arc<Ordering>>>,
 }
 
 /// The index of an elaborated circuit's devices and composite terminals by path and name,
@@ -484,8 +488,39 @@ impl Elaborated {
             temperature,
             composites,
             lookup: OnceLock::new(),
+            dissected: Mutex::new(BTreeMap::new()),
         };
         (elaborated, bound.devices)
+    }
+
+    /// The ordering a run's solver factors with: the minimum degree's, or, for `interiors`,
+    /// the one dissected into interiors of at most so many unknowns, made the first time a
+    /// run asks for it and shared by every run after. Two runs that ask at once may each
+    /// make it, which gives the same ordering, and the first kept is shared.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::TooLarge`] when the ordering does not fit in memory.
+    pub(crate) fn ordering(
+        &self,
+        interiors: Option<usize>,
+    ) -> Result<Arc<Ordering>, SimulationError> {
+        let Some(interiors) = interiors else {
+            return Ok(Arc::clone(&self.ordering));
+        };
+        let kept = || {
+            self.dissected
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        };
+        if let Some(ordering) = kept().get(&interiors) {
+            return Ok(Arc::clone(ordering));
+        }
+        let made = Ordering::dissected(Arc::clone(&self.pattern), interiors)
+            .map_err(|_| SimulationError::TooLarge)?;
+        Ok(Arc::clone(
+            kept().entry(interiors).or_insert_with(|| Arc::new(made)),
+        ))
     }
 
     /// The unknowns, in the order of every solution's values.
@@ -671,6 +706,7 @@ impl Elaborated {
             temperature: self.temperature,
             composites: self.composites.clone(),
             lookup: self.lookup.clone(),
+            dissected: Mutex::new(BTreeMap::new()),
         };
         Ok((restructured, bound.devices, patched))
     }

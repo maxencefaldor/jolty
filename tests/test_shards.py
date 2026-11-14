@@ -125,9 +125,24 @@ def _built(outcome: runner.Outcome) -> runner.Built:
     return outcome
 
 
-def _shard(script: Path, directory: Path, start: int, stop: int) -> Path:
-    """Runs the samples from `start` up to `stop` as a shard, and returns its file."""
-    job = runner.Job(script=script, plan=script, listed=10, samples=(start, stop))
+def _shard(
+    script: Path,
+    directory: Path,
+    start: int,
+    stop: int,
+    parallelism: runner.Thresholds | None = None,
+) -> Path:
+    """Runs the samples from `start` up to `stop` as a shard, and returns its file.
+
+    The shard's runs spread their work as `parallelism` says, in place of the plan's.
+    """
+    job = runner.Job(
+        script=script,
+        plan=script,
+        listed=10,
+        samples=(start, stop),
+        parallelism=parallelism or runner.Thresholds(),
+    )
     work = directory / f"job-{start}-{stop}"
     work.mkdir(parents=True)
     found = _built(runner.run(job, work)).shard
@@ -237,6 +252,28 @@ def test_shards_of_one_circuit_built_in_two_places_merge(tmp_path: Path) -> None
     other = _shard(changed, tmp_path / "changed.shards", 35, SAMPLES)
     with pytest.raises(JoltyError, match="as their fingerprints differ"):
         shards.merge([first, other])
+
+
+def test_shards_of_other_interiors_do_not_merge(tmp_path: Path) -> None:
+    # The interiors of a dissected factorization order its operations, so they join a
+    # shard's fingerprint, where the thresholds that only spread work do not.
+    script = _script(tmp_path)
+    directory = tmp_path / "divider.shards"
+    first = _shard(script, directory, 0, 35)
+    spread = _shard(
+        script, directory, 35, SAMPLES, runner.Thresholds(min_solves_per_task=1)
+    )
+    shard, _ = shards.merge([first, spread])
+    assert (shard.start, shard.stop) == (0, SAMPLES)
+    dissected = _shard(
+        script,
+        tmp_path / "dissected.shards",
+        35,
+        SAMPLES,
+        runner.Thresholds(max_unknowns_per_interior=2),
+    )
+    with pytest.raises(JoltyError, match="fingerprints differ"):
+        shards.merge([first, dissected])
 
 
 def test_gaps_and_overlaps_name_the_shards(tmp_path: Path) -> None:

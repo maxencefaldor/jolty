@@ -46,8 +46,11 @@ impl Record {
 
 /// How a run spreads its own work across the threads of the rayon pool it runs in: the
 /// frequencies of its small-signal analyses, the right-hand sides of its sensitivities, its
-/// devices' instances, and its Newton iteration's work on each unknown. No setting changes
-/// any result: every one of them is the same bits however the work is split.
+/// devices' instances, its Newton iteration's work on each unknown, and the factorization
+/// of its matrix's large blocks. Every result is the same bits however the work is split.
+/// No setting but [`Parallelism::max_unknowns_per_interior`] changes any result: that one
+/// orders the factorization's operations otherwise, so results agree with those of the
+/// factorization on one thread to within its rounding rather than bit for bit.
 ///
 /// The caller owns the pool and runs the engine inside it, with `ThreadPool::install`; a
 /// run that spreads its work uses at most its `threads`, on a pool of exactly that many
@@ -74,6 +77,14 @@ pub struct Parallelism {
     /// each stored entry of its matrix to spread over the threads a run may use; none, by
     /// default, to keep that work on the run's thread.
     pub min_unknowns_inside: Option<usize>,
+    /// The most unknowns of an interior when a run factors its matrix in parallel: each
+    /// block of its block triangular form with more is ordered by nested dissection into
+    /// interiors of at most as many, unless one cannot split, and the separators between
+    /// them, whose factorizations and solves spread over the threads a run may use; none,
+    /// by default, to factor every block on the run's thread, ordered by the minimum
+    /// degree. It changes the order of the factorization's operations, so the last digits
+    /// of results, which it gives the same bits on any number of threads.
+    pub max_unknowns_per_interior: Option<usize>,
 }
 
 impl Parallelism {
@@ -136,6 +147,18 @@ impl Parallelism {
         self.min_solves_per_task.is_some()
             || self.min_instances_per_task.is_some()
             || self.min_unknowns_inside.is_some()
+            || self.max_unknowns_per_interior.is_some()
+    }
+
+    /// How a run factors its matrix: the most unknowns of an interior its ordering
+    /// dissects its large blocks into, [`Parallelism::max_unknowns_per_interior`], and the
+    /// threads it may use for them, all it may use; none and one when that is unset.
+    #[must_use]
+    pub(crate) fn factorization(&self) -> (Option<usize>, usize) {
+        match self.max_unknowns_per_interior {
+            Some(interiors) => (Some(interiors), self.usable()),
+            None => (None, 1),
+        }
     }
 
     /// How a run's devices split their evaluation among threads: every group at once, each
@@ -361,6 +384,10 @@ impl Options {
             ("min_solves_per_task", parallelism.min_solves_per_task),
             ("min_instances_per_task", parallelism.min_instances_per_task),
             ("min_unknowns_inside", parallelism.min_unknowns_inside),
+            (
+                "max_unknowns_per_interior",
+                parallelism.max_unknowns_per_interior,
+            ),
         ];
         if let Some((name, _)) = counts.into_iter().find(|&(_, count)| count == Some(0)) {
             return Err(SimulationError::InvalidOptions(format!(

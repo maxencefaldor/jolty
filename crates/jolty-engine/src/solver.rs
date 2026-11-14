@@ -27,7 +27,19 @@ impl<T: Scalar> Solver<T> {
         }
     }
 
-    /// A solver of the same matrices in another scalar, sharing this one's ordering.
+    /// Factors with `ordering`, of the same pattern, from now on, keeping the counts of
+    /// work, as [`SparseLu::reorder`] does, unless it already does; and its dissected
+    /// blocks on up to `threads` threads at once.
+    pub(crate) fn order(&mut self, ordering: &Arc<Ordering>, threads: usize) {
+        if !Arc::ptr_eq(self.lu.ordering(), ordering) {
+            self.lu.reorder(Arc::clone(ordering));
+        }
+        self.lu.spread(threads);
+    }
+
+    /// A solver of the same matrices in another scalar, sharing this one's ordering, whose
+    /// dissected blocks run on its calling thread alone: the analyses that share it spread
+    /// their own solves.
     pub(crate) fn sharing<U: Scalar>(&self) -> Solver<U> {
         Solver::new(Arc::clone(self.lu.ordering()), Arc::clone(&self.names))
     }

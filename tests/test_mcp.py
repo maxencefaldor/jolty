@@ -99,6 +99,7 @@ def test_tools_mirror_the_service_requests() -> None:
         "min_solves_per_task",
         "min_instances_per_task",
         "min_unknowns_inside",
+        "max_unknowns_per_interior",
         "samples",
         "shards",
     }

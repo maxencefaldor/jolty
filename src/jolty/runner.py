@@ -114,6 +114,7 @@ class Thresholds(BaseModel):
     min_solves_per_task: int | None = Field(default=None, ge=1)
     min_instances_per_task: int | None = Field(default=None, ge=1)
     min_unknowns_inside: int | None = Field(default=None, ge=1)
+    max_unknowns_per_interior: int | None = Field(default=None, ge=1)
 
 
 class Job(BaseModel):
@@ -810,12 +811,12 @@ def _described(
     """What the numbers of a shard of `monte_carlo`'s samples depend on, as JSON.
 
     It is the analyses and the options, but for the parallelism, which changes no
-    result; the fidelity's models, by scope; the samples and their seed; each
-    condition's corner, temperature, process corner, and the
-    [`circuit_hash`][jolty.shards.circuit_hash] of its circuit, which leaves out the
-    script lines that placed its instances, none where it does not elaborate; the
-    requirements of `specs`, in words, and their yield target; and the unknowns
-    `traced` names.
+    result save for the interiors its factorization is dissected into; the fidelity's
+    models, by scope; the samples and their seed; each condition's corner,
+    temperature, process corner, and the [`circuit_hash`][jolty.shards.circuit_hash] of
+    its circuit, which leaves out the script lines that placed its instances, none where
+    it does not elaborate; the requirements of `specs`, in words, and their yield
+    target; and the unknowns `traced` names.
     """
     hashed: dict[int, str] = {}
 
@@ -828,7 +829,12 @@ def _described(
         return hashed[id(chosen.built)]
 
     options = plan.options.to_json()
-    options.pop("parallelism", None)
+    spread = options.pop("parallelism", None)
+    # The interiors order the factorization's operations, so the numbers' last digits.
+    if isinstance(spread, dict) and "max_unknowns_per_interior" in spread:
+        options["parallelism"] = {
+            "max_unknowns_per_interior": spread["max_unknowns_per_interior"]
+        }
     return {
         "analyses": {name: repr(analysis) for name, analysis in plan.analyses.items()},
         "options": options,

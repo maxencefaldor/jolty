@@ -1242,3 +1242,127 @@ fn a_deflated_search_spread_over_threads_finds_what_it_finds_on_one() {
     let search = Analysis::OperatingPoints(OperatingPoints { most: 8 });
     spread_finds_what_one_thread_finds(&latch(), &[search], &Options::default());
 }
+
+/// `options` with the factorization dissected into interiors of at most `interiors`
+/// unknowns.
+fn dissecting(options: &Options, interiors: usize) -> Options {
+    Options {
+        parallelism: Parallelism {
+            max_unknowns_per_interior: Some(interiors),
+            ..options.parallelism.clone()
+        },
+        ..options.clone()
+    }
+}
+
+/// A run whose options dissect its factorization finds the same bits on 1, 2, 3 and 8
+/// threads: the amplifier's operating point, response and transient, and the latch's
+/// every DC solution, dissected into interiors of two unknowns; and the operating point of
+/// the mesh of 10,000 nodes, into interiors of 500, its separators' fronts dense.
+#[test]
+fn a_dissected_factorization_finds_the_same_on_any_number_of_threads() {
+    let (amplifier, analyses, options) = benchmark("bjt_amp");
+    let (mesh, _, mesh_options) = benchmark("rc_mesh_100");
+    let cases = [
+        (amplifier, analyses, dissecting(&options, 2)),
+        (
+            mesh,
+            vec![Analysis::OperatingPoint],
+            dissecting(&mesh_options, 500),
+        ),
+        (
+            latch(),
+            vec![Analysis::OperatingPoints(OperatingPoints { most: 8 })],
+            dissecting(&Options::default(), 2),
+        ),
+    ];
+    for (circuit, analyses, options) in &cases {
+        let elaborated = shared(circuit);
+        let run = || -> Vec<Bits> {
+            let mut simulator =
+                Simulator::from_elaborated(Arc::clone(&elaborated), Values::default())
+                    .expect("a run");
+            analyses
+                .iter()
+                .map(|analysis| bits(&simulator.run(analysis, options)))
+                .collect()
+        };
+        let mut found = Vec::new();
+        for threads in THREADS {
+            let pool = ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("a pool");
+            found.push(pool.install(run));
+        }
+        assert!(
+            found[0].iter().all(|(numbers, _)| !numbers.is_empty()),
+            "{:?}",
+            found[0]
+        );
+        for (threads, each) in THREADS.iter().zip(&found).skip(1) {
+            assert_eq!(each, &found[0], "on {threads} threads");
+        }
+    }
+}
+
+/// A dissected factorization orders its operations otherwise than the serial one, so a
+/// run's operating point differs from the serial run's in its last digits, by no more than
+/// twice the tolerance Newton iteration stops within, the relative tolerance of each
+/// unknown plus its absolute tolerance, as each is within it of the exact solution.
+#[test]
+fn a_dissected_factorization_finds_the_operating_point_within_tolerance() {
+    for (name, interiors) in [("bjt_amp", 2), ("buck", 2), ("rc_mesh_100", 500)] {
+        let (circuit, _, options) = benchmark(name);
+        let elaborated = shared(&circuit);
+        let point = |options: &Options| {
+            let mut simulator =
+                Simulator::from_elaborated(Arc::clone(&elaborated), Values::default())
+                    .expect("a run");
+            simulator
+                .operating_point(options)
+                .expect("an operating point")
+        };
+        let serial = point(&options);
+        let dissected = point(&dissecting(&options, interiors));
+        for ((unknown, &one), &other) in elaborated
+            .unknowns()
+            .iter()
+            .zip(&serial.values)
+            .zip(&dissected.values)
+        {
+            let absolute = if unknown.quantity.is_current() {
+                options.current_tolerance
+            } else {
+                options.voltage_tolerance
+            };
+            let tolerance = options.relative_tolerance * one.abs().max(other.abs()) + absolute;
+            assert!(
+                (one - other).abs() <= 2.0 * tolerance,
+                "{name}: {} is {one} serially and {other} dissected",
+                unknown.name
+            );
+        }
+    }
+}
+
+/// A simulator that solved its operating point with the serial factorization solves it
+/// again for a dissected one, rather than read the one it remembers, so a run's numbers do
+/// not depend on what ran before it: they are those of a simulator made anew.
+#[test]
+fn a_dissected_run_solves_afresh_what_a_serial_one_left() {
+    let (circuit, _, options) = benchmark("bjt_amp");
+    let elaborated = shared(&circuit);
+    let dissected = dissecting(&options, 2);
+    let point = |simulator: &mut Simulator, options: &Options| {
+        bits(&simulator.run(&Analysis::OperatingPoint, options))
+    };
+    let mut fresh =
+        Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
+    let alone = point(&mut fresh, &dissected);
+    let mut used = Simulator::from_elaborated(elaborated, Values::default()).expect("a run");
+    let serial = point(&mut used, &options);
+    assert_ne!(serial.0, alone.0, "the orders of operations differ");
+    assert_eq!(point(&mut used, &dissected), alone);
+    assert_eq!(point(&mut used, &options), serial);
+}
