@@ -72,8 +72,8 @@ Its distortion comes from nominal models: the resistors' and capacitors' own non
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of out from 110 ms in run ≥ 990 Hz and ≤ 1.01 kHz | 995.541 Hz at cold, passed | 995.541 Hz at cold, passed | 3.7e-12 |
-| peak-to-peak of out from 110 ms in run ≥ 3.8 V and ≤ 4.2 V | 4.68202 V at cold, failed | 4.68203 V at cold, failed | 2.4e-06 |
+| frequency of out from 110 ms in run ≥ 990 Hz and ≤ 1.01 kHz | 995.541 Hz at cold, passed | 995.541 Hz at cold, passed | 2.5e-11 |
+| peak-to-peak of out from 110 ms in run ≥ 3.8 V and ≤ 4.2 V | 4.68203 V at cold, failed | 4.68203 V at cold, failed | 1.2e-07 |
 
 ## Replicated in ngspice
 

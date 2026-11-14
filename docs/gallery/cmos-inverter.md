@@ -18,7 +18,7 @@ with `jolty simulate examples/cmos_inverter.py`.
 | --- | --- | --- | --- |
 | out at 0 V in transfer ≥ 3.299 V and ≤ 3.301 V | 3.3 V, passed | 3.3 V, passed | 4.8e-12 |
 | out at 3.3 V in transfer ≥ -1 mV and ≤ 1 mV | 12.2891 nV, passed | 12.2891 nV, passed | 2.0e-09 |
-| out at 1.813 V in transfer ≥ 1.6 V and ≤ 1.7 V | 1.64982 V, passed | 1.64982 V, passed | 8.6e-15 |
+| out at 1.813 V in transfer ≥ 1.6 V and ≤ 1.7 V | 1.64982 V, passed | 1.64982 V, passed | 3.5e-15 |
 
 ## Replicated in ngspice
 
@@ -28,7 +28,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
 | `transfer` | 3 | 2.8e-06 | 2 | 3.8e-07 |
-| `edges` | 3 | 4.5e-04 | 2 | 1.8 % |
+| `edges` | 3 | 3.2e-04 | 2 | 3.4 % |
 
 ![The replication in ngspice](../images/gallery/cmos_inverter.transfer.replication.png)
 

@@ -16,8 +16,8 @@ Simulate it with `jolty simulate examples/colpitts_oscillator.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of out from 80 µs in run ≥ 512 kHz and ≤ 543.7 kHz | 527.297 kHz, passed | 527.299 kHz, passed | 3.8e-06 |
-| peak-to-peak of out from 80 µs in run ≥ 2 V | 7.53666 V, passed | 7.53669 V, passed | 3.2e-06 |
+| frequency of out from 80 µs in run ≥ 512 kHz and ≤ 543.7 kHz | 527.297 kHz, passed | 527.299 kHz, passed | 3.7e-06 |
+| peak-to-peak of out from 80 µs in run ≥ 2 V | 7.5361 V, passed | 7.53669 V, passed | 7.8e-05 |
 
 ## Replicated in ngspice
 

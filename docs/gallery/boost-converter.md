@@ -15,7 +15,7 @@ Simulate it with `jolty simulate examples/boost_converter.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| average of out from 9 ms in start ≥ 11 V and ≤ 12.5 V | 12.0304 V, passed | 12.0262 V, passed | 3.5e-04 |
+| average of out from 9 ms in start ≥ 11 V and ≤ 12.5 V | 12.0305 V, passed | 12.0269 V, passed | 3.0e-04 |
 
 ## Replicated in ngspice
 
@@ -24,7 +24,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `start` | 4 | 5.9e-04 | 3 | 0.11 % |
+| `start` | 4 | 2.5e-04 | 3 | 2.2e-04 |
 
 ![The replication in ngspice](../images/gallery/boost_converter.start.replication.png)
 

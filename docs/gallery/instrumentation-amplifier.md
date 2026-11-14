@@ -16,10 +16,10 @@ Simulate it with `jolty simulate examples/instrumentation_amplifier.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| out in op ≥ 100.9 mV and ≤ 101 mV | 100.897 mV, passed | 100.897 mV, passed | 5.5e-14 |
-| out at 500 mV in difference ≥ 5.04 V and ≤ 5.05 V | 5.04484 V, passed | 5.04484 V, passed | 1.0e-14 |
-| out at -5 V in common ≥ 100.9 mV and ≤ 101 mV | 100.897 mV, passed | 100.897 mV, passed | 1.2e-13 |
-| out at 5 V in common ≥ 100.9 mV and ≤ 101 mV | 100.897 mV, passed | 100.897 mV, passed | 1.9e-14 |
+| out in op ≥ 100.9 mV and ≤ 101 mV | 100.897 mV, passed | 100.897 mV, passed | 2.5e-14 |
+| out at 500 mV in difference ≥ 5.04 V and ≤ 5.05 V | 5.04484 V, passed | 5.04484 V, passed | 1.3e-14 |
+| out at -5 V in common ≥ 100.9 mV and ≤ 101 mV | 100.897 mV, passed | 100.897 mV, passed | 1.0e-13 |
+| out at 5 V in common ≥ 100.9 mV and ≤ 101 mV | 100.897 mV, passed | 100.897 mV, passed | 3.0e-14 |
 
 ## Replicated in ngspice
 
@@ -28,9 +28,9 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `op` | 12 | 5.5e-14 | 5 | 8.9e-15 |
-| `difference` | 12 | 1.4e-14 | 5 | 1.3e-14 |
-| `common` | 12 | 2.6e-13 | 5 | 1.2e-14 |
+| `op` | 12 | 2.5e-14 | 5 | 3.0e-15 |
+| `difference` | 12 | 1.6e-14 | 5 | 1.4e-14 |
+| `common` | 12 | 1.1e-12 | 5 | 5.2e-14 |
 
 ![The replication in ngspice](../images/gallery/instrumentation_amplifier.difference.replication.png)
 

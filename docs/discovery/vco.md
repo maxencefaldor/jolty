@@ -95,12 +95,12 @@ The 2 µs delay belongs to the op-amp macromodel, so a real comparator would nee
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of out from 4 ms to 16 ms in run ≥ 493.1 Hz and ≤ 503 Hz | 497.674 Hz, passed | 497.668 Hz, passed | 1.1e-05 |
-| frequency of out from 18 ms to 24 ms in run ≥ 986.1 Hz and ≤ 1.006 kHz | 995.167 Hz, passed | 995.131 Hz, passed | 3.7e-05 |
-| frequency of out from 25 ms to 28 ms in run ≥ 1.972 kHz and ≤ 2.012 kHz | 1.99088 kHz, passed | 1.99038 kHz, passed | 2.5e-04 |
-| frequency of out from 28.67 ms to 30.67 ms in run ≥ 2.958 kHz and ≤ 3.018 kHz | 2.98745 kHz, passed | 2.98673 kHz, passed | 2.4e-04 |
-| frequency of out from 31.17 ms to 32.67 ms in run ≥ 3.944 kHz and ≤ 4.024 kHz | 3.98577 kHz, passed | 3.9847 kHz, passed | 2.7e-04 |
-| frequency of out from 33.07 ms to 34.27 ms in run ≥ 4.931 kHz and ≤ 5.03 kHz | 4.98706 kHz, passed | 4.98493 kHz, passed | 4.3e-04 |
+| frequency of out from 4 ms to 16 ms in run ≥ 493.1 Hz and ≤ 503 Hz | 497.679 Hz, passed | 497.666 Hz, passed | 2.5e-05 |
+| frequency of out from 18 ms to 24 ms in run ≥ 986.1 Hz and ≤ 1.006 kHz | 995.073 Hz, passed | 995.132 Hz, passed | 5.9e-05 |
+| frequency of out from 25 ms to 28 ms in run ≥ 1.972 kHz and ≤ 2.012 kHz | 1.99073 kHz, passed | 1.99036 kHz, passed | 1.9e-04 |
+| frequency of out from 28.67 ms to 30.67 ms in run ≥ 2.958 kHz and ≤ 3.018 kHz | 2.98639 kHz, passed | 2.98671 kHz, passed | 1.1e-04 |
+| frequency of out from 31.17 ms to 32.67 ms in run ≥ 3.944 kHz and ≤ 4.024 kHz | 3.98572 kHz, passed | 3.9848 kHz, passed | 2.3e-04 |
+| frequency of out from 33.07 ms to 34.27 ms in run ≥ 4.931 kHz and ≤ 5.03 kHz | 4.98691 kHz, passed | 4.98484 kHz, passed | 4.2e-04 |
 
 ## Replicated in ngspice
 

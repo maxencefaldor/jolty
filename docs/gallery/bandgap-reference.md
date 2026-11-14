@@ -18,7 +18,7 @@ Simulate it with `jolty simulate examples/bandgap_reference.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| vref in op ≥ 1.165 V and ≤ 1.171 V | 1.16692 V at cold, passed | 1.16692 V at cold, passed | 5.5e-12 |
+| vref in op ≥ 1.165 V and ≤ 1.171 V | 1.16692 V at cold, passed | 1.16692 V at cold, passed | 6.5e-12 |
 
 ## Replicated in ngspice
 
@@ -27,4 +27,4 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `op` | 6 | 1.5e-11 | 2 | 2.9e-11 |
+| `op` | 6 | 8.1e-12 | 2 | 1.5e-11 |

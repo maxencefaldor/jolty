@@ -15,7 +15,7 @@ Simulate it with `jolty simulate examples/inverting_amplifier.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| gain of out at 100 Hz in bode ≥ 20 dB and ≤ 20 dB | 19.999 dB, passed | 19.999 dB, passed | 0 |
+| gain of out at 100 Hz in bode ≥ 20 dB and ≤ 20 dB | 19.999 dB, passed | 19.999 dB, passed | 1.8e-16 |
 | 3 dB bandwidth of out in bode ≥ 90.4 kHz and ≤ 91.4 kHz | 90.6292 kHz, passed | 90.6292 kHz, passed | 1.8e-15 |
 | peak-to-peak of out from 1 ms in tone ≥ 1.998 V and ≤ 2.002 V | 1.99964 V, passed | 1.99965 V, passed | 4.9e-06 |
 
@@ -27,7 +27,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
 | `op` | 4 | 0 | 2 | 0 |
-| `bode` | 4 | 1.2e-15 | 2 | 1.2e-15 |
+| `bode` | 4 | 1.1e-15 | 2 | 1.0e-15 |
 | `tone` | 4 | 1.2e-04 | 2 | 1.5e-05 |
 
 ![The replication in ngspice](../images/gallery/inverting_amplifier.bode.replication.png)

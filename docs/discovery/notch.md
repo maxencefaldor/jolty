@@ -67,8 +67,8 @@ The Monte Carlo varies the resistors and capacitors; the op-amp macromodel has n
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| gain of out at 25 Hz in bode ≥ -3 dB and ≤ 3 dB | -1.59743 dB, passed | -1.59743 dB, passed | 2.8e-15 |
-| gain of out at 100 Hz in bode ≥ -3 dB and ≤ 3 dB | -1.59581 dB, passed | -1.59581 dB, passed | 0 |
+| gain of out at 25 Hz in bode ≥ -3 dB and ≤ 3 dB | -1.59743 dB, passed | -1.59743 dB, passed | 5.6e-16 |
+| gain of out at 100 Hz in bode ≥ -3 dB and ≤ 3 dB | -1.59581 dB, passed | -1.59581 dB, passed | 2.1e-15 |
 
 ## Replicated in ngspice
 
@@ -77,7 +77,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `bode` | 13 | 9.5e-12 | 5 | 1.6e-12 |
+| `bode` | 13 | 9.4e-12 | 5 | 1.6e-12 |
 
 ![The replication in ngspice](../images/gallery/notch.bode.replication.png)
 

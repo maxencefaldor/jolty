@@ -16,8 +16,8 @@ Simulate it with `jolty simulate examples/twin_t_notch.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| gain of out at 10 Hz in bode ≥ -0.03 dB and ≤ 0 dB | -0.0200895 dB, passed | -0.0200895 dB, passed | 9.6e-14 |
-| gain of out at 1.592 kHz in bode ≤ -100 dB | -318.53 dB, passed | -321.276 dB, passed | 0.85 % |
+| gain of out at 10 Hz in bode ≥ -0.03 dB and ≤ 0 dB | -0.0200895 dB, passed | -0.0200895 dB, passed | 0 |
+| gain of out at 1.592 kHz in bode ≤ -100 dB | -321.276 dB, passed | -321.276 dB, passed | 0 |
 
 ## Replicated in ngspice
 
@@ -26,7 +26,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `bode` | 4 | 5.3e-15 | 1 | 8.1e-14 |
+| `bode` | 4 | 5.4e-15 | 1 | 6.4e-14 |
 
 ![The replication in ngspice](../images/gallery/twin_t_notch.bode.replication.png)
 

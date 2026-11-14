@@ -15,9 +15,9 @@ Simulate it with `jolty simulate examples/rlc_bandpass.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| gain of out at 5.033 kHz in bode ≥ -1e-09 dB and ≤ 1e-09 dB | -9.64327e-16 dB, passed | 0 dB, passed | 1e+02 % |
+| gain of out at 5.033 kHz in bode ≥ -1e-09 dB and ≤ 1e-09 dB | 0 dB, passed | 0 dB, passed | 0 |
 | gain of out at 4.3 kHz in bode ≥ -3.01 dB and ≤ -3.01 dB | -3.0103 dB, passed | -3.0103 dB, passed | 1.5e-15 |
-| gain of out at 5.891 kHz in bode ≥ -3.01 dB and ≤ -3.01 dB | -3.0103 dB, passed | -3.0103 dB, passed | 0 |
+| gain of out at 5.891 kHz in bode ≥ -3.01 dB and ≤ -3.01 dB | -3.0103 dB, passed | -3.0103 dB, passed | 8.9e-16 |
 
 ## Replicated in ngspice
 
@@ -28,7 +28,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 | --- | --- | --- | --- | --- |
 | `op` | 3 | 0 | 2 | 0 |
 | `bode` | 3 | 4.3e-14 | 2 | 4.3e-14 |
-| `ring` | 3 | 5.4e-04 | 2 | 5.1e-04 |
+| `ring` | 3 | 5.1e-04 | 2 | 4.7e-04 |
 
 ![The replication in ngspice](../images/gallery/rlc_bandpass.bode.replication.png)
 

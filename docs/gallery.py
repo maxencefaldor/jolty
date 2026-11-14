@@ -1018,7 +1018,10 @@ def main(names: Sequence[str]) -> int:
     for folder in {entry.folder for entry in chosen}:
         (DOCS / folder).mkdir(exist_ok=True)
     IMAGES.mkdir(parents=True, exist_ok=True)
-    with ProcessPoolExecutor(max_workers=4) as pool:
+    # Each entry builds in a process of its own: a discovery imports its modules by
+    # name, such as its `candidates`, and a process that built another discovery would
+    # hand it that one's.
+    with ProcessPoolExecutor(max_workers=4, max_tasks_per_child=1) as pool:
         built = list(pool.map(build, chosen))
     failures = 0
     written = []

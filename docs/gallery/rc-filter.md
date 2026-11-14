@@ -17,7 +17,7 @@ Simulate it with `jolty simulate examples/rc_filter.py`, which checks its specs 
 | --- | --- | --- | --- |
 | gain of out at 1 kHz in bode ≥ -0.1 dB and ≤ 0.1 dB | -0.000171449 dB, passed | -0.000171449 dB, passed | 0 |
 | 3 dB bandwidth of out in bode ≥ 150 kHz and ≤ 170 kHz | 158.754 kHz, passed | 158.754 kHz, passed | 1.6e-15 |
-| rise time of out in step ≤ 2.5 µs with a margin of 100 ns | 2.19248 µs, passed | 2.1961 µs, passed | 0.17 % |
+| rise time of out in step ≤ 2.5 µs with a margin of 100 ns | 2.19123 µs, passed | 2.1961 µs, passed | 0.22 % |
 | overshoot of out in step ≤ 1 % | 0 %, passed | 0 %, passed | 0 |
 
 ## Replicated in ngspice
@@ -28,8 +28,8 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
 | `op` | 2 | 0 | 1 | 0 |
-| `step` | 2 | 0 | 1 | 5.0e-06 |
-| `bode` | 2 | 9.0e-16 | 1 | 9.4e-16 |
+| `step` | 2 | 2.2e-16 | 1 | 2.5e-05 |
+| `bode` | 2 | 8.1e-16 | 1 | 8.4e-16 |
 
 ![The replication in ngspice](../images/gallery/rc_filter.step.replication.png)
 

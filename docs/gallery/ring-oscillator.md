@@ -17,8 +17,8 @@ Simulate it with `jolty simulate examples/ring_oscillator.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of out from 5 ns in run ≥ 400 MHz and ≤ 1 GHz | 926.624 MHz, passed | 926.485 MHz, passed | 1.5e-04 |
-| peak-to-peak of out from 5 ns in run ≥ 3 V | 3.37918 V, passed | 3.37964 V, passed | 1.4e-04 |
+| frequency of out from 5 ns in run ≥ 400 MHz and ≤ 1 GHz | 926.649 MHz, passed | 926.486 MHz, passed | 1.8e-04 |
+| peak-to-peak of out from 5 ns in run ≥ 3 V | 3.37904 V, passed | 3.37965 V, passed | 1.8e-04 |
 
 ## Replicated in ngspice
 

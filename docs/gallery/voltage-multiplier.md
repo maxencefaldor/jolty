@@ -16,7 +16,7 @@ Simulate it with `jolty simulate examples/voltage_multiplier.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| out at 200 ms in charge ≥ 50 V and ≤ 60 V | 56.8871 V, passed | 56.8849 V, passed | 3.9e-05 |
+| out at 200 ms in charge ≥ 50 V and ≤ 60 V | 56.8674 V, passed | 56.8849 V, passed | 3.1e-04 |
 
 ## Replicated in ngspice
 
@@ -25,7 +25,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `charge` | 7 | 1.5e-04 | 1 | 0.36 % |
+| `charge` | 7 | 0.2 % | 1 | 1.6 % |
 
 ![The replication in ngspice](../images/gallery/voltage_multiplier.charge.replication.png)
 

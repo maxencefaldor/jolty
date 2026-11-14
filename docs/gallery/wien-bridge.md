@@ -18,7 +18,7 @@ Simulate it with `jolty simulate examples/wien_bridge.py`.
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
 | frequency of out from 30 ms in start ≥ 1.56 kHz and ≤ 1.623 kHz | 1.57384 kHz, passed | 1.57392 kHz, passed | 5.5e-05 |
-| peak-to-peak of out from 30 ms in start ≥ 2 V and ≤ 20 V | 3.1809 V, passed | 3.18105 V, passed | 4.6e-05 |
+| peak-to-peak of out from 30 ms in start ≥ 2 V and ≤ 20 V | 3.1809 V, passed | 3.18104 V, passed | 4.5e-05 |
 
 ## Replicated in ngspice
 

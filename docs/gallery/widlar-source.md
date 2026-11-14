@@ -16,8 +16,8 @@ Simulate it with `jolty simulate examples/widlar_source.py`.
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
 | VOUT:current in op ≥ -55 µA and ≤ -45 µA | -50.4293 µA, passed | -50.4293 µA, passed | 1.2e-08 |
-| VOUT:current at 1 V in compliance ≥ -55 µA and ≤ -45 µA | -49.7588 µA, passed | -49.7588 µA, passed | 4.6e-12 |
-| VOUT:current at 12 V in compliance ≥ -55 µA and ≤ -45 µA | -51.5282 µA, passed | -51.5282 µA, passed | 3.4e-11 |
+| VOUT:current at 1 V in compliance ≥ -55 µA and ≤ -45 µA | -49.7588 µA, passed | -49.7588 µA, passed | 2.9e-12 |
+| VOUT:current at 12 V in compliance ≥ -55 µA and ≤ -45 µA | -51.5282 µA, passed | -51.5282 µA, passed | 6.0e-11 |
 
 ## Replicated in ngspice
 
