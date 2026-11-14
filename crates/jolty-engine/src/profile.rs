@@ -45,7 +45,7 @@ pub struct Profile {
     /// Evaluating the devices.
     pub evaluating: Duration,
     /// Turning what the devices contributed into each Newton iteration's matrix and
-    /// right-hand side.
+    /// right-hand side, and judging its residuals against their tolerances.
     pub assembling: Duration,
     /// Factoring matrices.
     pub factoring: Duration,
@@ -56,7 +56,7 @@ pub struct Profile {
     pub step_control: Duration,
     /// Reading the recorded devices at each point kept.
     pub recording: Duration,
-    /// Everything else: Newton iteration's tests of convergence and its updates, the
+    /// Everything else: Newton iteration's updates and its tests of their steps, the
     /// integration formula's terms and the prediction each step starts from, and what a
     /// transient carries along its steps, such as sensitivities.
     pub other: Duration,

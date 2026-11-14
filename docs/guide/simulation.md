@@ -322,7 +322,7 @@ A `Parallelism` spreads each kind of a run's work once its threshold is set, and
 | --- | --- |
 | `min_solves_per_task` | the frequencies of a response, a noise or a stability analysis and the right-hand sides of sensitivities, in tasks of at least so many |
 | `min_instances_per_task` | the evaluation of the devices, in tasks of so many instances |
-| `min_unknowns_inside` | the work of the Newton iteration and of a transient's step control on each unknown and each stored entry of the matrix, once the circuit has so many |
+| `min_unknowns_inside` | the work of the Newton iteration and of a transient's step control on each unknown and each stored entry of the matrix, once the circuit has so many, in chunks of 1,024 that the threads take as they free |
 | `max_unknowns_per_interior` | the factorization of the matrix: each block of more unknowns is ordered by nested dissection into interiors of at most so many, which factor at once, and the separators between them, each once the parts it separates are done |
 
 ```python

@@ -179,18 +179,16 @@ impl Parallelism {
         })
     }
 
-    /// How a run's Newton iteration and its transient's step control split their work on
-    /// each of the circuit's `unknowns` unknowns and on each stored entry of its matrix
-    /// among threads: in chunks of the
-    /// unknowns, or of the entries, a thread the run may use each takes, once the circuit
-    /// has at least [`Parallelism::min_unknowns_inside`] unknowns and the run may use two
-    /// threads or more; none, to do it all on the run's thread. The bits found are the
-    /// same either way.
+    /// Whether a run spreads its work on each of the circuit's `unknowns` unknowns and on
+    /// each stored entry of its matrix among threads, in Newton iteration and in a
+    /// transient's step control, as [`Inside`] does: once the circuit has at least
+    /// [`Parallelism::min_unknowns_inside`] unknowns and the run may use two threads or
+    /// more; none, to do it all on the run's thread. The bits found are the same either
+    /// way.
     #[must_use]
     pub(crate) fn inside(&self, unknowns: usize) -> Option<Inside> {
         let least = self.min_unknowns_inside?;
-        let threads = self.usable();
-        (threads >= 2 && unknowns >= least.max(1)).then_some(Inside { threads })
+        (self.usable() >= 2 && unknowns >= least.max(1)).then_some(Inside)
     }
 
     /// `each` of every one of `items`, in their order, spread over [`Parallelism::tasks`]
@@ -223,19 +221,12 @@ impl Parallelism {
     }
 }
 
-/// How a run's Newton iteration splits its work on each unknown and each stored entry:
-/// among `threads` threads, each taking a chunk of them.
+/// That a run spreads its work on each unknown and each stored entry over the threads of
+/// its pool: in chunks of [`jolty_numerics::reduce::CHUNK`] of them, whatever the number of
+/// threads, which rayon splits among the threads as they take them, so that a fast thread
+/// takes more chunks than a slow one; a sum adds the chunks' totals in their order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Inside {
-    pub(crate) threads: usize,
-}
-
-impl Inside {
-    /// The chunk of `count` values a thread takes.
-    pub(crate) fn chunk(self, count: usize) -> usize {
-        count.div_ceil(self.threads).max(1)
-    }
-}
+pub(crate) struct Inside;
 
 /// The numerical settings of a simulation: tolerances and iteration limits, and what its
 /// results record.

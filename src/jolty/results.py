@@ -668,7 +668,7 @@ class Profile:
     """Evaluating the devices."""
     assembling: float
     """Turning what the devices contributed into each Newton iteration's matrix and
-    right-hand side."""
+    right-hand side, and judging its residuals against their tolerances."""
     factoring: float
     """Factoring matrices."""
     solving: float
@@ -679,7 +679,8 @@ class Profile:
     recording: float
     """Reading the recorded devices at each point kept."""
     other: float
-    """Everything else, such as Newton iteration's tests of convergence."""
+    """Everything else, such as Newton iteration's updates and the tests of their
+    steps."""
 
     @property
     def total(self) -> float:

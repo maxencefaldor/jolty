@@ -1142,7 +1142,7 @@ fn a_warm_chain_through_a_kernels_numbers_evaluates_each_runs() {
 
 /// The ways the runs below spread their own work: devices evaluated in tasks of 1, 3 and
 /// 64 instances, the work of Newton iteration and step control on each unknown and each
-/// stored entry split in a chunk per thread, and both at once.
+/// stored entry split in chunks of 1,024, and both at once.
 const SPREADS: [(Option<usize>, Option<usize>); 5] = [
     (Some(1), None),
     (Some(3), None),

@@ -39,45 +39,75 @@ fn step_error((value, step): (f64, f64), quantity: Quantity, options: &Options) 
 }
 
 /// Does `each` for every chunk of `values` and the index of its first value: for one chunk
-/// of them all on the calling thread without `inside`, and else for a chunk per thread
-/// `inside` gives, on the threads of the current rayon pool.
+/// of them all on the calling thread without `inside`, and else for each chunk of
+/// [`reduce::CHUNK`] values, on the threads of the current rayon pool as they take them.
 pub(crate) fn each_chunk<T: Send>(
     values: &mut [T],
     inside: Option<Inside>,
     each: impl Fn(usize, &mut [T]) + Sync,
 ) {
-    let Some(inside) = inside else {
+    if inside.is_none() {
         each(0, values);
         return;
-    };
-    let size = inside.chunk(values.len());
+    }
     values
-        .par_chunks_mut(size)
+        .par_chunks_mut(reduce::CHUNK)
         .enumerate()
-        .for_each(|(index, chunk)| each(index * size, chunk));
+        .for_each(|(index, chunk)| each(index * reduce::CHUNK, chunk));
 }
 
-/// Does `each` for every chunk of the pair of `values`, of one length, and the index of its
-/// first value, as [`each_chunk`] does for one.
-fn each_chunk_pair(
-    (first, second): (&mut [f64], &mut [f64]),
+/// Does `each` for every chunk of the `N` `planes`, of one length, and the index of their
+/// first value, as [`each_chunk`] does for one, and returns whether it returned `true` of
+/// every chunk, each chunk done whatever the others return.
+fn each_chunk_of<const N: usize>(
+    planes: [&mut [f64]; N],
     inside: Option<Inside>,
-    each: impl Fn(usize, (&mut [f64], &mut [f64])) + Sync,
-) {
-    let Some(inside) = inside else {
-        each(0, (first, second));
-        return;
-    };
-    let size = inside.chunk(first.len());
-    first
-        .par_chunks_mut(size)
-        .zip(second.par_chunks_mut(size))
-        .enumerate()
-        .for_each(|(index, chunk)| each(index * size, chunk));
+    each: impl Fn(usize, [&mut [f64]; N]) -> bool + Sync,
+) -> bool {
+    if inside.is_none() {
+        return each(0, planes);
+    }
+    let whole = Planes { first: 0, planes };
+    rayon::iter::split(whole, Planes::halve)
+        .map(|part| each(part.first, part.planes))
+        .reduce(|| true, |one, other| one && other)
+}
+
+/// Consecutive values of `N` planes, from the index `first` on.
+struct Planes<'a, const N: usize> {
+    first: usize,
+    planes: [&'a mut [f64]; N],
+}
+
+impl<const N: usize> Planes<'_, N> {
+    /// The values split in two at a multiple of [`reduce::CHUNK`] values from the first, or
+    /// whole with `None` when they fill one chunk or less.
+    fn halve(self) -> (Self, Option<Self>) {
+        let count = self.planes.first().map_or(0, |plane| plane.len());
+        let chunks = count.div_ceil(reduce::CHUNK);
+        if chunks < 2 {
+            return (self, None);
+        }
+        let at = chunks / 2 * reduce::CHUNK;
+        let Self { first, mut planes } = self;
+        let later = planes.each_mut().map(|plane| {
+            let (head, tail) = std::mem::take(plane).split_at_mut(at);
+            *plane = head;
+            tail
+        });
+        (
+            Self { first, planes },
+            Some(Self {
+                first: first + at,
+                planes: later,
+            }),
+        )
+    }
 }
 
 /// Whether `holds` holds of every index below `count`, asked on the calling thread without
-/// `inside`, and else on the threads of the current rayon pool: the same answer either way.
+/// `inside`, and else in chunks of [`reduce::CHUNK`] indices on the threads of the current
+/// rayon pool: the same answer either way.
 pub(crate) fn all(
     count: usize,
     inside: Option<Inside>,
@@ -85,9 +115,9 @@ pub(crate) fn all(
 ) -> bool {
     match inside {
         None => (0..count).all(holds),
-        Some(inside) => (0..count)
+        Some(_) => (0..count)
             .into_par_iter()
-            .with_min_len(inside.chunk(count))
+            .with_min_len(reduce::CHUNK)
             .all(holds),
     }
 }
@@ -313,34 +343,12 @@ impl Simulator {
         for iteration in 0..limit {
             let limiting = iteration > 0 || !afresh;
             let limited = self.evaluate(x, time, (source_scale, options.gmin), limiting);
-            self.combine(x, mode, inside);
-            if stepped_within_tolerance
-                && !limited
-                && self.residual_within_tolerance(options, inside)
-            {
+            // The residuals are judged only once the last step was within tolerance and no
+            // device limited its voltage.
+            let judged = (stepped_within_tolerance && !limited).then_some(options);
+            if self.combine(x, mode, judged, inside) {
                 return Ok(iteration);
             }
-            // A residual within the rounding of the unknowns its equation reads is noise: the
-            // step it would drive is one the unknowns cannot record, and chasing it moves
-            // the others without end, as a source's current beside a node at megavolts.
-            let previous = self.state.workspace.meter.enter(Activity::Assembling);
-            let Workspace {
-                contributions,
-                resolution,
-                step,
-                ..
-            } = &mut self.state.workspace;
-            let (residual, resolution) = (&contributions.residual, &*resolution);
-            each_chunk(step, inside, |start, chunk| {
-                for (offset, step) in chunk.iter_mut().enumerate() {
-                    let index = start + offset;
-                    *step = if residual[index].abs() <= rounding(resolution[index]) {
-                        0.0
-                    } else {
-                        -residual[index]
-                    };
-                }
-            });
             // The solver keeps the factors of a Jacobian bitwise unchanged since the last, as
             // a linear circuit's is from one iteration to the next, and refactors a changed
             // one with the last pivots.
@@ -351,7 +359,7 @@ impl Simulator {
                 ..
             } = &mut self.state.workspace;
             meter.iterate();
-            meter.enter(Activity::Factoring);
+            let previous = meter.enter(Activity::Factoring);
             let solved = self.state.solver.factor(jacobian).and_then(|mut factors| {
                 meter.enter(Activity::Solving);
                 factors.solve(step)
@@ -361,13 +369,7 @@ impl Simulator {
             if let Mode::Dc { deflated, .. } = mode {
                 self.deflate(x, deflated, inside);
             }
-            let step = &self.state.workspace.step;
-            each_chunk(x, inside, |start, chunk| {
-                for (value, step) in chunk.iter_mut().zip(&step[start..]) {
-                    *value += step;
-                }
-            });
-            stepped_within_tolerance = self.step_within_tolerance(x, options, inside);
+            stepped_within_tolerance = self.take_step(x, options, inside);
         }
         Err(Failure::Diverged)
     }
@@ -407,17 +409,30 @@ impl Simulator {
     }
 
     /// Turns the evaluated device contributions into the residual and Jacobian of `mode`,
-    /// its work split as `inside` says.
-    fn combine(&mut self, x: &[f64], mode: Mode<'_>, inside: Option<Inside>) {
+    /// and the residual into the right-hand side of the Newton step, its work split as
+    /// `inside` says. Returns whether every residual is within tolerance of the terms it
+    /// sums, or within the rounding of the unknowns it depends on, when `judged` gives the
+    /// options to judge them by, and else `false`: a node's residual is a current, a
+    /// branch's a voltage.
+    ///
+    /// The matrix is found first, then each row's residual, the resolution `|J|·|x|` of its
+    /// equation, its judgement and its right-hand side, in one pass over the rows.
+    fn combine(
+        &mut self,
+        x: &[f64],
+        mode: Mode<'_>,
+        judged: Option<&Options>,
+        inside: Option<Inside>,
+    ) -> bool {
         let Workspace {
             contributions,
             jacobian,
             resolution,
+            step,
             meter,
-            ..
         } = &mut self.state.workspace;
         let previous = meter.enter(Activity::Assembling);
-        match mode {
+        let reactive = match mode {
             Mode::Dc { shunt, anchor, .. } => {
                 let conductance = &contributions.conductance;
                 each_chunk(jacobian, inside, |start, chunk| {
@@ -434,63 +449,83 @@ impl Simulator {
                         *scale = scale.max(current.abs());
                     }
                 }
+                None
             }
             Mode::Step { alpha, history, .. } => {
                 step_matrix(jacobian, contributions, alpha, inside);
-                let Contributions {
-                    residual,
-                    scale,
-                    charge,
-                    ..
-                } = contributions;
-                each_chunk_pair((residual, scale), inside, |start, (residual, scale)| {
-                    let terms = charge[start..].iter().zip(&history[start..]);
-                    let rows = residual.iter_mut().zip(scale.iter_mut());
-                    for ((residual, scale), (&charge, &term)) in rows.zip(terms) {
-                        let reactive = alpha * charge + term;
+                Some((alpha, history))
+            }
+        };
+        let Contributions {
+            residual,
+            scale,
+            charge,
+            ..
+        } = contributions;
+        let (pattern, jacobian, unknowns) = (
+            &self.elaborated.pattern,
+            &*jacobian,
+            &self.elaborated.unknowns,
+        );
+        let charge = &*charge;
+        let within = each_chunk_of(
+            [residual, scale, resolution, step],
+            inside,
+            |start, [residual, scale, resolution, step]| {
+                let mut within = true;
+                let rows = residual.iter_mut().zip(scale.iter_mut());
+                let rows = rows.zip(resolution.iter_mut().zip(step.iter_mut()));
+                for (offset, ((residual, scale), (resolution, step))) in rows.enumerate() {
+                    let index = start + offset;
+                    if let Some((alpha, history)) = reactive {
+                        let reactive = alpha * charge[index] + history[index];
                         *residual += reactive;
                         *scale = scale.max(reactive.abs());
                     }
-                });
-            }
-        }
-        // Each row's terms add in the order of their columns, as the pattern stores them.
-        let (pattern, jacobian) = (&self.elaborated.pattern, &*jacobian);
-        each_chunk(resolution, inside, |start, chunk| {
-            for (offset, resolution) in chunk.iter_mut().enumerate() {
-                let row = pattern.row(start + offset);
-                *resolution = row.iter().fold(0.0, |total, &(slot, column)| {
-                    total + (jacobian[slot] * x[column]).abs()
-                });
-            }
-        });
+                    // Each row's terms add in the order of their columns, as the pattern
+                    // stores them.
+                    *resolution = pattern
+                        .row(index)
+                        .iter()
+                        .fold(0.0, |total, &(slot, column)| {
+                            total + (jacobian[slot] * x[column]).abs()
+                        });
+                    let rounding = rounding(*resolution);
+                    if let Some(options) = judged {
+                        let absolute = options.equation_tolerance(unknowns[index].quantity);
+                        within &= residual.abs()
+                            <= options.relative_tolerance * *scale + absolute + rounding;
+                    }
+                    // A residual within the rounding of the unknowns its equation reads is
+                    // noise: the step it would drive is one the unknowns cannot record, and
+                    // chasing it moves the others without end, as a source's current beside
+                    // a node at megavolts.
+                    *step = if residual.abs() <= rounding {
+                        0.0
+                    } else {
+                        -*residual
+                    };
+                }
+                within
+            },
+        );
         meter.leave(previous);
+        judged.is_some() && within
     }
 
-    /// Whether the last step was within tolerance of every unknown it moved.
-    fn step_within_tolerance(&self, x: &[f64], options: &Options, inside: Option<Inside>) -> bool {
+    /// Moves `x` by the step solved, and returns whether the step was within tolerance of
+    /// every unknown it moved, in one pass over the unknowns split as `inside` says.
+    fn take_step(&self, x: &mut [f64], options: &Options, inside: Option<Inside>) -> bool {
         let (step, unknowns) = (&self.state.workspace.step, &self.elaborated.unknowns);
-        all(x.len(), inside, |index| {
-            step_error((x[index], step[index]), unknowns[index].quantity, options) <= 1.0
-        })
-    }
-
-    /// Whether every residual is within tolerance of the terms it sums, or within the
-    /// rounding of the unknowns it depends on. A node's residual is a current; a branch's is a
-    /// voltage.
-    fn residual_within_tolerance(&self, options: &Options, inside: Option<Inside>) -> bool {
-        let Workspace {
-            contributions,
-            resolution,
-            ..
-        } = &self.state.workspace;
-        let unknowns = &self.elaborated.unknowns;
-        all(unknowns.len(), inside, |index| {
-            let absolute = options.equation_tolerance(unknowns[index].quantity);
-            contributions.residual[index].abs()
-                <= options.relative_tolerance * contributions.scale[index]
-                    + absolute
-                    + rounding(resolution[index])
+        each_chunk_of([x], inside, |start, [chunk]| {
+            let mut within = true;
+            for (offset, value) in chunk.iter_mut().enumerate() {
+                let index = start + offset;
+                *value += step[index];
+                let error = step_error((*value, step[index]), unknowns[index].quantity, options);
+                within &= error <= 1.0;
+            }
+            within
         })
     }
 

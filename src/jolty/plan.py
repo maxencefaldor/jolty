@@ -355,8 +355,8 @@ class Parallelism:
     run's small-signal analyses and the right-hand sides of its sensitivities, in tasks
     of at least `min_solves_per_task` each; its device instances, in tasks of
     `min_instances_per_task`; the work of its Newton iteration and its transient's
-    step control on each unknown, once the circuit has `min_unknowns_inside` unknowns;
-    and the factorization of its
+    step control on each unknown, once the circuit has `min_unknowns_inside` unknowns,
+    in chunks of 1,024 its threads take as they free; and the factorization of its
     matrix, each block of more than `max_unknowns_per_interior` unknowns ordered by
     nested dissection into interiors of at most as many and the separators between
     them. Spreading work costs the time of waking threads, which a small run's work
