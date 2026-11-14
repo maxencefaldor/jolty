@@ -226,12 +226,22 @@ def _stopped_short(circuit: ir.Circuit, step: float) -> str:
     may leap past it, or stop, whatever the step. With 10 fF from every net to the
     ground, as real nets have, the solution continues, and jolty must finish wherever
     ngspice does, at the same step.
+
+    jolty runs first, on steps of its own: when it finishes, so does the solution,
+    whatever ngspice does. Only when it stops short too is ngspice asked, which on
+    such circuits can crawl for minutes at these tolerances.
     """
+    charged = Simulation(parasitic(circuit))
     try:
-        _transients(Simulation(parasitic(circuit)), step)
-    except SimulationError as error:
-        message = f"jolty stopped short where ngspice finished: {error}"
-        raise AssertionError(message) from None
+        charged.run(Transient(stop=STOP * s, max_step=step * s), TIGHT)
+    except SimulationError:
+        try:
+            found = _transients(charged, step)
+        except SimulationError as error:
+            message = f"jolty stopped short where ngspice finished: {error}"
+            raise AssertionError(message) from None
+        if found is None:
+            return "neither engine finishes, without capacitance or with it"
     return "no solution continues without capacitance"
 
 
