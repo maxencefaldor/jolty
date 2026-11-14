@@ -14,10 +14,11 @@ from jolty import (
     circuit,
     component,
     devices,
+    files,
     ir,
 )
 from jolty.plan import MonteCarlo, OperatingPoint, WorstCase
-from jolty.runner import Built, Job, run
+from jolty.runner import BATCHES, MONTE_CARLO, Built, Job, run
 from jolty.specs import Specs, value
 from jolty.units import A, V, kohm, nF
 from jolty.variation import Varied, extreme, moved, sample, toleranced
@@ -442,3 +443,97 @@ def test_a_worst_case_moves_a_step_of_its_tolerance() -> None:
         "R1": {"resistance": pytest.approx(900.0)},
         "R2": {"resistance": pytest.approx(1e3 * 1.01 / 2)},
     }
+
+
+GRIDDED = """
+from jolty import Builder, Corner, OperatingPoint, Plan, Role, Specs, component, devices
+from jolty.plan import Axis, Grid
+from jolty.specs import value
+from jolty.units import K, V, celsius, kohm
+
+
+@component
+def divider(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(5 * V), id="V1")
+    heated = devices.resistor(1 * kohm, temperature_coefficient=1e-3 / K)
+    upper = c.place(heated, id="R1")
+    lower = c.place(devices.resistor(1 * kohm), id="R2")
+    c.connect(source.positive, upper.a)
+    c.connect(upper.b, lower.a, name="out")
+    c.connect(lower.b, source.negative, ground)
+
+
+def build():
+    return divider()
+
+
+def plan():
+    resistances = [0.8 * kohm, 0.9 * kohm, 1 * kohm, 1.1 * kohm, 1.2 * kohm]
+    return Plan(
+        {"op": OperatingPoint()},
+        corners={"hot": Corner(temperature=celsius(127))},
+        variants=Grid([Axis("R2", "resistance", resistances)]),
+    )
+
+
+def specs():
+    return Specs([value("op", "out") >= 2.3 * V], yield_target=0.5)
+"""
+
+
+def test_a_plans_variants_run_at_its_conditions_and_every_corner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "divider.py"
+    script.write_text(GRIDDED, encoding="utf-8")
+    outcome = run(Job(script=script, plan=script, listed=10), tmp_path)
+    assert isinstance(outcome, Built), str(outcome)
+    report = outcome.variants
+    assert report is not None
+    assert (report.runs, report.parameters, report.corners) == (
+        5,
+        ("R2 resistance",),
+        ("hot",),
+    )
+    assert report.failed == 0
+    (spread,) = report.spreads
+    # At 127 °C, 100 K above 27 °C, R1 is 1.1 kΩ, which lowers every run's output: the
+    # worst of each run's two, within the rounding of a linear divider's solution.
+    lower = [800.0, 900.0, 1000.0, 1100.0, 1200.0]
+    hot = [5 * each / (1100 + each) for each in lower]
+    assert spread.values is not None
+    assert spread.values.minimum == pytest.approx(min(hot), rel=1e-14)
+    assert spread.values.maximum == pytest.approx(max(hot), rel=1e-14)
+    assert spread.passing == sum(each >= 2.3 for each in hot)
+    assert report.passing is not None
+    assert report.passing.passing == spread.passing
+    assert report.describe().startswith(
+        "variants: 5 runs of R2 resistance, at hot; 0 failed\n"
+    )
+
+
+def test_the_runner_saves_its_batches_tracing_what_their_plots_draw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "divider.py"
+    script.write_text(DIVIDER.replace("SAMPLES", "20"), encoding="utf-8")
+    outcome = run(Job(script=script, plan=script, listed=10, plot=True), tmp_path)
+    assert isinstance(outcome, Built), str(outcome)
+    ((name, batch),) = files.load_batches(tmp_path / BATCHES).items()
+    assert name == MONTE_CARLO
+    assert batch.requirements == ("out in op ≥ 2.493 V and ≤ 2.507 V",)
+    assert batch.bounds == ((2.5 - 7.5e-3, 2.5 + 7.5e-3),)
+    found = batch.result
+    assert found.runs == 20
+    (traced,) = found.traced
+    # The top component names one net, which a plot draws by default.
+    assert [unknown.name for unknown in traced.unknowns] == ["out"]
+    assert (traced.values[:, 0, 0] == found.measured[:, 0]).all()
+    # Without plots, a batch traces nothing.
+    unplotted = tmp_path / "unplotted"
+    unplotted.mkdir()
+    run(Job(script=script, plan=script, listed=10), unplotted)
+    assert files.load_batches(unplotted / BATCHES)[MONTE_CARLO].result.traced == ()

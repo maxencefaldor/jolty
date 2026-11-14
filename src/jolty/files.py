@@ -1,7 +1,10 @@
 # Copyright 2026 Maxence Faldor
 """Circuit and results files.
 
-A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A results file holds the
+A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A batch file holds a
+plan's batches of runs, each a [`Batch`][jolty.files.Batch]: the arrays of its
+[`BatchResult`][jolty.results.BatchResult] under keys such as ``monte-carlo.measured``,
+and a JSON header of the rest. A results file holds the
 results of named analyses as a NumPy ``.npz`` archive: a JSON header that names the
 circuit's unknowns and logic nets, says what the analyses recorded of its devices, each
 recording once however many analyses share it, and says what each analysis is, then
@@ -25,6 +28,8 @@ Examples:
 """
 
 from collections.abc import Mapping
+from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Annotated, Final, Literal
 
@@ -33,12 +38,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from jolty import ir, results
 from jolty.errors import JoltyError
+from jolty.units import Dimension
 
 CIRCUIT_SUFFIX: Final = ".jolty.json"
 """The suffix of circuit files, such as ``rc_filter.jolty.json``."""
 
 RESULTS_SUFFIX: Final = ".results.npz"
 """The suffix of results files, such as ``rc_filter.results.npz``."""
+
+BATCHES_SUFFIX: Final = ".batches.npz"
+"""The suffix of batch files, such as ``rc_filter.batches.npz``."""
 
 _HEADER: Final = "header"
 
@@ -214,6 +223,17 @@ def circuit_path(script: Path) -> Path:
 def results_path(script: Path) -> Path:
     """Where a script's results are saved by default: as ``<stem>.results.npz``."""
     return script.with_name(script.stem + RESULTS_SUFFIX)
+
+
+def batches_path(results: Path) -> Path:
+    """Where the batches go beside their plan's results: ``<stem>.batches.npz``.
+
+    Examples:
+        >>> batches_path(Path("rc.results.npz")).name
+        'rc.batches.npz'
+    """
+    stem = results.name.removesuffix(RESULTS_SUFFIX).removesuffix(".npz")
+    return results.with_name(stem + BATCHES_SUFFIX)
 
 
 def plot_path(results: Path, analysis: str) -> Path:
@@ -714,3 +734,163 @@ def _traces(data: Mapping[str, np.ndarray], name: str) -> tuple[results.Trace, .
     return tuple(
         results.Trace(times[index], levels[index]) for index in range(len(counts))
     )
+
+
+@dataclass(frozen=True, slots=True)
+class Batch:
+    """A batch of runs as a batch file holds it, with the requirements it measured.
+
+    Each of its measurements is a requirement's, which `requirements` states in words,
+    bounded by the `bounds` of each, its least and its most value, in SI base units,
+    None for a bound it does not state.
+    """
+
+    result: results.BatchResult
+    requirements: tuple[str, ...]
+    bounds: tuple[tuple[float | None, float | None], ...]
+
+
+class _Traced(_Model):
+    analysis: str
+    along: Literal["point", "level", "frequency", "time"]
+    unknowns: tuple[results.Unknown, ...]
+    source: str | None = None
+    quantity: results.Quantity | None = None
+    parameter: str | None = None
+
+
+type _Unit = tuple[str, str, str, str, str] | results.Plain | None
+"""A measurement's unit: a dimension's exponents of the base units, as fractions, a
+plain unit, or none."""
+
+
+def _unit(unit: Dimension | results.Plain | None) -> _Unit:
+    """`unit` as a batch file's header holds it."""
+    if isinstance(unit, Dimension):
+        kilogram, metre, second, ampere, kelvin = (
+            str(Fraction(exponent))
+            for exponent in (
+                unit.kilogram,
+                unit.metre,
+                unit.second,
+                unit.ampere,
+                unit.kelvin,
+            )
+        )
+        return kilogram, metre, second, ampere, kelvin
+    return unit
+
+
+def _dimension(unit: _Unit) -> Dimension | results.Plain | None:
+    """The unit a batch file's header holds as `unit`."""
+    if isinstance(unit, tuple):
+        exponents = [Fraction(exponent) for exponent in unit]
+        return Dimension(
+            *(
+                int(exponent) if exponent.denominator == 1 else exponent
+                for exponent in exponents
+            )
+        )
+    return unit
+
+
+class _Batch(_Model):
+    analyses: tuple[str, ...]
+    parameters: tuple[str, ...]
+    measurements: tuple[str, ...]
+    units: tuple[_Unit, ...]
+    reasons: tuple[str, ...]
+    problems: dict[int, tuple[str, ...]]
+    errors: dict[int, dict[str, str]]
+    traced: tuple[_Traced, ...]
+    requirements: tuple[str, ...]
+    bounds: tuple[tuple[float | None, float | None], ...]
+
+
+class _Batches(_Model):
+    format: Literal["jolty-batches"] = "jolty-batches"
+    version: Literal[1] = 1
+    batches: dict[str, _Batch]
+
+
+def save_batches(path: Path, batches: Mapping[str, Batch]) -> None:
+    """Writes `batches`, by name, to `path`."""
+    arrays: dict[str, np.ndarray] = {}
+    entries = {}
+    for name, batch in batches.items():
+        found = batch.result
+        for key in ("values", "ended", "measured", "causes"):
+            arrays[f"{name}.{key}"] = getattr(found, key)
+        for index, traced in enumerate(found.traced):
+            arrays[f"{name}.traced.{index}"] = traced.values
+            arrays[f"{name}.axis.{index}"] = traced.axis
+        entries[name] = _Batch(
+            analyses=found.analyses,
+            parameters=found.parameters,
+            measurements=found.measurements,
+            units=tuple(_unit(unit) for unit in found.units),
+            reasons=found.reasons,
+            problems=found.problems,
+            errors=found.errors,
+            traced=tuple(
+                _Traced(
+                    analysis=traced.analysis,
+                    along=traced.along,
+                    unknowns=traced.unknowns,
+                    source=traced.source,
+                    quantity=traced.quantity,
+                    parameter=traced.parameter,
+                )
+                for traced in found.traced
+            ),
+            requirements=batch.requirements,
+            bounds=batch.bounds,
+        )
+    arrays[_HEADER] = np.array(_Batches(batches=entries).model_dump_json())
+    with path.open("wb") as file:
+        np.savez(file, allow_pickle=False, **arrays)
+
+
+def load_batches(path: Path) -> dict[str, Batch]:
+    """Reads the batch file at `path`: each batch, by name.
+
+    Raises:
+        JoltyError: When the file is not a jolty batch file of this version.
+    """
+    with np.load(path, allow_pickle=False) as data:
+        try:
+            header = _Batches.model_validate_json(str(data[_HEADER]))
+        except KeyError, ValidationError:
+            message = f"{path} is not a jolty batch file of version 1"
+            raise JoltyError(message) from None
+        found = {}
+        for name, entry in header.batches.items():
+            traced = tuple(
+                results.Traced(
+                    each.analysis,
+                    each.along,
+                    data[f"{name}.axis.{index}"],
+                    each.unknowns,
+                    data[f"{name}.traced.{index}"],
+                    each.source,
+                    each.quantity,
+                    each.parameter,
+                )
+                for index, each in enumerate(entry.traced)
+            )
+            result = results.BatchResult(
+                entry.analyses,
+                entry.parameters,
+                data[f"{name}.values"],
+                data[f"{name}.ended"],
+                entry.measurements,
+                tuple(_dimension(unit) for unit in entry.units),
+                data[f"{name}.measured"],
+                data[f"{name}.causes"],
+                entry.reasons,
+                {int(index): tuple(each) for index, each in entry.problems.items()},
+                {int(index): dict(each) for index, each in entry.errors.items()},
+                traced,
+            )
+            found[name] = Batch(result, entry.requirements, entry.bounds)
+        return found

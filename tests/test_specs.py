@@ -1,10 +1,13 @@
 # Copyright 2026 Maxence Faldor
 
 import math
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from jolty import results
 from jolty.runner import Built, Failure, Job, run
@@ -27,6 +30,7 @@ from jolty.specs import (
     gain,
     gain_margin,
     integrated_noise,
+    judge,
     maximum,
     minimum,
     noise_density,
@@ -38,8 +42,12 @@ from jolty.specs import (
     rms,
     settling_time,
     solutions,
+    spread,
+    spread_of,
     value,
+    worst,
 )
+from jolty.specs import judged as judged_requirement
 from jolty.units import (
     CURRENT,
     FREQUENCY,
@@ -656,3 +664,111 @@ def test_solutions_count_a_searchs_dc_solutions() -> None:
     assert unread(value("states", "out") >= 0 * V, found) == (
         "a value reads an operating point, a transient or a DC sweep, not DC solutions"
     )
+
+
+type Readings = list[list[list[float | None]]]
+"""What each requirement read on each run, by condition then by requirement."""
+
+
+@st.composite
+def judged_runs(draw: st.DrawFn) -> tuple[Specs, list[bool], Readings]:
+    """Specs, and what each of their requirements read on each run at each condition.
+
+    Each reading is a number, possibly not finite, or None where the analysis failed;
+    a condition whose circuit does not elaborate, as `elaborates` says, reads none. A
+    bound in amperes is not in the reading's unit, which leaves it unmeasured.
+    """
+    numbers = st.floats(-3.0, 3.0, allow_nan=False)
+    requirements = []
+    for _ in range(draw(st.integers(1, 3))):
+        low, high = sorted((draw(numbers), draw(numbers)))
+        bounds = draw(st.sampled_from(["minimum", "maximum", "both"]))
+        unit = draw(st.sampled_from([V, V, A]))
+        measured = value("op", "out")
+        requirement = {
+            "minimum": measured >= low * unit,
+            "maximum": measured <= high * unit,
+            "both": measured.between(low * unit, high * unit),
+        }[bounds]
+        if draw(st.booleans()):
+            requirement = requirement.with_margin(draw(st.floats(0, 1)) * unit)
+        requirements.append(requirement)
+    runs = draw(st.integers(1, 12))
+    conditions = draw(st.integers(1, 3))
+    elaborates = [
+        draw(st.booleans()) or condition == 0 for condition in range(conditions)
+    ]
+    reading = st.one_of(
+        st.none(),
+        st.sampled_from([math.nan, math.inf, -math.inf]),
+        numbers,
+        st.sampled_from([-1.0, 0.0, 1.0, -0.0]),
+    )
+    readings = [
+        [[draw(reading) for _ in range(runs)] for _ in requirements]
+        for _ in range(conditions)
+    ]
+    return Specs(requirements), elaborates, readings
+
+
+def _batch(readings: Sequence[Sequence[float | None]]) -> results.BatchResult:
+    """A batch of a measurement per requirement that read `readings`, by requirement."""
+    measured = np.array(
+        [[math.nan if read is None else read for read in each] for each in readings]
+    ).T
+    causes = np.array(
+        [[0 if read is None else -1 for read in each] for each in readings],
+        dtype=np.int32,
+    ).T
+    width = len(readings)
+    ended = np.array([[True] for _ in range(measured.shape[0])])
+    return results.BatchResult(
+        ("op",),
+        (),
+        np.empty((measured.shape[0], 0)),
+        ended,
+        ("out in op",) * width,
+        (VOLTAGE,) * width,
+        measured,
+        causes,
+        ("the analysis op failed",),
+    )
+
+
+@given(judged_runs())
+@settings(max_examples=300, deadline=None)
+def test_verdicts_on_a_batch_are_those_on_each_run(
+    drawn: tuple[Specs, list[bool], Readings],
+) -> None:
+    """The spreads and the yield of a batch's columns are those of its runs' verdicts.
+
+    Each run's verdict on a requirement is its worst over the conditions, as `evaluate`
+    judges a Monte Carlo sample, and the columns' are the same numbers, bit for bit.
+    """
+    specs, elaborates, readings = drawn
+    runs = len(readings[0][0])
+    batches = [
+        _batch(readings[condition]) if elaborates[condition] else None
+        for condition in range(len(readings))
+    ]
+    judged = [
+        worst(
+            [
+                judged_requirement(requirement, ["op"], batch, place, runs)
+                for batch in batches
+            ]
+        )
+        for place, requirement in enumerate(specs.requirements)
+    ]
+    sampled = []
+    for index in range(runs):
+        verdicts = []
+        for place, requirement in enumerate(specs.requirements):
+            runs_of = []
+            for condition, elaborated in enumerate(elaborates):
+                read = readings[condition][place][index] if elaborated else None
+                found = {} if read is None else {"op": point(read)}
+                runs_of.append((None if condition == 0 else f"c{condition}", found))
+            verdicts.append(judge(requirement, ["op"], runs_of))
+        sampled.append(tuple(verdicts))
+    assert spread_of(specs, judged) == spread(specs, sampled)

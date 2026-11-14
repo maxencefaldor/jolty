@@ -2,7 +2,9 @@
 """Requirements, their verdicts, and their spread over Monte Carlo samples.
 
 What [`jolty.specs`][jolty.specs] describes: a measurement compared with a bound, the
-verdict on it at each of a plan's conditions, and the yield.
+verdict on it at each of a plan's conditions, and the yield. Over a batch's runs, the
+verdicts are [`Judged`][jolty.specs.Judged] as columns, one entry per run, each what the
+verdict on that run alone states.
 """
 
 import math
@@ -12,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from typing import Final, Literal, override
 
 import numpy as np
+import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict, Field
 
 from jolty import _core, ir, results
@@ -465,6 +468,159 @@ def _spread(requirement: Requirement, verdicts: Sequence[Verdict]) -> Spread:
 
 def _passes(verdict: Verdict) -> bool:
     return verdict.status in {"passed", "marginal"}
+
+
+@dataclass(frozen=True, slots=True)
+class Judged:
+    """A requirement's verdicts on many runs, as columns, one entry per run.
+
+    Each run's `severity` is its status's, 0 failed, 1 unmeasured, 2 marginal and 3
+    passed, with its `slack`, infinite where unmeasured, its `value`, not a number
+    where unmeasured, and, among `units`, the unit of the values of the conditions
+    each came from, by `origin`.
+    """
+
+    severity: npt.NDArray[np.int8]
+    slack: results.Real
+    value: results.Real
+    origin: npt.NDArray[np.intp]
+    units: tuple[str, ...]
+
+
+def judged(
+    requirement: Requirement,
+    planned: Collection[str],
+    batch: results.BatchResult | None,
+    place: int,
+    runs: int,
+) -> Judged:
+    """`requirement`'s verdict on each of `runs` runs of `batch`, as `evaluate` says.
+
+    `planned` names every analysis of the plan, and the measurement at `place` among
+    the batch's is the requirement's; with no batch, the circuit does not elaborate,
+    and no analysis ends on any run.
+    """
+    severity = np.full(runs, _SEVERITY["unmeasured"], dtype=np.int8)
+    slack = np.full(runs, math.inf)
+    value = np.full(runs, math.nan)
+    unit = ""
+    found = (
+        None
+        if batch is None or requirement.measurement.analysis not in planned
+        else place
+    )
+    if batch is not None and found is not None:
+        read = batch.measured[:, found]
+        finite = (batch.causes[:, found] < 0) & np.isfinite(read)
+        given = batch.units[found]
+        if given is not None and finite.any():
+            reading = Reading(0.0, given)
+            try:
+                requirement.judge(reading)
+            except DimensionError:
+                finite[:] = False
+            unit = "" if given == DIMENSIONLESS else str(given)
+            values = read[finite]
+            room = np.full(values.shape, math.inf)
+            if requirement.minimum is not None:
+                room = values - requirement.minimum.value
+            if requirement.maximum is not None:
+                other = requirement.maximum.value - values
+                room = np.where(other < room, other, room)
+            margin = 0.0 if requirement.margin is None else requirement.margin.value
+            severity[finite] = np.where(
+                room < 0,
+                _SEVERITY["failed"],
+                np.where(room < margin, _SEVERITY["marginal"], _SEVERITY["passed"]),
+            )
+            slack[finite] = room
+            value[finite] = values
+    return Judged(severity, slack, value, np.zeros(runs, dtype=np.intp), (unit,))
+
+
+def worst(conditions: Sequence[Judged]) -> Judged:
+    """The worst verdict on each run over `conditions`, as `judge` picks it.
+
+    The worst is failed, then unmeasured, then marginal, then passed, and the least
+    slack among equals, the first condition among those alike.
+
+    Raises:
+        ValueError: When there is no condition.
+    """
+    if not conditions:
+        message = "the worst verdict is of a condition or more"
+        raise ValueError(message)
+    first, *rest = conditions
+    severity, slack, value = (
+        first.severity.copy(),
+        first.slack.copy(),
+        first.value.copy(),
+    )
+    origin = np.zeros(severity.shape, dtype=np.intp)
+    for place, each in enumerate(rest, start=1):
+        worse = (each.severity < severity) | (
+            (each.severity == severity) & (each.slack < slack)
+        )
+        severity[worse] = each.severity[worse]
+        slack[worse] = each.slack[worse]
+        value[worse] = each.value[worse]
+        origin[worse] = place
+    units = tuple(
+        each.units[int(each.origin[0])] if each.units else "" for each in conditions
+    )
+    return Judged(severity, slack, value, origin, units)
+
+
+def spread_of(
+    specs: Specs, judged: Sequence[Judged]
+) -> tuple[tuple[Spread, ...], Yield]:
+    """Each requirement's spread, and the yield, as `spread` states them, of `judged`.
+
+    `judged` holds each requirement's verdicts on every sample, in the specs' order.
+    """
+    spreads = tuple(
+        _spread_of(requirement, each)
+        for requirement, each in zip(specs.requirements, judged, strict=True)
+    )
+    samples = int(judged[0].severity.shape[0]) if judged else 0
+    passing = (
+        int(
+            np.all(
+                [each.severity >= _SEVERITY["marginal"] for each in judged], axis=0
+            ).sum()
+        )
+        if judged
+        else samples
+    )
+    low, high = _wilson(passing, samples)
+    return spreads, Yield(
+        samples=samples,
+        passing=passing,
+        estimate=passing / samples,
+        low=low,
+        high=high,
+        target=specs.yield_target,
+    )
+
+
+def _spread_of(requirement: Requirement, judged: Judged) -> Spread:
+    measured = ~np.isnan(judged.value)
+    passing = int((judged.severity >= _SEVERITY["marginal"]).sum())
+    stated = Spread(
+        requirement=str(requirement), measured=int(measured.sum()), passing=passing
+    )
+    if not measured.any():
+        return stated
+    numbers = judged.value[measured]
+    first = int(np.argmax(measured))
+    values = Values(
+        unit=judged.units[int(judged.origin[first])],
+        minimum=float(numbers.min()),
+        maximum=float(numbers.max()),
+        mean=float(numbers.mean()),
+        deviation=float(numbers.std()),
+    )
+    return stated.model_copy(update={"values": values})
 
 
 _Z: Final = 1.959963984540054

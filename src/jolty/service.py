@@ -46,6 +46,7 @@ from jolty.report import (
     CornerReport,
     FailureReport,
     MonteCarloReport,
+    VariantsReport,
     WorstCaseReport,
 )
 from jolty.settings import Level, Settings
@@ -238,8 +239,9 @@ class SimulateRequest(_Model):
     the numerical options they share, among them the instances whose currents and
     small-signal models the saved results record beside the unknowns, a temperature,
     corners, other temperatures or arguments to build() at which the analyses run
-    again, and a Monte Carlo analysis that runs them on samples of the circuit's
-    tolerances. It may define specs(), which
+    again, a Monte Carlo analysis that runs them on samples of the circuit's
+    tolerances, and variants, the values of many runs of it. It may define specs(),
+    which
     returns jolty Specs: requirements on measurements of the analyses' results, each of
     which passes, is marginal, fails or goes unmeasured, at its worst corner, and a
     yield target for the Monte Carlo samples. It can be the build script itself.
@@ -298,8 +300,15 @@ class SimulateResult(CommandResult):
     monte_carlo: MonteCarloReport | None = Field(
         description="What the plan's Monte Carlo analysis found; null without one."
     )
+    variants: VariantsReport | None = Field(
+        description="What the runs of the plan's variants found; null without them."
+    )
     worst_case: WorstCaseReport | None = Field(
         description="What the plan's worst-case analysis found; null without one."
+    )
+    batches: Path | None = Field(
+        description="The saved batches of the plan's Monte Carlo analysis and "
+        "variants, at its own conditions; null without them."
     )
     specs: tuple[Verdict, ...] = Field(
         description="The verdict on each requirement of the plan's specs, in order; "
@@ -313,8 +322,9 @@ class SimulateResult(CommandResult):
         description="The top component's schematic; null when drawing is off."
     )
     plots: tuple[Plot, ...] = Field(
-        description="A plot per analysis but operating points and sensitivities; "
-        "empty when plotting is off or no analysis ran to its end."
+        description="A plot per analysis but operating points and sensitivities, "
+        "then a histogram of each batch's measurements and an envelope of each "
+        "analysis it traced; empty when plotting is off or nothing ran to its end."
     )
     output: ScriptOutput = Field(description="What the scripts printed.")
     seconds: float = Field(description="Seconds the command took.")
@@ -332,9 +342,9 @@ class SimulateResult(CommandResult):
 
         It meets its plan when every analysis ends, at the plan's own conditions and
         at every corner, every requirement passes, if only marginally, the Monte Carlo
-        analysis's yield reaches the specs' target, every requirement passes at its
-        worst-case extremes, and every model its fidelity chose agrees with its circuit
-        where a spot check looked.
+        analysis's yield and the variants' reach the specs' target, every requirement
+        passes at its worst-case extremes, and every model its fidelity chose agrees
+        with its circuit where a spot check looked.
         """
         checked = self.report is None or self.report.ok
         return (
@@ -344,10 +354,9 @@ class SimulateResult(CommandResult):
                 isinstance(analysis, FailureReport) for analysis in self.analyses
             )
             and all(corner.ok for corner in self.corners)
-            and (
-                self.monte_carlo is None
-                or self.monte_carlo.passing is None
-                or self.monte_carlo.passing.met
+            and all(
+                batch is None or batch.passing is None or batch.passing.met
+                for batch in (self.monte_carlo, self.variants)
             )
             and (self.worst_case is None or self.worst_case.ok)
             and all(verdict.status in {"passed", "marginal"} for verdict in self.specs)
@@ -364,10 +373,14 @@ class SimulateResult(CommandResult):
         ]
         if self.results is not None:
             blocks.append(f"saved {self.results}")
+        if self.batches is not None:
+            blocks.append(f"saved {self.batches}")
         blocks.extend(analysis.describe() for analysis in self.analyses)
         blocks.extend(corner.describe() for corner in self.corners)
         if self.monte_carlo is not None:
             blocks.append(self.monte_carlo.describe())
+        if self.variants is not None:
+            blocks.append(self.variants.describe())
         if self.worst_case is not None:
             blocks.append(self.worst_case.describe())
         if self.specs:
@@ -434,14 +447,18 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         listed=settings.listed_unknowns,
         check=request.check,
         record=request.record,
+        plot=request.plot,
+        probes=request.probes,
     )
     path = request.output or files.circuit_path(request.script)
     target = request.results or files.results_path(request.script)
-    built, output = await _run(job, settings, results=target)
+    batched = files.batches_path(target)
+    built, output = await _run(job, settings, results=target, batches=batched)
     circuit = await asyncio.to_thread(_save, built, path)
     report = _report(built, request, chosen, settings)
     saved = await asyncio.to_thread(target.is_file)
     loaded = await asyncio.to_thread(_load, target) if saved else {}
+    saved_batches = await asyncio.to_thread(batched.is_file)
     drawn = (
         await asyncio.to_thread(
             _draw,
@@ -458,6 +475,8 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         if request.plot
         else ()
     )
+    if request.plot and saved_batches:
+        plotted += await asyncio.to_thread(_plot_batches, target, batched)
     return SimulateResult(
         circuit=circuit,
         report=report,
@@ -465,7 +484,9 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         analyses=built.analyses,
         corners=built.corners,
         monte_carlo=built.monte_carlo,
+        variants=built.variants,
         worst_case=built.worst_case,
+        batches=batched if saved_batches else None,
         specs=built.specs,
         fidelity=built.fidelity,
         schematic=drawn,
@@ -578,6 +599,28 @@ def _plot(
         target = files.plot_path(path, name)
         plots.save(plots.plot(name, result, chosen), target)
         drawn.append(Plot(analysis=name, path=target))
+    return tuple(drawn)
+
+
+def _plot_batches(results_path: Path, path: Path) -> tuple[Plot, ...]:
+    """Plots each batch saved at `path` beside the results at `results_path`.
+
+    A batch draws a histogram of its measurements, if it has any, and an envelope of
+    each analysis it traced along points of an axis.
+    """
+    drawn = []
+    for name, batch in files.load_batches(path).items():
+        if batch.requirements:
+            target = files.plot_path(results_path, name)
+            plots.save(plots.histograms(name, batch), target)
+            drawn.append(Plot(analysis=name, path=target))
+        for traced in batch.result.traced:
+            if traced.along == "point":
+                continue
+            named = f"{name}.{traced.analysis}"
+            target = files.plot_path(results_path, named)
+            plots.save(plots.envelope(name, traced), target)
+            drawn.append(Plot(analysis=named, path=target))
     return tuple(drawn)
 
 
@@ -1076,9 +1119,15 @@ async def _existing(script: Path) -> Path:
 
 
 async def _run(
-    job: runner.Job, settings: Settings, *, results: Path | None
+    job: runner.Job,
+    settings: Settings,
+    *,
+    results: Path | None,
+    batches: Path | None = None,
 ) -> tuple[runner.Built, ScriptOutput]:
     """Runs `job` in a child process, and moves the results it writes to `results`.
+
+    The batches it writes go to `batches`, when given.
 
     Raises:
         JoltyError: When the job fails, runs out of time, or the child process ends
@@ -1102,6 +1151,8 @@ async def _run(
             case runner.Built() as built:
                 if results is not None:
                     await asyncio.to_thread(_move, directory / runner.RESULTS, results)
+                if batches is not None:
+                    await asyncio.to_thread(_move, directory / runner.BATCHES, batches)
                 return built, output
             case runner.Failure() as failure:
                 message = f"the script failed: {failure}"

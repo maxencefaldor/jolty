@@ -9,52 +9,64 @@ conditions then at each of its corners, building the circuit again with a corner
 arguments. Every run takes the models the plan's fidelity chooses, characterized once
 each, and spot checks run again with sampled instances at their circuit's fidelity. It
 evaluates the requirements its ``specs()`` returns, when it defines one, on every run,
-then on each sample of the plan's Monte Carlo analysis, which runs at the plan's own
-conditions and at each corner. It writes the
+then on each sample of the plan's Monte Carlo analysis and each run of its variants,
+which run at the plan's own conditions and at each corner. It writes the
 [`Outcome`][jolty.runner.Outcome], what was built or why it failed, to
-``DIRECTORY/outcome.json``, and the results of the analyses at the plan's
-own conditions to ``DIRECTORY/results.npz``.
+``DIRECTORY/outcome.json``, the results of the analyses at the plan's
+own conditions to ``DIRECTORY/results.npz``, and the plan's batches of runs, its Monte
+Carlo analysis's and its variants', at the plan's own conditions, to
+``DIRECTORY/batches.npz``.
+
+Every run but those of the plan's own conditions runs in a batch, one call to the
+engine for many runs of one circuit across its threads: the conditions whose circuits
+are one, the plan's own and those of the corners that change only the temperature,
+take their temperatures as the values of the batch's runs, and a corner whose arguments
+build the circuit again runs a batch of its own.
 
 Scripts and analyses therefore run outside the command line and the MCP server, whose
 standard output may be a protocol channel: what a script prints is captured, a timeout
 stops a script or an analysis that runs too long, and a crash ends only the runner.
 """
 
-import functools
-import itertools
+# jolty's modules load as the runner first uses them, so that a job that draws no batch
+# never imports matplotlib.
+__lazy_modules__ = ["jolty"]
+
 import json
-import os
 import runpy
 import sys
 import sysconfig
 import traceback
-from collections import deque
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Annotated, Final, Literal, override
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from jolty import checks, fidelity, files, ir, report, variation
+from jolty import checks, fidelity, files, ir, plots, report, variation
+from jolty import specs as specs_module
 from jolty.builder import Component, circuit
 from jolty.errors import ElaborationError, JoltyError, ScriptError, SimulationError
 from jolty.fidelity import FidelityReport
-from jolty.plan import Analysis, Corner, MonteCarlo, Plan, Recorded, WorstCase
-from jolty.results import Result
-from jolty.simulate import Simulation, kelvins
-from jolty.specs import (
-    Requirement,
-    Specs,
-    Verdict,
-    evaluate,
-    judge,
-    reading,
-    spread,
+from jolty.plan import (
+    Analysis,
+    Explicit,
+    MonteCarlo,
+    Plan,
+    Product,
+    Recorded,
+    Variant,
+    Variants,
+    WorstCase,
+    runs,
 )
+from jolty.results import BatchResult, Result, Run
+from jolty.simulate import Simulation, kelvins
+from jolty.specs import Requirement, Specs, Verdict, evaluate, judge, reading
+from jolty.units import TEMPERATURE, Quantity
 
 JOB: Final = "job.json"
 """The file in the job's directory that holds the job."""
@@ -64,6 +76,15 @@ OUTCOME: Final = "outcome.json"
 
 RESULTS: Final = "results.npz"
 """The file in the job's directory where the runner writes the analyses' results."""
+
+BATCHES: Final = "batches.npz"
+"""The file in the job's directory where the runner writes the plan's batches."""
+
+MONTE_CARLO: Final = "monte-carlo"
+"""The name of a plan's Monte Carlo analysis's batch, which no analysis's name is."""
+
+VARIANT_RUNS: Final = "variant-runs"
+"""The name of the batch of a plan's variants, which no analysis's name is."""
 
 _LIBRARIES: Final = tuple(
     {
@@ -96,6 +117,16 @@ class Job(BaseModel):
         default=None,
         description="The instances the results record, in the plan's place; null "
         "for the plan's own record.",
+    )
+    plot: bool = Field(
+        default=False,
+        description="Whether each batch traces the unknowns its plots draw, at the "
+        "plan's own conditions.",
+    )
+    probes: list[str] = Field(
+        default_factory=list,
+        description="The unknowns a batch traces for its plots; by default the nets "
+        "the top component names, as a plot draws them.",
     )
 
 
@@ -133,6 +164,10 @@ class Built(BaseModel):
     monte_carlo: report.MonteCarloReport | None = Field(
         default=None,
         description="What the plan's Monte Carlo analysis found; null without one.",
+    )
+    variants: report.VariantsReport | None = Field(
+        default=None,
+        description="What the runs of the plan's variants found; null without them.",
     )
     worst_case: report.WorstCaseReport | None = Field(
         default=None,
@@ -233,59 +268,76 @@ def _run(job: Job, directory: Path) -> Built:
     )
     if solved:
         files.save_results(directory / RESULTS, solved)
-    corners: list[report.CornerReport] = []
-    at_corners: dict[str, dict[str, Result]] = {}
-    chosen_at: dict[str, fidelity.Fidelity | None] = {}
-    for name, corner in plan.corners.items():
-        rebuilt = (
-            _built(job.script, namespaces, corner.arguments)
-            if corner.arguments
-            else built
-        )
-        found, at_corners[name], chosen_at[name] = _corner(
-            name, corner, rebuilt, plan, cache
-        )
-        corners.append(found)
+    conditions, corners = _corners(
+        job, namespaces, built, plan, cache, chosen=chosen, solved=solved
+    )
     specs = _specs(job.plan, namespaces)
+    at_corners = {
+        condition.corner: condition.solved
+        for condition in conditions
+        if condition.corner is not None
+    }
     verdicts = (
         () if specs is None else evaluate(specs, plan.analyses, solved, at_corners)
     )
     checked = _fidelity(chosen, plan, solved, specs)
-    monte_carlo = (
-        None
-        if plan.monte_carlo is None
-        else _monte_carlo(
-            chosen,
-            chosen_at,
-            plan,
-            plan.monte_carlo,
-            specs,
-            mismatched=len(simulation.foundry),
-        )
+    monte_carlo, variants = _batched(
+        job, directory, conditions, plan, specs, simulation=simulation
     )
     worst_case = (
         None
         if plan.worst_case is None
-        else _worst_case(
-            [(None, chosen, solved)]
-            + [(name, chosen_at[name], at_corners[name]) for name in chosen_at],
-            plan,
-            plan.worst_case,
-            specs,
-        )
+        else _worst_case(conditions, plan, plan.worst_case, specs)
     )
     return elaborated.model_copy(
         update={
             "diagnostics": elaborated.diagnostics + at_point,
             "analyses": reports,
-            "corners": tuple(corners),
+            "corners": corners,
             "monte_carlo": monte_carlo,
+            "variants": variants,
             "worst_case": worst_case,
             "specs": verdicts,
             "fidelity": checked
             and checked.model_copy(update={"outside": tuple(outside)}),
         }
     )
+
+
+def _batched(  # noqa: PLR0913 - the job, the plan, and where its batches run
+    job: Job,
+    directory: Path,
+    conditions: Sequence[_Condition],
+    plan: Plan,
+    specs: Specs | None,
+    *,
+    simulation: Simulation,
+) -> tuple[report.MonteCarloReport | None, report.VariantsReport | None]:
+    """What the plan's Monte Carlo analysis and its variants found, if it has them.
+
+    Their batches at the plan's own conditions, tracing the unknowns the job's plots
+    draw, which `simulation` runs, are written to `directory`.
+    """
+    traced = _traced(job, simulation)
+    batches: dict[str, files.Batch] = {}
+    monte_carlo = None
+    if plan.monte_carlo is not None:
+        monte_carlo, batches[MONTE_CARLO] = _monte_carlo(
+            conditions,
+            plan,
+            plan.monte_carlo,
+            specs,
+            mismatched=len(simulation.foundry),
+            traced=traced,
+        )
+    variants = None
+    if plan.variants is not None:
+        variants, batches[VARIANT_RUNS] = _variants(
+            conditions, plan, plan.variants, specs, traced=traced
+        )
+    if batches:
+        files.save_batches(directory / BATCHES, batches)
+    return monte_carlo, variants
 
 
 def _at_operating_point(
@@ -334,42 +386,6 @@ def _fidelity(
     )
 
 
-def _corner(
-    name: str,
-    corner: Corner,
-    built: ir.Circuit,
-    plan: Plan,
-    cache: fidelity.Cache,
-) -> tuple[report.CornerReport, dict[str, Result], fidelity.Fidelity | None]:
-    """What `plan`'s analyses find on the circuit `built` at `corner`.
-
-    The circuit takes the models the plan's fidelity chooses there, characterized
-    unless `cache` holds them. Returns the corner's report, the results of the analyses
-    that end, by name, and the models chosen, none when the circuit does not elaborate.
-    """
-    temperature, process = plan.temperature_at(corner), plan.process_at(corner)
-    try:
-        chosen = fidelity.resolve(built, plan, temperature, cache, process)
-        simulation = chosen.simulation()
-    except ElaborationError as error:
-        found = report.CornerReport(
-            name=name,
-            temperature=kelvins(temperature),
-            process=process,
-            problems=error.problems,
-        )
-        return found, {}, None
-    solved, reports = _analyses(simulation, plan, 1)
-    failures = tuple(r for r in reports if isinstance(r, report.FailureReport))
-    found = report.CornerReport(
-        name=name,
-        temperature=simulation.conditions.temperature,
-        process=process,
-        failures=failures,
-    )
-    return found, solved, chosen
-
-
 def _built(
     script: Path,
     namespaces: dict[Path, dict[str, object]],
@@ -392,128 +408,368 @@ def _built(
             raise ScriptError(message)
 
 
-def _monte_carlo(  # noqa: PLR0913 - the analysis, where it runs, and what it judges
+@dataclass(slots=True)
+class _Condition:
+    """Where a plan's analyses run, its own or a corner's conditions, and results."""
+
+    corner: str | None
+    """The corner, None for the plan's own conditions."""
+    temperature: Quantity
+    chosen: fidelity.Fidelity | None
+    """The models chosen there, None where the circuit does not elaborate."""
+    solved: Mapping[str, Result] = field(default_factory=dict)
+    """The results there of the analyses that end, by name."""
+    failures: Mapping[str, str] = field(default_factory=dict)
+    """Why each analysis that failed there failed, by name."""
+
+
+@dataclass(slots=True)
+class _Structure:
+    """Conditions whose circuits are one, and the simulation of it a batch runs on.
+
+    Each condition's runs take its temperature as their values, so the conditions run
+    in one batch, the runs of each together, in their order.
+    """
+
+    simulation: Simulation
+    members: list[int]
+    """The conditions, by their places among the plan's."""
+
+
+def _kelvins(temperature: Quantity | None) -> Quantity:
+    """`temperature`, 27 °C when it is None, as a run's values give it."""
+    return Quantity(kelvins(temperature), TEMPERATURE)
+
+
+def _unrecorded(plan: Plan) -> dict[str, Analysis]:
+    """The plan's analyses, recording nothing beyond what the checks read."""
+    return {
+        name: _recording(analysis, plan, recorded=False)
+        for name, analysis in plan.analyses.items()
+    }
+
+
+def _corners(  # noqa: PLR0913 - the script, the plan, and what its own run found
+    job: Job,
+    namespaces: dict[Path, dict[str, object]],
+    built: ir.Circuit,
+    plan: Plan,
+    cache: fidelity.Cache,
+    *,
     chosen: fidelity.Fidelity,
-    chosen_at: Mapping[str, fidelity.Fidelity | None],
+    solved: Mapping[str, Result],
+) -> tuple[list[_Condition], tuple[report.CornerReport, ...]]:
+    """The plan's own conditions and its corners', and what each corner found.
+
+    A corner builds the circuit again with its arguments, if it gives any, and takes the
+    models the plan's fidelity chooses there, characterized unless `cache` holds them;
+    the corners whose circuits are one run in one batch.
+    """
+    conditions = [
+        _Condition(None, _kelvins(plan.temperature_at()), chosen, dict(solved))
+    ]
+    problems: dict[int, tuple[str, ...]] = {}
+    for name, corner in plan.corners.items():
+        rebuilt = (
+            _built(job.script, namespaces, corner.arguments)
+            if corner.arguments
+            else built
+        )
+        temperature, process = plan.temperature_at(corner), plan.process_at(corner)
+        found: fidelity.Fidelity | None = None
+        try:
+            found = fidelity.resolve(rebuilt, plan, temperature, cache, process)
+        except ElaborationError as error:
+            problems[len(conditions)] = error.problems
+        conditions.append(_Condition(name, _kelvins(temperature), found))
+    analyses = _unrecorded(plan)
+    for structure in _structures(conditions, problems):
+        cornered = [member for member in structure.members if member != 0]
+        if not cornered:
+            continue
+        kept = _kept(
+            structure.simulation,
+            analyses,
+            _at_temperatures(conditions, cornered),
+            plan,
+        )
+        for run, member in zip(kept, cornered, strict=True):
+            if run.problems:
+                problems[member] = run.problems
+            else:
+                conditions[member].solved = run.results
+                conditions[member].failures = run.errors
+    reports = []
+    for place, condition in enumerate(conditions[1:], start=1):
+        name = condition.corner or ""
+        process = plan.process_at(plan.corners[name])
+        temperature = condition.temperature.value
+        if place in problems:
+            condition.chosen = None
+            reports.append(
+                report.CornerReport(
+                    name=name,
+                    temperature=temperature,
+                    process=process,
+                    problems=problems[place],
+                )
+            )
+            continue
+        failures = tuple(
+            report.FailureReport(name=analysis, error=error)
+            for analysis, error in condition.failures.items()
+        )
+        reports.append(
+            report.CornerReport(
+                name=name, temperature=temperature, process=process, failures=failures
+            )
+        )
+    return conditions, tuple(reports)
+
+
+def _structures(
+    conditions: Sequence[_Condition], problems: dict[int, tuple[str, ...]]
+) -> list[_Structure]:
+    """The conditions whose circuits are one, each with the simulation of it.
+
+    Two conditions' circuits are one when they build the same circuit and take the same
+    models at the same process corner, whatever their temperatures. The simulation is
+    the first condition's whose circuit elaborates; a condition whose circuit does not
+    joins `problems`, by its place, with why.
+    """
+    structures: list[_Structure] = []
+    keys: list[tuple[ir.Circuit, object, object, str | None]] = []
+    for place, condition in enumerate(conditions):
+        chosen = condition.chosen
+        if chosen is None or place in problems:
+            continue
+        key = (chosen.built, chosen.matched, chosen.models, chosen.process)
+        found = next(
+            (
+                index
+                for index, other in enumerate(keys)
+                if other[0] is key[0] and other[1:] == key[1:]
+            ),
+            None,
+        )
+        if found is not None:
+            structures[found].members.append(place)
+            continue
+        try:
+            simulation = chosen.simulation()
+        except ElaborationError as error:
+            problems[place] = error.problems
+            continue
+        keys.append(key)
+        structures.append(_Structure(simulation, [place]))
+    return structures
+
+
+def _at_temperatures(
+    conditions: Sequence[_Condition], members: Sequence[int]
+) -> Explicit:
+    """A run at the temperature of each of `members`, among `conditions`."""
+    return Explicit(
+        [Variant(temperature=conditions[member].temperature) for member in members]
+    )
+
+
+def _kept(
+    simulation: Simulation,
+    analyses: Mapping[str, Analysis],
+    variants: Variants,
+    plan: Plan,
+) -> list[Run]:
+    """What `analyses` find on each run of `variants`, batched on `simulation`.
+
+    A run whose values make problems holds them, and no result.
+    """
+    kept: dict[int, Run] = {}
+
+    def keep(run: Run) -> None:
+        kept[run.index] = run
+
+    found = simulation.batch(analyses, variants, plan.options, each=keep)
+    return [kept[index] for index in range(found.runs)]
+
+
+def _batches(
+    conditions: Sequence[_Condition],
+    plan: Plan,
+    variants: Variants,
+    specs: Specs | None,
+    traced: Sequence[str] = (),
+) -> list[BatchResult | None]:
+    """What the plan's analyses find on every run of `variants` at each condition.
+
+    Each condition whose circuit elaborates holds the batch of its runs, measuring the
+    requirements of `specs`, the plan's own tracing the unknowns `traced` names; one
+    whose circuit does not, none.
+    """
+    analyses = _unrecorded(plan)
+    measurements = (
+        [] if specs is None else [each.measurement for each in specs.requirements]
+    )
+    found: list[BatchResult | None] = [None] * len(conditions)
+    each = runs(variants)
+    for structure in _structures(conditions, {}):
+        members = structure.members
+        product = Product(_at_temperatures(conditions, members), variants)
+        batch = structure.simulation.batch(
+            analyses,
+            product,
+            plan.options,
+            measurements=measurements,
+            traced=traced if 0 in members else (),
+        )
+        for place, member in enumerate(members):
+            found[member] = batch.rows(place * each, (place + 1) * each)
+    return found
+
+
+def _spreads(
+    plan: Plan,
+    found: Sequence[BatchResult | None],
+    count: int,
+    specs: Specs | None,
+) -> tuple[int, tuple[specs_module.Spread, ...], specs_module.Yield | None]:
+    """How many of `count` runs failed at any condition, the spreads and the yield.
+
+    `found` holds the runs at each condition, and each run's verdict on a requirement
+    is its worst over the conditions.
+    """
+    failed = np.zeros(count, dtype=np.bool_)
+    for batch in found:
+        failed |= np.ones(count, dtype=np.bool_) if batch is None else batch.failed
+    if specs is None:
+        return int(failed.sum()), (), None
+    judged = [
+        specs_module.worst(
+            [
+                specs_module.judged(requirement, plan.analyses, batch, place, count)
+                for batch in found
+            ]
+        )
+        for place, requirement in enumerate(specs.requirements)
+    ]
+    spreads, passing = specs_module.spread_of(specs, judged)
+    return int(failed.sum()), spreads, passing
+
+
+def _monte_carlo(  # noqa: PLR0913 - the analysis, where it runs, and what it judges
+    conditions: Sequence[_Condition],
     plan: Plan,
     monte_carlo: MonteCarlo,
     specs: Specs | None,
     *,
     mismatched: int,
-) -> report.MonteCarloReport:
+    traced: Sequence[str],
+) -> tuple[report.MonteCarloReport, files.Batch]:
     """What `plan`'s analyses find on each sample of `monte_carlo`, against `specs`.
 
     Each sample draws the circuit's tolerances, and the kit's mismatch of its
-    `mismatched` foundry's devices, and runs at the plan's own conditions,
-    with the models `chosen` holds, and at each corner, with the models `chosen_at`
-    holds there, none where the circuit does not elaborate; the models stand for their
-    circuits' nominal parts. Every run draws its samples from the seed afresh, so a
-    corner whose circuit holds the same toleranced parameters runs each sample on the
+    `mismatched` foundry's devices, and runs at every one of `conditions` whose
+    circuit elaborates, with the models chosen there; the models stand for their
+    circuits' nominal parts. Every condition draws its samples from the seed afresh, so
+    a corner whose circuit holds the same toleranced parameters runs each sample on the
     same parts, and a requirement's verdict on a sample is its worst over the runs.
+    Also returns the samples at the plan's own conditions, tracing `traced`.
     """
-    runs = zip(
-        _samples(chosen, plan, monte_carlo),
-        *(_samples(at, plan, monte_carlo) for at in chosen_at.values()),
-        strict=True,
-    )
-    sampled: list[tuple[Verdict, ...]] = []
-    failed = 0
-    for (solved, ended), *there in runs:
-        corners = {
-            name: found for name, (found, _) in zip(chosen_at, there, strict=True)
-        }
-        failed += not (ended and all(ended_there for _, ended_there in there))
-        if specs is not None:
-            sampled.append(evaluate(specs, plan.analyses, solved, corners))
-    spreads, passing = ((), None) if specs is None else spread(specs, sampled)
-    return report.MonteCarloReport(
+    found = _batches(conditions, plan, monte_carlo, specs, traced)
+    failed, spreads, passing = _spreads(plan, found, monte_carlo.samples, specs)
+    nominal = conditions[0].chosen
+    analysed = report.MonteCarloReport(
         samples=monte_carlo.samples,
         seed=monte_carlo.seed,
-        toleranced=len(variation.toleranced(chosen.built)),
+        toleranced=0 if nominal is None else len(variation.toleranced(nominal.built)),
         mismatched=mismatched,
-        corners=tuple(chosen_at),
+        corners=tuple(condition.corner or "" for condition in conditions[1:]),
         failed=failed,
         spreads=spreads,
         passing=passing,
     )
+    return analysed, _saved(found[0], monte_carlo.samples, plan, specs)
 
 
-def _samples(
-    chosen: fidelity.Fidelity | None, plan: Plan, monte_carlo: MonteCarlo
-) -> Iterator[tuple[dict[str, Result], bool]]:
-    """What `plan`'s analyses find on each sample of `monte_carlo`, in turn.
-
-    On each, the results of the analyses that end, by name, and whether all of them do.
-    The samples are drawn from the seed, with the models `chosen` holds; with none, no
-    analysis ends on any.
-    """
-    if chosen is None:
-        yield from itertools.repeat(({}, False), monte_carlo.samples)
-        return
-    toleranced = variation.toleranced(chosen.built)
-    drawn = (
-        (
-            variation.sample(toleranced, monte_carlo.seed, index),
-            _mismatch(monte_carlo.seed, index),
-        )
-        for index in range(monte_carlo.samples)
-    )
-    yield from _parallel(functools.partial(_sampled, chosen, plan), drawn)
-
-
-def _mismatch(seed: int, index: int) -> int:
-    """The seed of the kit's mismatch of the sample `index` of a Monte Carlo analysis.
-
-    It is the same at every corner, so a corner runs the same parts.
-    """
-    return int(np.random.SeedSequence([seed, index]).generate_state(1)[0])
-
-
-def _sampled(
-    chosen: fidelity.Fidelity,
+def _variants(
+    conditions: Sequence[_Condition],
     plan: Plan,
-    drawn: tuple[dict[str, dict[str, float]], int],
-) -> tuple[dict[str, Result], bool]:
-    """What `plan`'s analyses find on one sample, its parameters and its mismatch.
+    variants: Variants,
+    specs: Specs | None,
+    *,
+    traced: Sequence[str],
+) -> tuple[report.VariantsReport, files.Batch]:
+    """What `plan`'s analyses find on each run of `variants`, against `specs`.
 
-    The sample replaces the circuit's parameters and draws a kit's mismatch from its
-    seed. The results of the analyses that end, by name, and whether all of them do.
+    Each run takes its values at every one of `conditions` whose circuit elaborates,
+    and a requirement's verdict on it is its worst over the conditions. Also returns
+    the runs at the plan's own conditions, tracing `traced`.
     """
-    overrides, mismatch = drawn
-    try:
-        simulation = chosen.simulation(overrides, mismatch=mismatch)
-    except ElaborationError:
-        return {}, False
-    solved, reports = _analyses(simulation, plan, 1)
-    return solved, not any(isinstance(r, report.FailureReport) for r in reports)
+    found = _batches(conditions, plan, variants, specs, traced)
+    count = runs(variants)
+    failed, spreads, passing = _spreads(plan, found, count, specs)
+    structures = _structures(conditions, {})
+    varied = structures[0].simulation.varied(variants) if structures else ()
+    analysed = report.VariantsReport(
+        runs=count,
+        parameters=varied,
+        corners=tuple(condition.corner or "" for condition in conditions[1:]),
+        failed=failed,
+        spreads=spreads,
+        passing=passing,
+    )
+    return analysed, _saved(found[0], count, plan, specs)
 
 
-def _parallel[T, R](function: Callable[[T], R], items: Iterable[T]) -> Iterator[R]:
-    """`function` of each of `items`, in order, on a thread per core.
+def _saved(
+    found: BatchResult | None, count: int, plan: Plan, specs: Specs | None
+) -> files.Batch:
+    """The batch of `count` runs `found` at the plan's own conditions, as it is saved.
 
-    The engine releases the interpreter while it simulates, so the threads simulate at
-    once; each item is drawn here, in turn, so the order is the same however many there
-    are. At most twice as many calls run ahead of the result consumed as there are
-    threads, so results do not pile up.
+    With none found, the circuit does not elaborate there, and no run reads anything.
     """
-    workers = os.cpu_count() or 1
-    with ThreadPoolExecutor(workers) as pool:
-        pending: deque[Future[R]] = deque()
-        for item in items:
-            pending.append(pool.submit(function, item))
-            if len(pending) >= 2 * workers:
-                yield pending.popleft().result()
-        while pending:
-            yield pending.popleft().result()
+    requirements = () if specs is None else tuple(specs.requirements)
+    if found is None:
+        width = len(requirements)
+        found = BatchResult(
+            tuple(plan.analyses),
+            (),
+            np.empty((count, 0)),
+            np.zeros((count, len(plan.analyses)), dtype=np.bool_),
+            tuple(str(each.measurement) for each in requirements),
+            (None,) * width,
+            np.full((count, width), np.nan),
+            np.zeros((count, width), dtype=np.int32),
+            ("the circuit does not elaborate",),
+        )
+    return files.Batch(
+        found,
+        tuple(str(requirement) for requirement in requirements),
+        tuple(
+            (
+                None if each.minimum is None else each.minimum.value,
+                None if each.maximum is None else each.maximum.value,
+            )
+            for each in requirements
+        ),
+    )
 
 
-type _Conditions = tuple[str | None, fidelity.Fidelity | None, Mapping[str, Result]]
-"""A run's conditions: its corner, None for the plan's own; the models chosen there,
-None where the circuit does not elaborate; and the results of its nominal run."""
+def _traced(job: Job, simulation: Simulation) -> tuple[str, ...]:
+    """The unknowns each batch traces for the plots of `job`, by name; none unplotted.
+
+    They are the job's probes, or the nets the top component names, as a plot draws
+    them, that are unknowns of `simulation`'s circuit.
+    """
+    if not job.plot:
+        return ()
+    named = {unknown.name for unknown in simulation.unknowns}
+    probes = job.probes or plots.default_probes(simulation.unknowns, simulation.nets)
+    return tuple(probe for probe in probes if probe in named)
 
 
 def _worst_case(
-    conditions: Sequence[_Conditions],
+    conditions: Sequence[_Condition],
     plan: Plan,
     worst_case: WorstCase,
     specs: Specs | None,
@@ -525,88 +781,150 @@ def _worst_case(
     of each requirement sets every parameter, and every lot's spread, at the extreme
     that moves the value toward the bound; runs at the same extremes are shared. A
     requirement's verdict is its worst over every bound and conditions where the
-    circuit elaborates.
+    circuit elaborates. The runs of the conditions whose circuits are one make a batch.
     """
     requirements = () if specs is None else specs.requirements
-    found: list[list[tuple[str | None, Mapping[str, Result]]]] = [
+    found: list[list[tuple[int, str | None, Mapping[str, Result]]]] = [
         [] for _ in requirements
     ]
     runs = 0
-    for corner, chosen, nominal in conditions:
-        if chosen is None or not requirements:
-            continue
-        varied = variation.toleranced(chosen.built)
-        run = functools.partial(_overridden, chosen, plan)
-        slopes = _slopes(varied, requirements, nominal, worst_case.step, run)
-        runs += len(varied)
-        extremes: dict[str, dict[str, dict[str, float]]] = {}
-        wanted: list[list[str]] = []
-        for index, requirement in enumerate(requirements):
-            keys = []
-            for toward in _bounds(requirement):
-                overrides = _extreme(
-                    varied, [toward * slope[index] for slope in slopes]
-                )
-                key = json.dumps(overrides, sort_keys=True)
-                extremes.setdefault(key, overrides)
-                keys.append(key)
-            wanted.append(keys)
-        solved = dict(zip(extremes, _parallel(run, extremes.values()), strict=True))
-        runs += len(extremes)
-        for at, keys in zip(found, wanted, strict=True):
-            at.extend((corner, solved[key]) for key in keys)
+    for structure in _structures(conditions, {}) if requirements else ():
+        ran, judged = _extremes(structure, conditions, plan, worst_case, requirements)
+        runs += ran
+        for at, more in zip(found, judged, strict=True):
+            at.extend(more)
+    # Each requirement is judged at the plan's own conditions, then at each corner.
     verdicts = tuple(
-        judge(requirement, plan.analyses, at)
+        judge(
+            requirement,
+            plan.analyses,
+            [(corner, solved) for _, corner, solved in sorted(at, key=_condition)],
+        )
         for requirement, at in zip(requirements, found, strict=True)
         if at
     )
-    first = next((chosen for _, chosen, _ in conditions if chosen is not None), None)
+    first = next(
+        (condition.chosen for condition in conditions if condition.chosen), None
+    )
     return report.WorstCaseReport(
         step=worst_case.step,
         toleranced=0 if first is None else len(variation.toleranced(first.built)),
-        corners=tuple(corner for corner, _, _ in conditions if corner is not None),
+        corners=tuple(condition.corner or "" for condition in conditions[1:]),
         runs=runs,
         verdicts=verdicts,
     )
 
 
-def _overridden(
-    chosen: fidelity.Fidelity, plan: Plan, overrides: dict[str, dict[str, float]]
-) -> dict[str, Result]:
-    """The results of `plan`'s analyses that end on the circuit `chosen` holds.
+def _condition(judged: tuple[int, str | None, Mapping[str, Result]]) -> int:
+    """The place among the plan's conditions of the condition a result comes from."""
+    return judged[0]
 
-    Its parameters are replaced by `overrides`; no analysis ends where it does not
-    elaborate.
+
+def _extremes(
+    structure: _Structure,
+    conditions: Sequence[_Condition],
+    plan: Plan,
+    worst_case: WorstCase,
+    requirements: Sequence[Requirement],
+) -> tuple[int, list[list[tuple[int, str | None, Mapping[str, Result]]]]]:
+    """How many runs a worst case makes at the conditions of `structure`, and more.
+
+    It returns what each requirement is judged on there too: at each condition, by its
+    place and its corner, the results at the extremes of each of its bounds, in order.
     """
-    solved: dict[str, Result] = {}
-    try:
-        simulation = chosen.simulation(overrides)
-    except ElaborationError:
-        return solved
-    solved, _ = _analyses(simulation, plan, 1)
-    return solved
+    analyses = _unrecorded(plan)
+    members = [
+        (member, condition, chosen)
+        for member in structure.members
+        if (chosen := (condition := conditions[member]).chosen) is not None
+    ]
+    varied = {
+        member: variation.toleranced(chosen.built) for member, _, chosen in members
+    }
+    moves = [
+        Variant(
+            chosen.overrides(variation.moved(varied[member], index, worst_case.step)),
+            condition.temperature,
+        )
+        for member, condition, chosen in members
+        for index in range(len(varied[member]))
+    ]
+    moved = (
+        _kept(structure.simulation, analyses, Explicit(moves), plan) if moves else []
+    )
+    extremes: list[Variant] = []
+    wanted: list[tuple[int, _Condition, list[list[int]]]] = []
+    runs = 0
+    for member, condition, chosen in members:
+        count = len(varied[member])
+        ran, moved = moved[:count], moved[count:]
+        slopes = _slopes(requirements, condition.solved, ran)
+        keyed: dict[str, int] = {}
+        keys = [
+            [
+                _keyed(
+                    _extreme(
+                        varied[member], [toward * slope[index] for slope in slopes]
+                    ),
+                    (chosen, condition.temperature),
+                    keyed,
+                    extremes,
+                )
+                for toward in _bounds(requirement)
+            ]
+            for index, requirement in enumerate(requirements)
+        ]
+        runs += count + len(keyed)
+        wanted.append((member, condition, keys))
+    solved = (
+        _kept(structure.simulation, analyses, Explicit(extremes), plan)
+        if extremes
+        else []
+    )
+    judged: list[list[tuple[int, str | None, Mapping[str, Result]]]] = [
+        [] for _ in requirements
+    ]
+    for member, condition, keys in wanted:
+        for at, bounds in zip(judged, keys, strict=True):
+            at.extend((member, condition.corner, solved[key].results) for key in bounds)
+    return runs, judged
+
+
+def _keyed(
+    overrides: dict[str, dict[str, float]],
+    at: tuple[fidelity.Fidelity, Quantity],
+    keyed: dict[str, int],
+    extremes: list[Variant],
+) -> int:
+    """The place among `extremes` of the run at `overrides`, unless `keyed` holds it.
+
+    The run takes the numbers the models `at` holds do not stand in for, at its
+    temperature; the runs at the same extremes of one condition are shared.
+    """
+    key = json.dumps(overrides, sort_keys=True)
+    if key not in keyed:
+        chosen, temperature = at
+        keyed[key] = len(extremes)
+        extremes.append(Variant(chosen.overrides(overrides), temperature))
+    return keyed[key]
 
 
 def _slopes(
-    varied: Sequence[variation.Varied],
     requirements: Sequence[Requirement],
     nominal: Mapping[str, Result],
-    step: float,
-    run: Callable[[dict[str, dict[str, float]]], Mapping[str, Result]],
+    moved: Sequence[Run],
 ) -> list[list[float]]:
-    """How far each requirement's value moves, per parameter of `varied` moved.
+    """How far each requirement's value moves, per run of `moved`, one parameter moved.
 
-    Each parameter moves `step` of its tolerance, and `run` runs the analyses there;
-    a value moves from its value on the `nominal` results, and 0 where either cannot be
+    A value moves from its value on the `nominal` results, and 0 where either cannot be
     read.
     """
     base = [reading(requirement, nominal) for requirement in requirements]
-    steps = (variation.moved(varied, index, step) for index in range(len(varied)))
     slopes = []
-    for moved in _parallel(run, steps):
+    for run in moved:
         slope = []
         for requirement, before in zip(requirements, base, strict=True):
-            after = reading(requirement, moved)
+            after = reading(requirement, run.results)
             slope.append(0.0 if before is None or after is None else after - before)
         slopes.append(slope)
     return slopes

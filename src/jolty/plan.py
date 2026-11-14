@@ -4,9 +4,9 @@
 A plan is kept apart from the circuit: the circuit says what exists, the plan how to
 simulate it. A plan runs its analyses at its temperature, then again at each of its
 corners: another temperature, or other arguments to the build script's ``build()``, and
-on Monte Carlo samples of the circuit's tolerances, each at its own conditions and at
-every corner. Variants are the values of many runs of one circuit, each a pure function
-of the run's index, which a batch runs: listed
+on Monte Carlo samples of the circuit's tolerances, and on the runs of its variants,
+each at its own conditions and at every corner. Variants are the values of many runs of
+one circuit, each a pure function of the run's index: listed
 ([`Explicit`][jolty.plan.Explicit]), on a [`Grid`][jolty.plan.Grid] of parameters and
 temperatures, drawn as [`MonteCarlo`][jolty.plan.MonteCarlo] samples, or every one of
 one at every one of another ([`Product`][jolty.plan.Product]). Its fidelity chooses, for
@@ -734,8 +734,9 @@ class Plan:
     names its results too. The circuit's devices are simulated at `temperature`, 27 °C
     unless given, a foundry's devices at its `process` corner, its kit's typical unless
     given, then at each of the `corners`, each named by an identifier too, on the
-    samples of a `monte_carlo` analysis, and at the extremes of a `worst_case`
-    analysis.
+    samples of a `monte_carlo` analysis, on the runs of its `variants`, and at the
+    extremes of a `worst_case` analysis. The samples and the variants each run at the
+    plan's own conditions and at every corner, as one batch of runs per circuit.
 
     Its `fidelity` maps scopes, patterns of instance paths such as ``adder/*``, where
     ``*`` matches within a level of the hierarchy and ``**`` across levels, to the
@@ -765,14 +766,15 @@ class Plan:
     fidelity: Mapping[str, Characterized] = field(default_factory=dict)
     process: str | None = None
     record: Sequence[str] | None = None
+    variants: Variants | None = None
 
     def __post_init__(self) -> None:
         """Checks that the plan runs an analysis or more, all named by identifiers.
 
         Raises:
             ValueError: When the plan runs no analysis, or a name is not an identifier.
-            TypeError: When a corner is not one, or the record is a string or holds
-                anything but strings.
+            TypeError: When a corner is not one, the variants are not variants, or the
+                record is a string or holds anything but strings.
             DimensionError: When the temperature is not one.
         """
         object.__setattr__(self, "record", recorded(self.record))
@@ -798,6 +800,11 @@ class Plan:
                     f"the scope {scope} takes {model!r}, not a Characterized model"
                 )
                 raise TypeError(message)
+        if self.variants is not None and not isinstance(
+            self.variants, MonteCarlo | Grid | Explicit | Product
+        ):
+            message = f"a plan's variants are variants, not {self.variants!r}"
+            raise TypeError(message)
 
     def process_at(self, corner: Corner | None = None) -> str | None:
         """The process corner of the plan's own run, or of `corner`'s.

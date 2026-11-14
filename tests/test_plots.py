@@ -6,10 +6,23 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jolty import JoltyError, results
+from jolty import (
+    Ac,
+    Builder,
+    JoltyError,
+    OperatingPoint,
+    Role,
+    Simulation,
+    component,
+    devices,
+    results,
+)
 from jolty.cli import main
-from jolty.files import save_results
-from jolty.plots import MAX_SERIES, default_probes, plot
+from jolty.files import Batch, save_results
+from jolty.plan import MonteCarlo, decade
+from jolty.plots import MAX_SERIES, default_probes, envelope, histograms, plot
+from jolty.specs import bandwidth, value
+from jolty.units import MHz, V, kHz, kohm, nF
 
 UNKNOWNS = (
     results.Unknown("in", "voltage"),
@@ -179,3 +192,49 @@ def test_the_plot_command_draws_saved_results(
         assert message in capsys.readouterr().err
     assert run("plot", str(path), "--analyses", "ac") == 2
     assert run("plot", str(tmp_path / "missing.results.npz")) == 2
+
+
+def test_a_batch_draws_a_histogram_per_measurement_and_an_envelope_per_analysis() -> (
+    None
+):
+    @component
+    def filtered(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V), id="V1")
+        resistor = c.place(devices.resistor(1 * kohm, tolerance=0.05), id="R1")
+        capacitor = c.place(devices.capacitor(1 * nF, tolerance=0.1), id="C1")
+        c.connect(source.positive, resistor.a, name="in")
+        c.connect(resistor.b, capacitor.a, name="out")
+        c.connect(capacitor.b, source.negative, ground)
+
+    requirements = [
+        value("op", "out") >= 0.5 * V,
+        bandwidth("bode", "out").between(100 * kHz, 200 * kHz),
+    ]
+    found = Simulation(filtered()).batch(
+        {"op": OperatingPoint(), "bode": Ac("V1", decade(1 * kHz, 10 * MHz, 5))},
+        MonteCarlo(30),
+        measurements=[requirement.measurement for requirement in requirements],
+        traced=["out", "V1:current"],
+    )
+    batch = Batch(
+        found,
+        tuple(str(requirement) for requirement in requirements),
+        ((0.5, None), (1e5, 2e5)),
+    )
+    figure = histograms("monte-carlo", batch)
+    assert [axes.get_title(loc="left") for axes in figure.axes] == [
+        "out in op ≥ 500 mV",
+        "3 dB bandwidth of out in bode ≥ 100 kHz and ≤ 200 kHz",
+    ]
+    # Each panel counts every run, and draws its requirement's bounds.
+    assert [len(axes.lines) for axes in figure.axes] == [1, 2]
+    _, bode = found.traced
+    figure = envelope("monte-carlo", bode)
+    assert [axes.get_ylabel() for axes in figure.axes] == [
+        "voltage magnitude",
+        "voltage phase",
+        "current magnitude",
+        "current phase",
+    ]
+    assert figure.axes[0].get_xscale() == "log"

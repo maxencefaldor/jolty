@@ -200,6 +200,7 @@ def plan() -> Plan:
 ```
 
 Each corner is named by a Python identifier, and runs at the plan's temperature and process corner unless it gives its own.
+The corners that build the plan's own circuit, changing only its temperature, run as one [batch](#batches), each corner's temperature the values of a run of it; a corner whose arguments build the circuit again runs a batch of its own.
 The report, the results file and the plots hold the plan's own run; a corner's report says whether the circuit elaborates there and which analyses failed.
 [Specs](specs.md) hold at every corner.
 
@@ -219,8 +220,9 @@ A parameter that sets an exponential's argument spreads in its logarithm: `toler
 Parts that drift together, as resistors on one die do, share a lot: `toleranced("resistance", 0.001, lot=ir.Lot(name="die", relative=0.2))` scales the part's own factor, within 0.1 %, by the lot's, drawn once per sample for each parameter and shared by every part that names the lot, wherever it lies in the hierarchy.
 A sample runs on the same parts at every corner whose circuit holds the same toleranced parameters, and each requirement's verdict on it is its worst at any of them.
 A sample of a circuit of a foundry's devices draws its kit's [mismatch](foundry.md#mismatch) too.
-Samples simulate at once, a thread per core, as the engine releases the interpreter while it simulates; each is drawn in turn, so the samples are the same however many cores there are.
+The samples run as one [batch](#batches) at the plan's own conditions and at the corners that change only the temperature, and as one more at each corner that builds the circuit again: the engine draws sample `i` from the seed and `i` alone, and runs the samples across its threads, so they are the same however many threads run them.
 The report counts the samples on which the circuit did not elaborate or an analysis failed, at the plan's own conditions or a corner; with [specs](specs.md), it states what each requirement read over the samples and the yield.
+The plots draw the samples at the plan's own conditions: a histogram of what each requirement read, against its bounds, and the envelope of each plotted net along each analysis, as [Results](results.md#plots) shows.
 
 ## Worst case
 
@@ -234,9 +236,62 @@ def plan() -> Plan:
 At the plan's own conditions and at each corner, a run per toleranced parameter, moved `step` of its tolerance, finds which way each requirement's value moves with it.
 Then, for each bound of each requirement, every parameter goes to the extreme of its tolerance that moves the value toward the bound, and a lot's spread to the extreme its parts move it toward together, so a spread that cancels, as a matched pair's in a ratio, stays at its nominal value; runs at the same extremes are shared.
 A normal tolerance's extreme is its three standard deviations, and a logarithmic one's its factor.
-The runs simulate at once, a thread per core, as a Monte Carlo analysis's samples do.
+The runs of each circuit run as a [batch](#batches) of listed values, one for the moves and one for the extremes.
 The extremes follow each value's first-order slope, as PSpice's do, so a value that bends over a tolerance may be worse inside it; a Monte Carlo analysis samples the inside.
 The report states how many runs it took and each requirement's verdict, its worst over its bounds and conditions, and `jolty simulate` exits with 1 when one fails.
+
+## Variants
+
+A plan's `variants` runs its analyses again on many runs of the circuit, each at values of its own, at the plan's own conditions and at each corner, as a Monte Carlo analysis's samples are:
+
+```python
+def plan() -> Plan:
+    return Plan(
+        {"op": OperatingPoint(), "bode": Ac("V1", decade(10 * Hz, 10 * MHz, 20))},
+        variants=Grid(
+            [
+                Axis.temperature([celsius(0), celsius(50), celsius(100)]),
+                Axis("R2", "resistance", [8 * kohm, 9 * kohm, 10 * kohm]),
+            ]
+        ),
+    )
+```
+
+Variants are the values of every run, each a pure function of the run's index:
+
+- `Explicit([Variant(overrides, temperature), ...])` lists them, each run's numbers by instance path then by parameter path, as a [`Simulation`](#analyses)'s overrides, and its temperature;
+- `Grid([Axis(instance, parameter, values), Axis.temperature(values), ...], warm=False)` takes every combination of its axes' values, the last axis fastest, its lines chains of runs each starting from the operating point of the one before, as a DC sweep's levels do, when `warm`;
+- `MonteCarlo(samples, seed)` draws [samples](#monte-carlo) of the circuit's tolerances;
+- `Product(first, second)` runs every run of `second` at every run of `first`, the values of `second` in place of those of `first` where both give one, so `Product(grid, MonteCarlo(100))` samples the tolerances at every point of the grid.
+
+The report states the runs and the numbers they vary, how many failed, and, with [specs](specs.md), each requirement's spread and the yield; the plots draw the runs at the plan's own conditions as a Monte Carlo analysis's samples are.
+
+## Batches
+
+Every many-runs analysis runs as a batch: one call to the engine for many runs of one circuit, spread across its threads, each run a pure function of its index and of nothing else, so the same bits whatever the threads.
+`Simulation.batch` runs one from Python:
+
+```python
+simulation = Simulation(bench())
+found = simulation.batch(
+    {"op": OperatingPoint(), "bode": Ac("V1", decade(10 * Hz, 10 * MHz, 20))},
+    MonteCarlo(10_000, seed=1),
+    measurements=[gain("bode", "out", at=1 * kHz), value("op", "out")],
+    traced=["out"],
+)
+gains = found.measured[:, 0]  # each run's gain at 1 kHz, in dB
+resistances = found.parameter("R1 resistance")  # each run's R1
+failed = found.failed  # whether each run failed; found.failure(run) says why
+responses = found.traced[1].values_of("out")  # a row per run, a column per frequency
+```
+
+The result holds its columns as NumPy arrays, one row per run, which the engine writes at each run's row as it ends: the values each run took, whether each analysis ended, what each [measurement](specs.md#measurements) read and why one read nothing, and the values of the unknowns `traced` names at each point of an operating point, a DC sweep, a response and a transient that names its `times`, which it steps onto.
+The engine reads every measurement of `jolty.specs` itself, without Python; a measurement a script writes is read under the interpreter's lock as each run ends, as is the function given as `each`, which sees every analysis's result.
+Each run finds what a simulation at its values alone finds, bit for bit.
+A run whose values give the circuit another structure, as a resistance below 1 Ω carries its current as an unknown, runs on the circuit elaborated once for that structure, and its measurements read the unknowns of the names they read.
+A run whose values put a device out of range, or one of whose analyses fails, says why, and the batch goes on.
+The threads are the engine's: the setting `threads`, or `jolty.simulate.threads(count)` for a block of code.
+A circuit of a foundry's devices runs each run in ngspice instead, as many at once as the engine has threads.
 
 ## Options
 

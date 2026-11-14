@@ -12,6 +12,11 @@ unknown levels hatched. Series take their colors in a fixed order, checked to st
 apart under the common color-vision deficiencies; a legend names them, and up to four
 are also labeled at their end.
 
+A batch of runs plots their distribution, not each run: a histogram of each
+measurement's values over the runs, against its requirement's bounds, and an envelope
+of each unknown it traced along an analysis, its least, median and greatest value over
+the runs at each point.
+
 Examples:
     >>> import numpy as np
     >>> from jolty import results
@@ -34,7 +39,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import EngFormatter
 
-from jolty import results
+from jolty import files, results
 from jolty.errors import JoltyError
 
 COLORS: Final = (
@@ -373,6 +378,169 @@ def _draw_logic(
 def _decibels(phasors: results.Complex) -> results.Real:
     """The magnitude of `phasors` in decibels, a zero magnitude at -6000 dB."""
     return 20 * np.log10(np.maximum(np.abs(phasors), 1e-300))
+
+
+def histograms(name: str, batch: files.Batch) -> Figure:
+    """A histogram of each measurement of `batch`, the batch `name`, over its runs.
+
+    Each panel counts the runs whose value lies in each bin, numpy's ``auto`` bins of
+    the values read, and draws the requirement's bounds across it; its title says how
+    many runs read no value.
+    """
+    found = batch.result
+    figure = Figure(
+        figsize=(8, 0.8 + 2.4 * max(len(found.measurements), 1)),
+        dpi=150,
+        layout="constrained",
+        facecolor=_SURFACE,
+    )
+    figure.suptitle(
+        f"{name}: {found.runs} runs, each measurement's values",
+        color=_INK,
+        x=0.02,
+        ha="left",
+    )
+    for place, requirement in enumerate(batch.requirements):
+        axes = figure.add_subplot(len(batch.requirements), 1, place + 1)
+        read = found.measured[:, place]
+        read = read[np.isfinite(read) & (found.causes[:, place] < 0)]
+        unit = found.units[place]
+        symbol = "" if unit is None or unit == "" else str(unit)
+        if read.size:
+            edges = np.histogram_bin_edges(read, bins="auto")
+            # An edge in the bars' color draws a bin narrower than a pixel, as one is
+            # beside a bound far from every value.
+            axes.hist(
+                read,
+                bins=edges.tolist(),
+                color=COLORS[0],
+                edgecolor=COLORS[0],
+                linewidth=0.8,
+            )
+        for bound in batch.bounds[place]:
+            if bound is not None:
+                axes.axvline(bound, color=_MUTED, linewidth=0.8, linestyle="--")
+        _style(axes, "runs")
+        unread = found.runs - read.size
+        missing = f", {unread} read none" if unread else ""
+        axes.set_title(f"{requirement}{missing}", color=_INK, fontsize=9, loc="left")
+        if symbol in {"dB", "°", "%"}:
+            axes.set_xlabel(symbol, color=_MUTED)
+        elif symbol:
+            axes.xaxis.set_major_formatter(EngFormatter(unit=symbol, sep=" "))
+    return figure
+
+
+def envelope(name: str, traced: results.Traced) -> Figure:
+    """The envelope of each unknown `traced` along an analysis of the batch `name`.
+
+    Each draws its least and its greatest value over the runs at each point as a band,
+    and its median as a line, the runs that did not end the analysis left out; a
+    response draws its magnitude and its phase, each run's phase unwrapped first. The
+    unknowns of each quantity share a panel, as a plot's do.
+    """
+    quantities = list(dict.fromkeys(unknown.quantity for unknown in traced.unknowns))
+    response = traced.along == "frequency"
+    panels = 2 * len(quantities) if response else len(quantities)
+    figure = Figure(
+        figsize=(8, 0.8 + 2.4 * max(panels, 1)),
+        dpi=150,
+        layout="constrained",
+        facecolor=_SURFACE,
+    )
+    runs = int(traced.values.shape[0])
+    figure.suptitle(
+        f"{name}: {traced.analysis}, the least, median and greatest of {runs} runs",
+        color=_INK,
+        x=0.02,
+        ha="left",
+    )
+    figure.subplots(max(panels, 1), 1, sharex=True, squeeze=False)
+    axes = figure.axes
+    colors = {
+        unknown.name: COLORS[index % len(COLORS)]
+        for index, unknown in enumerate(traced.unknowns)
+    }
+    for index, quantity in enumerate(quantities):
+        columns = [
+            (place, unknown)
+            for place, unknown in enumerate(traced.unknowns)
+            if unknown.quantity == quantity
+        ]
+        if response:
+            phasors = [
+                (
+                    unknown.name,
+                    colors[unknown.name],
+                    np.asarray(traced.values[:, :, place], dtype=np.complex128),
+                )
+                for place, unknown in columns
+            ]
+            magnitudes = [
+                (name, color, _decibels(values)) for name, color, values in phasors
+            ]
+            phases = [
+                (name, color, np.degrees(np.unwrap(np.angle(values), axis=1)))
+                for name, color, values in phasors
+            ]
+            _band(
+                axes[2 * index], traced.axis, magnitudes, f"{quantity} magnitude", "dB"
+            )
+            _band(axes[2 * index + 1], traced.axis, phases, f"{quantity} phase", "°")
+            continue
+        series = [
+            (unknown.name, colors[unknown.name], np.real(traced.values[:, :, place]))
+            for place, unknown in columns
+        ]
+        label = "temperature rise" if quantity == "temperature" else quantity
+        _band(axes[index], traced.axis, series, label, _UNITS[quantity])
+    if response:
+        for each in axes:
+            each.set_xscale("log")
+    unit = {"time": "s", "frequency": "Hz"}.get(traced.along, "")
+    if traced.along == "level" and traced.quantity is not None:
+        unit = _UNITS[traced.quantity]
+    axes[-1].xaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
+    along = {
+        "time": "time",
+        "frequency": "frequency",
+        "level": f"{traced.source} {traced.parameter or traced.quantity}",
+        "point": "",
+    }[traced.along]
+    axes[-1].set_xlabel(along, color=_MUTED)
+    return figure
+
+
+def _band(
+    axes: Axes,
+    x: results.Real,
+    series: list[tuple[str, str, results.Real]],
+    label: str,
+    unit: str,
+) -> None:
+    """Draws `series`, each a name, a color and its values, one row per run, along `x`.
+
+    Each is a band from its least to its greatest value at each point, and a line at
+    its median, over the runs whose values are numbers.
+    """
+    for name, color, values in series:
+        ended = values[~np.isnan(values).any(axis=1)]
+        if not ended.size:
+            continue
+        low, middle, high = (
+            ended.min(axis=0),
+            np.median(ended, axis=0),
+            ended.max(axis=0),
+        )
+        axes.fill_between(x, low, high, color=color, alpha=0.25, linewidth=0)
+        axes.plot(x, middle, color=color, linewidth=1.0, label=name)
+    _style(axes, label)
+    if unit:
+        axes.yaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
+    if len(series) > 1:
+        legend = axes.legend(loc="best", frameon=False, fontsize=8)
+        for text in legend.get_texts():
+            text.set_color(_INK)
 
 
 def save(figure: Figure, path: Path) -> None:

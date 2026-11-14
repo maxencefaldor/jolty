@@ -7,7 +7,8 @@ transient; and the level of every logic net at an operating point, and its first
 last level and how often it changed over a sweep or a transient. It lists the first
 unknowns and logic nets, up to a limit; the results file holds them all.
 A corner's report states whether the circuit elaborates there and which analyses fail,
-and a Monte Carlo analysis's what each requirement read over its samples and the yield.
+and a Monte Carlo analysis's, or a plan's variants', how many runs failed, what each
+requirement read over the runs, as its spread, and the yield, with its Wilson interval.
 """
 
 import math
@@ -654,6 +655,44 @@ class MonteCarloReport(_Model):
         )
         lines = [head]
         lines.extend(f"  {spread.describe(self.samples)}" for spread in self.spreads)
+        if self.passing is not None:
+            lines.append(f"  {self.passing.describe()}")
+        return "\n".join(lines)
+
+
+class VariantsReport(_Model):
+    """What the runs of a plan's variants found."""
+
+    runs: int
+    parameters: tuple[str, ...] = Field(
+        default=(),
+        description="The numbers the variants vary, such as 'R1 resistance' or "
+        "'temperature'.",
+    )
+    corners: tuple[str, ...] = Field(
+        default=(),
+        description="The corners each run also ran at, after the plan's own "
+        "conditions.",
+    )
+    failed: int = Field(
+        description="Runs on which the circuit did not elaborate or an analysis "
+        "failed, at the plan's own conditions or a corner."
+    )
+    spreads: tuple[Spread, ...] = Field(
+        default=(), description="What each requirement of the specs read."
+    )
+    passing: Yield | None = Field(
+        default=None,
+        description="How many runs meet every requirement; null without specs.",
+    )
+
+    def describe(self) -> str:
+        """The report as text."""
+        at = "".join(f", at {name}" for name in self.corners)
+        varied = " and ".join(self.parameters) or "nothing"
+        head = f"variants: {self.runs} runs of {varied}{at}; {self.failed} failed"
+        lines = [head]
+        lines.extend(f"  {spread.describe(self.runs)}" for spread in self.spreads)
         if self.passing is not None:
             lines.append(f"  {self.passing.describe()}")
         return "\n".join(lines)

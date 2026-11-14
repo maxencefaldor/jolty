@@ -42,6 +42,8 @@ The option `--probes` chooses other unknowns, such as `X1/mid` or `V1:current`, 
 uv run jolty plot rectifier.results.npz --analyses ripple --probes out --probes V1:current
 ```
 
+A plan's [Monte Carlo analysis](simulation.md#monte-carlo) and [variants](simulation.md#variants) plot the distribution of their runs at the plan's own conditions, not each run: a histogram of what each requirement read, against its bounds, as `<script>.monte-carlo.plot.png` or `<script>.variant-runs.plot.png`, and the envelope of each plotted net along each analysis, its least, median and greatest value at each point, as `<script>.monte-carlo.<analysis>.plot.png`.
+
 The option `--no-plot` leaves plots out.
 
 ## Unknowns
@@ -126,6 +128,8 @@ results["step"].variable("M1", "saturation_voltage")  # one per time point
 
 `jolty simulate` saves the results beside the script as `<script>.results.npz`, or where `--results` says.
 The file holds the analyses that ran to their end; when none did, the command removes an earlier results file at that path, so it never describes another circuit.
+
+A plan's batches go beside it as `<script>.batches.npz`, which `jolty.files.load_batches` reads back as each batch's [result](simulation.md#batches), with the requirements it measured.
 
 `jolty.files.load_results` reads it back as a dictionary of results by analysis name:
 

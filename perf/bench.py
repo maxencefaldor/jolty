@@ -6,7 +6,7 @@ fixture's files are what its script in ``perf/circuits`` writes, then times the 
 fixtures twice: in Rust, by the criterion benchmarks of
 ``crates/jolty-engine/benches/fixtures.rs``, and end to end in Python, each fixture's
 circuit read from its file and its plan's analyses run through ``Simulation.run``. A
-Monte Carlo fixture runs its first samples, drawn and run as the runner does, on the
+Monte Carlo fixture runs its first samples as the runner does, as one batch of the
 circuit elaborated once, on one thread and on a thread per core. It writes the times
 to ``perf/results/<commit>.json``, adding to what an earlier run on the same commit
 wrote, and prints them against a baseline's, flagging every change over 5 %.
@@ -37,14 +37,13 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Final
 
-from jolty import circuit, ir, results, variation
-from jolty.plan import Ac, OperatingPoint, Plan, Transient
+from jolty import circuit, ir, results, simulate
+from jolty.plan import Ac, MonteCarlo, OperatingPoint, Plan, Transient
 from jolty.simulate import Elaborated, Simulation
 from jolty.spice import export, ngspice
 from jolty.units import FREQUENCY, TIME
@@ -159,32 +158,20 @@ def run(loaded: Loaded) -> None:
 def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
     """The first `samples` of the fixture's Monte Carlo analysis, run on `threads`.
 
-    The samples are drawn in turn from the seed, as the runner draws them, and each runs
-    the plan's analyses at its parameters on the circuit elaborated once, as the runner
-    runs them, on a pool of threads as the runner's, the engine releasing the
-    interpreter while it runs; the one elaboration counts in the time.
+    The samples run as the runner runs them: one batch of the plan's analyses on the
+    circuit elaborated once, each sample drawn by the engine from its index, on a pool
+    of `threads` threads, the engine releasing the interpreter while it runs; the one
+    elaboration counts in the time.
     """
     monte_carlo = loaded.plan.monte_carlo
     seed = 0 if monte_carlo is None else monte_carlo.seed
-    toleranced = variation.toleranced(loaded.circuit)
-
-    def drawn() -> Iterable[dict[str, dict[str, float]]]:
-        return (variation.sample(toleranced, seed, index) for index in range(samples))
-
-    def sample(elaborated: Elaborated, overrides: dict[str, dict[str, float]]) -> None:
-        simulation = Simulation.of(elaborated, overrides)
-        for analysis in loaded.plan.analyses.values():
-            simulation.run(analysis, loaded.plan.options)
 
     def every() -> None:
-        elaborated = Elaborated(loaded.circuit)
-        if threads == 1:
-            for overrides in drawn():
-                sample(elaborated, overrides)
-            return
-        with ThreadPoolExecutor(threads) as pool:
-            for _ in pool.map(functools.partial(sample, elaborated), drawn()):
-                pass
+        simulation = Simulation.of(Elaborated(loaded.circuit))
+        with simulate.threads(threads):
+            simulation.batch(
+                loaded.plan.analyses, MonteCarlo(samples, seed), loaded.plan.options
+            )
 
     return every
 

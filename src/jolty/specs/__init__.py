@@ -63,6 +63,7 @@ from jolty.specs._measurements import (
 )
 from jolty.specs._requirements import (
     Bound,
+    Judged,
     Measurement,
     MeasurementError,
     Native,
@@ -78,8 +79,11 @@ from jolty.specs._requirements import (
     describe,
     evaluate,
     judge,
+    judged,
     reading,
     spread,
+    spread_of,
+    worst,
 )
 
 __all__ = [
@@ -87,6 +91,7 @@ __all__ = [
     "LEAST_PHASE_MARGIN",
     "Bound",
     "Edge",
+    "Judged",
     "Measurement",
     "MeasurementError",
     "Native",
@@ -114,6 +119,7 @@ __all__ = [
     "gain_margin",
     "integrated_noise",
     "judge",
+    "judged",
     "maximum",
     "minimum",
     "noise_density",
@@ -127,5 +133,7 @@ __all__ = [
     "settling_time",
     "solutions",
     "spread",
+    "spread_of",
     "value",
+    "worst",
 ]

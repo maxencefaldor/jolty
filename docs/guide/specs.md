@@ -80,7 +80,7 @@ failed: rise time of out in step ≤ 2 µs: read 2.192 µs at the corner hot, sl
 
 ## Yield
 
-Over a plan's [Monte Carlo](simulation.md#monte-carlo) samples, each requirement's spread states on how many samples it passed, and the lowest, highest and mean values read with their standard deviation.
+Over a plan's [Monte Carlo](simulation.md#monte-carlo) samples, or the runs of its [variants](simulation.md#variants), each requirement's spread states on how many it passed, and the lowest, highest and mean values read with their standard deviation.
 The yield is the fraction of samples on which every requirement passes, if marginally, with its 95 % Wilson interval:
 
 For a divider of a 1 % uniform resistor over a 1 % normal one, with `value("op", "out").within(2.5 * V, 15e-3 * V)` and a target of 90 %:
@@ -91,7 +91,7 @@ monte carlo: 1000 samples of 2 toleranced parameters, seed 1; 0 failed
   yield: 947 of 1000, 94.7 % (95 % interval 93.13 to 95.93 %), which reaches the target 90 %
 ```
 
-`Specs(requirements, yield_target=0.9)` sets the yield the samples must reach; `jolty simulate` exits with 1 when the estimate falls below it.
+`Specs(requirements, yield_target=0.9)` sets the yield the samples, and the variants' runs, must reach; `jolty simulate` exits with 1 when an estimate falls below it.
 
 A plan's [worst case](simulation.md#worst-case) judges each requirement again at the extremes of the tolerances that worsen it, and `jolty simulate` exits with 1 when one fails there.
 With `--output-format json`, the verdicts come as data, values and slacks in SI base units.

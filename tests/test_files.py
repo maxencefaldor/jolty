@@ -8,9 +8,11 @@ import numpy as np
 import pytest
 
 from jolty import (
+    Ac,
     Builder,
     DcSweep,
     JoltyError,
+    OperatingPoint,
     Role,
     Simulation,
     circuit,
@@ -19,14 +21,19 @@ from jolty import (
     results,
 )
 from jolty.files import (
+    Batch,
     circuit_path,
+    load_batches,
     load_circuit,
     load_results,
     results_path,
+    save_batches,
     save_circuit,
     save_results,
 )
-from jolty.units import V, kohm
+from jolty.plan import Explicit, MonteCarlo, Product, Variant, decade
+from jolty.specs import gain, value
+from jolty.units import VOLTAGE, MHz, V, kHz, kohm, nF
 
 UNKNOWNS = (results.Unknown("out", "voltage"), results.Unknown("V1:current", "current"))
 STATISTICS = results.Statistics(
@@ -302,6 +309,47 @@ def test_a_results_file_of_an_earlier_format_says_so(tmp_path: Path) -> None:
     np.savez(path, header=np.array(json.dumps(header)))
     with pytest.raises(JoltyError, match="version 2 of the format, which jolty reads"):
         load_results(path)
+
+
+def test_batch_files_hold_every_column_of_a_batch(tmp_path: Path) -> None:
+    @component
+    def filtered(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V), id="V1")
+        resistor = c.place(devices.resistor(1 * kohm, tolerance=0.05), id="R1")
+        capacitor = c.place(devices.capacitor(1 * nF, tolerance=0.1), id="C1")
+        load = c.place(devices.resistor(10 * kohm), id="R2")
+        c.connect(source.positive, resistor.a, name="in")
+        c.connect(resistor.b, capacitor.a, load.a, name="out")
+        c.connect(capacitor.b, load.b, source.negative, ground)
+
+    analyses = {
+        "op": OperatingPoint(),
+        "bode": Ac("V1", decade(1 * kHz, 10 * MHz, 2)),
+        "sweep": DcSweep("R1", [1 * kohm, 2 * kohm], parameter="resistance"),
+    }
+    measurements = [value("op", "out"), gain("bode", "out", at=1 * MHz)]
+    found = Simulation(filtered()).batch(
+        analyses,
+        Product(
+            Explicit([Variant(), Variant({"R2": {"resistance": -1.0}})]), MonteCarlo(3)
+        ),
+        measurements=measurements,
+        traced=["out"],
+    )
+    assert found.problems, "the runs at a negative resistance make problems"
+    path = tmp_path / "filtered.batches.npz"
+    requirements = ("out in op ≥ 0 V", "gain of out at 1 MHz in bode ≤ 0 dB")
+    written = Batch(found, requirements, ((0.0, None), (None, 0.0)))
+    save_batches(path, {"monte-carlo": written})
+    ((name, read),) = load_batches(path).items()
+    assert name == "monte-carlo"
+    assert_same(read, written, "batch")
+    assert read.result.units == (VOLTAGE, "dB")
+    other = tmp_path / "other.npz"
+    np.savez(other, values=np.zeros(1))
+    with pytest.raises(JoltyError, match="not a jolty batch file"):
+        load_batches(other)
 
 
 def test_results_files_hold_a_sweep_of_a_parameter(tmp_path: Path) -> None:

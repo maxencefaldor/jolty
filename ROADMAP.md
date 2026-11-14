@@ -8,8 +8,6 @@ Items keep their numbers; each leaves this file when it lands on `main`, and its
 | # | Item | Waits for |
 | --- | --- | --- |
 | 2 | Sensitivity twins local to their devices, so sensitivity costs O(P·k) rather than O(P·n). | Nothing |
-| 4 | Batched variants in Python: the runner's Monte Carlo, corners and worst case, and a `Simulation.batch`, each one call of the engine's batch executor per structure, its results columnar. | Nothing |
-| 5 | Spec measurements in Rust, so a batch returns verdicts rather than waveforms. | 4 |
 | 6 | Devices evaluated and assembled in parallel, bit for bit the same whatever the number of threads, as AC, noise, stability and sensitivity already spread their frequencies and right-hand sides. | 2 |
 | 7 | Fewer transient steps without heuristics, each benchmarked against ngspice: variable-order BDF and dense output at requested times. At default options jolty now takes within 2% of ngspice 47's accepted steps on every example, with half its Newton iterations; on the benchmarks' synchronous buck it accepts 73,880 to ngspice's 52,982, the difference being item 18's failed iterations at the gate edges, not the formula, so neither is yet where the steps are. | A circuit where they are |
 | 8 | A benchmark of what jolty gives an agent: the same tasks done with jolty and with ngspice, compared by success and by iterations. | A design |
