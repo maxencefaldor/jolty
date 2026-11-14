@@ -78,6 +78,44 @@ def test_the_score_says_why_work_falls_short(tmp_path: Path) -> None:
     assert "the bench's V1 differs" in score(COST_DOWN, tmp_path).reasons
 
 
+def test_the_given_transistor_is_excused_by_what_it_is_not_its_name(
+    tmp_path: Path,
+) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    unpriced = (
+        "is unpriced: a bipolar_transistor is priced by its part number alone, and it "
+        "states none"
+    )
+    # Renamed, in either arm, the given transistor is still excused, as it is in the
+    # original, which no catalog part prices either.
+    design(tmp_path, "0.01")
+    script = (tmp_path / "design.py").read_text(encoding="utf-8")
+    (tmp_path / "design.py").write_text(
+        script.replace('id="Q1"', 'id="QB"'), encoding="utf-8"
+    )
+    verdict = score(COST_DOWN, tmp_path)
+    assert verdict.met, verdict.reasons
+    netlist = (COST_DOWN / "ngspice" / "given" / "stage.cir").read_text(
+        encoding="utf-8"
+    )
+    stage(tmp_path, dict.fromkeys(RESISTORS, 0.01), netlist.replace("Q1 ", "QB "))
+    verdict = score(COST_DOWN, tmp_path, Arm.NGSPICE)
+    assert verdict.met, verdict.reasons
+    # Another transistor in its place is unpriced, whatever its name.
+    stage(
+        tmp_path, dict.fromkeys(RESISTORS, 0.01), netlist.replace("BF=416.4", "BF=500")
+    )
+    assert f"X1/Q1 {unpriced}" in score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons
+    # The original leaves one transistor out of its total: a second is unpriced.
+    second = "QS 0 0 0 q1\n.model q1"
+    stage(
+        tmp_path, dict.fromkeys(RESISTORS, 0.01), netlist.replace(".model q1", second)
+    )
+    assert score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons == (f"X1/QS {unpriced}",)
+
+
 def test_the_runner_runs_the_agent_in_a_copy_of_the_task(tmp_path: Path) -> None:
     from run import run  # noqa: PLC0415 - importable only once the path holds it
 
