@@ -10,6 +10,8 @@ A simulation runs a plan's analyses on a circuit, its results read by net and by
     options:
       inherited_members: true
 
+::: jolty.unknowns
+
 ::: jolty.results
     options:
       inherited_members: true

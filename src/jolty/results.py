@@ -23,10 +23,12 @@ import functools
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Never, TypedDict, override
+from typing import Any, Never, TypedDict, override
 
 import numpy as np
 import numpy.typing as npt
+
+from jolty.unknowns import Quantity, Unknown
 
 type Real = npt.NDArray[np.float64]
 type Complex = npt.NDArray[np.complex128]
@@ -42,20 +44,6 @@ def _no_rows() -> Real:
 
 def _no_phasors() -> Complex:
     return np.empty((0, 0), dtype=np.complex128)
-
-
-type Quantity = Literal["voltage", "current", "temperature", "state"]
-"""What an unknown is: a node's voltage, a branch's current, a thermal net's
-temperature above the ambient, in kelvins, or a device's dimensionless state, such as a
-memristor's."""
-
-
-@dataclass(frozen=True, slots=True)
-class Unknown:
-    """An unknown solved for: a voltage, a current, a temperature or a state."""
-
-    name: str
-    quantity: Quantity
 
 
 def column(

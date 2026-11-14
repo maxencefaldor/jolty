@@ -18,11 +18,12 @@ from typing import Final
 
 from pydantic import JsonValue, TypeAdapter
 
-from jolty import _core, ir, results
+from jolty import _core, ir
 from jolty.errors import JoltyError
 from jolty.ir import Role
 from jolty.spice import models, sky130
 from jolty.spice.ngspice import spice_celsius
+from jolty.unknowns import Unknown
 
 
 def _unwritable(message: str) -> JoltyError:
@@ -893,7 +894,7 @@ def _sense(instance: ir.Instance) -> str:
 
 
 def vector(
-    circuit: ir.Circuit, unknown: results.Unknown, subcircuits: Collection[str] = ()
+    circuit: ir.Circuit, unknown: Unknown, subcircuits: Collection[str] = ()
 ) -> str:
     """The name of the ngspice vector of a jolty unknown: a voltage, current or state.
 

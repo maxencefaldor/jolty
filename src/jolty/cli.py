@@ -10,6 +10,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from importlib.metadata import version
 from typing import Literal, NoReturn, override
 
 from pydantic import BaseModel, Field, ValidationError
@@ -21,7 +22,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-from jolty import __version__, service
+from jolty import service
 from jolty.errors import JoltyError
 from jolty.settings import Settings
 
@@ -185,7 +186,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     """
     arguments = sys.argv[1:] if argv is None else list(argv)
     if arguments == ["--version"]:
-        print(f"jolty {__version__}")
+        print(f"jolty {version('jolty')}")
         return
     try:
         CliApp.run(Jolty, cli_args=arguments)
