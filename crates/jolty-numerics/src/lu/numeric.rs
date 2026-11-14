@@ -29,6 +29,7 @@ const NONE: usize = usize::MAX;
 const PIVOT_TOLERANCE: f64 = 0.1;
 
 /// A triangular factor stored by columns.
+#[derive(Clone)]
 struct Triangle<T> {
     /// Where each column's entries start, then their number.
     starts: Vec<usize>,
@@ -96,6 +97,7 @@ pub(super) enum Factorization {
 
 /// The factors `L U` of the rows of an ordered matrix's diagonal blocks, permuted within
 /// each block by its pivots, and the workspace that finds them.
+#[derive(Clone)]
 pub(super) struct Numeric<T> {
     /// The row of the ordered matrix that is each position's pivot.
     pivot_rows: Vec<usize>,
@@ -141,6 +143,25 @@ impl<T: Scalar> Numeric<T> {
     /// the last left but its allocations.
     pub(super) const fn forget(&mut self) {
         self.complete = false;
+    }
+
+    /// Whether the next factorization of any matrix keeps the same pivots, in the same
+    /// patterns of `L` and `U`, as `other`'s would: both are complete, with the same pivot
+    /// rows and the same patterns, or neither is, so that both search afresh. A
+    /// refactorization reads nothing else: not the values of the factors, nor the
+    /// workspace, which every elimination leaves zero.
+    pub(super) fn pivots_alike(&self, other: &Self) -> bool {
+        match (self.complete, other.complete) {
+            (false, false) => true,
+            (true, true) => {
+                self.pivot_rows == other.pivot_rows
+                    && self.lower.starts == other.lower.starts
+                    && self.lower.indices == other.lower.indices
+                    && self.upper.starts == other.upper.starts
+                    && self.upper.indices == other.upper.indices
+            }
+            _ => false,
+        }
     }
 
     /// The number of entries of `L` below its diagonal and of `U` on and above it.

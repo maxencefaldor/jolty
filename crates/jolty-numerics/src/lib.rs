@@ -15,7 +15,7 @@ mod pattern;
 mod pencil;
 
 pub use dense::solve_in_range;
-pub use lu::{Factors, LinearError, Ordering, Scalar, SparseLu, Statistics};
+pub use lu::{Factors, LinearError, Ordering, Scalar, Shared, SparseLu, Statistics, Workspace};
 pub use num_complex::Complex64;
 pub use pattern::{Entry, Pattern, PatternBuilder, Replay};
 pub use pencil::{Eigenvalue, PencilError, generalized_eigenvalues};

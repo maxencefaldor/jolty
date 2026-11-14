@@ -143,6 +143,10 @@ pub struct Statistics {
 /// matrix, refactors with the last pivots when given another, and searches for pivots only
 /// where one has become too small; its workspaces are kept, so the Newton iterations of a
 /// whole simulation allocate nothing once the first has run.
+///
+/// A clone factors every matrix after as the solver it was cloned from would, bit for bit,
+/// which lets several threads each go on from one solver's pivots.
+#[derive(Clone)]
 pub struct SparseLu<T: Scalar> {
     ordering: Arc<Ordering>,
     numeric: Numeric<T>,
@@ -151,9 +155,28 @@ pub struct SparseLu<T: Scalar> {
     factored: Vec<T>,
     /// Whether the factors are those of `factored`.
     current: bool,
-    /// The solves' workspace, by row of the ordered matrix and by position.
-    workspace: (Vec<T>, Vec<T>),
+    /// The solves' workspace.
+    workspace: Workspace<T>,
     statistics: Statistics,
+}
+
+/// What a solve with [`Shared`] factors writes as it goes: a value for each row of the
+/// ordered matrix and for each position. Each thread that solves at once needs its own.
+#[derive(Debug, Clone)]
+pub struct Workspace<T: Scalar> {
+    by_row: Vec<T>,
+    by_position: Vec<T>,
+}
+
+impl<T: Scalar> Workspace<T> {
+    /// A workspace for the solves of a matrix of `dimension` rows.
+    #[must_use]
+    pub fn new(dimension: usize) -> Self {
+        Self {
+            by_row: vec![T::ZERO; dimension],
+            by_position: vec![T::ZERO; dimension],
+        }
+    }
 }
 
 impl<T: Scalar> SparseLu<T> {
@@ -166,7 +189,7 @@ impl<T: Scalar> SparseLu<T> {
             ordering,
             factored: Vec::new(),
             current: false,
-            workspace: (vec![T::ZERO; dimension], vec![T::ZERO; dimension]),
+            workspace: Workspace::new(dimension),
             statistics: Statistics::default(),
         }
     }
@@ -198,6 +221,17 @@ impl<T: Scalar> SparseLu<T> {
     #[must_use]
     pub fn statistics(&self) -> Statistics {
         self.statistics
+    }
+
+    /// Whether this solver factors every matrix from now on as `other` would, bit for bit:
+    /// both share one ordering and keep the same pivots, and so the same patterns of `L`
+    /// and `U`, or neither keeps any. A factorization depends on nothing else the solvers
+    /// hold: the factors a solver keeps for the matrix it factored last are those a
+    /// refactorization of it with the same pivots makes. Only their counts of work may
+    /// differ. Solvers of two orderings are never alike, even of one pattern.
+    #[must_use]
+    pub fn factors_alike(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ordering, &other.ordering) && self.numeric.pivots_alike(&other.numeric)
     }
 
     /// The entries the solves read: those of `L` below its unit diagonal, those of `U` on
@@ -260,9 +294,11 @@ impl<T: Scalar> SparseLu<T> {
             self.current = true;
         }
         Ok(Factors {
-            ordering: &self.ordering,
-            numeric: &self.numeric,
-            values: &self.factored,
+            shared: Shared {
+                ordering: &self.ordering,
+                numeric: &self.numeric,
+                values: &self.factored,
+            },
             workspace: &mut self.workspace,
         })
     }
@@ -279,21 +315,17 @@ impl<T: Scalar> fmt::Debug for SparseLu<T> {
 
 /// The LU factors of one matrix, ready to solve systems with it.
 pub struct Factors<'a, T: Scalar> {
-    ordering: &'a Ordering,
-    numeric: &'a Numeric<T>,
-    values: &'a [T],
-    workspace: &'a mut (Vec<T>, Vec<T>),
+    shared: Shared<'a, T>,
+    workspace: &'a mut Workspace<T>,
 }
 
 impl<T: Scalar> fmt::Debug for Factors<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Factors")
-            .field("rows", &self.ordering.pattern().dimension())
-            .finish_non_exhaustive()
+        self.shared.fmt(f)
     }
 }
 
-impl<T: Scalar> Factors<'_, T> {
+impl<'a, T: Scalar> Factors<'a, T> {
     /// Solves `A x = rhs` and leaves `x` in `rhs`.
     ///
     /// # Errors
@@ -305,15 +337,7 @@ impl<T: Scalar> Factors<'_, T> {
     ///
     /// Panics if `rhs` does not hold one value per row.
     pub fn solve(&mut self, rhs: &mut [T]) -> Result<(), LinearError> {
-        assert_eq!(
-            rhs.len(),
-            self.ordering.pattern().dimension(),
-            "one right-hand side value per row"
-        );
-        let (by_row, by_position) = &mut *self.workspace;
-        self.numeric
-            .solve(self.ordering, self.values, rhs, (by_row, by_position));
-        finite(rhs)
+        self.shared.solve(rhs, self.workspace)
     }
 
     /// Solves `Aᵀ x = rhs`, the transposed system, and leaves `x` in `rhs`: the adjoint
@@ -328,15 +352,90 @@ impl<T: Scalar> Factors<'_, T> {
     ///
     /// Panics if `rhs` does not hold one value per row.
     pub fn solve_transpose(&mut self, rhs: &mut [T]) -> Result<(), LinearError> {
-        assert_eq!(
-            rhs.len(),
-            self.ordering.pattern().dimension(),
-            "one right-hand side value per row"
-        );
-        let (by_row, by_position) = &mut *self.workspace;
+        self.shared.solve_transpose(rhs, self.workspace)
+    }
+
+    /// The factors, to solve with from several threads at once, each with a [`Workspace`]
+    /// of its own: each solve gives the bits [`Factors::solve`] would.
+    #[must_use]
+    pub fn shared(&self) -> Shared<'a, T> {
+        self.shared
+    }
+}
+
+/// The LU factors of one matrix, which any number of threads solve systems with at once,
+/// each writing to a [`Workspace`] of its own.
+#[derive(Clone, Copy)]
+pub struct Shared<'a, T: Scalar> {
+    ordering: &'a Ordering,
+    numeric: &'a Numeric<T>,
+    values: &'a [T],
+}
+
+impl<T: Scalar> fmt::Debug for Shared<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Factors")
+            .field("rows", &self.ordering.pattern().dimension())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Scalar> Shared<'_, T> {
+    /// Solves `A x = rhs` and leaves `x` in `rhs`, writing to `workspace` as it goes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
+    /// too small for the matrix's range causes, naming the columns whose values are not.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rhs` or `workspace` does not hold one value per row.
+    pub fn solve(&self, rhs: &mut [T], workspace: &mut Workspace<T>) -> Result<(), LinearError> {
+        self.check(rhs, workspace);
+        let Workspace {
+            by_row,
+            by_position,
+        } = workspace;
+        self.numeric
+            .solve(self.ordering, self.values, rhs, (by_row, by_position));
+        finite(rhs)
+    }
+
+    /// Solves `Aᵀ x = rhs` and leaves `x` in `rhs`, writing to `workspace` as it goes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
+    /// too small for the matrix's range causes, naming the columns whose values are not.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rhs` or `workspace` does not hold one value per row.
+    pub fn solve_transpose(
+        &self,
+        rhs: &mut [T],
+        workspace: &mut Workspace<T>,
+    ) -> Result<(), LinearError> {
+        self.check(rhs, workspace);
+        let Workspace {
+            by_row,
+            by_position,
+        } = workspace;
         self.numeric
             .solve_transpose(self.ordering, self.values, rhs, (by_row, by_position));
         finite(rhs)
+    }
+
+    /// Checks that `rhs` and `workspace` hold one value per row.
+    fn check(&self, rhs: &[T], workspace: &Workspace<T>) {
+        let dimension = self.ordering.pattern().dimension();
+        assert_eq!(rhs.len(), dimension, "one right-hand side value per row");
+        assert_eq!(
+            workspace.by_row.len(),
+            dimension,
+            "a workspace of one value per row"
+        );
     }
 }
 

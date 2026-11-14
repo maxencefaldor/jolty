@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use jolty_numerics::{
     Complex64, Entry, LinearError, Ordering, Pattern, PatternBuilder, Scalar, SparseLu, Statistics,
+    Workspace,
 };
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -600,6 +601,42 @@ proptest! {
         prop_assert_eq!(used.entries(), fresh.entries());
     }
 
+    /// A clone factors every matrix after as the solver it was cloned from, bit for bit;
+    /// two solvers whose pivots compare alike factor alike, whatever each factored last;
+    /// and the factors solve from shared views, each with a workspace of its own, as they
+    /// solve themselves.
+    #[test]
+    fn a_clone_and_a_solver_alike_factor_alike((first, second) in reshuffled_pair()) {
+        let (_, entries) = first.pattern();
+        let solved = |lu: &mut SparseLu<f64>, matrix: &Matrix<f64>| {
+            let stored = matrix.stored(lu.pattern(), &entries);
+            let mut x: Vec<f64> = rhs(matrix.dimension);
+            let mut factors = lu.factor(&stored)?;
+            let mut shared = x.clone();
+            factors.solve(&mut x)?;
+            let mut workspace = Workspace::new(matrix.dimension);
+            factors.shared().solve(&mut shared, &mut workspace)?;
+            assert_eq!(bits(&x), bits(&shared), "a shared solve solves alike");
+            Ok::<Vec<u64>, LinearError>(bits(&x))
+        };
+        let (mut original, _) = solver(&first);
+        prop_assert!(original.factors_alike(&original.clone()));
+        let _ = solved(&mut original, &first);
+        let mut clone = original.clone();
+        prop_assert!(clone.factors_alike(&original));
+        prop_assert_eq!(solved(&mut clone, &second), solved(&mut original, &second));
+        prop_assert!(clone.factors_alike(&original));
+        // A solver made afresh for the same ordering keeps no pivots, unlike one that has
+        // factored; once it has factored the same matrices, it keeps the same pivots and
+        // factors alike.
+        let mut fresh = SparseLu::new(Arc::clone(original.ordering()));
+        prop_assert!(!fresh.factors_alike(&original));
+        let _ = solved(&mut fresh, &first);
+        let _ = solved(&mut fresh, &second);
+        prop_assert!(fresh.factors_alike(&original));
+        prop_assert_eq!(solved(&mut fresh, &first), solved(&mut original, &first));
+    }
+
     /// The real and the complex solvers of one pattern share its ordering.
     #[test]
     fn real_and_complex_solvers_share_an_ordering(circuit in circuit()) {
@@ -613,6 +650,11 @@ proptest! {
         check(&mut complex_lu, &complex)?;
         prop_assert!(Arc::ptr_eq(real_lu.ordering(), complex_lu.ordering()));
     }
+}
+
+/// The bits of `values`.
+fn bits(values: &[f64]) -> Vec<u64> {
+    values.iter().map(|value| value.to_bits()).collect()
 }
 
 /// A dense 2 × 2 matrix's pattern and solver, with its values by slot.
