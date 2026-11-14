@@ -85,7 +85,7 @@ pub use passive::{
 pub use photocell::{Photocell, PhotocellParameters};
 pub use real::{Gradient, Hyper, Real};
 pub use schemars::Schema;
-pub use sources::{CurrentSource, SourceParameters, VoltageSource};
+pub use sources::{CurrentSource, SourceParameters, VoltageSource, held_source};
 pub use stamp::{SMALL_RESISTANCE, TerminalPair};
 pub use surroundings::Surrounded;
 pub use switch::{

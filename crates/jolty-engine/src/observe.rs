@@ -177,6 +177,7 @@ impl Simulator {
         let origins = Origins {
             elaborated: &self.elaborated,
             patched: &self.state.patched,
+            swept: &self.state.swept,
             temperature: self.state.temperature,
         };
         let prepared = options
@@ -457,13 +458,16 @@ impl Observer {
         2 * (selection.terminals + selection.derivatives) + selection.variables
     }
 
-    /// Holds the copy of the source at `placed` at `level`, or releases it, as the source
-    /// itself is.
-    pub(crate) fn hold(&mut self, placed: usize, level: Option<f64>) {
-        if let Some(probe) = self.made[placed]
-            && let Some(source) = self.probes[probe].device.as_source()
-        {
-            source.hold(level);
+    /// Makes the copy of the device at `placed` again, if there is one, from what `origins`
+    /// makes the device from, as the device itself was made again. A copy that cannot be
+    /// made forgets every copy, so that the next analysis makes those it records again.
+    pub(crate) fn remake(&mut self, origins: Origins<'_>, placed: usize) {
+        let Some(probe) = self.made.get(placed).copied().flatten() else {
+            return;
+        };
+        match Probe::new(origins, placed) {
+            Ok(made) => self.probes[probe] = made,
+            Err(_) => self.reset(),
         }
     }
 

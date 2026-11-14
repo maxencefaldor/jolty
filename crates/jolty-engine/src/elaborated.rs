@@ -181,6 +181,11 @@ impl Origin {
 }
 
 impl Placed {
+    /// What the device is made from, with its own numbers.
+    pub(crate) fn origin(&self) -> &Origin {
+        &self.template.origin
+    }
+
     /// Where the instance is: its path and the script line that placed it.
     #[must_use]
     pub fn location(&self) -> &Location {
@@ -421,20 +426,21 @@ pub(crate) type Rebound = (Elaborated, Vec<Box<dyn Device>>, Vec<Option<Origin>>
 
 /// What a run's devices are made from: an elaborated circuit, the origins its values
 /// give the devices whose numbers they replace, by device, none when they replace none,
-/// and its temperature.
+/// those of the devices a sweep holds elsewhere, by device, and its temperature.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Origins<'a> {
     pub(crate) elaborated: &'a Elaborated,
     pub(crate) patched: &'a [Option<Origin>],
+    pub(crate) swept: &'a BTreeMap<usize, Origin>,
     pub(crate) temperature: f64,
 }
 
 impl Origins<'_> {
     /// What the device at `index` is made from.
     pub(crate) fn of(&self, index: usize) -> &Origin {
-        self.patched
-            .get(index)
-            .and_then(Option::as_ref)
+        self.swept
+            .get(&index)
+            .or_else(|| self.patched.get(index).and_then(Option::as_ref))
             .unwrap_or(&self.elaborated.devices[index].template.origin)
     }
 }
@@ -718,9 +724,46 @@ impl Elaborated {
         }
     }
 
+    /// The numbers `values` replace among those of the device at `index`, in order.
+    pub(crate) fn patches_of<'a>(
+        &self,
+        values: &'a Values,
+        index: usize,
+    ) -> &'a [(ParameterId, f64)] {
+        let numbers = self.lookup().table.range(index);
+        let patches = values.patches();
+        let first = patches.partition_point(|(parameter, _)| parameter.index() < numbers.start);
+        let last = patches.partition_point(|(parameter, _)| parameter.index() < numbers.end);
+        &patches[first..last]
+    }
+
+    /// What the device at `index`, an independent source, is made from held at `level`:
+    /// its model's device from the parameters of a source of that constant level.
+    ///
+    /// # Errors
+    ///
+    /// Returns the problem of a device its model does not make from those parameters, or
+    /// whose terminals they change.
+    pub(crate) fn held_at(
+        &self,
+        index: usize,
+        level: f64,
+    ) -> Result<Origin, Box<ElaborationProblem>> {
+        let placed = &self.devices[index];
+        let at = || placed.location().clone();
+        let Origin::Model(made) = &placed.template.origin else {
+            return Err(Box::new(ElaborationProblem::Parameters {
+                at: at(),
+                message: "a connect element is held at no level".to_owned(),
+            }));
+        };
+        let parameters = jolty_models::held_source(level);
+        self.read(index, made, parameters)
+    }
+
     /// What the device at `index` is made from with the numbers `patches` replace, each a
     /// parameter of it.
-    fn patched(
+    pub(crate) fn patched(
         &self,
         index: usize,
         patches: &[(ParameterId, f64)],
@@ -762,6 +805,23 @@ impl Elaborated {
                 place += 1;
             });
         }
+        self.read(index, made, parameters)
+    }
+
+    /// What the model of `made`, the origin of the device at `index`, makes of `parameters`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the problem of parameters the model does not read, or that change the
+    /// device's terminals.
+    fn read(
+        &self,
+        index: usize,
+        made: &Made,
+        parameters: Parameters,
+    ) -> Result<Origin, Box<ElaborationProblem>> {
+        let placed = &self.devices[index];
+        let at = || placed.location().clone();
         let specification = made.model.read(&parameters).map_err(|error| {
             Box::new(ElaborationProblem::Parameters {
                 at: at(),
@@ -849,7 +909,7 @@ impl Elaborated {
     }
 
     /// The device at `path`, by its index.
-    fn device(&self, path: &str) -> Option<usize> {
+    pub(crate) fn device(&self, path: &str) -> Option<usize> {
         let found = self
             .lookup()
             .index

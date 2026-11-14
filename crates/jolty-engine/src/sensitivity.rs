@@ -33,6 +33,8 @@ use serde::Deserialize;
 
 use crate::ac::Linearization;
 use crate::elaborated::{Origin, Origins};
+use crate::state::Held;
+use crate::sweep::Swept;
 use crate::transient::{Carried, Tangent};
 use crate::{Ac, DcSweep, OperatingPoint, Options, Outcome, SimulationError, Simulator, Transient};
 
@@ -116,6 +118,9 @@ struct Twin {
     made: Box<dyn Device<Gradient>>,
     pattern: Pattern,
     contributions: Contributions<Gradient>,
+    /// Whether a sweep holds its number, which then moves nothing: the number swept, or
+    /// any of a source the sweep holds at a level, which replaces its waveform.
+    fixed: bool,
 }
 
 impl Twin {
@@ -202,14 +207,12 @@ impl Simulator {
                 )
             }
             Differentiated::DcSweep(sweep) => {
-                let swept = self.dc_sweep(sweep, options)?;
-                let index = self.source_index(&sweep.source)?;
-                let found = self.along_sweep(&outputs, &mut twins, index, &swept, options);
-                self.hold_source(index, None);
-                for twin in twins.iter_mut().filter(|twin| twin.device == index) {
-                    hold(twin, None);
-                }
-                (Derivatives::Real(found?), Outcome::DcSweep(swept))
+                let result = self.dc_sweep(sweep, options)?;
+                let swept = self.swept(sweep)?;
+                let found =
+                    self.along_sweep(&outputs, &mut twins, (swept, sweep), &result, options);
+                self.hold(swept, None)?;
+                (Derivatives::Real(found?), Outcome::DcSweep(result))
             }
             Differentiated::Ac(ac) => {
                 let response = self.ac(ac, options)?;
@@ -285,46 +288,68 @@ impl Simulator {
     /// A twin of every device, for each number of its parameters its model reads as a
     /// real number, in the devices' order then the numbers'.
     fn twins(&self) -> Vec<Twin> {
-        let origins = Origins {
-            elaborated: &self.elaborated,
-            patched: &self.state.patched,
-            temperature: self.state.temperature,
-        };
         let mut twins = Vec::new();
+        let origins = self.origins();
         for (index, placed) in self.elaborated.devices.iter().enumerate() {
             let Origin::Model(made) = origins.of(index) else {
                 continue;
             };
             for (name, value) in numbers(&made.parameters) {
-                let mut unknowns: Vec<UnknownInfo> =
-                    self.elaborated.unknowns[..placed.first_internal].to_vec();
-                let mut builder = PatternBuilder::new();
-                let mut binding = Binding::new(
-                    placed.path(),
-                    placed.nodes(),
-                    &mut unknowns,
-                    &mut builder,
-                    origins.temperature,
-                );
-                let Ok(device) = made.specification.instantiate_gradient(&name, &mut binding)
-                else {
-                    continue;
+                let parameter = Parameter {
+                    device: placed.path().to_owned(),
+                    name,
+                    value,
                 };
-                let pattern = builder.finish(self.elaborated.unknowns.len());
-                twins.push(Twin {
-                    device: index,
-                    parameter: Parameter {
-                        device: placed.path().to_owned(),
-                        name,
-                        value,
-                    },
-                    made: device,
-                    contributions: Contributions::new(&pattern),
-                    pattern,
-                });
+                if let Some(twin) = self.twin(index, parameter) {
+                    twins.push(twin);
+                }
             }
         }
         twins
+    }
+
+    /// What the run's devices are made from.
+    fn origins(&self) -> Origins<'_> {
+        Origins {
+            elaborated: &self.elaborated,
+            patched: &self.state.patched,
+            swept: &self.state.swept,
+            temperature: self.state.temperature,
+        }
+    }
+
+    /// The twin of the device at `index` that differentiates against its number
+    /// `parameter`, made from what the device is made from now; none when its model reads
+    /// no real number there.
+    fn twin(&self, index: usize, parameter: Parameter) -> Option<Twin> {
+        let origins = self.origins();
+        let Origin::Model(made) = origins.of(index) else {
+            return None;
+        };
+        let placed = &self.elaborated.devices[index];
+        let mut unknowns: Vec<UnknownInfo> =
+            self.elaborated.unknowns[..placed.first_internal].to_vec();
+        let mut builder = PatternBuilder::new();
+        let mut binding = Binding::new(
+            placed.path(),
+            placed.nodes(),
+            &mut unknowns,
+            &mut builder,
+            origins.temperature,
+        );
+        let device = made
+            .specification
+            .instantiate_gradient(&parameter.name, &mut binding)
+            .ok()?;
+        let pattern = builder.finish(self.elaborated.unknowns.len());
+        Some(Twin {
+            device: index,
+            parameter,
+            made: device,
+            contributions: Contributions::new(&pattern),
+            pattern,
+            fixed: false,
+        })
     }
 
     /// Each output's derivative with respect to each twin's parameter at the DC solution
@@ -350,8 +375,12 @@ impl Simulator {
         }
         let mut found = vec![Vec::with_capacity(twins.len()); outputs.len()];
         for twin in twins {
-            twin.evaluate(x, None, options.gmin);
-            let residual = twin.residual();
+            let residual = if twin.fixed {
+                vec![0.0; x.len()]
+            } else {
+                twin.evaluate(x, None, options.gmin);
+                twin.residual()
+            };
             for (adjoint, derivatives) in adjoints.iter().zip(&mut found) {
                 derivatives.push(-dot(adjoint, &residual));
             }
@@ -359,21 +388,30 @@ impl Simulator {
         Ok(found)
     }
 
-    /// The adjoint derivatives at each level of `swept`, the source at `index` held there,
-    /// and its twins too.
+    /// The adjoint derivatives at each level of the sweep `result`, of `swept` as `sweep`
+    /// names it, held there, and the twins of its device made again there: a number the
+    /// sweep holds moves nothing.
     fn along_sweep(
         &mut self,
         outputs: &[Unknown],
         twins: &mut [Twin],
-        index: usize,
-        swept: &crate::Sweep,
+        (swept, sweep): (Swept, &DcSweep),
+        result: &crate::Sweep,
         options: &Options,
     ) -> Result<Vec<Vec<Vec<f64>>>, SimulationError> {
-        let mut found = Vec::with_capacity(swept.levels.len());
-        for (&level, x) in swept.levels.iter().zip(&swept.values) {
-            self.hold_source(index, Some(level));
-            for twin in twins.iter_mut().filter(|twin| twin.device == index) {
-                hold(twin, Some(level));
+        let mut found = Vec::with_capacity(result.levels.len());
+        for (&level, x) in result.levels.iter().zip(&result.values) {
+            self.hold(swept, Some(level))?;
+            for twin in twins.iter_mut().filter(|twin| twin.device == swept.device) {
+                twin.fixed = match swept.held {
+                    Held::Level(_) => true,
+                    Held::Number(_) => sweep.parameter.as_ref() == Some(&twin.parameter.name),
+                };
+                if !twin.fixed
+                    && let Some(made) = self.twin(swept.device, twin.parameter.clone())
+                {
+                    *twin = made;
+                }
             }
             found.push(self.adjoint(outputs, twins, x, options)?);
         }
@@ -580,13 +618,6 @@ impl Simulator {
         }
         forward.found.push(at);
         Ok(())
-    }
-}
-
-/// Holds the twin's source at `level`, or releases it, if the twin is a source's.
-fn hold(twin: &mut Twin, level: Option<f64>) {
-    if let Some(source) = twin.made.as_source() {
-        source.hold(level);
     }
 }
 

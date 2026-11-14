@@ -353,6 +353,7 @@ fn a_ring_that_would_oscillate_at_dc_settles_unknown() {
     let mut simulator = simulator(&circuit);
     let sweep = DcSweep {
         source: "V1".to_owned(),
+        parameter: None,
         levels: vec![0.0, 1.0],
     };
     let sweep = simulator.dc_sweep(&sweep, &Options::default()).unwrap();

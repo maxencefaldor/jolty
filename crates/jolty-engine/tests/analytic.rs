@@ -312,6 +312,7 @@ fn a_dc_sweep_traces_the_diode_curve() {
     let levels: Vec<f64> = (0..=20).map(|step| f64::from(step) * 0.25).collect();
     let sweep = DcSweep {
         source: "V1".to_owned(),
+        parameter: None,
         levels: levels.clone(),
     };
     let options = Options {
@@ -326,6 +327,115 @@ fn a_dc_sweep_traces_the_diode_curve() {
     // The sweep releases the source: an operating point afterwards sees its own level again.
     let after = simulator.operating_point(&Options::default()).unwrap();
     assert!(after.values[current].abs() < 1e-12);
+}
+
+/// A divider of 5 V whose upper resistor a sweep steps, and a resistor in parallel with
+/// its lower one.
+fn swept_divider() -> Circuit {
+    circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(5.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3}),
+            &[("a", "in"), ("b", "out")],
+        ),
+        (
+            "R2",
+            "resistor",
+            json!({"resistance": 2e3}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ])
+}
+
+#[test]
+fn a_dc_sweep_steps_any_number_of_a_device() {
+    let mut simulator = simulator(&swept_divider());
+    let levels: Vec<f64> = (1..=20).map(|step| f64::from(step) * 250.0).collect();
+    let sweep = DcSweep {
+        source: "R1".to_owned(),
+        parameter: Some("resistance".to_owned()),
+        levels: levels.clone(),
+    };
+    let result = simulator.dc_sweep(&sweep, &Options::default()).unwrap();
+    assert_eq!(
+        (result.parameter.as_deref(), result.quantity),
+        (Some("resistance"), None)
+    );
+    let out = index(&simulator, "out");
+    // The tolerance is a few roundings of a linear divider's one Newton step.
+    for (level, values) in levels.iter().zip(&result.values) {
+        assert_close(values[out], 5.0 * 2e3 / (level + 2e3), 1e-14);
+    }
+    // The sweep leaves the resistor as it was: an operating point afterwards divides by
+    // its own resistance again.
+    let after = simulator.operating_point(&Options::default()).unwrap();
+    assert_close(after.values[out], 5.0 * 2e3 / 3e3, 1e-14);
+    // Along the sweep, the number it holds moves nothing, and the lower resistor moves the
+    // output by ∂/∂R2 of 5 R2 / (R1 + R2), 5 R1 / (R1 + R2)², at each R1.
+    let sensitivity = jolty_engine::Sensitivity {
+        outputs: vec!["out".to_owned()],
+        of: jolty_engine::Differentiated::DcSweep(sweep),
+    };
+    let found = simulator
+        .sensitivity(&sensitivity, &Options::default())
+        .unwrap();
+    let name = |device: &str, name: &str| {
+        found
+            .parameters
+            .iter()
+            .position(|parameter| parameter.device == device && parameter.name == name)
+            .expect("a parameter")
+    };
+    let (upper, lower) = (name("R1", "resistance"), name("R2", "resistance"));
+    let jolty_engine::Derivatives::Real(points) = &found.derivatives else {
+        panic!("real derivatives");
+    };
+    for (level, point) in levels.iter().zip(points) {
+        assert!(point[0][upper] == 0.0, "{}", point[0][upper]);
+        assert_close(point[0][lower], 5.0 * level / (level + 2e3).powi(2), 1e-9);
+    }
+}
+
+#[test]
+fn a_dc_sweep_cannot_change_the_unknowns_of_its_device() {
+    let mut simulator = simulator(&swept_divider());
+    let sweep = |levels: Vec<f64>, parameter: &str| DcSweep {
+        source: "R1".to_owned(),
+        parameter: Some(parameter.to_owned()),
+        levels,
+    };
+    // Below 1 Ω, a resistor carries its current as an unknown of its own.
+    let crossed = simulator.dc_sweep(&sweep(vec![10.0, 0.5], "resistance"), &Options::default());
+    assert!(
+        matches!(&crossed, Err(SimulationError::InvalidAnalysis(message))
+            if message.contains("R1") && message.contains("other unknowns")),
+        "{crossed:?}"
+    );
+    let missing = simulator.dc_sweep(&sweep(vec![1.0], "inductance"), &Options::default());
+    assert!(
+        matches!(&missing, Err(SimulationError::InvalidAnalysis(message))
+            if message.contains("no number `inductance`")),
+        "{missing:?}"
+    );
+    let negative = simulator.dc_sweep(&sweep(vec![1e3, -1.0], "resistance"), &Options::default());
+    assert!(
+        matches!(&negative, Err(SimulationError::InvalidAnalysis(message)) if message.contains("R1")),
+        "{negative:?}"
+    );
+    // A failed sweep leaves the circuit as it was.
+    let after = simulator.operating_point(&Options::default()).unwrap();
+    assert_close(
+        after.values[index(&simulator, "out")],
+        5.0 * 2e3 / 3e3,
+        1e-14,
+    );
 }
 
 #[test]
@@ -1075,6 +1185,7 @@ fn analyses_name_what_they_cannot_find() {
     let options = Options::default();
     let missing = DcSweep {
         source: "V9".to_owned(),
+        parameter: None,
         levels: vec![1.0],
     };
     assert_eq!(
@@ -1508,6 +1619,7 @@ fn a_circuit_of_a_foundrys_device_elaborates_but_no_analysis_solves_it() {
         Analysis::OperatingPoint,
         Analysis::DcSweep(DcSweep {
             source: "V1".to_owned(),
+            parameter: None,
             levels: vec![0.0, 1.8],
         }),
         Analysis::Ac(Ac {

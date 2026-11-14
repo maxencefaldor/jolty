@@ -1,3 +1,4 @@
+use jolty_ir::Parameters;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -7,6 +8,16 @@ use crate::{
     Binding, Branch, BranchKind, Device, Input, Interface, NativeDevice, NativeModel, Node, Output,
     ParameterError, Real, Source,
 };
+
+/// The parameters of an independent source held at a constant `level`, in volts or
+/// amperes, whatever its waveform: those of a source whose waveform is that level. A DC
+/// sweep makes its source from them at each of its levels.
+#[must_use]
+pub fn held_source(level: f64) -> Parameters {
+    let mut parameters = Parameters::new();
+    parameters.insert("waveform".to_owned(), serde_json::json!({ "dc": level }));
+    parameters
+}
 
 /// The parameters of an independent source.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -25,7 +36,6 @@ pub struct SourceParameters<R: Real = f64> {
 pub struct VoltageSource<R: Real = f64> {
     branch: CurrentBranch,
     waveform: Waveform<R>,
-    held: Option<f64>,
 }
 
 impl NativeModel for VoltageSource {
@@ -51,22 +61,19 @@ impl<R: Real> NativeDevice<R> for VoltageSource<R> {
         Ok(Self {
             branch: CurrentBranch::new(binding, "current", terminals),
             waveform: parameters.waveform,
-            held: None,
         })
     }
 }
 
 impl<R: Real> Device<R> for VoltageSource<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let level = level(self.held, &self.waveform, input.time) * input.source_scale;
+        let level = self.waveform.value(input.time) * input.source_scale;
         let voltage = self.branch.voltage(input);
         self.branch.add(input, output, -(level - voltage));
     }
 
     fn breakpoints(&self, start: f64, stop: f64, times: &mut Vec<f64>) {
-        if self.held.is_none() {
-            self.waveform.breakpoints(start, stop, times);
-        }
+        self.waveform.breakpoints(start, stop, times);
     }
 
     fn as_source(&mut self) -> Option<&mut dyn Source> {
@@ -75,10 +82,6 @@ impl<R: Real> Device<R> for VoltageSource<R> {
 }
 
 impl<R: Real> Source for VoltageSource<R> {
-    fn hold(&mut self, level: Option<f64>) {
-        self.held = level;
-    }
-
     fn level(&self) -> f64 {
         self.waveform.value(0.0).value()
     }
@@ -95,7 +98,6 @@ pub struct CurrentSource<R: Real = f64> {
     positive: Node,
     negative: Node,
     waveform: Waveform<R>,
-    held: Option<f64>,
 }
 
 impl NativeModel for CurrentSource {
@@ -121,22 +123,19 @@ impl<R: Real> NativeDevice<R> for CurrentSource<R> {
             positive: binding.terminal(0),
             negative: binding.terminal(1),
             waveform: parameters.waveform,
-            held: None,
         })
     }
 }
 
 impl<R: Real> Device<R> for CurrentSource<R> {
     fn evaluate(&mut self, input: &Input<'_>, output: &mut Output<'_, R>) {
-        let current = level(self.held, &self.waveform, input.time) * input.source_scale;
+        let current = self.waveform.value(input.time) * input.source_scale;
         output.add_residual(self.positive, current);
         output.add_residual(self.negative, -current);
     }
 
     fn breakpoints(&self, start: f64, stop: f64, times: &mut Vec<f64>) {
-        if self.held.is_none() {
-            self.waveform.breakpoints(start, stop, times);
-        }
+        self.waveform.breakpoints(start, stop, times);
     }
 
     fn as_source(&mut self) -> Option<&mut dyn Source> {
@@ -145,10 +144,6 @@ impl<R: Real> Device<R> for CurrentSource<R> {
 }
 
 impl<R: Real> Source for CurrentSource<R> {
-    fn hold(&mut self, level: Option<f64>) {
-        self.held = level;
-    }
-
     fn level(&self) -> f64 {
         self.waveform.value(0.0).value()
     }
@@ -161,11 +156,6 @@ impl<R: Real> Source for CurrentSource<R> {
             derivative[negative.index()] -= 1.0;
         }
     }
-}
-
-/// The level of a source: the held level if any, else its waveform's level at `time`.
-fn level<R: Real>(held: Option<f64>, waveform: &Waveform<R>, time: f64) -> R {
-    held.map_or_else(|| waveform.value(time), R::constant)
 }
 
 #[cfg(test)]
@@ -182,8 +172,9 @@ mod tests {
         let mut bench = Bench::new::<VoltageSource>(FIVE_VOLTS);
         let output = bench.evaluate(&[7.0, 2.0, -1e-3]);
         assert_close(&output.residual, &[-1e-3, 1e-3, 0.0]);
-        bench.device().as_source().unwrap().hold(Some(3.0));
-        assert_close(&bench.evaluate(&[7.0, 2.0, 0.0]).residual, &[0.0, 0.0, 2.0]);
+        let held = serde_json::Value::Object(held_source(3.0)).to_string();
+        let mut held = Bench::new::<VoltageSource>(&held);
+        assert_close(&held.evaluate(&[7.0, 2.0, 0.0]).residual, &[0.0, 0.0, 2.0]);
     }
 
     #[test]

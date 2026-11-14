@@ -412,7 +412,8 @@ fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyD
         Outcome::DcSweep(sweep) => {
             result.set_item("kind", "dc_sweep")?;
             result.set_item("source", sweep.source)?;
-            result.set_item("quantity", quantity_name(sweep.quantity))?;
+            result.set_item("parameter", sweep.parameter)?;
+            result.set_item("quantity", sweep.quantity.map(quantity_name))?;
             result.set_item("levels", PyArray1::from_vec(py, sweep.levels))?;
             result.set_item("values", stacked(py, sweep.values)?)?;
             add_observations(&result, sweep.observations)?;

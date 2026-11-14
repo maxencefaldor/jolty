@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use jolty_models::Device;
 
-use crate::Values;
 use crate::elaborate::ElaborationError;
 use crate::elaborated::{Elaborated, Origin, Origins};
 use crate::logic::Events;
@@ -20,6 +19,17 @@ use crate::newton::Workspace;
 use crate::observe::Observer;
 use crate::operating_point::Remembered;
 use crate::solver::Solver;
+use crate::{ParameterId, Values};
+
+/// What a DC sweep holds away from the run's own values: an independent source, at a
+/// level, or a number of a device's parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Held {
+    /// The independent source at this index among the devices.
+    Level(usize),
+    /// This number of a device's parameters.
+    Number(ParameterId),
+}
 
 /// What one run of an elaborated circuit writes.
 #[derive(Debug)]
@@ -31,6 +41,9 @@ pub(crate) struct State {
     /// What each device whose numbers the run's values replace is made from, by device,
     /// and `None` for the others, made from their own; empty when they replace none.
     pub(crate) patched: Vec<Option<Origin>>,
+    /// What each device a DC sweep holds away from the run's values is made from, by the
+    /// device's index.
+    pub(crate) swept: BTreeMap<usize, Origin>,
     /// Where a reset makes the devices, before they take the place of the run's.
     spare: Vec<Box<dyn Device>>,
     pub(crate) solver: Solver<f64>,
@@ -41,14 +54,14 @@ pub(crate) struct State {
     pub(crate) observer: Observer,
     /// The last operating point solved, what it was solved under and the state it left,
     /// which an analysis about the same operating point takes instead of solving it again.
-    /// Once the devices are made, only holding a source and driving the logic change their
-    /// DC equations: the sources held are part of what it was solved under, and an
+    /// Once the devices are made, only what a sweep holds and driving the logic change
+    /// their DC equations: what is held is part of what it was solved under, and an
     /// operating point starts from the logic reset and leaves the logic and its drivers
     /// as the one remembered left them.
     pub(crate) remembered: Option<Remembered>,
-    /// The sources held away from their own levels, at the level each is held at, by the
-    /// index of its device.
-    pub(crate) held: BTreeMap<usize, f64>,
+    /// What a DC sweep holds away from the run's own values, at the level or the number
+    /// each is held at.
+    pub(crate) held: BTreeMap<Held, f64>,
     /// How many times the run has solved for an operating point, or a DC sweep's first
     /// level, rather than taken the last one's.
     pub(crate) solves: usize,
@@ -67,6 +80,7 @@ impl State {
             temperature,
             devices,
             patched,
+            swept: BTreeMap::new(),
             spare: Vec::new(),
             solver: Solver::new(
                 Arc::clone(&elaborated.ordering),
@@ -132,6 +146,7 @@ impl State {
             return replayed;
         }
         self.temperature = temperature;
+        self.swept.clear();
         self.solver.reset();
         self.workspace.reset();
         self.events.reset(&elaborated.logic);
@@ -156,9 +171,11 @@ fn made(
     temperature: f64,
     devices: &mut Vec<Box<dyn Device>>,
 ) -> Result<bool, ElaborationError> {
+    let swept = BTreeMap::new();
     let origins = Origins {
         elaborated,
         patched,
+        swept: &swept,
         temperature,
     };
     let mut problems = Vec::new();

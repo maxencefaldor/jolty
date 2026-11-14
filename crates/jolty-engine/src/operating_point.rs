@@ -20,6 +20,7 @@ use serde::Deserialize;
 
 use crate::logic::{Bound, Events, detected};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
+use crate::state::Held;
 use crate::{Observation, Options, SimulationError, Simulator};
 
 /// The largest conductance gmin stepping starts from, in siemens.
@@ -90,9 +91,9 @@ pub(crate) struct Solved {
 /// it left the logic in.
 #[derive(Debug, Clone)]
 pub(crate) struct Remembered {
-    /// The sources held away from their own levels, at the level each was held at, by the
-    /// index of its device.
-    held: BTreeMap<usize, f64>,
+    /// What a sweep held away from the run's own values, at the level or the number each
+    /// was held at.
+    held: BTreeMap<Held, f64>,
     /// The options it was solved under, as a DC solution reads them.
     options: Options,
     /// The DC solution from zero, before the logic settled with it.
@@ -104,13 +105,13 @@ pub(crate) struct Remembered {
 impl Remembered {
     /// Whether it was solved with the sources `held` under `options`, so that solving
     /// again would find it again.
-    fn solved_under(&self, held: &BTreeMap<usize, f64>, options: &Options) -> bool {
+    fn solved_under(&self, held: &BTreeMap<Held, f64>, options: &Options) -> bool {
         self.held == *held && self.options == read_at_dc(options)
     }
 
     /// Whether it solves the DC equations of the sources `held` and of `options`, which
     /// may differ from those it was solved under only in where Newton iteration stops.
-    fn solves_alike(&self, held: &BTreeMap<usize, f64>, options: &Options) -> bool {
+    fn solves_alike(&self, held: &BTreeMap<Held, f64>, options: &Options) -> bool {
         self.held == *held && read_by_equations(&self.options) == read_by_equations(options)
     }
 }

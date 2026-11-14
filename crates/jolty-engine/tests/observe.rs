@@ -252,6 +252,7 @@ fn terminals_that_share_a_net_or_join_the_reference_keep_their_own_currents() {
         .dc_sweep(
             &DcSweep {
                 source: "V1".to_owned(),
+                parameter: None,
                 levels: vec![3.0],
             },
             &tight(),

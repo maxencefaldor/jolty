@@ -248,6 +248,7 @@ fn a_dc_sweep_leaves_the_operating_point_to_the_analyses_after_it() {
     let sweep = |levels: Vec<f64>| {
         Analysis::DcSweep(DcSweep {
             source: "V1".to_owned(),
+            parameter: None,
             levels,
         })
     };

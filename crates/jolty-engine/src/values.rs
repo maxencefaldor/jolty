@@ -60,6 +60,16 @@ impl Values {
     pub fn patches(&self) -> &[(ParameterId, f64)] {
         &self.patches
     }
+
+    /// The number that replaces `parameter`'s, if any.
+    #[must_use]
+    pub fn get(&self, parameter: ParameterId) -> Option<f64> {
+        let found = self
+            .patches
+            .binary_search_by_key(&parameter, |&(patched, _)| patched)
+            .ok()?;
+        Some(self.patches[found].1)
+    }
 }
 
 /// The numbers of an elaborated circuit's device instances: their nominal values, by
@@ -108,6 +118,15 @@ impl Table {
     /// Each parameter's nominal value.
     pub(crate) fn nominal(&self) -> &[f64] {
         &self.nominal
+    }
+
+    /// The parameters of `device`, by their indices: none for a device the table does not
+    /// hold.
+    pub(crate) fn range(&self, device: usize) -> std::ops::Range<usize> {
+        match (self.firsts.get(device), self.counts.get(device)) {
+            (Some(&first), Some(&count)) => first..first + count,
+            _ => 0..0,
+        }
     }
 
     /// The device whose number `parameter` is, by its index, and the number's place among

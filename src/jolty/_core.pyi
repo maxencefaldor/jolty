@@ -49,7 +49,8 @@ class OperatingPointsOutcome(TypedDict):
 class SweepOutcome(Observed):
     kind: Literal["dc_sweep"]
     source: str
-    quantity: Literal["voltage", "current", "temperature", "state"]
+    parameter: str | None
+    quantity: Literal["voltage", "current", "temperature", "state"] | None
     levels: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]

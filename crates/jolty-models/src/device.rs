@@ -66,12 +66,9 @@ pub trait Device<R: Real = f64>: fmt::Debug + Send {
     }
 }
 
-/// An independent source, whose level analyses can hold or excite.
+/// An independent source, whose level analyses excite. A DC sweep holds one at a level
+/// by making it again from the parameters [`held_source`](crate::held_source) gives.
 pub trait Source {
-    /// Holds the source at a constant `level`, as a DC sweep does, or releases it to its
-    /// waveform with `None`.
-    fn hold(&mut self, level: Option<f64>);
-
     /// The source's own level at the operating point: its waveform's at time zero.
     fn level(&self) -> f64;
 

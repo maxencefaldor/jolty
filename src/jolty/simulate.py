@@ -704,10 +704,17 @@ class Simulation:
                 )
                 return results.OperatingPoints(unknowns, points)
             case "dc_sweep":
+                quantity = outcome["quantity"]
+                if quantity is None:
+                    message = (
+                        f"the sweep of `{outcome['source']}`'s {outcome['parameter']} "
+                        "is of a parameter, which a result reads only of a source"
+                    )
+                    raise SimulationError(message)
                 return results.Sweep(
                     unknowns,
                     outcome["source"],
-                    outcome["quantity"],
+                    quantity,
                     outcome["levels"],
                     outcome["values"],
                     nets,
