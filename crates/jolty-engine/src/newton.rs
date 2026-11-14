@@ -247,7 +247,7 @@ impl Simulator {
         // The devices evaluate, and the work on each unknown and each stored entry splits,
         // as the options spread them, the same bits either way.
         let instances = self.elaborated.devices.len();
-        self.state.tasks = options.parallelism.evaluation(instances, x.len());
+        self.state.tasks = options.parallelism.evaluation(instances);
         let inside = options.parallelism.inside(x.len());
         // A DC solution starts afresh from its guess; a time step goes on from the last.
         let afresh = matches!(mode, Mode::Dc { .. });

@@ -163,22 +163,19 @@ impl Parallelism {
 
     /// How a run's devices split their evaluation among threads: every group at once, each
     /// in tasks of [`Parallelism::min_instances_per_task`] of its instances, then the
-    /// values of the circuit's equations gathered in tasks of as many as a thread the run
-    /// may use takes of its `unknowns` unknowns, the residuals in a task per thread and the
-    /// matrix's stored entries in as many more as there are more of them; none, to evaluate
-    /// them on the run's thread, when that is unset, the circuit's `instances` fill no more
-    /// than one task, or the run may use one thread alone. The bits found are the same
-    /// either way.
+    /// values of the circuit's equations gathered in parts where their contributions
+    /// balance, as many as the threads ask for as they take them; none, to evaluate them on
+    /// the run's thread, when that is unset, the circuit's `instances` fill no more than one
+    /// task, or the run may use one thread alone. The bits found are the same either way.
     #[must_use]
-    pub fn evaluation(&self, instances: usize, unknowns: usize) -> Option<jolty_models::Tasks> {
+    pub fn evaluation(&self, instances: usize) -> Option<jolty_models::Tasks> {
         let per_task = NonZeroUsize::new(self.min_instances_per_task?)?;
-        let threads = self.usable();
-        if threads < 2 || instances <= per_task.get() {
+        if self.usable() < 2 || instances <= per_task.get() {
             return None;
         }
-        let instances = per_task;
-        let targets = NonZeroUsize::new(unknowns.div_ceil(threads).max(1))?;
-        Some(jolty_models::Tasks { instances, targets })
+        Some(jolty_models::Tasks {
+            instances: per_task,
+        })
     }
 
     /// How a run's Newton iteration splits its work on each of the circuit's `unknowns`

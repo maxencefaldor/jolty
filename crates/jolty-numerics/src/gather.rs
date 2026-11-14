@@ -7,6 +7,8 @@
 //! map's order. Splitting the targets among threads changes nothing of that order, so the
 //! sums are the same bits however the work is split.
 
+use rayon::iter::ParallelIterator;
+
 /// The position that stands for no target, or no source: the reference node's row, or an
 /// entry with the reference in its row or its column.
 pub const UNMAPPED: u32 = u32::MAX;
@@ -29,6 +31,13 @@ pub struct GatherMap {
     starts: Vec<usize>,
     /// The position in the slab of each source, target after target.
     sources: Vec<u32>,
+}
+
+/// A run of consecutive targets of a parallel gather, from `first` on, and the part of each
+/// plane that holds them.
+struct Part<'a, const N: usize> {
+    first: usize,
+    planes: [&'a mut [f64]; N],
 }
 
 impl GatherMap {
@@ -110,13 +119,14 @@ impl GatherMap {
         self.raise_from(0, slab, into);
     }
 
-    /// Folds the values their sources hold in each of the `N` slabs `slabs` into the
-    /// targets of the plane of `into` of the same place, as its fold of `folds` says: added
-    /// as [`GatherMap::add`] adds them, or raised to as [`GatherMap::raise`] raises them,
-    /// one after another in the map's order. The targets split among the threads of the
-    /// current rayon pool in chunks of `per_task`, and each target's sources are read once
-    /// for every plane: the same bits as each plane folded alone, for any number of threads
-    /// and any chunk.
+    /// Sets each target of the plane of `into` of the same place to the fold of the values
+    /// its sources hold in each of the `N` slabs `slabs`, as its fold of `folds` says: from
+    /// zero, each added as [`GatherMap::add`] adds them, or raised to as
+    /// [`GatherMap::raise`] raises them, one after another in the map's order. The targets
+    /// split among the threads of the current rayon pool where their sources balance, into
+    /// as many parts as rayon's adaptive splitting asks for as the threads take them, and
+    /// each target's sources are read once for every plane: the same bits as each plane
+    /// zeroed and folded alone, for any number of threads.
     ///
     /// # Panics
     ///
@@ -126,27 +136,47 @@ impl GatherMap {
         slabs: [&[f64]; N],
         into: [&mut [f64]; N],
         folds: [Fold; N],
-        per_task: usize,
     ) {
-        let (targets, per_task) = (self.targets(), per_task.max(1));
-        let mut rest = into.map(|plane| &mut plane[..targets]);
-        rayon::scope(|scope| {
-            let mut first = 0;
-            while first < targets {
-                let count = per_task.min(targets - first);
-                let chunk = rest.each_mut().map(|plane| {
-                    let (head, tail) = std::mem::take(plane).split_at_mut(count);
-                    *plane = tail;
-                    head
-                });
-                scope.spawn(move |_| self.fold_from(first, slabs, chunk, folds));
-                first += count;
-            }
-        });
+        let targets = self.targets();
+        let whole = Part {
+            first: 0,
+            planes: into.map(|plane| &mut plane[..targets]),
+        };
+        rayon::iter::split(whole, |part| self.halve(part))
+            .for_each(|part| self.fold_from(part.first, slabs, part.planes, folds));
     }
 
-    /// Folds their sources into the targets from `first` on, held by `into`, each plane as
-    /// its fold says.
+    /// `part` split in two at the target where its sources balance, or whole with `None`
+    /// when it holds one target or none.
+    fn halve<'a, const N: usize>(&self, part: Part<'a, N>) -> (Part<'a, N>, Option<Part<'a, N>>) {
+        let count = part.planes.first().map_or(0, |plane| plane.len());
+        if count < 2 {
+            return (part, None);
+        }
+        let starts = &self.starts[part.first..=part.first + count];
+        let middle = starts[0] + (starts[count] - starts[0]) / 2;
+        // The first target whose sources start at the middle or after, kept off both ends.
+        let at = starts
+            .partition_point(|&start| start < middle)
+            .clamp(1, count - 1);
+        let mut planes = part.planes;
+        let later = planes.each_mut().map(|plane| {
+            let (head, tail) = std::mem::take(plane).split_at_mut(at);
+            *plane = head;
+            tail
+        });
+        let first = part.first;
+        (
+            Part { first, planes },
+            Some(Part {
+                first: first + at,
+                planes: later,
+            }),
+        )
+    }
+
+    /// Sets the targets from `first` on, held by `into`, to the fold of their sources from
+    /// zero, each plane as its fold says.
     fn fold_from<const N: usize>(
         &self,
         first: usize,
@@ -157,7 +187,7 @@ impl GatherMap {
         let starts = &self.starts[first..];
         let count = into.first().map_or(0, |plane| plane.len());
         for (target, bounds) in starts.windows(2).take(count).enumerate() {
-            let mut values: [f64; N] = std::array::from_fn(|plane| into[plane][target]);
+            let mut values = [0.0; N];
             for &source in &self.sources[bounds[0]..bounds[1]] {
                 for ((value, slab), fold) in values.iter_mut().zip(slabs).zip(folds) {
                     let term = slab[source as usize];
@@ -219,13 +249,12 @@ mod tests {
     }
 
     proptest! {
-        /// A sum is the sources added one after another in the map's order, the same bits
-        /// whatever chunks the targets are split into and however many threads take them.
+        /// A sum is the sources added one after another in the map's order; folded in
+        /// parallel, from zero, it is the same bits however many threads take the targets,
+        /// at 1, 2, 3 and 8.
         #[test]
         fn any_split_gives_the_same_bits(
             pairs in prop::collection::vec((0..40u32, any::<f64>()), 0..400),
-            per_task in 1..50usize,
-            threads in 1..6usize,
         ) {
             let slab: Vec<f64> = pairs
                 .iter()
@@ -240,28 +269,34 @@ mod tests {
             }
             let mut serial = start.clone();
             map.add(&slab, &mut serial);
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-            let mut largest = start.clone();
-            map.raise(&slab, &mut largest);
-            // The sums and the largest folded at once, and a second plane of sums, of the
-            // sources halved.
-            let halved: Vec<f64> = slab.iter().map(|value| value / 2.0).collect();
-            let mut halves = start.clone();
-            map.add(&halved, &mut halves);
-            let (mut parallel, mut raised, mut both) = (start.clone(), start.clone(), start);
-            pool.install(|| {
-                map.fold_in_parallel(
-                    [&slab, &slab, &halved],
-                    [&mut parallel, &mut raised, &mut both],
-                    [Fold::Add, Fold::Raise, Fold::Add],
-                    per_task,
-                );
-            });
-            let bits = |values: &[f64]| values.iter().map(|value| value.to_bits()).collect::<Vec<_>>();
             prop_assert_eq!(bits(&serial), bits(&expected));
-            prop_assert_eq!(bits(&parallel), bits(&expected));
-            prop_assert_eq!(bits(&raised), bits(&largest));
-            prop_assert_eq!(bits(&both), bits(&halves));
+            // The sums and the largest from zero, and a second plane of sums, of the sources
+            // halved, each folded alone.
+            let halved: Vec<f64> = slab.iter().map(|value| value / 2.0).collect();
+            let (mut sums, mut largest, mut halves) = (vec![0.0; 40], vec![0.0; 40], vec![0.0; 40]);
+            map.add(&slab, &mut sums);
+            map.raise(&slab, &mut largest);
+            map.add(&halved, &mut halves);
+            for threads in [1, 2, 3, 8] {
+                let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+                // Folded at once, over whatever the targets held.
+                let (mut parallel, mut raised, mut both) =
+                    (start.clone(), start.clone(), start.clone());
+                pool.install(|| {
+                    map.fold_in_parallel(
+                        [&slab, &slab, &halved],
+                        [&mut parallel, &mut raised, &mut both],
+                        [Fold::Add, Fold::Raise, Fold::Add],
+                    );
+                });
+                prop_assert_eq!(bits(&parallel), bits(&sums), "{} threads", threads);
+                prop_assert_eq!(bits(&raised), bits(&largest), "{} threads", threads);
+                prop_assert_eq!(bits(&both), bits(&halves), "{} threads", threads);
+            }
         }
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|value| value.to_bits()).collect()
     }
 }

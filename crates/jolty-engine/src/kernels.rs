@@ -373,9 +373,8 @@ fn every_corpus_circuit_assembles_as_its_devices_and_reads_them_as_they_evaluate
 
 #[test]
 fn a_parallel_evaluation_is_the_serial_one_bit_for_bit() {
-    let tasks = |instances: usize, targets: usize| Tasks {
+    let tasks = |instances: usize| Tasks {
         instances: instances.try_into().expect("a task holds an instance"),
-        targets: targets.try_into().expect("a task gathers a target"),
     };
     for (name, stop) in [("bjt_amp", 2e-5), ("buck", 2e-6)] {
         let (circuit, analyses, options) = fixture(name);
@@ -386,7 +385,7 @@ fn a_parallel_evaluation_is_the_serial_one_bit_for_bit() {
                 .num_threads(threads)
                 .build()
                 .expect("a pool");
-            for split in [tasks(1, 1), tasks(3, 7), tasks(64, 1024)] {
+            for split in [tasks(1), tasks(3), tasks(64)] {
                 let (parallel, _) = pool.install(|| {
                     outcomes(&circuit, &analyses, &options, |simulator| {
                         simulator.state.tasks = Some(split);
@@ -408,7 +407,8 @@ fn a_parallel_evaluation_of_a_thousand_transistors_is_the_serial_one_bit_for_bit
         .expect("the circuit elaborates");
     let unknowns = simulator.unknowns().len();
     // Voltages and currents all over, at which every transistor limits its steps from the
-    // last, and some evaluate in reverse.
+    // last, and some evaluate in reverse; each evaluation in parallel sets every value its
+    // gather writes, over what the one before left.
     let points: Vec<Vec<f64>> = (1..=3)
         .map(|point| {
             (0..unknowns)
@@ -440,10 +440,9 @@ fn a_parallel_evaluation_of_a_thousand_transistors_is_the_serial_one_bit_for_bit
             .num_threads(threads)
             .build()
             .expect("a pool");
-        for (instances, targets) in [(1, 1), (7, 100), (64, 1024), (1000, 4096)] {
+        for instances in [1, 7, 64, 1000] {
             let split = Tasks {
                 instances: instances.try_into().expect("a task holds an instance"),
-                targets: targets.try_into().expect("a task gathers a target"),
             };
             let parallel = pool.install(|| evaluations(Some(split)));
             assert!(

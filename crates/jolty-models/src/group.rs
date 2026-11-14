@@ -735,14 +735,11 @@ pub enum Changed {
 }
 
 /// How a run of the groups splits its work among the threads of the current rayon pool:
-/// the instances of a group a task evaluates, and the values of the circuit's equations a
-/// task gathers.
+/// the instances of a group a task evaluates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tasks {
     /// The instances a task evaluates.
     pub instances: NonZeroUsize,
-    /// The values a task gathers.
-    pub targets: NonZeroUsize,
 }
 
 /// The slab: each instance's block of residuals, scales and charges of its local unknowns,
@@ -1126,10 +1123,11 @@ impl Runs {
     }
 
     /// Evaluates every instance of `groups` at `input` and assembles their contributions in
-    /// `into`, which it zeroes first: serially without `tasks`, each instance's block added
-    /// as soon as it is written, and else in parallel, every group at once and each in the
-    /// tasks of instances `tasks` sets, every block written first and then gathered.
-    /// Returns whether an instance limited its voltages.
+    /// `into`, whatever it held: serially without `tasks`, `into` zeroed and each instance's
+    /// block added as soon as it is written, and else in parallel, every group at once and
+    /// each in the tasks of instances `tasks` sets, every block written first and then
+    /// gathered into `into`, each value from zero, as the threads take them. Returns whether
+    /// an instance limited its voltages.
     pub fn evaluate(
         &mut self,
         groups: &Groups,
@@ -1137,7 +1135,6 @@ impl Runs {
         into: &mut Contributions,
         tasks: Option<Tasks>,
     ) -> bool {
-        into.clear();
         let [residual, scale, charge] = &mut self.slab.rows;
         let [conductance, capacitance] = &mut self.slab.entries;
         let (mut rows, mut entries) = (
@@ -1153,6 +1150,7 @@ impl Runs {
             ))
         };
         let Some(tasks) = tasks else {
+            into.clear();
             let mut limited = false;
             for (group, run) in runs {
                 if let Some(blocks) = blocks(group) {
@@ -1175,7 +1173,6 @@ impl Runs {
                 }
             }
         });
-        let per_task = tasks.targets.get();
         let [residual, scale, charge] = &self.slab.rows;
         let [conductance, capacitance] = &self.slab.entries;
         let (rows, slots) = groups.gathers();
@@ -1187,17 +1184,22 @@ impl Runs {
             capacitance: stored,
             ..
         } = into;
-        rows.fold_in_parallel(
-            [residual, scale, charge],
-            [sums, largest, held],
-            [Fold::Add, Fold::Raise, Fold::Add],
-            per_task,
-        );
-        slots.fold_in_parallel(
-            [conductance, capacitance],
-            [conducted, stored],
-            [Fold::Add, Fold::Add],
-            per_task,
+        // The unknowns' values and the stored entries' gather at once, as the threads free.
+        rayon::join(
+            || {
+                rows.fold_in_parallel(
+                    [residual, scale, charge],
+                    [sums, largest, held],
+                    [Fold::Add, Fold::Raise, Fold::Add],
+                );
+            },
+            || {
+                slots.fold_in_parallel(
+                    [conductance, capacitance],
+                    [conducted, stored],
+                    [Fold::Add, Fold::Add],
+                );
+            },
         );
         self.limited.iter().any(|&limited| limited)
     }
