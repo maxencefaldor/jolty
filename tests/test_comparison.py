@@ -319,10 +319,14 @@ def test_each_session_is_scored_in_a_process_of_its_own(tmp_path: Path) -> None:
     assert "the design does not meet the plan of bias.py" in verdicts[1].reasons
 
 
-def test_a_scorer_that_crashes_fails_the_work(tmp_path: Path) -> None:
+def test_a_scorer_that_crashes_fails_the_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
     from run import scored  # noqa: PLC0415 - importable only once the path holds it
 
+    # As on CI, which forces colors: the scorer's traceback is read, not shown.
+    monkeypatch.setenv("FORCE_COLOR", "1")
     task = tmp_path / "broken"
     task.mkdir()
     (task / "scorer.py").write_text(

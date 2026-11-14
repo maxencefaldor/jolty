@@ -215,13 +215,19 @@ def scored(task: Path, work: Path, arm: Arm) -> Verdict:
     It scores in a process of its own, as score.py does, since the scorer runs the
     agent's scripts: a module one imports from beside it, or a change it makes to
     the path, stays in that process, and a crash ends that process alone, which fails
-    the work, with the last line the scorer wrote to its error stream.
+    the work, with the last line the scorer wrote to its error stream. That line is
+    read, not shown, so Python writes it without colors, whatever the environment
+    forces.
     """
     path = work / VERDICT
     path.unlink(missing_ok=True)
     command = [sys.executable, str(SCORE), str(task), str(work), "--arm", str(arm)]
     finished = subprocess.run(  # noqa: S603 - the scorer, beside the runner
-        [*command, "--verdict", str(path)], capture_output=True, text=True, check=False
+        [*command, "--verdict", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHON_COLORS": "0"},
     )
     if path.is_file():
         return Verdict.model_validate_json(path.read_text(encoding="utf-8"))
