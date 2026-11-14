@@ -82,6 +82,14 @@ fn a_kernels_evaluation_allocates_nothing() {
             r#"{"level": 3, "channel": "p", "drain_resistance": 10, "source_resistance": 0.5}"#,
             &[-3.0, -2.0, 0.0, 0.0],
         ),
+        ("vdmos", "{}", &[12.0, 6.0, 0.0]),
+        (
+            "vdmos",
+            r#"{"channel": "p", "drain_resistance": 0.05, "source_resistance": 2,
+                "gate_resistance": 3, "body_resistance": 0.01, "quasi_saturation_resistance": 1,
+                "quasi_saturation_voltage": 10, "breakdown_voltage": 30, "thermal": true}"#,
+            &[-12.0, -6.0, 0.0, 5.0],
+        ),
         ("bipolar_transistor", "{}", &[5.0, 0.7, 0.0]),
         (
             "bipolar_transistor",

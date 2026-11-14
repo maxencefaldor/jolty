@@ -52,8 +52,9 @@ pub struct PreparedDiode<R: Real> {
     /// The series resistance's conductance, or its resistance when its current is an
     /// unknown.
     series: R,
-    scaled: Scaled<R>,
+    junction: Junction<R>,
     transit_time: R,
+    temperature: f64,
     flicker: Flicker,
 }
 
@@ -64,9 +65,11 @@ pub struct DiodeMemory {
     last_voltage: f64,
 }
 
-/// What a diode's temperature sets.
+/// A junction's numbers at its temperature: its current, its breakdown and its depletion
+/// charge, and how its steps are limited, as ngspice's diode and the body diode of its
+/// VDMOS share them.
 #[derive(Debug, Clone, Copy)]
-struct Scaled<R: Real> {
+pub(crate) struct Junction<R: Real> {
     saturation_current: R,
     /// The emission coefficient times the thermal voltage.
     slope: R,
@@ -74,12 +77,11 @@ struct Scaled<R: Real> {
     critical_voltage: f64,
     depletion: Option<Depletion<R>>,
     breakdown: Option<Breakdown<R>>,
-    temperature: f64,
 }
 
-/// A diode's reverse breakdown.
+/// A junction's reverse breakdown.
 #[derive(Debug, Clone, Copy)]
-struct Breakdown<R: Real> {
+pub(crate) struct Breakdown<R: Real> {
     /// The voltage below which the junction breaks down, matched to the breakdown current.
     voltage: R,
     /// The breakdown emission coefficient times the thermal voltage.
@@ -93,7 +95,7 @@ impl<R: Real> Breakdown<R> {
     /// ngspice moves the breakdown voltage so the current there is the breakdown current,
     /// by a fixed-point iteration, and leaves it where a breakdown current too small for
     /// the saturation current cannot be met.
-    fn new(voltage: R, current: R, saturation: R, slope: R, vt: R) -> Self {
+    pub(crate) fn new(voltage: R, current: R, saturation: R, slope: R, vt: R) -> Self {
         /// How closely the current at the matched voltage meets the breakdown current.
         const MATCH: f64 = 1e-12;
         if current.value() < (saturation * voltage / vt).value() {
@@ -205,11 +207,12 @@ impl Kernel for Diode {
         let series_resistance =
             ParameterError::non_negative("series_resistance", parameters.series_resistance)?;
         let transit_time = ParameterError::non_negative("transit_time", parameters.transit_time)?;
-        let scaled = parameters.scaled(temperature)?;
+        let junction = parameters.junction(temperature)?;
         Ok(PreparedDiode {
             series: series_value(series_resistance),
-            scaled,
+            junction,
             transit_time,
+            temperature: temperature.value(),
             flicker,
         })
     }
@@ -240,36 +243,13 @@ impl Kernel for Diode {
         stamp: &mut Stamp<'_, R>,
     ) {
         shape.series.add(prepared.series, at, stamp);
-        let applied = shape.junction.voltage(at);
-        let voltage = at
-            .limiting
-            .then(|| prepared.limit(applied, memory.last_voltage))
-            .flatten()
-            .map_or(applied, |limited| {
-                stamp.mark_limited();
-                limited
-            });
-        memory.last_voltage = voltage;
-
-        // Evaluate at the limited voltage and extend linearly to the applied one, so the
-        // Newton step that follows solves the circuit linearized at the limited voltage.
-        let (current, conductance) = prepared.current(voltage);
-        let total_conductance = conductance + at.gmin;
-        let total_current = current + at.gmin * voltage;
-        shape.junction.add_current(
+        prepared.junction.add(
+            &shape.junction,
+            prepared.transit_time,
+            &mut memory.last_voltage,
+            at,
             stamp,
-            total_current + total_conductance * (applied - voltage),
         );
-        shape.junction.add_conductance(stamp, total_conductance);
-
-        let (depletion_charge, depletion_capacitance) =
-            depletion_charge(prepared.scaled.depletion.as_ref(), voltage);
-        let charge = depletion_charge + prepared.transit_time * current;
-        let capacitance = depletion_capacitance + prepared.transit_time * conductance;
-        shape
-            .junction
-            .add_charge(stamp, charge + capacitance * (applied - voltage));
-        shape.junction.add_capacitance(stamp, capacitance);
     }
 
     /// The series resistance's thermal noise, and the junction current's shot and flicker
@@ -280,9 +260,9 @@ impl Kernel for Diode {
         at: &Local<'_>,
         sources: &mut Vec<NoiseSource>,
     ) {
-        let thermal = ("series thermal", prepared.scaled.temperature);
+        let thermal = ("series thermal", prepared.temperature);
         shape.series.noise(prepared.series, thermal, sources);
-        let (current, _) = prepared.current(shape.junction.voltage(at));
+        let (current, _) = prepared.junction.current(shape.junction.voltage(at));
         let nodes = shape.junction.equations();
         sources.push(NoiseSource::shot("shot", nodes, current.value()));
         prepared.flicker.add(nodes, current.value(), sources);
@@ -290,9 +270,9 @@ impl Kernel for Diode {
 }
 
 impl<R: Real> DiodeParameters<R> {
-    /// What the diode's `temperature`, in kelvins, sets, once each parameter it reads is
-    /// checked.
-    fn scaled(&self, temperature: R) -> Result<Scaled<R>, ParameterError> {
+    /// The diode's junction at its `temperature`, in kelvins, once each parameter it reads
+    /// is checked.
+    fn junction(&self, temperature: R) -> Result<Junction<R>, ParameterError> {
         let &Self {
             saturation_current,
             emission_coefficient,
@@ -348,28 +328,85 @@ impl<R: Real> DiodeParameters<R> {
                 })
             })
             .transpose()?;
-        let slope = emission_coefficient * vt;
-        Ok(Scaled {
+        Ok(Junction::new(
             saturation_current,
-            slope,
-            critical_voltage: critical_voltage(saturation_current.value(), slope.value()),
-            depletion: Depletion::new(
+            emission_coefficient * vt,
+            Depletion::new(
                 junction_capacitance,
                 junction_potential,
                 grading_coefficient,
                 depletion_coefficient,
             ),
             breakdown,
-            temperature: temperatures.actual.value(),
-        })
+        ))
     }
 }
 
-impl<R: Real> PreparedDiode<R> {
+impl<R: Real> Junction<R> {
+    /// A junction of `saturation_current` and exponential `slope`, the emission
+    /// coefficient times the thermal voltage, which holds the `depletion` charge, if any,
+    /// and breaks down as `breakdown` says, if at all.
+    pub(crate) fn new(
+        saturation_current: R,
+        slope: R,
+        depletion: Option<Depletion<R>>,
+        breakdown: Option<Breakdown<R>>,
+    ) -> Self {
+        Self {
+            saturation_current,
+            slope,
+            critical_voltage: critical_voltage(saturation_current.value(), slope.value()),
+            depletion,
+            breakdown,
+        }
+    }
+
+    /// Adds the junction's current across `pair`, with gmin across it, and its depletion
+    /// charge and the diffusion charge of `transit_time`, its voltage limited from `last`'s,
+    /// which takes the voltage it is evaluated at, and returns the capacitance there.
+    pub(crate) fn add(
+        &self,
+        pair: &Pair,
+        transit_time: R,
+        last: &mut f64,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) -> R {
+        let applied = pair.voltage(at);
+        let voltage = at
+            .limiting
+            .then(|| self.limit(applied, *last))
+            .flatten()
+            .map_or(applied, |limited| {
+                stamp.mark_limited();
+                limited
+            });
+        *last = voltage;
+
+        // Evaluate at the limited voltage and extend linearly to the applied one, so the
+        // Newton step that follows solves the circuit linearized at the limited voltage.
+        let (current, conductance) = self.current(voltage);
+        let total_conductance = conductance + at.gmin;
+        let total_current = current + at.gmin * voltage;
+        pair.add_current(
+            stamp,
+            total_current + total_conductance * (applied - voltage),
+        );
+        pair.add_conductance(stamp, total_conductance);
+
+        let (depletion_charge, depletion_capacitance) =
+            depletion_charge(self.depletion.as_ref(), voltage);
+        let charge = depletion_charge + transit_time * current;
+        let capacitance = depletion_capacitance + transit_time * conductance;
+        pair.add_charge(stamp, charge + capacitance * (applied - voltage));
+        pair.add_capacitance(stamp, capacitance);
+        capacitance
+    }
+
     /// The junction's step to `applied` limited from the last evaluation's, `last`, as
     /// ngspice limits it: about the breakdown voltage when the junction nears it.
     fn limit(&self, applied: f64, last: f64) -> Option<f64> {
-        match self.scaled.breakdown {
+        match self.breakdown {
             Some(breakdown)
                 if applied
                     < (10.0 * breakdown.slope.value() - breakdown.voltage.value()).min(0.0) =>
@@ -379,33 +416,27 @@ impl<R: Real> PreparedDiode<R> {
                     -(applied + voltage),
                     -(last + voltage),
                     slope,
-                    self.scaled.critical_voltage,
+                    self.critical_voltage,
                 )
                 .map(|limited| -(limited + voltage))
             }
-            _ => limit_junction(
-                applied,
-                last,
-                self.scaled.slope.value(),
-                self.scaled.critical_voltage,
-            ),
+            _ => limit_junction(applied, last, self.slope.value(), self.critical_voltage),
         }
     }
 
     /// The junction's current at `voltage`, and its derivative.
-    fn current(&self, voltage: f64) -> (R, R) {
-        match self.scaled.breakdown {
+    pub(crate) fn current(&self, voltage: f64) -> (R, R) {
+        match self.breakdown {
             Some(breakdown)
-                if voltage < -3.0 * self.scaled.slope.value()
-                    && voltage < -breakdown.voltage.value() =>
+                if voltage < -3.0 * self.slope.value() && voltage < -breakdown.voltage.value() =>
             {
                 let exponential = (-(breakdown.voltage + voltage) / breakdown.slope).exp();
                 (
-                    -self.scaled.saturation_current * exponential,
-                    self.scaled.saturation_current * exponential / breakdown.slope,
+                    -self.saturation_current * exponential,
+                    self.saturation_current * exponential / breakdown.slope,
                 )
             }
-            _ => junction_current(voltage, self.scaled.saturation_current, self.scaled.slope),
+            _ => junction_current(voltage, self.saturation_current, self.slope),
         }
     }
 }

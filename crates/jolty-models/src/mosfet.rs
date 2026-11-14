@@ -17,9 +17,9 @@ use crate::dual::Dual;
 use crate::jfet::Channel;
 use crate::junction::{
     BOLTZMANN, Depletion, ELEMENTARY_CHARGE, Temperatures, band_gap, below_one, critical_voltage,
-    depletion_charge, junction_current, limit_drain, limit_gate, limit_junction,
+    depletion_charge, junction_current, limit_channel, limit_junction,
 };
-use crate::kernel::parts::{self, Nodes, Series, series_value};
+use crate::kernel::parts::{self, Nodes, Oriented, Series, series_value};
 use crate::noise::Flicker;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
@@ -30,14 +30,14 @@ use crate::{
 /// with which models are fitted, rather than CODATA's 8.8541878128e-12.
 const VACUUM_PERMITTIVITY: f64 = 8.854_214_871e-12;
 /// The permittivity of silicon dioxide, in farads per meter.
-const OXIDE_PERMITTIVITY: f64 = 3.9 * VACUUM_PERMITTIVITY;
+pub(crate) const OXIDE_PERMITTIVITY: f64 = 3.9 * VACUUM_PERMITTIVITY;
 /// The permittivity of silicon, in farads per meter.
 const SILICON_PERMITTIVITY: f64 = 11.7 * VACUUM_PERMITTIVITY;
 /// Silicon's intrinsic carrier concentration at 300 K, per cubic meter.
 const INTRINSIC_CONCENTRATION: f64 = 1.45e16;
 /// The oxide thickness, in meters, SPICE takes where none is given: for a level 3
 /// transistor's process, and for any transistor's flicker noise.
-const DEFAULT_OXIDE_THICKNESS: f64 = 1e-7;
+pub(crate) const DEFAULT_OXIDE_THICKNESS: f64 = 1e-7;
 /// The least saturation voltage Meyer's capacitances take, in volts.
 const MEYER_SATURATION: f64 = 0.025;
 
@@ -887,10 +887,11 @@ impl Kernel for Mosfet {
             0.0,
             0.0,
         ];
-        let added = Added {
-            stamp: &shape.stamp,
+        let added = Oriented {
+            nodes: &shape.stamp,
             sign,
             bias: &bias,
+            variables: VARIABLES,
         };
         added.current(stamp, (INNER_DRAIN, INNER_SOURCE), conduction.current);
 
@@ -1299,29 +1300,18 @@ impl<R: Real> PreparedMosfet<R> {
     /// the threshold and the drain's, from whichever end acts as the source, then the step
     /// of the junction with it. Returns `None` when no step needs limiting.
     fn limit(&self, applied: [f64; 3], memory: &MosfetMemory) -> Option<[f64; 3]> {
-        let [mut vgs, mut vds, applied_vbs] = applied;
-        let [_, applied_drain, _] = applied;
+        let [applied_gate, applied_drain, applied_vbs] = applied;
         let [previous_gate, previous_drain, previous_bulk] = memory.last;
         let threshold = memory.threshold.unwrap_or(self.threshold);
-        let mut limited = false;
+        let ([vgs, vds], mut limited) = limit_channel(
+            [applied_gate, applied_drain],
+            [previous_gate, previous_drain],
+            threshold,
+        );
         let mut apply = |value: f64, limit: Option<f64>| {
             limited |= limit.is_some();
             limit.unwrap_or(value)
         };
-        let vgd = vgs - vds;
-        if previous_drain >= 0.0 {
-            vgs = apply(vgs, limit_gate(vgs, previous_gate, threshold));
-            vds = vgs - vgd;
-            vds = apply(vds, limit_drain(vds, previous_drain));
-        } else {
-            let vgd = apply(
-                vgd,
-                limit_gate(vgd, previous_gate - previous_drain, threshold),
-            );
-            vds = vgs - vgd;
-            vds = -apply(-vds, limit_drain(-vds, -previous_drain));
-            vgs = vgd + vds;
-        }
         let [drain, source] = &self.junctions;
         let vbs = if vds >= 0.0 {
             let limit = limit_junction(
@@ -1343,56 +1333,6 @@ impl<R: Real> PreparedMosfet<R> {
             apply(vbd, limit) + vds
         };
         limited.then_some([vgs, vds, vbs])
-    }
-}
-
-/// How a transistor adds what it computes at one bias: through its stamped nodes, oriented
-/// by its channel's sign, extended to the applied voltages.
-struct Added<'a> {
-    stamp: &'a Nodes<4>,
-    sign: f64,
-    bias: &'a Bias,
-}
-
-impl Added<'_> {
-    /// Adds `current`, oriented as an n-channel's, from the stamped node `from` to `to`,
-    /// with its derivatives.
-    fn current<R: Real>(
-        &self,
-        stamp: &mut Stamp<'_, R>,
-        (from, to): (usize, usize),
-        current: Dual<R, 3>,
-    ) {
-        let nodes = self.stamp;
-        nodes.current(
-            stamp,
-            from,
-            to,
-            current.extend(self.bias.beyond) * self.sign,
-        );
-        for (variable, derivative) in VARIABLES.into_iter().zip(current.gradient) {
-            nodes.conductance(stamp, (from, to), variable, derivative);
-        }
-    }
-
-    /// Adds `charge`, oriented as an n-channel's, on the stamped node `on` against
-    /// `against`, with its derivatives.
-    fn charge<R: Real>(
-        &self,
-        stamp: &mut Stamp<'_, R>,
-        (on, against): (usize, usize),
-        charge: Dual<R, 3>,
-    ) {
-        let nodes = self.stamp;
-        nodes.charge(
-            stamp,
-            on,
-            against,
-            charge.extend(self.bias.beyond) * self.sign,
-        );
-        for (variable, derivative) in VARIABLES.into_iter().zip(charge.gradient) {
-            nodes.capacitance(stamp, (on, against), variable, derivative);
-        }
     }
 }
 

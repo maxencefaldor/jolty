@@ -236,6 +236,35 @@ pub(crate) fn limit_gate(new: f64, old: f64, threshold: f64) -> Option<f64> {
     }
 }
 
+/// SPICE's limiting of a field-effect transistor's steps of its gate-source and
+/// drain-source voltages from `old` to `new`, around its `threshold`: the gate's step from
+/// whichever end acted as the source, then the drain's. Returns the voltages as limited, and
+/// whether either step was.
+pub(crate) fn limit_channel(new: [f64; 2], old: [f64; 2], threshold: f64) -> ([f64; 2], bool) {
+    let [mut vgs, mut vds] = new;
+    let [previous_gate, previous_drain] = old;
+    let mut limited = false;
+    let mut apply = |value: f64, limit: Option<f64>| {
+        limited |= limit.is_some();
+        limit.unwrap_or(value)
+    };
+    let vgd = vgs - vds;
+    if previous_drain >= 0.0 {
+        vgs = apply(vgs, limit_gate(vgs, previous_gate, threshold));
+        vds = vgs - vgd;
+        vds = apply(vds, limit_drain(vds, previous_drain));
+    } else {
+        let vgd = apply(
+            vgd,
+            limit_gate(vgd, previous_gate - previous_drain, threshold),
+        );
+        vds = vgs - vgd;
+        vds = -apply(-vds, limit_drain(-vds, -previous_drain));
+        vgs = vgd + vds;
+    }
+    ([vgs, vds], limited)
+}
+
 /// SPICE's limiting of a field-effect transistor's drain voltage's step from `old` to
 /// `new`, both with the drain at or above the source. Returns the limited voltage, or
 /// `None` when `new` needs no limiting.

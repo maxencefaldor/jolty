@@ -49,6 +49,7 @@ mod switch;
 mod testing;
 mod thermal;
 mod topology;
+mod vdmos;
 pub mod waveform;
 
 use std::collections::BTreeMap;
@@ -108,6 +109,7 @@ pub use thermal::{
     ThermalResistance, ThermalResistanceParameters,
 };
 pub use topology::{Branch, BranchKind, Interface};
+pub use vdmos::{Vdmos, VdmosParameters};
 
 /// The models a circuit can use, by name: analog models and logic models, no two of the
 /// same name.
@@ -144,6 +146,7 @@ impl Library {
         library.add(Thermal::<Diode>::new());
         library.add(Thermal::<Jfet>::new());
         library.add(Thermal::<Mosfet>::new());
+        library.add(Thermal::<Vdmos>::new());
         library.add(Native::<Photocell>::new());
         library.add(Native::<VoltageControlledMemristor>::new());
         library.add(Native::<CurrentControlledMemristor>::new());
@@ -213,6 +216,9 @@ mod tests {
     fn examples() -> Vec<(&'static str, Value)> {
         let mosfet = json!({"level": 3, "channel": "p", "oxide_thickness": 1e-8,
             "gate_material": "aluminum", "temperature": 350});
+        let vdmos = json!({"channel": "p", "drain_resistance": 0.02, "breakdown_voltage": 200,
+            "quasi_saturation_resistance": 0.5, "quasi_saturation_voltage": 100,
+            "thermal": true, "temperature_offset": 10});
         let memristor = json!({"on_resistance": 1e3, "off_resistance": 1e5,
             "on_voltage": -1, "off_voltage": 0.5, "on_rate": 1e6, "off_rate": 1e5,
             "law": "exponential", "state": 0.5});
@@ -293,6 +299,7 @@ mod tests {
             ),
             ("thermal_capacitance", json!({"capacitance": 2})),
             ("thermal_resistance", json!({"resistance": 10})),
+            ("vdmos", vdmos),
             (
                 "voltage_controlled_current_source",
                 json!({"transconductance": 1e-3}),
@@ -426,6 +433,7 @@ mod tests {
                 "resistor",
                 "thermal_capacitance",
                 "thermal_resistance",
+                "vdmos",
                 "voltage_controlled_current_source",
                 "voltage_controlled_memristor",
                 "voltage_controlled_switch",

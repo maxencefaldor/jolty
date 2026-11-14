@@ -1,9 +1,11 @@
 //! What kernels stamp their contributions through, by local index: the entries among some
 //! of an instance's local unknowns, a two-terminal element's, a branch whose current is a
-//! local unknown of its own, a series resistance, and the voltages an instance is evaluated
-//! at, limited from its last evaluation's.
+//! local unknown of its own, a series resistance, fixed or varying with a voltage, the
+//! voltages an instance is evaluated at, limited from its last evaluation's, and what a
+//! transistor adds at them.
 
 use super::{Layout, Local, Stamp};
+use crate::dual::Dual;
 use crate::{NoiseSource, Quantity, Real, Unknown};
 
 /// The resistance below which a resistance carries its current as an unknown, in ohms.
@@ -310,6 +312,74 @@ impl Series {
         }
     }
 
+    /// The number a `resistance` stamps with in the form this one takes, which its value
+    /// where it was laid out chose: its conductance where it is a conductance, and the
+    /// resistance itself where its current is an unknown or there is none, whatever the
+    /// resistance has become since, as at another temperature.
+    pub(crate) fn value_of<R: Real>(&self, resistance: R) -> R {
+        match self {
+            Self::Conductance(_) => resistance.recip(),
+            Self::None | Self::Current(..) => resistance,
+        }
+    }
+
+    /// Claims the entries through which the resistance's current depends on the voltage of
+    /// `plus` over `minus`, two local unknowns, which its value follows.
+    pub(crate) fn varying(&self, layout: &mut Layout, (plus, minus): (usize, usize)) -> Varying {
+        let rows = match self {
+            Self::None => [NOWHERE; 2],
+            Self::Conductance(Pair(nodes)) => [nodes.node(POSITIVE), nodes.node(NEGATIVE)],
+            Self::Current(branch, _) => [branch.current, NOWHERE],
+        };
+        let mut claim = |row: usize| {
+            if row == NOWHERE {
+                [NOWHERE; 2]
+            } else {
+                [layout.entry(row, plus), layout.entry(row, minus)]
+            }
+        };
+        Varying {
+            entries: rows.map(&mut claim),
+        }
+    }
+
+    /// Adds the current through `resistance`, in this one's form, with its derivatives,
+    /// the resistance moving by `slope` per volt of the voltage whose entries `varying`
+    /// claims.
+    pub(crate) fn add_varying<R: Real>(
+        &self,
+        (resistance, slope): (R, R),
+        varying: &Varying,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let [[first_plus, first_minus], [second_plus, second_minus]] = varying.entries;
+        match self {
+            Self::None => {}
+            Self::Conductance(pair) => {
+                let voltage = pair.voltage(at);
+                let conductance = resistance.recip();
+                pair.add_current(stamp, conductance * voltage);
+                pair.add_conductance(stamp, conductance);
+                // i = v / r, so its derivative along the voltage r follows is −v · r′ / r².
+                let along = -(slope * voltage) * conductance * conductance;
+                stamp.add_conductance(first_plus, along);
+                stamp.add_conductance(first_minus, -along);
+                stamp.add_conductance(second_plus, -along);
+                stamp.add_conductance(second_minus, along);
+            }
+            Self::Current(branch, entry) => {
+                let current = branch.current(at);
+                let residual = R::constant(branch.voltage(at)) - resistance * current;
+                branch.add(at, stamp, residual);
+                stamp.add_conductance(*entry, -resistance);
+                let along = -slope * current;
+                stamp.add_conductance(first_plus, along);
+                stamp.add_conductance(first_minus, -along);
+            }
+        }
+    }
+
     /// Appends the resistance's thermal noise at `temperature`, for its [`series_value`]
     /// `value`, named `name`, to `sources`.
     pub(crate) fn noise<R: Real>(
@@ -331,6 +401,14 @@ impl Series {
             ),
         });
     }
+}
+
+/// The entries through which a series resistance's current depends on a voltage its value
+/// follows: those of each row the resistance stamps, its terminal's and its internal
+/// node's, or its current's, at the voltage's two nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Varying {
+    entries: [[usize; 2]; 2],
 }
 
 /// The number a series `resistance` stamps with: its conductance where it is a conductance,
@@ -375,5 +453,58 @@ impl<const N: usize> Bias<N> {
             .fold(R::constant(0.0), |moved, (slope, beyond)| {
                 moved + slope * beyond
             })
+    }
+}
+
+/// What a transistor adds at one bias: currents and charges between its stamped nodes,
+/// computed oriented as an n-channel's and turned by its channel's `sign`, each extended
+/// from the voltages it is evaluated at to the applied ones, with its derivatives with
+/// respect to the voltage across each of the `variables`' pairs of stamped nodes.
+pub(crate) struct Oriented<'a, const M: usize, const N: usize> {
+    pub(crate) nodes: &'a Nodes<M>,
+    pub(crate) sign: f64,
+    pub(crate) bias: &'a Bias<N>,
+    pub(crate) variables: [(usize, usize); N],
+}
+
+impl<const M: usize, const N: usize> Oriented<'_, M, N> {
+    /// Adds `current`, oriented as an n-channel's, from the stamped node `from` to `to`,
+    /// with its derivatives.
+    pub(crate) fn current<R: Real>(
+        &self,
+        stamp: &mut Stamp<'_, R>,
+        (from, to): (usize, usize),
+        current: Dual<R, N>,
+    ) {
+        let nodes = self.nodes;
+        nodes.current(
+            stamp,
+            from,
+            to,
+            current.extend(self.bias.beyond) * self.sign,
+        );
+        for (variable, derivative) in self.variables.into_iter().zip(current.gradient) {
+            nodes.conductance(stamp, (from, to), variable, derivative);
+        }
+    }
+
+    /// Adds `charge`, oriented as an n-channel's, on the stamped node `on` against
+    /// `against`, with its derivatives.
+    pub(crate) fn charge<R: Real>(
+        &self,
+        stamp: &mut Stamp<'_, R>,
+        (on, against): (usize, usize),
+        charge: Dual<R, N>,
+    ) {
+        let nodes = self.nodes;
+        nodes.charge(
+            stamp,
+            on,
+            against,
+            charge.extend(self.bias.beyond) * self.sign,
+        );
+        for (variable, derivative) in self.variables.into_iter().zip(charge.gradient) {
+            nodes.capacitance(stamp, (on, against), variable, derivative);
+        }
     }
 }
