@@ -468,6 +468,7 @@ impl Simulator {
         let Ok(mut factors) = solver.factor(&matrix) else {
             return;
         };
+        let mut phasors = vec![Complex64::default(); values.len()];
         for &(element, net) in &self.system.logic.drivers {
             let Some(current) = self.system.devices[element]
                 .device
@@ -477,7 +478,7 @@ impl Simulator {
                 continue;
             };
             // Raising the driver's voltage by a volt adds -1 to its equation's residual.
-            let mut phasors = vec![Complex64::default(); values.len()];
+            phasors.fill(Complex64::default());
             phasors[current.index()] = Complex64::new(1.0, 0.0);
             if factors.solve(&mut phasors).is_ok() {
                 self.events
