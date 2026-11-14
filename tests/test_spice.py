@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -586,6 +588,26 @@ def test_a_download_is_checked_and_kept(tmp_path: Path) -> None:
     assert kept.read_text() == published.read_text()
     published.unlink()
     assert spice.fetch(published.as_uri(), digest.upper(), cache) == kept
+
+
+def test_a_file_fetched_at_once_by_several_is_kept_whole_for_each(
+    tmp_path: Path,
+) -> None:
+    published = tmp_path / "part.lib"
+    published.write_bytes(bytes(range(256)) * 4096)
+    digest = hashlib.sha256(published.read_bytes()).hexdigest()
+    cache = tmp_path / "cache"
+    # Fetches of a mebibyte, started together, write it at the same time.
+    fetching = 8
+    together = threading.Barrier(fetching)
+
+    def fetch(_: int) -> bytes:
+        together.wait()
+        return spice.fetch(published.as_uri(), digest, cache).read_bytes()
+
+    with ThreadPoolExecutor(fetching) as pool:
+        kept = list(pool.map(fetch, range(fetching)))
+    assert kept == [published.read_bytes()] * fetching
 
 
 def test_a_download_must_match_its_digest(tmp_path: Path) -> None:

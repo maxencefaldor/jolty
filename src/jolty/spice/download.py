@@ -9,6 +9,7 @@ is always what was checked, and is downloaded once into the cache of
 import hashlib
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
@@ -46,7 +47,10 @@ def fetch(url: str, sha256: str, cache: Path | None = None) -> Path:
         message = f"{url} has SHA-256 digest {digest}, not {sha256.lower()}"
         raise DownloadError(message)
     path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_name(f"{name}.partial")
+    # Each download is written to a file of its own, then renamed onto the kept one at
+    # once: fetches of one file at the same time never write into the same file, and
+    # none reads a file another is still writing.
+    partial = path.with_name(f"{name}.{uuid.uuid4().hex}.partial")
     partial.write_bytes(contents)
     partial.replace(path)
     return path

@@ -97,8 +97,12 @@ def root(settings: Settings | None = None) -> Path:
                     and (member.isfile() or member.isdir())
                 ]
                 packed.extractall(staging, members=members, filter="data")
-        if not (kept / LIBRARY).is_file():
+        try:
             staging.rename(kept)
+        except OSError:
+            # Another process fetching the release at the same time kept it first.
+            if not (kept / LIBRARY).is_file():
+                raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return kept
