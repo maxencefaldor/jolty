@@ -363,11 +363,25 @@ impl Simulator {
             .ok_or_else(|| {
                 refused("it would claim other unknowns or entries, which a sweep cannot".to_owned())
             })?;
-        self.state.devices[index] = made;
-        match origin {
+        let previous = match origin {
             Some(origin) => self.state.swept.insert(index, origin),
             None => self.state.swept.remove(&index),
         };
+        // A kernel's instance evaluates what its device is now made of.
+        let kept = self
+            .state
+            .prepare_again(&self.elaborated, index)
+            .map_err(|error| refused(error.to_string()));
+        if !matches!(kept, Ok(true)) {
+            match previous {
+                Some(previous) => self.state.swept.insert(index, previous),
+                None => self.state.swept.remove(&index),
+            };
+            return Err(kept.err().unwrap_or_else(|| {
+                refused("it would change the kernel's shape, which a sweep cannot".to_owned())
+            }));
+        }
+        self.state.devices[index] = made;
         // At its own level, a device held leaves the DC equations as they are.
         match level.filter(|level| level.total_cmp(&swept.own).is_ne()) {
             Some(level) => self.state.held.insert(swept.held, level),

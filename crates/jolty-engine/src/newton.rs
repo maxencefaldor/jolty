@@ -185,6 +185,9 @@ impl Simulator {
             Mode::Dc { source_scale, .. } => (None, source_scale),
             Mode::Step { time, .. } => (Some(time), 1.0),
         };
+        // The devices evaluate as the options spread them, the same bits either way.
+        let values = self.elaborated.pattern.len().max(x.len());
+        self.state.tasks = options.parallelism.evaluation(values);
         // A DC solution starts afresh from its guess; a time step goes on from the last.
         let afresh = matches!(mode, Mode::Dc { .. });
         let mut stepped_within_tolerance = false;

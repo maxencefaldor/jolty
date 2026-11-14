@@ -147,7 +147,13 @@ impl State {
         }
         let mut runs = elaborated.groups.runs();
         let changed = |device| changes(elaborated, &patched, device, true);
-        if !prepared(elaborated, (&mut runs, &patched), temperature, changed)? {
+        let swept = BTreeMap::new();
+        if !prepared(
+            elaborated,
+            (&mut runs, &patched, &swept),
+            temperature,
+            changed,
+        )? {
             return Ok(None);
         }
         runs.commit();
@@ -187,7 +193,12 @@ impl State {
                 let again = moved || old.get(device).is_some_and(Option::is_some);
                 changes(elaborated, &patched, device, again)
             };
-            replayed = prepared(elaborated, (&mut self.runs, &patched), temperature, changed);
+            replayed = prepared(
+                elaborated,
+                (&mut self.runs, &patched, &self.swept),
+                temperature,
+                changed,
+            );
         }
         let made_again = matches!(replayed, Ok(true));
         if made_again {
@@ -271,15 +282,48 @@ impl State {
         if !problems.is_empty() {
             return Err(ElaborationError::new(problems));
         }
-        self.temperature = temperature;
-        if self.patched.is_empty() && made.iter().any(|(_, origin, _)| origin.is_some()) {
+        // The kernels' instances among the devices made again are prepared again from the
+        // same origins, so that the groups evaluate what the devices are made of.
+        // The origins of the devices made again replace their old ones, which come back if
+        // the kernels refuse them.
+        let was_empty = self.patched.is_empty();
+        if was_empty && made.iter().any(|(_, origin, _)| origin.is_some()) {
             self.patched.resize_with(elaborated.devices.len(), || None);
         }
-        for (index, origin, device) in made {
-            self.devices[index] = device;
-            if let Some(patched) = self.patched.get_mut(index) {
-                *patched = origin;
+        let mut previous = Vec::with_capacity(made.len());
+        for (index, origin, _) in &mut made {
+            if let Some(slot) = self.patched.get_mut(*index) {
+                previous.push((*index, std::mem::replace(slot, origin.take())));
             }
+        }
+        let again: Vec<usize> = made.iter().map(|(index, _, _)| *index).collect();
+        let patched = &self.patched;
+        let changed = |device: usize| {
+            if again.binary_search(&device).is_ok() {
+                changes(elaborated, patched, device, true)
+            } else {
+                Changed::Nothing
+            }
+        };
+        let kept = prepared(
+            elaborated,
+            (&mut self.runs, &self.patched, &self.swept),
+            temperature,
+            changed,
+        );
+        if !matches!(kept, Ok(true)) {
+            for (index, origin) in previous {
+                self.patched[index] = origin;
+            }
+            if was_empty {
+                self.patched.clear();
+            }
+            return kept;
+        }
+        self.runs.commit();
+        self.temperature = temperature;
+        for (index, _, device) in made {
+            self.devices[index] = device;
             let origins = Origins {
                 elaborated,
                 patched: &self.patched,
@@ -289,6 +333,37 @@ impl State {
             self.observer.remake(origins, index);
         }
         Ok(true)
+    }
+
+    /// Prepares again the instance of a kernel the device at `device` is, if it is one,
+    /// from its origin as the run now makes it: swept, patched or its own. Returns whether
+    /// it keeps its group's kernel and shape; when it does not, or its numbers make a
+    /// problem, it keeps the numbers it had.
+    ///
+    /// # Errors
+    ///
+    /// Returns the problem the device's numbers make.
+    pub(crate) fn prepare_again(
+        &mut self,
+        elaborated: &Elaborated,
+        device: usize,
+    ) -> Result<bool, ElaborationError> {
+        let swept = self.swept.contains_key(&device);
+        let changed = |index: usize| match (index == device, swept) {
+            (false, _) => Changed::Nothing,
+            (true, true) => Changed::Parameters,
+            (true, false) => changes(elaborated, &self.patched, index, true),
+        };
+        let kept = prepared(
+            elaborated,
+            (&mut self.runs, &self.patched, &self.swept),
+            self.temperature,
+            changed,
+        )?;
+        if kept {
+            self.runs.commit();
+        }
+        Ok(kept)
     }
 }
 
@@ -325,22 +400,23 @@ fn changes(
 }
 
 /// Prepares, in `runs`, each instance of a kernel of `elaborated` whose device `changed`
-/// says has changed,
-/// for a run at `temperature`, from its origin of `patched` or its own, keeping the numbers
-/// apart until `runs` commits them. Returns whether each has its group's kernel and shape.
+/// says has changed, for a run at `temperature`, from its origin of `swept`, of `patched`
+/// or its own, keeping the numbers apart until `runs` commits them. Returns whether each
+/// has its group's kernel and shape.
 ///
 /// # Errors
 ///
 /// Returns the problem of each device whose parameters are out of range.
 fn prepared(
     elaborated: &Elaborated,
-    (runs, patched): (&mut Runs, &[Option<Origin>]),
+    (runs, patched, swept): (&mut Runs, &[Option<Origin>], &BTreeMap<usize, Origin>),
     temperature: f64,
     changed: impl Fn(usize) -> Changed,
 ) -> Result<bool, ElaborationError> {
     let origins = Origins {
         elaborated,
         patched,
+        swept,
         temperature,
     };
     runs.prepare(

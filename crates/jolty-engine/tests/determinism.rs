@@ -919,3 +919,157 @@ fn a_product_runs_every_sample_at_every_corner() {
     let batch = Batch::new(elaborated, analyses, options, Vec::new()).expect("a batch");
     assert_same_everywhere(&batch, &product, &[vec![0..6, 6..12]]);
 }
+
+/// A diode forward from a 1 V source through 1 kΩ, its saturation current 10 fA.
+fn forward_diode() -> Circuit {
+    let document = json!({
+        "format": "jolty-circuit", "version": 1, "top": "forward",
+        "components": {"forward": {"ports": [{"name": "0", "role": "ground"}], "instances": [
+            {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
+             "terminals": {"positive": "top", "negative": "0"}},
+            {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+             "terminals": {"a": "top", "b": "anode"}},
+            {"id": "D1", "of": {"device": "diode"}, "parameters": {"saturation_current": 1e-14},
+             "terminals": {"anode": "anode", "cathode": "0"}}
+        ]}}
+    });
+    Circuit::from_json(&document.to_string()).expect("a valid circuit")
+}
+
+/// The saturation currents a sweep or a chain takes the diode through, a decade apart, so
+/// that its forward voltage moves by about 60 mV from one to the next.
+const SATURATION_CURRENTS: [f64; 4] = [1e-15, 1e-14, 1e-13, 1e-12];
+
+/// The voltage across the diode at the operating point of `elaborated` at `values`, from a
+/// simulator made afresh for them.
+fn fresh_anode(elaborated: &Arc<Elaborated>, values: Values) -> f64 {
+    let mut simulator = Simulator::from_elaborated(Arc::clone(elaborated), values).expect("a run");
+    let Ok(jolty_engine::Outcome::OperatingPoint(point)) =
+        simulator.run(&Analysis::OperatingPoint, &Options::default())
+    else {
+        panic!("an operating point");
+    };
+    let anode = simulator.unknown("anode").expect("the anode").index();
+    point.values[anode]
+}
+
+/// The tolerance the anode's voltage is found within: SPICE's default voltage tolerance
+/// and a thousandth of it, as Newton iteration stops.
+fn within_tolerance(found: f64, expected: f64) -> bool {
+    (found - expected).abs() <= 1e-6 + 1e-3 * expected.abs()
+}
+
+/// A DC sweep of a diode's own number makes its kernel's instance evaluate each value: at
+/// each, the anode lies where a run made afresh for that value finds it.
+#[test]
+fn a_sweep_of_a_kernels_number_evaluates_each_value() {
+    let elaborated = shared(&forward_diode());
+    let sweep: Analysis = serde_json::from_value(json!({"dc_sweep": {
+        "source": "D1", "parameter": "saturation_current", "levels": SATURATION_CURRENTS,
+    }}))
+    .expect("a sweep");
+    let mut simulator =
+        Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
+    let Ok(jolty_engine::Outcome::DcSweep(swept)) = simulator.run(&sweep, &Options::default())
+    else {
+        panic!("a sweep");
+    };
+    let anode = simulator.unknown("anode").expect("the anode").index();
+    let parameter = elaborated
+        .parameter("D1", "saturation_current")
+        .expect("a saturation current");
+    for (values, current) in swept.values.iter().zip(SATURATION_CURRENTS) {
+        let mut at = Values::default();
+        at.set(parameter, current);
+        let expected = fresh_anode(&elaborated, at);
+        assert!(
+            within_tolerance(values[anode], expected),
+            "at {current:e} A the sweep finds {} V, a fresh run {expected} V",
+            values[anode]
+        );
+    }
+}
+
+/// A warm chain through a diode's own numbers makes its kernel's instance evaluate each
+/// run's: at each, the anode lies where a run made afresh for those numbers finds it.
+#[test]
+fn a_warm_chain_through_a_kernels_numbers_evaluates_each_runs() {
+    let elaborated = shared(&forward_diode());
+    let parameter = elaborated
+        .parameter("D1", "saturation_current")
+        .expect("a saturation current");
+    let grid = Grid::new(
+        vec![(Axis::Parameter(parameter), SATURATION_CURRENTS.to_vec())],
+        true,
+    )
+    .expect("a grid");
+    assert_eq!(grid.chain(), SATURATION_CURRENTS.len() as u64);
+    let batch = Batch::new(
+        Arc::clone(&elaborated),
+        vec![Analysis::OperatingPoint],
+        Options::default(),
+        Vec::new(),
+    )
+    .expect("a batch");
+    let (found, _) = run_on(&batch, &grid, &only(0..grid.len()), 1);
+    let anode = elaborated
+        .unknowns()
+        .iter()
+        .position(|unknown| unknown.name == "anode")
+        .expect("the anode");
+    for (index, current) in SATURATION_CURRENTS.into_iter().enumerate() {
+        let mut at = Values::default();
+        at.set(parameter, current);
+        let expected = fresh_anode(&elaborated, at);
+        let bits = found[&(index as u64)].0[0].0[anode];
+        let chained = f64::from_bits(bits);
+        assert!(
+            within_tolerance(chained, expected),
+            "at {current:e} A the chain finds {chained} V, a fresh run {expected} V"
+        );
+    }
+}
+
+/// A run whose options let its devices evaluate in parallel finds, on pools of 2, 3 and 8
+/// threads and in tasks of 1, 3 and 64 instances, the bits it finds on its own thread:
+/// the amplifier's operating point, response and transient, through its transistor's
+/// kernel and every other device's.
+#[test]
+fn devices_evaluated_in_parallel_find_what_they_find_on_one_thread() {
+    let (circuit, analyses, options) = benchmark("bjt_amp");
+    let elaborated = shared(&circuit);
+    let serial: Vec<Bits> = {
+        let mut simulator =
+            Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
+        analyses
+            .iter()
+            .map(|analysis| bits(&simulator.run(analysis, &options)))
+            .collect()
+    };
+    for threads in [2, 3, 8] {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("a pool");
+        for instances in [1, 3, 64] {
+            let parallel = Options {
+                parallelism: Parallelism {
+                    min_instances_per_task: Some(instances),
+                    ..options.parallelism.clone()
+                },
+                ..options.clone()
+            };
+            assert!(parallel.parallelism.spreads());
+            let found: Vec<Bits> = pool.install(|| {
+                let mut simulator =
+                    Simulator::from_elaborated(Arc::clone(&elaborated), Values::default())
+                        .expect("a run");
+                analyses
+                    .iter()
+                    .map(|analysis| bits(&simulator.run(analysis, &parallel)))
+                    .collect()
+            });
+            assert_eq!(found, serial, "{threads} threads, tasks of {instances}");
+        }
+    }
+}

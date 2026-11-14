@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use jolty_models::Quantity;
 use rayon::prelude::*;
 use serde::Deserialize;
+use std::num::NonZeroUsize;
 
 use crate::SimulationError;
 
@@ -63,8 +64,8 @@ pub struct Parallelism {
     /// The fewest frequencies, right-hand sides or parameters' derivatives a task takes
     /// when a run spreads them; none, by default, to take them all on the run's thread.
     pub min_solves_per_task: Option<usize>,
-    /// The fewest device instances a task evaluates, when devices evaluate in parallel;
-    /// none until they do.
+    /// The device instances a task evaluates when a run evaluates its devices in
+    /// parallel; none, by default, to evaluate them on the run's thread.
     pub min_instances_per_task: Option<usize>,
     /// The fewest unknowns a circuit has for its Newton iteration's work on each unknown to
     /// run in parallel; none until it does.
@@ -92,7 +93,24 @@ impl Parallelism {
     /// A run that may not touches no thread but its own.
     #[must_use]
     pub const fn spreads(&self) -> bool {
-        self.min_solves_per_task.is_some()
+        self.min_solves_per_task.is_some() || self.min_instances_per_task.is_some()
+    }
+
+    /// How a run's devices split their evaluation among threads: tasks of
+    /// [`Parallelism::min_instances_per_task`] instances each, then the circuit's `values`
+    /// values gathered in a task per thread the run may use; none, to evaluate them on the
+    /// run's thread, when that is unset or the run may use one thread alone. The bits
+    /// found are the same either way.
+    #[must_use]
+    pub fn evaluation(&self, values: usize) -> Option<jolty_models::Tasks> {
+        let instances = NonZeroUsize::new(self.min_instances_per_task?)?;
+        let threads = rayon::current_num_threads();
+        let threads = self.threads.map_or(threads, |most| most.min(threads));
+        if threads < 2 {
+            return None;
+        }
+        let targets = NonZeroUsize::new(values.div_ceil(threads).max(1))?;
+        Some(jolty_models::Tasks { instances, targets })
     }
 
     /// `each` of every one of `items`, in their order, spread over [`Parallelism::tasks`]
