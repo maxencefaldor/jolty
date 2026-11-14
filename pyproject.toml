@@ -34,6 +34,7 @@ dev = [
     "maturin",
     "mcp>=2.1",
     "pytest",
+    "pytest-xdist",
     "ruff",
     "rumdl",
     "ty",
@@ -124,12 +125,17 @@ testpaths = ["src", "tests"]
 # The tests share harness modules, `differential` and `strategies`, which they import
 # from there.
 pythonpath = ["tests"]
+# The tests run in a process per processor, pytest-xdist's. Each test of random circuits
+# is one item that runs for minutes, so a process that finishes its share takes tests
+# still waiting behind another's, rather than wait idle: worksteal.
 addopts = [
     "--import-mode=importlib",
     "--doctest-modules",
     "--strict-config",
     "--strict-markers",
     "-ra",
+    "--numprocesses=auto",
+    "--dist=worksteal",
 ]
 filterwarnings = ["error"]
 xfail_strict = true
