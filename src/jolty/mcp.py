@@ -91,7 +91,10 @@ device's thermal, shot and flicker noise, referred to the input source if given,
 with jolty.specs.noise_density (in V/√Hz, such as 10 * nV / rtHz) and
 integrated_noise, and PoleZero(source=None, output=None, reference=None): the poles of
 the linearized circuit, and the zeros of the transfer function from source to output,
-read with jolty.specs.damping and dominant_pole. Unknowns
+read with jolty.specs.damping and dominant_pole, and TransferFunction(source, output,
+reference=None): SPICE's .tf, the DC gain from an independent source to a net's
+voltage or a voltage source's current, the resistance the source sees and the one the
+output sees. Unknowns
 are named by path: a net such as out or stage/mid, and the current through a source or
 inductor such as V1:current. A result records the instances its plan's or its
 analysis's record names, as Plan(..., record=["X1/**", "!X1/bias/**"]) or

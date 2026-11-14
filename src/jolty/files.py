@@ -67,7 +67,7 @@ _EPOCH: Final = (1980, 1, 1, 0, 0, 0)
 
 _HEADER: Final = "header"
 
-_VERSION: Final = 6
+_VERSION: Final = 7
 """The version of the results file's format that jolty writes and reads."""
 
 
@@ -147,6 +147,16 @@ class _PolesZeros(_Model):
     recording: int
 
 
+class _Transfer(_Model):
+    kind: Literal["transfer_function"] = "transfer_function"
+    source: str
+    input: results.Quantity
+    output: str
+    reference: str | None
+    strategy: str
+    recording: int
+
+
 type _Entry = Annotated[
     _Point
     | _Points
@@ -156,7 +166,8 @@ type _Entry = Annotated[
     | _Sensitivities
     | _LoopGain
     | _NoiseSpectrum
-    | _PolesZeros,
+    | _PolesZeros
+    | _Transfer,
     Field(discriminator="kind"),
 ]
 
@@ -504,12 +515,27 @@ def _save_linear(
     result: results.Sensitivities
     | results.LoopGain
     | results.NoiseSpectrum
-    | results.PolesZeros,
+    | results.PolesZeros
+    | results.Transfer,
     arrays: dict[str, np.ndarray],
     recordings: dict[results.Recording, int],
 ) -> _Entry:
-    """The header's entry of sensitivities, a loop gain, a noise spectrum or poles."""
+    """The header's entry of a small-signal result or of sensitivities."""
     match result:
+        case results.Transfer():
+            arrays[f"{name}.transfer"] = np.array(
+                [result.gain, result.input_resistance, result.output_resistance]
+            )
+            point = result.operating_point
+            arrays.update(_point_arrays(f"{name}.operating_point", point))
+            return _Transfer(
+                source=result.source,
+                input=result.input,
+                output=result.output,
+                reference=result.reference,
+                strategy=point.strategy,
+                recording=_indexed(recordings, point.recording),
+            )
         case results.Sensitivities():
             arrays[f"{name}.parameters"] = np.array(
                 [parameter.value for parameter in result.parameters], dtype=float
@@ -632,13 +658,34 @@ def _load(
 def _load_linear(
     data: Mapping[str, np.ndarray],
     name: str,
-    entry: _Sensitivities | _LoopGain | _NoiseSpectrum | _PolesZeros,
+    entry: _Sensitivities | _LoopGain | _NoiseSpectrum | _PolesZeros | _Transfer,
     header: _Header,
     recordings: tuple[results.Recording, ...],
 ) -> results.Result:
-    """The sensitivities, loop gain, noise spectrum or poles stored under `name`."""
+    """The small-signal result or the sensitivities stored under `name`."""
     unknowns = header.unknowns
     match entry:
+        case _Transfer():
+            gain, input_resistance, output_resistance = (
+                float(value) for value in data[f"{name}.transfer"]
+            )
+            return results.Transfer(
+                unknowns,
+                entry.source,
+                entry.input,
+                entry.output,
+                entry.reference,
+                gain,
+                input_resistance,
+                output_resistance,
+                _point(
+                    data,
+                    f"{name}.operating_point",
+                    entry.strategy,
+                    header,
+                    recordings[entry.recording],
+                ),
+            )
         case _Sensitivities(outputs=outputs, parameters=named, result=differentiated):
             parameters = tuple(
                 results.Parameter(instance, parameter, float(value))
@@ -653,6 +700,7 @@ def _load_linear(
                 | results.LoopGain
                 | results.NoiseSpectrum
                 | results.PolesZeros
+                | results.Transfer
                 | results.OperatingPoints,
             ):
                 message = (
@@ -729,7 +777,8 @@ def _names(result: results.Result) -> _Names:
         results.Response
         | results.LoopGain
         | results.NoiseSpectrum
-        | results.PolesZeros,
+        | results.PolesZeros
+        | results.Transfer,
     ):
         return _names(result.operating_point)
     return _Names(unknowns=result.unknowns, nets=result.nets)

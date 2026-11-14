@@ -63,6 +63,7 @@ from jolty.plan import (
     Recorded,
     Sensitivity,
     Stability,
+    TransferFunction,
     Transient,
     Variants,
 )
@@ -580,6 +581,10 @@ class Simulation:
     ) -> results.NoiseSpectrum: ...
     @overload
     def run(
+        self, analysis: TransferFunction, options: Options | None = None
+    ) -> results.Transfer: ...
+    @overload
+    def run(
         self, analysis: PoleZero, options: Options | None = None
     ) -> results.PolesZeros: ...
     def run(self, analysis: Analysis, options: Options | None = None) -> results.Result:
@@ -915,6 +920,18 @@ class Simulation:
                     derivatives,
                     differentiated,
                 )
+            case "transfer_function":
+                return results.Transfer(
+                    unknowns,
+                    outcome["source"],
+                    outcome["input"],
+                    outcome["output"],
+                    outcome["reference"],
+                    outcome["gain"],
+                    outcome["input_resistance"],
+                    outcome["output_resistance"],
+                    self._point(outcome["operating_point"], recording),
+                )
             case "stability":
                 return results.LoopGain(
                     unknowns,
@@ -1052,10 +1069,10 @@ class Simulation:
 
     def _linear_shape(
         self,
-        analysis: Sensitivity | Stability | Noise | PoleZero,
+        analysis: Sensitivity | Stability | Noise | PoleZero | TransferFunction,
         point: results.OperatingPoint,
     ) -> results.Result:
-        """A result of sensitivities, a loop gain, noise or poles, as `_shape` makes it.
+        """A small-signal result or sensitivities, as `_shape` makes it.
 
         It is of `analysis`, about the operating point `point`.
         """
@@ -1073,6 +1090,21 @@ class Simulation:
                 )
             case Noise():
                 return self._noise_shape(analysis, point)
+            case TransferFunction():
+                # A voltage source's current is an unknown of its own, named after it.
+                branch = f"{analysis.source}:current"
+                held = any(unknown.name == branch for unknown in unknowns)
+                return results.Transfer(
+                    unknowns,
+                    analysis.source,
+                    "voltage" if held else "current",
+                    analysis.output,
+                    analysis.reference,
+                    math.nan,
+                    math.nan,
+                    math.nan,
+                    point,
+                )
             case PoleZero():
                 transfer = analysis.source is not None and analysis.output is not None
                 return results.PolesZeros(

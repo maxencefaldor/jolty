@@ -797,7 +797,10 @@ def _plot(
             continue
         if isinstance(
             result,
-            results.OperatingPoint | results.OperatingPoints | results.Sensitivities,
+            results.OperatingPoint
+            | results.OperatingPoints
+            | results.Sensitivities
+            | results.Transfer,
         ):
             if analyses:
                 message = f"{name} is taken at DC solutions: nothing to plot"

@@ -87,6 +87,7 @@ mod solver;
 mod stability;
 mod state;
 mod sweep;
+mod transfer;
 mod transient;
 mod values;
 pub mod variants;
@@ -113,6 +114,7 @@ pub use profile::{Profile, Work};
 pub use sensitivity::{Derivatives, Differentiated, Parameter, Sensitivities, Sensitivity};
 pub use stability::{LoopGain, Stability};
 pub use sweep::{DcSweep, Sweep};
+pub use transfer::{Transfer, TransferFunction};
 pub use transient::{Statistics, Transient, Waveforms};
 pub use values::{ParameterId, Values};
 

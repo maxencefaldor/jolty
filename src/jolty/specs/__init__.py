@@ -63,6 +63,7 @@ from jolty.specs._measurements import (
 )
 from jolty.specs._requirements import (
     Bound,
+    ExtendedReal,
     Judged,
     Measurement,
     MeasurementError,
@@ -91,6 +92,7 @@ __all__ = [
     "LEAST_PHASE_MARGIN",
     "Bound",
     "Edge",
+    "ExtendedReal",
     "Judged",
     "Measurement",
     "MeasurementError",

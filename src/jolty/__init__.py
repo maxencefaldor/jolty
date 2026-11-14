@@ -38,6 +38,7 @@ from jolty.plan import (
     PoleZero,
     Sensitivity,
     Stability,
+    TransferFunction,
     Transient,
     WorstCase,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "SpiceError",
     "Stability",
     "Terminal",
+    "TransferFunction",
     "Transient",
     "WorstCase",
     "__version__",

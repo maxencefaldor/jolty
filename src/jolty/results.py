@@ -847,6 +847,31 @@ class LoopGain:
 
 
 @dataclass(frozen=True, slots=True)
+class Transfer:
+    """The small-signal transfer function at DC from a source to an output.
+
+    The `gain` is the output per unit of the source's level, in volts or amperes of
+    output per volt or ampere of input; the `input_resistance` is what the source sees,
+    and the `output_resistance` what the output sees with the source at its level, each
+    in ohms and infinite where no current can flow.
+    """
+
+    unknowns: tuple[Unknown, ...]
+    source: str
+    """The path of the input source, such as ``V1``."""
+    input: Quantity
+    """What the source's level is: ``voltage`` or ``current``."""
+    output: str
+    """The output: a net, such as ``out``, or a voltage source's current."""
+    reference: str | None
+    """The net the output voltage is taken over, or None for the ground."""
+    gain: float
+    input_resistance: float
+    output_resistance: float
+    operating_point: OperatingPoint
+
+
+@dataclass(frozen=True, slots=True)
 class NoiseSource:
     """One noise source of a device."""
 
@@ -1105,6 +1130,7 @@ type Result = (
     | LoopGain
     | NoiseSpectrum
     | PolesZeros
+    | Transfer
 )
 """The result of any analysis."""
 

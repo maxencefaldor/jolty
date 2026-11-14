@@ -245,6 +245,33 @@ class Stability:
 
 
 @dataclass(frozen=True, slots=True)
+class TransferFunction:
+    """The small-signal transfer function at DC, as SPICE's ``.tf`` reports it.
+
+    From an independent source, named by its path such as ``V1``, to an output: a net's
+    voltage, over the ground or over the net `reference` names, or a voltage source's
+    current, such as ``V2:current``. It gives the gain, the output per volt or ampere of
+    the source, the resistance the source sees, and the resistance the output sees with
+    the source at its level: a voltage source a short, a current source open.
+
+    Examples:
+        >>> TransferFunction("V1", "out").to_json()
+        {'transfer_function': {'source': 'V1', 'output': 'out'}}
+    """
+
+    source: str
+    output: str
+    reference: str | None = None
+
+    def to_json(self) -> JsonValue:
+        """The analysis in the engine's format."""
+        given: dict[str, JsonValue] = {"source": self.source, "output": self.output}
+        if self.reference is not None:
+            given["reference"] = self.reference
+        return {"transfer_function": given}
+
+
+@dataclass(frozen=True, slots=True)
 class Noise:
     """The noise density at an output at each frequency, from every device's noise.
 
@@ -315,6 +342,7 @@ type Analysis = (
     | Stability
     | Noise
     | PoleZero
+    | TransferFunction
 )
 """Any analysis."""
 

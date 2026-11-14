@@ -37,8 +37,11 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
 | `Noise(output, frequencies, reference=None, source=None)` | the noise density at an output from every device's noise, at each frequency, and referred to an input source |
 | `PoleZero(source=None, output=None, reference=None)` | the poles of the circuit linearized at its operating point, and the zeros of the transfer function from a source to an output |
+| `TransferFunction(source, output, reference=None)` | SPICE's `.tf`: the gain at DC from an independent source to a net's voltage or a voltage source's current, the resistance the source sees, and the one the output sees with the source at its level |
 
 A source is named by its path, such as `V1` or `bias/I1`.
+A transfer function linearizes the circuit at its operating point and solves it twice: driven by its source, for the gain and the input resistance, and driven at its output, a unit current into the net or a volt in series with the source whose current it is, for the output resistance; a voltage source is a short to that second solve and a current source is open, as in SPICE.
+A resistance through which no current can flow, such as a voltage source's that drives nothing, is infinite, where ngspice writes 10²⁰ Ω.
 `linear(start, stop, points)` spaces levels evenly, and `decade(start, stop, per_decade)` spaces frequencies evenly on a log scale.
 A transient's method is `"trapezoidal"`, `"gear2"` for stiff circuits that ring, or `"backward_euler"` for the most damping.
 Its longest step defaults to a fiftieth of `stop`.

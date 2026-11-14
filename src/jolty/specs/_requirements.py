@@ -155,9 +155,10 @@ def _engine(measure: _core.Measure, result: results.Result) -> float:
             )
         case results.PolesZeros():
             value = measure.read_poles(_complex(result.poles))
-        case results.Sensitivities():
-            # No measure reads sensitivities, so none is resolved against them.
-            message = "the engine measures no sensitivities"
+        case results.Sensitivities() | results.Transfer():
+            # No measure reads sensitivities or a transfer function, so none is resolved
+            # against them.
+            message = f"the engine measures no {type(result).__name__}"
             raise MeasurementError(message)
     return value
 

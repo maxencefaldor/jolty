@@ -625,6 +625,19 @@ pub(crate) fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bo
             result.set_item("kind", "pole_zero")?;
             add_poles_zeros(&result, found)?;
         }
+        Outcome::TransferFunction(transfer) => {
+            result.set_item("kind", "transfer_function")?;
+            result.set_item("source", transfer.source)?;
+            result.set_item("input", quantity_name(transfer.input))?;
+            result.set_item("output", transfer.output)?;
+            result.set_item("reference", transfer.reference)?;
+            result.set_item("gain", transfer.gain)?;
+            result.set_item("input_resistance", transfer.input_resistance)?;
+            result.set_item("output_resistance", transfer.output_resistance)?;
+            let operating_point = PyDict::new(py);
+            add_operating_point(&operating_point, transfer.operating_point)?;
+            result.set_item("operating_point", operating_point)?;
+        }
     }
     Ok(result)
 }

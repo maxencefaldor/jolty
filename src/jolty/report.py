@@ -308,6 +308,45 @@ class StabilityReport(_Model):
         return "\n".join(lines)
 
 
+class TransferReport(_Model):
+    """The small-signal transfer function at DC: a gain and two resistances."""
+
+    kind: Literal["transfer_function"] = "transfer_function"
+    name: str
+    source: str = Field(description="The input source's path.")
+    output: str = Field(description="The output: a net or a voltage source's current.")
+    reference: str | None = Field(
+        default=None,
+        description="The net the output voltage is taken over; null for the ground.",
+    )
+    gain: specs.ExtendedReal = Field(
+        description="The output per volt or ampere of the source's level."
+    )
+    unit: str = Field(description="The gain's unit, such as 'V/V' or 'A/V'.")
+    input_resistance: specs.ExtendedReal = Field(
+        description="The resistance the source sees, in ohms."
+    )
+    output_resistance: specs.ExtendedReal = Field(
+        description="The resistance the output sees with the source at its level, in "
+        "ohms."
+    )
+
+    def describe(self) -> str:
+        """The report as text."""
+        over = "" if self.reference is None else f" over {self.reference}"
+        return "\n".join(
+            [
+                (
+                    f"{self.name}: transfer function from {self.source} to "
+                    f"{self.output}{over}"
+                ),
+                f"  gain {self.gain:.6g} {self.unit}",
+                f"  input resistance {format_si(self.input_resistance, 'Ω')}",
+                f"  output resistance {format_si(self.output_resistance, 'Ω')}",
+            ]
+        )
+
+
 class NoiseContributor(_Model):
     """What one noise source of a device adds to a noise analysis's output."""
 
@@ -798,6 +837,7 @@ type AnalysisReport = Annotated[
     | StabilityReport
     | NoiseReport
     | PoleZeroReport
+    | TransferReport
     | FailureReport,
     Field(discriminator="kind"),
 ]
@@ -894,11 +934,14 @@ def _linear(
     result: results.Sensitivities
     | results.LoopGain
     | results.NoiseSpectrum
-    | results.PolesZeros,
+    | results.PolesZeros
+    | results.Transfer,
     listed: int,
 ) -> AnalysisReport:
-    """The report of sensitivities, a loop gain, a noise spectrum or poles and zeros."""
+    """The report of a small-signal analysis or of sensitivities."""
     match result:
+        case results.Transfer():
+            return _transfer(name, result)
         case results.Sensitivities():
             return _sensitivities(name, result, listed)
         case results.LoopGain():
@@ -983,6 +1026,23 @@ def _noise(name: str, result: results.NoiseSpectrum, listed: int) -> NoiseReport
         referred_quantity=None if noise_input is None else noise_input.quantity,
         contributors=contributors,
         unlisted=len(result.sources) - len(contributors),
+    )
+
+
+def _transfer(name: str, result: results.Transfer) -> TransferReport:
+    """The report of the transfer function analysis `name`."""
+    output = next(
+        unknown.quantity for unknown in result.unknowns if unknown.name == result.output
+    )
+    return TransferReport(
+        name=name,
+        source=result.source,
+        output=result.output,
+        reference=result.reference,
+        gain=result.gain,
+        unit=f"{_SYMBOLS[output]}/{_SYMBOLS[result.input]}",
+        input_resistance=result.input_resistance,
+        output_resistance=result.output_resistance,
     )
 
 
@@ -1111,6 +1171,7 @@ def _nets(result: results.Result) -> tuple[str, ...]:
         | results.LoopGain
         | results.NoiseSpectrum
         | results.PolesZeros
+        | results.Transfer
         | results.OperatingPoints,
     ):
         return ()

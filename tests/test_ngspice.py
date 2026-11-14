@@ -40,6 +40,7 @@ from jolty import (
     Role,
     Simulation,
     Stability,
+    TransferFunction,
     Transient,
     component,
     devices,
@@ -1616,6 +1617,45 @@ def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
     np.testing.assert_allclose(
         np.sqrt(spectrum.referred()), raw.real("inoise_spectrum"), rtol=1e-5
     )
+
+
+NGSPICE_INFINITE_RESISTANCE: Final = 1e20
+"""What ngspice's `.tf` writes for a resistance through which no current flows."""
+
+
+@pytest.mark.parametrize(
+    "top", [divider, jfet_stage, bjt_amplifier, integrated_stage, nmos_stage]
+)
+def test_transfer_functions_agree(top: Callable[[], Component]) -> None:
+    """The gain at DC and both resistances, as ngspice's `.tf` finds them.
+
+    Both linearize the circuit at operating points that agree within a millionth, so
+    the gain and the resistances agree within the noise comparison's 1e-5, and a
+    resistance ngspice writes as its 1e20 is infinite in jolty.
+    """
+    simulation = Simulation(top())
+    found = simulation.run(TransferFunction("V1", "out"), TIGHT)
+    circuit = simulation.circuit
+    output = vector(circuit, results.Unknown("out", "voltage"))
+    raw = ngspice.run(netlist(circuit), f"tf {output} VV1")
+
+    def read(part: str) -> float:
+        (name,) = [name for name in raw.vectors if part in name.lower()]
+        value = float(raw.vectors[name].real[0])
+        # ngspice's TFanal writes 1e20 for a resistance through which less than 1e-20 A
+        # flows, as into a coupling capacitor at DC: an infinite one.
+        return math.inf if value == NGSPICE_INFINITE_RESISTANCE else value
+
+    expected = (
+        read("transfer_function"),
+        read("input_impedance"),
+        read("output_impedance"),
+    )
+    assert (
+        found.gain,
+        found.input_resistance,
+        found.output_resistance,
+    ) == pytest.approx(expected, rel=1e-5)
 
 
 def _ordered(roots: results.Complex) -> results.Complex:

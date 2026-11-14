@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::{
     Ac, DcSweep, LoopGain, Noise, NoiseSpectrum, OperatingPoint, OperatingPoints, Options,
     PoleZero, PolesZeros, Response, Sensitivities, Sensitivity, SimulationError, Simulator,
-    Stability, Sweep, Transient, Waveforms,
+    Stability, Sweep, Transfer, TransferFunction, Transient, Waveforms,
 };
 
 /// An analysis to run.
@@ -33,6 +33,8 @@ pub enum Analysis {
     PoleZero(PoleZero),
     /// Every DC solution, up to a number.
     OperatingPoints(OperatingPoints),
+    /// The small-signal transfer function at DC: a gain and two resistances.
+    TransferFunction(TransferFunction),
 }
 
 /// The result of an [`Analysis`].
@@ -56,6 +58,8 @@ pub enum Outcome {
     PoleZero(PolesZeros),
     /// The DC solutions, the operating point first.
     OperatingPoints(Vec<OperatingPoint>),
+    /// The transfer function at DC.
+    TransferFunction(Transfer),
 }
 
 impl Simulator {
@@ -86,6 +90,9 @@ impl Simulator {
             Analysis::PoleZero(analysis) => Outcome::PoleZero(self.pole_zero(analysis, options)?),
             Analysis::OperatingPoints(search) => {
                 Outcome::OperatingPoints(self.operating_points(search, options)?)
+            }
+            Analysis::TransferFunction(analysis) => {
+                Outcome::TransferFunction(self.transfer_function(analysis, options)?)
             }
         })
     }

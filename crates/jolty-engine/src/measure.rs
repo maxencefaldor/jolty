@@ -344,7 +344,8 @@ pub enum Results<'a> {
 }
 
 impl<'a> Results<'a> {
-    /// The numbers of `outcome`; none for sensitivities, which no measure reads.
+    /// The numbers of `outcome`; none for sensitivities and transfer functions, which no
+    /// measure reads.
     #[must_use]
     pub fn of(outcome: &'a Outcome) -> Option<Self> {
         Some(match outcome {
@@ -352,7 +353,7 @@ impl<'a> Results<'a> {
             Outcome::DcSweep(sweep) => sweep.into(),
             Outcome::Ac(response) => response.into(),
             Outcome::Transient(waveforms) => waveforms.into(),
-            Outcome::Sensitivity(_) => return None,
+            Outcome::Sensitivity(_) | Outcome::TransferFunction(_) => return None,
             Outcome::Stability(gain) => gain.into(),
             Outcome::Noise(spectrum) => spectrum.into(),
             Outcome::PoleZero(found) => found.into(),

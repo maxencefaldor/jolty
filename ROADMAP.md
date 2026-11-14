@@ -20,7 +20,7 @@ Items keep their numbers; each leaves this file when it lands on `main`, and its
 1. Native process design kits: jolty runs SKY130's transistors through ngspice, and has no flow yet for GF180MCU or IHP's SG13G2.
 1. Transmission lines: lossless, lossy (LTRA), and coupled lines.
 1. XSPICE's code models, analog and digital, and its mixed-signal interface.
-1. The small-signal transfer function (`.tf`) and distortion (`.disto`) analyses.
+1. The distortion analysis (`.disto`).
 1. The control language: scripts, loops, parameter alteration and interactive analysis.
 1. Numerical device simulation of semiconductors (CIDER).
 1. Device bypass and OpenMP-parallel evaluation of its BSIM4 model.
