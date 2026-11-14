@@ -22,6 +22,13 @@
 //! Logic devices join logic nets, which an event scheduler simulates beside the analog
 //! circuit, joined to it by connect elements where a logic pin meets an electrical net.
 //!
+//! Many runs of one circuit, its Monte Carlo samples, corners, sweeps and candidate
+//! designs, run as one [batch](batch::Batch) across the threads of the caller's rayon pool,
+//! their values the [`variants`] of each run's index; a run spreads its own
+//! frequencies and right-hand sides across threads as its options'
+//! [parallelism](Parallelism) allows. Every number is the same bits however many threads
+//! run it.
+//!
 //! ```
 //! use jolty_engine::{Conditions, Elaborated, Options, Simulator, Structure, Values};
 //! use jolty_ir::Circuit;
@@ -60,6 +67,7 @@
 
 mod ac;
 mod analysis;
+pub mod batch;
 mod elaborate;
 mod elaborated;
 mod logic;
@@ -79,6 +87,7 @@ mod state;
 mod sweep;
 mod transient;
 mod values;
+pub mod variants;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -252,6 +261,77 @@ impl Simulator {
         }
         self.values = values;
         Ok(())
+    }
+
+    /// Readies the simulator to run at `values`, as [`Simulator::reset`] does, but only on
+    /// the circuit it runs: returns false, and leaves the simulator as it was, when the
+    /// values give that circuit another structure.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`ElaborationProblem`] the values make, and leaves the simulator as it
+    /// was.
+    pub(crate) fn try_reset(&mut self, values: Values) -> Result<bool, ElaborationError> {
+        if !self.state.reset(&self.elaborated, &values)? {
+            return Ok(false);
+        }
+        self.values = values;
+        Ok(true)
+    }
+
+    /// Readies the simulator to run at `values` from where its last run left it, as the
+    /// next run of a chain: the devices whose numbers or temperature differ made again,
+    /// every other device as it is, and everything else forgotten as a reset forgets it,
+    /// but for the sparse solver's pivots and the last operating point solved, which the
+    /// next operating point starts from. Returns false, and leaves the simulator as it
+    /// was, when the values give the circuit another structure, or the last run solved no
+    /// operating point to start from.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`ElaborationProblem`] the values make, and leaves the simulator as it
+    /// was.
+    pub(crate) fn advance(&mut self, values: Values) -> Result<bool, ElaborationError> {
+        let Some(solution) = self
+            .state
+            .remembered
+            .as_ref()
+            .map(|remembered| remembered.solution().to_vec())
+        else {
+            return Ok(false);
+        };
+        let from = std::mem::take(&mut self.values);
+        let moved = self.state.move_to(&self.elaborated, &from, &values);
+        if !matches!(moved, Ok(true)) {
+            self.values = from;
+            return moved;
+        }
+        self.state.forget(&self.elaborated);
+        self.state.warm = Some(state::Warm {
+            values: from,
+            solution,
+        });
+        self.values = values;
+        Ok(true)
+    }
+
+    /// Makes again the devices whose numbers or temperature differ at `values` from the
+    /// run's, as [`Simulator::advance`] does, and runs at `values` from now on, forgetting
+    /// nothing. Returns false, and leaves the simulator as it was, when the values give
+    /// the circuit another structure.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`ElaborationProblem`] the values make.
+    pub(crate) fn move_to(&mut self, values: Values) -> Result<bool, ElaborationError> {
+        if !self
+            .state
+            .move_to(&self.elaborated, &self.values, &values)?
+        {
+            return Ok(false);
+        }
+        self.values = values;
+        Ok(true)
     }
 
     /// The elaborated circuit the simulator runs.

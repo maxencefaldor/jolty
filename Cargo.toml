@@ -27,6 +27,9 @@ num-complex = "0.4"
 numpy = "0.30"
 proptest = "1.12"
 pyo3 = "0.30"
+rand = { version = "0.10", default-features = false }
+rand_chacha = { version = "0.10", default-features = false }
+rand_distr = { version = "0.6", default-features = false, features = ["std_math"] }
 rayon = "1.12"
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }

@@ -49,7 +49,8 @@ impl Record {
 /// changes any result: every one of them is the same bits however the work is split.
 ///
 /// The caller owns the pool and runs the engine inside it, with `ThreadPool::install`; a
-/// run uses at most its `threads`.
+/// run uses at most its `threads`, and a [batch](crate::batch::Batch) runs each of its runs
+/// on one thread whenever it has a run for every thread of its pool.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Parallelism {

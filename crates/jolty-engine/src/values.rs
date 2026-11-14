@@ -15,6 +15,12 @@ use serde_json::Value;
 pub struct ParameterId(u32);
 
 impl ParameterId {
+    /// The parameter at `index` in its circuit's table, for tests.
+    #[cfg(test)]
+    pub(crate) const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
     /// The parameter's index in its circuit's table.
     #[must_use]
     pub const fn index(self) -> usize {
@@ -69,6 +75,17 @@ impl Values {
             .binary_search_by_key(&parameter, |&(patched, _)| patched)
             .ok()?;
         Some(self.patches[found].1)
+    }
+
+    /// Takes the temperature `other` gives, if it gives one, and each number it replaces,
+    /// in place of this one's.
+    pub fn extend(&mut self, other: &Self) {
+        if other.temperature.is_some() {
+            self.temperature = other.temperature;
+        }
+        for &(parameter, value) in &other.patches {
+            self.set(parameter, value);
+        }
     }
 }
 

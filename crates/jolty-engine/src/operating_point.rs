@@ -20,8 +20,8 @@ use serde::Deserialize;
 
 use crate::logic::{Bound, Events, detected};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
-use crate::state::Held;
-use crate::{Observation, Options, SimulationError, Simulator};
+use crate::state::{Held, Warm};
+use crate::{Observation, Options, ParameterId, SimulationError, Simulator, Values};
 
 /// The largest conductance gmin stepping starts from, in siemens.
 const FIRST_STEPPED: f64 = 1e-2;
@@ -103,6 +103,11 @@ pub(crate) struct Remembered {
 }
 
 impl Remembered {
+    /// The operating point's solution, once the logic settled.
+    pub(crate) fn solution(&self) -> &[f64] {
+        &self.point.values
+    }
+
     /// Whether it was solved with the sources `held` under `options`, so that solving
     /// again would find it again.
     fn solved_under(&self, held: &BTreeMap<Held, f64>, options: &Options) -> bool {
@@ -267,7 +272,8 @@ impl Simulator {
     /// iteration goes on from it with the iterations the limit leaves: from zero, Newton
     /// iteration takes the same iterates under any tolerances, so it goes on as from zero
     /// it would, to a solution within the tolerances of the one from zero. Failing that,
-    /// it is solved anew.
+    /// it is solved anew: from zero, or, for a run of a chain, from the operating point of
+    /// the run before it, [as a DC sweep goes on](Simulator::solve_warm).
     pub(crate) fn solve_from_zero(&mut self, options: &Options) -> Result<Solved, SimulationError> {
         let start = self
             .state
@@ -304,7 +310,91 @@ impl Simulator {
                 });
             }
         }
+        if let Some(warm) = self.state.warm.take() {
+            return self.solve_warm(warm, options);
+        }
         self.solve_dc(vec![0.0; self.elaborated.unknowns.len()], options)
+    }
+
+    /// The DC solution of a run of a chain, from `warm`, the operating point of the run
+    /// before it, as a DC sweep goes from one level to the next: every device evaluated
+    /// there first, so that each limits its steps from there, then continued along every
+    /// number and the temperature that differ between the two runs' values, or else
+    /// solved from it by every strategy.
+    fn solve_warm(&mut self, warm: Warm, options: &Options) -> Result<Solved, SimulationError> {
+        let to = self.values.clone();
+        self.evaluate(&warm.solution, None, (1.0, options.gmin), false);
+        let coordinates = self.coordinates(&warm.values, &to);
+        let spans: Vec<(f64, f64)> = coordinates
+            .iter()
+            .map(|&(_, from, to)| (from, to))
+            .collect();
+        let mut values = warm.solution.clone();
+        let mut set = |simulator: &mut Self, at: &[f64]| {
+            let mut point = to.clone();
+            for (&(coordinate, _, target), &value) in coordinates.iter().zip(at) {
+                if value.to_bits() != target.to_bits() {
+                    match coordinate {
+                        Some(parameter) => point.set(parameter, value),
+                        None => point.temperature = Some(value),
+                    }
+                }
+            }
+            matches!(simulator.move_to(point), Ok(true))
+        };
+        if self.continue_along(&spans, &mut set, &mut values, options) {
+            return Ok(Solved {
+                values,
+                strategy: Strategy::Direct,
+                iterations: None,
+            });
+        }
+        if !self
+            .move_to(to)
+            .map_err(|error| SimulationError::InvalidAnalysis(error.to_string()))?
+        {
+            return Err(SimulationError::InvalidAnalysis(
+                "a run of a chain has another structure than the run before it".to_owned(),
+            ));
+        }
+        self.solve_dc(warm.solution, options)
+    }
+
+    /// Each number, by its parameter, and the temperature, as `None`, that differ between
+    /// the values `from` and `to`, with its value at each, in the order of the parameters
+    /// then the temperature.
+    fn coordinates(&self, from: &Values, to: &Values) -> Vec<(Option<ParameterId>, f64, f64)> {
+        let nominal = self.elaborated.nominal();
+        let value = |values: &Values, parameter: ParameterId| {
+            values.get(parameter).unwrap_or(nominal[parameter.index()])
+        };
+        let mut parameters: Vec<ParameterId> = from
+            .patches()
+            .iter()
+            .chain(to.patches())
+            .map(|&(parameter, _)| parameter)
+            .collect();
+        parameters.sort_unstable();
+        parameters.dedup();
+        let mut found: Vec<(Option<ParameterId>, f64, f64)> = parameters
+            .into_iter()
+            .map(|parameter| {
+                (
+                    Some(parameter),
+                    value(from, parameter),
+                    value(to, parameter),
+                )
+            })
+            .filter(|&(_, a, b)| a.to_bits() != b.to_bits())
+            .collect();
+        let (a, b) = (
+            self.elaborated.temperature_of(from),
+            self.elaborated.temperature_of(to),
+        );
+        if a.to_bits() != b.to_bits() {
+            found.push((None, a, b));
+        }
+        found
     }
 
     /// Finds the operating point, then the other DC solutions, up to `search.most` in all,

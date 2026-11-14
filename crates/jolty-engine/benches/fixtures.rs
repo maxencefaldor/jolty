@@ -5,8 +5,11 @@
 //! the setup alone, from the circuit's JSON text to a simulator ready to run,
 //! `<fixture>/shared` the setup of a run of the circuit elaborated once and shared, as each
 //! of many runs of one circuit makes it, and `<fixture>/run` the setup from the JSON text
-//! and then every analysis of the plan. `scripts/bench` runs the suite's fixtures and reads
-//! what criterion measured; name others after `--` to run them, such as
+//! and then every analysis of the plan. For a fixture whose plan runs one,
+//! `<fixture>/batch/<threads>` measures its first [`SAMPLES`] samples run as one batch on a
+//! pool of that many threads: 1, 2, 4, 8 and every core, as far as there are cores.
+//! `scripts/bench` runs the suite's fixtures and reads what criterion measured; name
+//! others after `--` to run them, such as
 //! `cargo bench -p jolty-engine --bench fixtures -- inverter_chain_5000/`.
 
 use std::error::Error;
@@ -16,7 +19,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use criterion::{Criterion, SamplingMode, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
+use jolty_engine::batch::{Batch, Sink};
+use jolty_engine::variants::{MonteCarlo, toleranced};
 use jolty_engine::{
     Analysis, Conditions, Elaborated, Options, Outcome, SimulationError, Simulator, Structure,
     Values,
@@ -33,8 +38,27 @@ struct Plan {
     /// The analyses, in order, each by name.
     analyses: Vec<(String, Analysis)>,
     options: Options,
-    /// A Monte Carlo analysis's samples and seed, which only the Python timing runs.
-    monte_carlo: Option<serde_json::Value>,
+    /// A Monte Carlo analysis's samples and seed.
+    monte_carlo: Option<Samples>,
+}
+
+/// A Monte Carlo analysis of a fixture's plan.
+#[derive(Deserialize)]
+struct Samples {
+    samples: u64,
+    seed: u64,
+}
+
+/// The samples of a Monte Carlo fixture a batch runs: those the suite's Python timing runs.
+const SAMPLES: u64 = 1000;
+
+/// A sink that keeps no outcome, as a batch that only measures its runs keeps none.
+struct Dropped;
+
+impl Sink for Dropped {
+    fn accept(&self, _: u64, outcome: jolty_engine::batch::Outcome) {
+        black_box(outcome);
+    }
 }
 
 /// A fixture: its name, its circuit's JSON text and its plan.
@@ -75,7 +99,7 @@ fn perf() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf")
 }
 
-/// Every fixture whose plan runs no Monte Carlo analysis, in the order of their names.
+/// Every fixture, in the order of their names.
 fn fixtures() -> Result<Vec<Fixture>, Box<dyn Error>> {
     let mut plans: Vec<PathBuf> = fs::read_dir(perf().join("plans"))?
         .map(|entry| entry.map(|entry| entry.path()))
@@ -89,9 +113,6 @@ fn fixtures() -> Result<Vec<Fixture>, Box<dyn Error>> {
             .ok_or_else(|| format!("{} has no name", path.display()))?
             .to_owned();
         let plan: Plan = serde_json::from_str(&fs::read_to_string(&path)?)?;
-        if plan.monte_carlo.is_some() {
-            continue;
-        }
         let circuit = perf()
             .join("circuits")
             .join(format!("{}.json", plan.circuit));
@@ -109,6 +130,10 @@ fn benchmark(c: &mut Criterion) {
     let library = Library::standard();
     let fixtures = fixtures().expect("the fixtures of perf/ read");
     for fixture in &fixtures {
+        if let Some(samples) = &fixture.plan.monte_carlo {
+            batches(c, fixture, samples, &library);
+            continue;
+        }
         let mut group = c.benchmark_group(&fixture.name);
         // A run of the larger fixtures takes seconds: each sample is one run or more, and
         // ten samples are the fewest criterion takes.
@@ -145,6 +170,59 @@ fn benchmark(c: &mut Criterion) {
         });
         group.finish();
     }
+}
+
+/// The first [`SAMPLES`] samples of `fixture`'s Monte Carlo analysis, run as one batch on
+/// pools of 1, 2, 4 and 8 threads and of every core, as far as there are cores.
+#[expect(
+    clippy::expect_used,
+    reason = "a benchmark whose fixture cannot be read, or that fails, has nothing to measure"
+)]
+fn batches(c: &mut Criterion, fixture: &Fixture, samples: &Samples, library: &Library) {
+    let circuit = Circuit::from_json(&fixture.text).expect("the fixture reads");
+    let elaborated = fixture.elaborated(library).expect("the fixture elaborates");
+    let varied = toleranced(&circuit).expect("its tolerances are of numbers");
+    let count = SAMPLES.min(samples.samples);
+    let variants = MonteCarlo::new(&elaborated, samples.seed, count, varied)
+        .expect("its tolerances are of its numbers");
+    let analyses = fixture
+        .plan
+        .analyses
+        .iter()
+        .map(|(_, analysis)| analysis.clone())
+        .collect();
+    let batch = Batch::new(
+        elaborated,
+        analyses,
+        fixture.plan.options.clone(),
+        Vec::new(),
+    )
+    .expect("a batch");
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let mut counts: Vec<usize> = [1, 2, 4, 8]
+        .into_iter()
+        .filter(|&threads| threads < cores)
+        .collect();
+    counts.push(cores);
+    let mut group = c.benchmark_group(&fixture.name);
+    group
+        .sampling_mode(SamplingMode::Flat)
+        .sample_size(10)
+        .warm_up_time(Duration::from_secs(1))
+        .measurement_time(Duration::from_secs(5));
+    for threads in counts {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("a pool");
+        group.bench_with_input(BenchmarkId::new("batch", threads), &threads, |b, _| {
+            b.iter(|| {
+                pool.install(|| batch.run(&variants, 0..count, &Dropped))
+                    .expect("the samples lie within the variants")
+            });
+        });
+    }
+    group.finish();
 }
 
 criterion_group!(benches, benchmark);

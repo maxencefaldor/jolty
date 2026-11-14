@@ -908,6 +908,11 @@ impl Elaborated {
             .get_or_init(|| Lookup::new(&self.devices, &self.composites))
     }
 
+    /// Where the device at `path` is: its path and the script line that placed it.
+    pub(crate) fn location(&self, path: &str) -> Option<Location> {
+        Some(self.devices[self.device(path)?].location().clone())
+    }
+
     /// The device at `path`, by its index.
     pub(crate) fn device(&self, path: &str) -> Option<usize> {
         let found = self

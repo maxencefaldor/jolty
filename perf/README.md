@@ -34,7 +34,7 @@ Run a script from the repository root after changing it, such as `uv run python 
 | `inverter_chain_5000`, `_50000` | The same chain of 5,000 and 50,000 inverters | The same, on one large circuit | `--scale` |
 | `rc_mesh_100` | A square mesh of 10,000 nodes, 1 kΩ between neighbours and 1 pF to ground, under a pulse: 10 µs | The sparse solver's fill | the suite |
 | `rc_mesh_300` | The same mesh of 90,000 nodes | The same, on one large circuit | `--scale` |
-| `monte_carlo` | `bjt_amp`'s analyses on 100,000 samples of its resistors, each within 5% | Many runs of one circuit | the suite, its first 1,000 samples; `--scale`, every one |
+| `monte_carlo` | `bjt_amp`'s analyses on 100,000 samples of its resistors, each within 5% | Many runs of one circuit | the suite, its first 1,000 samples, in Rust as one batch and in Python; `--scale`, every one, in Python |
 
 The MOSFETs of a level 1 model each add three unknowns of their own, the displacements of their Meyer capacitances, so the chains of 500, 5,000 and 50,000 inverters solve for 3,504, 35,004 and 350,004 unknowns.
 The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.1 at the transient's 800 points or so, more than the 2 the engine allows by default.
@@ -46,6 +46,7 @@ The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.
 | `rust/<fixture>/setup` | Criterion's median of a setup: the circuit read from its JSON text and elaborated, into a simulator ready to run. |
 | `rust/<fixture>/shared` | Criterion's median of a setup from the circuit elaborated once and shared, as each of many runs of one circuit makes it: its devices made again, and a run's buffers. |
 | `rust/<fixture>/run` | Criterion's median of a run: the setup, then every analysis of the plan in order. |
+| `rust/monte_carlo/<n> samples, <t> threads` | Criterion's median of the fixture's first `n` samples run as one batch, per sample: drawn from their indices and run on the circuit elaborated once, on a pool of `t` threads, for 1, 2, 4 and 8 threads and every core, as far as there are cores. |
 | `python/<fixture>` | The median of at least ten runs over at least five seconds, after one to warm up: the circuit, read once from its file, elaborated by `Simulation`, and every analysis run by `Simulation.run`, whose results are made as a script's are. An operating point and a transient also record the instances rated for a current or a power, which the checks read. |
 | `python/monte_carlo/<n> samples, one core`, `..., every core` | The time per sample of the fixture's first `n` samples, drawn from its seed as the runner draws them, each run at its parameters on the circuit elaborated once, as the runner runs them, the one elaboration counted: on one thread, and on a thread per core, the engine releasing the interpreter while it simulates. The suite runs the first 1,000, and `--scale` all of them, on every core. |
 | `ngspice/<fixture>` | ngspice 47 in batch mode on the fixture's netlist as jolty writes it, its analyses run from a control section: from its start to its exit, so its start-up and the parsing of its netlist count, for context. |

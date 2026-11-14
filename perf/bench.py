@@ -295,12 +295,15 @@ def shares(found_profiles: Mapping[str, Mapping[str, Profiled]]) -> None:
 
 
 def rust(names: Iterable[str], found: Mapping[str, Fixture]) -> dict[str, Timing]:
-    """The criterion timings of the fixtures `names` that run no Monte Carlo analysis.
+    """The criterion timings of the fixtures `names`.
+
+    A Monte Carlo fixture's time is per sample of its first samples, run as one batch,
+    named by the number of samples and of threads.
 
     Raises:
         SystemExit: When the benchmarks fail.
     """
-    chosen = [name for name in names if found[name].plan.monte_carlo is None]
+    chosen = list(names)
     if not chosen:
         return {}
     pattern = "^(" + "|".join(chosen) + ")/"
@@ -329,15 +332,34 @@ def rust(names: Iterable[str], found: Mapping[str, Fixture]) -> dict[str, Timing
     measured = Path(json.loads(metadata.stdout)["target_directory"]) / "criterion"
     timings: dict[str, Timing] = {}
     for name in chosen:
-        for function in ("setup", "shared", "run"):
-            new = measured / name / function / "new"
-            estimates = json.loads((new / "estimates.json").read_text("utf-8"))
-            sample = json.loads((new / "sample.json").read_text("utf-8"))
-            seconds = estimates["median"]["point_estimate"] * 1e-9
-            timings[f"rust/{name}/{function}"] = Timing(
-                seconds, round(sum(sample["iters"]))
+        monte_carlo = found[name].plan.monte_carlo
+        if monte_carlo is None:
+            for function in ("setup", "shared", "run"):
+                timings[f"rust/{name}/{function}"] = _criterion(
+                    measured / name / function / "new", 1
+                )
+            continue
+        samples = min(SAMPLES, monte_carlo.samples)
+        for directory in sorted(
+            (measured / name / "batch").iterdir(), key=lambda path: int(path.name)
+        ):
+            threads = int(directory.name)
+            label = "1 thread" if threads == 1 else f"{threads} threads"
+            timings[f"rust/{name}/{samples} samples, {label}"] = _criterion(
+                directory / "new", samples
             )
     return timings
+
+
+def _criterion(new: Path, runs: int) -> Timing:
+    """Criterion's median in `new`, per run of the `runs` each iteration makes.
+
+    The directory holds criterion's latest estimates and samples of one benchmark.
+    """
+    estimates = json.loads((new / "estimates.json").read_text("utf-8"))
+    sample = json.loads((new / "sample.json").read_text("utf-8"))
+    seconds = estimates["median"]["point_estimate"] * 1e-9 / runs
+    return Timing(seconds, round(sum(sample["iters"])))
 
 
 def deck(loaded: Loaded) -> list[str]:

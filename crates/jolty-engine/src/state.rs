@@ -31,6 +31,14 @@ pub(crate) enum Held {
     Number(ParameterId),
 }
 
+/// Where a run of a chain starts its first operating point: the operating point the run
+/// before it solved, and the values it solved it at.
+#[derive(Debug, Clone)]
+pub(crate) struct Warm {
+    pub(crate) values: Values,
+    pub(crate) solution: Vec<f64>,
+}
+
 /// What one run of an elaborated circuit writes.
 #[derive(Debug)]
 pub(crate) struct State {
@@ -62,6 +70,9 @@ pub(crate) struct State {
     /// What a DC sweep holds away from the run's own values, at the level or the number
     /// each is held at.
     pub(crate) held: BTreeMap<Held, f64>,
+    /// Where the run's first operating point starts, in a chain of runs: none for a run
+    /// that starts from zero.
+    pub(crate) warm: Option<Warm>,
     /// How many times the run has solved for an operating point, or a DC sweep's first
     /// level, rather than taken the last one's.
     pub(crate) solves: usize,
@@ -91,6 +102,7 @@ impl State {
             observer: Observer::new(elaborated),
             remembered: None,
             held: BTreeMap::new(),
+            warm: None,
             solves: 0,
         }
     }
@@ -153,9 +165,95 @@ impl State {
         self.observer.reset();
         self.remembered = None;
         self.held.clear();
+        self.warm = None;
         self.solves = 0;
         Ok(true)
     }
+
+    /// Forgets what a run leaves but its devices, the sparse solver's pivots and the
+    /// meter's counts: the operating point remembered, what a sweep holds, the logic's
+    /// events and traces, and the devices made again to be read.
+    pub(crate) fn forget(&mut self, elaborated: &Elaborated) {
+        self.swept.clear();
+        self.events.reset(&elaborated.logic);
+        self.observer.reset();
+        self.remembered = None;
+        self.held.clear();
+        self.warm = None;
+    }
+
+    /// Makes again, for `to`, the devices whose numbers or temperature differ from those
+    /// of `from`, the values the run's devices are made for, and the copies of them the
+    /// observer reads; leaves every other device as it is, its memory among it. Returns
+    /// whether each of them claims the unknowns and entries of `elaborated`; when one does
+    /// not, or the values make a problem, the state is left as it was.
+    ///
+    /// # Errors
+    ///
+    /// Returns every problem the values make for the devices made again.
+    pub(crate) fn move_to(
+        &mut self,
+        elaborated: &Elaborated,
+        from: &Values,
+        to: &Values,
+    ) -> Result<bool, ElaborationError> {
+        let temperature = elaborated.temperature_of(to);
+        let every = temperature.to_bits() != self.temperature.to_bits();
+        let mut problems = Vec::new();
+        let mut made = Vec::new();
+        for index in 0..elaborated.devices.len() {
+            let patches = elaborated.patches_of(to, index);
+            if !every && same(patches, elaborated.patches_of(from, index)) {
+                continue;
+            }
+            let origin = if patches.is_empty() {
+                None
+            } else {
+                match elaborated.patched(index, patches) {
+                    Ok(origin) => Some(origin),
+                    Err(problem) => {
+                        problems.push(*problem);
+                        continue;
+                    }
+                }
+            };
+            let template = elaborated.devices[index].origin();
+            match elaborated.replay(index, origin.as_ref().unwrap_or(template), temperature) {
+                Ok(Some(device)) => made.push((index, origin, device)),
+                Ok(None) => return Ok(false),
+                Err(error) => problems.push(elaborated.problem(index, error)),
+            }
+        }
+        if !problems.is_empty() {
+            return Err(ElaborationError::new(problems));
+        }
+        self.temperature = temperature;
+        if self.patched.is_empty() && made.iter().any(|(_, origin, _)| origin.is_some()) {
+            self.patched.resize_with(elaborated.devices.len(), || None);
+        }
+        for (index, origin, device) in made {
+            self.devices[index] = device;
+            if let Some(patched) = self.patched.get_mut(index) {
+                *patched = origin;
+            }
+            let origins = Origins {
+                elaborated,
+                patched: &self.patched,
+                swept: &self.swept,
+                temperature,
+            };
+            self.observer.remake(origins, index);
+        }
+        Ok(true)
+    }
+}
+
+/// Whether `a` and `b` replace the same numbers with the same bits.
+fn same(a: &[(ParameterId, f64)], b: &[(ParameterId, f64)]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|((p, x), (q, y))| p == q && x.to_bits() == y.to_bits())
 }
 
 /// Makes every device of `elaborated` for a run at `temperature`, each from its origin of
