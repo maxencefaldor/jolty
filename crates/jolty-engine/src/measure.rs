@@ -537,6 +537,60 @@ pub enum MeasureError {
 }
 
 impl Measure {
+    /// The measure reading the same signals of a circuit whose unknowns lie elsewhere: each
+    /// signal's unknown, and its reference's, at the index `column` gives it, as a run on
+    /// another structure of the circuit holds them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MeasureError::Unknown`] with the index of the first unknown `column` gives
+    /// no index for.
+    pub fn moved(&self, column: impl Fn(usize) -> Option<usize>) -> Result<Self, MeasureError> {
+        let at = |signal: Signal| -> Result<Signal, MeasureError> {
+            let moved = |unknown| column(unknown).ok_or(MeasureError::Unknown(unknown));
+            Ok(Signal {
+                unknown: moved(signal.unknown)?,
+                reference: signal.reference.map(moved).transpose()?,
+            })
+        };
+        let through = |transfer: Transfer| -> Result<Transfer, MeasureError> {
+            Ok(match transfer {
+                Transfer::Loop => Transfer::Loop,
+                Transfer::Output { output, over } => Transfer::Output {
+                    output: at(output)?,
+                    over: over.map(at).transpose()?,
+                },
+            })
+        };
+        let mut moved = *self;
+        match &mut moved {
+            Self::Value { signal, .. }
+            | Self::Maximum { signal, .. }
+            | Self::Minimum { signal, .. }
+            | Self::PeakToPeak { signal, .. }
+            | Self::Average { signal, .. }
+            | Self::Rms { signal, .. }
+            | Self::RiseTime { signal, .. }
+            | Self::Overshoot { signal, .. }
+            | Self::SettlingTime { signal, .. }
+            | Self::Crossing { signal, .. }
+            | Self::Frequency { signal, .. }
+            | Self::Distortion { signal, .. } => *signal = at(*signal)?,
+            Self::Gain { transfer, .. }
+            | Self::Phase { transfer, .. }
+            | Self::Bandwidth { transfer, .. }
+            | Self::Crossover { transfer }
+            | Self::PhaseMargin { transfer }
+            | Self::GainMargin { transfer } => *transfer = through(*transfer)?,
+            Self::NoiseDensity { .. }
+            | Self::IntegratedNoise { .. }
+            | Self::Solutions
+            | Self::Damping
+            | Self::DominantPole => {}
+        }
+        Ok(moved)
+    }
+
     /// What the measure reads of `results`, in the unit its variant says.
     ///
     /// # Errors

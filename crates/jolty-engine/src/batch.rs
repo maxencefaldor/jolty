@@ -1,8 +1,8 @@
 //! The batch executor: many runs of one circuit in one call, spread across the threads of
 //! the rayon pool it runs in.
 //!
-//! A [`Batch`] holds a circuit elaborated once, the analyses each run runs in order, their
-//! options, and the [measures](crate::measure) each run reads of their results. Its
+//! A [`Batch`] holds a circuit elaborated once, the analyses each run runs in order, each
+//! with its options, and the [measures](crate::measure) each run reads of their results. Its
 //! [`Batch::run`] takes [`Variants`], the values of each run as a pure function of the
 //! run's index, and a range of indices, and hands each run's [`Outcome`] to a [`Sink`] at
 //! its index. Every outcome is a pure function of the circuit, the analyses, the options and
@@ -21,10 +21,12 @@
 //! - **Structures.** A run whose values give the circuit another structure, as a resistance
 //!   crossing 1 Ω carries its current as an unknown, runs on the circuit elaborated for that
 //!   structure, built once for the batch, whichever thread meets it first, behind the one
-//!   lock of the engine.
+//!   lock of the engine. Its unknowns may lie elsewhere among its results, so its measures
+//!   read the unknowns of the names they read of the batch's circuit, and its outcome says
+//!   where each lies.
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -77,6 +79,11 @@ pub struct Measured {
 /// What one run of a batch found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
+    /// The values the run ran at.
+    pub values: Values,
+    /// The circuit the run ran on, when its values gave the batch's circuit another
+    /// structure; none when they did not, or made problems.
+    pub structure: Option<Arc<Restructured>>,
     /// The problems the run's values make, which no analysis runs past; none when they make
     /// none.
     pub problems: Option<ElaborationError>,
@@ -88,6 +95,17 @@ pub struct Outcome {
 }
 
 impl Outcome {
+    /// The index among the run's results' values of the batch circuit's unknown at
+    /// `unknown`: the same index on the batch's own structure, and that of the unknown of
+    /// the same name on another; none when the run's circuit has no unknown of that name.
+    #[must_use]
+    pub fn column(&self, unknown: usize) -> Option<usize> {
+        match &self.structure {
+            None => Some(unknown),
+            Some(structure) => structure.column(unknown),
+        }
+    }
+
     /// Whether the run failed: its values made problems, or an analysis failed.
     #[must_use]
     pub fn failed(&self) -> bool {
@@ -236,17 +254,60 @@ pub enum BatchError {
     },
 }
 
+/// The circuit elaborated for another structure than its batch's, which the batch's runs of
+/// that structure run on, built once for the batch: where its unknowns lie, and the
+/// batch's measures as they read its results.
+#[derive(Debug)]
+pub struct Restructured {
+    key: StructureKey,
+    elaborated: Arc<Elaborated>,
+    /// The index among this circuit's unknowns of each of the batch circuit's, by its
+    /// index; none where this one has none of its name.
+    columns: Vec<Option<usize>>,
+    /// Each of the batch's measures, reading the unknowns of the names it reads of the
+    /// batch's circuit; an error where this circuit has none of a name.
+    measures: Vec<Result<Measured, MeasureError>>,
+}
+
+impl PartialEq for Restructured {
+    /// Whether two are of the same structure, which makes them the same circuit.
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Restructured {
+    /// The structure's key against the batch's circuit.
+    #[must_use]
+    pub fn key(&self) -> &StructureKey {
+        &self.key
+    }
+
+    /// The circuit elaborated for the structure.
+    #[must_use]
+    pub fn elaborated(&self) -> &Arc<Elaborated> {
+        &self.elaborated
+    }
+
+    /// The index among this circuit's unknowns of the batch circuit's unknown at
+    /// `unknown`; none when this one has no unknown of its name.
+    #[must_use]
+    pub fn column(&self, unknown: usize) -> Option<usize> {
+        self.columns.get(unknown).copied().flatten()
+    }
+}
+
 /// A circuit elaborated for each structure its runs meet, built once, by the key of the
 /// structure against the batch's own circuit.
-type Structures = BTreeMap<StructureKey, Arc<OnceLock<Result<Arc<Elaborated>, ElaborationError>>>>;
+type Structures =
+    BTreeMap<StructureKey, Arc<OnceLock<Result<Arc<Restructured>, ElaborationError>>>>;
 
 /// Many runs of one circuit: the circuit, elaborated once, the analyses each run runs, in
-/// order, their options, and the measures each run reads.
+/// order, each with its options, and the measures each run reads.
 #[derive(Debug)]
 pub struct Batch {
     elaborated: Arc<Elaborated>,
-    analyses: Vec<Analysis>,
-    options: Options,
+    analyses: Vec<(Analysis, Options)>,
     measures: Vec<Measured>,
     /// The circuit elaborated for each other structure the runs have met: the engine's one
     /// lock, held only to find or add a structure's place, never while it is built.
@@ -254,16 +315,17 @@ pub struct Batch {
 }
 
 /// What a thread keeps from one run to the next: a run of each structure it has met, by
-/// the structure's key, and the structure of the run it ran last.
+/// the structure's key, with the circuit of each structure other than the batch's own, and
+/// the structure of the run it ran last.
 #[derive(Default)]
 struct Worker {
-    simulators: BTreeMap<StructureKey, Simulator>,
+    simulators: BTreeMap<StructureKey, (Simulator, Option<Arc<Restructured>>)>,
     last: Option<StructureKey>,
 }
 
 impl Batch {
-    /// A batch of runs of `elaborated`, each running `analyses` in order with `options`, and
-    /// reading `measures`.
+    /// A batch of runs of `elaborated`, each running `analyses` in order, each with its
+    /// options, and reading `measures`.
     ///
     /// # Errors
     ///
@@ -271,8 +333,7 @@ impl Batch {
     /// have.
     pub fn new(
         elaborated: Arc<Elaborated>,
-        analyses: Vec<Analysis>,
-        options: Options,
+        analyses: Vec<(Analysis, Options)>,
         measures: Vec<Measured>,
     ) -> Result<Self, BatchError> {
         if let Some((measure, measured)) = measures
@@ -289,7 +350,6 @@ impl Batch {
         Ok(Self {
             elaborated,
             analyses,
-            options,
             measures,
             structures: Mutex::new(BTreeMap::new()),
         })
@@ -332,11 +392,18 @@ impl Batch {
         if range.is_empty() {
             return Ok(Summary::empty(measures));
         }
-        let mut options = self.options.clone();
         let threads = rayon::current_num_threads() as u64;
-        if range.end - range.start >= threads {
-            options.parallelism.threads = Some(1);
-        }
+        let options: Vec<Options> = self
+            .analyses
+            .iter()
+            .map(|(_, options)| {
+                let mut options = options.clone();
+                if range.end - range.start >= threads {
+                    options.parallelism.threads = Some(1);
+                }
+                options
+            })
+            .collect();
         let chain = variants.chain().max(1);
         let chains = range.start / chain..range.end.div_ceil(chain);
         let summary = chains
@@ -347,7 +414,7 @@ impl Batch {
                 let mut warm = false;
                 // The runs of the chain past the range's end are of no run within it.
                 for index in first..(first + chain).min(range.end) {
-                    let outcome = self.one(worker, &variants.values(index), warm, &options);
+                    let outcome = self.one(worker, variants.values(index), warm, &options);
                     warm = outcome.problems.is_none();
                     if range.contains(&index) {
                         summary.add(&outcome);
@@ -361,12 +428,15 @@ impl Batch {
     }
 
     /// The outcome of one run at `values`, on a state `worker` keeps; `warm` when it starts
-    /// from the operating point of the run before it, in its chain.
-    fn one(&self, worker: &mut Worker, values: &Values, warm: bool, options: &Options) -> Outcome {
-        let simulator = match self.ready(worker, values, warm) {
-            Ok(simulator) => simulator,
+    /// from the operating point of the run before it, in its chain. Each analysis runs
+    /// with its own `options`.
+    fn one(&self, worker: &mut Worker, values: Values, warm: bool, options: &[Options]) -> Outcome {
+        let (simulator, structure) = match self.ready(worker, &values, warm) {
+            Ok(ready) => ready,
             Err(problems) => {
                 return Outcome {
+                    values,
+                    structure: None,
                     problems: Some(problems),
                     results: Vec::new(),
                     measured: vec![Err(Unmeasured::Failed); self.measures.len()],
@@ -376,29 +446,43 @@ impl Batch {
         let results: Vec<Result<crate::Outcome, SimulationError>> = self
             .analyses
             .iter()
-            .map(|analysis| simulator.run(analysis, options))
+            .zip(options)
+            .map(|((analysis, _), options)| simulator.run(analysis, options))
             .collect();
-        let measured = self
-            .measures
-            .iter()
-            .map(|measured| match &results[measured.analysis] {
-                Ok(found) => {
-                    let read = Results::of(found).ok_or(MeasureError::Kind)?;
-                    Ok(measured.measure.measure(&read)?)
-                }
-                Err(_) => Err(Unmeasured::Failed),
-            })
-            .collect();
+        let read = |measured: &Measured| match &results[measured.analysis] {
+            Ok(found) => {
+                let read = Results::of(found).ok_or(MeasureError::Kind)?;
+                Ok(measured.measure.measure(&read)?)
+            }
+            Err(_) => Err(Unmeasured::Failed),
+        };
+        let measured = match &structure {
+            None => self.measures.iter().map(read).collect(),
+            Some(structure) => structure
+                .measures
+                .iter()
+                .zip(&self.measures)
+                .map(|(moved, measured)| match moved {
+                    Ok(moved) => read(moved),
+                    Err(error) => match results[measured.analysis] {
+                        Ok(_) => Err(Unmeasured::Measure(*error)),
+                        Err(_) => Err(Unmeasured::Failed),
+                    },
+                })
+                .collect(),
+        };
         Outcome {
+            values,
+            structure,
             problems: None,
             results,
             measured,
         }
     }
 
-    /// A run at `values`, of the circuit elaborated for their structure: the last run of
-    /// `worker` gone on from its operating point when `warm` and it can, and else a run of
-    /// the structure reset for them.
+    /// A run at `values`, of the circuit elaborated for their structure, and that circuit
+    /// when it is not the batch's own: the last run of `worker` gone on from its operating
+    /// point when `warm` and it can, and else a run of the structure reset for them.
     ///
     /// # Errors
     ///
@@ -408,14 +492,14 @@ impl Batch {
         worker: &'a mut Worker,
         values: &Values,
         warm: bool,
-    ) -> Result<&'a mut Simulator, ElaborationError> {
+    ) -> Result<(&'a mut Simulator, Option<Arc<Restructured>>), ElaborationError> {
         // The problems of the values as the batch's own circuit finds them, every one, so
         // that a run's message does not depend on the state its thread kept.
         let problems =
             |error: ElaborationError| self.elaborated.structure_of(values).err().unwrap_or(error);
         let mut readied = None;
         if let Some(last) = &worker.last
-            && let Some(simulator) = worker.simulators.get_mut(last)
+            && let Some((simulator, _)) = worker.simulators.get_mut(last)
         {
             let gone_on = if warm {
                 simulator.advance(values.clone())
@@ -440,23 +524,26 @@ impl Batch {
         worker.last = Some(key.clone());
         match worker.simulators.entry(key) {
             Entry::Occupied(occupied) => {
-                let simulator = occupied.into_mut();
+                let (simulator, structure) = occupied.into_mut();
                 if !reset {
                     // The simulator runs the structure the values give, so they reset it.
                     if !simulator.try_reset(values.clone()).map_err(problems)? {
                         return Err(problems(ElaborationError::new(Vec::new())));
                     }
                 }
-                Ok(simulator)
+                Ok((simulator, structure.clone()))
             }
             Entry::Vacant(vacant) => {
                 let key = vacant.key();
-                let elaborated = if key.is_empty() {
-                    Arc::clone(&self.elaborated)
+                let (elaborated, structure) = if key.is_empty() {
+                    (Arc::clone(&self.elaborated), None)
                 } else {
-                    self.structure(key, values)?
+                    let structure = self.structure(key, values)?;
+                    (Arc::clone(&structure.elaborated), Some(structure))
                 };
-                Ok(vacant.insert(Simulator::from_elaborated(elaborated, values.clone())?))
+                let simulator = Simulator::from_elaborated(elaborated, values.clone())?;
+                let (simulator, structure) = vacant.insert((simulator, structure));
+                Ok((simulator, structure.clone()))
             }
         }
     }
@@ -468,7 +555,7 @@ impl Batch {
         &self,
         key: &StructureKey,
         values: &Values,
-    ) -> Result<Arc<Elaborated>, ElaborationError> {
+    ) -> Result<Arc<Restructured>, ElaborationError> {
         let cell = {
             let mut structures = self
                 .structures
@@ -476,7 +563,44 @@ impl Batch {
                 .unwrap_or_else(PoisonError::into_inner);
             Arc::clone(structures.entry(key.clone()).or_default())
         };
-        cell.get_or_init(|| self.elaborated.restructured(values))
-            .clone()
+        cell.get_or_init(|| {
+            let elaborated = self.elaborated.restructured(values)?;
+            Ok(Arc::new(self.restructured(key.clone(), elaborated)))
+        })
+        .clone()
+    }
+
+    /// The circuit `elaborated` for the structure `key`, with where each of the batch
+    /// circuit's unknowns lies among its own, by name, and the measures that read them.
+    fn restructured(&self, key: StructureKey, elaborated: Arc<Elaborated>) -> Restructured {
+        let own: HashMap<&str, usize> = elaborated
+            .unknowns()
+            .iter()
+            .enumerate()
+            .map(|(index, unknown)| (unknown.name.as_str(), index))
+            .collect();
+        let columns: Vec<Option<usize>> = self
+            .elaborated
+            .unknowns()
+            .iter()
+            .map(|unknown| own.get(unknown.name.as_str()).copied())
+            .collect();
+        let measures = self
+            .measures
+            .iter()
+            .map(|measured| {
+                let column = |unknown: usize| columns.get(unknown).copied().flatten();
+                Ok(Measured {
+                    analysis: measured.analysis,
+                    measure: measured.measure.moved(column)?,
+                })
+            })
+            .collect();
+        Restructured {
+            key,
+            elaborated,
+            columns,
+            measures,
+        }
     }
 }

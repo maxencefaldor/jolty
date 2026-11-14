@@ -29,6 +29,14 @@ use serde_json::{Value, json};
 /// The thread counts every comparison runs at.
 const THREADS: [usize; 4] = [1, 2, 3, 8];
 
+/// Each of `analyses` with `options`, as a batch runs them.
+fn with(analyses: Vec<Analysis>, options: &Options) -> Vec<(Analysis, Options)> {
+    analyses
+        .into_iter()
+        .map(|analysis| (analysis, options.clone()))
+        .collect()
+}
+
 /// `options` with a run's frequencies and right-hand sides spread over every thread of its
 /// pool, a task taking as few as one.
 fn spreading(options: Options) -> Options {
@@ -439,7 +447,7 @@ proptest! {
             .expect("the network's resistances");
         let options = Options { record: Record::All, ..Options::default() };
         let measures = node_one(&elaborated);
-        let batch = Batch::new(elaborated, network_analyses(), options, measures)
+        let batch = Batch::new(elaborated, with(network_analyses(), &options), measures)
             .expect("a batch");
         assert_same_everywhere(&batch, &variants, &[vec![0..7, 7..8, 8..24], vec![0..13, 13..24]]);
     }
@@ -599,7 +607,8 @@ fn amplifier_samples_find_the_same_alone_and_in_a_batch() {
     let elaborated = shared(&circuit);
     let variants = amplifier_samples(&elaborated, 7, 16);
     // A range of fewer runs than threads spreads each run's frequencies too.
-    let batch = Batch::new(elaborated, analyses, spreading(options), Vec::new()).expect("a batch");
+    let batch =
+        Batch::new(elaborated, with(analyses, &spreading(options)), Vec::new()).expect("a batch");
     assert_same_everywhere(&batch, &variants, &[vec![0..5, 5..16]]);
     let (all, _) = run_on(&batch, &variants, &only(0..16), 8);
     for index in [0, 9, 15] {
@@ -734,8 +743,7 @@ fn a_failed_run_is_an_outcome_and_the_batch_goes_on() {
     }];
     let batch = Batch::new(
         Arc::clone(&elaborated),
-        analyses,
-        Options::default(),
+        with(analyses, &Options::default()),
         measures,
     )
     .expect("a batch");
@@ -804,8 +812,7 @@ fn runs_that_alternate_between_structures_share_each_structure() {
     .collect();
     let batch = Batch::new(
         Arc::clone(&elaborated),
-        analyses.clone(),
-        Options::default(),
+        with(analyses.clone(), &Options::default()),
         Vec::new(),
     )
     .expect("a batch");
@@ -825,6 +832,101 @@ fn runs_that_alternate_between_structures_share_each_structure() {
             .map(|analysis| bits(&alone.run(analysis, &Options::default())))
             .collect();
         assert!(found[&index].0 == alone, "run {index}");
+    }
+}
+
+/// A shunt placed before its source: below 1 Ω, the shunt's current is an unknown, which
+/// comes before the source's among the unknowns.
+fn shunted() -> Circuit {
+    let document = json!({
+        "format": "jolty-circuit", "version": 1, "top": "shunted",
+        "components": {"shunted": {"ports": [{"name": "0", "role": "ground"}], "instances": [
+            {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 2.0},
+             "terminals": {"a": "out", "b": "0"}},
+            {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
+             "terminals": {"positive": "top", "negative": "0"}},
+            {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+             "terminals": {"a": "top", "b": "out"}}
+        ]}}
+    });
+    Circuit::from_json(&document.to_string()).expect("a valid circuit")
+}
+
+/// A run on another structure, its unknowns shifted by one it adds, reads the unknowns its
+/// measures name: the source's current, whichever side of 1 Ω the shunt lies, is what a
+/// run made for those values alone finds of the unknown of that name, and the outcome
+/// says where each of the batch circuit's unknowns lies among the run's.
+#[test]
+fn a_run_of_another_structure_measures_the_unknowns_of_its_names() {
+    let elaborated = shared(&shunted());
+    let named = |elaborated: &Elaborated, name: &str| {
+        elaborated
+            .unknowns()
+            .iter()
+            .position(|unknown| unknown.name == name)
+            .expect("an unknown of the name")
+    };
+    let current = named(&elaborated, "V1:current");
+    let measure = |unknown| Measure::Value {
+        signal: Signal {
+            unknown,
+            reference: None,
+        },
+        at: None,
+    };
+    let measures = vec![
+        Measured {
+            analysis: 0,
+            measure: measure(current),
+        },
+        Measured {
+            analysis: 0,
+            measure: measure(named(&elaborated, "out")),
+        },
+    ];
+    let shunt = elaborated
+        .parameter("R1", "resistance")
+        .expect("a resistance");
+    let runs: Vec<Values> = (0..16)
+        .map(|index| {
+            let mut values = Values::default();
+            let ohms = if index % 2 == 0 { 0.5 } else { 2.0 };
+            values.set(shunt, ohms + f64::from(index) * 1e-3);
+            values
+        })
+        .collect();
+    let variants = Explicit(runs);
+    let batch = Batch::new(
+        Arc::clone(&elaborated),
+        with(vec![Analysis::OperatingPoint], &Options::default()),
+        measures,
+    )
+    .expect("a batch");
+    assert_same_everywhere(&batch, &variants, &[vec![0..5, 5..16]]);
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(3)
+        .build()
+        .expect("a pool");
+    let kept = Kept::default();
+    pool.install(|| batch.run(&variants, 0..16, &kept))
+        .expect("the runs lie within the variants");
+    for (index, outcome) in kept.0.into_inner().expect("no test thread panicked") {
+        let mut alone = Simulator::from_elaborated(Arc::clone(&elaborated), variants.values(index))
+            .expect("a run");
+        let Ok(jolty_engine::Outcome::OperatingPoint(point)) =
+            alone.run(&Analysis::OperatingPoint, &Options::default())
+        else {
+            panic!("an operating point");
+        };
+        let own = named(alone.elaborated(), "V1:current");
+        assert_eq!(outcome.structure.is_some(), index % 2 == 0, "run {index}");
+        assert_eq!(outcome.column(current), Some(own), "run {index}");
+        assert_eq!(
+            outcome.measured[0].as_ref().map(|value| value.to_bits()),
+            Ok(point.values[own].to_bits()),
+            "run {index}"
+        );
+        assert_eq!(outcome.values, variants.values(index), "run {index}");
     }
 }
 
@@ -861,8 +963,12 @@ fn a_warm_grid_runs_its_lines_as_chains() {
     let grid = Grid::new(axes, true).expect("a grid");
     assert!(grid.chain() > 1);
     let analyses = vec![Analysis::OperatingPoint];
-    let batch =
-        Batch::new(Arc::clone(&elaborated), analyses, options, Vec::new()).expect("a batch");
+    let batch = Batch::new(
+        Arc::clone(&elaborated),
+        with(analyses, &options),
+        Vec::new(),
+    )
+    .expect("a batch");
     let len = grid.len();
     assert_same_everywhere(
         &batch,
@@ -881,8 +987,7 @@ fn a_chain_of_levels_is_the_dc_sweep_of_them() {
     let grid = Grid::new(vec![(Axis::Parameter(level), levels.clone())], true).expect("a grid");
     let batch = Batch::new(
         Arc::clone(&elaborated),
-        vec![Analysis::OperatingPoint],
-        Options::default(),
+        with(vec![Analysis::OperatingPoint], &Options::default()),
         Vec::new(),
     )
     .expect("a batch");
@@ -916,7 +1021,7 @@ fn a_product_runs_every_sample_at_every_corner() {
     let values = product.values(8);
     assert_eq!(values.temperature, Some(350.0));
     assert_eq!(values.patches(), samples.values(2).patches());
-    let batch = Batch::new(elaborated, analyses, options, Vec::new()).expect("a batch");
+    let batch = Batch::new(elaborated, with(analyses, &options), Vec::new()).expect("a batch");
     assert_same_everywhere(&batch, &product, &[vec![0..6, 6..12]]);
 }
 
@@ -1006,8 +1111,7 @@ fn a_warm_chain_through_a_kernels_numbers_evaluates_each_runs() {
     assert_eq!(grid.chain(), SATURATION_CURRENTS.len() as u64);
     let batch = Batch::new(
         Arc::clone(&elaborated),
-        vec![Analysis::OperatingPoint],
-        Options::default(),
+        with(vec![Analysis::OperatingPoint], &Options::default()),
         Vec::new(),
     )
     .expect("a batch");

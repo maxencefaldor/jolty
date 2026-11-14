@@ -135,6 +135,12 @@ impl<A: Variants, B: Variants> Product<A, B> {
             .ok_or(VariantsError::TooMany)?;
         Ok(Self { first, second, len })
     }
+
+    /// The variants of which it runs every one at every one: the first, then the second.
+    #[must_use]
+    pub const fn parts(&self) -> (&A, &B) {
+        (&self.first, &self.second)
+    }
 }
 
 impl<A: Variants, B: Variants> Variants for Product<A, B> {

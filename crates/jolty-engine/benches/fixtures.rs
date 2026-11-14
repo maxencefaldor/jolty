@@ -189,15 +189,9 @@ fn batches(c: &mut Criterion, fixture: &Fixture, samples: &Samples, library: &Li
         .plan
         .analyses
         .iter()
-        .map(|(_, analysis)| analysis.clone())
+        .map(|(_, analysis)| (analysis.clone(), fixture.plan.options.clone()))
         .collect();
-    let batch = Batch::new(
-        elaborated,
-        analyses,
-        fixture.plan.options.clone(),
-        Vec::new(),
-    )
-    .expect("a batch");
+    let batch = Batch::new(elaborated, analyses, Vec::new()).expect("a batch");
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
     let mut counts: Vec<usize> = [1, 2, 4, 8]
         .into_iter()

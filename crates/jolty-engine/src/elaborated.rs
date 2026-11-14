@@ -719,6 +719,13 @@ impl Elaborated {
         Ok((restructured, bound.devices, patched))
     }
 
+    /// The temperature its devices are made at, in kelvins, unless a run's values give
+    /// another.
+    #[must_use]
+    pub fn temperature(&self) -> f64 {
+        self.temperature
+    }
+
     /// The temperature a run of `values` makes its devices at, in kelvins.
     pub(crate) fn temperature_of(&self, values: &Values) -> f64 {
         values.temperature.unwrap_or(self.temperature)
