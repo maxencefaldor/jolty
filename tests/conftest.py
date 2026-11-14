@@ -26,6 +26,15 @@ for found in pkgutil.walk_packages(jolty.__path__, f"{jolty.__name__}."):
         importlib.import_module(found.name)
 
 sys.path.insert(0, str(BENCHMARKS))
-for script in ("arms", "verdict", "scoring", "score", "run", "stub", "transcript"):
+for script in (
+    "arms",
+    "verdict",
+    "scoring",
+    "score",
+    "run",
+    "stub",
+    "transcript",
+    "compare",
+):
     importlib.import_module(script)
 sys.path.remove(str(BENCHMARKS))

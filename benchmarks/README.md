@@ -41,3 +41,42 @@ Score a directory an agent already worked in:
 ```sh
 uv run python benchmarks/score.py benchmarks/cost_down path/to/work
 ```
+
+## Comparing an agent with jolty and with ngspice
+
+Roadmap item 8 asks what jolty gives an agent: each task is done in two arms, which are compared by success and by iterations.
+
+- The **jolty arm** is the runner above: the agent has jolty's command line, MCP server and Python package, and writes `design.py`.
+- The **ngspice arm** has ngspice and a Python with numpy, scipy and matplotlib, made afresh for each session, and no jolty on its path or in its Python.
+  Its prompt is `task.md` with each sentence the task's `ngspice/task.toml` replaces in place, and the tools of `ngspice.toml` in place of jolty's.
+  It gets the task's files but its Python scripts, which need jolty, and the SPICE files of the task's `ngspice/given` in their place: the given transistors as model cards in `parts.lib`, and the cost-down's stage in `stage.cir`, with `bias.cir` to run it.
+  It writes `design.cir`, a SPICE library whose subcircuit `design` is its circuit; for AnalogCoder, `p1.cir` to `p24.cir`, with their inputs' levels in `levels.json`, and for the cost-down the subcircuit `stage`, with its resistors' tolerances in `tolerances.json`.
+- Both arms are judged by the same scorers, on the same simulator.
+  jolty's SPICE reader reads a netlist, after the task's `.lib` files, into the component a script would build, and a transistor is a given part when its parameters are those the reader makes of the given model.
+  A netlist jolty cannot read fails, as a script that does not build does.
+
+Each arm's simulator, `jolty` or `ngspice`, is a wrapper on the agent's path that logs every run, `counted.py`, and the runner keeps the log beside the transcript, as `simulations.jsonl`.
+Claude Code prints its session as stream-json events, and `transcript.py` reads its turns, its tool calls by name, and its own report of the session's wall time, cost and tokens.
+
+Run one session of the ngspice arm, or score its work:
+
+```sh
+uv run python benchmarks/run.py --arm ngspice benchmarks/balun
+uv run python benchmarks/score.py benchmarks/balun path/to/work --arm ngspice
+```
+
+Run the comparison, five sessions per arm per task by default, so 60 paid sessions for the six tasks, on the model `--model` names or Claude Code's default:
+
+```sh
+uv run python benchmarks/compare.py --agent claude
+```
+
+It runs the sessions one at a time, the arms and the tasks taking turns in each round, each in a fresh directory outside the repository, and writes `benchmarks/results/<date>-<agent>.json`, with each session's transcript and log beside it, in `benchmarks/results/<date>-<agent>/<task>/<arm>/<repetition>`.
+The report holds every session, each arm's success rate on each task with its 95 % Wilson interval, as jolty states a yield's, the median and the range of its turns, tool calls, simulator runs, wall time and cost, and the arms' difference on each task, jolty's less ngspice's, with Newcombe's interval for the success rates'.
+AnalogCoder's problems count as one task, met when all twenty-four are, and each of its sessions keeps the scorer's verdict on every problem.
+
+`--agent stub` runs `stub.py` in the agent's place, which writes a known good design of the cost-down and of AnalogCoder in either arm's form, and costs nothing:
+
+```sh
+uv run python benchmarks/compare.py --agent stub --repetitions 2 --results /tmp/stub
+```

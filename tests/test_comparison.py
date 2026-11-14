@@ -193,3 +193,107 @@ def test_a_transcript_of_no_events_says_nothing_of_its_session(tmp_path: Path) -
     session = read(path)
     assert session is not None
     assert (session.turns, session.calls, session.seconds) == (1, 1, None)
+
+
+@SKIP
+def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
+    tmp_path: Path,
+) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from compare import Report, compare, wilson  # noqa: PLC0415 - importable only once the path holds it
+
+    work = tmp_path / "work"
+    work.mkdir()
+    path = compare(
+        "stub",
+        tasks=["cost_down"],
+        arms=list(Arm),
+        repetitions=2,
+        results=tmp_path,
+        work=work,
+    )
+    report = Report.model_validate_json(path.read_text(encoding="utf-8"))
+    assert path == tmp_path / f"{report.date}-stub.json"
+    assert [(run.arm, run.repetition) for run in report.runs] == [
+        (Arm.JOLTY, 1),
+        (Arm.NGSPICE, 1),
+        (Arm.JOLTY, 2),
+        (Arm.NGSPICE, 2),
+    ]
+    assert all(run.met and run.exit_code == 0 for run in report.runs)
+    assert all(Path(run.work).parent == work for run in report.runs)
+    # The stub writes design.py, or design.cir and tolerances.json, a turn each, then
+    # runs the arm's simulator once in a turn of its own.
+    written = {Arm.JOLTY: 1, Arm.NGSPICE: 2}
+    for run in report.runs:
+        assert run.session is not None
+        assert run.session.turns == written[run.arm] + 1
+        assert run.session.tool_calls == {"Bash": 1, "Write": written[run.arm]}
+        assert run.simulations.commands == {f"{run.arm} --version": 1}
+        assert bool(run.packages) == (run.arm is Arm.NGSPICE)
+        kept = tmp_path / f"{report.date}-stub" / "cost_down" / run.arm
+        for name in ("transcript.txt", "simulations.jsonl"):
+            assert (kept / str(run.repetition) / name).is_file()
+    task = report.tasks["cost_down"]
+    low, high = wilson(2, 2)
+    for arm in Arm:
+        summary = task.arms[arm]
+        assert summary.success.model_dump() == {
+            "met": 2,
+            "runs": 2,
+            "rate": 1.0,
+            "low": low,
+            "high": high,
+        }
+        assert summary.turns is not None
+        assert summary.turns.median == written[arm] + 1
+        assert report.arms[arm] == summary.success
+    difference = task.difference
+    assert difference is not None
+    # Newcombe's interval about a difference of 0 spans each rate's Wilson interval.
+    assert (difference.success, difference.low, difference.high) == (
+        0,
+        low - 1,
+        1 - low,
+    )
+    assert (difference.turns, difference.tool_calls, difference.simulations) == (
+        -1,
+        -1,
+        0,
+    )
+    with pytest.raises(FileExistsError):
+        compare(
+            "stub",
+            tasks=["cost_down"],
+            arms=[Arm.JOLTY],
+            repetitions=1,
+            results=tmp_path,
+        )
+
+
+def test_the_comparison_runs_no_session_without_its_programs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from compare import compare  # noqa: PLC0415 - importable only once the path holds it
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(FileNotFoundError, match="claude, ngspice, uv not on the path"):
+        compare(
+            "claude",
+            tasks=["cost_down"],
+            arms=list(Arm),
+            repetitions=1,
+            results=tmp_path,
+        )
+    assert not list(tmp_path.iterdir())
+    monkeypatch.undo()
+    with pytest.raises(ValueError, match="lies in the repository"):
+        compare(
+            "stub",
+            tasks=["cost_down"],
+            arms=[Arm.JOLTY],
+            repetitions=1,
+            results=tmp_path,
+            work=BENCHMARKS,
+        )
