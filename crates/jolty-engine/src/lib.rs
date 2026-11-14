@@ -318,10 +318,10 @@ impl Simulator {
         Ok(true)
     }
 
-    /// Makes again the devices whose numbers or temperature differ at `values` from the
-    /// run's, as [`Simulator::advance`] does, and runs at `values` from now on, forgetting
-    /// nothing. Returns false, and leaves the simulator as it was, when the values give
-    /// the circuit another structure.
+    /// Prepares again the instances whose numbers or temperature differ at `values` from
+    /// the run's, as [`Simulator::advance`] does, and runs at `values` from now on,
+    /// forgetting nothing. Returns false, and leaves the simulator as it was, when the
+    /// values give the circuit another structure.
     ///
     /// # Errors
     ///

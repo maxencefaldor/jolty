@@ -136,7 +136,7 @@ pub(crate) enum Origin {
 }
 
 /// What a model made a device from: the instance's parameters, read once into the
-/// specification that makes the device again, and as they are written.
+/// specification its kernel's instance is made of, and as they are written.
 pub(crate) struct Made {
     /// The model, which reads the parameters again when a run replaces some of their
     /// numbers.

@@ -617,7 +617,7 @@ fn a_device_recorded_alone_reads_as_it_does_among_every_device() {
         ]
     );
     let chosen = Options { record, ..tight() };
-    // Each simulator makes again only the devices it records.
+    // Each simulator reads only the devices it records.
     let mut apart = self::simulator(&bench());
     let every = simulator.transient(&pulse(), &tight()).unwrap();
     let alone = apart.transient(&pulse(), &chosen).unwrap();

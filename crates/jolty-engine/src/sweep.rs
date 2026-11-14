@@ -57,8 +57,8 @@ pub struct Sweep {
     pub logic: Vec<Vec<Level>>,
 }
 
-/// What a sweep sweeps: what it holds, the device it makes again, and where the run's own
-/// values leave it.
+/// What a sweep sweeps: what it holds, the device whose instance it prepares again, and
+/// where the run's own values leave it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Swept {
     pub(crate) held: Held,

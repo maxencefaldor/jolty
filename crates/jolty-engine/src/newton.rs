@@ -135,10 +135,7 @@ impl Simulator {
             check.last = Some((x.to_vec(), time, source_scale, gmin));
         }
         #[cfg(test)]
-        let before = state.check.is_some().then(|| {
-            let zero = Contributions::new(&self.elaborated.pattern);
-            (zero, state.runs.clone())
-        });
+        let before = state.check.is_some().then(|| state.runs.clone());
         let limited = state.runs.evaluate(
             &self.elaborated.groups,
             &input,
@@ -146,10 +143,9 @@ impl Simulator {
             state.tasks,
         );
         #[cfg(test)]
-        if let (Some(check), Some((prefix, mut alone))) = (&mut state.check, before) {
+        if let (Some(check), Some(mut alone)) = (&mut state.check, before) {
             let assembled = (&state.workspace.contributions, state.runs.slab());
-            let input = (&input, limited);
-            check.compare(&self.elaborated, &mut alone, input, &prefix, assembled);
+            check.compare(&self.elaborated, &mut alone, (&input, limited), assembled);
         }
         state.workspace.meter.leave(previous);
         limited

@@ -107,26 +107,24 @@ fn bound(terms: usize, magnitude: f64) -> f64 {
 pub(crate) type Slab<'a> = ([&'a [f64]; 3], [&'a [f64]; 2]);
 
 impl Check {
-    /// Compares `assembled`, the contributions the groups added from `slab` to `prefix`,
-    /// those of the devices of no kernel, with the instances of `elaborated`'s groups
-    /// evaluated at `input` each alone, from what `alone`, the groups' run before the
-    /// evaluation, holds, one by one in the order of the circuit's devices, each one's
-    /// local sums added to `prefix` as a device of its own adds them; `limited` says
-    /// whether the groups' evaluation limited a voltage.
+    /// Compares `assembled`, the contributions the groups added from `slab`, with the
+    /// instances of `elaborated`'s groups evaluated at `input` each alone, from what
+    /// `alone`, the groups' run before the evaluation, holds, one by one in the order of
+    /// the circuit's devices, each one's local sums added as a device of its own adds
+    /// them; `limited` says whether the groups' evaluation limited a voltage.
     ///
-    /// Both sum the same terms: the value of `prefix`, and each instance's contributions
-    /// to the value, which its block of the slab holds. The groups add them one by one in
-    /// the order of the groups, of their instances and of each instance's local indices;
-    /// the instances alone each one's own sum, in the order of the devices.
+    /// Both sum the same terms: each instance's contributions to the value, which its
+    /// block of the slab holds. The groups add them one by one in the order of the groups,
+    /// of their instances and of each instance's local indices; the instances alone each
+    /// one's own sum, in the order of the devices.
     pub(crate) fn compare(
         &mut self,
         elaborated: &Elaborated,
         alone: &mut Runs,
         (input, limited): (&Input<'_>, bool),
-        prefix: &Contributions,
         (assembled, slab): (&Contributions, Slab<'_>),
     ) {
-        let (sums, one_by_one) = alone_sums(elaborated, alone, input, prefix);
+        let (sums, one_by_one) = alone_sums(elaborated, alone, input);
         assert_eq!(limited, one_by_one, "whether a voltage was limited");
         let bits = |values: &[f64]| {
             values
@@ -144,44 +142,29 @@ impl Check {
         let planes = [
             (
                 "residual",
-                (&assembled.residual, &sums.residual, &prefix.residual),
+                (&assembled.residual, &sums.residual),
                 (rows, residual),
             ),
-            (
-                "charge",
-                (&assembled.charge, &sums.charge, &prefix.charge),
-                (rows, charge),
-            ),
+            ("charge", (&assembled.charge, &sums.charge), (rows, charge)),
             (
                 "conductance",
-                (
-                    &assembled.conductance,
-                    &sums.conductance,
-                    &prefix.conductance,
-                ),
+                (&assembled.conductance, &sums.conductance),
                 (slots, conductance),
             ),
             (
                 "capacitance",
-                (
-                    &assembled.capacitance,
-                    &sums.capacitance,
-                    &prefix.capacitance,
-                ),
+                (&assembled.capacitance, &sums.capacitance),
                 (slots, capacitance),
             ),
         ];
-        for (name, (assembled, sums, prefix), (map, slab)) in planes {
-            for (index, ((&assembled, &sum), &first)) in
-                assembled.iter().zip(sums).zip(prefix).enumerate()
-            {
+        for (name, (assembled, sums), (map, slab)) in planes {
+            for (index, (&assembled, &sum)) in assembled.iter().zip(sums).enumerate() {
                 let sources = map.sources_of(index);
-                let terms = sources.len() + 1;
-                let magnitude = first.abs()
-                    + sources
-                        .iter()
-                        .map(|&source| slab[source as usize].abs())
-                        .sum::<f64>();
+                let terms = sources.len();
+                let magnitude = sources
+                    .iter()
+                    .map(|&source| slab[source as usize].abs())
+                    .sum::<f64>();
                 // A sum that overflows, as a junction's current can at a first guess, does
                 // in both.
                 if !magnitude.is_finite() {
@@ -207,17 +190,16 @@ impl Check {
 
 /// The contributions of the instances of `elaborated`'s groups evaluated at `input` each
 /// alone, from what `alone` holds, one by one in the order of the circuit's devices, each
-/// one's local sums added to `prefix` as a device of its own adds them, and whether one
-/// limited its voltages.
+/// one's local sums added as a device of its own adds them, and whether one limited its
+/// voltages.
 fn alone_sums(
     elaborated: &Elaborated,
     alone: &mut Runs,
     input: &Input<'_>,
-    prefix: &Contributions,
 ) -> (Contributions, bool) {
     let mut members: Vec<usize> = elaborated.groups.members().flatten().copied().collect();
     members.sort_unstable();
-    let mut sums = prefix.clone();
+    let mut sums: Contributions = Contributions::new(&elaborated.pattern);
     let mut one_by_one = false;
     for &member in &members {
         let Some(block) = alone.evaluate_alone(&elaborated.groups, member, input) else {

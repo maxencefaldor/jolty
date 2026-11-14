@@ -418,8 +418,8 @@ impl Simulator {
     }
 
     /// The adjoint derivatives at each level of the sweep `result`, of `swept` as `sweep`
-    /// names it, held there, and the twins of its device made again there, from what its
-    /// instance is made of: a number the sweep holds moves nothing.
+    /// names it, held there, and the twins of its device prepared again there, from what
+    /// its instance is made of: a number the sweep holds moves nothing.
     fn along_sweep(
         &mut self,
         outputs: &[Unknown],

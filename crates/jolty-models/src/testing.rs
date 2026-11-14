@@ -424,8 +424,8 @@ fn at<'a>(value: &'a mut serde_json::Value, path: &[String]) -> &'a mut serde_js
 
 /// Checks that the exact derivatives of a device's residuals and charges at `x` with
 /// respect to each number of `parameters`, a JSON object, match central differences of
-/// the device made again with the number a little above and below, and that their values
-/// are the device's own.
+/// its instance prepared with the number a little above and below, and that their values
+/// are the instance's own.
 pub(crate) fn assert_parameter_gradients_match<K: Kernel>(parameters: &str, x: &[f64]) {
     assert_model_parameter_gradients_match(&Native::<K>::new(), parameters, x, None);
 }

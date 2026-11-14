@@ -39,8 +39,8 @@ pub struct Work {
 /// sum to its whole time, [`Profile::total`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Profile {
-    /// Checking the options, making again the devices the analysis records, and gathering
-    /// the sources' breakpoints.
+    /// Checking the options, choosing the devices the analysis records, and gathering the
+    /// sources' breakpoints.
     pub preparing: Duration,
     /// Evaluating the devices.
     pub evaluating: Duration,
