@@ -23,4 +23,4 @@ Items keep their numbers; each leaves this file when it lands on `main`, and its
 1. The distortion analysis (`.disto`).
 1. The control language: scripts, loops, parameter alteration and interactive analysis.
 1. Numerical device simulation of semiconductors (CIDER).
-1. Device bypass and OpenMP-parallel evaluation of its BSIM4 model.
+1. Device bypass, which skips a device's evaluation where its voltages barely moved; jolty evaluates every model's instances in parallel instead, bit for bit the same on any number of threads.
