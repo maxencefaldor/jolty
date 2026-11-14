@@ -30,14 +30,16 @@ says so:
 - Only the two transistors, resistors, capacitors and constant sources may appear.
 """
 
+import json
 import runpy
-import sys
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
+from arms import Arm
+from scoring import built, modeled, netlist, script
 from verdict import Verdict
 
 from jolty import Builder, Component, Role, Simulation, circuit, component, devices, ir
@@ -252,16 +254,23 @@ def _size_free(parameters: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def transistors(task: Path) -> dict[object, dict[str, object]]:
-    """The given transistors' parameters but their size, by channel."""
-    parts = runpy.run_path(str(task / "given" / "parts.py"))
+def transistors(task: Path, arm: Arm) -> dict[object, dict[str, object]]:
+    """The given transistors' parameters but their size, by channel, as `arm` got them.
+
+    A function of ``parts.py`` makes a transistor of the size it is given, and a model
+    of ``parts.lib`` one of the size its element gives.
+    """
+    if arm is Arm.JOLTY:
+        parts = runpy.run_path(str(task / "given" / "parts.py"))
+        made = [parts[name](1 * um, 1 * um) for name in ("nmos", "pmos")]
+    else:
+        made = [modeled(task, name) for name in ("nmos", "pmos")]
     found = {}
-    for name in ("nmos", "pmos"):
-        made = parts[name](1 * um, 1 * um)
-        if not isinstance(made, devices.Device):
-            message = f"parts.py's {name}() makes no device"
+    for each in made:
+        if not isinstance(each, devices.Device):
+            message = f"the given {each} is no device"
             raise TypeError(message)
-        found[made.parameters["channel"]] = _size_free(made.parameters)
+        found[each.parameters["channel"]] = _size_free(each.parameters)
     return found
 
 
@@ -858,29 +867,62 @@ def needed(problem: Problem) -> tuple[str, ...]:
             return ()
 
 
-def loaded(script: Path) -> tuple[Component, dict[str, float]] | str:
-    """The design `script` builds and the levels it declares, or why it has none."""
-    if not script.is_file():
-        return f"there is no {script.name}"
+LEVELS = {Arm.JOLTY: "LEVELS", Arm.NGSPICE: "levels.json"}
+"""Where each arm's designs declare their inputs' levels."""
+
+
+def loaded(
+    task: Path, work: Path, number: int, arm: Arm, declared: Mapping[str, object]
+) -> tuple[Component, dict[str, float]] | str:
+    """The design of problem `number` in `work` and its inputs' levels, or why none.
+
+    The jolty arm's script declares the levels as ``LEVELS``; the ngspice arm's
+    netlists are `declared`'s, by the netlist's name.
+    """
+    stem = f"p{number}"
+    if arm is Arm.NGSPICE:
+        made = netlist(task, work, stem)
+        levels = declared.get(stem, {})
+    else:
+        namespace = script(work, stem)
+        if isinstance(namespace, str):
+            return namespace
+        made = built(namespace, stem)
+        levels = namespace.get("LEVELS", {})
+    if isinstance(made, str):
+        return made
+    if not isinstance(levels, Mapping):
+        return f"{LEVELS[arm]} gives {stem} no levels by input"
     try:
-        namespace = runpy.run_path(str(script))
-        made = namespace["build"]()
-        levels = {
-            str(port): float(level)
-            for port, level in dict(namespace.get("LEVELS", {})).items()
-        }
-    except Exception as error:  # noqa: BLE001 - an agent's script may raise anything
-        return f"{script.name} fails: {error!r}"
-    if not isinstance(made, Component):
-        return "build() returns no component"
-    return made, levels
+        return made, {str(port): float(level) for port, level in levels.items()}
+    except (TypeError, ValueError) as error:
+        return f"{LEVELS[arm]} gives {stem} a level that is no number: {error}"
+
+
+def declarations(work: Path, arm: Arm) -> Mapping[str, object] | str:
+    """The levels the ngspice arm's ``levels.json`` declares, or why it declares none.
+
+    The jolty arm's scripts declare their own; a missing file declares none.
+    """
+    path = work / LEVELS[Arm.NGSPICE]
+    if arm is Arm.JOLTY or not path.is_file():
+        return {}
+    try:
+        found = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        return f"{path.name} is no JSON: {error}"
+    if not isinstance(found, dict):
+        return f"{path.name} holds no levels by circuit"
+    return dict[str, object](found)
 
 
 def judge(
-    script: Path, number: int, given: Mapping[object, Mapping[str, object]]
+    found: tuple[Component, dict[str, float]] | str,
+    number: int,
+    given: Mapping[object, Mapping[str, object]],
+    arm: Arm,
 ) -> list[str]:
-    """Why the design in `script` fails problem `number`, if it does."""
-    found = loaded(script)
+    """Why the design `found` for problem `number` fails it, if it does."""
     if isinstance(found, str):
         return [found]
     made, levels = found
@@ -891,7 +933,7 @@ def judge(
         return [f"its ports are {', '.join(ports)}, not {', '.join(expected)}"]
     missing = [port for port in needed(problem) if port not in levels]
     if missing:
-        return [f"LEVELS gives no level for {', '.join(missing)}"]
+        return [f"{LEVELS[arm]} gives no level for {', '.join(missing)}"]
     try:
         forbidden = disallowed(made, given)
         return forbidden or CHECKS[problem.kind](number, made, problem, levels)
@@ -899,12 +941,15 @@ def judge(
         return [f"its simulation fails: {error}"]
 
 
-def score(task: Path, work: Path) -> Verdict:
-    """The verdict on the designs ``p1.py`` to ``p24.py`` in `work`."""
-    sys.path.insert(0, str(work))
-    given = transistors(task)
+def score(task: Path, work: Path, arm: Arm) -> Verdict:
+    """The verdict on the designs ``p1`` to ``p24`` in `work`, as `arm` writes them."""
+    given = transistors(task, arm)
+    declared = declarations(work, arm)
+    if isinstance(declared, str):
+        return Verdict(met=False, reasons=(declared,))
     failures = {
-        number: judge(work / f"p{number}.py", number, given) for number in PROBLEMS
+        number: judge(loaded(task, work, number, arm, declared), number, given, arm)
+        for number in PROBLEMS
     }
     measurements = {"solved": float(sum(not found for found in failures.values()))}
     measurements |= {

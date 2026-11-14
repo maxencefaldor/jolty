@@ -24,13 +24,21 @@ sources a current from the first and sinks one into the second, so the output cu
 flows out of ``output`` when ``plus`` is the higher.
 """
 
-import runpy
-import sys
 from functools import partial
 from pathlib import Path
 
 import numpy as np
-from scoring import Board, cornered, count_devices, disallowed, discrete, tolerate
+from arms import Arm
+from scoring import (
+    Board,
+    cornered,
+    count_devices,
+    design,
+    disallowed,
+    discrete,
+    given,
+    tolerate,
+)
 from verdict import Verdict
 
 from jolty import Builder, Component, Role, circuit, component, devices
@@ -211,19 +219,13 @@ def shortfalls(found: dict[str, float]) -> list[str]:
     return reasons
 
 
-def score(task: Path, work: Path) -> Verdict:
-    """The verdict on the voltage-current converter in `work`."""
-    parts = runpy.run_path(str(task / "given" / "parts.py"))
-    given = [parts["npn"](), parts["pnp"]()]
-    design = work / "design.py"
-    if not design.is_file():
-        return Verdict(met=False, reasons=(f"there is no {design}",))
-    sys.path.insert(0, str(work))
-    made = runpy.run_path(str(design))["build"]()
-    if not isinstance(made, Component):
-        return Verdict(met=False, reasons=("build() returns no component",))
+def score(task: Path, work: Path, arm: Arm) -> Verdict:
+    """The verdict on the voltage-current converter in `work`, as `arm` writes it."""
+    made = design(task, work, "design", arm)
+    if isinstance(made, str):
+        return Verdict(met=False, reasons=(made,))
     built = circuit(bench(made, cases()[0], swing()))
-    reasons = disallowed(built, given, ALLOWED)
+    reasons = disallowed(built, given(task, arm, "npn", "pnp"), ALLOWED)
     measured = partial(measure, made)
     measurements, short = cornered(measured, shortfalls)
     reasons += short

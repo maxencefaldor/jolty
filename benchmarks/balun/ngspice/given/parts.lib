@@ -1,0 +1,9 @@
+* The two transistors of the balun: a 2N3904 and a 2N3906, with their makers'
+* SPICE parameters, as parts.py gives them to jolty's agents.
+* An element names its model, such as `Q1 collector base emitter npn`.
+.model npn NPN(IS=6.734e-15 BF=416.4 BR=0.7371 NF=1.0 VAF=74.03 IKF=66.78e-3
++ ISE=6.734e-15 NE=1.259 NC=2.0 RB=10 RC=1 CJE=4.493p MJE=0.2593 CJC=3.638p
++ MJC=0.3085 TF=301.2p XTF=2.0 VTF=4 ITF=0.4 TR=239.5n XTB=1.5)
+.model pnp PNP(IS=1.41e-15 BF=180.7 BR=4.977 VAF=18.7 IKF=80e-3 NE=1.5 NC=2.0
++ RB=10 RC=2.5 CJE=8.063p MJE=0.3677 CJC=9.728p MJC=0.5776 TF=179.3p XTF=6.0
++ VTF=4 ITF=0.4 TR=33.42n XTB=1.5)

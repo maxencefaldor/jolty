@@ -1,0 +1,31 @@
+# The ngspice arm's prompt: task.md, with each of these sentences in place of the
+# jolty arm's, and the tools of ../../ngspice.toml in place of jolty's.
+
+[[replace]]
+jolty = '''`bias.py` builds the bias of a common-emitter stage: the component `stage`, placed as `X1` on its bench, and the bench's 5 V supply `V1`.'''
+ngspice = '''`bias.cir` simulates the bias of a common-emitter stage: the subcircuit `stage` of `stage.cir`, placed as `X1` on its bench, and the bench's 5 V supply `V1`.'''
+
+[[replace]]
+jolty = '''Its plan runs the operating point over 200 Monte Carlo samples of the resistors' tolerances, and its specs hold the emitter at 1 V within 100 mV and the collector at 2.5 V within 300 mV, with a yield of at least 99 %.'''
+ngspice = '''Its specs hold the emitter, the stage's node `emitter`, at 1 V within 100 mV and the collector, the bench's node `out`, at 2.5 V within 300 mV at the operating point, on at least 99 % of 200 boards whose resistors each lie anywhere within their tolerance, uniformly.'''
+
+[[replace]]
+jolty = '''Write `design.py`: a build script whose `build()` returns the same bench with a cheaper stage, which meets the same specs and yield.'''
+ngspice = '''Write `design.cir`: a SPICE library whose subcircuit `stage` is a cheaper stage, which meets the same specs and yield on the same bench.'''
+
+[[replace]]
+jolty = '''Keep the bench, its supply and its nets as they are, and keep `X1`'s ports; change what you like inside the stage.'''
+ngspice = '''Keep the stage's pins, `supply` then `output`, its ground, SPICE's node `0`, and its node `emitter`; change what you like inside the stage.'''
+
+[[replace]]
+jolty = '''Each resistor of the stage must state a tolerance and take a value that a part of the catalog has at that tolerance.'''
+ngspice = '''Write `tolerances.json` beside it, which gives each resistor of the stage its tolerance by the resistor's name, such as `{"R1": 0.01}`; each resistor must take a value that a part of the catalog has at that tolerance.'''
+
+[[replace]]
+jolty = '''`jolty cost` prices a saved circuit with a catalog.
+'''
+ngspice = ''
+
+[[replace]]
+jolty = '''Your design is scored by building it, simulating it with the plan and specs of the original `bias.py`, and pricing `X1` with `catalog.json`'''
+ngspice = '''Your design is scored by reading it, simulating it as `X1` on the original bench with the original's specs and yield, and pricing `X1` with `catalog.json`'''

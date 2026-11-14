@@ -1,0 +1,5 @@
+# The ngspice arm's tools, which every task's prompt states in place of jolty's.
+
+jolty = '''You have jolty, a compiler and simulator for electronic circuits: its command line, `jolty`, its MCP server, `jolty-mcp`, and its Python package.'''
+ngspice = '''You have ngspice, a SPICE simulator, through its command line, `ngspice`, and a Python with numpy, scipy and matplotlib; simulate with ngspice itself, through no PySpice or other wrapper, and with no other simulator.
+The scorer reads each netlist you write with a SPICE reader of its own and simulates it itself: a netlist holds only `.subckt`, `.model` and `.param` statements, includes no file, and may name the models of the given `.lib` files, which the scorer reads before it.'''

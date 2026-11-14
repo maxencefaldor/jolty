@@ -1,8 +1,9 @@
 # Copyright 2026 Maxence Faldor
 
+import json
 import runpy
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,9 +20,10 @@ from jolty import (
     component,
     devices,
     ir,
+    spice,
 )
 from jolty.plan import linear
-from jolty.units import V, kohm, mA, nF
+from jolty.units import V, kohm, mA, nF, um
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks"
 COST_DOWN = BENCHMARKS / "cost_down"
@@ -616,3 +618,218 @@ def test_a_design_must_meet_its_task_in_every_corner() -> None:
     spread, (reason,) = tolerate(circuit(loaded()), measure, cool, parts)
     assert spread["yield"] == 0
     assert reason.endswith("at 70 °C with the supplies 5 % low, it runs too hot")
+
+
+TASKS = sorted(path.parent for path in BENCHMARKS.glob("*/task.md"))
+
+
+def test_the_ngspice_arm_gets_spice_in_place_of_scripts() -> None:
+    from arms import Arm, given, prompt  # noqa: PLC0415 - importable only once the path holds it
+
+    for task in TASKS:
+        assert prompt(task, Arm.JOLTY) == (task / "task.md").read_text(encoding="utf-8")
+        written = prompt(task, Arm.NGSPICE)
+        assert "jolty" not in written.casefold(), task.name
+        assert "`ngspice`" in written
+        names = [path.name for path in given(task, Arm.NGSPICE)]
+        assert not [name for name in names if name.endswith(".py")], task.name
+        assert names == sorted(names)
+    assert [path.name for path in given(COST_DOWN, Arm.NGSPICE)] == [
+        "bias.cir",
+        "catalog.json",
+        "stage.cir",
+    ]
+    assert "Write `design.cir`" in prompt(CUBIC, Arm.NGSPICE)
+
+
+def _spice_defaults(parameters: Mapping[str, object]) -> dict[str, object]:
+    """`parameters`, a jolty device's, with what SPICE states of the same device.
+
+    SPICE gives a bipolar transistor a polarity and a substrate, vertical for an NPN
+    and lateral for a PNP, joined to node 0; a MOSFET's size is its element's, and its
+    level 1 the default the reader leaves out.
+    """
+    if "forward_beta" in parameters:
+        polarity = parameters.get("polarity", "npn")
+        substrate = "vertical" if polarity == "npn" else "lateral"
+        return {**parameters, "polarity": polarity, "substrate": substrate}
+    sized = {"width", "length"} | ({"level"} if parameters.get("level") == 1 else set())
+    return {key: value for key, value in parameters.items() if key not in sized}
+
+
+def test_the_given_spice_models_are_the_given_scripts_parts() -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from scoring import given, modeled  # noqa: PLC0415 - importable only once the path holds it
+
+    for task, names in (
+        (BENCHMARKS / "balun", ("npn", "pnp")),
+        (BENCHMARKS / "cubic_discrete", ("npn", "pnp")),
+        (BENCHMARKS / "voltage_current", ("npn", "pnp")),
+        (CUBIC, ("npn",)),
+    ):
+        for script, read in zip(
+            given(task, Arm.JOLTY, *names),
+            given(task, Arm.NGSPICE, *names),
+            strict=True,
+        ):
+            assert read.parameters == _spice_defaults(script.parameters), task.name
+    parts = runpy.run_path(str(ANALOGCODER / "given" / "parts.py"))
+    for name in ("nmos", "pmos"):
+        script = parts[name](1 * um, 1 * um)
+        assert modeled(ANALOGCODER, name).parameters == _spice_defaults(
+            script.parameters
+        )
+
+
+def test_the_given_stage_netlist_is_the_given_scripts_stage() -> None:
+    bench = runpy.run_path(str(COST_DOWN / "given" / "bias.py"))["build"]()
+    (script,) = bench.children
+    read = spice.load(COST_DOWN / "ngspice" / "given" / "stage.cir").component("stage")
+    assert [port.name for port in read.definition.ports] == [
+        port.name for port in script.definition.ports
+    ]
+    found = {each.id: each for each in read.definition.instances}
+    assert set(found) == {each.id for each in script.definition.instances}
+    for instance in script.definition.instances:
+        twin = found[instance.id]
+        assert twin.of == instance.of
+        assert twin.parameters == _spice_defaults(instance.parameters)
+        assert {
+            terminal: net
+            for terminal, net in twin.terminals.items()
+            if terminal != "substrate"
+        } == instance.terminals
+
+
+def stage(work: Path, tolerances: dict[str, float] | None, text: str = "") -> None:
+    """Writes the given stage netlist as `work`'s design, and its `tolerances`.
+
+    `text` replaces nothing when empty, else the netlist itself.
+    """
+    netlist = (COST_DOWN / "ngspice" / "given" / "stage.cir").read_text(
+        encoding="utf-8"
+    )
+    (work / "design.cir").write_text(text or netlist, encoding="utf-8")
+    if tolerances is not None:
+        (work / "tolerances.json").write_text(json.dumps(tolerances), encoding="utf-8")
+
+
+RESISTORS = ("R1", "R2", "RE", "RC")
+"""The given stage's resistors."""
+
+
+def test_a_cheaper_netlist_that_meets_the_specs_meets_the_task(tmp_path: Path) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    # Names are matched without case, as SPICE matches them.
+    stage(tmp_path, {name.casefold(): 0.01 for name in RESISTORS})
+    verdict = score(COST_DOWN, tmp_path, Arm.NGSPICE)
+    assert verdict.met, verdict.reasons
+    # The same parts as the cheaper script's, so the same prices.
+    assert verdict.measurements == {
+        "baseline": pytest.approx(0.2),
+        "cost": pytest.approx(0.016),
+    }
+
+
+def test_the_score_says_why_a_netlist_falls_short(tmp_path: Path) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    assert score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons == (
+        f"there is no {tmp_path / 'design.cir'}",
+    )
+    stage(tmp_path, None)
+    reasons = score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons
+    assert (
+        "X1/R1 is unpriced: its resistance has no tolerance, which a part must meet"
+        in (reasons)
+    )
+    stage(tmp_path, dict.fromkeys(RESISTORS, 0.05))
+    reasons = score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons
+    assert "the design does not meet the plan of bias.py" in reasons
+    stage(tmp_path, {**dict.fromkeys(RESISTORS, 0.01), "R9": 0.01})
+    (reason,) = score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons
+    assert "tolerances.json names r9, which is no resistor of the stage" in reason
+    netlist = (COST_DOWN / "ngspice" / "given" / "stage.cir").read_text(
+        encoding="utf-8"
+    )
+    stage(tmp_path, None, f".include parts.lib\n{netlist}")
+    (reason,) = score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons
+    assert reason.startswith("the design does not build: ")
+    assert "a library defines subcircuits, models and parameters only" in reason
+
+
+def reference_netlists(work: Path) -> None:
+    """Writes each of AnalogCoder's reference designs into `work` as a netlist."""
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from stub import DESIGNS  # noqa: PLC0415 - importable only once the path holds it
+
+    for name, text in DESIGNS["analogcoder"](ANALOGCODER, Arm.NGSPICE).items():
+        (work / name).write_text(text, encoding="utf-8")
+
+
+def test_the_reference_netlists_pass_every_analogcoder_check(tmp_path: Path) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    reference_netlists(tmp_path)
+    verdict = score(ANALOGCODER, tmp_path, Arm.NGSPICE)
+    assert verdict.met, verdict.reasons
+    assert verdict.measurements["solved"] == 24
+
+
+def test_the_analogcoder_scorer_says_why_netlists_fail(tmp_path: Path) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    reference_netlists(tmp_path)
+    (tmp_path / "p3.cir").unlink()
+    (tmp_path / "p7.cir").write_text(
+        ".subckt p7 vdd vin vout\nE1 vout 0 vin 0 -1\n.ends p7\n", encoding="utf-8"
+    )
+    (tmp_path / "p8.cir").write_text(
+        ".subckt p8 vdd vbias vout\nZ1 vout 0 vbias 1\n.ends p8\n", encoding="utf-8"
+    )
+    levels = json.loads((tmp_path / "levels.json").read_text(encoding="utf-8"))
+    (tmp_path / "levels.json").write_text(
+        json.dumps({**levels, "p1": {}}), encoding="utf-8"
+    )
+    verdict = score(ANALOGCODER, tmp_path, Arm.NGSPICE)
+    assert verdict.measurements["solved"] == 20
+    assert "p1: levels.json gives no level for vin" in verdict.reasons
+    assert "p3: there is no p3.cir" in verdict.reasons
+    assert "p7: E1 is a voltage_controlled_voltage_source, which the task forbids" in (
+        verdict.reasons
+    )
+    (reason,) = [each for each in verdict.reasons if each.startswith("p8: ")]
+    assert reason.startswith("p8: jolty cannot read p8.cir: p8.cir:2: ")
+
+
+def test_a_netlist_s_transistors_must_be_the_given_models(tmp_path: Path) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    follower = ".subckt design input output vcc\nQ1 vcc input output {}\n.ends\n"
+    (tmp_path / "design.cir").write_text(follower.format("npn"), encoding="utf-8")
+    reasons = score(CUBIC_DISCRETE, tmp_path, Arm.NGSPICE).reasons
+    assert reasons
+    assert not [reason for reason in reasons if "given part" in reason]
+    (tmp_path / "design.cir").write_text(
+        f"{follower.format('fast')}.model fast NPN(IS=6.734e-15 BF=1000)\n",
+        encoding="utf-8",
+    )
+    reasons = score(CUBIC_DISCRETE, tmp_path, Arm.NGSPICE).reasons
+    assert reasons[0] == "Q1 is not a given part"
+
+
+def test_a_script_that_fails_to_build_fails_its_task(tmp_path: Path) -> None:
+    from score import score  # noqa: PLC0415 - importable only once the path holds it
+
+    (tmp_path / "design.py").write_text(
+        "def build():\n    raise RuntimeError('unfinished')\n", encoding="utf-8"
+    )
+    assert score(BALUN, tmp_path).reasons == (
+        "design.py's build() fails: RuntimeError('unfinished')",
+    )

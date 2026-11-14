@@ -1,0 +1,6 @@
+* The one transistor of the cubic function generator, of a fast bipolar process:
+* an integrated NPN transistor, its transit frequency gigahertz near 1 mA, as
+* parts.py gives it to jolty's agents.
+* Every transistor of an integrated circuit made in one process matches every
+* other, so a diode is an npn transistor whose base joins its collector.
+.model npn NPN(IS=1e-16 BF=100.0 BR=1.0 VAF=50 RB=50 RC=10 CJE=20f CJC=10f TF=10p)

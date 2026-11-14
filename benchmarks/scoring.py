@@ -1,7 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""What the scorers share: scripts simulated, parts counted and checked, designs judged.
+"""What the scorers share: designs read and simulated, parts checked, designs judged.
 
-A scorer measures a design with its parts exact, in each corner of the conditions it
+A design is the jolty arm's script or the ngspice arm's netlist, and the given parts are
+the functions of a task's ``parts.py``, or the models of its ``parts.lib``, as the arm's
+agent got them; from them on, a scorer judges both arms by the same code. A scorer
+measures a design with its parts exact, in each corner of the conditions it
 must work in: at 0 °C and at 70 °C, the commercial range, with its supplies 5 % low and
 5 % high, besides 27 °C and its supplies exact. If it meets its task in every corner, it
 is measured again on boards built of real parts, whose values stray within their
@@ -11,6 +14,8 @@ boards meet it in all of them.
 
 import asyncio
 import math
+import runpy
+import sys
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -18,11 +23,144 @@ from pathlib import Path
 from typing import Final
 
 import numpy as np
+from arms import Arm, libraries
 
-from jolty import Simulation, devices, files, ir, service, variation
+from jolty import Component, Simulation, devices, files, ir, service, spice, variation
 from jolty.errors import SimulationError
 from jolty.settings import Settings
 from jolty.units import celsius
+
+
+def script(work: Path, stem: str) -> dict[str, object] | str:
+    """What the script `stem`, such as ``design``, of `work` defines, or why it fails.
+
+    It runs as a script whose directory is importable, so it may import modules of its
+    own from beside it.
+    """
+    path = work / f"{stem}.py"
+    if not path.is_file():
+        return f"there is no {path.name}"
+    if str(work) not in sys.path:
+        sys.path.insert(0, str(work))
+    try:
+        namespace = dict[str, object](runpy.run_path(str(path)))
+    except Exception as error:  # noqa: BLE001 - an agent's script may raise anything
+        return f"{path.name} fails: {error!r}"
+    return namespace
+
+
+def built(namespace: Mapping[str, object], stem: str) -> Component | str:
+    """The component the ``build()`` of `namespace`, script `stem`'s, returns.
+
+    Returns why there is none, when it has no ``build()``, or it fails or returns no
+    component.
+    """
+    build = namespace.get("build")
+    if not callable(build):
+        return f"{stem}.py defines no build()"
+    try:
+        made = build()
+    except Exception as error:  # noqa: BLE001 - an agent's script may raise anything
+        return f"{stem}.py's build() fails: {error!r}"
+    if not isinstance(made, Component):
+        return "build() returns no component"
+    return made
+
+
+def grounded(made: Component) -> Component:
+    """`made`, a subcircuit read, with SPICE's ground, node ``0``, as a port.
+
+    jolty's reader gives a subcircuit a ground port only when an element joins node
+    ``0``; a design's ground is node ``0`` whether or not anything joins it.
+    """
+    ports = made.definition.ports
+    if any(port.name == spice.GROUND for port in ports):
+        return made
+    port = ir.Port(name=spice.GROUND, role=ir.Role.GROUND)
+    definition = made.definition.model_copy(update={"ports": (*ports, port)})
+    return Component(made.name, definition, made.children)
+
+
+def netlist(task: Path, work: Path, stem: str) -> Component | str:
+    """The subcircuit `stem` of the netlist `stem`, such as ``design.cir``, of `work`.
+
+    jolty's SPICE reader reads the netlist after the libraries of `task`'s ngspice arm,
+    whose models it may name, and the subcircuit's ground is SPICE's node ``0``.
+    Returns why there is none, when the netlist is missing, jolty cannot read it, or it
+    defines no subcircuit `stem`.
+    """
+    path = work / f"{stem}.cir"
+    if not path.is_file():
+        return f"there is no {path.name}"
+    try:
+        return grounded(spice.load(*libraries(task), path).component(stem))
+    except ValueError as error:
+        return f"jolty cannot read {path.name}: {error}"
+
+
+def design(task: Path, work: Path, stem: str, arm: Arm) -> Component | str:
+    """The component the design `stem` of `work` is, as `arm` writes it, or why none.
+
+    It is the component the script ``stem.py`` builds, or the subcircuit ``stem`` of
+    the netlist ``stem.cir``.
+    """
+    if arm is Arm.NGSPICE:
+        return netlist(task, work, stem)
+    found = script(work, stem)
+    return found if isinstance(found, str) else built(found, stem)
+
+
+_ELEMENTS: Final = {
+    "npn": "Q1 collector base emitter",
+    "pnp": "Q1 collector base emitter",
+    "nmos": "M1 drain gate source bulk",
+    "pmos": "M1 drain gate source bulk",
+}
+"""An element of a model of each SPICE type the given parts are, but its model."""
+
+
+def modeled(task: Path, model: str) -> devices.Device:
+    """The device jolty reads of an element of `model`, a model of `task`'s libraries.
+
+    The element gives the model nothing of its own, such as a MOSFET's size.
+
+    Raises:
+        KeyError: When no model of the libraries is named `model`, or it is of a type
+            no given part is.
+    """
+    library = spice.load(*libraries(task))
+    card = library.model(model, {})
+    if card is None or card.kind not in _ELEMENTS:
+        message = f"the libraries of {task.name} give no part `{model}`"
+        raise KeyError(message)
+    library.read(f".subckt part\n{_ELEMENTS[card.kind]} {model}\n.ends", "part")
+    (instance,) = library.component("part").definition.instances
+    if not isinstance(instance.of, ir.DeviceOf):
+        message = f"`{model}` is no device's model"
+        raise KeyError(message)
+    return devices.device(instance.of.device, dict(instance.parameters))
+
+
+def given(task: Path, arm: Arm, *names: str) -> list[devices.Device]:
+    """The given parts `names` of `task`, as `arm`'s agent got them.
+
+    Each is the device the function of that name in ``parts.py`` makes, or the one
+    jolty reads of an element of the model of that name in ``parts.lib``.
+
+    Raises:
+        TypeError: When a function of ``parts.py`` makes no device.
+    """
+    if arm is Arm.NGSPICE:
+        return [modeled(task, name) for name in names]
+    functions = runpy.run_path(str(task / "given" / "parts.py"))
+    found = []
+    for name in names:
+        made = functions[name]()
+        if not isinstance(made, devices.Device):
+            message = f"parts.py's {name}() makes no device"
+            raise TypeError(message)
+        found.append(made)
+    return found
 
 
 @dataclass(frozen=True, slots=True)

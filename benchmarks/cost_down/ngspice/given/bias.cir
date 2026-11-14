@@ -1,0 +1,9 @@
+* The stage of stage.cir, from a 5 V supply: its operating point.
+* Its parts hold the emitter at 1 V within 100 mV and the collector at 2.5 V
+* within 300 mV on every board of their tolerances: the baseline of the
+* cost-down task. Simulate it with `ngspice -b bias.cir`.
+.include stage.cir
+V1 supply 0 5
+X1 supply out stage
+.op
+.end

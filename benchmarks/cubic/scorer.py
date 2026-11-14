@@ -14,19 +14,21 @@ within 5 %.
 """
 
 import runpy
-import sys
 from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path
 
 import numpy as np
+from arms import Arm
 from scoring import (
     CORNERS,
     Board,
     Corner,
     cornered,
     count_devices,
+    design,
     disallowed,
+    given,
     integrated,
     tolerate,
 )
@@ -122,20 +124,15 @@ def shortfalls(found: dict[str, float]) -> list[str]:
     return [f"the score is {found['score']:.4g}, more than the patent's 1"]
 
 
-def score(task: Path, work: Path) -> Verdict:
-    """The verdict on the cubic `work` against `task`."""
+def score(task: Path, work: Path, arm: Arm) -> Verdict:
+    """The verdict on the cubic `work` against `task`, as `arm` writes it."""
     patented = runpy.run_path(str(task / "patent.py"))["cubic"]()
     patent = {corner: errors(patented, Board(corner=corner)) for corner in CORNERS}
-    transistor = runpy.run_path(str(task / "given" / "parts.py"))["npn"]()
-    design = work / "design.py"
-    if not design.is_file():
-        return Verdict(met=False, reasons=(f"there is no {design}",))
-    sys.path.insert(0, str(work))
-    made = runpy.run_path(str(design))["build"]()
-    if not isinstance(made, Component):
-        return Verdict(met=False, reasons=("build() returns no component",))
+    made = design(task, work, "design", arm)
+    if isinstance(made, str):
+        return Verdict(met=False, reasons=(made,))
     built = circuit(bench(made))
-    reasons = disallowed(built, [transistor], ALLOWED)
+    reasons = disallowed(built, given(task, arm, "npn"), ALLOWED)
     measured = partial(measure, made, patent)
     measurements, short = cornered(measured, shortfalls)
     reasons += short

@@ -1,0 +1,12 @@
+* A common-emitter stage's bias, its resistors 0.1 % parts, as bias.py builds it
+* for jolty's agents.
+* A divider sets the base, the emitter resistor the current, and the collector
+* resistor the collector's voltage.
+.subckt stage supply output
+Q1 output base emitter q1
+R1 supply base 33.2k
+R2 base 0 16.5k
+RE emitter 0 1k
+RC supply output 2.49k
+.model q1 NPN(IS=6.734e-15 BF=416.4 VAF=74.03)
+.ends stage

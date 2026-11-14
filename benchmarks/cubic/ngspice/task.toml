@@ -1,0 +1,14 @@
+# The ngspice arm's prompt: task.md, with each of these sentences in place of the
+# jolty arm's, and the tools of ../../ngspice.toml in place of jolty's.
+
+[[replace]]
+jolty = '''Write `design.py`, a script whose `build()` returns your circuit as a component with five ports: `supply`, `reference`, `input`, `output` and `ground`.'''
+ngspice = '''Write `design.cir`, a SPICE library whose subcircuit `design` is your circuit, its pins `supply`, `reference`, `input` and `output`, and its ground SPICE's node `0`.'''
+
+[[replace]]
+jolty = '''Build it only from the transistor of `parts.py`, `npn()`, an integrated NPN transistor of a fast bipolar process, and from resistors and capacitors.'''
+ngspice = '''Build it only from the transistor of `parts.lib`, the model `npn`, an integrated NPN transistor of a fast bipolar process, and from resistors and capacitors.'''
+
+[[replace]]
+jolty = '''Every transistor of an integrated circuit matches every other, so a diode is an `npn()` whose base joins its collector.'''
+ngspice = '''Every transistor of an integrated circuit matches every other, so a diode is an `npn` transistor whose base joins its collector.'''
