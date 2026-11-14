@@ -199,31 +199,40 @@ def _excused(
     steps, and is no reference for either engine.
     """
     for divisor in SHORTENED:
-        shorter = _transients(simulation, STEP / divisor)
+        step = STEP / divisor
+        try:
+            shorter = _transients(simulation, step)
+        except SimulationError:
+            return _stopped_short(simulation.circuit, step)
         if shorter is None:
             return "ngspice stopped short"
         if not differing(*shorter[:2], quantities, 1e-3):
             return "agree once both take shorter steps"
-    finest = _jolty(simulation, STEP / SHORTENED[-1], times)
+    step = STEP / SHORTENED[-1]
+    try:
+        finest = _jolty(simulation, step, times)
+    except SimulationError:
+        return _stopped_short(simulation.circuit, step)
     if differing(finest, jolty, quantities, 1e-3):
         return "a waveform that shorter steps move"
     return None
 
 
-def _assert_no_solution_continues(circuit: ir.Circuit) -> None:
-    """Asserts that where jolty stops short of ngspice, no solution continues.
+def _stopped_short(circuit: ir.Circuit, step: float) -> str:
+    """Why jolty may stop short of ngspice with `step` the longest: none continues.
 
     Without capacitance, the equations of a net that only resistive devices hold can
     fold, as their solution moves, into a point past which none continues: ngspice
-    may leap past it, or stop. With 10 fF from every net to the ground, as real nets
-    have, the solution continues, and jolty must finish wherever ngspice does.
+    may leap past it, or stop, whatever the step. With 10 fF from every net to the
+    ground, as real nets have, the solution continues, and jolty must finish wherever
+    ngspice does, at the same step.
     """
     try:
-        _transients(Simulation(parasitic(circuit)), STEP)
+        _transients(Simulation(parasitic(circuit)), step)
     except SimulationError as error:
         message = f"jolty stopped short where ngspice finished: {error}"
         raise AssertionError(message) from None
-    event("no solution continues without capacitance")
+    return "no solution continues without capacitance"
 
 
 @SETTINGS
@@ -240,7 +249,7 @@ def test_transients_agree(circuit: ir.Circuit) -> None:
     try:
         found = _transients(simulation, STEP)
     except SimulationError:
-        _assert_no_solution_continues(simulation.circuit)
+        event(_stopped_short(simulation.circuit, STEP))
         return
     if found is None:
         event("ngspice stopped short")
