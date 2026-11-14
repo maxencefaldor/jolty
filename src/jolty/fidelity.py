@@ -24,7 +24,7 @@ mean delay, violates the contract, and the report says where.
 import itertools
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Final
 
@@ -35,7 +35,7 @@ from jolty import devices, ir, results
 from jolty.errors import CharacterizationError, JoltyError
 from jolty.plan import Ac, Characterized, OperatingPoint, Plan, Transient
 from jolty.results import Result
-from jolty.simulate import Excursion, Simulation, kelvins
+from jolty.simulate import Elaborated, Excursion, Simulation, kelvins
 from jolty.specs import Verdict
 from jolty.units import FREQUENCY, TIME, VOLTAGE, Quantity, format_si
 
@@ -638,7 +638,9 @@ class Fidelity:
     """The fidelity of one circuit at one temperature.
 
     It holds each instance a scope matches, and the characterization of its component
-    that stands in for it.
+    that stands in for it. Its simulations, as many as a Monte Carlo analysis runs,
+    share the circuit elaborated once with the models standing in, as
+    [`Elaborated`][jolty.simulate.Elaborated] describes.
     """
 
     built: ir.Circuit
@@ -649,6 +651,11 @@ class Fidelity:
     """Each component's characterization, by name."""
     process: str | None = None
     """The process corner of a foundry's devices, its kit's typical unless given."""
+    elaborated: dict[str | None, Elaborated] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    """The circuit elaborated with the models, by the instance left at its circuit's own
+    fidelity, if any, once a simulation first asks for it."""
 
     def substitutes(self, opened: str | None = None) -> dict[str, devices.Device]:
         """The models that stand in for the instances, but for `opened`."""
@@ -676,13 +683,23 @@ class Fidelity:
     ) -> Simulation:
         """The circuit elaborated with the models, but for `opened`, and `overrides`.
 
-        A foundry's devices draw their kit's mismatch from the seed `mismatch`.
+        The circuit is elaborated once for every simulation with the same `opened`, each
+        of which makes its devices again from the numbers `overrides` gives. A foundry's
+        devices draw their kit's mismatch from the seed `mismatch`.
+
+        Raises:
+            ElaborationError: When the circuit does not elaborate with the models, or
+                with the numbers `overrides` gives.
         """
-        return Simulation(
-            self.built,
-            self.temperature,
+        shared = self.elaborated.get(opened)
+        if shared is None:
+            elaborated = Elaborated(
+                self.built, self.temperature, self.substitutes(opened)
+            )
+            shared = self.elaborated.setdefault(opened, elaborated)
+        return Simulation.of(
+            shared,
             overrides and self.overrides(overrides),
-            self.substitutes(opened),
             process=self.process,
             mismatch=mismatch,
         )

@@ -6,10 +6,10 @@ fixture's files are what its script in ``perf/circuits`` writes, then times the 
 fixtures twice: in Rust, by the criterion benchmarks of
 ``crates/jolty-engine/benches/fixtures.rs``, and end to end in Python, each fixture's
 circuit read from its file and its plan's analyses run through ``Simulation.run``. A
-Monte Carlo fixture runs its first samples, drawn and run as the runner does, on one
-thread and on a thread per core. It writes the times to ``perf/results/<commit>.json``,
-adding to what an earlier run on the same commit wrote, and prints them against a
-baseline's, flagging every change over 5 %.
+Monte Carlo fixture runs its first samples, drawn and run as the runner does, on the
+circuit elaborated once, on one thread and on a thread per core. It writes the times
+to ``perf/results/<commit>.json``, adding to what an earlier run on the same commit
+wrote, and prints them against a baseline's, flagging every change over 5 %.
 
 Usage::
 
@@ -47,7 +47,7 @@ import numpy as np
 
 from jolty import circuit, ir, results, variation
 from jolty.plan import Ac, OperatingPoint, Plan, Transient
-from jolty.simulate import Simulation
+from jolty.simulate import Elaborated, Simulation
 from jolty.spice import export, ngspice
 from jolty.units import FREQUENCY, TIME
 
@@ -151,11 +151,9 @@ def load(fixture: Fixture) -> Loaded:
     return Loaded(ir.Circuit.model_validate_json(text), fixture.plan)
 
 
-def run(
-    loaded: Loaded, overrides: Mapping[str, Mapping[str, float]] | None = None
-) -> None:
-    """Elaborates the circuit with `overrides`, and runs the plan's analyses on it."""
-    simulation = Simulation(loaded.circuit, overrides=overrides)
+def run(loaded: Loaded) -> None:
+    """Elaborates the circuit, and runs the plan's analyses on it."""
+    simulation = Simulation(loaded.circuit)
     for analysis in loaded.plan.analyses.values():
         simulation.run(analysis, loaded.plan.options)
 
@@ -163,9 +161,10 @@ def run(
 def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
     """The first `samples` of the fixture's Monte Carlo analysis, run on `threads`.
 
-    The samples are drawn in turn from the seed, as the runner draws them, and each
-    elaborates the circuit with its parameters and runs the plan's analyses, on a pool
-    of threads as the runner's, the engine releasing the interpreter while it runs.
+    The samples are drawn in turn from the seed, as the runner draws them, and each runs
+    the plan's analyses at its parameters on the circuit elaborated once, as the runner
+    runs them, on a pool of threads as the runner's, the engine releasing the
+    interpreter while it runs; the one elaboration counts in the time.
     """
     monte_carlo = loaded.plan.monte_carlo
     seed = 0 if monte_carlo is None else monte_carlo.seed
@@ -175,13 +174,19 @@ def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
         generator = np.random.default_rng(seed)
         return (variation.sample(toleranced, generator) for _ in range(samples))
 
+    def sample(elaborated: Elaborated, overrides: dict[str, dict[str, float]]) -> None:
+        simulation = Simulation.of(elaborated, overrides)
+        for analysis in loaded.plan.analyses.values():
+            simulation.run(analysis, loaded.plan.options)
+
     def every() -> None:
+        elaborated = Elaborated(loaded.circuit)
         if threads == 1:
             for overrides in drawn():
-                run(loaded, overrides)
+                sample(elaborated, overrides)
             return
         with ThreadPoolExecutor(threads) as pool:
-            for _ in pool.map(functools.partial(run, loaded), drawn()):
+            for _ in pool.map(functools.partial(sample, elaborated), drawn()):
                 pass
 
     return every

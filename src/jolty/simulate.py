@@ -2,7 +2,10 @@
 """Run analyses on a circuit with the Rust engine.
 
 A [`Simulation`][jolty.simulate.Simulation] elaborates a circuit once, its devices at
-one temperature, 27 °C unless given, and runs any number of analyses on it.
+one temperature, 27 °C unless given, and runs any number of analyses on it. A circuit
+[`Elaborated`][jolty.simulate.Elaborated] once is shared by simulations of it at any
+parameters, as a Monte Carlo analysis's samples are: each makes its devices again from
+its parameters, and none elaborates the circuit anew.
 
 Examples:
     >>> from jolty import Builder, Role, component, devices
@@ -21,9 +24,10 @@ Examples:
     2.5
 """
 
+import contextlib
 import functools
 import json
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Generator, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Final, Literal, overload
@@ -105,6 +109,123 @@ class Excursion(BaseModel):
     count: int = Field(description="How many times it was read outside.")
 
 
+def _stand_ins(substitutes: Mapping[str, Device] | None) -> str:
+    """The models of `substitutes` as the engine reads them, by path, in JSON."""
+    stand_ins = {
+        path: {"model": device.model, "parameters": device.parameters}
+        for path, device in (substitutes or {}).items()
+    }
+    return json.dumps(stand_ins, allow_nan=False)
+
+
+@contextlib.contextmanager
+def _elaborating() -> Generator[None]:
+    """Raises the engine's elaboration error as an `ElaborationError` of its problems.
+
+    Raises:
+        ElaborationError: With every problem the engine finds, each naming the instance
+            and the line of the build script that placed it.
+    """
+    try:
+        yield
+    except _core.ElaborationError as error:
+        (found,) = error.args
+        raise ElaborationError([checks.problem(each) for each in found]) from None
+
+
+class Elaborated:
+    """A circuit elaborated once, which simulations of it at any parameters share.
+
+    Its devices run at one temperature, 27 °C unless given, with the models of
+    `substitutes` standing in for component instances. A
+    [`Simulation.of`][jolty.simulate.Simulation.of] it replaces some of its devices'
+    numbers, as a Monte Carlo sample does, and makes its devices again from them, as
+    elaborating the circuit with them would, bit for bit, without elaborating it anew.
+    Numbers that give a device another structure, as a resistance below 1 Ω carries its
+    current as an unknown of its own, run on the circuit elaborated once for that
+    structure, which every simulation whose numbers give it shares.
+
+    Examples:
+        >>> from jolty import Builder, Role, component, devices
+        >>> from jolty.plan import OperatingPoint
+        >>> from jolty.units import V, kohm
+        >>> @component
+        ... def divider(c: Builder) -> None:
+        ...     ground = c.port("ground", Role.GROUND)
+        ...     source = c.place(devices.voltage_source(5 * V), id="V1")
+        ...     upper = c.place(devices.resistor(1 * kohm), id="R1")
+        ...     lower = c.place(devices.resistor(1 * kohm), id="R2")
+        ...     c.connect(source.positive, upper.a)
+        ...     c.connect(upper.b, lower.a, name="out")
+        ...     c.connect(lower.b, source.negative, ground)
+        >>> elaborated = Elaborated(divider())
+        >>> sample = Simulation.of(elaborated, {"R1": {"resistance": 3000.0}})
+        >>> sample.run(OperatingPoint()).voltage("out")
+        1.25
+    """
+
+    circuit: ir.Circuit
+    """The circuit, in the canonical format."""
+
+    temperature: Quantity | None
+    """The temperature its devices run at; 27 °C when it is None."""
+
+    substituted: frozenset[str]
+    """The paths of the component instances a model stands in for."""
+
+    def __init__(
+        self,
+        circuit_or_top: ir.Circuit | Component,
+        temperature: Quantity | None = None,
+        substitutes: Mapping[str, Device] | None = None,
+    ) -> None:
+        """Elaborates a circuit, or the circuit with a component at its top.
+
+        Raises:
+            ElaborationError: With every problem the engine finds, each naming the
+                instance and the line of the build script that placed it.
+            DimensionError: When the temperature is not one.
+        """
+        self.circuit = (
+            circuit_or_top
+            if isinstance(circuit_or_top, ir.Circuit)
+            else circuit(circuit_or_top)
+        )
+        self.temperature = temperature
+        self.substituted = frozenset(substitutes or {})
+        self._kelvins = kelvins(temperature)
+        with _elaborating():
+            self._core = _core.Elaborated(
+                self.circuit.model_dump_json(), _stand_ins(substitutes)
+            )
+        self._structures: dict[_core.StructureKey, _core.Elaborated] = {}
+
+    def simulator(
+        self, overrides: Mapping[str, Mapping[str, float]] | None = None
+    ) -> _core.Simulator:
+        """The engine's simulator of the circuit with the numbers of `overrides`.
+
+        It runs on this circuit, or on the circuit elaborated for the structure the
+        numbers give it, elaborated the first time they give it.
+
+        Raises:
+            ElaborationError: With every number `overrides` names that the circuit's
+                devices do not write, and every device whose numbers they put out of
+                range.
+        """
+        with _elaborating():
+            values = self._core.values(
+                json.dumps(overrides or {}, allow_nan=False), self._kelvins
+            )
+            key = self._core.structure_of(values)
+            shared = self._core
+            if not key.unchanged:
+                shared = self._structures.get(key) or self._structures.setdefault(
+                    key, self._core.restructured(values)
+                )
+            return _core.Simulator.from_elaborated(shared, values)
+
+
 class Simulation:
     """A circuit elaborated once, ready to run any number of analyses.
 
@@ -167,28 +288,82 @@ class Simulation:
             ValueError: When a process corner is given for a circuit that holds no
                 foundry's device.
         """
-        self.circuit = (
+        built = (
             circuit_or_top
             if isinstance(circuit_or_top, ir.Circuit)
             else circuit(circuit_or_top)
         )
-        self._substituted = frozenset(substitutes or {})
-        self._recordings: dict[str, results.Recording] = {}
-        self._records: dict[tuple[str, ...], frozenset[str]] = {}
-        try:
-            stand_ins = {
-                path: {"model": device.model, "parameters": device.parameters}
-                for path, device in (substitutes or {}).items()
-            }
-            self._core = _core.Simulator(
-                self.circuit.model_dump_json(),
+        with _elaborating():
+            core = _core.Simulator(
+                built.model_dump_json(),
                 kelvins(temperature),
                 json.dumps(overrides or {}, allow_nan=False),
-                json.dumps(stand_ins, allow_nan=False),
+                _stand_ins(substitutes),
             )
-        except _core.ElaborationError as error:
-            (found,) = error.args
-            raise ElaborationError([checks.problem(each) for each in found]) from None
+        self._start(
+            built,
+            core,
+            (temperature, overrides, frozenset(substitutes or {})),
+            (process, mismatch),
+        )
+
+    @classmethod
+    def of(
+        cls,
+        elaborated: Elaborated,
+        overrides: Mapping[str, Mapping[str, float]] | None = None,
+        *,
+        process: str | None = None,
+        mismatch: int | None = None,
+    ) -> Simulation:
+        """The circuit `elaborated` holds, its parameters replaced by `overrides`.
+
+        It simulates as the circuit elaborated with them does, bit for bit, as
+        [`Elaborated`][jolty.simulate.Elaborated] describes, at the circuit's
+        temperature, its foundry's devices at the `process` corner drawing their kit's
+        mismatch from the seed `mismatch`.
+
+        Raises:
+            ElaborationError: With every number `overrides` names that the circuit's
+                devices do not write, and every device whose numbers they put out of
+                range.
+            ValueError: When a process corner is given for a circuit that holds no
+                foundry's device.
+        """
+        simulation = cls.__new__(cls)
+        core = elaborated.simulator(overrides)
+        replaced = (elaborated.temperature, overrides, elaborated.substituted)
+        start = simulation._start  # noqa: SLF001 - readies what it made, as __init__ does
+        start(elaborated.circuit, core, replaced, (process, mismatch))
+        return simulation
+
+    def _start(
+        self,
+        built: ir.Circuit,
+        core: _core.Simulator,
+        replaced: tuple[
+            Quantity | None, Mapping[str, Mapping[str, float]] | None, frozenset[str]
+        ],
+        foundry_conditions: tuple[str | None, int | None],
+    ) -> None:
+        """Readies the simulation of `built` that the engine's `core` runs.
+
+        Its devices run at a temperature, their parameters replaced by overrides and
+        the component instances a model stands in for substituted, `replaced`; a
+        foundry's at a process corner, drawing their kit's mismatch from a seed,
+        `foundry_conditions`.
+
+        Raises:
+            ValueError: When a process corner is given for a circuit that holds no
+                foundry's device.
+        """
+        temperature, overrides, substituted = replaced
+        process, mismatch = foundry_conditions
+        self.circuit = built
+        self._substituted = substituted
+        self._recordings: dict[str, results.Recording] = {}
+        self._records: dict[tuple[str, ...], frozenset[str]] = {}
+        self._core = core
         self.unknowns = tuple(
             results.Unknown(name, quantity) for name, quantity in self._core.unknowns
         )
