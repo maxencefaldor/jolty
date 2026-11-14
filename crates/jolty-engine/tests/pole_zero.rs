@@ -1,4 +1,5 @@
 //! Poles and zeros against closed forms.
+#![cfg(test)]
 
 use jolty_engine::{Conditions, Options, PoleZero, PolesZeros, SimulationError, Simulator};
 use jolty_ir::Circuit;

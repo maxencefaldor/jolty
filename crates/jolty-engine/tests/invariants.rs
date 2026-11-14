@@ -1,4 +1,5 @@
 //! Physical invariants on random circuits.
+#![cfg(test)]
 
 use jolty_engine::{Conditions, Options, Simulator};
 use jolty_ir::Circuit;

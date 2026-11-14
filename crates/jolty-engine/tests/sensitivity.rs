@@ -1,4 +1,5 @@
 //! Adjoint sensitivities against finite differences of the whole circuit.
+#![cfg(test)]
 
 use jolty_engine::{
     Ac, Conditions, DcSweep, Derivatives, Differentiated, Method, Options, Sensitivity,

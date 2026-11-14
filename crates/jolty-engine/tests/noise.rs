@@ -1,4 +1,5 @@
 //! The noise at an output against closed forms.
+#![cfg(test)]
 
 use std::f64::consts::TAU;
 

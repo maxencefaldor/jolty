@@ -1,4 +1,5 @@
 //! Every analysis against circuits whose answers are known in closed form.
+#![cfg(test)]
 
 use std::f64::consts::{PI, TAU};
 

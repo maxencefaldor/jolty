@@ -1,5 +1,6 @@
 //! The operating point a simulator remembers, solved once for every analysis about it, and
 //! the same as solved afresh.
+#![cfg(test)]
 
 use jolty_engine::{
     Ac, Analysis, Conditions, DcSweep, Differentiated, Method, Noise, OperatingPoints, Options,

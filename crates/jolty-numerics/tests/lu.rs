@@ -1,6 +1,7 @@
 //! The sparse LU solver against a dense reference: on random sparse matrices whose large
 //! entries lie off the diagonal, on the matrices of random circuits, real and complex, after
 //! their values change, and on singular and nearly singular matrices.
+#![cfg(test)]
 
 use std::sync::Arc;
 

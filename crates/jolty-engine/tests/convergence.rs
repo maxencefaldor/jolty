@@ -1,4 +1,5 @@
 //! Circuits that Newton iteration alone does not solve, and the aid that does.
+#![cfg(test)]
 
 use jolty_engine::{Conditions, Options, Simulator, Strategy};
 use jolty_ir::Circuit;

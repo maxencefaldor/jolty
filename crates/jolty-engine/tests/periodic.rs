@@ -1,4 +1,5 @@
 //! The periodic steady state against closed form and against long transients.
+#![cfg(test)]
 
 use std::f64::consts::TAU;
 

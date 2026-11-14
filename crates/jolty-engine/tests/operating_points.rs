@@ -1,4 +1,5 @@
 //! Every DC solution of circuits with one, three and a latch's.
+#![cfg(test)]
 
 use jolty_engine::{
     Conditions, OperatingPoint, OperatingPoints, Options, SimulationError, Simulator,

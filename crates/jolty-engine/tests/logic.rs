@@ -1,5 +1,6 @@
 //! The event scheduler on logic circuits, alone and joined to analog circuits, against timing
 //! known in closed form.
+#![cfg(test)]
 
 use jolty_engine::{
     Bound, Conditions, DcSweep, ElaborationProblem, Endpoint, Options, Simulator, Transient,

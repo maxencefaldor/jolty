@@ -38,6 +38,11 @@ impl PatternBuilder {
     /// Panics if a claimed position lies outside the matrix.
     #[must_use]
     pub fn finish(self, dimension: usize) -> Pattern {
+        #[expect(
+            clippy::panic,
+            reason = "every caller claims positions among the `dimension` unknowns it binds, so \
+                      one outside is a bug of the caller's"
+        )]
         if let Some(&(row, column)) = self
             .positions
             .iter()

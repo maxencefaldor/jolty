@@ -937,6 +937,12 @@ impl Elements<'_> {
             self.builder,
             self.temperature,
         );
+        #[expect(
+            clippy::unreachable,
+            reason = "a connect element refuses only a negative capacitance, and the input \
+                      capacitances it takes were checked non-negative as their logic device \
+                      was read"
+        )]
         let device: Box<dyn Device> = match D::new(parameters, &mut binding) {
             Ok(device) => Box::new(device),
             Err(error) => unreachable!("a connect element's parameters are checked: {error}"),

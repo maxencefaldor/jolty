@@ -1,6 +1,7 @@
 //! What the recorded devices do: the current into every terminal and the charge it holds,
 //! the derivatives of its equations, and its variables, for the devices and the component
 //! instances a record names.
+#![cfg(test)]
 
 use std::collections::BTreeSet;
 

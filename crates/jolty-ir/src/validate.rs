@@ -422,20 +422,16 @@ fn check_component(
 
 /// Reports each cycle of the component graph once, by a depth-first search.
 fn find_cycles(components: &BTreeMap<Name, Component>, problems: &mut Vec<Problem>) {
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Mark {
-        Open,
-        Done,
-    }
-
+    /// Visits `name` and every component below it not yet `visited`. `path` holds the
+    /// components the search is within, so a child on it closes a cycle.
     fn visit<'a>(
         name: &'a Name,
         components: &'a BTreeMap<Name, Component>,
-        marks: &mut BTreeMap<&'a Name, Mark>,
+        visited: &mut BTreeSet<&'a Name>,
         path: &mut Vec<&'a Name>,
         problems: &mut Vec<Problem>,
     ) {
-        marks.insert(name, Mark::Open);
+        visited.insert(name);
         path.push(name);
         let children =
             components[name]
@@ -446,28 +442,21 @@ fn find_cycles(components: &BTreeMap<Name, Component>, problems: &mut Vec<Proble
                     _ => None,
                 });
         for child in children {
-            match marks.get(child) {
-                Some(Mark::Open) => {
-                    let start = path
-                        .iter()
-                        .position(|&n| n == child)
-                        .expect("an open component is on the path");
-                    let mut cycle: Vec<Name> = path[start..].iter().map(|&n| n.clone()).collect();
-                    cycle.push(child.clone());
-                    problems.push(Problem::Recursive { cycle });
-                }
-                Some(Mark::Done) => {}
-                None => visit(child, components, marks, path, problems),
+            if let Some(start) = path.iter().position(|&n| n == child) {
+                let mut cycle: Vec<Name> = path[start..].iter().map(|&n| n.clone()).collect();
+                cycle.push(child.clone());
+                problems.push(Problem::Recursive { cycle });
+            } else if !visited.contains(child) {
+                visit(child, components, visited, path, problems);
             }
         }
         path.pop();
-        marks.insert(name, Mark::Done);
     }
 
-    let mut marks = BTreeMap::new();
+    let mut visited = BTreeSet::new();
     for name in components.keys() {
-        if !marks.contains_key(name) {
-            visit(name, components, &mut marks, &mut Vec::new(), problems);
+        if !visited.contains(name) {
+            visit(name, components, &mut visited, &mut Vec::new(), problems);
         }
     }
 }

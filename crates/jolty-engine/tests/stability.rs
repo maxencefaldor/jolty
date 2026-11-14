@@ -1,4 +1,5 @@
 //! The loop gain through a probe against closed forms.
+#![cfg(test)]
 
 use std::f64::consts::TAU;
 

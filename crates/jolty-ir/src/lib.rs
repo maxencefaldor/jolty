@@ -336,6 +336,11 @@ impl Circuit {
     ///
     /// Never: every part of a circuit serializes to JSON.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "serde_json fails only on a map keyed by other than strings, and every map of \
+                  a circuit is keyed by strings"
+    )]
     pub fn to_json(&self) -> String {
         let document = Document {
             format: FORMAT.to_owned(),
