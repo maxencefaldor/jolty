@@ -12,8 +12,9 @@ Specs state what a circuit must do, and every simulation measures its results ag
 A plan can run a component as a logic cell characterized from its own circuit, as the full adder example runs its nine transistor-level NAND gates, and spot checks hold each cell to its circuit.
 A sensitivity analysis gives the derivative of any unknown with respect to every parameter of every device, at the operating point, along a DC sweep, over frequency or over time.
 A stability analysis gives a feedback loop's gain through a probe, by Middlebrook's double injection, and specs read its phase and gain margins.
-A noise analysis gives the noise density at any output from every device's thermal, shot and flicker noise, each source's share, and the noise referred to an input, and a pole-zero analysis the circuit's natural frequencies and a transfer function's zeros.
+A noise analysis gives the noise density at any output from every device's thermal, shot and flicker noise, each source's share, and the noise referred to an input, a pole-zero analysis the circuit's natural frequencies and a transfer function's zeros, and a transfer function analysis, SPICE's `.tf`, the gain at DC and the resistances the source and the output see.
 A periodic transient finds the steady state a driven circuit settles into, such as a rectifier's or a power converter's, in a few periods by shooting, where a transient would run for many.
+The engine runs on every core: a batch runs a circuit's Monte Carlo samples, corners or any grid of values at once, each run finding the same bits it finds alone, and its devices evaluate in parallel within a run; shards split a batch across machines, and `jolty merge` joins them into the report one machine would write.
 Every result holds the circuit's unknowns at every point, and, for each device a plan records, its terminals' currents and charges, the derivatives of its equations and its model's variables, and a 3D viewer plays any simulation on the circuit's layout.
 A circuit of SKY130 transistors runs its plans in ngspice with the foundry's own models, at its process corners, and its results read as the engine's.
 jolty stops at the circuit: it writes SPICE netlists for ngspice and KiCad netlists for boards, and leaves laying out boards and chips to the tools made for them.
@@ -104,8 +105,8 @@ The Rust workspace in `crates/` holds the engine, each crate built on the ones b
 
 1. `jolty-ir`: the circuit format, its names and its validation.
 1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, and integration formulas.
-1. `jolty-models`: the interface every device implements, and the standard library of devices.
-1. `jolty-engine`: elaboration of a hierarchy into devices bound to unknowns, Newton iteration, and the analyses.
+1. `jolty-models`: the interface every device implements, the kernels that compute a model one instance at a time and the groups that evaluate them together, across threads, and the standard library of devices.
+1. `jolty-engine`: elaboration of a hierarchy, once per structure, into devices bound to unknowns, Newton iteration, the analyses, the measures specs read, and the batch executor that runs many runs of one circuit across threads.
 1. `jolty-python`: the Python extension module `jolty._core`.
 
 The Python package in `src/jolty` holds everything an agent reads and writes: units, the builder, plans, results, specs, reports, the command line and the MCP server.
