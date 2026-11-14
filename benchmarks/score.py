@@ -1,12 +1,12 @@
 # Copyright 2026 Maxence Faldor
 """Score an agent's work on a benchmark task, independently of the agent.
 
-Usage: ``uv run python benchmarks/score.py TASK WORK [--arm ARM]``, where ``TASK`` is a
-task's directory, such as ``benchmarks/cost_down``, ``WORK`` the directory the agent
-worked in, and ``ARM`` the tools it had: ``jolty``, by default, when it wrote its design
-as a script, such as ``design.py``, or ``ngspice`` when it wrote it as a netlist, such
-as ``design.cir``. It prints the verdict as JSON, and exits with 0 when the work meets
-the task.
+Usage: ``uv run python benchmarks/score.py TASK WORK [--arm ARM] [--verdict FILE]``,
+where ``TASK`` is a task's directory, such as ``benchmarks/cost_down``, ``WORK`` the
+directory the agent worked in, and ``ARM`` the tools it had: ``jolty``, by default,
+when it wrote its design as a script, such as ``design.py``, or ``ngspice`` when it
+wrote it as a netlist, such as ``design.cir``. It prints the verdict as JSON, writes it
+to ``FILE`` too when given, and exits with 0 when the work meets the task.
 
 Each task's own ``scorer.py``, which the agent never sees, defines
 ``score(task, work, arm)`` and returns a `verdict.Verdict`. It reads the design as the
@@ -44,6 +44,7 @@ class Arguments(BaseModel):
     task: Path
     work: Path
     arm: Arm
+    verdict: Path | None
 
 
 def main() -> None:
@@ -54,9 +55,13 @@ def main() -> None:
     parser.add_argument(
         "--arm", type=Arm, choices=list(Arm), default=Arm.JOLTY, help="its tools"
     )
+    parser.add_argument("--verdict", type=Path, help="a file to write the verdict to")
     arguments = Arguments.model_validate(vars(parser.parse_args()))
     verdict = score(arguments.task, arguments.work, arguments.arm)
-    print(verdict.model_dump_json(indent=2))
+    written = verdict.model_dump_json(indent=2)
+    if arguments.verdict is not None:
+        arguments.verdict.write_text(written, encoding="utf-8")
+    print(written)
     raise SystemExit(0 if verdict.met else 1)
 
 

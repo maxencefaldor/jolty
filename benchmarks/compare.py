@@ -12,7 +12,7 @@ scored by the task's own scorer. The sessions run one at a time, so none
 slows another, the arms and tasks taking turns in each round of repetitions, so a change
 in the agent's service over the hours affects both arms alike. It writes
 ``DIRECTORY/DATE-AGENT.json``, ``benchmarks/results`` by default, and keeps each
-session's transcript and log of simulator runs beside it, in
+session's transcript, log of simulator runs and verdict beside it, in
 ``DIRECTORY/DATE-AGENT/TASK/ARM/REPETITION``. The report holds every session, and for
 each task and arm:
 
@@ -48,7 +48,7 @@ from typing import Final, Literal
 
 from arms import Arm
 from pydantic import BaseModel, ConfigDict, Field
-from run import SIMULATIONS, TRANSCRIPT, default_agent, session
+from run import SIMULATIONS, TRANSCRIPT, VERDICT, default_agent, session
 from transcript import Session, read
 
 # jolty's own 95 % interval of a yield's rate, which jolty.specs keeps to itself.
@@ -305,9 +305,9 @@ def versions() -> dict[str, str]:
 
 
 def kept(run: Path, work: Path) -> None:
-    """Keeps the transcript and the simulator log of the session in `work` in `run`."""
+    """Keeps in `run` the transcript, simulator log and verdict of `work`'s session."""
     run.mkdir(parents=True)
-    for name in (TRANSCRIPT, SIMULATIONS):
+    for name in (TRANSCRIPT, SIMULATIONS, VERDICT):
         if (work / name).is_file():
             shutil.copy(work / name, run / name)
 

@@ -56,6 +56,7 @@ Roadmap item 8 asks what jolty gives an agent: each task is done in two arms, wh
   A netlist jolty cannot read fails, as a script that does not build does.
 
 Each arm's simulator, `jolty` or `ngspice`, is a wrapper on the agent's path that logs every run, `counted.py`, and the runner keeps the log beside the transcript, as `simulations.jsonl`.
+The runner scores the work in a process of its own, through `score.py`, so what an agent's scripts import or change stays there, and keeps the verdict beside them, as `verdict.json`.
 Claude Code prints its session as stream-json events, and `transcript.py` reads its turns, its tool calls by name, and its own report of the session's wall time, cost and tokens.
 
 Run one session of the ngspice arm, or score its work:
@@ -71,7 +72,7 @@ Run the comparison, five sessions per arm per task by default, so 60 paid sessio
 uv run python benchmarks/compare.py --agent claude
 ```
 
-It runs the sessions one at a time, the arms and the tasks taking turns in each round, each in a fresh directory outside the repository, and writes `benchmarks/results/<date>-<agent>.json`, with each session's transcript and log beside it, in `benchmarks/results/<date>-<agent>/<task>/<arm>/<repetition>`.
+It runs the sessions one at a time, the arms and the tasks taking turns in each round, each in a fresh directory outside the repository, and writes `benchmarks/results/<date>-<agent>.json`, with each session's transcript, log and verdict beside it, in `benchmarks/results/<date>-<agent>/<task>/<arm>/<repetition>`.
 The report holds every session, each arm's success rate on each task with its 95 % Wilson interval, as jolty states a yield's, the median and the range of its turns, tool calls, simulator runs, wall time and cost, and the arms' difference on each task, jolty's less ngspice's, with Newcombe's interval for the success rates'.
 AnalogCoder's problems count as one task, met when all twenty-four are, and each of its sessions keeps the scorer's verdict on every problem.
 

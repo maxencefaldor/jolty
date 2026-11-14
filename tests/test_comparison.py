@@ -297,3 +297,40 @@ def test_the_comparison_runs_no_session_without_its_programs(
             results=tmp_path,
             work=BENCHMARKS,
         )
+
+
+def test_each_session_is_scored_in_a_process_of_its_own(tmp_path: Path) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from run import VERDICT, scored  # noqa: PLC0415 - importable only once the path holds it
+
+    bias = (COST_DOWN / "given" / "bias.py").read_text(encoding="utf-8")
+    verdicts = []
+    # Each design imports its resistors' tolerance from a module of the same name
+    # beside it: scored in one process, the second would find the first's.
+    for name, tolerance in (("cheap", 0.01), ("loose", 0.05)):
+        work = tmp_path / name
+        work.mkdir()
+        (work / "helper.py").write_text(f"TOLERANCE = {tolerance}\n", encoding="utf-8")
+        design = bias.replace("TOLERANCE = 0.001", "from helper import TOLERANCE")
+        (work / "design.py").write_text(design, encoding="utf-8")
+        verdicts.append(scored(COST_DOWN, work, Arm.JOLTY))
+        assert (work / VERDICT).is_file()
+    assert [verdict.met for verdict in verdicts] == [True, False]
+    assert "the design does not meet the plan of bias.py" in verdicts[1].reasons
+
+
+def test_a_scorer_that_crashes_fails_the_work(tmp_path: Path) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from run import scored  # noqa: PLC0415 - importable only once the path holds it
+
+    task = tmp_path / "broken"
+    task.mkdir()
+    (task / "scorer.py").write_text(
+        "def score(task, work, arm):\n    raise RuntimeError('a broken scorer')\n",
+        encoding="utf-8",
+    )
+    verdict = scored(task, tmp_path, Arm.JOLTY)
+    assert not verdict.met
+    assert verdict.reasons == (
+        "the scorer exited with 1, having written RuntimeError: a broken scorer",
+    )

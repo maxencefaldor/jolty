@@ -36,7 +36,6 @@ from typing import Final
 
 from arms import Arm, given, prompt
 from pydantic import BaseModel
-from score import score
 from verdict import Verdict
 
 MCP: dict[str, object] = {"mcpServers": {"jolty": {"command": "jolty-mcp"}}}
@@ -47,6 +46,10 @@ SIMULATIONS: Final = "simulations.jsonl"
 """The log of the runs of the arm's simulators, one JSON object a run."""
 TRANSCRIPT: Final = "transcript.txt"
 """What the agent printed, its error stream with its output."""
+VERDICT: Final = "verdict.json"
+"""The scorer's verdict on the session's work."""
+SCORE: Final = Path(__file__).with_name("score.py")
+"""The scorer, which judges the work in a process of its own."""
 PACKAGES: Final = ("numpy", "scipy", "matplotlib")
 """The packages of the ngspice arm's Python."""
 JOLTY: Final = ("jolty", "jolty-mcp")
@@ -165,8 +168,8 @@ def environment(arm: Arm, directory: Path) -> Environment:
 
 
 @dataclass(frozen=True, slots=True)
-class Session:
-    """One agent's session on a task, as the runner saw it, and its verdict."""
+class Outcome:
+    """How one agent's session on a task went, as the runner saw it, and its verdict."""
 
     exit_code: int
     seconds: float
@@ -176,10 +179,10 @@ class Session:
     """The packages of the ngspice arm's Python, by name; none for the jolty arm."""
 
 
-def session(task: Path, agent: list[str], work: Path, arm: Arm) -> Session:
+def session(task: Path, agent: list[str], work: Path, arm: Arm) -> Outcome:
     """Runs `agent` of `arm` on `task` in `work`, keeps its transcript, and scores it.
 
-    The transcript and the log of the simulators' runs end in `work`.
+    The transcript, the log of the simulators' runs and the verdict end in `work`.
     """
     text = prepare(task, work, arm)
     with tempfile.TemporaryDirectory(prefix=f"jolty-{arm}-tools-") as directory:
@@ -201,8 +204,30 @@ def session(task: Path, agent: list[str], work: Path, arm: Arm) -> Session:
             shutil.copy(log, work / SIMULATIONS)
         else:
             (work / SIMULATIONS).touch()
-    verdict = score(task, work, arm)
-    return Session(finished.returncode, seconds, verdict, prepared.packages)
+    return Outcome(
+        finished.returncode, seconds, scored(task, work, arm), prepared.packages
+    )
+
+
+def scored(task: Path, work: Path, arm: Arm) -> Verdict:
+    """The verdict of `task`'s scorer on `work`, as `arm` wrote it, written beside it.
+
+    It scores in a process of its own, as score.py does, since the scorer runs the
+    agent's scripts: a module one imports from beside it, or a change it makes to
+    the path, stays in that process, and a crash ends that process alone, which fails
+    the work, with the last line the scorer wrote to its error stream.
+    """
+    path = work / VERDICT
+    path.unlink(missing_ok=True)
+    command = [sys.executable, str(SCORE), str(task), str(work), "--arm", str(arm)]
+    finished = subprocess.run(  # noqa: S603 - the scorer, beside the runner
+        [*command, "--verdict", str(path)], capture_output=True, text=True, check=False
+    )
+    if path.is_file():
+        return Verdict.model_validate_json(path.read_text(encoding="utf-8"))
+    last = finished.stderr.strip().splitlines()[-1:] or ["nothing"]
+    reason = f"the scorer exited with {finished.returncode}, having written {last[0]}"
+    return Verdict(met=False, reasons=(reason,))
 
 
 def run(task: Path, agent: list[str], work: Path, arm: Arm = Arm.JOLTY) -> int:
