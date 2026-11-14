@@ -711,6 +711,7 @@ dependencies = [
  "faer",
  "num-complex",
  "proptest",
+ "rayon",
  "serde",
  "thiserror 2.0.21",
 ]
