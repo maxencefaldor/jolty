@@ -38,6 +38,11 @@ type RuleKey = Annotated[str, StringConstraints(pattern=r"^[a-z]+(-[a-z]+)*$")]
 """A rule's name, such as ``no-dc-path``, or ``all`` for every rule."""
 
 
+def _user_cache() -> Path:
+    """`$XDG_CACHE_HOME/jolty`, or `~/.cache/jolty` where `XDG_CACHE_HOME` is unset."""
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "jolty"
+
+
 class Settings(BaseSettings):
     """Settings shared by every front end."""
 
@@ -72,9 +77,7 @@ class Settings(BaseSettings):
         description="Diagnostics a check report lists; it counts the rest.",
     )
     cache: Path = Field(
-        default_factory=lambda: (
-            Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "jolty"
-        ),
+        default_factory=_user_cache,
         description="Directory that keeps what jolty downloads, such as the model "
         "files of parts; by default, jolty's own in the user's cache.",
     )

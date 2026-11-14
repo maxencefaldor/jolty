@@ -11,6 +11,7 @@ come from the schemas the engine derives from its own parameter types. The pages
 therefore match the tools exactly, and CI fails when a page is stale.
 """
 
+import inspect
 import json
 import re
 from collections.abc import Mapping
@@ -171,6 +172,11 @@ def cli_page() -> str:
 
 
 def _setting_default(field: FieldInfo) -> str:
+    factory = field.default_factory
+    if inspect.isfunction(factory) and factory.__doc__ is not None:
+        # A default computed where jolty runs, as the function that computes it says,
+        # rather than what it computes on the machine that writes the page.
+        return factory.__doc__.strip().removesuffix(".")
     value = field.get_default(call_default_factory=True, validated_data={})
     return "unset" if value is None or value == {} else f"`{value}`"
 
