@@ -394,6 +394,34 @@ mod tests {
         ));
     }
 
+    /// Python writes each number as the shortest text that reads back as it, and the
+    /// engine must read that number, not a neighbour: without `serde_json`'s
+    /// `float_roundtrip`, 981.4902141434463 reads as 981.4902141434465, as about one number
+    /// in five reads an ulp off.
+    #[test]
+    fn reads_every_number_as_python_writes_it() {
+        for written in [
+            "981.4902141434463",
+            "0.1",
+            "1e-15",
+            "2.2250738585072014e-308",
+            "5e-324",
+            "1.7976931348623157e+308",
+        ] {
+            let text = divider().replace("1000.0", written);
+            let circuit = Circuit::from_json(&text).unwrap();
+            let read = circuit.components[&Name::new("divider").unwrap()].instances[0]
+                .parameters["resistance"]
+                .as_f64()
+                .unwrap();
+            assert_eq!(
+                read.to_bits(),
+                written.parse::<f64>().unwrap().to_bits(),
+                "{written}"
+            );
+        }
+    }
+
     #[test]
     fn rejects_unknown_fields() {
         let text = divider().replace(r#""role": "ground""#, r#""role": "ground", "colour": 1"#);
