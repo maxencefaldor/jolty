@@ -206,6 +206,8 @@ def test_the_transcript_reader_counts_turns_and_tool_calls(tmp_path: Path) -> No
                 "type": "result",
                 "subtype": "success",
                 "is_error": False,
+                "result": "design.py meets the specs.",
+                "terminal_reason": "completed",
                 "num_turns": 5,
                 "duration_ms": 61500,
                 "total_cost_usd": 1.25,
@@ -233,6 +235,8 @@ def test_the_transcript_reader_counts_turns_and_tool_calls(tmp_path: Path) -> No
         "cache_read_input_tokens": 9000,
     }
     assert session.outcome == "success"
+    assert session.report == "design.py meets the specs."
+    assert session.terminal_reason == "completed"
     setup = session.setup
     assert setup is not None
     assert setup.mcp_servers == {"jolty": "connected"}
@@ -241,6 +245,89 @@ def test_the_transcript_reader_counts_turns_and_tool_calls(tmp_path: Path) -> No
         "none",
     )
     assert (setup.skills, setup.agents, setup.plugins) == ((), ("general-purpose",), ())
+
+
+def test_the_transcript_reader_reads_the_setup_and_how_the_session_ended(
+    tmp_path: Path,
+) -> None:
+    from transcript import Setup, read  # noqa: PLC0415 - importable only once the path holds it
+
+    path = tmp_path / "transcript.txt"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "system",
+                        "subtype": "init",
+                        "tools": ["Bash"],
+                        "mcp_servers": [{"name": "jolty", "status": "failed"}, {}],
+                        "plugins": [{"name": "a", "path": "/p"}],
+                        "permissionMode": "bypassPermissions",
+                    }
+                ),
+                _assistant("msg_1", {"type": "text", "text": "I tried."}),
+                _assistant("msg_2", _call("toolu_1", "Bash")),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "error_max_turns",
+                        "is_error": True,
+                        "terminal_reason": "max_turns",
+                        "errors": ["Reached the maximum number of turns (3)"],
+                        "num_turns": 3,
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    session = read(path)
+    assert session is not None
+    assert session.setup == Setup(
+        tools=("Bash",),
+        mcp_servers={"jolty": "failed"},
+        permission_mode="bypassPermissions",
+        plugins=("a",),
+    )
+    assert (session.outcome, session.terminal_reason, session.is_error) == (
+        "error_max_turns",
+        "max_turns",
+        True,
+    )
+    assert session.errors == ("Reached the maximum number of turns (3)",)
+    # Without a result, the last report is the last text the model wrote.
+    assert session.report == "I tried."
+
+
+def test_a_session_ends_as_the_runner_saw_and_the_agent_reports() -> None:
+    from compare import Ending, ending  # noqa: PLC0415 - importable only once the path holds it
+    from transcript import Session  # noqa: PLC0415 - importable only once the path holds it
+
+    def reported(outcome: str | None, *, is_error: bool | None = False) -> Session:
+        return Session(turns=1, tool_calls={}, outcome=outcome, is_error=is_error)
+
+    assert ending(0, reported("success"), timed_out=False) is Ending.FINISHED
+    assert ending(-9, reported(None, is_error=None), timed_out=True) is (
+        Ending.OUT_OF_TIME
+    )
+    assert ending(1, reported("error_max_turns", is_error=True), timed_out=False) is (
+        Ending.OUT_OF_TURNS
+    )
+    assert ending(1, reported("error_max_budget_usd"), timed_out=False) is (
+        Ending.OUT_OF_BUDGET
+    )
+    # A success that is an error, an error, a failed exit and no report all errored.
+    for code, session in (
+        (0, reported("success", is_error=True)),
+        (1, reported("error_during_execution")),
+        (1, reported("success")),
+        (0, reported(None, is_error=None)),
+    ):
+        assert ending(code, session, timed_out=False) is Ending.ERRORED
+    # An agent that prints no events ended as its exit code says.
+    assert ending(0, None, timed_out=False) is Ending.FINISHED
+    assert ending(2, None, timed_out=False) is Ending.ERRORED
 
 
 def test_a_transcript_of_no_events_says_nothing_of_its_session(tmp_path: Path) -> None:
@@ -283,6 +370,8 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
     ]
     assert all(run.met and run.exit_code == 0 for run in report.runs)
     assert all(Path(run.work).parent == work for run in report.runs)
+    assert all(run.ending == "finished" and not run.shortfalls for run in report.runs)
+    assert report.runs[0].report == "I wrote the known good design, design.py."
     for run in report.runs:
         configuration = run.configuration
         # Each session ran in a home of its own, in the sandbox wherever there is one,
@@ -308,6 +397,11 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
     low, high = wilson(2, 2)
     for arm in Arm:
         summary = task.arms[arm]
+        assert (summary.endings, summary.shortfalls, summary.specs) == (
+            {"finished": 2},
+            {},
+            {},
+        )
         assert summary.success.model_dump() == {
             "met": 2,
             "runs": 2,
@@ -483,6 +577,7 @@ def test_the_comparison_s_command_line_reads_lists_and_refuses_bad_values(
         [
             *("--agent", "stub", "--tasks", "cost_down,balun", "--arms", "ngspice"),
             *("--repetitions", "2", "--results", str(results)),
+            *("--timeout", "600", "--turns", "40", "--budget", "2.5"),
         ]
     )
     assert asked == [
@@ -494,6 +589,7 @@ def test_the_comparison_s_command_line_reads_lists_and_refuses_bad_values(
             "results": results,
             "model": None,
             "work": None,
+            "limits": compare.Limits(timeout=600, turns=40, budget=2.5),
         }
     ]
     assert results.is_dir()
@@ -573,6 +669,31 @@ def test_a_sandboxed_agent_reads_and_writes_its_own_directory_alone(
     assert not (secret.parent / "new.txt").exists()
 
 
+def test_the_runner_stops_a_session_and_what_it_left_running(tmp_path: Path) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from run import Program, session  # noqa: PLC0415 - importable only once the path holds it
+
+    def left(work: Path) -> bool:
+        pid = int((work / "child.pid").read_text(encoding="utf-8"))
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    for name, script, timeout in (
+        ("exits", "sleep 300 & echo $! > child.pid", None),
+        ("runs on", "sleep 300 & echo $! > child.pid; sleep 300", 2.0),
+    ):
+        work = tmp_path / name
+        work.mkdir()
+        program = Program(("/bin/sh", "-c", script), confined=False)
+        ran = session(COST_DOWN, program, work, Arm.JOLTY, timeout)
+        assert ran.timed_out == (timeout is not None)
+        assert ran.configuration.timeout == timeout
+        assert not left(work)
+
+
 def _claude(directory: Path, *, logged_in: bool) -> None:
     """Writes a stand-in for Claude Code into `directory`, that answers for free.
 
@@ -617,9 +738,16 @@ def test_claude_runs_only_in_a_sandbox_and_holding_credentials(
         )
 
     # Claude Code started in the sandbox, which costs nothing, says who it is.
-    agent = default_agent(Arm.JOLTY, model="opus")
+    agent = default_agent(Arm.JOLTY, model="opus", turns=40, budget=2.5)
     assert agent.command[0] == str((programs / "claude").resolve())
-    assert agent.command[-2:] == ("--model", "opus")
+    assert agent.command[-6:] == (
+        "--model",
+        "opus",
+        "--max-turns",
+        "40",
+        "--max-budget-usd",
+        "2.5",
+    )
     assert "--setting-sources=" in agent.command
     if compare.mechanism() is not None:
         assert compare.started(agent) == (

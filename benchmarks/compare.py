@@ -3,7 +3,7 @@
 
 Usage: ``uv run python benchmarks/compare.py [--agent AGENT] [--model MODEL]
 [--repetitions N] [--tasks TASK,...] [--arms ARM,...] [--results DIRECTORY]
-[--work DIRECTORY]``.
+[--work DIRECTORY] [--timeout SECONDS] [--turns N] [--budget USD]``.
 
 It runs ``N`` sessions of the agent per arm per task, 5 by default, each as run.py runs
 one: in a fresh working directory, made in ``--work`` or the system's temporary
@@ -11,7 +11,9 @@ directory and never in the repository, with the arm's prompt, files and tools, a
 scored by the task's own scorer. Each session has a configuration of its own, which
 holds nothing of the user's, and runs in the platform's sandbox, ``sandbox.py``: Claude
 Code runs only in one, and only once it is found to start there and to hold
-credentials, which costs nothing. The sessions run one at a time, so none slows
+credentials, which costs nothing. The runner stops a session after ``--timeout``
+seconds, and Claude Code stops itself after ``--turns`` turns or once it has spent
+``--budget`` US dollars, when given. The sessions run one at a time, so none slows
 another, the arms and tasks taking turns in each round of repetitions, so a change in
 the agent's service over the hours affects both arms alike. It writes
 ``DIRECTORY/DATE-AGENT.json``, ``benchmarks/results`` by default, and keeps each
@@ -22,6 +24,10 @@ each task and arm:
 - the success rate, with its 95 % Wilson interval, as jolty states a yield's;
 - the median and the range of the iterations, the model's turns and tool calls, and
   the runs of the arm's simulator, and of the session's wall time and cost;
+- the failure kinds: how the sessions ended, finished, out of time, turns or budget,
+  or in an error, as the runner saw and the agent reports, and how many fell short in
+  each kind the scorer found, and of each spec, each session with its verdict's
+  shortfalls and the agent's last report beside them;
 - the difference between the arms on the task, jolty's less ngspice's: of the success
   rates, with the 95 % interval of Newcombe's hybrid score method built from the arms'
   Wilson intervals, and of the medians.
@@ -44,7 +50,7 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Final
@@ -66,6 +72,7 @@ from run import (
 )
 from sandbox import mechanism
 from transcript import Session, read
+from verdict import Kind, Shortfall
 
 from jolty import cli
 from jolty.specs import wilson
@@ -85,7 +92,32 @@ class Agent(StrEnum):
     STUB = "stub"
 
 
-def command(agent: Agent, task: Path, arm: Arm, model: str | None) -> Program:
+class Limits(BaseModel):
+    """How long a session may run: in seconds, in the agent's turns, in US dollars."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    timeout: float | None = Field(
+        default=None,
+        gt=0,
+        description="The seconds after which the runner stops a session; null for "
+        "none.",
+    )
+    turns: int | None = Field(
+        default=None,
+        ge=1,
+        description="The turns after which Claude Code stops; null for none.",
+    )
+    budget: float | None = Field(
+        default=None,
+        gt=0,
+        description="The US dollars after which Claude Code stops; null for none.",
+    )
+
+
+def command(
+    agent: Agent, task: Path, arm: Arm, model: str | None, limits: Limits
+) -> Program:
     """The program that runs `agent` of `arm` on `task`, but its prompt.
 
     The stub reads itself and its known good designs, in the benchmarks' directory,
@@ -99,7 +131,7 @@ def command(agent: Agent, task: Path, arm: Arm, model: str | None) -> Program:
             reads=(BENCHMARKS, *imported(python)),
             confined=False,
         )
-    return default_agent(arm, model=model)
+    return default_agent(arm, model=model, turns=limits.turns, budget=limits.budget)
 
 
 class Simulations(BaseModel):
@@ -125,6 +157,41 @@ def simulations(log: Path) -> Simulations:
     return Simulations(runs=len(runs), commands=dict(sorted(counted.items())))
 
 
+class Ending(StrEnum):
+    """How an agent's session ended, as the runner saw it and the agent reports it."""
+
+    FINISHED = "finished"
+    """It reported its session a success, and exited with 0."""
+    OUT_OF_TIME = "out of time"
+    """The runner stopped it, at its timeout."""
+    OUT_OF_TURNS = "out of turns"
+    """It stopped at its limit of turns, as it reports."""
+    OUT_OF_BUDGET = "out of budget"
+    """It stopped at its budget, as it reports."""
+    ERRORED = "errored"
+    """It reported an error, exited with other than 0, or left no report."""
+
+
+def ending(exit_code: int, session: Session | None, *, timed_out: bool) -> Ending:
+    """How a session ended, by the runner's facts and the agent's own report.
+
+    An agent that prints no events, as one other than Claude Code may not, ended as its
+    exit code says.
+    """
+    if timed_out:
+        return Ending.OUT_OF_TIME
+    if session is None:
+        return Ending.FINISHED if exit_code == 0 else Ending.ERRORED
+    match session.outcome:
+        case "error_max_turns":
+            return Ending.OUT_OF_TURNS
+        case "error_max_budget_usd":
+            return Ending.OUT_OF_BUDGET
+        case "success" if session.is_error is False and exit_code == 0:
+            return Ending.FINISHED
+    return Ending.ERRORED
+
+
 class Run(BaseModel):
     """One session of the agent on a task, and its verdict."""
 
@@ -136,10 +203,15 @@ class Run(BaseModel):
     work: str = Field(description="The working directory, kept until it is cleared.")
     exit_code: int = Field(description="The agent's exit code.")
     seconds: float = Field(description="The session's wall time, as the runner saw it.")
+    ending: Ending
     met: bool = Field(description="Whether the work meets the task.")
     measurements: dict[str, float] = Field(description="What the scorer measured.")
-    reasons: tuple[str, ...] = Field(
-        description="Why the work falls short, if it does."
+    shortfalls: tuple[Shortfall, ...] = Field(
+        description="Why the work falls short, if it does, each of its kind."
+    )
+    report: str | None = Field(
+        description="The agent's last report, kept beside its verdict; null when it "
+        "wrote none."
     )
     session: Session | None = Field(
         description="What the transcript says of the session; null without events."
@@ -227,6 +299,14 @@ class Summary(BaseModel):
     simulations: Spread | None
     seconds: Spread | None
     cost: Spread | None
+    endings: dict[Ending, int] = Field(description="The sessions by how they ended.")
+    shortfalls: dict[Kind, int] = Field(
+        description="The sessions that fell short in each kind, each counted once in "
+        "every kind its verdict shows."
+    )
+    specs: dict[str, int] = Field(
+        description="The sessions that fell short of each spec, by the spec's name."
+    )
 
     @classmethod
     def of(cls, runs: Sequence[Run]) -> Summary:
@@ -238,7 +318,24 @@ class Summary(BaseModel):
             simulations=Spread.of([run.simulations.runs for run in runs]),
             seconds=Spread.of([run.seconds for run in runs]),
             cost=Spread.of([run.cost for run in runs]),
+            endings=dict(sorted(Counter(run.ending for run in runs).items())),
+            shortfalls=_tally(
+                {shortfall.kind for shortfall in run.shortfalls} for run in runs
+            ),
+            specs=_tally(
+                {
+                    shortfall.spec
+                    for shortfall in run.shortfalls
+                    if shortfall.spec is not None
+                }
+                for run in runs
+            ),
         )
+
+
+def _tally[T: str](found: Iterable[set[T]]) -> dict[T, int]:
+    """How many of the sets `found` hold each of their members, by member."""
+    return dict(sorted(Counter(member for each in found for member in each).items()))
 
 
 class Difference(BaseModel):
@@ -309,6 +406,7 @@ class Report(BaseModel):
     agent: Agent
     model: str | None = Field(description="The model asked for; null for the agent's.")
     repetitions: int
+    limits: Limits
     versions: dict[str, str] = Field(
         description="jolty's, ngspice's, Python's, the platform's, and the agent's, "
         "as it states it in its sandbox."
@@ -408,11 +506,12 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
     results: Path,
     model: str | None = None,
     work: Path | None = None,
+    limits: Limits | None = None,
 ) -> Path:
     """Runs the comparison, writes its report in `results`, and returns its path.
 
     Each session works in a fresh directory in `work`, the system's temporary directory
-    by default.
+    by default, within `limits`, none by default.
 
     Raises:
         FileExistsError: When the report of the day's comparison of `agent` exists.
@@ -422,6 +521,7 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
         ValueError: When `work` lies in the repository, where an agent would find its
             instructions and the scorers.
     """
+    limits = limits or Limits()
     preflight(agent, arms)
     repository = BENCHMARKS.parent.resolve()
     if work is not None and work.resolve().is_relative_to(repository):
@@ -436,7 +536,7 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
     found = versions()
     authentication: dict[str, str] = {}
     if agent is Agent.CLAUDE:
-        programs = command(agent, BENCHMARKS / tasks[0], arms[0], model)
+        programs = command(agent, BENCHMARKS / tasks[0], arms[0], model, limits)
         found["agent"], authentication = started(programs)
     runs: list[Run] = []
     for repetition in range(1, repetitions + 1):
@@ -444,8 +544,8 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
             task = BENCHMARKS / name
             for arm in arms:
                 made = tempfile.mkdtemp(prefix=f"jolty-{name}-{arm}-", dir=work)
-                program = command(agent, task, arm, model)
-                ran = session(task, program, Path(made), arm)
+                program = command(agent, task, arm, model, limits)
+                ran = session(task, program, Path(made), arm, limits.timeout)
                 kept(directory / name / str(arm) / str(repetition), Path(made))
                 told = read(Path(made) / TRANSCRIPT)
                 runs.append(
@@ -456,9 +556,11 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
                         work=made,
                         exit_code=ran.exit_code,
                         seconds=ran.seconds,
+                        ending=ending(ran.exit_code, told, timed_out=ran.timed_out),
                         met=ran.verdict.met,
                         measurements=ran.verdict.measurements,
-                        reasons=ran.verdict.reasons,
+                        shortfalls=ran.verdict.shortfalls,
+                        report=None if told is None else told.report,
                         session=told,
                         simulations=simulations(Path(made) / SIMULATIONS),
                         configuration=ran.configuration,
@@ -471,10 +573,11 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
         agent=agent,
         model=model,
         repetitions=repetitions,
+        limits=limits,
         versions=found,
         authentication=authentication,
         commands={
-            arm: list(command(agent, BENCHMARKS / tasks[0], arm, model).command)
+            arm: list(command(agent, BENCHMARKS / tasks[0], arm, model, limits).command)
             for arm in arms
         },
         tasks={
@@ -540,6 +643,17 @@ class Comparison(cli.CommandLine):
     work: Path | None = Field(
         default=None, description="Where each session's directory is made."
     )
+    timeout: float | None = Field(
+        default=None, gt=0, description="The seconds after which a session stops."
+    )
+    turns: int | None = Field(
+        default=None, ge=1, description="The turns after which Claude Code stops."
+    )
+    budget: float | None = Field(
+        default=None,
+        gt=0,
+        description="The US dollars a session of Claude Code may spend.",
+    )
 
     def cli_cmd(self) -> None:
         """Runs the comparison, and prints where its report is."""
@@ -553,6 +667,9 @@ class Comparison(cli.CommandLine):
                 results=self.results,
                 model=self.model,
                 work=self.work,
+                limits=Limits(
+                    timeout=self.timeout, turns=self.turns, budget=self.budget
+                ),
             )
         )
 

@@ -23,13 +23,16 @@ With ``-`` as the agent, it only prepares the working directory and prints it, f
 agent started some other way; ``score.py`` scores the directory afterwards.
 """
 
+import contextlib
 import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -102,18 +105,29 @@ class Program:
     """Whether it must run in a sandbox, and so not run where there is none."""
 
 
-def default_agent(arm: Arm, *, model: str | None = None) -> Program:
+def default_agent(
+    arm: Arm,
+    *,
+    model: str | None = None,
+    turns: int | None = None,
+    budget: float | None = None,
+) -> Program:
     """Claude Code, on its own, printing its session as JSON events.
 
     It loads no settings file and no CLAUDE.md, ``--setting-sources=`` naming no source
     of them, and has the MCP servers of `arm` alone, jolty's or none, whatever any
     configuration gives it. ``--mcp-config`` takes every word after it up to the next
-    option, so it comes first. It runs `model`, or its own default. It reads its own
-    installation, and runs only in a sandbox.
+    option, so it comes first. It runs `model`, or its own default, and stops after
+    `turns` turns of its own or once it has spent `budget` US dollars, when given. It
+    reads its own installation, and runs only in a sandbox.
     """
     program = claude()
     servers = ["--mcp-config", json.dumps(MCP)] if arm is Arm.JOLTY else []
-    options = [] if model is None else ["--model", model]
+    options = [
+        *([] if model is None else ["--model", model]),
+        *([] if turns is None else ["--max-turns", str(turns)]),
+        *([] if budget is None else ["--max-budget-usd", f"{budget:g}"]),
+    ]
     return Program(
         (
             str(program),
@@ -282,6 +296,10 @@ class Configuration(BaseModel):
         "apply whatever it is told: each file and its text; none on most machines."
     )
     sandbox: Sandbox | None = Field(description="Its sandbox; null without one.")
+    timeout: float | None = Field(
+        description="The seconds it was given before the runner stopped it; null for "
+        "as long as it needs."
+    )
 
 
 def managed() -> dict[str, str]:
@@ -325,18 +343,27 @@ class Outcome:
     """The agent's exit code, or less the signal that stopped it."""
     seconds: float
     """The session's wall time, from the agent's start to its exit."""
+    timed_out: bool
+    """Whether the runner stopped it, having run out of its time."""
     verdict: Verdict
     configuration: Configuration
     packages: dict[str, str]
     """The packages of the ngspice arm's Python, by name; none for the jolty arm."""
 
 
-def session(task: Path, program: Program, work: Path, arm: Arm) -> Outcome:
+def session(
+    task: Path,
+    program: Program,
+    work: Path,
+    arm: Arm,
+    timeout: float | None = None,
+) -> Outcome:
     """Runs `program` of `arm` on `task` in `work`, keeps its transcript, and scores it.
 
     It runs in a sandbox wherever this platform has one, and `program` runs only in
-    one if it must. The transcript, the log of the simulators' runs and the verdict end
-    in `work`.
+    one if it must. The runner stops it after `timeout` seconds, if given, and once it
+    exits, whatever it left running. The transcript, the log of the simulators' runs
+    and the verdict end in `work`.
 
     Raises:
         RuntimeError: When `program` must run in a sandbox and this platform has none.
@@ -350,14 +377,15 @@ def session(task: Path, program: Program, work: Path, arm: Arm) -> Outcome:
             command = confined(command, within, work)
         started = time.perf_counter()
         with (work / TRANSCRIPT).open("w", encoding="utf-8") as transcript:
-            finished = subprocess.run(  # noqa: S603 - the agent is the command given
+            process = subprocess.Popen(  # noqa: S603 - the agent is the command given
                 command,
                 cwd=work,
                 env=prepared.variables,
                 stdout=transcript,
                 stderr=subprocess.STDOUT,
-                check=False,
+                start_new_session=True,
             )
+            timed_out = _waited(process, timeout)
         seconds = time.perf_counter() - started
         if prepared.log.is_file():
             shutil.copy(prepared.log, work / SIMULATIONS)
@@ -371,10 +399,12 @@ def session(task: Path, program: Program, work: Path, arm: Arm) -> Outcome:
         },
         managed=managed(),
         sandbox=within,
+        timeout=timeout,
     )
     return Outcome(
-        finished.returncode,
+        process.returncode,
         seconds,
+        timed_out,
         scored(task, work, arm),
         configuration,
         prepared.packages,
@@ -408,6 +438,44 @@ def probe(program: Program, arguments: Sequence[str]) -> str:
             check=True,
         )
     return finished.stdout
+
+
+def _waited(process: subprocess.Popen[bytes], timeout: float | None) -> bool:
+    """Waits for `process` to exit, for `timeout` seconds at most, then stops the rest.
+
+    The process leads a session and a process group of its own, which a signal to the
+    group ends whole: the agent when it runs out of time, and whatever it left running
+    when it exits. The group is signalled while its leader's id is still held, before
+    the leader is reaped, so no other process can have taken it.
+
+    Returns whether it ran out of time.
+    """
+    expired = threading.Event()
+
+    def expire() -> None:
+        expired.set()
+        _signal(process.pid)
+
+    timer = None if timeout is None else threading.Timer(timeout, expire)
+    if timer is not None:
+        timer.start()
+    os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+    if timer is not None:
+        timer.cancel()
+        timer.join()
+    _signal(process.pid)
+    process.wait()
+    return expired.is_set()
+
+
+def _signal(group: int) -> None:
+    """Kills every process of the process group `group`, if it holds any.
+
+    A group that holds none is no error: Linux says there is no such group, and macOS
+    that it may not be signalled, when its leader alone remains, a zombie.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(group, signal.SIGKILL)
 
 
 def scored(task: Path, work: Path, arm: Arm) -> Verdict:

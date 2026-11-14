@@ -6,11 +6,12 @@ events, one JSON object a line: first a ``system`` event that names the model an
 agent's version and says what it runs with, its tools, MCP servers, permission mode,
 skills, plugins and the source of its key, then each message of the model,
 ``assistant``, and of its tools, ``user``, and last a ``result`` event, the agent's own
-report of the session's length, cost and tokens. A message the model writes may stream
-as several events, one per block of its content, which share the message's id; a block
-of type ``tool_use`` calls a tool, by its ``name``. A subagent's messages count with
-the agent's own. The fields are those of the Claude Agent SDK's ``SDKSystemMessage``
-and ``SDKResultMessage``.
+report of the session's length, cost and tokens, of how it ended and of the errors it
+met, with its last message. A message the model writes may stream as several events,
+one per block of its content, which share the message's id; a block of type
+``tool_use`` calls a tool, by its ``name``, and one of type ``text`` says something. A
+subagent's messages count with the agent's own. The fields are those of the Claude
+Agent SDK's ``SDKSystemMessage`` and ``SDKResultMessage``.
 
 A line that holds no JSON object, such as a warning the agent wrote to its error
 stream, which the runner keeps in the same transcript, is not an event.
@@ -106,8 +107,27 @@ class Session(BaseModel):
     )
     outcome: str | None = Field(
         default=None,
-        description="How the agent reports the session ended, such as success; null "
+        description="How the agent reports the session ended, such as success, "
+        "error_max_turns, error_max_budget_usd or error_during_execution; null "
         "without a report.",
+    )
+    terminal_reason: str | None = Field(
+        default=None,
+        description="Why the agent reports its loop ended, such as completed, "
+        "max_turns or api_error; null when it does not say.",
+    )
+    is_error: bool | None = Field(
+        default=None,
+        description="Whether the agent reports its session ended in an error; null "
+        "without a report.",
+    )
+    errors: tuple[str, ...] = Field(
+        default=(), description="The errors the agent reports it met."
+    )
+    report: str | None = Field(
+        default=None,
+        description="The agent's last report: the result it gives, or else the last "
+        "text the model wrote; null when it wrote none.",
     )
 
     @property
@@ -140,6 +160,7 @@ def read(path: Path) -> Session | None:
     agent: str | None = None
     messages: set[str] = set()
     calls: dict[str, str] = {}
+    said: str | None = None
     report: Event = {}
     for number, event in enumerate(events(path)):
         match event:
@@ -152,14 +173,21 @@ def read(path: Path) -> Session | None:
                 found = True
                 messages.add(_text(message.get("id")) or f"event {number}")
                 for place, block in enumerate(_blocks(message)):
-                    if block.get("type") == "tool_use":
-                        key = _text(block.get("id")) or f"event {number} block {place}"
-                        calls[key] = _text(block.get("name")) or "unnamed"
+                    match block.get("type"):
+                        case "tool_use":
+                            key = (
+                                _text(block.get("id"))
+                                or f"event {number} block {place}"
+                            )
+                            calls[key] = _text(block.get("name")) or "unnamed"
+                        case "text":
+                            said = _text(block.get("text")) or said
             case {"type": "result"}:
                 found = True
                 report = event
     if not found:
         return None
+    flag = report.get("is_error")
     return Session(
         setup=setup,
         model=model,
@@ -171,6 +199,10 @@ def read(path: Path) -> Session | None:
         cost=_number(report.get("total_cost_usd")),
         tokens=_tokens(report.get("usage")),
         outcome=_text(report.get("subtype")),
+        terminal_reason=_text(report.get("terminal_reason")),
+        is_error=flag if isinstance(flag, bool) else None,
+        errors=_texts(report.get("errors")),
+        report=_text(report.get("result")) or said,
     )
 
 

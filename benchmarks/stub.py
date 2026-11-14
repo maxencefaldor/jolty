@@ -124,6 +124,7 @@ def _turns(task: Path, arm: Arm) -> Iterator[dict[str, object]]:
         "type": "result",
         "subtype": "success",
         "is_error": False,
+        "result": f"I wrote the known good design, {', '.join(files) or 'none'}.",
         "num_turns": len(files) + 1,
         "duration_ms": (time.perf_counter() - started) * 1e3,
         "total_cost_usd": 0.0,

@@ -57,7 +57,7 @@ Roadmap item 8 asks what jolty gives an agent: each task is done in two arms, wh
 
 Each arm's simulator, `jolty` or `ngspice`, is a wrapper on the agent's path that logs every run, `counted.py`, and the runner keeps the log beside the transcript, as `simulations.jsonl`.
 The runner scores the work in a process of its own, through `score.py`, so what an agent's scripts import or change stays there, and keeps the verdict beside them, as `verdict.json`.
-Claude Code prints its session as stream-json events, and `transcript.py` reads its turns, its tool calls by name, and its own report of the session's wall time, cost and tokens.
+Claude Code prints its session as stream-json events, and `transcript.py` reads its turns, its tool calls by name, what it says it runs with, and its own report of the session's wall time, cost, tokens and end, with its last message.
 
 Every session runs clean and confined, since Claude Code runs with every permission (`--dangerously-skip-permissions`):
 
@@ -90,8 +90,25 @@ Run the comparison, five sessions per arm per task by default, so 60 paid sessio
 uv run python benchmarks/compare.py --agent claude
 ```
 
+`--timeout SECONDS` has the runner stop a session, and `--turns N` and `--budget USD` have Claude Code stop itself, after so many of its turns or US dollars; none has a default, and the report records them.
+The runner also stops whatever a session leaves running when it ends.
+
+Before the paid comparison:
+
+1. Put Claude Code on the path, and give the sessions a credential in the environment, `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` for a subscription: no session sees the user's own login.
+1. Run the stub, below, which proves the harness and the sandbox for free.
+1. Run one session, `--tasks cost_down --arms jolty --repetitions 1` with the limits chosen, and read its transcript and report: its setup should list jolty's MCP server connected and no skill or plugin.
+
 It runs the sessions one at a time, the arms and the tasks taking turns in each round, each in a fresh directory outside the repository, and writes `benchmarks/results/<date>-<agent>.json`, with each session's transcript, log and verdict beside it, in `benchmarks/results/<date>-<agent>/<task>/<arm>/<repetition>`.
 The report holds every session, each arm's success rate on each task with its 95 % Wilson interval, as jolty states a yield's, the median and the range of its turns, tool calls, simulator runs, wall time and cost, and the arms' difference on each task, jolty's less ngspice's, with Newcombe's interval for the success rates'.
+
+It also holds the failure kinds, each from what is known, never read from words:
+
+- **How the session ended**, as the runner saw it and the agent reports it: finished, out of time (the runner stopped it at `--timeout` seconds), out of turns (`--turns`), out of budget (`--budget`, in US dollars), or errored, when the agent reports an error, exits with other than 0 or leaves no report.
+- **How the work fell short**, as its scorer found it: no deliverable (`missing`), a design that does not build or read (`unbuilt`), one the engine cannot elaborate (`unelaborated`), a rule's error (`rule`), a failed analysis (`analysis`), a requirement of the task not met (`spec`), which it names, such as a measurement, `parts`, `yield` or `cost`, or a scorer that could not judge (`scorer`).
+- **The agent's last report**, its final message, beside its verdict.
+
+Each arm's summary on a task counts its sessions by how they ended, by each kind they fell short in, and by each spec.
 AnalogCoder's problems count as one task, met when all twenty-four are, and each of its sessions keeps the scorer's verdict on every problem.
 
 `--agent stub` runs `stub.py` in the agent's place, which writes a known good design of the cost-down and of AnalogCoder in either arm's form, and costs nothing:
