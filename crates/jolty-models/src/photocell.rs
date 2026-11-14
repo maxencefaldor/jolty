@@ -133,8 +133,8 @@ impl<R: Real> Photocell<R> {
     /// with respect to the light.
     fn settled(&self, light: f64) -> (R, R) {
         let root = light.hypot(DARKNESS);
-        let lit = 0.5 * (light + root);
-        let rounding = 0.5 * (1.0 + light / root);
+        let lit = f64::midpoint(light, root);
+        let rounding = f64::midpoint(1.0, light / root);
         let response = (R::constant(lit) / self.reference).pow(self.gamma);
         (response, response * self.gamma / lit * rounding)
     }

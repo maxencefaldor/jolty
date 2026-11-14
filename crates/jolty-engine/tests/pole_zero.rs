@@ -275,12 +275,7 @@ fn a_qz_iteration_that_stalls_is_taken_again_on_the_reversed_pencil() {
         charge_tolerance: 1e-18,
         ..Options::default()
     };
-    assert!(
-        simulator
-            .growing_modes(&tight)
-            .expect("the modes")
-            .is_empty()
-    );
+    assert_eq!(simulator.growing_modes(&tight).expect("the modes"), []);
 }
 
 #[test]

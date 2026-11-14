@@ -487,7 +487,7 @@ fn a_component_instance_recorded_alone_keeps_its_terminals_and_none_of_its_devic
     let all = Columns::of(&simulator, &Record::All);
     let record = instances(&["X1"]);
     let recorded = simulator.recorded(&record);
-    assert!(recorded.devices.is_empty());
+    assert_eq!(recorded.devices, Vec::<usize>::new());
     assert_eq!(recorded.composites, [0, 1]);
     let options = Options {
         record: record.clone(),

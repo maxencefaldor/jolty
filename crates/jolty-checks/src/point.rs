@@ -247,19 +247,11 @@ mod tests {
         // remembers it now: the checks solve it once, and none after an analysis that did.
         let options = Options::default();
         let mut checked = simulator(&tank(5e-5));
-        assert!(
-            check_operating_point(&mut checked, &options)
-                .unwrap()
-                .is_empty()
-        );
+        assert_eq!(check_operating_point(&mut checked, &options).unwrap(), []);
         assert_eq!(checked.operating_point_solves(), 1);
         let mut analyzed = simulator(&tank(5e-5));
         analyzed.operating_point(&options).unwrap();
-        assert!(
-            check_operating_point(&mut analyzed, &options)
-                .unwrap()
-                .is_empty()
-        );
+        assert_eq!(check_operating_point(&mut analyzed, &options).unwrap(), []);
         assert_eq!(analyzed.operating_point_solves(), 1);
     }
 
@@ -318,7 +310,7 @@ mod tests {
             "{message}"
         );
         // A megohm holds it at 1 mV, which doubling gmin moves by a picovolt.
-        assert!(diagnostics(&leaking(1e-9, Some(1e6))).is_empty());
+        assert_eq!(diagnostics(&leaking(1e-9, Some(1e6))), []);
     }
 
     #[test]
@@ -349,7 +341,7 @@ mod tests {
             diagnostic.message
         );
         // A megohm across the leaking diode's net leaves it one.
-        assert!(diagnostics(&leaking(1e-9, Some(1e6))).is_empty());
+        assert_eq!(diagnostics(&leaking(1e-9, Some(1e6))), []);
     }
 
     #[test]
@@ -373,7 +365,7 @@ mod tests {
             "{message}"
         );
         // Less feedback than loss: it dies away.
-        assert!(diagnostics(&tank(5e-5)).is_empty());
+        assert_eq!(diagnostics(&tank(5e-5)), []);
     }
 
     #[test]

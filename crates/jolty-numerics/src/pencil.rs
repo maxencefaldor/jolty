@@ -584,11 +584,7 @@ mod tests {
         let b = [1.0, 0.0, 0.0, 2.0];
         let found = finite(&generalized_eigenvalues(2, &a, &b).expect("converges"));
         assert!((found[0] + 3.0).norm() < 1e-12 && (found[1] - 2.0).norm() < 1e-12);
-        assert!(
-            generalized_eigenvalues(0, &[], &[])
-                .expect("empty")
-                .is_empty()
-        );
+        assert_eq!(generalized_eigenvalues(0, &[], &[]).expect("empty"), []);
     }
 
     #[test]

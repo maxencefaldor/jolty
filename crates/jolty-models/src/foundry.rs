@@ -133,6 +133,6 @@ mod tests {
             .expect("valid")
             .interface();
         assert_eq!(interface.terminals, ["drain", "gate", "source", "bulk"]);
-        assert!(interface.thermal.is_empty());
+        assert_eq!(interface.thermal, Vec::<usize>::new());
     }
 }

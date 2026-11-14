@@ -102,7 +102,7 @@ fn logic_settles_at_dc_and_follows_its_sources_after_each_delay() {
         ),
     ]);
     let mut simulator = simulator(&circuit);
-    assert!(simulator.unknowns().is_empty());
+    assert_eq!(simulator.unknowns(), []);
     let point = simulator.operating_point(&Options::default()).unwrap();
     let levels: Vec<(&str, Level)> = simulator
         .logic_nets()

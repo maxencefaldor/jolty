@@ -242,7 +242,7 @@ fn controlled_sources_amplify_their_control_voltage() {
 fn diode_current(source: f64, resistance: f64, saturation: f64) -> f64 {
     let (mut low, mut high) = (0.0, source / resistance);
     for _ in 0..200 {
-        let current = 0.5 * (low + high);
+        let current = f64::midpoint(low, high);
         let voltage = THERMAL_VOLTAGE * (current / saturation + 1.0).ln();
         if voltage + current * resistance > source {
             high = current;
@@ -250,7 +250,7 @@ fn diode_current(source: f64, resistance: f64, saturation: f64) -> f64 {
             low = current;
         }
     }
-    0.5 * (low + high)
+    f64::midpoint(low, high)
 }
 
 #[test]

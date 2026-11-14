@@ -477,7 +477,7 @@ mod tests {
         let smooth: Expression = "min(v(x), 1) + limit(v(x), 0, 2) + abs(v(x))"
             .parse()
             .expect("valid");
-        assert!(chosen(&smooth, &[0.5]).is_empty());
+        assert_eq!(chosen(&smooth, &[0.5]), []);
     }
 
     #[test]

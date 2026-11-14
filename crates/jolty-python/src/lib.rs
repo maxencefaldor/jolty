@@ -755,8 +755,8 @@ fn mantissas(series: &str) -> PyResult<Vec<f64>> {
         .ok_or_else(|| PyValueError::new_err(format!("no E series is named `{series}`")))
 }
 
-#[pymodule]
-fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
+#[pymodule(name = "_core")]
+fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     module.add_class::<Simulator>()?;
     module.add_function(wrap_pyfunction!(rules, module)?)?;
