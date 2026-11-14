@@ -64,3 +64,6 @@ The first release, 0.1.0.
 - Monte Carlo analyses, corners and worst cases run as batches, one per circuit, the corners that change only the temperature taking it as their runs' values, rather than one simulation at a time on a thread per core.
   Their reports are the same, bit for bit, but for the Monte Carlo spreads' last digits: a sample now runs at exactly the numbers the engine draws, where a sample sent to the engine as JSON text ran at the number its parser read back, which differs by an ulp for about one number in five.
 - The Python extension allocates through mimalloc, whose heaps are each thread's own, so that a batch's runs on many threads take no longer each than on one: 95.9% of linear on eight threads, against 64 to 68% with the system's allocator.
+- A measurement may read an infinity, as the gain of a response of exactly nothing is −∞ dB, and its verdict judges it, with infinite slack; only a reading that is not a number is unmeasured.
+  A twin T at its notch passes exactly nothing once its numbers are read exactly, where it was unmeasured.
+  JSON, which has no infinity, writes one as `"Infinity"` or `"-Infinity"`, as the reports' schemas say, and a spread's mean and deviation are null where its values leave them undefined.

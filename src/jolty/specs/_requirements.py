@@ -11,11 +11,18 @@ import math
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Final, Literal, override
+from typing import Annotated, Final, Literal, override
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    WithJsonSchema,
+)
 
 from jolty import _core, ir, results
 from jolty.builder import caller
@@ -46,6 +53,31 @@ _SEVERITY: Final[dict[Status, int]] = {
     "passed": 3,
 }
 """How bad each status is, the worst first: the order a verdict picks its run by."""
+
+
+def _a_number(value: float) -> float:
+    if math.isnan(value):
+        message = "a value read is a number, finite or infinite"
+        raise ValueError(message)
+    return value
+
+
+def _written(value: float) -> float | str:
+    if math.isfinite(value):
+        return value
+    return "Infinity" if value > 0 else "-Infinity"
+
+
+type ExtendedReal = Annotated[
+    float,
+    AfterValidator(_a_number),
+    PlainSerializer(_written, when_used="json"),
+    WithJsonSchema(
+        {"anyOf": [{"type": "number"}, {"enum": ["Infinity", "-Infinity"]}]}
+    ),
+]
+"""A real number or an infinity, which JSON has no number for: there it is written
+``"Infinity"`` or ``"-Infinity"``, as a gain of exactly nothing is ``-inf`` dB."""
 
 
 class MeasurementError(JoltyError):
@@ -313,13 +345,13 @@ class Verdict(BaseModel):
 
     requirement: str = Field(description="The requirement, in words.")
     status: Status
-    value: float | None = Field(
+    value: ExtendedReal | None = Field(
         default=None, description="The value read, in SI base units; null when unread."
     )
     unit: str | None = Field(
         default=None, description="The value's unit, such as 'V' or 'dB'."
     )
-    slack: float | None = Field(
+    slack: ExtendedReal | None = Field(
         default=None,
         description="How far the value lies inside the bounds, negative outside them.",
     )
@@ -353,10 +385,37 @@ class Values(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     unit: str = Field(description="The values' unit, such as 'V' or 'dB'.")
-    minimum: float
-    maximum: float
-    mean: float
-    deviation: float = Field(description="The values' standard deviation.")
+    minimum: ExtendedReal
+    maximum: ExtendedReal
+    mean: ExtendedReal | None = Field(
+        description="The values' mean; null when it is not a number, as when some "
+        "values are infinities of either sign."
+    )
+    deviation: float | None = Field(
+        description="The values' standard deviation; null when some value is infinite."
+    )
+
+    @classmethod
+    def of(cls, numbers: npt.NDArray[np.float64], unit: str) -> Values:
+        """The least, the greatest, the mean and the deviation of `numbers`.
+
+        An infinity among them is their mean, unless one of each sign is, and leaves
+        their deviation undefined.
+        """
+        finite = np.isfinite(numbers)
+        infinities = {float(number) for number in numbers[~finite]}
+        if finite.all():
+            mean, deviation = float(numbers.mean()), float(numbers.std())
+        else:
+            mean = infinities.pop() if len(infinities) == 1 else None
+            deviation = None
+        return cls(
+            unit=unit,
+            minimum=float(numbers.min()),
+            maximum=float(numbers.max()),
+            mean=mean,
+            deviation=deviation,
+        )
 
 
 class Spread(BaseModel):
@@ -383,8 +442,10 @@ class Spread(BaseModel):
             _format(self.values.minimum, unit),
             _format(self.values.maximum, unit),
         )
-        mean = _format(self.values.mean, unit)
-        deviation = _format(self.values.deviation, unit)
+        mean, deviation = (
+            "undefined" if value is None else _format(value, unit)
+            for value in (self.values.mean, self.values.deviation)
+        )
         return (
             f"{head}{missing}; read {low} to {high}, mean {mean}, deviation {deviation}"
         )
@@ -455,14 +516,7 @@ def _spread(requirement: Requirement, verdicts: Sequence[Verdict]) -> Spread:
     stated = Spread(requirement=str(requirement), measured=len(read), passing=passing)
     if not read:
         return stated
-    numbers = np.array([value for value, _ in read])
-    values = Values(
-        unit=read[0][1],
-        minimum=float(numbers.min()),
-        maximum=float(numbers.max()),
-        mean=float(numbers.mean()),
-        deviation=float(numbers.std()),
-    )
+    values = Values.of(np.array([value for value, _ in read]), read[0][1])
     return stated.model_copy(update={"values": values})
 
 
@@ -511,16 +565,16 @@ def judged(
     )
     if batch is not None and found is not None:
         read = batch.measured[:, found]
-        finite = (batch.causes[:, found] < 0) & np.isfinite(read)
+        measured = (batch.causes[:, found] < 0) & ~np.isnan(read)
         given = batch.units[found]
-        if given is not None and finite.any():
+        if given is not None and measured.any():
             reading = Reading(0.0, given)
             try:
                 requirement.judge(reading)
             except DimensionError:
-                finite[:] = False
+                measured[:] = False
             unit = "" if given == DIMENSIONLESS else str(given)
-            values = read[finite]
+            values = read[measured]
             room = np.full(values.shape, math.inf)
             if requirement.minimum is not None:
                 room = values - requirement.minimum.value
@@ -528,13 +582,13 @@ def judged(
                 other = requirement.maximum.value - values
                 room = np.where(other < room, other, room)
             margin = 0.0 if requirement.margin is None else requirement.margin.value
-            severity[finite] = np.where(
+            severity[measured] = np.where(
                 room < 0,
                 _SEVERITY["failed"],
                 np.where(room < margin, _SEVERITY["marginal"], _SEVERITY["passed"]),
             )
-            slack[finite] = room
-            value[finite] = values
+            slack[measured] = room
+            value[measured] = values
     return Judged(severity, slack, value, np.zeros(runs, dtype=np.intp), (unit,))
 
 
@@ -611,15 +665,9 @@ def _spread_of(requirement: Requirement, judged: Judged) -> Spread:
     )
     if not measured.any():
         return stated
-    numbers = judged.value[measured]
     first = int(np.argmax(measured))
-    values = Values(
-        unit=judged.units[int(judged.origin[first])],
-        minimum=float(numbers.min()),
-        maximum=float(numbers.max()),
-        mean=float(numbers.mean()),
-        deviation=float(numbers.std()),
-    )
+    unit = judged.units[int(judged.origin[first])]
+    values = Values.of(judged.value[measured], unit)
     return stated.model_copy(update={"values": values})
 
 
@@ -724,8 +772,8 @@ def _verdict(
         return stated.model_copy(update={"reason": reason})
     try:
         reading = requirement.measurement.read(solved[analysis])
-        if not math.isfinite(reading.value):
-            message = f"the value read is {reading.value}"
+        if math.isnan(reading.value):
+            message = "the value read is not a number"
             raise MeasurementError(message)
         status, slack = requirement.judge(reading)
     except (JoltyError, KeyError) as error:

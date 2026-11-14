@@ -402,8 +402,9 @@ def histograms(name: str, batch: files.Batch) -> Figure:
     )
     for place, requirement in enumerate(batch.requirements):
         axes = figure.add_subplot(len(batch.requirements), 1, place + 1)
-        read = found.measured[:, place]
-        read = read[np.isfinite(read) & (found.causes[:, place] < 0)]
+        measured = found.measured[:, place]
+        measured = measured[~np.isnan(measured) & (found.causes[:, place] < 0)]
+        read = measured[np.isfinite(measured)]
         unit = found.units[place]
         symbol = "" if unit is None or unit == "" else str(unit)
         if read.size:
@@ -421,9 +422,20 @@ def histograms(name: str, batch: files.Batch) -> Figure:
             if bound is not None:
                 axes.axvline(bound, color=_MUTED, linewidth=0.8, linestyle="--")
         _style(axes, "runs")
-        unread = found.runs - read.size
+        unread = found.runs - measured.size
         missing = f", {unread} read none" if unread else ""
-        axes.set_title(f"{requirement}{missing}", color=_INK, fontsize=9, loc="left")
+        # An infinite reading, as a gain of exactly nothing, has no bin to fall in.
+        infinite = "".join(
+            f", {count} read {sign}inf"
+            for sign, count in (
+                ("-", int((measured == -np.inf).sum())),
+                ("", int((measured == np.inf).sum())),
+            )
+            if count
+        )
+        axes.set_title(
+            f"{requirement}{missing}{infinite}", color=_INK, fontsize=9, loc="left"
+        )
         if symbol in {"dB", "°", "%"}:
             axes.set_xlabel(symbol, color=_MUTED)
         elif symbol:

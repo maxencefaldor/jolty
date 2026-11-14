@@ -195,6 +195,36 @@ def test_a_first_order_response_falls_3_db_at_its_corner() -> None:
     assert over == pytest.approx(20 * math.log10(abs(1 / (1 + 1e-3j)) / 2))
 
 
+def test_a_response_of_exactly_nothing_reads_minus_infinite_decibels() -> None:
+    """A twin T at its notch, or a balanced bridge, passes nothing: -inf dB, a number.
+
+    Its verdict passes an upper bound with infinite slack and fails a lower one, and
+    JSON, which has no infinity, writes it as a string its schema names.
+    """
+    frequencies = np.array([1e2, 1e3, 1e4])
+    silent = response(frequencies, np.array([1e-3, 0, 1e-3], dtype=np.complex128))
+    notch = verdict_of(gain("ac", "out", at=1 * kHz) <= -100, silent)
+    assert (notch.status, notch.value, notch.slack) == ("passed", -math.inf, math.inf)
+    assert notch.describe().startswith(
+        "passed: gain of out at 1 kHz in ac ≤ -100 dB: read -inf dB, slack inf dB\n"
+    )
+    written = notch.model_dump_json()
+    assert '"value":"-Infinity"' in written
+    assert '"slack":"Infinity"' in written
+    assert Verdict.model_validate_json(written) == notch
+    extended = Verdict.model_json_schema(mode="serialization")["$defs"]["ExtendedReal"]
+    assert {"enum": ["Infinity", "-Infinity"]} in extended["anyOf"]
+    deep = verdict_of(gain("ac", "out", at=1 * kHz) >= -100, silent)
+    assert (deep.status, deep.slack) == ("failed", -math.inf)
+    passing = verdict_of(gain("ac", "out", at=100 * Hz) <= -100, silent)
+    specs = Specs([gain("ac", "out", at=1 * kHz) <= -100])
+    spreads, _ = spread(specs, [(notch,), (passing,)])
+    assert spreads[0].values is not None
+    assert (spreads[0].values.minimum, spreads[0].values.mean) == (-math.inf, -math.inf)
+    assert spreads[0].values.deviation is None
+    assert spreads[0].describe(2).endswith("mean -inf dB, deviation undefined")
+
+
 def test_the_phase_margin_of_an_integrator_with_a_pole_at_unity() -> None:
     frequencies = np.logspace(-3, 3, 60_001)
     loop = 1 / (1j * frequencies) / (1 + 1j * frequencies)

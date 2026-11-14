@@ -67,6 +67,7 @@ Each requirement's verdict is one of four:
 - **marginal:** the value lies within its bounds, by less than the requirement's margin, set with `.with_margin(margin)`;
 - **failed:** the value lies outside its bounds;
 - **unmeasured:** its analysis failed or is not in the plan, or the measurement cannot be read, such as a crossing that never happens.
+  An infinity is read, not unmeasured: the gain of a response of exactly nothing, such as a twin T's at its notch, is −∞ dB, which passes an upper bound and fails a lower one; JSON writes it as `"-Infinity"`.
 
 A requirement holds at the plan's own conditions and at each of its [corners](simulation.md#corners), and its verdict is the worst of them: failed, then unmeasured, then marginal, then passed, and the least slack among equals.
 A verdict states the value read and the slack, how far the value lies inside its bounds, negative outside them, the corner it comes from, and the script line that stated the requirement:
