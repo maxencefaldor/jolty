@@ -23,11 +23,12 @@ import functools
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Never, TypedDict, override
+from typing import Any, Final, Never, TypedDict, override
 
 import numpy as np
 import numpy.typing as npt
 
+from jolty import _core
 from jolty.unknowns import Quantity, Unknown
 
 type Real = npt.NDArray[np.float64]
@@ -907,8 +908,10 @@ class NoiseSpectrum:
         if self.input is None:
             message = "the noise analysis named no source to refer its noise to"
             raise ValueError(message)
-        with np.errstate(divide="ignore"):
-            return self.densities / np.abs(self.input.gains) ** 2
+        return _core.referred(
+            np.asarray(self.densities, dtype=np.float64),
+            np.asarray(self.input.gains, dtype=np.complex128),
+        )
 
     def contribution(self, instance: str, name: str | None = None) -> Real:
         """What the noise of `instance`, or its source `name`, adds at each frequency.
@@ -939,15 +942,22 @@ class NoiseSpectrum:
                 analysis named no source to refer its noise to.
         """
         densities = self.referred() if referred else self.densities
-        order = np.argsort(self.frequencies)
-        points = self.frequencies[order]
-        if not points[0] <= at <= points[-1]:
+        try:
+            return _core.density(
+                np.asarray(self.frequencies, dtype=np.float64),
+                np.asarray(densities, dtype=np.float64),
+                at,
+            )
+        except _core.MeasureError as error:
+            reason, numbers = error.args
+            if reason != "outside_at":
+                raise ValueError(_UNSPECTRAL[reason]) from None
+            first, last = numbers
             message = (
                 f"{at!r} Hz does not lie within the frequencies, "
-                f"{float(points[0])!r} Hz to {float(points[-1])!r} Hz"
+                f"{first!r} Hz to {last!r} Hz"
             )
-            raise ValueError(message)
-        return _power_law(points, densities[order], at)
+            raise ValueError(message) from None
 
     def rms(
         self,
@@ -969,6 +979,13 @@ class NoiseSpectrum:
         return math.sqrt(integrate(self.frequencies, densities, start, stop))
 
 
+_UNSPECTRAL: Final[dict[str, str]] = {
+    "empty": "a spectrum of no frequencies has no density",
+    "mismatch": "a spectrum holds a density at each frequency",
+}
+"""Why frequencies and densities make no spectrum, by the engine's reason."""
+
+
 def integrate(
     frequencies: Real,
     densities: Real,
@@ -988,56 +1005,23 @@ def integrate(
     Raises:
         ValueError: When the band does not lie within the frequencies, or is empty.
     """
-    order = np.argsort(frequencies)
-    points, values = frequencies[order], densities[order]
-    low = float(points[0]) if start is None else start
-    high = float(points[-1]) if stop is None else stop
-    if not points[0] <= low < high <= points[-1]:
+    try:
+        return _core.integrate(
+            np.asarray(frequencies, dtype=np.float64),
+            np.asarray(densities, dtype=np.float64),
+            start,
+            stop,
+        )
+    except _core.MeasureError as error:
+        reason, numbers = error.args
+        if reason != "band":
+            raise ValueError(_UNSPECTRAL[reason]) from None
+        low, high, first, last = numbers
         message = (
             f"a band from {low!r} Hz to {high!r} Hz does not lie within the "
-            f"frequencies, {float(points[0])!r} Hz to {float(points[-1])!r} Hz"
+            f"frequencies, {first!r} Hz to {last!r} Hz"
         )
-        raise ValueError(message)
-    inside = (points > low) & (points < high)
-    band = np.concatenate(([low], points[inside], [high]))
-    levels = np.concatenate(
-        (
-            [_power_law(points, values, low)],
-            values[inside],
-            [_power_law(points, values, high)],
-        )
-    )
-    return math.fsum(
-        _segment(
-            *map(float, band[index : index + 2]), *map(float, levels[index : index + 2])
-        )
-        for index in range(band.size - 1)
-    )
-
-
-def _power_law(points: Real, values: Real, at: float) -> float:
-    """The density at `at`, a power law between the two frequencies around it."""
-    index = int(np.clip(np.searchsorted(points, at), 1, points.size - 1))
-    first, last = float(points[index - 1]), float(points[index])
-    low, high = float(values[index - 1]), float(values[index])
-    if at in {first, last}:
-        return low if at == first else high
-    if low <= 0 or high <= 0:
-        return low + (high - low) * (at - first) / (last - first)
-    return low * math.exp(
-        math.log(high / low) * math.log(at / first) / math.log(last / first)
-    )
-
-
-def _segment(first: float, last: float, low: float, high: float) -> float:
-    """The integral from `first` to `last` of the power law from `low` to `high`."""
-    if low <= 0 or high <= 0:
-        return 0.5 * (low + high) * (last - first)
-    span = math.log(last / first)
-    # With the density ∝ f^a, the integral is low·first·(e^{(a+1)·span} - 1)/(a + 1).
-    growth = math.log(high / low) + span
-    factor = 1.0 if growth == 0 else math.expm1(growth) / growth
-    return low * first * span * factor
+        raise ValueError(message) from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1083,7 +1067,7 @@ class PolesZeros:
 
 def natural_frequencies(roots: Complex) -> Real:
     """The natural frequency of each of `roots`, its magnitude over 2π, in hertz."""
-    return np.abs(roots) / (2 * np.pi)
+    return _core.natural_frequencies(np.asarray(roots, dtype=np.complex128))
 
 
 def dampings(roots: Complex) -> Real:
@@ -1092,8 +1076,7 @@ def dampings(roots: Complex) -> Real:
     It is 1 for a real root in the left half-plane, between 0 and 1 for a conjugate pair
     that rings, and negative in the right half-plane; NaN at the origin.
     """
-    with np.errstate(invalid="ignore"):
-        return -roots.real / np.abs(roots)
+    return _core.dampings(np.asarray(roots, dtype=np.complex128))
 
 
 type Result = (

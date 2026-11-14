@@ -14,7 +14,7 @@ from typing import Final, Literal, override
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from jolty import ir, results
+from jolty import _core, ir, results
 from jolty.builder import caller
 from jolty.errors import DimensionError, JoltyError
 from jolty.units import (
@@ -63,6 +63,79 @@ class Reading:
 
 
 @dataclass(frozen=True, slots=True)
+class Native:
+    """A measurement resolved for the engine to read, against one kind of result.
+
+    Its `measure` holds its signals as the indices of the result's unknowns, and its
+    times, levels and frequencies in SI base units, so the engine reads it without
+    Python.
+    """
+
+    measure: _core.Measure
+    unit: Dimension | Plain
+    """The unit of what the engine reads."""
+    explain: Callable[[_core.MeasureError], str] = field(repr=False, compare=False)
+    """Says in words why the engine could not read a result, from its error."""
+
+    def read(self, result: results.Result) -> Reading:
+        """What the engine reads of `result`, a result of the kind it was resolved for.
+
+        Raises:
+            MeasurementError: When the engine cannot read it.
+            ValueError: When a noise integral's band does not lie within the
+                frequencies, as `results.integrate` raises.
+        """
+        try:
+            value = _engine(self.measure, result)
+        except _core.MeasureError as error:
+            raise MeasurementError(self.explain(error)) from None
+        return Reading(value, self.unit)
+
+
+def _engine(measure: _core.Measure, result: results.Result) -> float:
+    """What the engine's `measure` reads of the arrays of `result`.
+
+    Raises:
+        MeasureError: When it cannot read them.
+    """
+    match result:
+        case results.OperatingPoint():
+            value = measure.read_point(_real(result.values))
+        case results.OperatingPoints():
+            value = measure.read_solutions(len(result.points))
+        case results.Sweep():
+            value = measure.read_sweep(_real(result.levels), _real(result.values))
+        case results.Waveforms():
+            value = measure.read_transient(_real(result.times), _real(result.values))
+        case results.Response():
+            value = measure.read_response(
+                _real(result.frequencies), _complex(result.values)
+            )
+        case results.LoopGain():
+            value = measure.read_loop(_real(result.frequencies), _complex(result.gains))
+        case results.NoiseSpectrum():
+            gains = None if result.input is None else _complex(result.input.gains)
+            value = measure.read_noise(
+                _real(result.frequencies), _real(result.densities), gains
+            )
+        case results.PolesZeros():
+            value = measure.read_poles(_complex(result.poles))
+        case results.Sensitivities():
+            # No measure reads sensitivities, so none is resolved against them.
+            message = "the engine measures no sensitivities"
+            raise MeasurementError(message)
+    return value
+
+
+def _real(values: np.typing.ArrayLike) -> results.Real:
+    return np.asarray(values, dtype=np.float64)
+
+
+def _complex(values: np.typing.ArrayLike) -> results.Complex:
+    return np.asarray(values, dtype=np.complex128)
+
+
+@dataclass(frozen=True, slots=True)
 class Measurement:
     """A number read from the result of one named analysis."""
 
@@ -74,6 +147,13 @@ class Measurement:
     read: Callable[[results.Result], Reading] = field(repr=False, compare=False)
     """Reads the measurement from the analysis's result; raises a `JoltyError`, or a
     `KeyError` for an unknown the result lacks, when it cannot."""
+    native: Callable[[results.Result], Native] | None = field(
+        default=None, repr=False, compare=False
+    )
+    """Resolves the measurement for the engine to read against a result, from no more
+    than the result's kind and unknowns, a sweep's source and quantity, and a noise
+    analysis's output's and source's quantities; raises as `read` does when it cannot.
+    None for a measurement only Python reads, such as one a plan script writes."""
 
     def __ge__(self, minimum: Bound) -> Requirement:
         """The requirement that the measurement be at least `minimum`."""
