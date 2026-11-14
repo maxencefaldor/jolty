@@ -897,10 +897,18 @@ fn jumping(condition: &str) -> Circuit {
 
 #[test]
 fn a_behavioral_jump_is_stepped_onto_and_followed() {
-    // Whether in time or in a voltage, the step at 1.0003 ms falls within a step of 40 µs;
-    // located, it starts the capacitor's exponential there, with no overshoot.
-    let jump = 1.0003e-3;
-    for condition in ["time > 1.0003e-3", "v(ramp) > 2.50075"] {
+    // Whether in time or in a voltage, the step falls within a step of 40 µs; located, it
+    // starts the capacitor's exponential there, with no overshoot. At 1.03 ms the jump
+    // comes late in a step of 40 µs, so the first step after it, a tenth of the one before,
+    // spans several of the capacitor's 1 µs time constants unless its error is judged.
+    let jumps = [
+        (1.0003e-3, ["time > 1.0003e-3", "v(ramp) > 2.50075"]),
+        (1.03e-3, ["time > 1.03e-3", "v(ramp) > 2.575"]),
+    ];
+    for (jump, condition) in jumps
+        .into_iter()
+        .flat_map(|(jump, conditions)| conditions.map(|condition| (jump, condition)))
+    {
         let circuit = jumping(condition);
         let mut simulator = simulator(&circuit);
         let transient = Transient {

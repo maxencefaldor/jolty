@@ -379,7 +379,9 @@ mod tests {
         // A sine wave keeps the ladder moving, so that every step takes an iteration at
         // least, each of which once made a factorization. The Jacobian, `G + αC`, now changes
         // only with `α`, as the step's length or formula changes: while the first steps grow
-        // to the longest, a millionth of a second, and on the last, landing on the stop.
+        // to the longest, a millionth of a second, on the last, landing on the stop, on each
+        // step tried and rejected, and once as the formula turns from backward Euler, which
+        // starts the run, to the trapezoidal rule.
         let sine = json!({"sine": {"offset": 0.0, "amplitude": 1.0, "frequency": 1e3}});
         let mut simulator = ladder(5, &sine, false);
         let options = Options::default();
@@ -398,9 +400,23 @@ mod tests {
         assert!(steps.accepted >= 1000, "{} steps", steps.accepted);
         assert!(steps.iterations >= steps.accepted);
         assert!(searched + refactored + reused >= steps.iterations);
+        // Each step's length, read from the times to within their rounding, a few units in
+        // the last place of the stop.
+        let (longest, rounding) = (1e-6, 4.0 * f64::EPSILON * 1e-3);
+        let lengths: Vec<f64> = waveforms
+            .times
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .collect();
+        let at_longest = |length: &f64| (length - longest).abs() < rounding;
+        let ramp = lengths.iter().position(at_longest).unwrap_or(lengths.len());
+        assert!(lengths[ramp..lengths.len() - 1].iter().all(at_longest));
+        // The lengths up to the longest, the longest's own, and the last's.
+        let changes = ramp + 2;
+        let formulas = 1;
         assert!(
-            searched + refactored <= 8,
-            "{searched} + {refactored} factorizations over {} steps",
+            searched + refactored <= changes + steps.rejected + formulas,
+            "{searched} + {refactored} factorizations over {} steps, {ramp} before the longest",
             steps.accepted
         );
     }

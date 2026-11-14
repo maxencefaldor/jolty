@@ -6,7 +6,7 @@ use jolty_models::{Choice, Input, Level};
 use jolty_numerics::integration::{Formula, Method, divided_difference};
 use serde::Deserialize;
 
-use crate::logic::{Command, Crossing, crossing};
+use crate::logic::{Checkpoint, Command, Crossing, crossing};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
 use crate::options::NUMBERS_PER_GIB;
 use crate::periodic::Monodromy;
@@ -283,14 +283,92 @@ impl Breakpoints {
 
 /// What came of trying a step.
 enum Step {
-    /// The step was accepted, with what every device did at its end, and logic drivers
-    /// began ramps that settle at these times.
-    Accepted(Observation, Vec<f64>),
+    /// The step was accepted, with the first step after the last corner before it if that
+    /// was pending, oldest first; logic drivers began ramps that settle at these times.
+    Accepted(Vec<Point>, Vec<f64>),
+    /// The step is the first after a corner, solved but accepted only once the next has
+    /// estimated its error.
+    Pending,
     /// The step was rejected, to be tried again shorter.
     Rejected,
     /// A detector crosses, a logic driver changes or a device's contribution jumps within
     /// the step, at this time, which the step is tried again to land on.
     Land(f64),
+}
+
+/// A point a transient accepted.
+struct Point {
+    time: f64,
+    /// The solution there.
+    x: Vec<f64>,
+    /// The formula of the step that reached it.
+    formula: Formula,
+    /// The length of that step.
+    length: f64,
+    /// Whether the integration restarts after it.
+    restarted: bool,
+    /// What every recorded device did there.
+    found: Observation,
+}
+
+/// The first step after a corner, solved and through the logic but not yet accepted.
+///
+/// Its error needs the curvature of the charges after the corner, which takes a third point
+/// to estimate: the end of the step after it. That step accepts it along with itself, or,
+/// when the estimate shows its error too large, goes back to the corner to take it shorter.
+struct Pending {
+    /// The step's formula.
+    formula: Formula,
+    /// The step's length.
+    length: f64,
+    /// The Newton iterations that solved it.
+    iterations: usize,
+    /// The corner it started from.
+    corner: Corner,
+}
+
+/// The state at a corner that a pending first step goes back to.
+struct Corner {
+    time: f64,
+    /// The solution, the charges and their derivatives there.
+    x: Vec<f64>,
+    charge: Vec<f64>,
+    derivative: Vec<f64>,
+    /// The length of the step that reached it.
+    previous: f64,
+    /// The logic there, before the pending step moved it on.
+    logic: Checkpoint,
+}
+
+/// A step judged by its truncation error: its length, and the charges and their
+/// derivatives at its end and at its start.
+struct Span<'a> {
+    length: f64,
+    charge: (&'a [f64], &'a [f64]),
+    derivative: (&'a [f64], &'a [f64]),
+}
+
+/// A step solved by Newton iteration, on its way to being taken.
+struct Tried {
+    end: f64,
+    length: f64,
+    method: Method,
+    formula: Formula,
+    /// The Newton iterations that solved it.
+    iterations: usize,
+    /// The solution at its end, the charges there and their derivatives.
+    x: Vec<f64>,
+    charge: Vec<f64>,
+    derivative: Vec<f64>,
+}
+
+/// How a step's estimated truncation error compares with its tolerance.
+#[derive(Clone, Copy)]
+struct Judgement {
+    /// The largest ratio of a charge's error to its tolerance.
+    ratio: f64,
+    /// The index of that charge's equation.
+    worst: usize,
 }
 
 /// The state of a transient analysis between steps.
@@ -316,19 +394,19 @@ struct Stepper {
     /// point alone is the start.
     before: Option<(f64, Vec<f64>)>,
     history: History,
-    /// The length of the next step to try.
+    /// The length of the next step to try: the longest the error allows, which a step
+    /// landing on a breakpoint or an event cuts short without changing.
     next: f64,
-    /// The length of the last accepted step.
+    /// The length of the last step taken.
     previous: f64,
-    /// Whether the next step follows a breakpoint, and so uses backward Euler.
-    restart: bool,
     /// Whether the next step uses backward Euler, its error still controlled, to end the
     /// trapezoidal formula's ringing.
     damp: bool,
     /// The history terms of the step being tried, one per unknown.
     terms: Vec<f64>,
-    /// The integration formula of the last accepted step.
-    formula: Formula,
+    /// The first step after the last corner, while it waits for the next to estimate its
+    /// error; the stepper stands at its end.
+    pending: Option<Pending>,
     statistics: Statistics,
 }
 
@@ -529,10 +607,9 @@ impl Simulator {
             },
             next: first,
             previous: first,
-            restart: true,
             damp: false,
             terms: vec![0.0; unknowns],
-            formula: Formula::new(Method::BackwardEuler, first, first),
+            pending: None,
             statistics: Statistics {
                 initial: strategy,
                 accepted: 0,
@@ -554,27 +631,29 @@ impl Simulator {
             let passed = observations.partition_point(|&time| time < stepper.time + shortest);
             let observation = observations.get(passed).copied().unwrap_or(f64::INFINITY);
             match self.step_toward(&mut stepper, (breakpoint, gap), observation, options)? {
-                Step::Accepted(found, settles) => {
-                    let at = (stepper.time, stepper.x.as_slice());
-                    let formula = (&stepper.formula, stepper.restart);
-                    self.advance_carried(&mut carried, at, formula, options)?;
-                    self.watch_supplies(&stepper.x, stepper.time, options);
-                    held += width;
-                    if held > most_held {
-                        return Err(SimulationError::TooManyPoints {
-                            time: stepper.time,
-                            step: stepper.previous,
-                            memory: options.memory,
-                        });
+                Step::Accepted(points, settles) => {
+                    for point in points {
+                        let at = (point.time, point.x.as_slice());
+                        let formula = (&point.formula, point.restarted);
+                        self.advance_carried(&mut carried, at, formula, options)?;
+                        self.watch_supplies(&point.x, point.time, options);
+                        held += width;
+                        if held > most_held {
+                            return Err(SimulationError::TooManyPoints {
+                                time: point.time,
+                                step: point.length,
+                                memory: options.memory,
+                            });
+                        }
+                        times.push(point.time);
+                        values.push(point.x);
+                        observed.push(&point.found);
                     }
-                    times.push(stepper.time);
-                    values.push(stepper.x.clone());
-                    observed.push(&found);
                     for time in settles {
                         breakpoints.insert(time);
                     }
                 }
-                Step::Rejected => {}
+                Step::Pending | Step::Rejected => {}
                 Step::Land(time) => breakpoints.insert(time),
             }
         }
@@ -617,7 +696,11 @@ impl Simulator {
         // Only a breakpoint is a corner in the waveforms, after which the integration
         // restarts; an observation is a time like any other.
         let corner = landing && target >= breakpoint;
-        let method = if stepper.restart || stepper.damp {
+        // Backward Euler until the points since the last corner are enough to estimate the
+        // error of the transient's own method, so that every step but the first after a
+        // corner is judged by its own estimate, and the first by the second's.
+        let available = stepper.history.len() + 1;
+        let method = if stepper.damp || available < stepper.method.order() + 2 {
             Method::BackwardEuler
         } else {
             stepper.method
@@ -655,61 +738,221 @@ impl Simulator {
             .zip(&stepper.terms)
             .map(|(&q, &term)| formula.alpha * q + term)
             .collect();
-        let ratio = if stepper.restart {
-            None
-        } else {
-            let new = (end, charge.as_slice());
-            self.error_ratio(method, length, &stepper.history, new, &derivative, options)
+        let tried = Tried {
+            end,
+            length,
+            method,
+            formula,
+            iterations,
+            x: candidate,
+            charge,
+            derivative,
         };
-        let factor = ratio.map_or(FACTOR_BOUNDS.1, |(ratio, _)| {
-            (SAFETY * method.step_factor(ratio)).clamp(FACTOR_BOUNDS.0, FACTOR_BOUNDS.1)
-        });
-        if let Some((ratio, worst)) = ratio
-            && ratio > 1.0
-        {
-            let name = &self.system.unknowns[worst].name;
-            return stepper.reject(length * factor, || Rejection::Inaccurate(name.clone()));
-        }
-        let (commands, jumped) = match self.events_within(stepper, (end, &candidate), options) {
+        let Some(factor) = self.judged(stepper, &tried, options)? else {
+            return Ok(Step::Rejected);
+        };
+        // The logic before a first step moves it on, for going back to the corner.
+        let first = stepper.history.len() == 1;
+        let logic = first.then(|| self.events.checkpoint());
+        let (commands, jumped) = match self.events_within(stepper, (end, &tried.x), options) {
             Ok(found) => found,
             Err(early) => {
-                // An event lands no closer than the shortest step allowed.
+                // An event lands no closer than the shortest step allowed; the step tried
+                // next lands on it, as it is shorter than this one.
                 stepper.statistics.landed += 1;
-                stepper.next = early - stepper.time;
                 return Ok(Step::Land(early));
             }
         };
-
-        stepper.statistics.accepted += 1;
-        stepper.statistics.iterations += iterations;
-        stepper.formula = formula;
-        let last = (stepper.time, std::mem::replace(&mut stepper.x, candidate));
-        stepper.previous = length;
-        let settles = self.follow(&commands);
-        let restart = corner || !commands.is_empty() || jumped;
-        let found = self
-            .observer
-            .step(&stepper.x, end, options.gmin, (&formula, restart));
-        if restart {
-            // A breakpoint, a driver's ramp starting or a device's jump is a corner in the
-            // waveforms.
+        // A breakpoint, a driver's ramp starting or a device's jump is a corner in the
+        // waveforms. The step after it is a tenth of the step the error allowed before it,
+        // as SPICE's saved step, or of the gap to the next breakpoint if shorter.
+        let restart = (corner || !commands.is_empty() || jumped).then(|| {
             let gap = if corner { gap } else { breakpoint - end };
-            stepper.time = end;
+            RESTART_FRACTION * reach.min(gap)
+        });
+        Ok(self.take(
+            stepper,
+            tried,
+            (factor, restart),
+            (commands, logic),
+            options,
+        ))
+    }
+
+    /// Judges the step `tried` by its error, and the pending first step after the last
+    /// corner with it; returns the factor the next step grows by, or `None` after
+    /// rejecting the step, or both, to take it again shorter.
+    fn judged(
+        &mut self,
+        stepper: &mut Stepper,
+        tried: &Tried,
+        options: &Options,
+    ) -> Result<Option<f64>, SimulationError> {
+        let new = (tried.end, tried.charge.as_slice());
+        if let Some(pending) = &stepper.pending {
+            // The first step after the corner, by the curvature it shares with this one.
+            let span = Span {
+                length: pending.length,
+                charge: (&stepper.history.last.1, &pending.corner.charge),
+                derivative: (&stepper.history.derivative, &pending.corner.derivative),
+            };
+            let judged = self.judge(Method::BackwardEuler, &stepper.history, new, &span, options);
+            if let Some(judged) = judged
+                && judged.ratio > 1.0
+            {
+                let next = pending.length * factor(Method::BackwardEuler, Some(judged));
+                self.back_to_corner(stepper, next, judged.worst)?;
+                return Ok(None);
+            }
+        }
+        // The first step after a corner has no estimate of its own: the next judges it.
+        let own = if stepper.history.len() == 1 {
+            None
+        } else {
+            let span = Span {
+                length: tried.length,
+                charge: (&tried.charge, &stepper.history.last.1),
+                derivative: (&tried.derivative, &stepper.history.derivative),
+            };
+            self.judge(tried.method, &stepper.history, new, &span, options)
+        };
+        let factor = factor(tried.method, own);
+        if let Some(judged) = own
+            && judged.ratio > 1.0
+        {
+            let name = &self.system.unknowns[judged.worst].name;
+            stepper.reject(tried.length * factor, || {
+                Rejection::Inaccurate(name.clone())
+            })?;
+            return Ok(None);
+        }
+        Ok(Some(factor))
+    }
+
+    /// Takes the step `tried`, judged to grow the next by `factor`, and through the logic,
+    /// which drivers must follow `commands`: accepts it, with the pending first step after
+    /// the last corner, or holds it as that first step, the logic before it `logic`.
+    /// `restart`, the length of the step after it, says the integration restarts at its end.
+    fn take(
+        &mut self,
+        stepper: &mut Stepper,
+        tried: Tried,
+        (factor, restart): (f64, Option<f64>),
+        (commands, logic): (Vec<Command>, Option<Checkpoint>),
+        options: &Options,
+    ) -> Step {
+        let Tried {
+            end,
+            length,
+            method,
+            formula,
+            iterations,
+            x,
+            charge,
+            derivative,
+        } = tried;
+        let mut points = Vec::with_capacity(2);
+        if let Some(pending) = stepper.pending.take() {
+            // The first step after the corner, its error now estimated within tolerance.
+            let at = (stepper.time, stepper.x.clone());
+            let step = (pending.formula, pending.length, pending.iterations);
+            points.push(self.accept(stepper, at, step, false, options));
+        }
+        let last = (stepper.time, std::mem::replace(&mut stepper.x, x));
+        let settles = self.follow(&commands);
+        if restart.is_none()
+            && let Some(logic) = logic
+        {
+            stepper.pending = Some(Pending {
+                formula,
+                length,
+                iterations,
+                corner: Corner {
+                    time: last.0,
+                    x: last.1.clone(),
+                    charge: stepper.history.last.1.clone(),
+                    derivative: stepper.history.derivative.clone(),
+                    previous: stepper.previous,
+                    logic,
+                },
+            });
+        } else {
+            // A first step that ends at a corner has no point after it to estimate its
+            // error from, and is accepted as SPICE accepts it.
+            let at = (end, stepper.x.clone());
+            let step = (formula, length, iterations);
+            points.push(self.accept(stepper, at, step, restart.is_some(), options));
+        }
+        stepper.previous = length;
+        stepper.time = end;
+        if let Some(next) = restart {
             stepper.before = None;
             stepper.history.restart(end, charge, derivative);
-            stepper.restart = true;
             stepper.damp = false;
-            stepper.next = RESTART_FRACTION * length.min(gap);
+            stepper.next = next;
         } else {
             let trapezoidal = method == Method::Trapezoidal;
             stepper.damp = trapezoidal && self.rings(&stepper.history, &derivative, options);
-            stepper.time = end;
             stepper.before = Some(last);
             stepper.history.accept(end, charge, derivative, trapezoidal);
-            stepper.restart = false;
             stepper.next = length * factor;
         }
-        Ok(Step::Accepted(found, settles))
+        if points.is_empty() {
+            Step::Pending
+        } else {
+            Step::Accepted(points, settles)
+        }
+    }
+
+    /// Accepts the point `(time, x)` that a step reached by `formula` over its length in so
+    /// many Newton iterations; `restarted` when the integration begins afresh from it.
+    fn accept(
+        &mut self,
+        stepper: &mut Stepper,
+        (time, x): (f64, Vec<f64>),
+        (formula, length, iterations): (Formula, f64, usize),
+        restarted: bool,
+        options: &Options,
+    ) -> Point {
+        stepper.statistics.accepted += 1;
+        stepper.statistics.iterations += iterations;
+        let found = self
+            .observer
+            .step(&x, time, options.gmin, (&formula, restarted));
+        Point {
+            time,
+            x,
+            formula,
+            length,
+            restarted,
+            found,
+        }
+    }
+
+    /// Goes back to the corner the pending first step started from, its error, estimated by
+    /// the step after it, too large in the equation `worst`, and rejects both steps, to take
+    /// the first again `next` long.
+    fn back_to_corner(
+        &mut self,
+        stepper: &mut Stepper,
+        next: f64,
+        worst: usize,
+    ) -> Result<Step, SimulationError> {
+        if let Some(Pending { corner, .. }) = stepper.pending.take() {
+            self.events.restore(corner.logic);
+            stepper.time = corner.time;
+            stepper.x = corner.x;
+            stepper.before = None;
+            stepper.resume = None;
+            stepper
+                .history
+                .restart(corner.time, corner.charge, corner.derivative);
+            stepper.previous = corner.previous;
+            stepper.damp = false;
+            stepper.statistics.rejected += 1;
+        }
+        let name = &self.system.unknowns[worst].name;
+        stepper.reject(next, || Rejection::Inaccurate(name.clone()))
     }
 
     /// Whether the trapezoidal formula rings: whether some charge's derivative, over the last
@@ -766,7 +1009,11 @@ impl Simulator {
             return Err(time);
         }
         let commands = self.advance_logic(stepper, (end, after), options)?;
-        Ok((commands, jump.is_some()))
+        // A jump closer to the step's start than the shortest step is the one the step
+        // before landed on, where a strict comparison had not yet turned: the integration
+        // restarted there, and the step already follows the jumped contribution.
+        let jumped = jump.is_some_and(|time| time - stepper.time >= stepper.shortest);
+        Ok((commands, jumped))
     }
 
     /// The first time between the stepper's last point and `end`, where the solution is
@@ -885,21 +1132,21 @@ impl Simulator {
         times
     }
 
-    /// The largest ratio of a charge's estimated truncation error to its tolerance, for the
-    /// step to `new`, and the index of that charge's equation; `None` while too few points
-    /// follow the last breakpoint to estimate it.
+    /// Judges `span`, a step by `method`, by its truncation error, estimated from the
+    /// divided difference of the charges at the last of `history`'s points and at `new`, as
+    /// many as the method's order and two; `None` while too few points follow the last
+    /// corner to estimate it.
     ///
     /// A charge's tolerance is the larger of a relative tolerance on the charge itself and one
     /// on the current it carries over the step, scaled by the truncation tolerance.
-    fn error_ratio(
+    fn judge(
         &self,
         method: Method,
-        length: f64,
         history: &History,
         new: (f64, &[f64]),
-        derivative: &[f64],
+        span: &Span<'_>,
         options: &Options,
-    ) -> Option<(f64, usize)> {
+    ) -> Option<Judgement> {
         let needed = method.order() + 2;
         let available = history.len() + 1;
         if available < needed {
@@ -912,32 +1159,45 @@ impl Simulator {
         }
         times[needed - 1] = new.0;
         let mut samples = [0.0; HISTORY + 1];
-        let mut worst = (0.0, 0);
+        let mut worst = Judgement {
+            ratio: 0.0,
+            worst: 0,
+        };
         for (index, unknown) in self.system.unknowns.iter().enumerate() {
             for (slot, (_, charge)) in samples.iter_mut().zip(&used) {
                 *slot = charge[index];
             }
             samples[needed - 1] = new.1[index];
             let error = method.truncation_error(
-                length,
+                span.length,
                 divided_difference(&times[..needed], &samples[..needed]),
             );
-            let previous_charge = history.last.1[index];
             let absolute_current = options.equation_tolerance(unknown.quantity);
-            let charge_tolerance = options.relative_tolerance
-                * new.1[index].abs().max(previous_charge.abs())
-                + options.charge_tolerance;
-            let current_tolerance = length
-                * (options.relative_tolerance
-                    * derivative[index].abs().max(history.derivative[index].abs())
-                    + absolute_current);
+            let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
+            let charge_tolerance = options.relative_tolerance * charge + options.charge_tolerance;
+            let current = span.derivative.0[index]
+                .abs()
+                .max(span.derivative.1[index].abs());
+            let current_tolerance =
+                span.length * (options.relative_tolerance * current + absolute_current);
             let tolerance = options.truncation_tolerance * charge_tolerance.max(current_tolerance);
-            if error / tolerance > worst.0 {
-                worst = (error / tolerance, index);
+            if error / tolerance > worst.ratio {
+                worst = Judgement {
+                    ratio: error / tolerance,
+                    worst: index,
+                };
             }
         }
         Some(worst)
     }
+}
+
+/// The factor a step by `method` judged `judged` scales the next by: as far as its error
+/// allows, within bounds, or by the most it may grow when its error was not estimated.
+fn factor(method: Method, judged: Option<Judgement>) -> f64 {
+    judged.map_or(FACTOR_BOUNDS.1, |judged| {
+        (SAFETY * method.step_factor(judged.ratio)).clamp(FACTOR_BOUNDS.0, FACTOR_BOUNDS.1)
+    })
 }
 
 #[cfg(test)]

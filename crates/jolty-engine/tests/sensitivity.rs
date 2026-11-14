@@ -99,6 +99,19 @@ fn tight() -> Options {
     }
 }
 
+/// The options `of` runs at: tight, and for a transient, with a truncation tolerance no
+/// step's error reaches, so every run takes the same steps, growing to the longest, and
+/// finite differences see what the parameters move, not where the steps fall.
+fn options(of: &Differentiated) -> Options {
+    match of {
+        Differentiated::Transient(_) => Options {
+            truncation_tolerance: f64::INFINITY,
+            ..tight()
+        },
+        _ => tight(),
+    }
+}
+
 /// The simulator of the circuit of `instances` with the parameter `name` of `device` at
 /// `value`.
 fn moved(instances: &Value, device: &str, name: &str, value: f64) -> Simulator {
@@ -151,7 +164,7 @@ fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> V
             .collect(),
         Differentiated::Transient(transient) => pick(
             simulator
-                .transient(transient, &tight())
+                .transient(transient, &options(of))
                 .expect("waveforms")
                 .values,
         ),
@@ -192,7 +205,7 @@ fn assert_matches(
         of: of.clone(),
     };
     let sensitivities = simulator
-        .sensitivity(&sensitivity, &tight())
+        .sensitivity(&sensitivity, &options(of))
         .expect("sensitivities");
     let found = complex(&sensitivities.derivatives);
     for (index, parameter) in sensitivities.parameters.iter().enumerate() {
