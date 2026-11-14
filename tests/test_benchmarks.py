@@ -138,18 +138,21 @@ def test_the_given_transistor_is_excused_by_what_it_is_not_its_name(
 
 
 def test_the_runner_runs_the_agent_in_a_copy_of_the_task(tmp_path: Path) -> None:
-    from run import run  # noqa: PLC0415 - importable only once the path holds it
+    from run import Program, run  # noqa: PLC0415 - importable only once the path holds it
 
-    agent = [
-        sys.executable,
-        "-c",
+    agent = Program(
         (
-            "import pathlib, sys; source = pathlib.Path('bias.py').read_text(); "
-            "pathlib.Path('design.py').write_text("
-            "source.replace('TOLERANCE = 0.001', 'TOLERANCE = 0.01')); "
-            "print(sys.argv[1].splitlines()[0])"
+            sys.executable,
+            "-c",
+            (
+                "import pathlib, sys; source = pathlib.Path('bias.py').read_text(); "
+                "pathlib.Path('design.py').write_text("
+                "source.replace('TOLERANCE = 0.001', 'TOLERANCE = 0.01')); "
+                "print(sys.argv[1].splitlines()[0])"
+            ),
         ),
-    ]
+        confined=False,
+    )
     assert run(COST_DOWN, agent, tmp_path) == 0
     assert (tmp_path / "catalog.json").is_file()
     assert not (tmp_path / "task.md").exists()

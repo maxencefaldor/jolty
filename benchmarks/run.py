@@ -31,13 +31,15 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
 from arms import Arm, given, prompt
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import CliPositionalArg, CliUnknownArgs, SettingsConfigDict
+from sandbox import Sandbox, confined, mechanism, sandbox
 from verdict import Kind, Shortfall, Verdict
 
 from jolty import cli
@@ -56,29 +58,77 @@ SCORE: Final = Path(__file__).with_name("score.py")
 """The scorer, which judges the work in a process of its own."""
 PACKAGES: Final = ("numpy", "scipy", "matplotlib")
 """The packages of the ngspice arm's Python."""
-JOLTY: Final = ("jolty", "jolty-mcp")
-"""jolty's command line and MCP server, which no directory of the ngspice arm's path
-holds."""
+CREDENTIALS: Final = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+)
+"""The variables that may hold Claude Code's credentials: an API key, a token of a
+gateway, or the long-lived token ``claude setup-token`` makes for a subscription."""
+LOCALE: Final = ("LANG", "LC_ALL", "LC_CTYPE")
+"""The variables of the runner's locale, which a session keeps."""
+SET: Final = "(set)"
+"""What a session's record says in place of a credential's value."""
+MANAGED: Final = {
+    "darwin": Path("/Library/Application Support/ClaudeCode"),
+    "linux": Path("/etc/claude-code"),
+}
+"""Where Claude Code reads the managed settings an administrator sets, by platform,
+which apply whatever else it is told."""
 
 
-def default_agent(arm: Arm) -> list[str]:
+def claude() -> Path:
+    """Claude Code's program, found on the path.
+
+    Raises:
+        FileNotFoundError: When there is none.
+    """
+    found = shutil.which("claude")
+    if found is None:
+        message = "Claude Code, claude, is not on the path"
+        raise FileNotFoundError(message)
+    return Path(found).resolve()
+
+
+@dataclass(frozen=True, slots=True)
+class Program:
+    """An agent's program: its command, but its prompt, and the files it reads."""
+
+    command: tuple[str, ...]
+    reads: tuple[Path, ...] = ()
+    """What the program itself reads in the private places, such as its installation,
+    which its sandbox lets it read."""
+    confined: bool = True
+    """Whether it must run in a sandbox, and so not run where there is none."""
+
+
+def default_agent(arm: Arm, *, model: str | None = None) -> Program:
     """Claude Code, on its own, printing its session as JSON events.
 
-    It has the MCP servers of `arm` alone, jolty's or none, whatever the user's
+    It loads no settings file and no CLAUDE.md, ``--setting-sources=`` naming no source
+    of them, and has the MCP servers of `arm` alone, jolty's or none, whatever any
     configuration gives it. ``--mcp-config`` takes every word after it up to the next
-    option, so it comes first.
+    option, so it comes first. It runs `model`, or its own default. It reads its own
+    installation, and runs only in a sandbox.
     """
+    program = claude()
     servers = ["--mcp-config", json.dumps(MCP)] if arm is Arm.JOLTY else []
-    return [
-        "claude",
-        *servers,
-        "--strict-mcp-config",
-        "--print",
-        "--dangerously-skip-permissions",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-    ]
+    options = [] if model is None else ["--model", model]
+    return Program(
+        (
+            str(program),
+            *servers,
+            "--strict-mcp-config",
+            "--setting-sources=",
+            "--print",
+            "--dangerously-skip-permissions",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            *options,
+        ),
+        reads=(program.parent,),
+    )
 
 
 def prepare(task: Path, work: Path, arm: Arm = Arm.JOLTY) -> str:
@@ -88,9 +138,14 @@ def prepare(task: Path, work: Path, arm: Arm = Arm.JOLTY) -> str:
     return prompt(task, arm)
 
 
-def wrap(directory: Path, program: Path, log: Path) -> None:
-    """Writes into `directory` a wrapper of `program`, named as it, logging to `log`."""
-    command = shlex.join([sys.executable, "-I", str(COUNTED), str(log), str(program)])
+def wrap(directory: Path, program: Path, log: Path, python: Path) -> None:
+    """Writes into `directory` a wrapper of `program`, named as it, logging to `log`.
+
+    It runs a copy of `COUNTED` in `directory` with `python`, isolated.
+    """
+    counted = directory / COUNTED.name
+    shutil.copy(COUNTED, counted)
+    command = shlex.join([str(python), "-I", str(counted), str(log), str(program)])
     wrapper = directory / program.name
     wrapper.write_text(f'#!/bin/sh\nexec {command} "$@"\n', encoding="utf-8")
     wrapper.chmod(0o755)
@@ -124,51 +179,142 @@ def _python(directory: Path) -> dict[str, str]:
     return {each["name"]: each["version"] for each in json.loads(listed.stdout)}
 
 
+def imported(python: Path) -> list[Path]:
+    """Where `python` imports from, isolated: its prefixes and every path it imports.
+
+    Its output is read, not shown, so it writes it without colors.
+    """
+    probe = (
+        "import json, sys; print(json.dumps([sys.prefix, sys.base_prefix, *sys.path]))"
+    )
+    listed = subprocess.run(  # noqa: S603 - the arm's own Python
+        [str(python), "-I", "-c", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={"PYTHON_COLORS": "0"},
+    )
+    return [Path(each) for each in json.loads(listed.stdout) if Path(each).exists()]
+
+
 @dataclass(frozen=True, slots=True)
 class Environment:
-    """What an agent of an arm runs with: its environment and its Python's packages."""
+    """What an agent of an arm runs with: its variables, its places and its Python.
+
+    It reads `reads`, its programs and its directory of them, and writes `writes`, its
+    own directories, which the session's sandbox lets it.
+    """
 
     variables: dict[str, str]
+    log: Path
+    """The log its simulators' wrappers write."""
+    reads: tuple[Path, ...]
+    writes: tuple[Path, ...]
     packages: dict[str, str] = field(default_factory=dict)
 
 
 def environment(arm: Arm, directory: Path) -> Environment:
-    """The environment of an agent of `arm`, its programs made in `directory`.
+    """The environment of an agent of `arm`, its programs and places in `directory`.
 
-    The wrappers of the arm's simulators lead its path, from ``directory/bin``, and log
-    to ``directory/simulations.jsonl``; the ngspice arm's Python is made in
+    It holds nothing of the runner's but its locale and Claude Code's credentials: its
+    home is ``directory/home``, Claude Code's configuration ``directory/home/.claude``,
+    which holds nothing, and its temporary directory ``directory/tmp``. Its path holds
+    the wrappers of the arm's simulators, in ``directory/bin``, which log to
+    ``directory/log/simulations.jsonl``, then the arm's Python's programs, then the
+    system's own, ``confstr("CS_PATH")``. The ngspice arm's Python is made in
     ``directory/python``.
 
     Raises:
         FileNotFoundError: When ngspice, for the ngspice arm, is not on the path.
     """
-    wrappers = directory / "bin"
-    wrappers.mkdir()
-    log = directory / SIMULATIONS
-    scripts = Path(sys.executable).parent
-    path = os.environ.get("PATH", "").split(os.pathsep)
-    variables = dict(os.environ)
+    wrappers, logs, home, temporary = (
+        directory / name for name in ("bin", "log", "home", "tmp")
+    )
+    for each in (wrappers, logs, home / ".claude", temporary):
+        each.mkdir(parents=True)
+    log = logs / SIMULATIONS
+    variables = {name: os.environ[name] for name in LOCALE if name in os.environ}
+    variables |= {name: os.environ[name] for name in CREDENTIALS if name in os.environ}
+    variables |= {
+        "HOME": str(home),
+        "CLAUDE_CONFIG_DIR": str(home / ".claude"),
+        "TMPDIR": str(temporary),
+    }
+    system = os.confstr("CS_PATH") or ""
     if arm is Arm.JOLTY:
-        wrap(wrappers, scripts / "jolty", log)
-        variables["PATH"] = os.pathsep.join([str(wrappers), str(scripts), *path])
-        return Environment(variables)
+        python = Path(sys.executable)
+        wrap(wrappers, python.parent / "jolty", log, python)
+        variables["PATH"] = os.pathsep.join([str(wrappers), str(python.parent), system])
+        return Environment(
+            variables, log, (directory, *imported(python)), (logs, home, temporary)
+        )
     found = shutil.which("ngspice")
     if found is None:
         message = "ngspice, the ngspice arm's simulator, is not on the path"
         raise FileNotFoundError(message)
-    wrap(wrappers, Path(found), log)
-    python = directory / "python"
-    packages = _python(python)
-    kept = [
-        each
-        for each in path
-        if each and not any((Path(each) / name).exists() for name in JOLTY)
-    ]
-    for name in ("PYTHONPATH", "PYTHONHOME"):
-        variables.pop(name, None)
-    variables["VIRTUAL_ENV"] = str(python)
-    variables["PATH"] = os.pathsep.join([str(wrappers), str(python / "bin"), *kept])
-    return Environment(variables, packages)
+    venv = directory / "python"
+    packages = _python(venv)
+    python = venv / "bin" / "python"
+    wrap(wrappers, Path(found), log, python)
+    simulator = Path(found).resolve().parent.parent
+    variables["VIRTUAL_ENV"] = str(venv)
+    variables["PATH"] = os.pathsep.join([str(wrappers), str(python.parent), system])
+    return Environment(
+        variables,
+        log,
+        (directory, *imported(python), simulator),
+        (logs, home, temporary),
+        packages,
+    )
+
+
+class Configuration(BaseModel):
+    """What a session ran with, as the runner set it up, so a report can say."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    command: tuple[str, ...] = Field(description="The agent's command, but its prompt.")
+    variables: dict[str, str] = Field(
+        description="Its whole environment, a credential's value written as (set)."
+    )
+    managed: dict[str, str] = Field(
+        description="The managed settings Claude Code reads on this machine, which "
+        "apply whatever it is told: each file and its text; none on most machines."
+    )
+    sandbox: Sandbox | None = Field(description="Its sandbox; null without one.")
+
+
+def managed() -> dict[str, str]:
+    """The managed settings files on this machine, each with its text."""
+    directory = MANAGED.get(sys.platform)
+    if directory is None or not directory.is_dir():
+        return {}
+    return {
+        str(path): path.read_text(encoding="utf-8", errors="replace")
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+
+
+def confinement(program: Program, prepared: Environment, work: Path) -> Sandbox | None:
+    """The sandbox of `program`'s session, in `prepared`, working in `work`.
+
+    It reads its programs, the agent's and the arm's, and writes its own directories:
+    `work` and those of `prepared`.
+
+    Raises:
+        RuntimeError: When `program` must run in a sandbox and this platform has none.
+    """
+    if not program.confined and mechanism() is None:
+        return None
+    found = sandbox([*program.reads, *prepared.reads], [work, *prepared.writes])
+    if found is None:
+        message = (
+            f"no sandbox, sandbox-exec or bwrap, is on the path of this {sys.platform} "
+            f"machine, and {Path(program.command[0]).name} runs only in one"
+        )
+        raise RuntimeError(message)
+    return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,26 +322,36 @@ class Outcome:
     """How one agent's session on a task went, as the runner saw it, and its verdict."""
 
     exit_code: int
+    """The agent's exit code, or less the signal that stopped it."""
     seconds: float
     """The session's wall time, from the agent's start to its exit."""
     verdict: Verdict
+    configuration: Configuration
     packages: dict[str, str]
     """The packages of the ngspice arm's Python, by name; none for the jolty arm."""
 
 
-def session(task: Path, agent: list[str], work: Path, arm: Arm) -> Outcome:
-    """Runs `agent` of `arm` on `task` in `work`, keeps its transcript, and scores it.
+def session(task: Path, program: Program, work: Path, arm: Arm) -> Outcome:
+    """Runs `program` of `arm` on `task` in `work`, keeps its transcript, and scores it.
 
-    The transcript, the log of the simulators' runs and the verdict end in `work`.
+    It runs in a sandbox wherever this platform has one, and `program` runs only in
+    one if it must. The transcript, the log of the simulators' runs and the verdict end
+    in `work`.
+
+    Raises:
+        RuntimeError: When `program` must run in a sandbox and this platform has none.
     """
     text = prepare(task, work, arm)
     with tempfile.TemporaryDirectory(prefix=f"jolty-{arm}-tools-") as directory:
-        tools = Path(directory)
-        prepared = environment(arm, tools)
+        prepared = environment(arm, Path(directory))
+        within = confinement(program, prepared, work)
+        command = [*program.command, text]
+        if within is not None:
+            command = confined(command, within, work)
         started = time.perf_counter()
         with (work / TRANSCRIPT).open("w", encoding="utf-8") as transcript:
             finished = subprocess.run(  # noqa: S603 - the agent is the command given
-                [*agent, text],
+                command,
                 cwd=work,
                 env=prepared.variables,
                 stdout=transcript,
@@ -203,14 +359,55 @@ def session(task: Path, agent: list[str], work: Path, arm: Arm) -> Outcome:
                 check=False,
             )
         seconds = time.perf_counter() - started
-        log = tools / SIMULATIONS
-        if log.is_file():
-            shutil.copy(log, work / SIMULATIONS)
+        if prepared.log.is_file():
+            shutil.copy(prepared.log, work / SIMULATIONS)
         else:
             (work / SIMULATIONS).touch()
-    return Outcome(
-        finished.returncode, seconds, scored(task, work, arm), prepared.packages
+    configuration = Configuration(
+        command=program.command,
+        variables={
+            name: SET if name in CREDENTIALS else value
+            for name, value in prepared.variables.items()
+        },
+        managed=managed(),
+        sandbox=within,
     )
+    return Outcome(
+        finished.returncode,
+        seconds,
+        scored(task, work, arm),
+        configuration,
+        prepared.packages,
+    )
+
+
+def probe(program: Program, arguments: Sequence[str]) -> str:
+    """What `program`'s own program prints when given `arguments`, as in a session.
+
+    It runs as an agent of the jolty arm runs, with its environment and in its
+    sandbox, from an empty directory, so a check that costs nothing, such as of its
+    version, tells what a session will find. Its output is read, not shown.
+
+    Raises:
+        RuntimeError: When `program` must run in a sandbox and this platform has none.
+        subprocess.CalledProcessError: When the program exits with other than 0.
+    """
+    with tempfile.TemporaryDirectory(prefix="jolty-probe-") as directory:
+        place = Path(directory)
+        work = place / "work"
+        work.mkdir()
+        prepared = environment(Arm.JOLTY, place / "tools")
+        within = confinement(program, prepared, work)
+        command = [program.command[0], *arguments]
+        finished = subprocess.run(  # noqa: S603 - the agent's own program
+            command if within is None else confined(command, within, work),
+            cwd=work,
+            env=prepared.variables | {"PYTHON_COLORS": "0", "NO_COLOR": "1"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    return finished.stdout
 
 
 def scored(task: Path, work: Path, arm: Arm) -> Verdict:
@@ -240,7 +437,7 @@ def scored(task: Path, work: Path, arm: Arm) -> Verdict:
     return Verdict(met=False, shortfalls=(Shortfall(kind=Kind.SCORER, reason=reason),))
 
 
-def run(task: Path, agent: list[str], work: Path, arm: Arm = Arm.JOLTY) -> int:
+def run(task: Path, agent: Program, work: Path, arm: Arm = Arm.JOLTY) -> int:
     """Runs `agent` of `arm` on `task` in `work` and prints its verdict: 0 if met."""
     ran = session(task, agent, work, arm)
     print(f"worked in {work}, agent exited with {ran.exit_code}")
@@ -267,17 +464,24 @@ class Runner(cli.CommandLine):
     def cli_cmd(self) -> None:
         """Runs the agent given, or Claude Code, on the task given.
 
+        The agent given runs in a sandbox wherever this platform has one, reading
+        there what the arm's programs read; Claude Code runs only in one.
+
         Raises:
             SystemExit: With 0 when the work meets the task, or once the directory is
                 prepared, and 1 when it falls short.
         """
         task = self.task.resolve()
-        agent = self.agent or default_agent(self.arm)
         work = Path(tempfile.mkdtemp(prefix=f"jolty-{task.name}-"))
-        if agent == ["-"]:
+        if self.agent == ["-"]:
             prepare(task, work, self.arm)
             print(work)
             raise SystemExit(0)
+        agent = (
+            Program(tuple(self.agent), confined=False)
+            if self.agent
+            else default_agent(self.arm)
+        )
         raise SystemExit(run(task, agent, work, self.arm))
 
 

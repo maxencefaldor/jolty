@@ -3,11 +3,14 @@
 
 Claude Code, run with ``--output-format stream-json --verbose``, prints its session as
 events, one JSON object a line: first a ``system`` event that names the model and the
-agent's version, then each message of the model, ``assistant``, and of its tools,
-``user``, and last a ``result`` event, the agent's own report of the session's length,
-cost and tokens. A message the model writes may stream as several events, one per block
-of its content, which share the message's id; a block of type ``tool_use`` calls a tool,
-by its ``name``. A subagent's messages count with the agent's own.
+agent's version and says what it runs with, its tools, MCP servers, permission mode,
+skills, plugins and the source of its key, then each message of the model,
+``assistant``, and of its tools, ``user``, and last a ``result`` event, the agent's own
+report of the session's length, cost and tokens. A message the model writes may stream
+as several events, one per block of its content, which share the message's id; a block
+of type ``tool_use`` calls a tool, by its ``name``. A subagent's messages count with
+the agent's own. The fields are those of the Claude Agent SDK's ``SDKSystemMessage``
+and ``SDKResultMessage``.
 
 A line that holds no JSON object, such as a warning the agent wrote to its error
 stream, which the runner keeps in the same transcript, is not an event.
@@ -34,10 +37,42 @@ type Event = dict[str, JsonValue]
 _JSON: Final = TypeAdapter[JsonValue](JsonValue)
 
 
+class Setup(BaseModel):
+    """What the agent says it runs with, in its first event, as it found it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cwd: str | None = Field(default=None, description="Its working directory.")
+    tools: tuple[str, ...] = Field(default=(), description="Its tools, by name.")
+    mcp_servers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Its MCP servers, by name, each with its status, such as "
+        "connected.",
+    )
+    permission_mode: str | None = Field(
+        default=None, description="Its permission mode, such as bypassPermissions."
+    )
+    api_key_source: str | None = Field(
+        default=None, description="Where its key came from, such as user or none."
+    )
+    output_style: str | None = Field(default=None, description="Its output style.")
+    skills: tuple[str, ...] = Field(default=(), description="Its skills, by name.")
+    agents: tuple[str, ...] = Field(default=(), description="Its subagents, by name.")
+    slash_commands: tuple[str, ...] = Field(
+        default=(), description="Its slash commands, by name."
+    )
+    plugins: tuple[str, ...] = Field(default=(), description="Its plugins, by name.")
+
+
 class Session(BaseModel):
     """What a transcript says of the agent's session."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    setup: Setup | None = Field(
+        default=None,
+        description="What the agent says it runs with; null without a first event.",
+    )
 
     model: str | None = Field(
         default=None, description="The model the session ran, as its first event says."
@@ -100,6 +135,7 @@ def read(path: Path) -> Session | None:
     agent other than Claude Code may not.
     """
     found = False
+    setup: Setup | None = None
     model: str | None = None
     agent: str | None = None
     messages: set[str] = set()
@@ -109,6 +145,7 @@ def read(path: Path) -> Session | None:
         match event:
             case {"type": "system", "subtype": "init"}:
                 found = True
+                setup = _setup(event)
                 model = _text(event.get("model"))
                 agent = _text(event.get("claude_code_version"))
             case {"type": "assistant", "message": dict(message)}:
@@ -124,6 +161,7 @@ def read(path: Path) -> Session | None:
     if not found:
         return None
     return Session(
+        setup=setup,
         model=model,
         agent=agent,
         turns=len(messages),
@@ -134,6 +172,43 @@ def read(path: Path) -> Session | None:
         tokens=_tokens(report.get("usage")),
         outcome=_text(report.get("subtype")),
     )
+
+
+def _setup(event: Event) -> Setup:
+    """What the first event, `event`, says the agent runs with."""
+    servers = _named(event.get("mcp_servers"))
+    return Setup(
+        cwd=_text(event.get("cwd")),
+        tools=_texts(event.get("tools")),
+        mcp_servers={
+            name: _text(server.get("status")) or "unstated"
+            for name, server in servers.items()
+        },
+        permission_mode=_text(event.get("permissionMode")),
+        api_key_source=_text(event.get("apiKeySource")),
+        output_style=_text(event.get("output_style")),
+        skills=_texts(event.get("skills")),
+        agents=_texts(event.get("agents")),
+        slash_commands=_texts(event.get("slash_commands")),
+        plugins=tuple(_named(event.get("plugins"))),
+    )
+
+
+def _named(value: JsonValue) -> dict[str, Event]:
+    """The objects of the list `value` that have a name, by their names."""
+    found: dict[str, Event] = {}
+    for each in value if isinstance(value, list) else []:
+        if isinstance(each, dict):
+            name = _text(each.get("name"))
+            if name is not None:
+                found[name] = each
+    return found
+
+
+def _texts(value: JsonValue) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(each for each in value if isinstance(each, str))
 
 
 def _blocks(message: Event) -> list[Event]:

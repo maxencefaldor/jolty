@@ -59,6 +59,24 @@ Each arm's simulator, `jolty` or `ngspice`, is a wrapper on the agent's path tha
 The runner scores the work in a process of its own, through `score.py`, so what an agent's scripts import or change stays there, and keeps the verdict beside them, as `verdict.json`.
 Claude Code prints its session as stream-json events, and `transcript.py` reads its turns, its tool calls by name, and its own report of the session's wall time, cost and tokens.
 
+Every session runs clean and confined, since Claude Code runs with every permission (`--dangerously-skip-permissions`):
+
+- **Its own configuration.**
+  The session's home, Claude Code's configuration home in it (`CLAUDE_CONFIG_DIR`) and its temporary directory are made empty for it, and its environment holds nothing of the runner's but the locale and Claude Code's credentials, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` (which `claude setup-token` makes for a subscription).
+  Claude Code loads no settings file and no `CLAUDE.md` (`--setting-sources=`), and has the arm's MCP servers alone (`--strict-mcp-config`), so none of the user's settings, hooks, memory, skills, plugins or MCP servers reach it; only the settings an administrator manages, which it always applies, could, and the session records them.
+  Its path holds the arm's simulator and Python, then the system's own directories.
+- **A sandbox.**
+  `sandbox.py` runs the whole session, the agent and everything it starts, its MCP servers and their scripts among them, in the platform's sandbox: Seatbelt (`sandbox-exec`) on macOS and bubblewrap (`bwrap`) on Linux, the mechanisms Claude Code's own sandbox uses for its commands.
+  It reads nothing in the home directories, the temporary directories or mounted volumes but its own directories and the programs it runs, so neither the repository's scorers nor another session's work, and writes nothing outside its own directories.
+  On macOS it also reaches no local service but DNS, and starts no program outside the sandbox, through Apple Events or Launch Services.
+  It reaches the network, as Claude Code must reach its service: an agent could fetch what it likes, such as jolty from PyPI in the ngspice arm.
+  On Linux, bubblewrap can filter no socket by its path nor any address, so the machine's other services stay within reach there.
+- **What it ran with.**
+  Each session records its command, its whole environment, a credential written as `(set)`, the managed settings, and its sandbox, and its transcript's first event says what Claude Code found: its tools, MCP servers, permission mode, skills, plugins and the source of its key.
+
+Claude Code runs only in a sandbox: on a platform without one, `compare.py` refuses to start, and before the first session it runs `claude --version` and `claude auth status` in a session's configuration and sandbox, which cost nothing, and refuses to start when Claude Code finds no credentials there.
+The stub runs in the sandbox too, wherever there is one, reading its own known good designs.
+
 Run one session of the ngspice arm, or score its work:
 
 ```sh

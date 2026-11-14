@@ -32,7 +32,7 @@ def test_a_wrapper_logs_each_run_then_runs_the_program(tmp_path: Path) -> None:
     wrappers = tmp_path / "bin"
     wrappers.mkdir()
     log = tmp_path / "simulations.jsonl"
-    wrap(wrappers, program, log)
+    wrap(wrappers, program, log, Path(sys.executable))
     arguments = ["-b", "a deck.cir", "it's", ""]
     for _ in range(2):
         ran = subprocess.run(  # noqa: S603 - the wrapper just written
@@ -77,8 +77,12 @@ def test_the_ngspice_arm_has_ngspice_and_python_but_no_jolty(tmp_path: Path) -> 
     assert ran("python", "-c", probe).stdout.strip() == str(tmp_path / "python")
     assert "No module named 'jolty'" in ran("python", "-c", "import jolty").stderr
     assert "ngspice" in ran("ngspice", "--version").stdout
-    (logged,) = (tmp_path / SIMULATIONS).read_text(encoding="utf-8").splitlines()
+    assert prepared.log == tmp_path / "log" / SIMULATIONS
+    (logged,) = prepared.log.read_text(encoding="utf-8").splitlines()
     assert json.loads(logged)["arguments"] == ["--version"]
+    # Neither jolty's Python nor its package is among what the arm reads.
+    repository = BENCHMARKS.parent.resolve()
+    assert not [each for each in prepared.reads if each.is_relative_to(repository)]
 
 
 def test_the_jolty_arm_counts_its_command_lines_runs(tmp_path: Path) -> None:
@@ -97,8 +101,46 @@ def test_the_jolty_arm_counts_its_command_lines_runs(tmp_path: Path) -> None:
         check=True,
     )
     assert ran.stdout.startswith("jolty ")
-    (logged,) = (tmp_path / SIMULATIONS).read_text(encoding="utf-8").splitlines()
+    (logged,) = (
+        (tmp_path / "log" / SIMULATIONS).read_text(encoding="utf-8").splitlines()
+    )
     assert json.loads(logged)["program"] == "jolty"
+
+
+def test_a_session_holds_nothing_of_the_runner_s_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from run import SET, environment  # noqa: PLC0415 - importable only once the path holds it
+
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "a model of the user's")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a key")
+    monkeypatch.setenv("LANG", "en_GB.UTF-8")
+    prepared = environment(Arm.JOLTY, tmp_path)
+    variables = prepared.variables
+    # Its home, Claude Code's configuration in it, and its temporary directory are its
+    # own, and empty; its path is the arm's then the system's.
+    home = tmp_path / "home"
+    assert (variables["HOME"], variables["CLAUDE_CONFIG_DIR"], variables["TMPDIR"]) == (
+        str(home),
+        str(home / ".claude"),
+        str(tmp_path / "tmp"),
+    )
+    assert not list((home / ".claude").iterdir())
+    assert variables["PATH"].endswith(f"{os.pathsep}{os.confstr('CS_PATH')}")
+    # Of the runner's own, only the locale and the credentials remain.
+    assert set(variables) == {
+        "HOME",
+        "CLAUDE_CONFIG_DIR",
+        "TMPDIR",
+        "PATH",
+        "LANG",
+        "ANTHROPIC_API_KEY",
+        *(name for name in ("LC_ALL", "LC_CTYPE") if name in os.environ),
+    }
+    assert variables["ANTHROPIC_API_KEY"] == "a key"
+    assert SET == "(set)"
 
 
 def _assistant(id: str, *blocks: dict[str, object], parent: str | None = None) -> str:
@@ -123,7 +165,16 @@ def test_the_transcript_reader_counts_turns_and_tool_calls(tmp_path: Path) -> No
                 "subtype": "init",
                 "model": "claude-opus-5-5",
                 "claude_code_version": "2.1.325",
-                "tools": ["Bash"],
+                "cwd": "/work",
+                "tools": ["Bash", "Write", "mcp__jolty__simulate"],
+                "mcp_servers": [{"name": "jolty", "status": "connected"}],
+                "permissionMode": "bypassPermissions",
+                "apiKeySource": "none",
+                "output_style": "default",
+                "skills": [],
+                "agents": ["general-purpose"],
+                "slash_commands": ["compact"],
+                "plugins": [],
             }
         ),
         _assistant("msg_1", {"type": "text", "text": "I read the task."}),
@@ -182,6 +233,14 @@ def test_the_transcript_reader_counts_turns_and_tool_calls(tmp_path: Path) -> No
         "cache_read_input_tokens": 9000,
     }
     assert session.outcome == "success"
+    setup = session.setup
+    assert setup is not None
+    assert setup.mcp_servers == {"jolty": "connected"}
+    assert (setup.permission_mode, setup.api_key_source) == (
+        "bypassPermissions",
+        "none",
+    )
+    assert (setup.skills, setup.agents, setup.plugins) == ((), ("general-purpose",), ())
 
 
 def test_a_transcript_of_no_events_says_nothing_of_its_session(tmp_path: Path) -> None:
@@ -202,6 +261,7 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
 ) -> None:
     from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
     from compare import Agent, Report, compare  # noqa: PLC0415 - importable only once the path holds it
+    from sandbox import mechanism  # noqa: PLC0415 - importable only once the path holds it
 
     work = tmp_path / "work"
     work.mkdir()
@@ -223,6 +283,15 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
     ]
     assert all(run.met and run.exit_code == 0 for run in report.runs)
     assert all(Path(run.work).parent == work for run in report.runs)
+    for run in report.runs:
+        configuration = run.configuration
+        # Each session ran in a home of its own, in the sandbox wherever there is one,
+        # writing its working directory and its own places alone.
+        assert configuration.variables["HOME"].endswith("/home")
+        assert configuration.command[1] == str(BENCHMARKS / "stub.py")
+        if mechanism() is not None:
+            assert configuration.sandbox is not None
+            assert configuration.sandbox.writes[0] == str(Path(run.work).resolve())
     # The stub writes design.py, or design.cir and tolerances.json, a turn each, then
     # runs the arm's simulator once in a turn of its own.
     written = {Arm.JOLTY: 1, Arm.NGSPICE: 2}
@@ -438,3 +507,153 @@ def test_the_comparison_s_command_line_reads_lists_and_refuses_bad_values(
         f"{', '.join(compare.TASKS)}\n"
     )
     assert len(asked) == 1
+
+
+PROBE = """
+import json, pathlib, sys
+
+def tried(action):
+    try:
+        action()
+    except PermissionError:
+        return "refused"
+    return "done"
+
+secret, scorer, home = (pathlib.Path(each) for each in sys.argv[1:4])
+found = {
+    "its own file": tried(lambda: pathlib.Path("bias.py").read_text()),
+    "a file outside": tried(secret.read_text),
+    "the scorer": tried(scorer.read_text),
+    "the user's home": tried(lambda: list(home.iterdir())),
+    "writing outside": tried(lambda: (secret.parent / "new.txt").write_text("x")),
+    "writing its own": tried(lambda: pathlib.Path("new.txt").write_text("x")),
+    "writing its home": tried(lambda: (pathlib.Path.home() / "x").write_text("x")),
+}
+pathlib.Path("probe.json").write_text(json.dumps(found))
+"""
+"""An agent that tries to read and write in and out of its directory, and says how
+it went, in ``probe.json``."""
+
+
+def sandboxed() -> pytest.MarkDecorator:
+    """Skips a test where this platform has no sandbox, sandbox-exec or bwrap."""
+    import shutil  # noqa: PLC0415 - only to decide whether to skip
+
+    found = shutil.which("sandbox-exec" if sys.platform == "darwin" else "bwrap")
+    return pytest.mark.skipif(found is None, reason="no sandbox on this platform")
+
+
+@sandboxed()
+def test_a_sandboxed_agent_reads_and_writes_its_own_directory_alone(
+    tmp_path: Path,
+) -> None:
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from run import Program, session  # noqa: PLC0415 - importable only once the path holds it
+
+    secret = tmp_path / "outside" / "secret.txt"
+    secret.parent.mkdir()
+    secret.write_text("the user's", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    scorer = COST_DOWN / "scorer.py"
+    program = Program(
+        (sys.executable, "-c", PROBE, str(secret), str(scorer), str(Path.home()))
+    )
+    ran = session(COST_DOWN, program, work, Arm.JOLTY)
+    assert ran.configuration.sandbox is not None
+    assert json.loads((work / "probe.json").read_text(encoding="utf-8")) == {
+        "its own file": "done",
+        "a file outside": "refused",
+        "the scorer": "refused",
+        "the user's home": "refused",
+        "writing outside": "refused",
+        "writing its own": "done",
+        "writing its home": "done",
+    }
+    assert not (secret.parent / "new.txt").exists()
+
+
+def _claude(directory: Path, *, logged_in: bool) -> None:
+    """Writes a stand-in for Claude Code into `directory`, that answers for free.
+
+    It states its version, and its authentication as logged in or not, exiting with 1
+    when not, as Claude Code does.
+    """
+    status = json.dumps(
+        {"loggedIn": logged_in, "authMethod": "api_key", "apiProvider": "firstParty"}
+    )
+    script = (
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        '  --version) echo "2.1.325 (Claude Code)" ;;\n'
+        f"  auth) echo '{status}'; exit {0 if logged_in else 1} ;;\n"
+        "esac\n"
+    )
+    directory.mkdir(exist_ok=True)
+    (directory / "claude").write_text(script, encoding="utf-8")
+    (directory / "claude").chmod(0o755)
+
+
+def test_claude_runs_only_in_a_sandbox_and_holding_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import compare  # noqa: PLC0415 - importable only once the path holds it
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+    from run import default_agent  # noqa: PLC0415 - importable only once the path holds it
+
+    programs = tmp_path / "bin"
+    _claude(programs, logged_in=True)
+    monkeypatch.setenv("PATH", f"{programs}{os.pathsep}{os.environ['PATH']}")
+    results = tmp_path / "results"
+    results.mkdir()
+
+    def compared() -> Path:
+        return compare.compare(
+            compare.Agent.CLAUDE,
+            tasks=["cost_down"],
+            arms=[Arm.JOLTY],
+            repetitions=1,
+            results=results,
+        )
+
+    # Claude Code started in the sandbox, which costs nothing, says who it is.
+    agent = default_agent(Arm.JOLTY, model="opus")
+    assert agent.command[0] == str((programs / "claude").resolve())
+    assert agent.command[-2:] == ("--model", "opus")
+    assert "--setting-sources=" in agent.command
+    if compare.mechanism() is not None:
+        assert compare.started(agent) == (
+            "2.1.325 (Claude Code)",
+            {"authMethod": "api_key", "apiProvider": "firstParty"},
+        )
+        _claude(programs, logged_in=False)
+        with pytest.raises(RuntimeError, match="holds no credentials"):
+            compared()
+    monkeypatch.setattr(compare, "mechanism", lambda: None)
+    with pytest.raises(RuntimeError, match="Claude Code's sessions run only in one"):
+        compared()
+    assert not list(results.iterdir())
+
+
+def test_bubblewrap_hides_the_private_places_but_what_a_session_is_given(
+    tmp_path: Path,
+) -> None:
+    from sandbox import Sandbox, bubblewrap  # noqa: PLC0415 - importable only once the path holds it
+
+    work, program = tmp_path / "work", tmp_path / "program"
+    within = Sandbox(
+        mechanism="bwrap",
+        private=(str(tmp_path), str(tmp_path / "absent")),
+        reads=(str(program),),
+        writes=(str(work),),
+    )
+    # The system read-only, the private places that exist emptied, then what the
+    # session reads there, read-only, and what it writes; processes of its own.
+    assert bubblewrap(within, work) == [
+        *("bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"),
+        *("--tmpfs", str(tmp_path)),
+        *("--ro-bind", str(program), str(program)),
+        *("--bind", str(work), str(work)),
+        *("--unshare-pid", "--die-with-parent", "--new-session"),
+        *("--chdir", str(work.resolve())),
+    ]

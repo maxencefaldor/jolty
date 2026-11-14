@@ -8,9 +8,12 @@ Usage: ``uv run python benchmarks/compare.py [--agent AGENT] [--model MODEL]
 It runs ``N`` sessions of the agent per arm per task, 5 by default, each as run.py runs
 one: in a fresh working directory, made in ``--work`` or the system's temporary
 directory and never in the repository, with the arm's prompt, files and tools, and
-scored by the task's own scorer. The sessions run one at a time, so none
-slows another, the arms and tasks taking turns in each round of repetitions, so a change
-in the agent's service over the hours affects both arms alike. It writes
+scored by the task's own scorer. Each session has a configuration of its own, which
+holds nothing of the user's, and runs in the platform's sandbox, ``sandbox.py``: Claude
+Code runs only in one, and only once it is found to start there and to hold
+credentials, which costs nothing. The sessions run one at a time, so none slows
+another, the arms and tasks taking turns in each round of repetitions, so a change in
+the agent's service over the hours affects both arms alike. It writes
 ``DIRECTORY/DATE-AGENT.json``, ``benchmarks/results`` by default, and keeps each
 session's transcript, log of simulator runs and verdict beside it, in
 ``DIRECTORY/DATE-AGENT/TASK/ARM/REPETITION``. The report holds every session, and for
@@ -49,7 +52,19 @@ from typing import Annotated, Final
 from arms import Arm
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 from pydantic_settings import SettingsConfigDict
-from run import SIMULATIONS, TRANSCRIPT, VERDICT, default_agent, session
+from run import (
+    CREDENTIALS,
+    SIMULATIONS,
+    TRANSCRIPT,
+    VERDICT,
+    Configuration,
+    Program,
+    default_agent,
+    imported,
+    probe,
+    session,
+)
+from sandbox import mechanism
 from transcript import Session, read
 
 from jolty import cli
@@ -70,11 +85,21 @@ class Agent(StrEnum):
     STUB = "stub"
 
 
-def command(agent: Agent, task: Path, arm: Arm, model: str | None) -> list[str]:
-    """The command that runs `agent` of `arm` on `task`, but its prompt."""
+def command(agent: Agent, task: Path, arm: Arm, model: str | None) -> Program:
+    """The program that runs `agent` of `arm` on `task`, but its prompt.
+
+    The stub reads itself and its known good designs, in the benchmarks' directory,
+    and the jolty it writes them with; it runs outside a sandbox only where there is
+    none. Claude Code runs only in one.
+    """
     if agent is Agent.STUB:
-        return [sys.executable, str(STUB), str(task), str(arm)]
-    return [*default_agent(arm), *([] if model is None else ["--model", model])]
+        python = Path(sys.executable)
+        return Program(
+            (str(python), str(STUB), str(task), str(arm)),
+            reads=(BENCHMARKS, *imported(python)),
+            confined=False,
+        )
+    return default_agent(arm, model=model)
 
 
 class Simulations(BaseModel):
@@ -120,6 +145,7 @@ class Run(BaseModel):
         description="What the transcript says of the session; null without events."
     )
     simulations: Simulations
+    configuration: Configuration
     packages: dict[str, str] = Field(
         description="The ngspice arm's Python's packages, by name; none for jolty's."
     )
@@ -284,7 +310,12 @@ class Report(BaseModel):
     model: str | None = Field(description="The model asked for; null for the agent's.")
     repetitions: int
     versions: dict[str, str] = Field(
-        description="jolty's, ngspice's, Python's and the platform's."
+        description="jolty's, ngspice's, Python's, the platform's, and the agent's, "
+        "as it states it in its sandbox."
+    )
+    authentication: dict[str, str] = Field(
+        description="How Claude Code authenticates in its sessions' configuration, as "
+        "it states it there, such as authMethod api_key; none for the stub."
     )
     commands: dict[Arm, list[str]] = Field(
         description="The command that ran each arm's agent on the first task, but "
@@ -325,6 +356,8 @@ def preflight(agent: Agent, arms: Sequence[Arm]) -> None:
     Raises:
         FileNotFoundError: When Claude Code, for it, or ngspice or uv, for the ngspice
             arm, is not on the path.
+        RuntimeError: When Claude Code, for it, would run without a sandbox, on a
+            platform that has none.
     """
     needed = ["claude"] if agent is Agent.CLAUDE else []
     if Arm.NGSPICE in arms:
@@ -333,6 +366,37 @@ def preflight(agent: Agent, arms: Sequence[Arm]) -> None:
     if missing:
         message = f"{', '.join(missing)} not on the path, which the sessions need"
         raise FileNotFoundError(message)
+    if agent is Agent.CLAUDE and mechanism() is None:
+        message = (
+            f"no sandbox, sandbox-exec or bwrap, is on the path of this {sys.platform} "
+            "machine, and Claude Code's sessions run only in one"
+        )
+        raise RuntimeError(message)
+
+
+def started(program: Program) -> tuple[str, dict[str, str]]:
+    """Claude Code's version and authentication, as it states them in its sandbox.
+
+    Both cost nothing: ``claude --version``, and ``claude auth status --json``, which
+    reads its configuration and credentials and calls no model.
+
+    Raises:
+        RuntimeError: When Claude Code holds no credentials there, so that every
+            session would fail.
+    """
+    version = probe(program, ["--version"]).strip()
+    try:
+        status = json.loads(probe(program, ["auth", "status", "--json"]))
+    except subprocess.CalledProcessError as error:
+        status = json.loads(error.stdout)
+    if not status.get("loggedIn"):
+        message = (
+            "Claude Code holds no credentials in its sessions' configuration: set "
+            f"one of {', '.join(CREDENTIALS)}"
+        )
+        raise RuntimeError(message)
+    kept = ("authMethod", "apiProvider")
+    return version, {key: str(status[key]) for key in kept if key in status}
 
 
 def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
@@ -353,6 +417,8 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
     Raises:
         FileExistsError: When the report of the day's comparison of `agent` exists.
         FileNotFoundError: When a program the sessions need is not on the path.
+        RuntimeError: When Claude Code would run without a sandbox, or holds no
+            credentials in its sessions' configuration.
         ValueError: When `work` lies in the repository, where an agent would find its
             instructions and the scorers.
     """
@@ -367,14 +433,21 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
     if path.exists() or directory.exists():
         message = f"{path} or {directory} exists: give another --results"
         raise FileExistsError(message)
+    found = versions()
+    authentication: dict[str, str] = {}
+    if agent is Agent.CLAUDE:
+        programs = command(agent, BENCHMARKS / tasks[0], arms[0], model)
+        found["agent"], authentication = started(programs)
     runs: list[Run] = []
     for repetition in range(1, repetitions + 1):
         for name in tasks:
             task = BENCHMARKS / name
             for arm in arms:
                 made = tempfile.mkdtemp(prefix=f"jolty-{name}-{arm}-", dir=work)
-                ran = session(task, command(agent, task, arm, model), Path(made), arm)
+                program = command(agent, task, arm, model)
+                ran = session(task, program, Path(made), arm)
                 kept(directory / name / str(arm) / str(repetition), Path(made))
+                told = read(Path(made) / TRANSCRIPT)
                 runs.append(
                     Run(
                         task=name,
@@ -386,8 +459,9 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
                         met=ran.verdict.met,
                         measurements=ran.verdict.measurements,
                         reasons=ran.verdict.reasons,
-                        session=read(Path(made) / TRANSCRIPT),
+                        session=told,
                         simulations=simulations(Path(made) / SIMULATIONS),
+                        configuration=ran.configuration,
                         packages=ran.packages,
                     )
                 )
@@ -397,9 +471,11 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
         agent=agent,
         model=model,
         repetitions=repetitions,
-        versions=versions(),
+        versions=found,
+        authentication=authentication,
         commands={
-            arm: command(agent, BENCHMARKS / tasks[0], arm, model) for arm in arms
+            arm: list(command(agent, BENCHMARKS / tasks[0], arm, model).command)
+            for arm in arms
         },
         tasks={
             name: _task([run for run in runs if run.task == name]) for name in tasks
