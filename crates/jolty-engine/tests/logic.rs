@@ -280,8 +280,12 @@ fn an_inverter_and_an_rc_oscillate_at_their_closed_form_period() {
         ),
     ]);
     let mut simulator = simulator(&circuit);
+    // The capacitor holds a nanocoulomb, so the default charge tolerance, 1e-14 C, would
+    // bound the period's accuracy at about 1e-4 whatever the relative tolerance; with it a
+    // ten-thousandth as large, the relative tolerance does.
     let options = Options {
         relative_tolerance: 1e-6,
+        charge_tolerance: 1e-18,
         ..Options::default()
     };
     let waveforms = simulator
