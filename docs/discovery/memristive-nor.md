@@ -76,18 +76,18 @@ The shunt draws current through every write, and a gate in a crossbar would need
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| X1/MO:state at 12.5 ns in write ≥ -0.1 and ≤ 0.1 | 0.00109968 at high, passed | 0.00109978 at high, passed | 8.7e-05 |
-| X1/MA:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 0.994904 at high, passed | 0.994904 at high, passed | 2.5e-07 |
-| X1/MB:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 0.994904 at high, passed | 0.994904 at high, passed | 2.5e-07 |
-| X2/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1 at high, passed | 1 at high, passed | 4.4e-15 |
-| X2/MA:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 1, passed | 1 at high, passed | 5.8e-15 |
-| X2/MB:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | 0, passed | 0 |
-| X3/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1 at high, passed | 1 at low, passed | 4.4e-15 |
-| X3/MA:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | 0, passed | 0 |
-| X3/MB:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 1, passed | 1 at high, passed | 5.8e-15 |
-| X4/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1 at low, passed | 1 at high, passed | 2.0e-15 |
-| X4/MA:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | 0, passed | 0 |
-| X4/MB:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | 0, passed | 0 |
+| X1/MO:state at 12.5 ns in write ≥ -0.1 and ≤ 0.1 | 0.00109992 at high, passed | — at high, unmeasured | — |
+| X1/MA:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 0.994904 at high, passed | — at high, unmeasured | — |
+| X1/MB:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 0.994904 at high, passed | — at high, unmeasured | — |
+| X2/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1 at low, passed | — at high, unmeasured | — |
+| X2/MA:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 1, passed | — at high, unmeasured | — |
+| X2/MB:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | — at high, unmeasured | — |
+| X3/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1 at low, passed | — at high, unmeasured | — |
+| X3/MA:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | — at high, unmeasured | — |
+| X3/MB:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 1, passed | — at high, unmeasured | — |
+| X4/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1, passed | — at high, unmeasured | — |
+| X4/MA:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | — at high, unmeasured | — |
+| X4/MB:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | — at high, unmeasured | — |
 
 ## Replicated in ngspice
 
@@ -96,7 +96,11 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `write` | 5 | 4.9e-09 | 1 | 3.6e-05 |
+| `write` | 5 | 9.3e-06 | 1 | 1.2e-05 |
+
+ngspice could not finish `write` with tolerances as tight as jolty's, so it ran with its own defaults.
+
+ngspice finished `write` at the corner `high` neither with tolerances as tight as jolty's nor with its own defaults, within 300 s, so it judges no spec on them.
 
 ![The replication in ngspice](../images/gallery/memristive_nor.write.replication.png)
 

@@ -237,6 +237,12 @@ class Replication:
     loosened: list[str] = field(default_factory=list)
     """The analyses ngspice could not finish with tolerances as tight as jolty's, run
     again with its own defaults."""
+    unfinished: list[tuple[str | None, str]] = field(default_factory=list)
+    """The analyses ngspice finished with neither, within its time limit, each with
+    its corner, None for the plan's own conditions."""
+    unreplicated: tuple[bool, ...] = ()
+    """For each of the verdicts, whether it reads an analysis ngspice did not
+    finish."""
 
 
 def _commands(
@@ -282,11 +288,11 @@ def _commands(
 
 def _run(
     lines: list[str], commands: list[str], option: str, kelvins: float
-) -> tuple[ngspice.Raw, bool]:
+) -> tuple[ngspice.Raw | None, bool]:
     """What ngspice finds of `commands`, merged along their axis, and if it loosened.
 
     A transient that stops before its end, or a run that fails, runs again with
-    ngspice's default tolerances, and loosened says so.
+    ngspice's default tolerances, and loosened says so; none when that fails too.
     """
     raws: list[ngspice.Raw] = []
     loosened = False
@@ -299,9 +305,12 @@ def _run(
             raw = None
         if raw is None or _stopped_early(raw, command):
             loosened = True
-            raw = ngspice.run(
-                lines, command, options=option or "*", temperature=kelvins
-            )
+            try:
+                raw = ngspice.run(
+                    lines, command, options=option or "*", temperature=kelvins
+                )
+            except JoltyError:
+                return None, loosened
         raws.append(raw)
     if len(raws) == 1:
         return raws[0], loosened
@@ -395,6 +404,9 @@ def _replicate(
             transient = isinstance(analysis, Transient)
             lines = export.netlist(circuit, excited=excited, transient=transient)
             raw, loosened = _run(lines, texts, option, kelvins)
+            if raw is None:
+                replication.unfinished.append((corner, name))
+                continue
             if loosened and corner is None:
                 replication.loosened.append(name)
             table, shared = _from_raw(raw, circuit, jolty.unknowns)
@@ -426,6 +438,11 @@ def _replicate(
             plan.analyses,
             replication.solved,
             replication.corners or None,
+        )
+        unfinished = {name for _, name in replication.unfinished}
+        replication.unreplicated = tuple(
+            requirement.measurement.analysis in unfinished
+            for requirement in script_specs.requirements
         )
     return replication
 
@@ -802,6 +819,19 @@ def _replication_section(built: Built) -> list[str]:
             ),
             "",
         ]
+    if replication.unfinished:
+        names = ", ".join(
+            f"`{name}`" if corner is None else f"`{name}` at the corner `{corner}`"
+            for corner, name in replication.unfinished
+        )
+        lines += [
+            (
+                f"ngspice finished {names} neither with tolerances as tight as "
+                f"jolty's nor with its own defaults, within {ngspice.TIMEOUT} s, so "
+                "it judges no spec on them."
+            ),
+            "",
+        ]
     for image in built.replicated_plots:
         lines += [f"![The replication in ngspice](../images/gallery/{image})", ""]
     return lines
@@ -1001,13 +1031,24 @@ def _failures(built: Built) -> int:
     engines disagree: its findings report the bounds it misses.
     """
     ours = built.verdicts
-    theirs = built.replication.verdicts if built.replication else ()
+    replication = built.replication
+    theirs = replication.verdicts if replication else ()
+    # A spec on an analysis ngspice did not finish is none of ngspice's to judge.
+    skipped = {
+        index
+        for index, unreplicated in enumerate(
+            replication.unreplicated if replication else ()
+        )
+        if unreplicated
+    }
     if built.entry.discovered:
         return sum(
             mine.status != spice.status
-            for mine, spice in zip(ours, theirs, strict=True)
+            for index, (mine, spice) in enumerate(zip(ours, theirs, strict=True))
+            if index not in skipped
         )
-    return sum(verdict.status != "passed" for verdict in (*ours, *theirs))
+    judged = [spice for index, spice in enumerate(theirs) if index not in skipped]
+    return sum(verdict.status != "passed" for verdict in (*ours, *judged))
 
 
 def main(names: Sequence[str]) -> int:
