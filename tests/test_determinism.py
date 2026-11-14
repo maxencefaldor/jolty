@@ -125,6 +125,13 @@ def test_a_part_added_leaves_every_other_draw_alone() -> None:
         assert more == alone
 
 
+def test_a_pool_holds_a_thread_or_more() -> None:
+    assert simulate.pool(3).threads == 3
+    for count in (0, -1):
+        with pytest.raises(ValueError, match="a thread or more"):
+            simulate.pool(count)
+
+
 def test_a_seed_is_64_bits() -> None:
     assert MonteCarlo(1, seed=2**64 - 1).seed == 2**64 - 1
     for seed in (-1, 2**64):

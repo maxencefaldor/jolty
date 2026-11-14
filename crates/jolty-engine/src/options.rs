@@ -50,13 +50,19 @@ impl Record {
 ///
 /// The caller owns the pool and runs the engine inside it, with `ThreadPool::install`; a
 /// run uses at most its `threads`, and a [batch](crate::batch::Batch) runs each of its runs
-/// on one thread whenever it has a run for every thread of its pool.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// on one thread whenever it has a run for every thread of its pool. Spreading work costs
+/// the time of waking threads, which a small run's work does not repay, so each kind of
+/// work spreads only once its threshold is set: none is by default, and a run does all its
+/// work on its own thread.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Parallelism {
     /// The most threads a run spreads its own work over; none for every thread of the pool
     /// it runs in, and 1 to run it on one thread alone.
     pub threads: Option<usize>,
+    /// The fewest frequencies, right-hand sides or parameters' derivatives a task takes
+    /// when a run spreads them; none, by default, to take them all on the run's thread.
+    pub min_solves_per_task: Option<usize>,
     /// The fewest device instances a task evaluates, when devices evaluate in parallel;
     /// none until they do.
     pub min_instances_per_task: Option<usize>,
@@ -65,39 +71,49 @@ pub struct Parallelism {
     pub min_unknowns_inside: Option<usize>,
 }
 
-impl Default for Parallelism {
-    /// Every thread of the pool, and nothing that does not yet run in parallel.
-    fn default() -> Self {
-        Self {
-            threads: None,
-            min_instances_per_task: None,
-            min_unknowns_inside: None,
-        }
-    }
-}
-
 impl Parallelism {
-    /// How many tasks a run splits work of `items` independent items into: one per thread
-    /// it may use, no more than there are items, and at least one.
+    /// How many tasks a run splits `items` independent solves into: one per thread it may
+    /// use, each taking at least [`Parallelism::min_solves_per_task`] of them, and one when
+    /// that is unset or there are too few.
     #[must_use]
     pub fn tasks(&self, items: usize) -> usize {
+        let Some(least) = self.min_solves_per_task else {
+            return 1;
+        };
         let threads = rayon::current_num_threads();
         self.threads
             .map_or(threads, |most| most.min(threads))
-            .min(items)
+            .min(items / least.max(1))
             .max(1)
+    }
+
+    /// Whether a run may spread any of its work across threads, and so must run inside
+    /// its caller's pool: once a threshold of [`Parallelism`] lets one kind of work spread.
+    /// A run that may not touches no thread but its own.
+    #[must_use]
+    pub const fn spreads(&self) -> bool {
+        self.min_solves_per_task.is_some()
     }
 
     /// `each` of every one of `items`, in their order, spread over [`Parallelism::tasks`]
     /// tasks of consecutive items, each task with scratch space of its own that `scratch`
-    /// makes. Each item's result is the same whichever task finds it.
+    /// makes; on the calling thread alone for one task. Each item's result is the same
+    /// whichever task finds it.
     pub(crate) fn spread<T: Send, S, R: Send>(
         &self,
         items: &mut [T],
         scratch: impl Fn() -> S + Sync,
         each: impl Fn(&mut S, &mut T) -> R + Sync,
     ) -> Vec<R> {
-        let size = items.len().div_ceil(self.tasks(items.len())).max(1);
+        let tasks = self.tasks(items.len());
+        if tasks == 1 {
+            let mut space = scratch();
+            return items
+                .iter_mut()
+                .map(|item| each(&mut space, item))
+                .collect();
+        }
+        let size = items.len().div_ceil(tasks).max(1);
         let parts: Vec<Vec<R>> = items
             .par_chunks_mut(size)
             .map(|part| {
@@ -149,7 +165,7 @@ pub struct Options {
     /// changes no other result.
     pub profile: bool,
     /// How a run spreads its own work across threads, which changes no result; by default
-    /// over every thread of the pool it runs in.
+    /// it does all its work on its own thread.
     pub parallelism: Parallelism,
 }
 
@@ -252,6 +268,7 @@ impl Options {
         let parallelism = &self.parallelism;
         let counts = [
             ("threads", parallelism.threads),
+            ("min_solves_per_task", parallelism.min_solves_per_task),
             ("min_instances_per_task", parallelism.min_instances_per_task),
             ("min_unknowns_inside", parallelism.min_unknowns_inside),
         ];

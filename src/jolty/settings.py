@@ -90,9 +90,9 @@ class Settings(BaseSettings):
     threads: int | None = Field(
         default=None,
         ge=1,
-        description="Threads the engine runs on, which spread one simulation's own "
-        "work, such as its frequencies; by default, one per processor. No result "
-        "depends on them.",
+        description="Threads the engine runs on: a batch's runs, and a simulation's "
+        "own work, such as its frequencies, where its options spread it; by default, "
+        "one per processor. No result depends on them.",
     )
     rules: dict[RuleKey, Level] = Field(
         default_factory=dict,

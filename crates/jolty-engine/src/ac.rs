@@ -203,8 +203,9 @@ pub(crate) fn over_frequencies<R: Send>(
         .enumerate()
         .map(|(part, frequencies)| (1 + part * size, frequencies))
         .collect();
-    // Where each run starts, and its results from there, once taken.
-    let mut starts: Vec<Linearization> = vec![first.clone(); parts.len()];
+    // Where each run starts, none for where the first frequency left `first`, and its
+    // results from there, once taken.
+    let mut starts: Vec<Option<Linearization>> = (0..parts.len()).map(|_| None).collect();
     let mut runs: Vec<Option<Run<R>>> = (0..parts.len()).map(|_| None).collect();
     let mut standing = 0;
     while standing < parts.len() {
@@ -213,8 +214,8 @@ pub(crate) fn over_frequencies<R: Send>(
             .collect::<Vec<usize>>()
             .into_par_iter()
             .map(|part| {
-                let run = Run::from(starts[part].clone(), parts[part], contributions, at);
-                (part, run)
+                let start = starts[part].as_ref().unwrap_or(&first).clone();
+                (part, Run::from(start, parts[part], contributions, at))
             })
             .collect();
         for (part, run) in taken {
@@ -223,7 +224,10 @@ pub(crate) fn over_frequencies<R: Send>(
         // The runs stand in order while each started from the pivots the run before it
         // left; the first error of one that stands is the first error of all.
         while standing < parts.len()
-            && starts[standing].factors_alike(end_before(&runs, standing, &first))
+            && starts[standing]
+                .as_ref()
+                .unwrap_or(&first)
+                .factors_alike(end_before(&runs, standing, &first))
         {
             if let Some(run) = runs[standing].as_mut()
                 && let Some(error) = run.error.take()
@@ -234,11 +238,15 @@ pub(crate) fn over_frequencies<R: Send>(
         }
         // Every run that does not stand starts again from where the run before it ended,
         // unless it started from pivots alike already.
-        let ends: Vec<Linearization> = (standing..parts.len())
-            .map(|part| end_before(&runs, part, &first).clone())
+        let ends: Vec<Option<Linearization>> = (standing..parts.len())
+            .map(|part| {
+                let end = end_before(&runs, part, &first);
+                let start = starts[part].as_ref().unwrap_or(&first);
+                (!start.factors_alike(end)).then(|| end.clone())
+            })
             .collect();
         for (part, end) in (standing..parts.len()).zip(ends) {
-            if !starts[part].factors_alike(&end) {
+            if end.is_some() {
                 starts[part] = end;
                 runs[part] = None;
             }

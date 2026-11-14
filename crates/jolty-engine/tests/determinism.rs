@@ -29,6 +29,18 @@ use serde_json::{Value, json};
 /// The thread counts every comparison runs at.
 const THREADS: [usize; 4] = [1, 2, 3, 8];
 
+/// `options` with a run's frequencies and right-hand sides spread over every thread of its
+/// pool, a task taking as few as one.
+fn spreading(options: Options) -> Options {
+    Options {
+        parallelism: Parallelism {
+            min_solves_per_task: Some(1),
+            ..options.parallelism
+        },
+        ..options
+    }
+}
+
 fn reals(values: &[f64], into: &mut Vec<u64>) {
     into.extend(values.iter().map(|value| value.to_bits()));
 }
@@ -458,7 +470,7 @@ proptest! {
                     .expect("a run");
                 analyses
                     .iter()
-                    .map(|analysis| bits(&simulator.run(analysis, &Options::default())))
+                    .map(|analysis| bits(&simulator.run(analysis, &spreading(Options::default()))))
                     .collect::<Vec<_>>()
             })
         };
@@ -519,7 +531,7 @@ fn frequencies_whose_pivots_change_find_the_same_in_any_spread() {
                 Simulator::from_elaborated(shared(&circuit), Values::default()).expect("a run");
             analyses
                 .iter()
-                .map(|analysis| bits(&simulator.run(analysis, &Options::default())))
+                .map(|analysis| bits(&simulator.run(analysis, &spreading(Options::default()))))
                 .collect::<Vec<_>>()
         })
     };
@@ -533,17 +545,21 @@ fn frequencies_whose_pivots_change_find_the_same_in_any_spread() {
     }
 }
 
-/// A run's own work stays on one thread when its options say so, and finds the same.
+/// A run's own work stays on one thread by default, and when its options cap its threads
+/// at one, and finds what it finds spread over many.
 #[test]
 fn a_run_on_one_thread_finds_what_it_finds_on_many() {
-    let (circuit, analyses, options) = benchmark("ac_wide");
+    let (circuit, analyses, plan) = benchmark("ac_wide");
+    let options = spreading(plan.clone());
     let serial = Options {
         parallelism: Parallelism {
             threads: Some(1),
-            ..Parallelism::default()
+            ..options.parallelism.clone()
         },
         ..options.clone()
     };
+    assert_eq!(Parallelism::default().tasks(10_000), 1);
+    assert_eq!(serial.parallelism.tasks(10_000), 1);
     let run = |options: &Options| {
         let pool = ThreadPoolBuilder::new()
             .num_threads(8)
@@ -558,7 +574,9 @@ fn a_run_on_one_thread_finds_what_it_finds_on_many() {
                 .collect::<Vec<_>>()
         })
     };
-    assert_eq!(run(&serial), run(&options));
+    let found = run(&options);
+    assert_eq!(run(&serial), found);
+    assert_eq!(run(&plan), found);
 }
 
 /// The amplifier's resistors, each within 5%, the benchmark `monte_carlo`'s tolerances.
@@ -580,7 +598,8 @@ fn amplifier_samples_find_the_same_alone_and_in_a_batch() {
     let (circuit, analyses, options) = benchmark("bjt_amp");
     let elaborated = shared(&circuit);
     let variants = amplifier_samples(&elaborated, 7, 16);
-    let batch = Batch::new(elaborated, analyses, options, Vec::new()).expect("a batch");
+    // A range of fewer runs than threads spreads each run's frequencies too.
+    let batch = Batch::new(elaborated, analyses, spreading(options), Vec::new()).expect("a batch");
     assert_same_everywhere(&batch, &variants, &[vec![0..5, 5..16]]);
     let (all, _) = run_on(&batch, &variants, &only(0..16), 8);
     for index in [0, 9, 15] {

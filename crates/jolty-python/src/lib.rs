@@ -68,6 +68,19 @@ impl Pool {
     }
 }
 
+impl Pool {
+    /// `work`, a run under `options`: inside the pool, on its threads, when the options let
+    /// the run spread its work over threads, and else on the calling thread, which a run
+    /// that spreads nothing never leaves, so that it waits on no thread of the pool.
+    fn run<T: Send>(&self, options: &Options, work: impl FnOnce() -> T + Send) -> T {
+        if options.parallelism.spreads() {
+            self.inner.install(work)
+        } else {
+            work()
+        }
+    }
+}
+
 /// A circuit elaborated once, which simulators of it at the values of any parameters share.
 #[pyclass(module = "jolty._core", frozen)]
 struct Elaborated {
@@ -355,9 +368,9 @@ impl Simulator {
 
     /// Every diagnostic of the rules on the circuit linearized at its operating point under
     /// `options`, a JSON object, as `check` gives them; none for a circuit of more unknowns
-    /// than the checks linearize. It runs on the threads of `pool`, releasing the
-    /// interpreter while it runs. A circuit with no operating point raises
-    /// `SimulationError`.
+    /// than the checks linearize. It runs releasing the interpreter, inside `pool` when its
+    /// options let it spread its work over threads. A circuit with no operating point
+    /// raises `SimulationError`.
     fn check_operating_point<'py>(
         &self,
         py: Python<'py>,
@@ -366,7 +379,7 @@ impl Simulator {
     ) -> PyResult<Bound<'py, PyList>> {
         let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
         let found = py.detach(|| {
-            pool.inner.install(|| {
+            pool.run(&options, || {
                 let mut simulator = self.lock();
                 jolty_checks::check_operating_point(&mut simulator, &options)
             })
@@ -399,7 +412,8 @@ impl Simulator {
     }
 
     /// Runs the analysis whose JSON text is `analysis` with the options whose JSON text is
-    /// `options`, on the threads of `pool`, releasing the interpreter while it runs.
+    /// `options`, releasing the interpreter while it runs, inside `pool` when the options
+    /// let it spread its work over threads.
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -411,7 +425,7 @@ impl Simulator {
             serde_json::from_str(analysis).map_err(|error| unreadable(&error))?;
         let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
         let outcome = py.detach(|| {
-            pool.inner.install(|| {
+            pool.run(&options, || {
                 let mut simulator = self.lock();
                 simulator.run(&analysis, &options)
             })

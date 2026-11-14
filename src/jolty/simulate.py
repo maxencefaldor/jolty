@@ -88,6 +88,9 @@ def pool(count: int | None = None) -> _core.Pool:
     Raises:
         ValueError: When `count` is not positive.
     """
+    if count is not None and count < 1:
+        message = f"a pool holds a thread or more, not {count}"
+        raise ValueError(message)
     return _core.Pool(count)
 
 
