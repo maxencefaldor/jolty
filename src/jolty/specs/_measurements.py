@@ -636,7 +636,8 @@ def noise_density(
         point = _frequency_axis(spectrum.frequencies).locate(at, "at")
         density = spectrum.density(point, referred=referred)
         return Reading(
-            math.sqrt(density), _noise_unit(spectrum, referred) / rtHz.dimension
+            math.sqrt(density),
+            _noise_unit(spectrum, referred=referred) / rtHz.dimension,
         )
 
     referral = " referred to the input" if referred else ""
@@ -669,7 +670,7 @@ def integrated_noise(
             message = f"the band from {start} to {stop} is empty"
             raise MeasurementError(message)
         rms = spectrum.rms(low, high, referred=referred)
-        return Reading(rms, _noise_unit(spectrum, referred))
+        return Reading(rms, _noise_unit(spectrum, referred=referred))
 
     referral = " referred to the input" if referred else ""
     lowest = "the lowest frequency" if start is None else str(start)
@@ -1072,7 +1073,7 @@ def _poles(result: results.Result, what: str) -> results.Complex:
     return result.poles
 
 
-def _noise_unit(spectrum: results.NoiseSpectrum, referred: bool) -> Dimension:  # noqa: FBT001
+def _noise_unit(spectrum: results.NoiseSpectrum, *, referred: bool) -> Dimension:
     """The unit of the noise's amplitude: the output's, or the input's if `referred`."""
     quantity = spectrum.quantity
     if referred and spectrum.input is not None:

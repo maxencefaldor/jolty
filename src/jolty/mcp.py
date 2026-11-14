@@ -166,7 +166,7 @@ def tool_from[Request: BaseModel, Result: service.CommandResult](
             content=content, structured_content=result.model_dump(mode="json")
         )
 
-    tool.__signature__ = inspect.Signature(  # ty: ignore[missing-attribute]
+    tool.__signature__ = inspect.Signature(  # ty: ignore[missing-attribute] - inspect reads it; functions declare none
         parameters, return_annotation=Annotated[CallToolResult, result_type]
     )
     tool.__name__ = name

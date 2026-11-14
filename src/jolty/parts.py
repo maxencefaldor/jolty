@@ -79,7 +79,7 @@ def q2n3904(*, heated: bool = False) -> devices.Device:
                 reverse_transit_time=239.5 * ns,
                 beta_temperature_exponent=1.5,
             ),
-            heated,
+            heated=heated,
         )
         .numbered("2N3904")
         .rated("voltage", 40 * V, terminals=("collector", "emitter"))
@@ -123,7 +123,7 @@ def q2n3906(*, heated: bool = False) -> devices.Device:
                 reverse_transit_time=33.42 * ns,
                 beta_temperature_exponent=1.5,
             ),
-            heated,
+            heated=heated,
         )
         .numbered("2N3906")
         .rated("voltage", minimum=-40 * V, terminals=("collector", "emitter"))
@@ -152,7 +152,7 @@ def d1n4148(*, heated: bool = False) -> devices.Device:
                 grading_coefficient=0.4,
                 transit_time=20 * ns,
             ),
-            heated,
+            heated=heated,
         )
         .numbered("1N4148")
         .rated("voltage", minimum=-100 * V)
@@ -162,7 +162,7 @@ def d1n4148(*, heated: bool = False) -> devices.Device:
     )
 
 
-def _heated(device: devices.Device, heated: bool) -> devices.Device:  # noqa: FBT001
+def _heated(device: devices.Device, *, heated: bool) -> devices.Device:
     """`device`, [heated][jolty.devices.Device.heated] if `heated`."""
     return device.heated() if heated else device
 
@@ -475,7 +475,7 @@ def fitted_mosfet(c: Builder, sheet: Datasheet, *, heated: bool = False) -> None
                 * F
                 / m,
             ),
-            heated,
+            heated=heated,
         ),
         id="M1",
     )
@@ -492,7 +492,7 @@ def fitted_mosfet(c: Builder, sheet: Datasheet, *, heated: bool = False) -> None
                 junction_potential=JUNCTION_POTENTIAL * V,
                 grading_coefficient=0.5,
             ),
-            heated,
+            heated=heated,
         ),
         id="D1",
     )

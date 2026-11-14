@@ -728,7 +728,7 @@ def level_three_curves(c: Builder) -> None:
 
 
 @component
-def drifting(c: Builder, apart: bool = False) -> None:  # noqa: FBT001, FBT002
+def drifting(c: Builder, *, apart: bool = False) -> None:
     """Every temperature coefficient jolty models, on every kind of device.
 
     A zener reference biases a bipolar stage and a MOSFET, beside a JFET current source.

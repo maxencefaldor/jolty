@@ -138,7 +138,7 @@ def test_sensitivities_carry_through_the_heat() -> None:
 
 
 @component
-def follower(c: Builder, heated: bool, sink: float, emitter: float) -> None:  # noqa: FBT001
+def follower(c: Builder, *, heated: bool, sink: float, emitter: float) -> None:
     """A 2N3904 from 12 V into `emitter` ohms, joined by `sink` K/W to the ambient."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(12 * V), id="V1")

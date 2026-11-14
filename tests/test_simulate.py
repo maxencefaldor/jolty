@@ -974,7 +974,7 @@ def test_corners_are_named_by_identifiers_at_a_temperature() -> None:
     with pytest.raises(ValueError, match="a corner is named by a Python identifier"):
         Plan(analyses, corners={"cold 1": corner})
     with pytest.raises(TypeError, match="not a Corner"):
-        Plan(analyses, corners={"cold": celsius(-40)})  # ty: ignore[invalid-argument-type]
+        Plan(analyses, corners={"cold": celsius(-40)})  # ty: ignore[invalid-argument-type] - the wrong type is tested
     with pytest.raises(DimensionError, match="a corner's temperature"):
         Corner(temperature=5 * V)
 

@@ -1043,7 +1043,7 @@ def main(names: Sequence[str]) -> int:
     # One sentence per line, as the docs' Markdown is checked: the pages quote
     # docstrings, which wrap at 88 columns.
     rumdl = Path(sys.executable).parent / "rumdl"
-    subprocess.run([rumdl, "fmt", "--quiet", *written], check=True)  # noqa: S603
+    subprocess.run([rumdl, "fmt", "--quiet", *written], check=True)  # noqa: S603 - this environment's rumdl, on the pages just written
     return failures
 
 
