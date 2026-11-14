@@ -7,8 +7,8 @@ circuit's unknowns and logic nets, says what the analyses recorded of its device
 recording once however many analyses share it, and says what each analysis is, then
 the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 ``step.currents`` and ``step.conductances``, ``loop.frequencies`` and ``loop.gains``, or
-``hiss.densities`` and ``hiss.contributions``. The header is in version 5 of the format;
-a file of an earlier version is not read.
+``hiss.densities`` and ``hiss.contributions``. The header is in version 6 of the format,
+which names the parameter a DC sweep steps; a file of an earlier version is not read.
 
 Examples:
     >>> import tempfile
@@ -42,7 +42,7 @@ RESULTS_SUFFIX: Final = ".results.npz"
 
 _HEADER: Final = "header"
 
-_VERSION: Final = 5
+_VERSION: Final = 6
 """The version of the results file's format that jolty writes and reads."""
 
 
@@ -65,7 +65,8 @@ class _Points(_Model):
 class _Sweep(_Model):
     kind: Literal["dc_sweep"] = "dc_sweep"
     source: str
-    quantity: results.Quantity
+    quantity: results.Quantity | None
+    parameter: str | None = None
     recording: int
 
 
@@ -191,7 +192,7 @@ class _Recording(_Model):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[5] = 5
+    version: Literal[6] = 6
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
 
@@ -366,6 +367,7 @@ def _save(
             return _Sweep(
                 source=result.source,
                 quantity=result.quantity,
+                parameter=result.parameter,
                 recording=_indexed(recordings, result.recording),
             )
         case results.Response():
@@ -518,6 +520,7 @@ def _load(
                 nets,
                 data[f"{name}.logic"],
                 **_observed(data, name, recordings[recording]),
+                parameter=entry.parameter,
             )
         case _Response(source=source, strategy=strategy, recording=recording):
             point = f"{name}.operating_point"

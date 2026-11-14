@@ -38,7 +38,7 @@ type PyWindow = (Option<f64>, Option<f64>);
 
 /// One number read from the result of one analysis, as the engine reads it.
 #[pyclass(module = "jolty._core", frozen)]
-pub(crate) struct Measure(measure::Measure);
+pub(crate) struct Measure(pub(crate) measure::Measure);
 
 fn to_signal((unknown, reference): PySignal) -> Signal {
     Signal { unknown, reference }
@@ -400,22 +400,35 @@ fn slice<'a, T: Element + Copy>(array: &'a PyReadonlyArray1<'_, T>) -> Cow<'a, [
 
 /// `error` as a Python exception: the one Python's `math.fsum` or the allocation of a
 /// distortion's samples would raise, or a `MeasureError` of its reason and numbers.
-fn failure(error: Failure) -> PyErr {
-    let (reason, numbers): (&str, Vec<f64>) = match error {
-        Failure::Sum(SumError::Overflow) => return PyOverflowError::new_err(error.to_string()),
-        Failure::Sum(SumError::Indeterminate) => return PyValueError::new_err(error.to_string()),
-        Failure::Memory => return PyMemoryError::new_err(error.to_string()),
+pub(crate) fn failure(error: Failure) -> PyErr {
+    match reason(error) {
+        ("overflow", _) => PyOverflowError::new_err(error.to_string()),
+        ("indeterminate", _) => PyValueError::new_err(error.to_string()),
+        ("memory", _) => PyMemoryError::new_err(error.to_string()),
+        (reason, numbers) => MeasureError::new_err((reason, numbers)),
+    }
+}
+
+/// Why `error` read nothing, as Python is told: the reason a `MeasureError` names, such as
+/// `"outside_at"`, and the numbers it states; or `"overflow"`, `"indeterminate"` or
+/// `"memory"` where Python raises `OverflowError`, `ValueError` or `MemoryError`, as its
+/// `math.fsum` or its allocation of a distortion's samples would.
+pub(crate) fn reason(error: Failure) -> (&'static str, Vec<f64>) {
+    match error {
+        Failure::Sum(SumError::Overflow) => ("overflow", vec![]),
+        Failure::Sum(SumError::Indeterminate) => ("indeterminate", vec![]),
+        Failure::Memory => ("memory", vec![]),
         Failure::Kind => ("kind", vec![]),
         Failure::Unknown(_) => ("unknown", vec![]),
         Failure::Mismatch => ("mismatch", vec![]),
         Failure::Empty => ("empty", vec![]),
         Failure::Outside { point, first, last } => {
-            let reason = match point {
+            let named = match point {
                 measure::Point::At => "outside_at",
                 measure::Point::Start => "outside_start",
                 measure::Point::Stop => "outside_stop",
             };
-            (reason, vec![first, last])
+            (named, vec![first, last])
         }
         Failure::EmptyWindow => ("empty_window", vec![]),
         Failure::Flat(level) => ("flat", vec![level]),
@@ -435,8 +448,7 @@ fn failure(error: Failure) -> PyErr {
         } => ("band", vec![low, high, first, last]),
         Failure::NoPoles => ("no_poles", vec![]),
         Failure::Unreferred => ("unreferred", vec![]),
-    };
-    MeasureError::new_err((reason, numbers))
+    }
 }
 
 /// The integral of `densities` over `frequencies` from `start` to `stop`, by default the

@@ -25,7 +25,7 @@ from jolty.units import (
     format_si,
 )
 
-type Plain = Literal["dB", "°", "%", ""]
+type Plain = results.Plain
 """The unit of a measurement that reads a plain number: none for a ratio."""
 
 type Bound = Quantity | float

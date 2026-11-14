@@ -5,8 +5,13 @@ A plan is kept apart from the circuit: the circuit says what exists, the plan ho
 simulate it. A plan runs its analyses at its temperature, then again at each of its
 corners: another temperature, or other arguments to the build script's ``build()``, and
 on Monte Carlo samples of the circuit's tolerances, each at its own conditions and at
-every corner. Its fidelity chooses, for the
-component instances its scopes match, logic models characterized from their circuits.
+every corner. Variants are the values of many runs of one circuit, each a pure function
+of the run's index, which a batch runs: listed
+([`Explicit`][jolty.plan.Explicit]), on a [`Grid`][jolty.plan.Grid] of parameters and
+temperatures, drawn as [`MonteCarlo`][jolty.plan.MonteCarlo] samples, or every one of
+one at every one of another ([`Product`][jolty.plan.Product]). Its fidelity chooses, for
+the component instances its scopes match, logic models characterized from their
+circuits.
 
 Examples:
     >>> from jolty.units import us
@@ -21,7 +26,15 @@ from typing import Literal
 
 from pydantic import JsonValue
 
-from jolty.units import FREQUENCY, TEMPERATURE, TIME, VOLTAGE, Dimension, Quantity
+from jolty.units import (
+    FREQUENCY,
+    TEMPERATURE,
+    TIME,
+    VOLTAGE,
+    Dimension,
+    Quantity,
+    finite,
+)
 
 type Method = Literal["trapezoidal", "gear2", "backward_euler"]
 """An integration method: trapezoidal by default, Gear2 for stiff circuits that ring,
@@ -108,20 +121,27 @@ class OperatingPoints(Recorded):
 
 @dataclass(frozen=True, slots=True)
 class DcSweep(Recorded):
-    """The operating point at each level of one independent source.
+    """The operating point at each level of one independent source, or of a parameter.
 
-    The source is named by its path, such as ``V1`` or ``bias/I1``.
+    The source is named by its path, such as ``V1`` or ``bias/I1``. Given a
+    `parameter`, named by its path among the instance's parameters, such as
+    ``resistance``, the sweep sets that number of any device to each level instead, the
+    device made again from its parameters with the number replaced.
     """
 
     source: str
     levels: Sequence[Quantity]
+    parameter: str | None = None
 
     def to_json(self, level: Dimension) -> JsonValue:
         """The analysis in the engine's format, its levels checked against `level`."""
         levels: list[JsonValue] = [
             value.to(level, "a sweep level") for value in self.levels
         ]
-        return {"dc_sweep": {"source": self.source, "levels": levels}}
+        sweep: dict[str, JsonValue] = {"source": self.source, "levels": levels}
+        if self.parameter is not None:
+            sweep["parameter"] = self.parameter
+        return {"dc_sweep": sweep}
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,7 +415,8 @@ class MonteCarlo:
     Each sample runs at the plan's own conditions and at each of its corners, on the
     same parts wherever the corner's circuit holds the same toleranced parameters, and
     a requirement's verdict on it is its worst there. A `seed` draws the same samples
-    from the same circuit.
+    from the same circuit: sample `i` from the seed and `i` alone, as the engine draws
+    it. As variants, sample `i` is run `i`.
     """
 
     samples: int
@@ -416,6 +437,211 @@ class MonteCarlo:
         if not 0 <= self.seed < 2**64:
             message = f"a Monte Carlo seed lies from 0 to 2**64 - 1, not {self.seed}"
             raise ValueError(message)
+
+
+@dataclass(frozen=True, slots=True)
+class Variant:
+    """The values one run of a batch takes: numbers and a temperature.
+
+    The numbers replace parameters of devices, by instance path then by parameter path,
+    such as ``waveform.dc``, in SI base units, as a simulation's overrides do; the
+    temperature is the simulation's unless given.
+
+    Examples:
+        >>> from jolty.units import celsius
+        >>> Variant({"R1": {"resistance": 2e3}}, celsius(85)).overrides
+        {'R1': {'resistance': 2000.0}}
+    """
+
+    overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    temperature: Quantity | None = None
+
+    def __post_init__(self) -> None:
+        """Keeps the numbers as dictionaries of floats, and checks the temperature.
+
+        Raises:
+            DimensionError: When the temperature is not one.
+            ValueError: When a number is infinite or not a number.
+        """
+        if self.temperature is not None:
+            self.temperature.to(TEMPERATURE, "a variant's temperature")
+        numbers = {
+            path: {name: finite(float(value), name) for name, value in named.items()}
+            for path, named in self.overrides.items()
+        }
+        object.__setattr__(self, "overrides", numbers)
+
+
+@dataclass(frozen=True, slots=True)
+class Explicit:
+    """Runs at listed values, run `i` at the variant `i`.
+
+    Examples:
+        >>> from jolty.units import celsius
+        >>> len(
+        ...     Explicit([Variant(temperature=celsius(t)) for t in (-40, 125)]).variants
+        ... )
+        2
+    """
+
+    variants: Sequence[Variant]
+
+    def __post_init__(self) -> None:
+        """Keeps the variants as a tuple, and checks there is one or more.
+
+        Raises:
+            ValueError: When there is none.
+            TypeError: When one is not a variant.
+        """
+        variants = tuple(self.variants)
+        if not variants:
+            message = "explicit variants list a run or more"
+            raise ValueError(message)
+        for variant in variants:
+            if not isinstance(variant, Variant):
+                message = f"explicit variants are variants, not {variant!r}"
+                raise TypeError(message)
+        object.__setattr__(self, "variants", variants)
+
+
+@dataclass(frozen=True, slots=True)
+class Axis:
+    """What one axis of a grid steps, and its values in order.
+
+    It steps a number of a device's parameters, named by the instance's path and the
+    parameter's, such as ``R1`` and ``resistance``, its values in SI base units in the
+    dimension of the first; or the temperature, with neither named.
+
+    Examples:
+        >>> from jolty.units import celsius, kohm
+        >>> Axis("R1", "resistance", [1 * kohm, 2 * kohm]).numbers()
+        [1000.0, 2000.0]
+        >>> Axis.temperature([celsius(-40), celsius(125)]).numbers()
+        [233.14999999999998, 398.15]
+    """
+
+    instance: str | None
+    parameter: str | None
+    values: Sequence[Quantity]
+
+    def __post_init__(self) -> None:
+        """Keeps the values as a tuple, and checks them.
+
+        Raises:
+            ValueError: When there is no value, or the axis names an instance but no
+                parameter or a parameter but no instance.
+            DimensionError: When the values of the temperature are not temperatures,
+                or a parameter's are not all of one dimension.
+        """
+        values = tuple(self.values)
+        object.__setattr__(self, "values", values)
+        if (self.instance is None) != (self.parameter is None):
+            message = "an axis names an instance and its parameter, or neither"
+            raise ValueError(message)
+        if not values:
+            message = "an axis steps a value or more"
+            raise ValueError(message)
+        self.numbers()
+
+    @classmethod
+    def temperature(cls, values: Sequence[Quantity]) -> Axis:
+        """The axis that steps the temperature through `values`."""
+        return cls(None, None, values)
+
+    def numbers(self) -> list[float]:
+        """The values in SI base units: kelvins for the temperature.
+
+        Raises:
+            DimensionError: When a value is not of the axis's dimension.
+        """
+        dimension = TEMPERATURE if self.instance is None else self.values[0].dimension
+        return [value.to(dimension, "an axis's value") for value in self.values]
+
+
+@dataclass(frozen=True, slots=True)
+class Grid:
+    """Runs on a grid: every combination of its axes' values, the last axis fastest.
+
+    Run `i` takes, from the last axis back, the value of each axis at `i` modulo its
+    length, `i` then divided by it, as digits in mixed radix. Each line along the last
+    axis is a chain of warm runs when `warm`: each run of it starts from the operating
+    point of the one before, as a DC sweep's levels do.
+
+    Examples:
+        >>> from jolty.units import celsius, kohm
+        >>> grid = Grid(
+        ...     [
+        ...         Axis.temperature([celsius(0), celsius(85)]),
+        ...         Axis("R1", "resistance", [1 * kohm, 2 * kohm, 3 * kohm]),
+        ...     ]
+        ... )
+        >>> len(grid.axes)
+        2
+    """
+
+    axes: Sequence[Axis]
+    warm: bool = False
+
+    def __post_init__(self) -> None:
+        """Keeps the axes as a tuple.
+
+        Raises:
+            TypeError: When one is not an axis.
+        """
+        axes = tuple(self.axes)
+        for axis in axes:
+            if not isinstance(axis, Axis):
+                message = f"a grid's axes are axes, not {axis!r}"
+                raise TypeError(message)
+        object.__setattr__(self, "axes", axes)
+
+
+@dataclass(frozen=True, slots=True)
+class Product:
+    """Every run of `first` at every run of `second`.
+
+    Run `i` is run `i // len(second)` of `first`, then run `i % len(second)` of
+    `second`, whose values replace those of `first` where both give one, so corners,
+    samples and a sweep make one batch. Its chains are those of `second`.
+    """
+
+    first: Variants
+    second: Variants
+
+    def __post_init__(self) -> None:
+        """Checks that both are variants.
+
+        Raises:
+            TypeError: When one is not.
+        """
+        for part in (self.first, self.second):
+            if not isinstance(part, MonteCarlo | Grid | Explicit | Product):
+                message = f"a product is of variants, not {part!r}"
+                raise TypeError(message)
+
+
+type Variants = MonteCarlo | Grid | Explicit | Product
+"""The values of many runs of one circuit, each a pure function of the run's index."""
+
+
+def runs(variants: Variants) -> int:
+    """How many runs `variants` make.
+
+    Examples:
+        >>> from jolty.units import celsius
+        >>> grid = Grid([Axis.temperature([celsius(0), celsius(85)])])
+        >>> runs(Product(grid, MonteCarlo(100)))
+        200
+    """
+    match variants:
+        case MonteCarlo(samples=samples):
+            return samples
+        case Grid(axes=axes):
+            return math.prod(len(axis.values) for axis in axes)
+        case Explicit(variants=listed):
+            return len(listed)
+        case Product(first=first, second=second):
+            return runs(first) * runs(second)
 
 
 @dataclass(frozen=True, slots=True)

@@ -186,6 +186,8 @@ def _axis(result: results.Result) -> tuple[str, np.ndarray, str, str] | None:
     match result:
         case results.OperatingPoint():
             return "operating_point", np.zeros(1), "", ""
+        case results.Sweep() if result.parameter is not None:
+            return "dc_sweep", result.levels, f"{result.source} {result.parameter}", ""
         case results.Sweep():
             unit = "A" if result.quantity == "current" else "V"
             return "dc_sweep", result.levels, f"{result.source} level", unit

@@ -159,12 +159,18 @@ class SweepReport(_Model):
 
     kind: Literal["dc_sweep"] = "dc_sweep"
     name: str
-    source: str = Field(description="The swept source's path.")
-    quantity: Quantity = Field(
-        description="Whether its levels are voltages or currents."
+    source: str = Field(description="The swept instance's path.")
+    quantity: Quantity | None = Field(
+        description="Whether its levels are voltages or currents; null for a "
+        "parameter's."
     )
-    first: float = Field(description="The first level, in volts or amperes.")
-    last: float = Field(description="The last level, in volts or amperes.")
+    parameter: str | None = Field(
+        default=None,
+        description="The parameter swept, such as 'resistance'; null for a source's "
+        "level.",
+    )
+    first: float = Field(description="The first level, in SI base units.")
+    last: float = Field(description="The last level, in SI base units.")
     levels: int = Field(description="Levels the sweep solved.")
     extents: tuple[Extent, ...]
     activities: tuple[Activity, ...] = ()
@@ -172,10 +178,15 @@ class SweepReport(_Model):
 
     def describe(self) -> str:
         """The report as text."""
-        unit = _SYMBOLS[self.quantity]
+        if self.quantity is None:
+            swept = f"{self.source}'s {self.parameter}"
+            first, last = f"{self.first:.4g}", f"{self.last:.4g}"
+        else:
+            unit = _SYMBOLS[self.quantity]
+            swept = self.source
+            first, last = format_si(self.first, unit), format_si(self.last, unit)
         head = (
-            f"{self.name}: DC sweep of {self.source} from "
-            f"{format_si(self.first, unit)} to {format_si(self.last, unit)} "
+            f"{self.name}: DC sweep of {swept} from {first} to {last} "
             f"in {self.levels} levels"
         )
         lines = _extents(self.extents) + _activities(self.activities)
@@ -740,6 +751,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 name=name,
                 source=result.source,
                 quantity=result.quantity,
+                parameter=result.parameter,
                 first=float(result.levels[0]),
                 last=float(result.levels[-1]),
                 levels=len(result.levels),
@@ -933,7 +945,7 @@ def _sensitivities(
             of, points, strategy, unit = "operating_point", 1, point.strategy, ""
         case results.Sweep() as sweep:
             of, points, strategy = "dc_sweep", len(sweep.levels), None
-            unit = _SYMBOLS[sweep.quantity]
+            unit = "" if sweep.quantity is None else _SYMBOLS[sweep.quantity]
         case results.Response() as response:
             of, points, unit = "ac", len(response.frequencies), "Hz"
             strategy = response.operating_point.strategy

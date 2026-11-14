@@ -50,6 +50,11 @@ The first release, 0.1.0.
 - Small-signal responses, noise, loop gains and sensitivities spread their frequencies and right-hand sides across threads once the options' `parallelism` sets how few a task takes, which it does not by default, and find the same bits as on one thread: each run of frequencies starts from the pivots the run before it leaves, and is taken again where a pivot changed.
 - A DC sweep of any number of a device's parameters, named by its `parameter`, beside the level of an independent source; a sweep makes its device again at each level, so no device holds a level of its own.
 - The engine's threads, `threads` in the settings or `JOLTY_THREADS`, one per processor by default, and `jolty.simulate.threads` for a block of code: an analysis that spreads its work runs on a pool of the engine's own, never rayon's global one, and every call that runs the engine, elaborates a circuit or checks one releases the interpreter.
+- Batches from Python: `Simulation.batch(analyses, variants)` runs many runs of one circuit in one call to the engine, across its threads, each run finding what a simulation at its values alone finds, bit for bit, at any number of threads, and returns a `BatchResult` of NumPy columns, one row per run, which a sink in the engine writes at each run's row as it ends: the values each run took, whether each analysis ended and why it failed, what each measurement read and why one read nothing, and the unknowns it traces at each point of an operating point, a DC sweep, a response and a transient's `times`.
+  The engine reads every measurement of `jolty.specs` itself; one a script writes, and a function given as `each`, read each run's results under the interpreter's lock as it ends.
+  A circuit of a foundry's devices runs each run in ngspice, as many at once as the engine has threads.
+- Variants in `jolty.plan`: `Explicit` runs at listed `Variant`s of numbers and a temperature, a `Grid` of `Axis` values of parameters and the temperature, its lines warm chains if asked, and the `Product` of two, beside `MonteCarlo`.
+- A DC sweep of a parameter from Python, `DcSweep("R1", levels, parameter="resistance")`, whose result names the parameter and has no quantity; results files are in version 6 of their format, which names it.
 
 ### Changed
 

@@ -2,10 +2,12 @@
 """Run analyses on a circuit with the Rust engine.
 
 A [`Simulation`][jolty.simulate.Simulation] elaborates a circuit once, its devices at
-one temperature, 27 °C unless given, and runs any number of analyses on it. A circuit
+one temperature, 27 °C unless given, and runs any number of analyses on it, or a batch
+of runs of them, each at the values of one of its variants, in one call that spreads
+the runs across the engine's threads. A circuit
 [`Elaborated`][jolty.simulate.Elaborated] once is shared by simulations of it at any
-parameters, as a Monte Carlo analysis's samples are: each makes its devices again from
-its parameters, and none elaborates the circuit anew.
+parameters: each makes its devices again from its parameters, and none elaborates the
+circuit anew.
 
 Examples:
     >>> from jolty import Builder, Role, component, devices
@@ -28,38 +30,49 @@ import contextlib
 import contextvars
 import functools
 import json
-from collections.abc import Callable, Collection, Generator, Iterator, Mapping
+import math
+from collections.abc import Callable, Collection, Generator, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Final, Literal, overload
 
 import numpy as np
+import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from jolty import _core, checks, foundry, ir, results, specs
 from jolty.builder import Component, circuit
 from jolty.devices import Device
-from jolty.errors import ElaborationError, SimulationError
+from jolty.errors import ElaborationError, JoltyError, SimulationError
 from jolty.plan import (
     Ac,
     Analysis,
     Conditions,
     DcSweep,
+    Explicit,
+    Grid,
+    MonteCarlo,
     Noise,
     OperatingPoint,
     OperatingPoints,
     Options,
     Plan,
     PoleZero,
+    Product,
     Recorded,
     Sensitivity,
     Stability,
     Transient,
+    Variants,
 )
 from jolty.settings import Settings
 from jolty.units import (
     CURRENT,
+    DIMENSIONLESS,
+    FREQUENCY,
     TEMPERATURE,
+    TIME,
     VOLTAGE,
     ZERO_CELSIUS,
     Dimension,
@@ -600,6 +613,56 @@ class Simulation:
             )
         return self._result(outcome, recording)
 
+    def batch(  # noqa: PLR0913 - the runs, their analyses, and what each reads
+        self,
+        analyses: Mapping[str, Analysis],
+        variants: Variants,
+        options: Options | None = None,
+        *,
+        measurements: Sequence[specs.Measurement] = (),
+        traced: Sequence[str] = (),
+        each: Callable[[results.Run], object] | None = None,
+    ) -> results.BatchResult:
+        """Runs `analyses`, by name, on each run of `variants`, as one batch.
+
+        Run `i` takes the values of the variants' run `i` in place of the simulation's,
+        and runs each analysis in order with `options`, finding what
+        [`run`][jolty.simulate.Simulation.run] finds at those values, bit for bit,
+        however many threads the engine runs the batch on; runs at values that give
+        the circuit another structure run on the circuit elaborated once for it. The
+        result holds, one row per run, the values each run took, whether each analysis
+        ended, what each of `measurements` read, the engine reading each it can resolve
+        from the analysis's kind and the circuit's unknowns, and the values of the
+        unknowns `traced` names at every point of each operating point, DC sweep,
+        response and transient that names its times. `each`, if given, is called with
+        what each run found, under the interpreter's lock, as each run ends, in no
+        particular order. A circuit that holds a foundry's devices runs each run in
+        ngspice instead, as many at once as the engine has threads, a Monte Carlo
+        sample drawing the kit's mismatch of its own.
+
+        Raises:
+            ElaborationError: When the variants name a number the circuit's devices do
+                not write.
+            KeyError: When `traced` names no unknown.
+        """
+        chosen = Options() if options is None else options
+        planned = _Planned.of(self, analyses, chosen, measurements, traced)
+        found = (
+            planned.in_ngspice(variants, each)
+            if self.foundry
+            else planned.in_engine(variants, each)
+        )
+        return planned.result(found)
+
+    def varied(self, variants: Variants) -> tuple[str, ...]:
+        """The numbers `variants` vary, as a batch's result names its columns of values.
+
+        Raises:
+            ElaborationError: When they name a number the circuit's devices do not
+                write.
+        """
+        return _labels(self._variants(variants).parameters)
+
     def run_plan(self, plan: Plan) -> dict[str, results.Result]:
         """Runs every analysis of `plan`, by name, with its options.
 
@@ -733,7 +796,12 @@ class Simulation:
         return analysis.to_json()
 
     def _level(self, sweep: DcSweep) -> Dimension:
-        """The dimension of the swept source's level, so its levels are checked."""
+        """The dimension of the swept source's level, so its levels are checked.
+
+        A parameter's levels are all of the dimension of the first.
+        """
+        if sweep.parameter is not None:
+            return sweep.levels[0].dimension if sweep.levels else DIMENSIONLESS
         match self.circuit.find(sweep.source):
             case ir.Instance(of=ir.DeviceOf(device="current_source")):
                 return CURRENT
@@ -758,22 +826,16 @@ class Simulation:
                 )
                 return results.OperatingPoints(unknowns, points)
             case "dc_sweep":
-                quantity = outcome["quantity"]
-                if quantity is None:
-                    message = (
-                        f"the sweep of `{outcome['source']}`'s {outcome['parameter']} "
-                        "is of a parameter, which a result reads only of a source"
-                    )
-                    raise SimulationError(message)
                 return results.Sweep(
                     unknowns,
                     outcome["source"],
-                    quantity,
+                    outcome["quantity"],
                     outcome["levels"],
                     outcome["values"],
                     nets,
                     outcome["logic"],
                     **_observed(outcome, recording),
+                    parameter=outcome["parameter"],
                 )
             case "ac":
                 return results.Response(
@@ -881,6 +943,187 @@ class Simulation:
                     self._point(outcome["operating_point"], recording),
                 )
 
+    def _variants(self, variants: Variants) -> _core.Variants:
+        """`variants` as the engine runs them, of the circuit this simulation runs.
+
+        Raises:
+            ElaborationError: When they name a number the circuit's devices do not
+                write.
+        """
+        elaborated = self._core.elaborated
+        with _elaborating():
+            match variants:
+                case MonteCarlo(samples=samples, seed=seed):
+                    return _core.Variants.monte_carlo(
+                        elaborated, self._toleranced(), seed, samples
+                    )
+                case Grid(axes=axes, warm=warm):
+                    stepped = [
+                        (
+                            None
+                            if axis.instance is None or axis.parameter is None
+                            else (axis.instance, axis.parameter),
+                            axis.numbers(),
+                        )
+                        for axis in axes
+                    ]
+                    return _core.Variants.grid(elaborated, stepped, warm)
+                case Explicit(variants=listed):
+                    runs = [
+                        (
+                            json.dumps(variant.overrides, allow_nan=False),
+                            None
+                            if variant.temperature is None
+                            else kelvins(variant.temperature),
+                        )
+                        for variant in listed
+                    ]
+                    return _core.Variants.explicit(elaborated, runs)
+                case Product(first=first, second=second):
+                    return _core.Variants.product(
+                        self._variants(first), self._variants(second)
+                    )
+
+    def _toleranced(self) -> str:
+        """The circuit's toleranced numbers, as the engine draws samples of them.
+
+        They leave out the numbers within a component instance a model stands in for,
+        which the circuit the simulation runs does not hold.
+        """
+        kept: list[JsonValue] = [
+            {
+                "path": path,
+                "parameter": name,
+                "nominal": nominal,
+                "tolerance": json.loads(tolerance),
+            }
+            for path, name, nominal, tolerance in _core.toleranced(
+                self.circuit.model_dump_json()
+            )
+            if not any(path.startswith(f"{inside}/") for inside in self._substituted)
+        ]
+        return json.dumps(kept, allow_nan=False)
+
+    def _shape(self, analysis: Analysis) -> results.Result:
+        """A result of `analysis` that holds no point, for measurements to resolve.
+
+        It holds the analysis's kind and the circuit's unknowns, and a sweep's source
+        and quantity and a noise analysis's, all that a measurement resolves against.
+        """
+        unknowns = self.unknowns
+        width = len(unknowns)
+        point = results.OperatingPoint(unknowns, np.zeros(width), "")
+        no, rows = np.empty(0), np.empty((0, width))
+        match analysis:
+            case OperatingPoint():
+                return point
+            case OperatingPoints():
+                return results.OperatingPoints(unknowns, ())
+            case DcSweep():
+                quantity = self._quantity(analysis)
+                return results.Sweep(
+                    unknowns,
+                    analysis.source,
+                    quantity,
+                    no,
+                    rows,
+                    parameter=analysis.parameter,
+                )
+            case Ac():
+                phasors = np.empty((0, width), dtype=np.complex128)
+                return results.Response(unknowns, analysis.source, no, phasors, point)
+            case Transient():
+                statistics = results.Statistics("", 0, 0, 0, 0)
+                return results.Waveforms(unknowns, no, rows, statistics)
+        return self._linear_shape(analysis, point)
+
+    def _linear_shape(
+        self,
+        analysis: Sensitivity | Stability | Noise | PoleZero,
+        point: results.OperatingPoint,
+    ) -> results.Result:
+        """A result of sensitivities, a loop gain, noise or poles, as `_shape` makes it.
+
+        It is of `analysis`, about the operating point `point`.
+        """
+        unknowns = self.unknowns
+        roots = np.empty(0, dtype=np.complex128)
+        match analysis:
+            case Sensitivity():
+                rows = np.empty((0, len(unknowns)))
+                outputs = tuple(analysis.outputs)
+                return results.Sensitivities(unknowns, outputs, (), rows, point)
+            case Stability():
+                frequencies = np.empty(0)
+                return results.LoopGain(
+                    unknowns, analysis.probe, frequencies, roots, point
+                )
+            case Noise():
+                return self._noise_shape(analysis, point)
+            case PoleZero():
+                transfer = analysis.source is not None and analysis.output is not None
+                return results.PolesZeros(
+                    unknowns,
+                    roots,
+                    roots if transfer else None,
+                    analysis.source,
+                    analysis.output,
+                    analysis.reference,
+                    point,
+                )
+
+    def _noise_shape(
+        self, noise: Noise, point: results.OperatingPoint
+    ) -> results.NoiseSpectrum:
+        """A noise analysis's result that holds no frequency, as `_shape` makes it."""
+        names = {unknown.name: unknown.quantity for unknown in self.unknowns}
+        given = None
+        if noise.source is not None:
+            quantity = "current" if self._source(noise.source) == CURRENT else "voltage"
+            gains = np.empty(0, dtype=np.complex128)
+            given = results.NoiseInput(noise.source, quantity, gains)
+        no = np.empty(0)
+        return results.NoiseSpectrum(
+            self.unknowns,
+            noise.output,
+            noise.reference,
+            names.get(noise.output, "voltage"),
+            no,
+            no,
+            (),
+            np.empty((0, 0)),
+            given,
+            point,
+        )
+
+    def _source(self, path: str) -> Dimension | None:
+        """The dimension of the level of the independent source at `path`, if any."""
+        match self.circuit.find(path):
+            case ir.Instance(of=ir.DeviceOf(device="current_source")):
+                return CURRENT
+            case ir.Instance(of=ir.DeviceOf(device="voltage_source")):
+                return VOLTAGE
+        return None
+
+    def _quantity(self, sweep: DcSweep) -> results.Quantity | None:
+        """Whether `sweep`'s levels are voltages or currents; None for a parameter's."""
+        if sweep.parameter is not None:
+            return None
+        return "current" if self._level(sweep) == CURRENT else "voltage"
+
+    def _view(self, core: _core.Simulator) -> Simulation:
+        """The simulation of the same circuit that the engine's `core` runs.
+
+        Runs on another structure of the circuit run on such a one, which reads their
+        results.
+        """
+        view = Simulation.__new__(Simulation)
+        temperature = Quantity(self.conditions.temperature, TEMPERATURE)
+        replaced = (temperature, self.conditions.overrides, self._substituted)
+        start = view._start  # noqa: SLF001 - readies what it made, as __init__ does
+        start(self.circuit, core, replaced, (None, None))
+        return view
+
     def _point(
         self, solved: _core.SolvedPoint, recording: results.Recording
     ) -> results.OperatingPoint:
@@ -892,6 +1135,643 @@ class Simulation:
             solved["logic"],
             **_observed(solved, recording),
         )
+
+
+_RAISED: Final[dict[str, type[Exception]]] = {
+    "overflow": OverflowError,
+    "indeterminate": ValueError,
+    "memory": MemoryError,
+}
+"""What Python raises where the engine's arithmetic stopped a measure, by its reason,
+as `math.fsum` or the allocation of a distortion's samples would."""
+
+
+def mismatch(seed: int, index: int) -> int:
+    """The seed of the kit's mismatch of the sample `index` of a Monte Carlo analysis.
+
+    It is the same at every corner, so a corner runs the same parts.
+    """
+    return int(np.random.SeedSequence([seed, index]).generate_state(1)[0])
+
+
+@dataclass(frozen=True, slots=True)
+class _Reading:
+    """How a batch reads one measurement: by the engine, in Python, or not at all."""
+
+    measurement: specs.Measurement
+    native: specs.Native | None = None
+    """The measurement resolved for the engine, which reads it."""
+    slot: int = -1
+    """Its place among the measures the engine reads."""
+    reason: str | None = None
+    """Why it reads nothing where its analysis ended: it cannot be resolved."""
+    everywhere: bool = False
+    """Whether it reads nothing on any run, its analysis never running."""
+
+
+@dataclass(slots=True)
+class _Planned:
+    """A batch as the simulation runs it.
+
+    It holds its analyses, each as the engine reads it or why it fails on every run,
+    and how it reads each measurement and traces unknowns.
+    """
+
+    simulation: Simulation
+    analyses: Mapping[str, Analysis]
+    options: Options
+    names: tuple[str, ...]
+    engine: dict[str, int]
+    """The place among the engine's analyses of each it runs, by name."""
+    settings: list[tuple[str, str]]
+    """Each analysis the engine runs and its options, as JSON texts."""
+    records: dict[str, str]
+    """What each analysis the engine runs records, as JSON."""
+    refused: dict[str, str]
+    """Why each analysis that fails on every run fails, by name."""
+    readings: list[_Reading]
+    traced: list[tuple[str, list[int]]]
+    """Each analysis traced, by name, and the unknowns traced, by their columns."""
+    read: dict[tuple[int, int], specs.Reading | str]
+    """What each measurement read in Python read of each run, or why it read nothing,
+    by the run's index and the measurement's."""
+
+    @classmethod
+    def of(
+        cls,
+        simulation: Simulation,
+        analyses: Mapping[str, Analysis],
+        options: Options,
+        measurements: Sequence[specs.Measurement],
+        traced: Sequence[str],
+    ) -> _Planned:
+        """The batch of `analyses` on `simulation`.
+
+        Raises:
+            KeyError: When `traced` names no unknown.
+        """
+        planned = cls(
+            simulation,
+            analyses,
+            options,
+            tuple(analyses),
+            {},
+            [],
+            {},
+            {},
+            [],
+            [],
+            {},
+        )
+        for name, analysis in analyses.items():
+            if simulation.foundry:
+                # ngspice runs every analysis, and says why one fails on each run.
+                planned.engine[name] = len(planned.engine)
+                continue
+            try:
+                encoded = json.dumps(simulation._encode(analysis), allow_nan=False)  # noqa: SLF001 - one simulation's own
+                record = simulation._record(analysis)  # noqa: SLF001 - one simulation's own
+            except JoltyError as error:
+                planned.refused[name] = str(error)
+                continue
+            settings = {**options.to_json(), "record": record}
+            planned.engine[name] = len(planned.settings)
+            planned.records[name] = json.dumps(record)
+            planned.settings.append((encoded, json.dumps(settings, allow_nan=False)))
+        for measurement in measurements:
+            planned.readings.append(planned._reading(measurement))
+        columns = [results.column(simulation.unknowns, name) for name in traced]
+        planned.traced = [
+            (name, columns)
+            for name, analysis in analyses.items()
+            if columns
+            and name in planned.engine
+            and (
+                isinstance(analysis, OperatingPoint | DcSweep | Ac)
+                or (isinstance(analysis, Transient) and analysis.times)
+            )
+        ]
+        return planned
+
+    def _reading(self, measurement: specs.Measurement) -> _Reading:
+        """How the batch reads `measurement`."""
+        name = measurement.analysis
+        if name not in self.analyses:
+            reason = f"the batch runs no analysis named {name}"
+            return _Reading(measurement, reason=reason, everywhere=True)
+        if name in self.refused:
+            reason = f"the analysis {name} failed"
+            return _Reading(measurement, reason=reason, everywhere=True)
+        if measurement.native is None or self.simulation.foundry:
+            return _Reading(measurement)
+        shape = self.simulation._shape(self.analyses[name])  # noqa: SLF001 - one simulation's own
+        try:
+            native = measurement.native(shape)
+        except (JoltyError, KeyError) as error:
+            return _Reading(measurement, reason=str(error.args[0]))
+        slot = sum(reading.native is not None for reading in self.readings)
+        return _Reading(measurement, native=native, slot=slot)
+
+    def _in_python(self) -> list[int]:
+        """The measurements read in Python, by their indices."""
+        return [
+            index
+            for index, reading in enumerate(self.readings)
+            if reading.native is None and reading.reason is None
+        ]
+
+    def _readings(self, index: int, run: results.Run) -> None:
+        """Reads each measurement read in Python of the results of the run `index`."""
+        for place in self._in_python():
+            measurement = self.readings[place].measurement
+            result = run.results.get(measurement.analysis)
+            if result is None:
+                self.read[index, place] = f"the analysis {measurement.analysis} failed"
+                continue
+            try:
+                self.read[index, place] = measurement.read(result)
+            except (JoltyError, KeyError) as error:
+                self.read[index, place] = str(error.args[0])
+
+    def in_engine(
+        self, variants: Variants, each: Callable[[results.Run], object] | None
+    ) -> _core.BatchOutcome:
+        """What the engine finds on the runs of `variants`, each handed to `each`.
+
+        Raises:
+            ElaborationError: When the variants name a number the circuit's devices do
+                not write.
+        """
+        simulation = self.simulation
+        ran = simulation._variants(variants)  # noqa: SLF001 - one simulation's own
+        measures = [
+            (self.engine[reading.measurement.analysis], reading.native.measure)
+            for reading in self.readings
+            if reading.native is not None
+        ]
+        traced = [(self.engine[name], columns) for name, columns in self.traced]
+        views: dict[int, Simulation] = {}
+
+        def hand(
+            index: int,
+            structure: _core.Simulator | None,
+            problems: list[_core.ProblemOutcome] | None,
+            outcomes: list[_core.Outcome | str],
+        ) -> None:
+            view = simulation
+            if structure is not None:
+                view = views.get(id(structure)) or views.setdefault(
+                    id(structure),
+                    simulation._view(structure),  # noqa: SLF001 - one simulation's own
+                )
+            run = self._run(view, index, problems, outcomes)
+            self._readings(index, run)
+            if each is not None:
+                each(run)
+
+        handing = each is not None or bool(self._in_python())
+        found = simulation._core.batch(  # noqa: SLF001 - one simulation's own
+            self.settings,
+            ran,
+            measures,
+            traced,
+            _engine(),
+            hand if handing else None,
+        )
+        found["parameters"] = ran.parameters
+        return found
+
+    def _run(
+        self,
+        view: Simulation,
+        index: int,
+        problems: list[_core.ProblemOutcome] | None,
+        outcomes: list[_core.Outcome | str],
+    ) -> results.Run:
+        """What the run `index` found, its outcomes read by `view`."""
+        if problems is not None:
+            return results.Run(
+                index, {}, {}, tuple(checks.problem(each) for each in problems)
+            )
+        found: dict[str, results.Result] = {}
+        errors = dict(self.refused)
+        for name, place in self.engine.items():
+            outcome = outcomes[place]
+            if isinstance(outcome, str):
+                errors[name] = outcome
+                continue
+            recording = view._recording(self.records[name])  # noqa: SLF001 - one simulation's own
+            found[name] = view._result(outcome, recording)  # noqa: SLF001 - one simulation's own
+        ordered = {name: errors[name] for name in self.names if name in errors}
+        return results.Run(index, found, ordered)
+
+    def in_ngspice(
+        self, variants: Variants, each: Callable[[results.Run], object] | None
+    ) -> _core.BatchOutcome:
+        """What ngspice finds on the runs of `variants`, each handed to `each`.
+
+        The runs go as many at once as the engine has threads, each waiting on its own
+        ngspice, and are handed to `each` in order.
+
+        Raises:
+            ElaborationError: When the variants name a number the circuit's devices do
+                not write.
+        """
+        simulation = self.simulation
+        ran = simulation._variants(variants)  # noqa: SLF001 - one simulation's own
+        with ThreadPoolExecutor(_engine().threads) as executor:
+            found = list(
+                executor.map(functools.partial(self._ngspice, ran), range(len(ran)))
+            )
+        count = len(found)
+        ended = np.zeros((count, len(self.names)), dtype=np.bool_)
+        problems: dict[int, list[_core.ProblemOutcome]] = {}
+        errors: dict[int, list[tuple[int, str]]] = {}
+        traced: list[results.Real | results.Complex] = []
+        for name, columns in self.traced:
+            unknowns = [simulation.unknowns[column] for column in columns]
+            analysis = self.analyses[name]
+            rows = [
+                _at(run.results.get(name), analysis, unknowns) for run, _, _ in found
+            ]
+            if isinstance(analysis, Ac):
+                traced.append(np.stack(rows).astype(np.complex128))
+            else:
+                traced.append(np.stack(rows).astype(np.float64))
+        for index, (run, problem, _) in enumerate(found):
+            self._readings(index, run)
+            if problem is not None:
+                problems[index] = problem
+            for name in run.results:
+                ended[index, self.names.index(name)] = True
+            if run.errors:
+                errors[index] = [
+                    (self.names.index(name), error)
+                    for name, error in run.errors.items()
+                ]
+            if each is not None:
+                each(run)
+        empty = np.empty((count, 0))
+        return {
+            "values": np.array([numbers for _, _, numbers in found]).reshape(
+                count, len(ran.parameters)
+            ),
+            "parameters": ran.parameters,
+            "measured": empty,
+            "causes": empty.astype(np.int32),
+            "reasons": [],
+            "ended": ended,
+            "problems": problems,
+            "errors": errors,
+            "traced": traced,
+        }
+
+    def _ngspice(
+        self, ran: _core.Variants, index: int
+    ) -> tuple[results.Run, list[_core.ProblemOutcome] | None, list[float]]:
+        """What ngspice finds on the run `index` of `ran`, and the values it took.
+
+        It returns the problems the run's values make too, if any.
+        """
+        simulation = self.simulation
+        replaced, temperature = ran.overrides(index)
+        own = simulation.conditions.overrides
+        overrides: dict[str, dict[str, float]] = {
+            path: {**own.get(path, {}), **replaced.get(path, {})}
+            for path in {*own, *replaced}
+        }
+        kelvin = (
+            simulation.conditions.temperature if temperature is None else temperature
+        )
+        numbers: list[float] = [
+            kelvin
+            if parameter is None
+            else overrides.get(parameter[0], {}).get(parameter[1], math.nan)
+            for parameter in ran.parameters
+        ]
+        elaborated = simulation._core.elaborated  # noqa: SLF001 - one simulation's own
+        try:
+            values = elaborated.values(json.dumps(overrides, allow_nan=False), kelvin)
+            elaborated.structure_of(values)
+        except _core.ElaborationError as error:
+            (found,) = error.args
+            problems = tuple(checks.problem(each) for each in found)
+            return results.Run(index, {}, {}, problems), found, numbers
+        sample = ran.sample(index)
+        conditions = Conditions(
+            kelvin,
+            simulation.conditions.process,
+            overrides,
+            None if sample is None else mismatch(*sample),
+        )
+        solved: dict[str, results.Result] = {}
+        failed: dict[str, str] = {}
+        for name, analysis in self.analyses.items():
+            try:
+                solved[name] = foundry.run(
+                    simulation.circuit,
+                    analysis,
+                    self.options,
+                    conditions,
+                    simulation.unknowns,
+                )
+            except JoltyError as error:
+                failed[name] = str(error)
+        return results.Run(index, solved, failed), None, numbers
+
+    def result(self, found: _core.BatchOutcome) -> results.BatchResult:
+        """The result of the batch, from what the engine or ngspice `found`.
+
+        Raises:
+            OverflowError: Where a measurement's sum overflowed on a run.
+            ValueError: Where a measurement's sum was indeterminate on a run.
+            MemoryError: Where a distortion's samples would not fit in memory.
+        """
+        ended_engine = found["ended"]
+        runs = int(found["values"].shape[0])
+        ended = np.zeros((runs, len(self.names)), dtype=np.bool_)
+        for name, place in self.engine.items():
+            ended[:, self.names.index(name)] = ended_engine[:, place]
+        columns = _Columns(runs, len(self.readings))
+        units: list[Dimension | results.Plain | None] = []
+        for place, reading in enumerate(self.readings):
+            if reading.native is not None:
+                columns.engine(place, reading, found)
+                units.append(reading.native.unit)
+            elif reading.reason is not None:
+                analysis = reading.measurement.analysis
+                where = (
+                    np.zeros(runs, dtype=np.bool_)
+                    if reading.everywhere
+                    else ended[:, self.names.index(analysis)]
+                )
+                columns.unresolved(place, reading, where)
+                units.append(None)
+            else:
+                units.append(self._read_in_python(place, columns))
+        if columns.raised:
+            _, _, error = min(columns.raised, key=lambda raised: raised[:2])
+            raise error
+        return results.BatchResult(
+            self.names,
+            _labels(found["parameters"]),
+            np.asarray(found["values"], dtype=np.float64),
+            ended,
+            tuple(str(reading.measurement) for reading in self.readings),
+            tuple(units),
+            columns.measured,
+            columns.causes,
+            tuple(columns.texts),
+            {
+                int(index): tuple(checks.problem(each) for each in problems)
+                for index, problems in found["problems"].items()
+            },
+            self._errors(found, runs),
+            self._traces(found),
+        )
+
+    def _read_in_python(
+        self, place: int, columns: _Columns
+    ) -> Dimension | results.Plain | None:
+        """Writes what the measurement at `place` read in Python of each run, or not.
+
+        Returns the unit of the first run's reading, which every reading takes.
+        """
+        unit: Dimension | results.Plain | None = None
+        for (index, at), read in sorted(self.read.items()):
+            if at != place:
+                continue
+            if isinstance(read, str):
+                columns.causes[index, place] = columns.told(read)
+                continue
+            if unit is None:
+                unit = read.unit
+            if read.unit != unit:
+                reason = f"read in {read.unit}, not {unit}"
+                columns.causes[index, place] = columns.told(reason)
+                continue
+            columns.measured[index, place] = read.value
+        return unit
+
+    def _errors(
+        self, found: _core.BatchOutcome, runs: int
+    ) -> dict[int, dict[str, str]]:
+        """Why each analysis that failed on a run failed, by the run, then by name."""
+        problems = found["problems"]
+        failed: dict[int, dict[str, str]] = {}
+        by_place = {place: name for name, place in self.engine.items()}
+        for index, errors in found["errors"].items():
+            named = {
+                by_place.get(place, self.names[place]): error for place, error in errors
+            }
+            failed[int(index)] = named
+        if self.refused:
+            for index in range(runs):
+                if index not in problems:
+                    failed.setdefault(index, {}).update(self.refused)
+        return {
+            index: {name: errors[name] for name in self.names if name in errors}
+            for index, errors in sorted(failed.items())
+        }
+
+    def _traces(self, found: _core.BatchOutcome) -> tuple[results.Traced, ...]:
+        """Each analysis traced, from the arrays `found` holds."""
+        simulation = self.simulation
+        traces = []
+        for (name, columns), values in zip(self.traced, found["traced"], strict=True):
+            analysis = self.analyses[name]
+            source = getattr(analysis, "source", None)
+            traces.append(
+                results.Traced(
+                    name,
+                    _ALONG[type(analysis)],
+                    _axis(analysis, simulation),
+                    tuple(simulation.unknowns[column] for column in columns),
+                    values,
+                    source,
+                    simulation._quantity(analysis)  # noqa: SLF001 - one simulation's own
+                    if isinstance(analysis, DcSweep)
+                    else None,
+                    analysis.parameter if isinstance(analysis, DcSweep) else None,
+                )
+            )
+        return tuple(traces)
+
+
+def _labels(parameters: Sequence[tuple[str, str] | None]) -> tuple[str, ...]:
+    """The name of each of `parameters`: ``R1 resistance``, or ``temperature``."""
+    return tuple(
+        "temperature" if parameter is None else f"{parameter[0]} {parameter[1]}"
+        for parameter in parameters
+    )
+
+
+@dataclass(slots=True)
+class _Columns:
+    """What a batch's measurements read of each run, or why not, as it is written."""
+
+    measured: results.Real
+    causes: npt.NDArray[np.int32]
+    texts: dict[str, int]
+    """Each reason a measurement read nothing for, by its text, at its place."""
+    raised: list[tuple[int, int, Exception]]
+    """What the arithmetic of a measurement raised, at the run and the measurement."""
+
+    def __init__(self, runs: int, width: int) -> None:
+        """The columns of `width` measurements of `runs` runs, none read yet."""
+        self.measured = np.full((runs, width), np.nan)
+        self.causes = np.full((runs, width), -1, dtype=np.int32)
+        self.texts = {}
+        self.raised = []
+
+    def told(self, reason: str) -> np.int32:
+        """The place of `reason` among the reasons, added if it is new."""
+        return np.int32(self.texts.setdefault(reason, len(self.texts)))
+
+    def engine(self, place: int, reading: _Reading, found: _core.BatchOutcome) -> None:
+        """Writes what the engine read of the measurement at `place`, or why not."""
+        if reading.native is None:
+            return
+        failed = f"the analysis {reading.measurement.analysis} failed"
+        column = found["causes"][:, reading.slot]
+        self.measured[:, place] = found["measured"][:, reading.slot]
+        table = np.full(len(found["reasons"]) + 1, -1, dtype=np.int32)
+        for cause in sorted({int(each) for each in column[column >= 0]}):
+            reason, numbers, message = found["reasons"][cause]
+            if reason in _RAISED:
+                first = int(np.argmax(column == cause))
+                self.raised.append((first, place, _RAISED[reason](message)))
+            elif reason == "failed":
+                table[cause] = self.told(failed)
+            else:
+                error = _core.MeasureError(reason, numbers)
+                table[cause] = self.told(reading.native.explain(error))
+        self.causes[:, place] = table[np.where(column >= 0, column, -1)]
+
+    def unresolved(
+        self, place: int, reading: _Reading, where: npt.NDArray[np.bool_]
+    ) -> None:
+        """Writes why the measurement at `place`, which resolves against none, read nil.
+
+        It is why it does not resolve against a result of its analysis, `where` the
+        analysis ended, and else that the analysis failed.
+        """
+        if reading.reason is None:
+            return
+        if reading.everywhere:
+            if len(where):
+                self.causes[:, place] = self.told(reading.reason)
+            return
+        failed = f"the analysis {reading.measurement.analysis} failed"
+        for mask, reason in ((where, reading.reason), (~where, failed)):
+            if mask.any():
+                self.causes[mask, place] = self.told(reason)
+
+
+_ALONG: Final[dict[type, Literal["point", "level", "frequency", "time"]]] = {
+    OperatingPoint: "point",
+    DcSweep: "level",
+    Ac: "frequency",
+    Transient: "time",
+}
+"""What the points of each kind of analysis a batch traces are."""
+
+
+def _points(analysis: Analysis) -> int:
+    """How many points a batch traces `analysis` along."""
+    match analysis:
+        case DcSweep(levels=levels):
+            return len(levels)
+        case Ac(frequencies=frequencies):
+            return len(frequencies)
+        case Transient(times=times):
+            return len(times)
+    return 1
+
+
+def _axis(analysis: Analysis, simulation: Simulation) -> results.Real:
+    """The points a batch traces `analysis` along: none at an operating point."""
+    match analysis:
+        case DcSweep():
+            level = simulation._level(analysis)  # noqa: SLF001 - one simulation's own
+            return np.array(
+                [value.to(level, "a sweep level") for value in analysis.levels]
+            )
+        case Ac(frequencies=frequencies):
+            return np.array([each.to(FREQUENCY, "a frequency") for each in frequencies])
+        case Transient(times=times):
+            return np.array([each.to(TIME, "a time to step onto") for each in times])
+    return np.empty(0)
+
+
+def _at(
+    result: results.Result | None,
+    analysis: Analysis,
+    unknowns: Sequence[results.Unknown],
+) -> results.Real | results.Complex:
+    """The values of `unknowns` at each point `analysis` is traced along, in `result`.
+
+    They are traced as the engine traces them, and not a number for one the result does
+    not hold, or where the analysis did not end, with no result.
+    """
+    points = _points(analysis)
+    if isinstance(analysis, Ac):
+        phasors = np.full((points, len(unknowns)), np.nan, dtype=np.complex128)
+        if isinstance(result, results.Response):
+            _picked(result.values, result.unknowns, unknowns, phasors)
+        return phasors
+    found = np.full((points, len(unknowns)), np.nan)
+    match result:
+        case results.OperatingPoint():
+            _picked(result.values[np.newaxis, :], result.unknowns, unknowns, found)
+        case results.Sweep():
+            _picked(result.values, result.unknowns, unknowns, found)
+        case results.Waveforms() if isinstance(analysis, Transient):
+            times = [time.to(TIME, "a time to step onto") for time in analysis.times]
+            rows = np.array(
+                [
+                    [
+                        _interpolated(result.times, column, time)
+                        for column in result.values.T
+                    ]
+                    for time in times
+                ]
+            ).reshape(len(times), -1)
+            _picked(rows, result.unknowns, unknowns, found)
+    return found
+
+
+def _picked(
+    rows: npt.NDArray[np.float64] | npt.NDArray[np.complex128],
+    held: Sequence[results.Unknown],
+    unknowns: Sequence[results.Unknown],
+    into: npt.NDArray[np.float64] | npt.NDArray[np.complex128],
+) -> None:
+    """Writes the columns of `rows`, over the unknowns `held`, of `unknowns` in `into`.
+
+    Each is found by name, and the column of one `held` does not name left as it is.
+    """
+    named = {unknown.name: place for place, unknown in enumerate(held)}
+    for place, unknown in enumerate(unknowns):
+        column = named.get(unknown.name)
+        if column is not None:
+            into[:, place] = rows[:, column]
+
+
+def _interpolated(times: results.Real, values: results.Real, time: float) -> float:
+    """The value at `time`, as the engine traces it.
+
+    It is the value at an accepted time there, and else interpolated linearly between
+    the accepted times on either side; not a number outside them.
+    """
+    after = int(np.searchsorted(times, time, side="left"))
+    if after < len(times) and times[after] == time:
+        return float(values[after])
+    if after == 0 or after == len(times):
+        return math.nan
+    start, stop = float(times[after - 1]), float(times[after])
+    low, high = float(values[after - 1]), float(values[after])
+    return low + (high - low) * ((time - start) / (stop - start))
 
 
 def _observed(

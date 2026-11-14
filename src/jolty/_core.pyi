@@ -1,6 +1,7 @@
 # Copyright 2026 Maxence Faldor
 # The types of the Rust extension module; its documentation lives with the Rust code.
 
+from collections.abc import Callable
 from typing import Literal, TypedDict
 
 import numpy as np
@@ -240,6 +241,57 @@ class Simulator:
     ) -> list[DiagnosticOutcome]: ...
     def excursions(self) -> list[ExcursionOutcome]: ...
     def run(self, analysis: str, options: str, pool: Pool) -> Outcome: ...
+    @property
+    def elaborated(self) -> Elaborated: ...
+    def batch(
+        self,
+        analyses: list[tuple[str, str]],
+        variants: Variants,
+        measures: list[tuple[int, Measure]],
+        traced: list[tuple[int, list[int]]],
+        pool: Pool,
+        each: Callable[
+            [int, Simulator | None, list[ProblemOutcome] | None, list[Outcome | str]],
+            None,
+        ]
+        | None = None,
+    ) -> BatchOutcome: ...
+
+class BatchOutcome(TypedDict):
+    values: npt.NDArray[np.float64]
+    parameters: list[tuple[str, str] | None]
+    measured: npt.NDArray[np.float64]
+    causes: npt.NDArray[np.int32]
+    reasons: list[tuple[str, list[float], str]]
+    ended: npt.NDArray[np.bool_]
+    problems: dict[int, list[ProblemOutcome]]
+    errors: dict[int, list[tuple[int, str]]]
+    traced: list[npt.NDArray[np.float64] | npt.NDArray[np.complex128]]
+
+class Variants:
+    @staticmethod
+    def explicit(
+        elaborated: Elaborated, runs: list[tuple[str, float | None]]
+    ) -> Variants: ...
+    @staticmethod
+    def grid(
+        elaborated: Elaborated,
+        axes: list[tuple[tuple[str, str] | None, list[float]]],
+        warm: bool,
+    ) -> Variants: ...
+    @staticmethod
+    def monte_carlo(
+        elaborated: Elaborated, varied: str, seed: int, samples: int
+    ) -> Variants: ...
+    @staticmethod
+    def product(first: Variants, second: Variants) -> Variants: ...
+    def __len__(self) -> int: ...
+    @property
+    def parameters(self) -> list[tuple[str, str] | None]: ...
+    def overrides(
+        self, index: int
+    ) -> tuple[dict[str, dict[str, float]], float | None]: ...
+    def sample(self, index: int) -> tuple[int, int] | None: ...
 
 def integrate(
     frequencies: Real,

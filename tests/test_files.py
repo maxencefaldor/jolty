@@ -7,7 +7,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jolty import Builder, JoltyError, Role, circuit, component, devices, results
+from jolty import (
+    Builder,
+    DcSweep,
+    JoltyError,
+    Role,
+    Simulation,
+    circuit,
+    component,
+    devices,
+    results,
+)
 from jolty.files import (
     circuit_path,
     load_circuit,
@@ -270,7 +280,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 5
+    assert header["version"] == 6
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {
@@ -292,3 +302,25 @@ def test_a_results_file_of_an_earlier_format_says_so(tmp_path: Path) -> None:
     np.savez(path, header=np.array(json.dumps(header)))
     with pytest.raises(JoltyError, match="version 2 of the format, which jolty reads"):
         load_results(path)
+
+
+def test_results_files_hold_a_sweep_of_a_parameter(tmp_path: Path) -> None:
+    @component
+    def divider(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(5 * V), id="V1")
+        upper = c.place(devices.resistor(1 * kohm), id="R1")
+        lower = c.place(devices.resistor(1 * kohm), id="R2")
+        c.connect(source.positive, upper.a)
+        c.connect(upper.b, lower.a, name="out")
+        c.connect(lower.b, source.negative, ground)
+
+    sweep = Simulation(divider()).run(
+        DcSweep("R2", [1 * kohm, 3 * kohm], parameter="resistance")
+    )
+    path = tmp_path / "divider.results.npz"
+    save_results(path, {"sweep": sweep})
+    read = load_results(path)["sweep"]
+    assert_same(read, sweep, "sweep")
+    assert isinstance(read, results.Sweep)
+    assert (read.parameter, read.quantity) == ("resistance", None)

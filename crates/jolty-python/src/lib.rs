@@ -9,6 +9,7 @@
 //! runs. Everything an agent or a person reads, from units to reports, is built on top of
 //! it in Python.
 
+mod batch;
 mod measure;
 
 use std::sync::{Arc, Mutex};
@@ -38,7 +39,7 @@ create_exception!(_core, SimulationError, PyException, "An analysis failed.");
 /// the engine runs inside, never rayon's global pool. No result depends on its threads.
 #[pyclass(module = "jolty._core", frozen)]
 struct Pool {
-    inner: rayon::ThreadPool,
+    pub(crate) inner: rayon::ThreadPool,
 }
 
 #[pymethods]
@@ -84,7 +85,7 @@ impl Pool {
 /// A circuit elaborated once, which simulators of it at the values of any parameters share.
 #[pyclass(module = "jolty._core", frozen)]
 struct Elaborated {
-    inner: Arc<jolty_engine::Elaborated>,
+    pub(crate) inner: Arc<jolty_engine::Elaborated>,
 }
 
 /// The values of some parameters of an elaborated circuit, and the temperature, that a
@@ -193,7 +194,7 @@ type Recording = (Vec<RecordedDevice>, Vec<(String, bool)>);
 
 impl Simulator {
     /// The simulator of `inner`, with what Python reads of it once.
-    fn wrapping(inner: jolty_engine::Simulator) -> Self {
+    pub(crate) fn wrapping(inner: jolty_engine::Simulator) -> Self {
         let unknowns = inner
             .unknowns()
             .iter()
@@ -261,6 +262,70 @@ impl Simulator {
             .detach(|| jolty_engine::Simulator::from_elaborated(shared, values.inner.clone()))
             .map_err(|error| elaboration_error(py, &error))?;
         Ok(Self::wrapping(inner))
+    }
+
+    /// The circuit elaborated once that the simulator runs, which variants of its runs
+    /// vary.
+    #[getter]
+    fn elaborated(&self) -> Elaborated {
+        Elaborated {
+            inner: Arc::clone(self.lock().elaborated()),
+        }
+    }
+
+    /// Runs many runs of the circuit, each at the simulator's values with those of the
+    /// run's variant of `variants` in their place, releasing the interpreter while they
+    /// run on the threads of `pool`, each run a pure function of its index.
+    ///
+    /// Each run runs `analyses` in order, each the JSON texts of an analysis and of its
+    /// options; reads `measures`, each the index of the analysis it reads and the measure;
+    /// and traces `traced`, each the index of an analysis and the indices of the unknowns
+    /// whose values it keeps at each of its points: an operating point's one, a DC sweep's
+    /// levels, a response's frequencies, or a transient's times, interpolated linearly
+    /// between the times it accepted. Returns a dictionary of `NumPy` arrays, one row per
+    /// run: `values`, of each number the variants vary; `measured`, what each measure read,
+    /// or not a number; `causes`, -1 where it read a number and else the index among
+    /// `reasons` of why it read none, each `("failed", [], "")` where the analysis did not
+    /// end, or a `MeasureError`'s reason, numbers and message; `ended`, whether each
+    /// analysis ended; and each traced array, runs × points × unknowns, among `traced`.
+    /// `problems` holds, by run, the problems its values made, as `ElaborationError`'s, and
+    /// `errors`, by run, the index of each analysis that failed and why.
+    ///
+    /// `each`, if given, is called under the interpreter's lock as each run ends, in no
+    /// particular order, with the run's index, the simulator of its structure when its
+    /// values gave the circuit another, its problems, if any, and each analysis's outcome,
+    /// as `run` returns it, or why it failed; the first exception it raises is raised once
+    /// every run has ended. Raises `ValueError` for input the engine cannot read.
+    #[pyo3(signature = (analyses, variants, measures, traced, pool, each = None))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a batch is its runs, its analyses, its measures, what it traces, its \
+                  threads and the function that reads each run, as Python names them"
+    )]
+    fn batch<'py>(
+        &self,
+        py: Python<'py>,
+        analyses: Vec<(String, String)>,
+        variants: &batch::Variants,
+        measures: Vec<(usize, Py<measure::Measure>)>,
+        traced: Vec<(usize, Vec<usize>)>,
+        pool: &Pool,
+        each: Option<Py<PyAny>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let (elaborated, base) = {
+            let simulator = self.lock();
+            (
+                Arc::clone(simulator.elaborated()),
+                simulator.values().clone(),
+            )
+        };
+        let request = batch::Request {
+            analyses,
+            measures,
+            traced,
+            each,
+        };
+        batch::run(py, (&elaborated, &base), variants, request, pool)
     }
 
     /// Each unknown's name and quantity, `"voltage"` or `"current"`, in the order of every
@@ -447,7 +512,7 @@ impl Simulator {
 }
 
 /// A `ValueError` for input the engine cannot read.
-fn unreadable(error: &impl std::fmt::Display) -> PyErr {
+pub(crate) fn unreadable(error: &impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(error.to_string())
 }
 
@@ -462,7 +527,7 @@ fn quantity_name(quantity: Quantity) -> &'static str {
 }
 
 /// The outcome of an analysis as a dictionary whose `kind` names the analysis.
-fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyDict>> {
+pub(crate) fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyDict>> {
     let result = PyDict::new(py);
     match outcome {
         Outcome::OperatingPoint(operating_point) => {
@@ -739,7 +804,7 @@ fn diagnostics_to_python(
 }
 
 /// Each problem of `error`, a dictionary of its `message` and its `instance` or `None`.
-fn problems_to_python<'py>(
+pub(crate) fn problems_to_python<'py>(
     py: Python<'py>,
     error: &jolty_engine::ElaborationError,
 ) -> PyResult<Bound<'py, PyList>> {
@@ -817,7 +882,7 @@ fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Boun
 
 /// The error of a circuit that does not elaborate: `ElaborationError` with a list of its
 /// problems, each a dictionary of its `message` and its `instance`.
-fn elaboration_error(py: Python<'_>, error: &jolty_engine::ElaborationError) -> PyErr {
+pub(crate) fn elaboration_error(py: Python<'_>, error: &jolty_engine::ElaborationError) -> PyErr {
     match problems_to_python(py, error) {
         Ok(problems) => ElaborationError::new_err((problems.unbind(),)),
         Err(error) => error,
@@ -962,10 +1027,10 @@ fn mantissas(series: &str) -> PyResult<Vec<f64>> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Varied {
-    path: String,
-    parameter: String,
-    nominal: f64,
-    tolerance: jolty_ir::Tolerance,
+    pub(crate) path: String,
+    pub(crate) parameter: String,
+    pub(crate) nominal: f64,
+    pub(crate) tolerance: jolty_ir::Tolerance,
 }
 
 /// The value of each number of `varied`, a JSON list of objects of an instance's `path`, a
@@ -1021,6 +1086,7 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Elaborated>()?;
     module.add_class::<Values>()?;
     module.add_class::<StructureKey>()?;
+    module.add_class::<batch::Variants>()?;
     module.add_function(wrap_pyfunction!(rules, module)?)?;
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
     module.add_function(wrap_pyfunction!(constant, module)?)?;

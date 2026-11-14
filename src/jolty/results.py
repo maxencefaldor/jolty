@@ -16,6 +16,11 @@ each of its equations with respect to each of its unknowns, which ``conductance`
 threshold voltage, which ``variable`` reads. For a component instance or a logic device:
 its terminals' currents and charges, such as ``X1`` and ``vdd``, each the sum of the
 device terminals behind it.
+
+A [`BatchResult`][jolty.results.BatchResult] holds what many runs of one circuit found
+as columns, one row per run: the values each run took, whether each analysis ended,
+what each measurement read, and the values of some unknowns at every point of an
+analysis.
 """
 
 import difflib
@@ -23,16 +28,20 @@ import functools
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Final, Never, TypedDict, override
+from typing import Any, Final, Literal, Never, TypedDict, override
 
 import numpy as np
 import numpy.typing as npt
 
 from jolty import _core
+from jolty.units import Dimension
 from jolty.unknowns import Quantity, Unknown
 
 type Real = npt.NDArray[np.float64]
 type Complex = npt.NDArray[np.complex128]
+
+type Plain = Literal["dB", "°", "%", ""]
+"""The unit of a measurement that reads a plain number: none for a ratio."""
 
 
 def _none() -> Real:
@@ -562,13 +571,17 @@ class OperatingPoints:
 
 @dataclass(frozen=True, slots=True)
 class Sweep(_Devices[Real]):
-    """The operating points of a DC sweep, one row per level of its source."""
+    """The operating points of a DC sweep, one row per level of its source.
+
+    A sweep of a parameter of a device names it, and its levels are the parameter's
+    values, in SI base units.
+    """
 
     unknowns: tuple[Unknown, ...]
     source: str
-    """The path of the swept source, such as ``V1``."""
-    quantity: Quantity
-    """Whether the levels are voltages or currents."""
+    """The path of the swept instance, such as ``V1``."""
+    quantity: Quantity | None
+    """Whether the levels are voltages or currents; None for a parameter's."""
     levels: Real
     values: Real
     nets: tuple[str, ...] = ()
@@ -587,6 +600,9 @@ class Sweep(_Devices[Real]):
     """Each recorded derivative of a charge at each level, one row per level."""
     readings: Real = field(default_factory=_no_rows)
     """Each recorded variable's value at each level, one row per level."""
+    parameter: str | None = None
+    """The parameter swept, by its path among the instance's, such as ``resistance``;
+    None for a source's level."""
 
     def level(self, net: str) -> Real:
         """The level of the logic net `net` at each level: 0, 1, or NaN when unknown."""
@@ -1091,3 +1107,157 @@ type Result = (
     | PolesZeros
 )
 """The result of any analysis."""
+
+
+@dataclass(frozen=True, slots=True)
+class Traced:
+    """The values of some unknowns at each point of one analysis, over a batch's runs.
+
+    `values` has one row per run, one column per point, then one entry per unknown:
+    not a number where the run did not end the analysis. The points are an operating
+    point's one, a DC sweep's levels, a response's frequencies, whose values are
+    phasors, or the times a transient names, interpolated linearly between the times
+    it accepted, so exact at each it stepped onto.
+    """
+
+    analysis: str
+    """The analysis, by name."""
+    along: Literal["point", "level", "frequency", "time"]
+    """What the points are."""
+    axis: Real
+    """Each point: a level, a frequency or a time; none at an operating point."""
+    unknowns: tuple[Unknown, ...]
+    """The unknowns traced, in the order of `values`' last axis."""
+    values: Real | Complex
+    source: str | None = None
+    """The swept or excited source, or the swept instance, of a sweep or a response."""
+    quantity: Quantity | None = None
+    """Whether a sweep's levels are voltages or currents; None for a parameter's."""
+    parameter: str | None = None
+    """The parameter a sweep steps, if any."""
+
+    def values_of(self, name: str) -> Real | Complex:
+        """The values of the unknown `name`, one row per run, one column per point.
+
+        Raises:
+            KeyError: When the batch traced no unknown of that name.
+        """
+        names = [unknown.name for unknown in self.unknowns]
+        return self.values[:, :, _find(names, name, "the batch traced no unknown")]
+
+
+@dataclass(frozen=True, slots=True)
+class Run:
+    """What one run of a batch found, as a function given to the batch reads it."""
+
+    index: int
+    """The run's index among the variants' runs."""
+    results: dict[str, Result]
+    """The result of each analysis that ended, by name."""
+    errors: dict[str, str]
+    """Why each analysis that did not end failed, by name."""
+    problems: tuple[str, ...] = ()
+    """The problems the run's values make, which no analysis runs past."""
+
+
+@dataclass(frozen=True, slots=True)
+class BatchResult:
+    """What many runs of one circuit found, as columns: one row per run, in order.
+
+    Each run took the `values` of the `parameters` its variants vary, each named as
+    ``X1/R1 resistance``, or ``temperature``, in kelvins, and ran the `analyses` in
+    order; `ended` says whether each analysis of each run ended. `measured` holds what
+    each of the `measurements` read on each run, in its unit among `units`, and not a
+    number where it read none, `causes` then indexing `reasons`, the words that say why,
+    and -1 where it read a number. `traced` holds the unknowns a batch traced along its
+    analyses. Every row is a pure function of its run's index, whatever the threads.
+    """
+
+    analyses: tuple[str, ...]
+    parameters: tuple[str, ...]
+    values: Real
+    ended: npt.NDArray[np.bool_]
+    measurements: tuple[str, ...]
+    """Each measurement, as its requirement names it, such as ``out in op``."""
+    units: tuple[Dimension | Plain | None, ...]
+    """The unit of each measurement's values, ``dB``, ``°``, ``%`` or ``""`` for a
+    plain number, or None where it read none."""
+    measured: Real
+    causes: npt.NDArray[np.int32]
+    reasons: tuple[str, ...]
+    problems: dict[int, tuple[str, ...]] = field(default_factory=dict)
+    """The problems the values of each run that made some made, by the run's index."""
+    errors: dict[int, dict[str, str]] = field(default_factory=dict)
+    """Why each analysis that failed on a run failed, by the run's index then name."""
+    traced: tuple[Traced, ...] = ()
+
+    @property
+    def runs(self) -> int:
+        """The number of runs."""
+        return int(self.values.shape[0])
+
+    @property
+    def failed(self) -> npt.NDArray[np.bool_]:
+        """Whether each run failed: its values made problems, or an analysis failed."""
+        return ~self.ended.all(axis=1)
+
+    def failure(self, run: int) -> str | None:
+        """Why the run `run` failed, in words; None when it did not."""
+        if run in self.problems:
+            return "\n\n".join(self.problems[run])
+        if run in self.errors:
+            return "; ".join(
+                f"{name}: {error}" for name, error in self.errors[run].items()
+            )
+        return None
+
+    def reason(self, run: int, measurement: int) -> str | None:
+        """Why the measurement at `measurement` read nothing on `run`, if it did not."""
+        cause = int(self.causes[run, measurement])
+        return None if cause < 0 else self.reasons[cause]
+
+    def parameter(self, name: str) -> Real:
+        """The values of the parameter `name`, such as ``R1 resistance``, one per run.
+
+        Raises:
+            KeyError: When the variants vary no such parameter.
+        """
+        found = _find(list(self.parameters), name, "the variants vary no parameter")
+        return self.values[:, found]
+
+    def rows(self, start: int, stop: int) -> BatchResult:
+        """The runs from `start` up to `stop`, from 0, as a result of their own."""
+
+        def kept[T](found: dict[int, T]) -> dict[int, T]:
+            return {
+                index - start: value
+                for index, value in found.items()
+                if start <= index < stop
+            }
+
+        return BatchResult(
+            self.analyses,
+            self.parameters,
+            self.values[start:stop],
+            self.ended[start:stop],
+            self.measurements,
+            self.units,
+            self.measured[start:stop],
+            self.causes[start:stop],
+            self.reasons,
+            kept(self.problems),
+            kept(self.errors),
+            tuple(
+                Traced(
+                    traced.analysis,
+                    traced.along,
+                    traced.axis,
+                    traced.unknowns,
+                    traced.values[start:stop],
+                    traced.source,
+                    traced.quantity,
+                    traced.parameter,
+                )
+                for traced in self.traced
+            ),
+        )

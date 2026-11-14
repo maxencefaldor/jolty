@@ -385,7 +385,8 @@ def _describe(result: Plotted) -> str:
         case results.Waveforms():
             return "transient"
         case results.Sweep():
-            return f"DC sweep of {result.source}"
+            swept = "" if result.parameter is None else f"'s {result.parameter}"
+            return f"DC sweep of {result.source}{swept}"
         case results.Response():
             return f"response to a unit excitation of {result.source}"
         case results.LoopGain():
@@ -404,7 +405,8 @@ def _abscissa(result: Plotted) -> tuple[results.Real, str]:
         case results.Waveforms():
             return result.times, "s"
         case results.Sweep():
-            return result.levels, _UNITS[result.quantity]
+            unit = "" if result.quantity is None else _UNITS[result.quantity]
+            return result.levels, unit
         case results.Response() | results.LoopGain() | results.NoiseSpectrum():
             return result.frequencies, "Hz"
         case results.PolesZeros():
@@ -416,7 +418,7 @@ def _abscissa_label(result: Plotted) -> str:
         case results.Waveforms():
             return "time"
         case results.Sweep():
-            return f"{result.source} {result.quantity}"
+            return f"{result.source} {result.parameter or result.quantity}"
         case results.Response() | results.LoopGain() | results.NoiseSpectrum():
             return "frequency"
         case results.PolesZeros():

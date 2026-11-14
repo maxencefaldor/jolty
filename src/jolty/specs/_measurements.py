@@ -756,9 +756,13 @@ class _Signal:
 
 @dataclass(frozen=True, slots=True)
 class _Axis:
-    """What a result's points are: times, levels or frequencies."""
+    """What a result's points are: times, levels or frequencies.
 
-    dimension: Dimension
+    The values of a parameter a DC sweep steps are of no dimension the result holds, so
+    a point on their axis is in its own.
+    """
+
+    dimension: Dimension | None
     noun: str
     """What a point is, such as ``time``."""
 
@@ -768,7 +772,9 @@ class _Axis:
         Raises:
             DimensionError: When the point is not of the axis's dimension.
         """
-        return point.to(self.dimension, name)
+        return point.to(
+            point.dimension if self.dimension is None else self.dimension, name
+        )
 
     def outside(self, points: Mapping[str, tuple[str, Quantity | None]]) -> _Explainer:
         """What a point past the axis says, of each of `points`.
@@ -781,11 +787,14 @@ class _Axis:
             name: str, point: Quantity | None
         ) -> Callable[[Sequence[float]], str]:
             def outside(numbers: Sequence[float]) -> str:
-                symbol = str(self.dimension)
-                first, last = (
-                    format_si(numbers[0], symbol),
-                    format_si(numbers[1], symbol),
-                )
+                if self.dimension is None:
+                    first, last = f"{numbers[0]:.4g}", f"{numbers[1]:.4g}"
+                else:
+                    symbol = str(self.dimension)
+                    first, last = (
+                        format_si(numbers[0], symbol),
+                        format_si(numbers[1], symbol),
+                    )
                 return (
                     f"{name}, {point}, lies outside the {self.noun}s, {first} to {last}"
                 )
@@ -970,6 +979,8 @@ def _axis(result: results.Result, what: str) -> _Axis:
     match result:
         case results.Waveforms():
             return _Axis(TIME, "time")
+        case results.Sweep() if result.quantity is None:
+            return _Axis(None, f"value of {result.source}'s {result.parameter}")
         case results.Sweep():
             along = VOLTAGE if result.quantity == "voltage" else CURRENT
             return _Axis(along, f"level of {result.source}")
