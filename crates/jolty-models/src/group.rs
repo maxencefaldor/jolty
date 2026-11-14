@@ -22,11 +22,12 @@ use std::sync::OnceLock;
 use jolty_numerics::{Entry, GatherMap, Pattern, UNMAPPED};
 use rayon::prelude::*;
 
+use crate::device::lift;
 use crate::kernel::device::mapped;
 use crate::surroundings::Own;
 use crate::{
-    Binding, Choice, Contributions, Input, Kernel, Layout, Level, Local, Node, NoiseSource,
-    ParameterError, Stamp, Unknown,
+    Binding, Choice, Contributions, Gradient, Input, Kernel, Layout, Level, Local, Node,
+    NoiseSource, ParameterError, Real, Stamp, Unknown,
 };
 
 /// The parameters of an instance of some kernel, read, as an [`Instance`] holds them.
@@ -180,6 +181,31 @@ pub(crate) trait Kind: Send + Sync + 'static {
 
     /// As [`Kernel::sense`].
     fn sense(shape: &Self::Shape, prepared: &Self::Prepared, at: &Local<'_>) -> Option<(f64, f64)>;
+
+    /// An instance's numbers computing with the derivative of every number with respect
+    /// to one of its parameters, and what it remembers then.
+    type Twin: fmt::Debug + Send + Sync;
+
+    /// The twin of an instance of `shape` with `parameters` at `temperature`, in kelvins,
+    /// differentiated against its number at the path `parameter` among them, as
+    /// [`jolty_ir::numbers`] names it, from its initial memory: `None` when the kernel
+    /// reads no real number there, as when it reads it as a choice, such as a level, or a
+    /// parameter is out of range.
+    fn twin(
+        shape: &Self::Shape,
+        parameters: &Self::Parameters,
+        parameter: &str,
+        temperature: f64,
+    ) -> Option<Self::Twin>;
+
+    /// Evaluates the twin of an instance of `shape` at `at`, from what it remembers, which
+    /// it updates, into `stamp`.
+    fn evaluate_twin(
+        shape: &Self::Shape,
+        twin: &mut Self::Twin,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, Gradient>,
+    );
 }
 
 impl<K: Kernel> Kind for K {
@@ -268,6 +294,29 @@ impl<K: Kernel> Kind for K {
 
     fn sense(shape: &K::Shape, prepared: &K::Prepared<f64>, at: &Local<'_>) -> Option<(f64, f64)> {
         K::sense(shape, prepared, at)
+    }
+
+    type Twin = (K::Prepared<Gradient>, K::Memory);
+
+    fn twin(
+        shape: &K::Shape,
+        parameters: &K::Parameters<f64>,
+        parameter: &str,
+        temperature: f64,
+    ) -> Option<Self::Twin> {
+        let lifted: K::Parameters<Gradient> = lift(parameters, parameter).ok()?;
+        let prepared = K::prepare(&lifted, Gradient::constant(temperature)).ok()?;
+        let memory = K::memory(shape, &prepared);
+        Some((prepared, memory))
+    }
+
+    fn evaluate_twin(
+        shape: &K::Shape,
+        (prepared, memory): &mut Self::Twin,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, Gradient>,
+    ) {
+        K::evaluate(shape, prepared, memory, at, stamp);
     }
 }
 
@@ -727,6 +776,37 @@ impl Runs {
         }
     }
 
+    /// The twin of the instance the device `device` is, the `instance` of its parameters
+    /// as the run now makes it, at the temperature `temperature` of its surroundings,
+    /// differentiated against its number at the path `parameter`, as
+    /// [`jolty_ir::numbers`] names it, from its initial memory; `None` when its kernel
+    /// reads no real number there, as when it reads it as a choice, such as a level, or a
+    /// parameter is out of range.
+    #[must_use]
+    pub fn twin(
+        &self,
+        groups: &Groups,
+        device: usize,
+        (instance, temperature): (&Instance<'_>, f64),
+        parameter: &str,
+    ) -> Option<Twin> {
+        let (group, member) = groups.place(device)?;
+        let (of, run) = (groups.kernels.get(group)?, self.groups.get(group)?);
+        let evaluated = run.twin(instance, parameter, temperature)?;
+        let (unknowns, stride) = (of.unknowns(), of.stride());
+        let zero = || vec![Gradient::default(); unknowns];
+        Some(Twin {
+            evaluated,
+            nodes: of.map_of(member)?.to_vec(),
+            slots: of.slots_of(member)?.to_vec(),
+            rows: [zero(), zero(), zero()],
+            entries: [
+                vec![Gradient::default(); stride],
+                vec![Gradient::default(); stride],
+            ],
+        })
+    }
+
     /// The instance the device `device` is, if it is a kernel's, and its group's run.
     fn run_of(&self, groups: &Groups, device: usize) -> Option<(&dyn GroupRun, usize)> {
         let (group, member) = groups.place(device)?;
@@ -1060,6 +1140,16 @@ trait GroupRun: fmt::Debug + Send {
         block: Blocks<'_>,
     ) -> bool;
 
+    /// The twin of an instance of the group, the `instance` of its device, at the
+    /// temperature `temperature` of its surroundings, differentiated against its number
+    /// at the path `parameter`; `None` when its kernel reads no real number there.
+    fn twin(
+        &self,
+        instance: &Instance<'_>,
+        parameter: &str,
+        temperature: f64,
+    ) -> Option<Box<dyn Twinned>>;
+
     /// Prepares the instance `member` of the group, the `instance` of its device, at the
     /// temperature `temperature` of its surroundings, keeping the numbers apart; with a
     /// `layout`, its layout is claimed again there to check its shape. Returns whether it
@@ -1264,6 +1354,21 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         stamp.is_limited()
     }
 
+    fn twin(
+        &self,
+        instance: &Instance<'_>,
+        parameter: &str,
+        temperature: f64,
+    ) -> Option<Box<dyn Twinned>> {
+        let parameters = instance.parameters::<K>()?;
+        let temperature = instance.own.temperature(temperature).ok()?;
+        let twin = K::twin(&self.shape, parameters, parameter, temperature)?;
+        Some(Box::new(KernelTwin::<K> {
+            shape: self.shape.clone(),
+            twin,
+        }))
+    }
+
     fn prepare(
         &mut self,
         member: usize,
@@ -1365,6 +1470,100 @@ impl<K: Kind> GroupRun for KernelRun<K> {
             Some(into),
         )
     }
+}
+
+/// An instance's twin, typed, apart from its group.
+trait Twinned: fmt::Debug + Send + Sync {
+    /// Evaluates the twin at `at` into `stamp`.
+    fn evaluate(&mut self, at: &Local<'_>, stamp: &mut Stamp<'_, Gradient>);
+}
+
+/// The twin of an instance of the kind `K`, and its shape.
+struct KernelTwin<K: Kind> {
+    shape: K::Shape,
+    twin: K::Twin,
+}
+
+impl<K: Kind> fmt::Debug for KernelTwin<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct(K::NAME)
+            .field("shape", &self.shape)
+            .field("twin", &self.twin)
+            .finish()
+    }
+}
+
+impl<K: Kind> Twinned for KernelTwin<K> {
+    fn evaluate(&mut self, at: &Local<'_>, stamp: &mut Stamp<'_, Gradient>) {
+        K::evaluate_twin(&self.shape, &mut self.twin, at, stamp);
+    }
+}
+
+/// A device's instance computing with the derivative of every number with respect to one
+/// number of its parameters: how the contributions it adds to the circuit's equations
+/// move with that number, which its own block holds, local to the instance, and the map
+/// of its group places among the circuit's.
+#[derive(Debug)]
+pub struct Twin {
+    evaluated: Box<dyn Twinned>,
+    /// The circuit's unknown of each local unknown, or [`UNMAPPED`] for one on the
+    /// reference.
+    nodes: Vec<u32>,
+    /// The stored position of each local entry, or [`UNMAPPED`] for none.
+    slots: Vec<u32>,
+    /// The residuals, scales and charges of the local unknowns, as last evaluated.
+    rows: [Vec<Gradient>; 3],
+    /// The conductances and capacitances of the local entries, as last evaluated.
+    entries: [Vec<Gradient>; 2],
+}
+
+impl Twin {
+    /// Evaluates the twin at `input`.
+    pub fn evaluate(&mut self, input: &Input<'_>) {
+        let [residual, scale, charge] = &mut self.rows;
+        let [conductance, capacitance] = &mut self.entries;
+        let mut stamp = Stamp::zeroed([residual, scale, charge], [conductance, capacitance]);
+        self.evaluated
+            .evaluate(&input.local(&self.nodes), &mut stamp);
+    }
+
+    /// Each residual the instance adds, with its derivative, by the circuit's unknown whose
+    /// equation it enters, in the order of its local unknowns, those on the reference left
+    /// out: `f` and `∂f/∂p`, as last evaluated.
+    pub fn residual(&self) -> impl Iterator<Item = (usize, Gradient)> + '_ {
+        by_unknown(&self.nodes, &self.rows[0])
+    }
+
+    /// Each charge the instance adds, with its derivative, as [`Twin::residual`] gives the
+    /// residuals: `q` and `∂q/∂p`, as last evaluated.
+    pub fn charge(&self) -> impl Iterator<Item = (usize, Gradient)> + '_ {
+        by_unknown(&self.nodes, &self.rows[2])
+    }
+
+    /// Each conductance and capacitance the instance adds, with its derivative, by the
+    /// stored position it adds to, in the order of its local entries, those on the
+    /// reference left out: `G`, `∂G/∂p`, `C` and `∂C/∂p`, as last evaluated.
+    pub fn entries(&self) -> impl Iterator<Item = (usize, Gradient, Gradient)> + '_ {
+        let [conductance, capacitance] = &self.entries;
+        self.slots
+            .iter()
+            .zip(conductance.iter().zip(capacitance))
+            .filter(|(slot, _)| **slot != UNMAPPED)
+            .map(|(&slot, (&conductance, &capacitance))| (slot as usize, conductance, capacitance))
+    }
+}
+
+/// Each of `values`, by the circuit's unknown of `nodes` at its index, those on the
+/// reference left out.
+fn by_unknown<'a>(
+    nodes: &'a [u32],
+    values: &'a [Gradient],
+) -> impl Iterator<Item = (usize, Gradient)> + 'a {
+    nodes
+        .iter()
+        .zip(values)
+        .filter(|(node, _)| **node != UNMAPPED)
+        .map(|(&node, &value)| (node as usize, value))
 }
 
 /// The instances of a chunk of a group: their blocks, their memory and their prepared

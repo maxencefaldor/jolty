@@ -218,6 +218,25 @@ mod tests {
     }
 
     #[test]
+    fn a_sources_excitation_is_the_derivative_of_its_stamp_with_respect_to_its_level() {
+        let pulse = r#"{"waveform": {"pulse": {"initial": 0.5, "pulsed": 2, "rise": 0.2,
+            "fall": 0.3, "width": 0.4}}}"#;
+        for parameters in [FIVE_VOLTS, pulse] {
+            for (model, x) in [
+                (
+                    &crate::Native::<VoltageSource>::new() as &dyn crate::Model,
+                    &[1.0, -0.5, 1e-3][..],
+                ),
+                (&crate::Native::<CurrentSource>::new(), &[1.0, -0.5][..]),
+            ] {
+                let (excitation, derivative) =
+                    crate::testing::excitation_and_derivative(model, parameters, x);
+                assert_eq!(excitation, derivative, "{}", model.name());
+            }
+        }
+    }
+
+    #[test]
     fn parameter_gradients_are_exact() {
         let pulse = r#"{"waveform": {"pulse": {"initial": 0.5, "pulsed": 2, "delay": 0.1,
             "rise": 0.2, "fall": 0.3, "width": 0.4, "period": 1.5}}}"#;

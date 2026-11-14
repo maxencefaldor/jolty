@@ -3,8 +3,9 @@
 use jolty_numerics::{Pattern, PatternBuilder};
 
 use crate::{
-    BOLTZMANN, Binding, Contributions, Device, Gradient, Input, Kernel, Model, Native, Node,
-    NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Unknown, UnknownInfo,
+    BOLTZMANN, Binding, Contributions, Device, Gradient, Groups, Input, Kernel, Model, Native,
+    Node, NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, Real, Runs, Unknown,
+    UnknownInfo,
 };
 
 /// One device whose terminals each connect to an unknown of their own.
@@ -322,26 +323,98 @@ impl Rig<'_> {
     }
 
     /// The residuals, charges and conductances at `x`, with their gradients with respect
-    /// to the number at `parameter`, of the device made with `parameters`.
+    /// to the number at `parameter`, of the twin of the instance made with `parameters`,
+    /// in a group of its own.
     fn exact(
         &self,
         parameters: &jolty_ir::Parameters,
         parameter: &str,
-        x: (&[f64], Option<f64>),
+        (x, time): (&[f64], Option<f64>),
     ) -> Option<[Vec<Gradient>; 3]> {
+        let specification = self.model.read(parameters).expect("valid");
         let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
-        let mut binding = self.binding(&mut unknowns, &mut builder);
-        let mut device = self
-            .model
-            .read(parameters)
-            .and_then(|specification| specification.instantiate_gradient(parameter, &mut binding))
-            .ok()?;
-        Some(residuals_and_charges(
-            device.as_mut(),
-            &builder.finish(x.0.len()),
-            x,
-        ))
+        let (mut groups, mut runs) = (Groups::new(), Runs::default());
+        let temperature = REFERENCE_TEMPERATURE + 30.0;
+        {
+            let mut binding = self.binding(&mut unknowns, &mut builder);
+            let instance = (specification.kernel(), temperature);
+            groups
+                .add(&mut runs, instance, &mut binding)
+                .expect("valid");
+        }
+        let pattern = builder.finish(x.len());
+        groups.finish(&mut runs, &pattern).expect("a small circuit");
+        let instance = (&specification.kernel(), temperature);
+        let mut twin = runs.twin(&groups, 0, instance, parameter)?;
+        let mut input = Input::new(x, time, 1e-12);
+        input.limiting = false;
+        twin.evaluate(&input);
+        let mut found = [
+            vec![Gradient::default(); x.len()],
+            vec![Gradient::default(); x.len()],
+            vec![Gradient::default(); pattern.len()],
+        ];
+        for (unknown, residual) in twin.residual() {
+            found[0][unknown] += residual;
+        }
+        for (unknown, charge) in twin.charge() {
+            found[1][unknown] += charge;
+        }
+        for (slot, conductance, _) in twin.entries() {
+            found[2][slot] += conductance;
+        }
+        Some(found)
     }
+}
+
+/// The excitation of an independent source of `model` with `parameters`, each terminal on
+/// an unknown of its own, by unknown, and the derivative of its residuals at `x` with
+/// respect to the level of the source of that model held at its level, as a DC sweep holds
+/// it: its waveform's `dc`.
+pub(crate) fn excitation_and_derivative(
+    model: &dyn Model,
+    parameters: &str,
+    x: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
+    let grouped = |parameters: &jolty_ir::Parameters| {
+        let specification = model.read(parameters).expect("valid");
+        let terminals = specification.interface().terminals.len();
+        let rig = Rig {
+            model,
+            nodes: (0..terminals)
+                .map(|index| Some(Unknown::new(index)))
+                .collect(),
+        };
+        let (mut unknowns, mut builder) = (Vec::new(), PatternBuilder::new());
+        let (mut groups, mut runs) = (Groups::new(), Runs::default());
+        {
+            let mut binding = rig.binding(&mut unknowns, &mut builder);
+            let instance = (specification.kernel(), REFERENCE_TEMPERATURE);
+            groups
+                .add(&mut runs, instance, &mut binding)
+                .expect("valid");
+        }
+        let pattern = builder.finish(x.len());
+        groups.finish(&mut runs, &pattern).expect("a small circuit");
+        (specification, groups, runs)
+    };
+    let parameters = serde_json::from_str(parameters).expect("a JSON object");
+    let (_, groups, runs) = grouped(&parameters);
+    let level = runs.level(&groups, 0).expect("a source");
+    let mut excitation = vec![0.0; x.len()];
+    runs.excite(&groups, 0, &mut excitation);
+    let held = crate::held_source(level);
+    let (specification, groups, runs) = grouped(&held);
+    let instance = (&specification.kernel(), REFERENCE_TEMPERATURE);
+    let mut twin = runs
+        .twin(&groups, 0, instance, "waveform.dc")
+        .expect("a real level");
+    twin.evaluate(&Input::new(x, None, 0.0));
+    let mut derivative = vec![0.0; x.len()];
+    for (unknown, residual) in twin.residual() {
+        derivative[unknown] += residual.derivative;
+    }
+    (excitation, derivative)
 }
 
 /// Every number within `value`, by the keys and indices that reach it.

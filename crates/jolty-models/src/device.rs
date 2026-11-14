@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::{
-    Binding, Choice, Detect, Drive, Gradient, Input, Instance, Interface, NoiseSource, Output, Real,
+    Binding, Choice, Detect, Drive, Input, Instance, Interface, NoiseSource, Output, Real,
 };
 
 /// One placed device, bound to its unknowns, computing with plain numbers or with their
@@ -126,21 +126,6 @@ pub trait Specification: fmt::Debug + Send + Sync {
     /// Returns [`ParameterError`] when a parameter is out of range.
     fn instantiate(&self, binding: &mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError>;
 
-    /// Makes the device bound through `binding`, its residuals and charges carrying their
-    /// exact derivatives with respect to the number at `parameter`, its path among the
-    /// parameters as [`jolty_ir::numbers`] names it, such as `waveform.dc`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParameterError`] when the parameters hold no number there that the device
-    /// reads as a real number, as when it reads it as a choice, such as a level, or when a
-    /// parameter is out of range.
-    fn instantiate_gradient(
-        &self,
-        parameter: &str,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device<Gradient>>, ParameterError>;
-
     /// The parameters, each one left out written with its default, which read back as
     /// they are.
     ///
@@ -246,15 +231,6 @@ impl<M: NativeModel> Specification for Typed<M> {
 
     fn instantiate(&self, binding: &mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError> {
         Ok(Box::new(M::Device::<f64>::new(self.0.clone(), binding)?))
-    }
-
-    fn instantiate_gradient(
-        &self,
-        parameter: &str,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
-        let parameters = lift(&self.0, parameter)?;
-        Ok(Box::new(M::Device::<Gradient>::new(parameters, binding)?))
     }
 
     fn parameters(&self) -> Result<Parameters, ParameterError> {

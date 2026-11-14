@@ -7,7 +7,7 @@ use schemars::{JsonSchema, Schema};
 use serde_json::Value;
 
 use crate::device::{extended, schema};
-use crate::{Binding, Device, Gradient, Instance, Interface, Model, ParameterError, Specification};
+use crate::{Binding, Device, Instance, Interface, Model, ParameterError, Specification};
 
 /// A model whose every device may run at a temperature of its own, as SPICE's `TEMP` and
 /// `DTEMP` set an instance's: the parameter `temperature`, in kelvins, holds the device
@@ -146,15 +146,6 @@ impl Specification for AtOwn {
     fn instantiate(&self, binding: &mut Binding<'_>) -> Result<Box<dyn Device>, ParameterError> {
         binding.set_temperature(self.own.temperature(binding.temperature())?);
         self.inner.instantiate(binding)
-    }
-
-    fn instantiate_gradient(
-        &self,
-        parameter: &str,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
-        binding.set_temperature(self.own.temperature(binding.temperature())?);
-        self.inner.instantiate_gradient(parameter, binding)
     }
 
     fn parameters(&self) -> Result<Parameters, ParameterError> {

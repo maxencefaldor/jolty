@@ -22,13 +22,16 @@
 //! Computer-Aided Design* 4(4), 1985). Each step's Jacobian is evaluated again at its
 //! solution. A derivative moves no logic event, and no step.
 //!
-//! Each device's `∂F/∂p` is exact: the device made again computing with [`Gradient`], the
-//! parameter differentiated against, and evaluated where the device itself is.
+//! Each device's `∂F/∂p` is exact: its instance prepared again computing with the
+//! derivative of every number with respect to the parameter differentiated against, and
+//! evaluated where the instance itself is, into a block of its own whose map places it
+//! among the circuit's equations, so that a parameter costs what its instance does, not
+//! what the circuit does.
 
 use jolty_ir::numbers;
-use jolty_models::{Binding, Contributions, Device, Gradient, Input, Unknown, UnknownInfo};
+use jolty_models::{Gradient, Input, Unknown};
 use jolty_numerics::integration::Formula;
-use jolty_numerics::{Complex64, Pattern, PatternBuilder, Workspace};
+use jolty_numerics::{Complex64, Workspace};
 use serde::Deserialize;
 
 use crate::ac::{Linearization, over_frequencies};
@@ -109,15 +112,13 @@ pub struct Sensitivities {
     pub result: Box<Outcome>,
 }
 
-/// A device made again computing with [`Gradient`], one number of its parameters
-/// differentiated against.
+/// A device's instance computing with the derivative of every number with respect to one
+/// number of its parameters.
 struct Twin {
     /// The index of the device it is made from.
     device: usize,
     parameter: Parameter,
-    made: Box<dyn Device<Gradient>>,
-    pattern: Pattern,
-    contributions: Contributions<Gradient>,
+    made: jolty_models::Twin,
     /// Whether a sweep holds its number, which then moves nothing: the number swept, or
     /// any of a source the sweep holds at a level, which replaces its waveform.
     fixed: bool,
@@ -129,40 +130,57 @@ impl Twin {
     fn evaluate(&mut self, x: &[f64], time: Option<f64>, gmin: f64) {
         let mut input = Input::new(x, time, gmin);
         input.limiting = false;
+        self.made.evaluate(&input);
+    }
+
+    /// `∂f/∂p`, by unknown, as last evaluated, among `dimension` unknowns.
+    fn residual(&self, dimension: usize) -> Vec<f64> {
+        dense(self.made.residual(), dimension)
+    }
+
+    /// `∂q/∂p`, by unknown, as last evaluated, among `dimension` unknowns.
+    fn charge(&self, dimension: usize) -> Vec<f64> {
+        dense(self.made.charge(), dimension)
+    }
+
+    /// `aᵀ ∂f/∂p` for the vector `a` of the unknowns, as last evaluated: the instance's own
+    /// terms alone.
+    fn dot(&self, a: &[f64]) -> f64 {
         self.made
-            .evaluate(&input, &mut self.contributions.output(&self.pattern));
+            .residual()
+            .map(|(unknown, residual)| a[unknown] * residual.derivative)
+            .sum()
     }
 
-    /// `∂f/∂p`, by unknown, as last evaluated.
-    fn residual(&self) -> Vec<f64> {
-        derivatives(&self.contributions.residual)
-    }
-
-    /// `∂q/∂p`, by unknown, as last evaluated.
-    fn charge(&self) -> Vec<f64> {
-        derivatives(&self.contributions.charge)
-    }
-}
-
-/// Adds `(∂G/∂p + jω ∂C/∂p) x` to `product`, at `(ω, x)`, from a twin's `contributions` of
-/// `pattern`, as last evaluated.
-fn add_product(
-    pattern: &Pattern,
-    contributions: &Contributions<Gradient>,
-    (omega, x): (f64, &[Complex64]),
-    product: &mut [Complex64],
-) {
-    let entries = contributions.conductance.iter();
-    let stored = entries.zip(&contributions.capacitance);
-    for ((row, column), (conductance, capacitance)) in pattern.positions().zip(stored) {
-        let value = Complex64::new(conductance.derivative, omega * capacitance.derivative);
-        product[row] += value * x[column];
+    /// `aᵀ (∂G/∂p + jω ∂C/∂p) x` at `(ω, x)`, for the vector `a` of the equations, as last
+    /// evaluated: the instance's own entries alone, each at its row and column of
+    /// `positions`.
+    fn product(
+        &self,
+        positions: &[(usize, usize)],
+        a: &[Complex64],
+        (omega, x): (f64, &[Complex64]),
+    ) -> Complex64 {
+        self.made
+            .entries()
+            .map(|(slot, conductance, capacitance)| {
+                let (row, column) = positions[slot];
+                let derivative =
+                    Complex64::new(conductance.derivative, omega * capacitance.derivative);
+                a[row] * derivative * x[column]
+            })
+            .sum()
     }
 }
 
-/// The derivatives the gradients `values` carry.
-fn derivatives(values: &[Gradient]) -> Vec<f64> {
-    values.iter().map(|value| value.derivative).collect()
+/// The derivatives `sparse` carries, by index, among `dimension`, the others zero; one
+/// index's derivatives add.
+fn dense(sparse: impl Iterator<Item = (usize, Gradient)>, dimension: usize) -> Vec<f64> {
+    let mut values = vec![0.0; dimension];
+    for (index, value) in sparse {
+        values[index] += value.derivative;
+    }
+    values
 }
 
 /// The direct method's state along a transient: each parameter's derivatives of the
@@ -329,31 +347,19 @@ impl Simulator {
     /// no real number there.
     fn twin(&self, index: usize, parameter: Parameter) -> Option<Twin> {
         let origins = self.origins();
-        let Origin::Model(made) = origins.of(index) else {
+        let origin = origins.of(index);
+        if !matches!(origin, Origin::Model(_)) {
             return None;
-        };
-        let placed = &self.elaborated.devices[index];
-        let mut unknowns: Vec<UnknownInfo> =
-            self.elaborated.unknowns[..placed.first_internal].to_vec();
-        let mut builder = PatternBuilder::new();
-        let mut binding = Binding::new(
-            placed.path(),
-            placed.nodes(),
-            &mut unknowns,
-            &mut builder,
-            origins.temperature,
-        );
-        let device = made
-            .specification
-            .instantiate_gradient(&parameter.name, &mut binding)
-            .ok()?;
-        let pattern = builder.finish(self.elaborated.unknowns.len());
+        }
+        let instance = (&origin.kernel(), origins.temperature);
+        let made =
+            self.state
+                .runs
+                .twin(&self.elaborated.groups, index, instance, &parameter.name)?;
         Some(Twin {
             device: index,
             parameter,
-            made: device,
-            contributions: Contributions::new(&pattern),
-            pattern,
+            made,
             fixed: false,
         })
     }
@@ -392,15 +398,13 @@ impl Simulator {
             twins,
             || (),
             |(), twin| {
-                let residual = if twin.fixed {
-                    vec![0.0; dimension]
-                } else {
-                    twin.evaluate(x, None, options.gmin);
-                    twin.residual()
-                };
+                if twin.fixed {
+                    return vec![0.0; adjoints.len()];
+                }
+                twin.evaluate(x, None, options.gmin);
                 adjoints
                     .iter()
-                    .map(|adjoint| -dot(adjoint, &residual))
+                    .map(|adjoint| -twin.dot(adjoint))
                     .collect::<Vec<f64>>()
             },
         );
@@ -466,7 +470,11 @@ impl Simulator {
             || Workspace::new(dimension),
             |workspace, twin| {
                 twin.evaluate(x, None, options.gmin);
-                let mut shift: Vec<f64> = twin.residual().iter().map(|value| -value).collect();
+                let mut shift: Vec<f64> = twin
+                    .residual(dimension)
+                    .iter()
+                    .map(|value| -value)
+                    .collect();
                 shared.solve(&mut shift, workspace)?;
                 Ok(shift)
             },
@@ -479,11 +487,8 @@ impl Simulator {
             bias.push(self.bias_derivative(x, shift, options));
         }
         self.evaluate(x, None, (1.0, options.gmin), false);
-        let products: Vec<(&Pattern, &Contributions<Gradient>)> = twins
-            .iter()
-            .map(|twin| (&twin.pattern, &twin.contributions))
-            .collect();
-        let pattern = &self.elaborated.pattern;
+        let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
+        let twins = &*twins;
         over_frequencies(
             Linearization::new(&self.state.solver),
             &self.state.workspace.contributions,
@@ -499,23 +504,18 @@ impl Simulator {
                     factors.solve_transpose(&mut adjoint)?;
                     adjoints.push(adjoint);
                 }
-                let mut at = vec![Vec::with_capacity(products.len()); outputs.len()];
-                for (&(twin_pattern, contributions), moving) in products.iter().zip(&bias) {
-                    let mut product = vec![Complex64::default(); dimension];
-                    add_product(twin_pattern, contributions, (omega, phasors), &mut product);
-                    if let Some((conductance, capacitance)) = moving {
-                        for ((row, column), (g, c)) in
-                            pattern.positions().zip(conductance.iter().zip(capacitance))
-                        {
-                            product[row] += Complex64::new(*g, omega * c) * phasors[column];
-                        }
-                    }
+                let mut at = vec![Vec::with_capacity(twins.len()); outputs.len()];
+                for (twin, moving) in twins.iter().zip(&bias) {
                     for (adjoint, derivatives) in adjoints.iter().zip(&mut at) {
-                        let total: Complex64 = adjoint
-                            .iter()
-                            .zip(&product)
-                            .map(|(lambda, value)| lambda * value)
-                            .sum();
+                        let mut total = twin.product(&positions, adjoint, (omega, phasors));
+                        if let Some((conductance, capacitance)) = moving {
+                            let entries = positions.iter().zip(conductance.iter().zip(capacitance));
+                            total += entries
+                                .map(|(&(row, column), (g, c))| {
+                                    adjoint[row] * Complex64::new(*g, omega * c) * phasors[column]
+                                })
+                                .sum::<Complex64>();
+                        }
                         derivatives.push(-total);
                     }
                 }
@@ -586,7 +586,7 @@ impl Simulator {
         let mut shifts = Vec::with_capacity(forward.twins.len());
         for twin in &mut forward.twins {
             twin.evaluate(x, None, options.gmin);
-            let mut moved: Vec<f64> = twin.residual().iter().map(|value| -value).collect();
+            let mut moved: Vec<f64> = twin.residual(x.len()).iter().map(|value| -value).collect();
             factors.solve(&mut moved)?;
             for (output, derivatives) in forward.outputs.iter().zip(&mut at) {
                 derivatives.push(moved[output.index()]);
@@ -599,7 +599,7 @@ impl Simulator {
         forward.tangents.clear();
         for (twin, moved) in forward.twins.iter_mut().zip(&shifts) {
             twin.evaluate(x, Some(0.0), options.gmin);
-            let mut charge = twin.charge();
+            let mut charge = twin.charge(x.len());
             let capacitances = &self.state.workspace.contributions.capacitance;
             self.elaborated
                 .pattern
@@ -633,10 +633,10 @@ impl Simulator {
         let mut at = vec![Vec::with_capacity(forward.twins.len()); forward.outputs.len()];
         for (twin, tangent) in forward.twins.iter_mut().zip(&mut forward.tangents) {
             twin.evaluate(x, Some(time), options.gmin);
-            let partial_charge = twin.charge();
+            let partial_charge = twin.charge(x.len());
             let history = tangent.history(formula);
             let mut moved: Vec<f64> = twin
-                .residual()
+                .residual(x.len())
                 .iter()
                 .zip(&partial_charge)
                 .zip(&history)
@@ -656,9 +656,4 @@ impl Simulator {
         forward.found.push(at);
         Ok(())
     }
-}
-
-/// The dot product of `a` and `b`.
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }

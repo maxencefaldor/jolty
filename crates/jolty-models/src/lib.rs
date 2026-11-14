@@ -74,7 +74,7 @@ pub use device::{
 pub use diode::{Diode, DiodeParameters};
 pub use evaluation::{Contributions, Input, Output};
 pub use foundry::{FoundryMosfet, FoundryMosfetParameters};
-pub use group::{Alone, Changed, Groups, Instance, Runs, Tasks, TooLarge};
+pub use group::{Alone, Changed, Groups, Instance, Runs, Tasks, TooLarge, Twin};
 pub use heat::{Heatable, HeatableModel, Heated, Heating, Thermal};
 pub use jfet::{Channel, Jfet, JfetParameters};
 pub use jolty_expressions::Choice;

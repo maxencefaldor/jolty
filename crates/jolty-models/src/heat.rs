@@ -19,7 +19,7 @@ use jolty_ir::Parameters;
 use jolty_numerics::{Entry, Pattern, PatternBuilder};
 use schemars::{JsonSchema, Schema};
 
-use crate::device::{extended, lift, read, schema, written};
+use crate::device::{extended, read, schema, written};
 use crate::{
     Binding, Choice, Contributions, Device, Gradient, Hyper, Input, Instance, Interface, Model,
     NativeDevice, Node, NoiseSource, Output, ParameterError, Quantity, Real, Specification,
@@ -224,23 +224,6 @@ impl<M: HeatableModel> Specification for Warmed<M> {
             Self::Heated(parameters) => {
                 Box::new(Heated::<M, f64>::new(parameters.clone(), binding)?)
             }
-        })
-    }
-
-    fn instantiate_gradient(
-        &self,
-        parameter: &str,
-        binding: &mut Binding<'_>,
-    ) -> Result<Box<dyn Device<Gradient>>, ParameterError> {
-        Ok(match self {
-            Self::Cool(parameters) => Box::new(M::Device::<Gradient>::new(
-                lift(parameters, parameter)?,
-                binding,
-            )?),
-            Self::Heated(parameters) => Box::new(Heated::<M, Gradient>::new(
-                lift(parameters, parameter)?,
-                binding,
-            )?),
         })
     }
 

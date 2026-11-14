@@ -21,8 +21,12 @@ use std::marker::PhantomData;
 use jolty_numerics::UNMAPPED;
 
 use super::{Heating, LOWEST_TEMPERATURE, MOST_TEMPERATURE_STEP};
+use crate::device::lift;
 use crate::group::Kind;
-use crate::{Choice, Kernel, Layout, Level, Local, NoiseSource, ParameterError, Quantity, Stamp};
+use crate::{
+    Choice, Gradient, Hyper, Kernel, Layout, Level, Local, NoiseSource, ParameterError, Quantity,
+    Stamp,
+};
 
 /// The instances of the kernel `K` that heat.
 pub(crate) struct HeatedKernel<K>(PhantomData<fn() -> K>);
@@ -516,5 +520,28 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
             })
             .collect();
         K::sense(&shape.inner, &prepared.at_ambient, &at.remapped(&map))
+    }
+
+    type Twin = (HeatedPrepared<K, Gradient>, HeatedMemory<K, Gradient>);
+
+    fn twin(
+        shape: &Self::Shape,
+        parameters: &Self::Parameters,
+        parameter: &str,
+        temperature: f64,
+    ) -> Option<Self::Twin> {
+        let lifted: K::Parameters<Hyper> = lift(parameters, parameter).ok()?;
+        let prepared = HeatedPrepared::<K, Gradient>::new(&lifted, temperature).ok()?;
+        let memory = HeatedMemory::new(shape, &prepared);
+        Some((prepared, memory))
+    }
+
+    fn evaluate_twin(
+        shape: &Self::Shape,
+        (prepared, memory): &mut Self::Twin,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, Gradient>,
+    ) {
+        evaluate::<K, Gradient>(shape, prepared, memory, at, stamp);
     }
 }
