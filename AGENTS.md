@@ -43,7 +43,7 @@ Each crate depends only on the crates listed before it:
 1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, and integration formulas.
 1. `jolty-expressions`: the expression language of behavioral sources, compiled and evaluated with its exact gradient.
 1. `jolty-models`: the interface every device implements, and the standard library of devices.
-1. `jolty-engine`: elaboration of a hierarchy into devices bound to unknowns, Newton iteration with SPICE's convergence aids, and the analyses.
+1. `jolty-engine`: elaboration of a hierarchy into devices bound to unknowns, Newton iteration with SPICE's convergence aids, and the analyses, which count their work and, when asked, time it.
 1. `jolty-checks`: the rules: structural ones, which read the elaborated circuit through the branches each device declares, and those on the circuit linearized at its operating point.
 1. `jolty-python`: the Python extension module `jolty._core`, which adapts the engine and nothing more.
 

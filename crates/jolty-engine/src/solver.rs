@@ -37,7 +37,6 @@ impl<T: Scalar> Solver<T> {
     }
 
     /// How much work the solver has done.
-    #[cfg(test)]
     pub(crate) fn statistics(&self) -> jolty_numerics::Statistics {
         self.lu.statistics()
     }

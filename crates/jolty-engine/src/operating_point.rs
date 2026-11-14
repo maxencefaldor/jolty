@@ -125,6 +125,7 @@ fn read_at_dc(options: &Options) -> Options {
         transient_iterations: unread.transient_iterations,
         truncation_tolerance: unread.truncation_tolerance,
         memory: unread.memory,
+        profile: unread.profile,
         ..options.clone()
     }
 }

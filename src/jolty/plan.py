@@ -319,6 +319,9 @@ class Options:
     transient_iterations: int | None = None
     truncation_tolerance: float | None = None
     memory: float | None = None
+    profile: bool | None = None
+    """Whether a transient measures where its time goes, into its statistics' profile;
+    it changes no other result."""
 
     def to_json(self) -> dict[str, JsonValue]:
         """The options in the engine's format, without those left to defaults."""

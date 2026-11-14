@@ -52,6 +52,23 @@ class ResponseOutcome(TypedDict):
     currents: npt.NDArray[np.complex128]
     operating_point: SolvedPoint
 
+class WorkOutcome(TypedDict):
+    iterations: int
+    factorizations: int
+    refactorizations: int
+    fallbacks: int
+    reuses: int
+
+class ProfileOutcome(TypedDict):
+    preparing: float
+    evaluating: float
+    assembling: float
+    factoring: float
+    solving: float
+    step_control: float
+    recording: float
+    other: float
+
 class StatisticsOutcome(TypedDict):
     initial: str
     accepted: int
@@ -59,6 +76,8 @@ class StatisticsOutcome(TypedDict):
     landed: int
     iterations: int
     periods: int | None
+    work: WorkOutcome
+    profile: ProfileOutcome | None
 
 class WaveformsOutcome(Observed):
     kind: Literal["transient"]

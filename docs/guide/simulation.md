@@ -44,7 +44,7 @@ A transient's method is `"trapezoidal"`, `"gear2"` for stiff circuits that ring,
 Its longest step defaults to a fiftieth of `stop`.
 It steps onto each of `times` exactly, besides the times it chooses, without restarting its integration there, so every unknown and terminal current has its solved value at those times.
 
-A simulation solves its operating point once: it remembers the last one it solved, and every analysis about the operating point, a DC sweep that starts at its source's own level, and the checks at the operating point take it again, as long as the options stay the same, save `charge_tolerance`, `transient_iterations`, `truncation_tolerance` and `memory`, which a DC solution does not read.
+A simulation solves its operating point once: it remembers the last one it solved, and every analysis about the operating point, a DC sweep that starts at its source's own level, and the checks at the operating point take it again, as long as the options stay the same, save `charge_tolerance`, `transient_iterations`, `truncation_tolerance`, `memory` and `profile`, which a DC solution does not read.
 Under other tolerances or another `dc_iterations` alone, Newton iteration goes on from where it stopped, as from zero it would, since it takes the same iterates from zero under any tolerances.
 
 ## Periodic steady state
@@ -253,6 +253,7 @@ The report states how many runs it took and each requirement's verdict, its wors
 | `transient_iterations` | 10 | Newton iterations allowed for a time step |
 | `truncation_tolerance` | 7 | how much the time step's truncation error may exceed the tolerances |
 | `memory` | 2 GiB | how much an analysis may hold at once, rather than fill the memory: a transient's results, past which it stops, and the dense matrices of a pole-zero analysis or a periodic steady state, past which it fails before it begins |
+| `profile` | off | whether a transient measures where its time goes, into its statistics' `profile`; the clock adds about a tenth to a small circuit's transient, and changes no other result |
 
 The unknowns cost a transient a number each at every point, eight bytes; a device recorded costs its terminals' currents and charges, the square of its unknowns twice over for its derivatives, and its variables: 12 numbers for a resistor, and 111 for a MOSFET whose gate oxide adds three unknowns to its four terminals.
 An operating point and a transient record the instances rated for a current or a power, whose ratings the checks read, and what the plan's or the analysis's [record](results.md#what-a-result-records) names, so a transient of a large circuit holds about its unknowns alone unless asked for more; recording every instance multiplies what it holds by thirty or more, and reaches `memory` sooner.

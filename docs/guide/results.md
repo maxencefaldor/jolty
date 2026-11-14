@@ -151,10 +151,14 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 | `NoiseSpectrum` | `frequencies`, `densities`, `contributions` per noise source, and an `input` with its `gains` | a density, one per frequency |
 | `PolesZeros` | `poles`, `zeros`, and the `operating_point` | a complex frequency, one per root |
 
+A transient's `statistics` count its steps, accepted, rejected or tried again to land on an event, and the Newton iterations of those accepted.
+Its `work` counts every Newton iteration it ran, its operating point's included unless the simulation remembered it, and its sparse solver's factorizations: those that searched for every pivot, those that kept the last's, those that fell back to a search from a pivot become too small, and those given the very matrix factored last.
+With the `profile` option, its `profile` says where its time went, in seconds: preparing, evaluating the devices, assembling each Newton iteration's matrix, factoring, solving, step control, recording, and the rest.
+
 `voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `rise(net)` a thermal net's temperature above the ambient, `state(name)` a device's dimensionless state, such as a memristor's `M1:state`, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a recorded terminal's, the current into a thermal terminal being the heat that flows in, in watts, `conductance`, `capacitance` and `variable` read a recorded device's own model, and `level(net)` reads a logic net's level.
 Each finds its column by name in a dictionary, so a read costs the same however large the circuit.
 A name that is not an unknown, a recorded terminal, derivative or variable, or a logic net raises a `KeyError` that suggests the closest names.
 
 The file is a NumPy archive: a JSON header names the unknowns and the logic nets, lists each recording the analyses made once, however many share it, as each recorded device's path, terminals, internal unknowns and variables, and the composites, and says what each analysis is and which recording it made, then each analysis's arrays follow under keys such as `step.times`.
 Any program that reads NumPy files reads it.
-The header is in version 3 of the format; a file of an earlier version, which recorded every device, is not read, and simulating again writes it anew.
+The header is in version 5 of the format; a file of an earlier version is not read, and simulating again writes it anew.

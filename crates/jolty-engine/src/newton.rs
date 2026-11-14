@@ -3,6 +3,7 @@
 use jolty_models::{Contributions, Input, Quantity};
 
 use crate::elaborate::System;
+use crate::profile::{Activity, Meter};
 use crate::{Options, SimulationError, Simulator};
 
 /// How many roundings of the unknowns a residual may show and still count as zero.
@@ -20,7 +21,8 @@ pub(crate) const NAMED_UNKNOWNS: usize = 3;
 /// root, where the distance in volts grows, the deflated equations become the plain ones.
 const SHIFT: f64 = 1.0;
 
-/// The buffers one evaluation of the circuit fills, allocated once per simulator.
+/// The buffers one evaluation of the circuit fills, allocated once per simulator, and the
+/// meter of the work they see done.
 #[derive(Debug)]
 pub(crate) struct Workspace {
     /// What the devices added; after [`Simulator::combine`], the residual is the full
@@ -33,6 +35,8 @@ pub(crate) struct Workspace {
     resolution: Vec<f64>,
     /// The last Newton step.
     step: Vec<f64>,
+    /// The Newton iterations run, and the time spent while an analysis profiles.
+    pub(crate) meter: Meter,
 }
 
 impl Workspace {
@@ -43,6 +47,7 @@ impl Workspace {
             jacobian: vec![0.0; stored],
             resolution: vec![0.0; unknowns],
             step: vec![0.0; unknowns],
+            meter: Meter::default(),
         }
     }
 }
@@ -90,6 +95,7 @@ impl Simulator {
         (source_scale, gmin): (f64, f64),
         limiting: bool,
     ) -> bool {
+        let previous = self.workspace.meter.enter(Activity::Evaluating);
         let mut output = self.workspace.contributions.output(&self.system.pattern);
         let mut input = Input::new(x, time, gmin);
         input.source_scale = source_scale;
@@ -97,7 +103,9 @@ impl Simulator {
         for placed in &mut self.system.devices {
             placed.device.evaluate(&input, &mut output);
         }
-        output.is_limited()
+        let limited = output.is_limited();
+        self.workspace.meter.leave(previous);
+        limited
     }
 
     /// Solves the system of `mode` by Newton iteration from `x`, leaving the solution in `x`
@@ -130,6 +138,7 @@ impl Simulator {
             // A residual within the rounding of the unknowns its equation reads is noise: the
             // step it would drive is one the unknowns cannot record, and chasing it moves
             // the others without end, as a source's current beside a node at megavolts.
+            let previous = self.workspace.meter.enter(Activity::Assembling);
             for index in 0..x.len() {
                 let residual = self.workspace.contributions.residual[index];
                 self.workspace.step[index] = if residual.abs() <= self.rounding(index) {
@@ -141,11 +150,20 @@ impl Simulator {
             // The solver keeps the factors of a Jacobian bitwise unchanged since the last, as
             // a linear circuit's is from one iteration to the next, and refactors a changed
             // one with the last pivots.
-            let workspace = &mut self.workspace;
-            self.solver
-                .factor(&workspace.jacobian)
-                .and_then(|mut factors| factors.solve(&mut workspace.step))
-                .map_err(Failure::Solver)?;
+            let Workspace {
+                jacobian,
+                step,
+                meter,
+                ..
+            } = &mut self.workspace;
+            meter.iterate();
+            meter.enter(Activity::Factoring);
+            let solved = self.solver.factor(jacobian).and_then(|mut factors| {
+                meter.enter(Activity::Solving);
+                factors.solve(step)
+            });
+            meter.leave(previous);
+            solved.map_err(Failure::Solver)?;
             if let Mode::Dc { deflated, .. } = mode {
                 self.deflate(x, deflated);
             }
@@ -195,8 +213,10 @@ impl Simulator {
             contributions,
             jacobian,
             resolution,
+            meter,
             ..
         } = &mut self.workspace;
+        let previous = meter.enter(Activity::Assembling);
         match mode {
             Mode::Dc { shunt, anchor, .. } => {
                 jacobian.copy_from_slice(&contributions.conductance);
@@ -237,6 +257,7 @@ impl Simulator {
         for ((row, column), &value) in self.system.pattern.positions().zip(jacobian.iter()) {
             resolution[row] += (value * x[column]).abs();
         }
+        meter.leave(previous);
     }
 
     /// Whether the last step was within tolerance of every unknown it moved.
@@ -298,6 +319,8 @@ impl Simulator {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use jolty_ir::Circuit;
     use jolty_models::Library;
     use jolty_numerics::Statistics;
@@ -424,5 +447,52 @@ mod tests {
             "{searched} + {refactored} factorizations over {} steps, {ramp} before the longest",
             steps.accepted
         );
+    }
+
+    #[test]
+    fn a_transient_counts_its_work_and_measures_its_time_only_when_asked() {
+        let sine = json!({"sine": {"offset": 0.0, "amplitude": 1.0, "frequency": 1e3}});
+        let transient = Transient {
+            stop: 1e-3,
+            max_step: Some(1e-5),
+            method: Method::Trapezoidal,
+            times: Vec::new(),
+            periodic: false,
+        };
+        let plain = ladder(3, &sine, true)
+            .transient(&transient, &Options::default())
+            .unwrap();
+        let profiling = Options {
+            profile: true,
+            ..Options::default()
+        };
+        let mut profiled = ladder(3, &sine, true)
+            .transient(&transient, &profiling)
+            .unwrap();
+        // The work counts the operating point's iterations and the rejected steps' beside
+        // the accepted steps', and each iteration factors its Jacobian once.
+        let (steps, work) = (plain.statistics, plain.statistics.work);
+        assert!(work.iterations > steps.iterations, "{work:?} for {steps:?}");
+        let factored = work.factorizations + work.refactorizations + work.fallbacks;
+        assert!(factored + work.reuses >= work.iterations, "{work:?}");
+        assert_eq!(work.factorizations, 1);
+        // Measuring the time changes nothing else, and the activities sum to the whole.
+        assert_eq!(plain.statistics.profile, None);
+        let profile = profiled.statistics.profile.take().expect("a profile");
+        assert_eq!(profiled, plain);
+        assert!(profile.evaluating > Duration::ZERO, "{profile:?}");
+        assert!(profile.factoring > Duration::ZERO, "{profile:?}");
+        assert!(profile.step_control > Duration::ZERO, "{profile:?}");
+        let activities = [
+            profile.preparing,
+            profile.evaluating,
+            profile.assembling,
+            profile.factoring,
+            profile.solving,
+            profile.step_control,
+            profile.recording,
+            profile.other,
+        ];
+        assert_eq!(activities.iter().sum::<Duration>(), profile.total());
     }
 }

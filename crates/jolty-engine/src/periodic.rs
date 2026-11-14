@@ -76,6 +76,7 @@ impl Simulator {
             ));
         }
         options.check()?;
+        let reading = self.read_meter(options.profile);
         let unknowns = self.system.unknowns.len();
         let size = f64::from(u32::try_from(unknowns).unwrap_or(u32::MAX));
         let dense = DENSE_MATRICES * size * size;
@@ -102,7 +103,9 @@ impl Simulator {
                 .map(|((start, end), tolerance)| (start - end).abs() / tolerance)
                 .collect();
             if mismatches.iter().all(|&mismatch| mismatch <= 1.0) {
-                waveforms.statistics.periods = Some(period);
+                let statistics = &mut waveforms.statistics;
+                statistics.periods = Some(period);
+                (statistics.work, statistics.profile) = self.metered_since(&reading);
                 return Ok(waveforms);
             }
             // (Φ − I) Δ = x₀ − φ(x₀), each unknown in units of its tolerance:

@@ -550,7 +550,7 @@ class Simulation:
                     currents=outcome["currents"],
                 )
             case "transient":
-                statistics = results.Statistics(**outcome["statistics"])
+                statistics = _statistics(outcome["statistics"])
                 traces = tuple(
                     results.Trace(times, levels) for times, levels in outcome["logic"]
                 )
@@ -670,6 +670,21 @@ def _observed(
         "capacitances": outcome["capacitances"],
         "readings": outcome["variables"],
     }
+
+
+def _statistics(outcome: _core.StatisticsOutcome) -> results.Statistics:
+    """How the transient of `outcome` went, its work and its profile included."""
+    profile = outcome["profile"]
+    return results.Statistics(
+        outcome["initial"],
+        outcome["accepted"],
+        outcome["rejected"],
+        outcome["landed"],
+        outcome["iterations"],
+        outcome["periods"],
+        results.Work(**outcome["work"]),
+        None if profile is None else results.Profile(**profile),
+    )
 
 
 _UNITS: dict[ir.Stress, str] = {

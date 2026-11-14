@@ -29,6 +29,7 @@ use jolty_numerics::integration::Formula;
 use jolty_numerics::{Complex64, Pattern, PatternBuilder};
 
 use crate::elaborate::{Origin, System};
+use crate::profile::Activity;
 use crate::{Options, Record, SimulationError, Simulator};
 
 /// What the recorded devices did at one solution, laid out as [`Recorded`] says.
@@ -172,8 +173,12 @@ impl Simulator {
     /// Returns [`SimulationError::InvalidOptions`] for options out of range, and
     /// [`SimulationError::Unrecordable`] when a device to record cannot be made again.
     pub(crate) fn prepare(&mut self, options: &Options) -> Result<(), SimulationError> {
-        options.check()?;
-        self.observer.select(&self.system, &options.record)
+        let previous = self.workspace.meter.enter(Activity::Preparing);
+        let prepared = options
+            .check()
+            .and_then(|()| self.observer.select(&self.system, &options.record));
+        self.workspace.meter.leave(previous);
+        prepared
     }
 }
 

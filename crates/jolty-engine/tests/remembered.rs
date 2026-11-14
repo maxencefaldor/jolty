@@ -4,7 +4,7 @@
 
 use jolty_engine::{
     Ac, Analysis, Conditions, DcSweep, Differentiated, Method, Noise, OperatingPoints, Options,
-    Outcome, PoleZero, Sensitivity, Simulator, Transient,
+    Outcome, PoleZero, Sensitivities, Sensitivity, Simulator, Transient, Work,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -48,6 +48,30 @@ fn afresh(circuit: &Circuit, analysis: &Analysis, options: &Options) -> Outcome 
     simulator(circuit)
         .run(analysis, options)
         .expect("the analysis runs")
+}
+
+/// `outcome` apart from the work of its transients, which is less on a simulator that
+/// remembers the operating point they start from.
+fn apart_from_work(outcome: Outcome) -> Outcome {
+    match outcome {
+        Outcome::Transient(mut waveforms) => {
+            waveforms.statistics.work = Work::default();
+            Outcome::Transient(waveforms)
+        }
+        Outcome::Sensitivity(sensitivities) => Outcome::Sensitivity(Sensitivities {
+            result: Box::new(apart_from_work(*sensitivities.result)),
+            ..sensitivities
+        }),
+        other => other,
+    }
+}
+
+/// The Newton iterations of the transient `outcome`, if it is one.
+fn iterations(outcome: &Outcome) -> Option<usize> {
+    match outcome {
+        Outcome::Transient(waveforms) => Some(waveforms.statistics.work.iterations),
+        _ => None,
+    }
 }
 
 fn analyses() -> Vec<Analysis> {
@@ -101,9 +125,18 @@ fn every_analysis_about_the_operating_point_solves_it_once_as_afresh() {
         let outcome = simulator
             .run(&analysis, &options)
             .expect("the analysis runs");
+        let fresh = afresh(&circuit, &analysis, &options);
+        // A transient from the operating point remembered skips the iterations that solve
+        // it, and takes the same steps.
+        if let (Some(remembered), Some(solved)) = (iterations(&outcome), iterations(&fresh)) {
+            assert!(
+                remembered < solved,
+                "{remembered} of {solved}: {analysis:?}"
+            );
+        }
         assert_eq!(
-            outcome,
-            afresh(&circuit, &analysis, &options),
+            apart_from_work(outcome),
+            apart_from_work(fresh),
             "{analysis:?}"
         );
     }

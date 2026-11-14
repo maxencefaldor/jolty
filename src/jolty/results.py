@@ -617,6 +617,69 @@ class Response(_Unknowns[Complex]):
 
 
 @dataclass(frozen=True, slots=True)
+class Work:
+    """The work an analysis did: its Newton iterations and its sparse solver's."""
+
+    iterations: int
+    """Every Newton iteration: those of the operating point it solved, unless the
+    simulation took the one it remembered, and those of every step it tried."""
+    factorizations: int
+    """Factorizations that searched for every pivot: the simulation's first, and any
+    after a matrix the solver could not factor."""
+    refactorizations: int
+    """Factorizations that kept every pivot of the last, with no search."""
+    fallbacks: int
+    """Factorizations that kept the last's pivots up to one their matrix made too small,
+    and searched for the pivots from that one on."""
+    reuses: int
+    """Factorizations given the very matrix factored last, which kept its factors."""
+
+
+@dataclass(frozen=True, slots=True)
+class Profile:
+    """Where an analysis spent its time, in seconds, each span in one activity.
+
+    Examples:
+        >>> Profile(0.1, 0.4, 0.1, 0.2, 0.1, 0.05, 0.03, 0.02).total
+        1.0
+    """
+
+    preparing: float
+    """Checking the options, making again the devices the analysis records, and
+    gathering the sources' breakpoints."""
+    evaluating: float
+    """Evaluating the devices."""
+    assembling: float
+    """Turning what the devices contributed into each Newton iteration's matrix and
+    right-hand side."""
+    factoring: float
+    """Factoring matrices."""
+    solving: float
+    """Solving with the factors."""
+    step_control: float
+    """Judging each step by its error, choosing the next, and finding the events a step
+    lands on."""
+    recording: float
+    """Reading the recorded devices at each point kept."""
+    other: float
+    """Everything else, such as Newton iteration's tests of convergence."""
+
+    @property
+    def total(self) -> float:
+        """The whole time: the sum of every activity's."""
+        return (
+            self.preparing
+            + self.evaluating
+            + self.assembling
+            + self.factoring
+            + self.solving
+            + self.step_control
+            + self.recording
+            + self.other
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Statistics:
     """How a transient analysis went."""
 
@@ -628,9 +691,17 @@ class Statistics:
     """Steps tried again shorter to land on an event within them: a detector's crossing,
     a logic driver's change or a device's jump."""
     iterations: int
+    """The Newton iterations of the accepted steps."""
     periods: int | None = None
     """For a periodic steady state, the periods simulated to find it, the last the one
     returned."""
+    work: Work | None = None
+    """The work the engine did, its operating point's included, and for a periodic
+    steady state every period's; None for ngspice's, which it does not count. Unlike
+    the results, it depends on what the simulation ran before: on an operating point it
+    remembers, and on the pivots its sparse solver kept."""
+    profile: Profile | None = None
+    """Where the engine's time went, when the options' ``profile`` is on."""
 
 
 @dataclass(frozen=True, slots=True)

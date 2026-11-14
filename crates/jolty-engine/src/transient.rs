@@ -8,10 +8,15 @@ use serde::Deserialize;
 
 use crate::logic::{Checkpoint, Command, Crossing, crossing};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
+use crate::observe::Observer;
 use crate::options::NUMBERS_PER_GIB;
 use crate::periodic::Monodromy;
+use crate::profile::Activity;
 use crate::sensitivity::Forward;
-use crate::{Observation, Observations, Options, Rejection, SimulationError, Simulator, Strategy};
+use crate::{
+    Observation, Observations, Options, Profile, Rejection, SimulationError, Simulator, Strategy,
+    Work,
+};
 
 /// The first step after the start or a breakpoint, as a fraction of the shorter of the step
 /// before and the gap to the next breakpoint, so a short waveform segment takes several steps.
@@ -87,6 +92,30 @@ pub struct Statistics {
     /// For a periodic steady state, the periods shooting simulated to find it, the last
     /// the one returned.
     pub periods: Option<usize>,
+    /// The work the analysis did, its operating point's included, and for a periodic
+    /// steady state every period's. Unlike the results, it depends on what the simulator
+    /// did before: on an operating point it remembers, and on the pivots its sparse
+    /// solver kept.
+    pub work: Work,
+    /// Where its time went, when its options' `profile` is on.
+    pub profile: Option<Profile>,
+}
+
+impl Statistics {
+    /// The statistics of a transient before its first step, from an operating point found
+    /// by `initial`.
+    fn starting(initial: Strategy) -> Self {
+        Self {
+            initial,
+            accepted: 0,
+            rejected: 0,
+            landed: 0,
+            iterations: 0,
+            periods: None,
+            work: Work::default(),
+            profile: None,
+        }
+    }
 }
 
 /// What a transient carries along its accepted steps besides its solution.
@@ -568,6 +597,7 @@ impl Simulator {
         start: Option<(Vec<f64>, Strategy)>,
         mut carried: Carried<'_>,
     ) -> Result<Waveforms, SimulationError> {
+        let reading = self.read_meter(options.profile);
         self.prepare(options)?;
         let longest = self.longest_step(transient)?;
         let shortest = longest * SMALLEST_STEP_FRACTION;
@@ -614,19 +644,12 @@ impl Simulator {
             damp: false,
             terms: vec![0.0; unknowns],
             pending: None,
-            statistics: Statistics {
-                initial: strategy,
-                accepted: 0,
-                rejected: 0,
-                landed: 0,
-                iterations: 0,
-                periods: None,
-            },
+            statistics: Statistics::starting(strategy),
             x: initial,
         };
         let (mut times, mut values) = (vec![0.0], vec![stepper.x.clone()]);
         let mut observed = Observations::default();
-        observed.push(&self.observer.start(&stepper.x, options.gmin));
+        observed.push(&self.record(|observer| observer.start(&stepper.x, options.gmin)));
         while stepper.time < transient.stop {
             if let Some(change) = self.events.next_analog_change(&self.system.logic) {
                 breakpoints.insert(change);
@@ -661,13 +684,23 @@ impl Simulator {
                 Step::Land(time) => breakpoints.insert(time),
             }
         }
+        let mut statistics = stepper.statistics;
+        (statistics.work, statistics.profile) = self.metered_since(&reading);
         Ok(Waveforms {
             times,
             values,
             observations: observed,
             logic: self.events.traces().to_vec(),
-            statistics: stepper.statistics,
+            statistics,
         })
+    }
+
+    /// What `read` reads of the recorded devices, its time counted as recording.
+    fn record(&mut self, read: impl FnOnce(&mut Observer) -> Observation) -> Observation {
+        let previous = self.workspace.meter.enter(Activity::Recording);
+        let found = read(&mut self.observer);
+        self.workspace.meter.leave(previous);
+        found
     }
 
     /// Tries one step toward `breakpoint`, landing on it when it is within reach; `gap` is the
@@ -752,13 +785,19 @@ impl Simulator {
             charge,
             derivative,
         };
-        let Some(next) = self.judged(stepper, &tried, options)? else {
+        let previous = self.workspace.meter.enter(Activity::StepControl);
+        let judged = self.judged(stepper, &tried, options);
+        self.workspace.meter.leave(previous);
+        let Some(next) = judged? else {
             return Ok(Step::Rejected);
         };
         // The logic before a first step moves it on, for going back to the corner.
         let first = stepper.history.len() == 1;
         let logic = first.then(|| self.events.checkpoint());
-        let (commands, jumped) = match self.events_within(stepper, (end, &tried.x), options) {
+        let previous = self.workspace.meter.enter(Activity::StepControl);
+        let events = self.events_within(stepper, (end, &tried.x), options);
+        self.workspace.meter.leave(previous);
+        let (commands, jumped) = match events {
             Ok(found) => found,
             Err(early) => {
                 // An event lands no closer than the shortest step allowed; the step tried
@@ -890,7 +929,9 @@ impl Simulator {
             stepper.next = after_corner;
         } else {
             let trapezoidal = method == Method::Trapezoidal;
+            let previous = self.workspace.meter.enter(Activity::StepControl);
             stepper.damp = trapezoidal && self.rings(&stepper.history, &derivative, options);
+            self.workspace.meter.leave(previous);
             stepper.before = Some(last);
             stepper.history.accept(end, charge, derivative, trapezoidal);
             stepper.next = next;
@@ -914,9 +955,8 @@ impl Simulator {
     ) -> Point {
         stepper.statistics.accepted += 1;
         stepper.statistics.iterations += iterations;
-        let found = self
-            .observer
-            .step(&x, time, options.gmin, (&formula, restarted));
+        let found =
+            self.record(|observer| observer.step(&x, time, options.gmin, (&formula, restarted)));
         Point {
             time,
             x,
@@ -1115,8 +1155,9 @@ impl Simulator {
     }
 
     /// The breakpoints of every device in `(0, stop]`, sorted, merged when closer than
-    /// `minimum`, and ending at `stop`, so never empty.
-    fn breakpoints(&self, stop: f64, minimum: f64) -> Vec<f64> {
+    /// `minimum`, and ending at `stop`, so never empty; their time is counted as preparing.
+    fn breakpoints(&mut self, stop: f64, minimum: f64) -> Vec<f64> {
+        let previous = self.workspace.meter.enter(Activity::Preparing);
         let mut times = vec![stop];
         for placed in &self.system.devices {
             placed.device.breakpoints(0.0, stop, &mut times);
@@ -1127,6 +1168,7 @@ impl Simulator {
         if let Some(last) = times.last_mut() {
             *last = stop;
         }
+        self.workspace.meter.leave(previous);
         times
     }
 
@@ -1223,10 +1265,13 @@ impl Simulator {
             .iter()
             .map(|difference| alpha * difference)
             .collect();
-        let solved = self
-            .solver
-            .factor(&matrix)
-            .and_then(|mut factors| factors.solve(&mut moved));
+        let meter = &mut self.workspace.meter;
+        let previous = meter.enter(Activity::Factoring);
+        let solved = self.solver.factor(&matrix).and_then(|mut factors| {
+            meter.enter(Activity::Solving);
+            factors.solve(&mut moved)
+        });
+        meter.leave(previous);
         if solved.is_ok() {
             differences.fill(0.0);
             self.system.pattern.add_product(

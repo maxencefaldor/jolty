@@ -75,6 +75,10 @@ pub struct Options {
     pub memory: f64,
     /// What the results record of the devices beside the unknowns; by default nothing.
     pub record: Record,
+    /// Whether a transient measures where its time goes, into its statistics' profile; by
+    /// default not, as the clock adds about a tenth to a small circuit's transient. It
+    /// changes no other result.
+    pub profile: bool,
 }
 
 impl Default for Options {
@@ -90,6 +94,7 @@ impl Default for Options {
             truncation_tolerance: 7.0,
             memory: 2.0,
             record: Record::default(),
+            profile: false,
         }
     }
 }

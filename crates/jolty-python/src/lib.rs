@@ -618,6 +618,34 @@ fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Boun
     result.set_item("landed", statistics.landed)?;
     result.set_item("iterations", statistics.iterations)?;
     result.set_item("periods", statistics.periods)?;
+    let work = statistics.work;
+    let counts = PyDict::new(py);
+    counts.set_item("iterations", work.iterations)?;
+    counts.set_item("factorizations", work.factorizations)?;
+    counts.set_item("refactorizations", work.refactorizations)?;
+    counts.set_item("fallbacks", work.fallbacks)?;
+    counts.set_item("reuses", work.reuses)?;
+    result.set_item("work", counts)?;
+    let profile = match statistics.profile {
+        Some(profile) => {
+            let seconds = PyDict::new(py);
+            for (name, spent) in [
+                ("preparing", profile.preparing),
+                ("evaluating", profile.evaluating),
+                ("assembling", profile.assembling),
+                ("factoring", profile.factoring),
+                ("solving", profile.solving),
+                ("step_control", profile.step_control),
+                ("recording", profile.recording),
+                ("other", profile.other),
+            ] {
+                seconds.set_item(name, spent.as_secs_f64())?;
+            }
+            Some(seconds)
+        }
+        None => None,
+    };
+    result.set_item("profile", profile)?;
     Ok(result)
 }
 

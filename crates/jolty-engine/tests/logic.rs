@@ -4,6 +4,7 @@
 
 use jolty_engine::{
     Bound, Conditions, DcSweep, ElaborationProblem, Endpoint, Options, Simulator, Transient,
+    Waveforms, Work,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library};
@@ -60,6 +61,13 @@ fn net(simulator: &Simulator, name: &str) -> usize {
         .iter()
         .position(|net| net.name == name)
         .unwrap_or_else(|| panic!("no logic net {name}"))
+}
+
+/// `waveforms` apart from the work that found them, which depends on what the simulator
+/// did before: an operating point it remembered, the pivots it kept.
+fn apart_from_work(mut waveforms: Waveforms) -> Waveforms {
+    waveforms.statistics.work = Work::default();
+    waveforms
 }
 
 fn transient(stop: f64) -> Transient {
@@ -670,12 +678,13 @@ fn the_logic_returns_to_its_operating_point_after_a_transient() {
     let options = Options::default();
     let mut simulator = simulator(&circuit);
     let point = simulator.operating_point(&options).unwrap();
-    let first = simulator.transient(&transient(10e-9), &options).unwrap();
+    let first = apart_from_work(simulator.transient(&transient(10e-9), &options).unwrap());
     assert_eq!(simulator.operating_point(&options).unwrap(), point);
     let second = simulator.transient(&transient(10e-9), &options).unwrap();
-    assert_eq!(second, first);
+    assert_eq!(apart_from_work(second), first);
     assert_eq!(simulator.operating_point_solves(), 1);
     let mut fresh = self::simulator(&circuit);
-    assert_eq!(fresh.transient(&transient(10e-9), &options).unwrap(), first);
+    let afresh = fresh.transient(&transient(10e-9), &options).unwrap();
+    assert_eq!(apart_from_work(afresh), first);
     assert_eq!(simulator.excursions(), fresh.excursions());
 }

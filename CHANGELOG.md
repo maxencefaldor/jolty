@@ -35,3 +35,4 @@ The first release, 0.1.0.
 - A command line, an MCP server and a Python package, every command defined once.
 - A reference of every model's parameters, each with the default the engine takes and its description, generated from the engine's own parameter types.
 - Benchmarks: blind tasks for one agent, from Koza's patented circuits, AnalogCoder's problems and a cost-down, each judged by a scorer the agent never sees.
+- A transient's statistics count its work, its Newton iterations and its sparse solver's factorizations, refactorizations, fallbacks and reuses, and with the `profile` option measure where its time goes: preparing, evaluating, assembling, factoring, solving, step control and recording.
