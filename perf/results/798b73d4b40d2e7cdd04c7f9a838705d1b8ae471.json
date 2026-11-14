@@ -1,0 +1,283 @@
+{
+  "commit": "798b73d4b40d2e7cdd04c7f9a838705d1b8ae471",
+  "machine": {
+    "cpu": "Apple M2 Max",
+    "cores": 12,
+    "kinds of core": {
+      "Performance": 8,
+      "Efficiency": 4
+    },
+    "sockets": 1,
+    "memory": 34359738368,
+    "system": "macOS-27.2-arm64-arm-64bit-Mach-O",
+    "python": "3.15.2",
+    "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
+  },
+  "timings": {
+    "rust/bjt_amp/setup": {
+      "seconds": 6.321375142080553e-05,
+      "runs": 80940
+    },
+    "rust/bjt_amp/run": {
+      "seconds": 0.0008068713806818181,
+      "runs": 6160
+    },
+    "rust/ac_wide/setup": {
+      "seconds": 6.189878311544155e-05,
+      "runs": 81080
+    },
+    "rust/ac_wide/run": {
+      "seconds": 0.010609291239583332,
+      "runs": 480
+    },
+    "rust/buck/setup": {
+      "seconds": 3.177875814440846e-05,
+      "runs": 157470
+    },
+    "rust/buck/run": {
+      "seconds": 1.1685903750000002,
+      "runs": 10
+    },
+    "rust/inverter_chain_500/setup": {
+      "seconds": 0.004094007725806452,
+      "runs": 1240
+    },
+    "rust/inverter_chain_500/run": {
+      "seconds": 2.905314417,
+      "runs": 10
+    },
+    "rust/rc_mesh_100/setup": {
+      "seconds": 0.042585767375,
+      "runs": 120
+    },
+    "rust/rc_mesh_100/run": {
+      "seconds": 0.8308291245,
+      "runs": 10
+    },
+    "python/bjt_amp": {
+      "seconds": 0.0015829159819986671,
+      "runs": 3111
+    },
+    "python/ac_wide": {
+      "seconds": 0.014631291996920481,
+      "runs": 341
+    },
+    "python/buck": {
+      "seconds": 1.0909711255080765,
+      "runs": 10
+    },
+    "python/inverter_chain_500": {
+      "seconds": 2.9010894585080678,
+      "runs": 10
+    },
+    "python/rc_mesh_100": {
+      "seconds": 0.8047001874947455,
+      "runs": 10
+    },
+    "python/monte_carlo/1000 samples, one core": {
+      "seconds": 0.0009321926455013454,
+      "runs": 10
+    },
+    "python/monte_carlo/1000 samples, every core": {
+      "seconds": 0.000401486582995858,
+      "runs": 13
+    },
+    "python/inverter_chain_5000": {
+      "seconds": 30.601631333003752,
+      "runs": 1
+    },
+    "python/inverter_chain_50000": {
+      "seconds": 337.3155585420027,
+      "runs": 1
+    },
+    "python/rc_mesh_300": {
+      "seconds": 21.569470582995564,
+      "runs": 1
+    },
+    "python/monte_carlo/100000 samples, every core": {
+      "seconds": 0.0003790003704201081,
+      "runs": 1
+    },
+    "ngspice/bjt_amp": {
+      "seconds": 0.017504207993624732,
+      "runs": 282
+    },
+    "ngspice/ac_wide": {
+      "seconds": 0.03094416600652039,
+      "runs": 161
+    },
+    "ngspice/buck": {
+      "seconds": 0.21872841598815285,
+      "runs": 23
+    },
+    "ngspice/inverter_chain_500": {
+      "seconds": 1.1264835000038147,
+      "runs": 10
+    },
+    "ngspice/rc_mesh_100": {
+      "seconds": 13.971916791502736,
+      "runs": 10
+    },
+    "ngspice/inverter_chain_5000": {
+      "seconds": 14.68717462499626,
+      "runs": 1
+    },
+    "ngspice/inverter_chain_50000": {
+      "seconds": 408.9872453749995,
+      "runs": 1
+    },
+    "ngspice/rc_mesh_300": {
+      "seconds": 857.409583583998,
+      "runs": 1
+    }
+  },
+  "profiles": {
+    "bjt_amp": {
+      "tran": {
+        "work": {
+          "iterations": 254,
+          "factorizations": 0,
+          "refactorizations": 257,
+          "fallbacks": 50,
+          "reuses": 0
+        },
+        "profile": {
+          "preparing": 1.124e-06,
+          "evaluating": 0.000276259,
+          "assembling": 6.0926e-05,
+          "factoring": 0.000140489,
+          "solving": 8.7668e-05,
+          "step_control": 7.433e-05,
+          "recording": 6.8663e-05,
+          "other": 7.7166e-05
+        }
+      }
+    },
+    "buck": {
+      "tran": {
+        "work": {
+          "iterations": 479871,
+          "factorizations": 1,
+          "refactorizations": 621777,
+          "fallbacks": 10370,
+          "reuses": 286
+        },
+        "profile": {
+          "preparing": 7.5416e-05,
+          "evaluating": 0.406992933,
+          "assembling": 0.116019679,
+          "factoring": 0.225667656,
+          "solving": 0.166512261,
+          "step_control": 0.216029222,
+          "recording": 0.005098033,
+          "other": 0.0969993
+        }
+      }
+    },
+    "inverter_chain_500": {
+      "tran": {
+        "work": {
+          "iterations": 7377,
+          "factorizations": 2,
+          "refactorizations": 8093,
+          "fallbacks": 24,
+          "reuses": 6
+        },
+        "profile": {
+          "preparing": 4.542e-06,
+          "evaluating": 1.886479779,
+          "assembling": 0.233927594,
+          "factoring": 0.34192139,
+          "solving": 0.262611232,
+          "step_control": 0.153966374,
+          "recording": 0.000163574,
+          "other": 0.020780806
+        }
+      }
+    },
+    "rc_mesh_100": {
+      "tran": {
+        "work": {
+          "iterations": 170,
+          "factorizations": 1,
+          "refactorizations": 53,
+          "fallbacks": 0,
+          "reuses": 203
+        },
+        "profile": {
+          "preparing": 7.9126e-05,
+          "evaluating": 0.143576576,
+          "assembling": 0.022518164,
+          "factoring": 0.482791957,
+          "solving": 0.075499543,
+          "step_control": 0.065210539,
+          "recording": 3.2996e-05,
+          "other": 0.004309891
+        }
+      }
+    },
+    "inverter_chain_5000": {
+      "tran": {
+        "work": {
+          "iterations": 7651,
+          "factorizations": 2,
+          "refactorizations": 8371,
+          "fallbacks": 60,
+          "reuses": 15
+        },
+        "profile": {
+          "preparing": 7.5291e-05,
+          "evaluating": 19.980548519,
+          "assembling": 2.427273611,
+          "factoring": 3.726138276,
+          "solving": 2.769337797,
+          "step_control": 1.182145123,
+          "recording": 0.000325843,
+          "other": 0.196322707
+        }
+      }
+    },
+    "inverter_chain_50000": {
+      "tran": {
+        "work": {
+          "iterations": 7812,
+          "factorizations": 2,
+          "refactorizations": 8532,
+          "fallbacks": 60,
+          "reuses": 15
+        },
+        "profile": {
+          "preparing": 0.000749916,
+          "evaluating": 242.490348644,
+          "assembling": 27.197032033,
+          "factoring": 39.70834445,
+          "solving": 29.054113849,
+          "step_control": 11.201536234,
+          "recording": 0.000562813,
+          "other": 1.933605603
+        }
+      }
+    },
+    "rc_mesh_300": {
+      "tran": {
+        "work": {
+          "iterations": 169,
+          "factorizations": 1,
+          "refactorizations": 53,
+          "fallbacks": 0,
+          "reuses": 202
+        },
+        "profile": {
+          "preparing": 0.001618666,
+          "evaluating": 2.607018583,
+          "assembling": 0.20255145,
+          "factoring": 16.125162836,
+          "solving": 1.022246452,
+          "step_control": 0.664365339,
+          "recording": 4.1418e-05,
+          "other": 0.036619173
+        }
+      }
+    }
+  }
+}

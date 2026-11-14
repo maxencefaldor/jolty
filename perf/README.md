@@ -52,3 +52,61 @@ The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.
 Criterion takes ten samples of each benchmark over five seconds, each sample one run or more, after a second of warming up.
 The Python timings follow the same protocol.
 Beside the times, the suite runs each fixture with a transient once more with the option `profile` on, and writes the transient's statistics' `work` and `profile`: its Newton iterations and factorizations, and where its time went.
+
+## Baseline
+
+The baseline is commit `798b73d`, whose times `results/798b73d4b40d2e7cdd04c7f9a838705d1b8ae471.json` holds.
+It was measured on an Apple M2 Max of 12 cores, 8 for performance and 4 for efficiency, on one socket, with 32 GB of memory, under macOS 27.2, with Rust 1.100.0 and Python 3.15.2, while other programs ran at a load average of 4 to 6.
+
+| Fixture | Rust setup | Rust run | Python | ngspice |
+| --- | --- | --- | --- | --- |
+| `bjt_amp` | 63.21 µs | 806.9 µs | 1.583 ms | 17.5 ms |
+| `ac_wide` | 61.9 µs | 10.61 ms | 14.63 ms | 30.94 ms |
+| `buck` | 31.78 µs | 1.169 s | 1.091 s | 218.7 ms |
+| `inverter_chain_500` | 4.094 ms | 2.905 s | 2.901 s | 1.126 s |
+| `rc_mesh_100` | 42.59 ms | 830.8 ms | 804.7 ms | 13.97 s |
+
+The large fixtures, each run once:
+
+| Fixture | Python | ngspice |
+| --- | --- | --- |
+| `inverter_chain_5000` | 30.6 s | 14.69 s |
+| `inverter_chain_50000` | 337.3 s | 409 s |
+| `rc_mesh_300` | 21.57 s | 857.4 s |
+
+A sample of `monte_carlo` takes 932.2 µs on one core, 1,073 samples a second, and 401.5 µs on every core, 2,491 a second: 2.3 times as fast on 12 cores, a parallel efficiency of 19%.
+All 100,000 samples, on every core, take 379 µs each, 37.9 s in all.
+A sample costs less than `bjt_amp`'s own run: Newton iteration alone finds 196 of the first 200 samples' operating points, where the nominal circuit's needs gmin stepping, and their transients take 142 Newton iterations on average, against its 254.
+
+The suite took 3 min 14 s, the benchmarks already built, and the `--scale` run 13 min 53 s.
+Run six times over an hour on the same engine, three times at this commit and three at an earlier one that differs only in `perf/`, each time but two spread by at most 5.6% from its fastest run to its slowest: `rc_mesh_100`'s Rust run by 9.8%, and the Monte Carlo samples on every core, which compete with every other program for the cores, by 19%.
+The baseline's own run was among the slower: the last run at this commit was faster in every time, by 0.6% to 4.4% but for those two.
+On a machine shared with other work, a change of a few percent is within the noise; the comparison flags those over 5%.
+
+The engine is built twice from the same code, into the benchmark and into the Python extension, and the two builds differ: `buck`'s run takes 6% to 9% longer in the benchmark's.
+So each kind of time is compared only with its own.
+
+### Where the time goes
+
+Each transient, run once with its profile on, spent its time and did its work as follows; the rest is preparing and everything else.
+
+| Transient | Time | Evaluating | Assembling | Factoring | Solving | Step control | Recording | The rest | Newton iterations | Factorizations, refactorizations, fallbacks, reuses |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `bjt_amp/tran` | 786.6 µs | 35% | 8% | 18% | 11% | 9% | 9% | 10% | 254 | 0, 257, 50, 0 |
+| `buck/tran` | 1.233 s | 33% | 9% | 18% | 14% | 18% | 0% | 8% | 479,871 | 1, 621,777, 10,370, 286 |
+| `inverter_chain_500/tran` | 2.9 s | 65% | 8% | 12% | 9% | 5% | 0% | 1% | 7,377 | 2, 8,093, 24, 6 |
+| `rc_mesh_100/tran` | 794 ms | 18% | 3% | 61% | 10% | 8% | 0% | 1% | 170 | 1, 53, 0, 203 |
+| `inverter_chain_5000/tran` | 30.28 s | 66% | 8% | 12% | 9% | 4% | 0% | 1% | 7,651 | 2, 8,371, 60, 15 |
+| `inverter_chain_50000/tran` | 351.6 s | 69% | 8% | 11% | 8% | 3% | 0% | 1% | 7,812 | 2, 8,532, 60, 15 |
+| `rc_mesh_300/tran` | 20.66 s | 13% | 1% | 78% | 5% | 3% | 0% | 0% | 169 | 1, 53, 0, 202 |
+
+`bjt_amp`'s transient starts from the operating point the plan's first analysis solved, so it makes no full factorization; it records its transistors, rated for a current and a power, at every point.
+A Newton iteration of `inverter_chain_500` takes 0.39 ms, two thirds of it in evaluating the devices; of `inverter_chain_50000`, 45 ms, a hundred and fifteen times as long for a hundred times the inverters.
+The meshes' transients factor a new matrix only when the step changes, 54 times, and spend most of their time doing so: a factorization of the larger mesh takes 33 times as long as one of the smaller, for 9 times the nodes.
+
+### Against the plan's starting point
+
+The many-cores plan's figures came from a two-core machine, on circuits of their own, before the sparse solver became KLU's and before the step control changed; this baseline replaces them.
+jolty's level 1 MOSFETs now carry their Meyer displacements as unknowns, so 500 inverters solve for 3,504 unknowns, where the plan's solved for 504.
+ngspice keeps 52,982 points of `buck`'s 2 ms, where jolty accepts 122,587 steps and rejects 32,900, and takes a fifth of jolty's time.
+It takes two fifths of jolty's time on the chain of 500 inverters and half on the chain of 5,000, but a fifth more on the chain of 50,000, and, with its default sparse solver, Sparse 1.3, 17 and 40 times jolty's on the meshes.
