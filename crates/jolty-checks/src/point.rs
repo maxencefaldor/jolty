@@ -125,7 +125,9 @@ fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Opti
     );
     Some(Diagnostic {
         rule: GMIN_DEPENDENCE.name,
-        message: format!("the operating point depends on gmin: doubling it moves {named}"),
+        message: format!(
+            "the operating point depends on gmin: to first order, doubling it moves {named}"
+        ),
         instances: Vec::new(),
         nets: nets.iter().map(|&(net, ..)| net.to_owned()).collect(),
     })
@@ -305,7 +307,8 @@ mod tests {
         let message = &raised[0].message;
         assert!(
             message.starts_with(
-                "the operating point depends on gmin: doubling it moves `n` from 999.98"
+                "the operating point depends on gmin: to first order, doubling it moves `n` \
+                 from 999.98"
             ) && message.contains(" V by -999.98"),
             "{message}"
         );

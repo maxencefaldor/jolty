@@ -389,11 +389,13 @@ def leaking(c: Builder, load: Quantity | None) -> None:
 
 
 def test_gmin_dependence() -> None:
-    # Only gmin holds `n`, at 1 nA / 1 pS: doubling gmin moves it by all of it.
+    # Only gmin holds `n`, at 1 nA / 1 pS: doubling gmin halves it, which to first order
+    # moves it by all of it.
     (held,) = Simulation(leaking(None)).check_operating_point()
     assert (held.rule, held.level, held.nets) == ("gmin-dependence", Level.WARN, ("n",))
     assert held.message.startswith(
-        "the operating point depends on gmin: doubling it moves `n` from 999.98"
+        "the operating point depends on gmin: to first order, doubling it moves `n` "
+        "from 999.98"
     )
     # A megohm holds it at 1 mV instead.
     assert Simulation(leaking(1 * Mohm)).check_operating_point() == ()

@@ -28,7 +28,7 @@ A net that little else holds, such as one between reverse-biased junctions, take
 The rule `gmin-dependence` names every net whose voltage doubling gmin would move, to first order, by more than a hundredth of the larger of that voltage and 1 V:
 
 ```text
-warn[gmin-dependence]: the operating point depends on gmin: doubling it moves `n` from 999.9899999999999 V by -999.9899999999998 V
+warn[gmin-dependence]: the operating point depends on gmin: to first order, doubling it moves `n` from 999.9899999999999 V by -999.9899999999998 V
 ```
 
 A circuit whose DC equations have more than one solution can rest in more than one state: a latch in either of its own, a bias circuit that can also rest with no current, which never starts.
