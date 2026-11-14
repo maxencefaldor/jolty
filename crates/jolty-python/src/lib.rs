@@ -3,8 +3,11 @@
 //! It exposes a class, [`Simulator`], that elaborates a circuit from its JSON text, checks
 //! its structure, and runs analyses described in JSON, returning arrays as `NumPy` arrays;
 //! a circuit elaborated once, [`Elaborated`], that simulators made at the [`Values`] of
-//! some parameters share; and the table of the structural checks' [`rules`]. Everything an
-//! agent or a person reads, from units to reports, is built on top of it in Python.
+//! some parameters share; the [`Pool`] of threads the engine runs on, never rayon's global
+//! one; the draws of Monte Carlo samples, [`sample`]; and the table of the structural
+//! checks' [`rules`]. Every call that runs the engine releases the interpreter while it
+//! runs. Everything an agent or a person reads, from units to reports, is built on top of
+//! it in Python.
 
 mod measure;
 
@@ -21,6 +24,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use serde::Deserialize;
 
 create_exception!(
     _core,
@@ -29,6 +33,40 @@ create_exception!(
     "A circuit cannot be elaborated. Its only argument lists every problem as a string."
 );
 create_exception!(_core, SimulationError, PyException, "An analysis failed.");
+
+/// The threads the engine runs on: a rayon pool of its own, which every call that runs
+/// the engine runs inside, never rayon's global pool. No result depends on its threads.
+#[pyclass(module = "jolty._core", frozen)]
+struct Pool {
+    inner: rayon::ThreadPool,
+}
+
+#[pymethods]
+impl Pool {
+    /// A pool of `threads` threads, or of one per processor with `None`.
+    ///
+    /// Raises `ValueError` for no thread, or when the threads cannot be started.
+    #[new]
+    #[pyo3(signature = (threads = None))]
+    fn new(threads: Option<usize>) -> PyResult<Self> {
+        if threads == Some(0) {
+            return Err(PyValueError::new_err(
+                "a pool holds a thread or more, not 0",
+            ));
+        }
+        let inner = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads.unwrap_or(0))
+            .build()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// The number of threads.
+    #[getter]
+    fn threads(&self) -> usize {
+        self.inner.current_num_threads()
+    }
+}
 
 /// A circuit elaborated once, which simulators of it at the values of any parameters share.
 #[pyclass(module = "jolty._core", frozen)]
@@ -193,7 +231,8 @@ impl Simulator {
             overrides: serde_json::from_str(overrides).map_err(|error| unreadable(&error))?,
             substitutes: serde_json::from_str(substitutes).map_err(|error| unreadable(&error))?,
         };
-        let inner = jolty_engine::Simulator::new(&circuit, &Library::standard(), &conditions)
+        let inner = py
+            .detach(|| jolty_engine::Simulator::new(&circuit, &Library::standard(), &conditions))
             .map_err(|error| elaboration_error(py, &error))?;
         Ok(Self::wrapping(inner))
     }
@@ -310,23 +349,27 @@ impl Simulator {
     /// `message`, its `instances` and its `nets`; each instance is a dictionary of its `path`
     /// and its `source`, the script line that placed it or `None`.
     fn check<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let simulator = self.lock();
-        diagnostics_to_python(py, jolty_checks::check(&simulator))
+        let found = py.detach(|| jolty_checks::check(&self.lock()));
+        diagnostics_to_python(py, found)
     }
 
     /// Every diagnostic of the rules on the circuit linearized at its operating point under
     /// `options`, a JSON object, as `check` gives them; none for a circuit of more unknowns
-    /// than the checks linearize. A circuit with no operating point raises
+    /// than the checks linearize. It runs on the threads of `pool`, releasing the
+    /// interpreter while it runs. A circuit with no operating point raises
     /// `SimulationError`.
     fn check_operating_point<'py>(
         &self,
         py: Python<'py>,
         options: &str,
+        pool: &Pool,
     ) -> PyResult<Bound<'py, PyList>> {
         let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
         let found = py.detach(|| {
-            let mut simulator = self.lock();
-            jolty_checks::check_operating_point(&mut simulator, &options)
+            pool.inner.install(|| {
+                let mut simulator = self.lock();
+                jolty_checks::check_operating_point(&mut simulator, &options)
+            })
         });
         diagnostics_to_python(
             py,
@@ -356,19 +399,22 @@ impl Simulator {
     }
 
     /// Runs the analysis whose JSON text is `analysis` with the options whose JSON text is
-    /// `options`, releasing the interpreter while it runs.
+    /// `options`, on the threads of `pool`, releasing the interpreter while it runs.
     fn run<'py>(
         &self,
         py: Python<'py>,
         analysis: &str,
         options: &str,
+        pool: &Pool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let analysis: Analysis =
             serde_json::from_str(analysis).map_err(|error| unreadable(&error))?;
         let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
         let outcome = py.detach(|| {
-            let mut simulator = self.lock();
-            simulator.run(&analysis, &options)
+            pool.inner.install(|| {
+                let mut simulator = self.lock();
+                simulator.run(&analysis, &options)
+            })
         });
         outcome_to_python(
             py,
@@ -898,10 +944,65 @@ fn mantissas(series: &str) -> PyResult<Vec<f64>> {
         .ok_or_else(|| PyValueError::new_err(format!("no E series is named `{series}`")))
 }
 
+/// A number that varies within its tolerance, as `jolty.variation` writes it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Varied {
+    path: String,
+    parameter: String,
+    nominal: f64,
+    tolerance: jolty_ir::Tolerance,
+}
+
+/// The value of each number of `varied`, a JSON list of objects of an instance's `path`, a
+/// number's `parameter` path, its `nominal` value and its `tolerance`, in the sample `index`
+/// of a Monte Carlo analysis seeded with `seed`, in order: each drawn from the seed, the
+/// index and its own name alone, as the engine draws it in a batch.
+///
+/// Raises `ValueError` for a list the engine cannot read.
+#[pyfunction]
+fn sample(varied: &str, seed: u64, index: u64) -> PyResult<Vec<f64>> {
+    let varied: Vec<Varied> = serde_json::from_str(varied).map_err(|error| unreadable(&error))?;
+    Ok(varied
+        .into_iter()
+        .map(|varied| {
+            jolty_engine::variants::Toleranced {
+                path: varied.path,
+                name: varied.parameter,
+                nominal: varied.nominal,
+                tolerance: varied.tolerance,
+            }
+            .drawn(seed, index)
+        })
+        .collect())
+}
+
+/// Every number of every device instance of the circuit whose JSON text is `circuit` that
+/// has a tolerance, in the order of the hierarchy, each instance's numbers by path: each
+/// as its instance's path, its own path, its nominal value and its tolerance's JSON text.
+///
+/// Raises `ValueError` for a tolerance of a parameter given no number.
+#[pyfunction]
+fn toleranced(circuit: &str) -> PyResult<Vec<(String, String, f64, String)>> {
+    let circuit = Circuit::from_json(circuit).map_err(|error| unreadable(&error))?;
+    let found = jolty_engine::variants::toleranced(&circuit).map_err(|error| unreadable(&error))?;
+    found
+        .into_iter()
+        .map(|varied| {
+            let tolerance =
+                serde_json::to_string(&varied.tolerance).map_err(|error| unreadable(&error))?;
+            Ok((varied.path, varied.name, varied.nominal, tolerance))
+        })
+        .collect()
+}
+
 #[pymodule(name = "_core")]
 fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     module.add_class::<Simulator>()?;
+    module.add_class::<Pool>()?;
+    module.add_function(wrap_pyfunction!(sample, module)?)?;
+    module.add_function(wrap_pyfunction!(toleranced, module)?)?;
     measure::register(module)?;
     module.add_class::<Elaborated>()?;
     module.add_class::<Values>()?;

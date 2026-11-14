@@ -42,9 +42,9 @@ def study(name: str, notch: Component, samples: int = 200) -> None:
     drawn = circuit(candidates.bench(notch))
     nominal = judge(response(drawn))
     varied = variation.toleranced(drawn)
-    rng = np.random.default_rng(1)
     outcomes = [
-        judge(response(drawn, variation.sample(varied, rng))) for _ in range(samples)
+        judge(response(drawn, variation.sample(varied, 1, index)))
+        for index in range(samples)
     ]
     depths = np.array([depth for depth, _, _ in outcomes])
     passing = sum(ok for _, _, ok in outcomes)

@@ -110,7 +110,7 @@ Each module imports only from the modules listed before it, and from those liste
   It is checked against ngspice on a corpus of circuits (`tests/test_ngspice.py`), on vendors' macromodels (`tests/test_vendor.py`), and on random circuits of every device and size, which Hypothesis shrinks to the smallest that disagrees (`tests/test_random_circuits.py`).
   These differential tests skip when ngspice is not installed, except in CI, which installs it and sets `JOLTY_REQUIRE_NGSPICE=1` so a skip fails.
   The same random circuits must simulate the same however they are written (`tests/test_metamorphic.py`).
-  The same circuits must simulate the same however many threads or shards run them (`crates/jolty-engine/tests/determinism.rs`).
+  The same circuits must simulate the same however many threads or shards run them (`tests/test_determinism.py`, `crates/jolty-engine/tests/determinism.rs`).
   The layout is checked by property tests over random circuits: nets never touch, and wires never cross a symbol.
   A bug fix comes with a test that fails without it.
   A test's tolerance says where it comes from, and is never loosened to let a change pass.

@@ -46,3 +46,9 @@ The first release, 0.1.0.
   Every outcome and the summary are the same bits at any number of threads and for any split of the runs into ranges.
 - Small-signal responses, noise, loop gains and sensitivities spread their frequencies and right-hand sides across threads, as the options' `parallelism` allows, and find the same bits as on one thread: each run of frequencies starts from the pivots the run before it leaves, and is taken again where a pivot changed.
 - A DC sweep of any number of a device's parameters, named by its `parameter`, beside the level of an independent source; a sweep makes its device again at each level, so no device holds a level of its own.
+- The engine's threads, `threads` in the settings or `JOLTY_THREADS`, one per processor by default, and `jolty.simulate.threads` for a block of code: each analysis runs on a pool of the engine's own, never rayon's global one, and every call that runs the engine, elaborates a circuit or checks one releases the interpreter.
+
+### Changed
+
+- Monte Carlo samples are drawn by the engine, each factor from the seed, the sample's index and the name of its part or its lot alone, through ChaCha20, so that sample `i` is the same drawn alone or among any others, on any thread, and a part added leaves every other part's draws as they were.
+  A seed therefore draws other samples than it did before, `jolty.variation.sample` takes the seed and the sample's index in place of a numpy generator, and a seed lies from 0 to 2⁶⁴ − 1.

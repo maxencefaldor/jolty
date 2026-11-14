@@ -402,15 +402,19 @@ class MonteCarlo:
     seed: int = 0
 
     def __post_init__(self) -> None:
-        """Checks that there is a sample or more.
+        """Checks that there is a sample or more, and that the seed is 64 bits.
 
         Raises:
-            ValueError: When there is none.
+            ValueError: When there is no sample, or the seed is negative or 2**64 or
+                more.
         """
         if self.samples < 1:
             message = (
                 f"a Monte Carlo analysis draws a sample or more, not {self.samples}"
             )
+            raise ValueError(message)
+        if not 0 <= self.seed < 2**64:
+            message = f"a Monte Carlo seed lies from 0 to 2**64 - 1, not {self.seed}"
             raise ValueError(message)
 
 

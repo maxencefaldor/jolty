@@ -281,10 +281,10 @@ def boards(built: ir.Circuit, spread: Spread) -> list[Board]:
         if name == built.top
         else component.model_copy(
             update={
-                "instances": [
+                "instances": tuple(
                     each.model_copy(update={"tolerances": spread(each)})
                     for each in component.instances
-                ]
+                )
             }
         )
         for name, component in built.components.items()
@@ -292,8 +292,7 @@ def boards(built: ir.Circuit, spread: Spread) -> list[Board]:
     varied = variation.toleranced(built.model_copy(update={"components": components}))
     if not varied:
         return [Board()]
-    generator = np.random.default_rng(SEED)
-    return [Board(variation.sample(varied, generator)) for _ in range(BOARDS)]
+    return [Board(variation.sample(varied, SEED, index)) for index in range(BOARDS)]
 
 
 def judge(

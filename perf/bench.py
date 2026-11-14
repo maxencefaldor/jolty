@@ -43,8 +43,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Final
 
-import numpy as np
-
 from jolty import circuit, ir, results, variation
 from jolty.plan import Ac, OperatingPoint, Plan, Transient
 from jolty.simulate import Elaborated, Simulation
@@ -171,8 +169,7 @@ def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
     toleranced = variation.toleranced(loaded.circuit)
 
     def drawn() -> Iterable[dict[str, dict[str, float]]]:
-        generator = np.random.default_rng(seed)
-        return (variation.sample(toleranced, generator) for _ in range(samples))
+        return (variation.sample(toleranced, seed, index) for index in range(samples))
 
     def sample(elaborated: Elaborated, overrides: dict[str, dict[str, float]]) -> None:
         simulation = Simulation.of(elaborated, overrides)

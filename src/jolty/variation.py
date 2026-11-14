@@ -11,8 +11,12 @@ the parts on one die drift together. A sample replaces the parameters by instanc
 then by parameter path, as the engine's overrides do. A worst case moves each parameter,
 and each lot's spread, to an extreme of its tolerance instead, or a step toward one.
 
+The engine draws every sample, so a sample drawn here is the one a batch of runs draws:
+each factor from the seed, the sample's index and the name of its part, or of its lot,
+alone. Sample `i` is the same however many samples are drawn, and a part added to the
+circuit leaves every other part's draws as they were.
+
 Examples:
-    >>> import numpy as np
     >>> from jolty import Builder, Role, circuit, component, devices
     >>> from jolty.units import V, kohm
     >>> @component
@@ -25,18 +29,17 @@ Examples:
     >>> (varied,) = toleranced(circuit(divider()))
     >>> (varied.path, varied.parameter, varied.nominal)
     ('R1', 'resistance', 1000.0)
-    >>> drawn = sample((varied,), np.random.default_rng(0))["R1"]["resistance"]
+    >>> drawn = sample((varied,), seed=0, index=0)["R1"]["resistance"]
     >>> 990 <= drawn <= 1010
     True
 """
 
+import json
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
-import numpy as np
-
-from jolty import ir
+from jolty import _core, ir
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,37 +57,51 @@ class Varied:
 def toleranced(circuit: ir.Circuit) -> tuple[Varied, ...]:
     """Every parameter of every device instance of `circuit` that has a tolerance.
 
-    They come in the order of the hierarchy, each instance's parameters by path, so a
-    seed draws the same samples from the same circuit.
+    They come in the order of the hierarchy, each instance's parameters by path, as the
+    engine lists them.
 
     Raises:
         ValueError: When a tolerance's parameter has no number.
     """
-    return tuple(_walk(circuit, circuit.top, ""))
+    return tuple(
+        Varied(path, parameter, nominal, ir.Tolerance.model_validate_json(tolerance))
+        for path, parameter, nominal, tolerance in _core.toleranced(
+            circuit.model_dump_json()
+        )
+    )
 
 
 def sample(
-    varied: Iterable[Varied], generator: np.random.Generator
+    varied: Iterable[Varied], seed: int, index: int
 ) -> dict[str, dict[str, float]]:
-    """One sample of the `varied` parameters, drawn from `generator`.
+    """The sample `index` of `varied`, drawn from `seed` as the engine draws it.
 
-    It holds each parameter's value, by instance path then by parameter path. Each
-    parameter draws its own factor, then the factor of its lot, if it has one and no
-    parameter before it in the lot drew it.
+    It holds each parameter's value, by instance path then by parameter path: its
+    nominal value times its own factor and, if it has a lot, the lot's, each drawn from
+    the seed, the index, and the name of the part's instance and parameter, or of the
+    lot and the parameter, alone.
+
+    Raises:
+        OverflowError: When the seed or the index is negative, or 2**64 or more.
     """
+    chosen = tuple(varied)
+    encoded = json.dumps(
+        [
+            {
+                "path": parameter.path,
+                "parameter": parameter.parameter,
+                "nominal": parameter.nominal,
+                "tolerance": parameter.tolerance.model_dump(mode="json"),
+            }
+            for parameter in chosen
+        ],
+        allow_nan=False,
+    )
     drawn: dict[str, dict[str, float]] = {}
-    lots: dict[tuple[str, str], float] = {}
-    for parameter in varied:
-        tolerance = parameter.tolerance
-        factor = _factor(tolerance, generator)
-        if (lot := tolerance.lot) is not None:
-            key = (lot.name, parameter.parameter)
-            if key not in lots:
-                lots[key] = _factor(lot, generator)
-            factor *= lots[key]
-        drawn.setdefault(parameter.path, {})[parameter.parameter] = (
-            parameter.nominal * factor
-        )
+    for parameter, value in zip(
+        chosen, _core.sample(encoded, seed, index), strict=True
+    ):
+        drawn.setdefault(parameter.path, {})[parameter.parameter] = value
     return drawn
 
 
@@ -150,33 +167,3 @@ def edge(spread: ir.Tolerance | ir.Lot, direction: float) -> float:
             return 1 + direction * spread.relative
         case "log_uniform" | "log_normal":
             return math.pow(1 + spread.relative, direction)
-
-
-def _factor(spread: ir.Tolerance | ir.Lot, generator: np.random.Generator) -> float:
-    """A factor drawn from `generator` within `spread`, as its distribution has it."""
-    relative = spread.relative
-    match spread.distribution:
-        case "uniform":
-            return 1 + float(generator.uniform(-relative, relative))
-        case "normal":
-            return 1 + float(generator.normal(0.0, relative / 3))
-        case "log_uniform":
-            return math.pow(1 + relative, float(generator.uniform(-1.0, 1.0)))
-        case "log_normal":
-            return math.pow(1 + relative, float(generator.normal(0.0, 1 / 3)))
-
-
-def _walk(circuit: ir.Circuit, component: str, prefix: str) -> Iterable[Varied]:
-    for instance in circuit.components[component].instances:
-        path = f"{prefix}{instance.id}"
-        match instance.of:
-            case ir.ComponentOf(component=inner):
-                yield from _walk(circuit, inner, f"{path}/")
-            case ir.DeviceOf():
-                for name, tolerance in sorted(instance.tolerances.items()):
-                    match ir.parameter(instance.parameters, name):
-                        case float() | int() as nominal:
-                            yield Varied(path, name, float(nominal), tolerance)
-                        case _:
-                            message = f"{path} gives {name} a tolerance, not a number"
-                            raise ValueError(message)

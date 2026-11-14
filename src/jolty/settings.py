@@ -87,6 +87,13 @@ class Settings(BaseSettings):
         "sky130A within it; by default, jolty's pinned release, fetched into the "
         "cache.",
     )
+    threads: int | None = Field(
+        default=None,
+        ge=1,
+        description="Threads the engine runs on, which spread one simulation's own "
+        "work, such as its frequencies; by default, one per processor. No result "
+        "depends on them.",
+    )
     rules: dict[RuleKey, Level] = Field(
         default_factory=dict,
         description="Level of each rule by name, or of every rule with 'all': error, "

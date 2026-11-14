@@ -49,9 +49,10 @@ def test_each_placement_of_a_component_varies_apart() -> None:
         ("X1/R1", "resistance"),
         ("X2/R1", "resistance"),
     ]
-    drawn = sample(varied, np.random.default_rng(3))
+    drawn = sample(varied, 3, 0)
     assert drawn["X1/R1"]["resistance"] != drawn["X2/R1"]["resistance"]
-    assert drawn == sample(varied, np.random.default_rng(3))
+    assert drawn == sample(varied, 3, 0)
+    assert drawn != sample(varied, 3, 1)
     point = Simulation(pair(), overrides=drawn).run(OperatingPoint())
     expected = 1 / drawn["X1/R1"]["resistance"] + 1 / drawn["X2/R1"]["resistance"]
     assert -point.current("V1") == pytest.approx(expected)
@@ -63,8 +64,7 @@ def test_values_spread_within_their_tolerance() -> None:
         *toleranced(circuit(pair())),
         *toleranced(_alone(device)),
     )
-    generator = np.random.default_rng(0)
-    drawn = [sample(varied, generator) for _ in range(4000)]
+    drawn = [sample(varied, 0, index) for index in range(4000)]
     uniform = np.array([d["X1/R1"]["resistance"] for d in drawn]) / 1e3 - 1
     normal = np.array([d["R1"]["resistance"] for d in drawn]) / 1e3 - 1
     assert np.abs(uniform).max() <= 0.05
@@ -199,7 +199,7 @@ def test_a_supply_takes_a_tolerance_by_its_path() -> None:
     built = circuit(divider())
     (varied,) = toleranced(built)
     assert (varied.path, varied.parameter, varied.nominal) == ("V1", "waveform.dc", 5)
-    drawn = sample((varied,), np.random.default_rng(0))
+    drawn = sample((varied,), 0, 0)
     level = drawn["V1"]["waveform.dc"]
     assert 4.75 <= level <= 5.25
     point = Simulation(built, overrides=drawn).run(OperatingPoint())
@@ -227,8 +227,7 @@ def test_the_parts_of_a_lot_share_its_factor() -> None:
         c.connect(capacitor.a, capacitor.b, ground)
 
     varied = toleranced(circuit(integrated()))
-    generator = np.random.default_rng(0)
-    drawn = [sample(varied, generator) for _ in range(2000)]
+    drawn = [sample(varied, 0, index) for index in range(2000)]
     first, second = (
         np.array([d[id]["resistance"] for d in drawn]) / 1e3 - 1 for id in ("R1", "R2")
     )
@@ -264,8 +263,7 @@ def test_an_exponentials_argument_spreads_in_its_logarithm() -> None:
 
     varied = toleranced(circuit(pair()))
     nominal = varied[0].nominal
-    generator = np.random.default_rng(0)
-    drawn = [sample(varied, generator) for _ in range(2000)]
+    drawn = [sample(varied, 0, index) for index in range(2000)]
     first, second = (
         np.log(np.array([d[id]["saturation_current"] for d in drawn]) / nominal)
         for id in ("Q1", "Q2")
@@ -331,12 +329,11 @@ def test_each_sample_runs_on_the_same_parts_at_every_corner(
     # Every sample reads worst at the low supply, on the parts the seed draws.
     (spread,) = report.spreads
     assert spread.values is not None
-    generator = np.random.default_rng(2)
     varied = [
         Varied(path, "resistance", 1e3, ir.Tolerance(relative=0.01))
         for path in ("R1", "R2")
     ]
-    drawn = [sample(varied, generator) for _ in range(50)]
+    drawn = [sample(varied, 2, index) for index in range(50)]
     low = [
         4.9 * d["R2"]["resistance"] / (d["R1"]["resistance"] + d["R2"]["resistance"])
         for d in drawn

@@ -25,6 +25,7 @@ Examples:
 """
 
 import contextlib
+import contextvars
 import functools
 import json
 from collections.abc import Callable, Collection, Generator, Iterator, Mapping
@@ -55,6 +56,7 @@ from jolty.plan import (
     Stability,
     Transient,
 )
+from jolty.settings import Settings
 from jolty.units import (
     CURRENT,
     TEMPERATURE,
@@ -74,6 +76,55 @@ def kelvins(temperature: Quantity | None) -> float:
     if temperature is None:
         return _core.REFERENCE_TEMPERATURE
     return temperature.to(TEMPERATURE, "a temperature")
+
+
+@functools.cache
+def pool(count: int | None = None) -> _core.Pool:
+    """A pool of `count` threads for the engine, or of one per processor with None.
+
+    Each is made once per process, so analyses run at once from several Python threads
+    share its threads rather than each starting its own.
+
+    Raises:
+        ValueError: When `count` is not positive.
+    """
+    return _core.Pool(count)
+
+
+_CHOSEN: Final = contextvars.ContextVar[_core.Pool | None]("pool", default=None)
+"""The pool a block of code chose with `threads`, if any."""
+
+
+@contextlib.contextmanager
+def threads(count: int | None) -> Generator[None]:
+    """Runs the engine on `count` threads within the block, or on one per processor.
+
+    Outside any such block, the engine runs on the settings' ``threads``. No result
+    depends on how many threads run it.
+
+    Raises:
+        ValueError: When `count` is not positive.
+    """
+    token = _CHOSEN.set(pool(count))
+    try:
+        yield
+    finally:
+        _CHOSEN.reset(token)
+
+
+def _engine() -> _core.Pool:
+    """The pool the engine runs on here: the one `threads` chose, or the settings'.
+
+    Raises:
+        JoltyError: When the settings are invalid.
+    """
+    return _CHOSEN.get() or _configured()
+
+
+@functools.cache
+def _configured() -> _core.Pool:
+    """The pool of the settings' ``threads``, read once per process."""
+    return pool(Settings.load().threads)
 
 
 _WILDCARDS: Final = frozenset("*?[")
@@ -422,7 +473,7 @@ class Simulation:
         chosen = Options() if options is None else options
         settings = json.dumps(chosen.to_json(), allow_nan=False)
         try:
-            found = self._core.check_operating_point(settings)
+            found = self._core.check_operating_point(settings, _engine())
         except _core.SimulationError as error:
             raise SimulationError(str(error)) from None
         return checks.diagnostics(found)
@@ -537,7 +588,7 @@ class Simulation:
         settings = json.dumps({**chosen.to_json(), "record": record}, allow_nan=False)
         recording = self._recording(json.dumps(record))
         try:
-            outcome = self._core.run(encoded, settings)
+            outcome = self._core.run(encoded, settings, _engine())
         except _core.SimulationError as error:
             raise SimulationError(str(error)) from None
         finally:

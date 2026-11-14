@@ -451,9 +451,11 @@ def _samples(
         yield from itertools.repeat(({}, False), monte_carlo.samples)
         return
     toleranced = variation.toleranced(chosen.built)
-    generator = np.random.default_rng(monte_carlo.seed)
     drawn = (
-        (variation.sample(toleranced, generator), _mismatch(monte_carlo.seed, index))
+        (
+            variation.sample(toleranced, monte_carlo.seed, index),
+            _mismatch(monte_carlo.seed, index),
+        )
         for index in range(monte_carlo.samples)
     )
     yield from _parallel(functools.partial(_sampled, chosen, plan), drawn)
