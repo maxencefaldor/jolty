@@ -1,0 +1,172 @@
+{
+  "commit": "38e4c7b90889895f56d6c571a8366ada6b0c8cdb",
+  "machine": {
+    "cpu": "Apple M2 Max",
+    "cores": 12,
+    "kinds of core": {
+      "Performance": 8,
+      "Efficiency": 4
+    },
+    "sockets": 1,
+    "memory": 34359738368,
+    "system": "macOS-27.2-arm64-arm-64bit-Mach-O",
+    "python": "3.15.2",
+    "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
+  },
+  "timings": {
+    "rust/bjt_amp/setup": {
+      "seconds": 6.297332479126526e-05,
+      "runs": 77850
+    },
+    "rust/bjt_amp/run": {
+      "seconds": 0.0008111480956239871,
+      "runs": 6170
+    },
+    "rust/ac_wide/setup": {
+      "seconds": 6.44579380927292e-05,
+      "runs": 75920
+    },
+    "rust/ac_wide/run": {
+      "seconds": 0.010289310795918369,
+      "runs": 490
+    },
+    "rust/buck/setup": {
+      "seconds": 3.1712896511926135e-05,
+      "runs": 155960
+    },
+    "rust/buck/run": {
+      "seconds": 0.7230358330000001,
+      "runs": 10
+    },
+    "rust/inverter_chain_500/setup": {
+      "seconds": 0.004114657541322314,
+      "runs": 1210
+    },
+    "rust/inverter_chain_500/run": {
+      "seconds": 2.9327078130000004,
+      "runs": 10
+    },
+    "rust/rc_mesh_100/setup": {
+      "seconds": 0.042000630208333334,
+      "runs": 120
+    },
+    "rust/rc_mesh_100/run": {
+      "seconds": 0.796233229,
+      "runs": 10
+    },
+    "python/bjt_amp": {
+      "seconds": 0.0016202910046558827,
+      "runs": 3061
+    },
+    "python/ac_wide": {
+      "seconds": 0.014662958012195304,
+      "runs": 341
+    },
+    "python/buck": {
+      "seconds": 0.6617790835007327,
+      "runs": 10
+    },
+    "python/inverter_chain_500": {
+      "seconds": 2.921002666989807,
+      "runs": 10
+    },
+    "python/rc_mesh_100": {
+      "seconds": 0.8084132289950503,
+      "runs": 10
+    },
+    "python/monte_carlo/1000 samples, one core": {
+      "seconds": 0.0009719889584957855,
+      "runs": 10
+    },
+    "python/monte_carlo/1000 samples, every core": {
+      "seconds": 0.000389862042007735,
+      "runs": 13
+    }
+  },
+  "profiles": {
+    "bjt_amp": {
+      "tran": {
+        "work": {
+          "iterations": 254,
+          "factorizations": 0,
+          "refactorizations": 257,
+          "fallbacks": 50,
+          "reuses": 0
+        },
+        "profile": {
+          "preparing": 1.166e-06,
+          "evaluating": 0.000281294,
+          "assembling": 6.2259e-05,
+          "factoring": 0.000141335,
+          "solving": 8.8374e-05,
+          "step_control": 7.7535e-05,
+          "recording": 7.1665e-05,
+          "other": 7.008e-05
+        }
+      }
+    },
+    "buck": {
+      "tran": {
+        "work": {
+          "iterations": 299616,
+          "factorizations": 1,
+          "refactorizations": 380968,
+          "fallbacks": 7956,
+          "reuses": 362
+        },
+        "profile": {
+          "preparing": 7.1543e-05,
+          "evaluating": 0.249308289,
+          "assembling": 0.070589851,
+          "factoring": 0.137868467,
+          "solving": 0.103780625,
+          "step_control": 0.118042994,
+          "recording": 0.003123856,
+          "other": 0.058412667
+        }
+      }
+    },
+    "inverter_chain_500": {
+      "tran": {
+        "work": {
+          "iterations": 7377,
+          "factorizations": 2,
+          "refactorizations": 8093,
+          "fallbacks": 24,
+          "reuses": 6
+        },
+        "profile": {
+          "preparing": 4.459e-06,
+          "evaluating": 1.891010946,
+          "assembling": 0.233465819,
+          "factoring": 0.346561936,
+          "solving": 0.261654396,
+          "step_control": 0.148174794,
+          "recording": 0.000239437,
+          "other": 0.022225296
+        }
+      }
+    },
+    "rc_mesh_100": {
+      "tran": {
+        "work": {
+          "iterations": 164,
+          "factorizations": 1,
+          "refactorizations": 50,
+          "fallbacks": 0,
+          "reuses": 197
+        },
+        "profile": {
+          "preparing": 7.7084e-05,
+          "evaluating": 0.135341039,
+          "assembling": 0.022996387,
+          "factoring": 0.457378202,
+          "solving": 0.072439715,
+          "step_control": 0.060646675,
+          "recording": 3.9546e-05,
+          "other": 0.004352185
+        }
+      }
+    }
+  }
+}
