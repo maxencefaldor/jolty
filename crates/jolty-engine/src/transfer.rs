@@ -74,64 +74,66 @@ impl Simulator {
         analysis: &TransferFunction,
         options: &Options,
     ) -> Result<Transfer, SimulationError> {
-        self.solvable()?;
-        options.check()?;
-        let input = self.source_index(&analysis.source)?;
-        let output = self.output_of(analysis)?;
-        let operating_point = self.linearized(options)?;
-        let size = self.elaborated.unknowns.len();
-        // Every right side and every index the solves read, before the factors borrow the
-        // solver.
-        let mut driven = self.excitation(input, size);
-        // An independent source holds a voltage or drives a current.
-        let seen = if self.source_quantity(input) == Quantity::Current {
-            Input::Current {
-                terminals: self.terminal_unknowns(input),
-            }
-        } else {
-            Input::Voltage {
-                branch: self.elaborated.devices[input].first_internal,
-            }
-        };
-        let mut probe = match output {
-            Output::Voltage { node, reference } => {
-                let mut injected = vec![0.0; size];
-                injected[node] += 1.0;
-                if let Some(reference) = reference {
-                    injected[reference] -= 1.0;
+        options.parallelism.confined(|| {
+            self.solvable()?;
+            options.check()?;
+            let input = self.source_index(&analysis.source)?;
+            let output = self.output_of(analysis)?;
+            let operating_point = self.linearized(options)?;
+            let size = self.elaborated.unknowns.len();
+            // Every right side and every index the solves read, before the factors borrow the
+            // solver.
+            let mut driven = self.excitation(input, size);
+            // An independent source holds a voltage or drives a current.
+            let seen = if self.source_quantity(input) == Quantity::Current {
+                Input::Current {
+                    terminals: self.terminal_unknowns(input),
                 }
-                Some(injected)
-            }
-            Output::Current { device, .. } if device == input => None,
-            Output::Current { device, .. } => Some(self.excitation(device, size)),
-        };
-        let mut factors = self
-            .state
-            .solver
-            .factor(&self.state.workspace.contributions.conductance)?;
-        factors.solve(&mut driven)?;
-        let gain = output.read(&driven);
-        let input_resistance = seen.resistance(&driven);
-        let output_resistance = match (output, probe.as_mut()) {
-            (_, None) => input_resistance,
-            (Output::Voltage { .. }, Some(injected)) => {
-                factors.solve(injected)?;
-                output.read(injected)
-            }
-            (Output::Current { branch, .. }, Some(series)) => {
-                factors.solve(series)?;
-                resistance(1.0, -series[branch])
-            }
-        };
-        Ok(Transfer {
-            source: analysis.source.clone(),
-            input: self.source_quantity(input),
-            output: analysis.output.clone(),
-            reference: analysis.reference.clone(),
-            operating_point,
-            gain,
-            input_resistance,
-            output_resistance,
+            } else {
+                Input::Voltage {
+                    branch: self.elaborated.devices[input].first_internal,
+                }
+            };
+            let mut probe = match output {
+                Output::Voltage { node, reference } => {
+                    let mut injected = vec![0.0; size];
+                    injected[node] += 1.0;
+                    if let Some(reference) = reference {
+                        injected[reference] -= 1.0;
+                    }
+                    Some(injected)
+                }
+                Output::Current { device, .. } if device == input => None,
+                Output::Current { device, .. } => Some(self.excitation(device, size)),
+            };
+            let mut factors = self
+                .state
+                .solver
+                .factor(&self.state.workspace.contributions.conductance)?;
+            factors.solve(&mut driven)?;
+            let gain = output.read(&driven);
+            let input_resistance = seen.resistance(&driven);
+            let output_resistance = match (output, probe.as_mut()) {
+                (_, None) => input_resistance,
+                (Output::Voltage { .. }, Some(injected)) => {
+                    factors.solve(injected)?;
+                    output.read(injected)
+                }
+                (Output::Current { branch, .. }, Some(series)) => {
+                    factors.solve(series)?;
+                    resistance(1.0, -series[branch])
+                }
+            };
+            Ok(Transfer {
+                source: analysis.source.clone(),
+                input: self.source_quantity(input),
+                output: analysis.output.clone(),
+                reference: analysis.reference.clone(),
+                operating_point,
+                gain,
+                input_resistance,
+                output_resistance,
+            })
         })
     }
 
