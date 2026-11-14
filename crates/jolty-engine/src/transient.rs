@@ -369,6 +369,8 @@ struct Judgement {
     ratio: f64,
     /// The index of that charge's equation.
     worst: usize,
+    /// The longest step every charge's error, by the same estimate, allows.
+    longest: f64,
 }
 
 /// The state of a transient analysis between steps.
@@ -748,7 +750,7 @@ impl Simulator {
             charge,
             derivative,
         };
-        let Some(factor) = self.judged(stepper, &tried, options)? else {
+        let Some(next) = self.judged(stepper, &tried, options)? else {
             return Ok(Step::Rejected);
         };
         // The logic before a first step moves it on, for going back to the corner.
@@ -770,18 +772,12 @@ impl Simulator {
             let gap = if corner { gap } else { breakpoint - end };
             RESTART_FRACTION * reach.min(gap)
         });
-        Ok(self.take(
-            stepper,
-            tried,
-            (factor, restart),
-            (commands, logic),
-            options,
-        ))
+        Ok(self.take(stepper, tried, (next, restart), (commands, logic), options))
     }
 
     /// Judges the step `tried` by its error, and the pending first step after the last
-    /// corner with it; returns the factor the next step grows by, or `None` after
-    /// rejecting the step, or both, to take it again shorter.
+    /// corner with it; returns the length of the step after it, or `None` after rejecting
+    /// the step, or both, to take it again shorter.
     fn judged(
         &mut self,
         stepper: &mut Stepper,
@@ -800,7 +796,7 @@ impl Simulator {
             if let Some(judged) = judged
                 && judged.ratio > 1.0
             {
-                let next = pending.length * factor(Method::BackwardEuler, Some(judged));
+                let next = next_length(pending.length, Some(judged));
                 self.back_to_corner(stepper, next, judged.worst)?;
                 return Ok(None);
             }
@@ -816,20 +812,18 @@ impl Simulator {
             };
             self.judge(tried.method, &stepper.history, new, &span, options)
         };
-        let factor = factor(tried.method, own);
+        let next = next_length(tried.length, own);
         if let Some(judged) = own
             && judged.ratio > 1.0
         {
             let name = &self.system.unknowns[judged.worst].name;
-            stepper.reject(tried.length * factor, || {
-                Rejection::Inaccurate(name.clone())
-            })?;
+            stepper.reject(next, || Rejection::Inaccurate(name.clone()))?;
             return Ok(None);
         }
-        Ok(Some(factor))
+        Ok(Some(next))
     }
 
-    /// Takes the step `tried`, judged to grow the next by `factor`, and through the logic,
+    /// Takes the step `tried`, judged to allow a next step `next` long, and through the logic,
     /// which drivers must follow `commands`: accepts it, with the pending first step after
     /// the last corner, or holds it as that first step, the logic before it `logic`.
     /// `restart`, the length of the step after it, says the integration restarts at its end.
@@ -837,7 +831,7 @@ impl Simulator {
         &mut self,
         stepper: &mut Stepper,
         tried: Tried,
-        (factor, restart): (f64, Option<f64>),
+        (next, restart): (f64, Option<f64>),
         (commands, logic): (Vec<Command>, Option<Checkpoint>),
         options: &Options,
     ) -> Step {
@@ -885,17 +879,17 @@ impl Simulator {
         }
         stepper.previous = length;
         stepper.time = end;
-        if let Some(next) = restart {
+        if let Some(after_corner) = restart {
             stepper.before = None;
             stepper.history.restart(end, charge, derivative);
             stepper.damp = false;
-            stepper.next = next;
+            stepper.next = after_corner;
         } else {
             let trapezoidal = method == Method::Trapezoidal;
             stepper.damp = trapezoidal && self.rings(&stepper.history, &derivative, options);
             stepper.before = Some(last);
             stepper.history.accept(end, charge, derivative, trapezoidal);
-            stepper.next = length * factor;
+            stepper.next = next;
         }
         if points.is_empty() {
             Step::Pending
@@ -1162,16 +1156,15 @@ impl Simulator {
         let mut worst = Judgement {
             ratio: 0.0,
             worst: 0,
+            longest: f64::INFINITY,
         };
         for (index, unknown) in self.system.unknowns.iter().enumerate() {
             for (slot, (_, charge)) in samples.iter_mut().zip(&used) {
                 *slot = charge[index];
             }
             samples[needed - 1] = new.1[index];
-            let error = method.truncation_error(
-                span.length,
-                divided_difference(&times[..needed], &samples[..needed]),
-            );
+            let difference = divided_difference(&times[..needed], &samples[..needed]);
+            let error = method.truncation_error(span.length, difference);
             let absolute_current = options.equation_tolerance(unknown.quantity);
             let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
             let charge_tolerance = options.relative_tolerance * charge + options.charge_tolerance;
@@ -1182,21 +1175,27 @@ impl Simulator {
                 span.length * (options.relative_tolerance * current + absolute_current);
             let tolerance = options.truncation_tolerance * charge_tolerance.max(current_tolerance);
             if error / tolerance > worst.ratio {
-                worst = Judgement {
-                    ratio: error / tolerance,
-                    worst: index,
-                };
+                worst.ratio = error / tolerance;
+                worst.worst = index;
             }
+            let longest = method.longest_step(
+                difference,
+                options.truncation_tolerance * charge_tolerance,
+                options.truncation_tolerance * current_tolerance / span.length,
+            );
+            worst.longest = worst.longest.min(longest);
         }
         Some(worst)
     }
 }
 
-/// The factor a step by `method` judged `judged` scales the next by: as far as its error
-/// allows, within bounds, or by the most it may grow when its error was not estimated.
-fn factor(method: Method, judged: Option<Judgement>) -> f64 {
-    judged.map_or(FACTOR_BOUNDS.1, |judged| {
-        (SAFETY * method.step_factor(judged.ratio)).clamp(FACTOR_BOUNDS.0, FACTOR_BOUNDS.1)
+/// The length of the step after one `length` long judged `judged`: the longest its error
+/// allows, with a safety factor, within bounds on the change, or the most it may grow to
+/// when its error was not estimated.
+fn next_length(length: f64, judged: Option<Judgement>) -> f64 {
+    let (shortest, longest) = (FACTOR_BOUNDS.0 * length, FACTOR_BOUNDS.1 * length);
+    judged.map_or(longest, |judged| {
+        (SAFETY * judged.longest).clamp(shortest, longest)
     })
 }
 

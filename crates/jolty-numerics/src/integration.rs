@@ -45,22 +45,45 @@ impl Method {
     /// for the trapezoidal formula and 2/9 for Gear2.
     #[must_use]
     pub fn truncation_error(self, step: f64, divided_difference: f64) -> f64 {
-        let (constant_times_factorial, power) = match self {
-            Self::BackwardEuler => (1.0 / 2.0 * 2.0, step * step),
-            Self::Trapezoidal => (1.0 / 12.0 * 6.0, step * step * step),
-            Self::Gear2 => (2.0 / 9.0 * 6.0, step * step * step),
-        };
-        constant_times_factorial * power * divided_difference.abs()
+        let power = step.powi(self.exponent());
+        self.constant_times_factorial() * power * divided_difference.abs()
     }
 
-    /// The factor that scales a step whose error was `error_ratio` times its tolerance to one
-    /// whose error would just meet it: `error_ratio^{−1/(p+1)}`, as the error grows with
-    /// `h^{p+1}`.
+    /// The longest step whose truncation error, by `divided_difference`, stays within the
+    /// larger of a tolerance `charge` on the charge and one on the current it carries,
+    /// `rate` times the step.
+    ///
+    /// The error `K h^{p+1}` meets the first at `(charge / K)^{1/(p+1)}` and the second at
+    /// `(rate / K)^{1/p}`, as that tolerance grows with the step; the longest step is the
+    /// longer of the two, and unbounded when the divided difference vanishes.
     #[must_use]
-    pub fn step_factor(self, error_ratio: f64) -> f64 {
+    pub fn longest_step(self, divided_difference: f64, charge: f64, rate: f64) -> f64 {
+        let coefficient = self.constant_times_factorial() * divided_difference.abs();
+        if coefficient == 0.0 {
+            return f64::INFINITY;
+        }
+        let order = f64::from(self.exponent() - 1);
+        let by_charge = (charge / coefficient).powf((order + 1.0).recip());
+        let by_current = (rate / coefficient).powf(order.recip());
+        by_charge.max(by_current)
+    }
+
+    /// The constant of the leading error term times the factorial that turns a divided
+    /// difference into a derivative: ½ · 2! for backward Euler, 1/12 · 3! for the
+    /// trapezoidal formula and 2/9 · 3! for Gear2.
+    fn constant_times_factorial(self) -> f64 {
         match self {
-            Self::BackwardEuler => error_ratio.sqrt().recip(),
-            Self::Trapezoidal | Self::Gear2 => error_ratio.cbrt().recip(),
+            Self::BackwardEuler => 1.0 / 2.0 * 2.0,
+            Self::Trapezoidal => 1.0 / 12.0 * 6.0,
+            Self::Gear2 => 2.0 / 9.0 * 6.0,
+        }
+    }
+
+    /// The power of the step in the error of one step, `p + 1`.
+    fn exponent(self) -> i32 {
+        match self {
+            Self::BackwardEuler => 2,
+            Self::Trapezoidal | Self::Gear2 => 3,
         }
     }
 }
@@ -218,6 +241,33 @@ mod tests {
                 "{method:?}: {actual} vs {predicted}"
             );
         }
+    }
+
+    proptest! {
+        /// The longest step meets the larger of its two tolerances exactly, and a step a
+        /// little longer exceeds both.
+        #[test]
+        fn the_longest_step_just_meets_its_tolerance(
+            divided_difference in 1e-6..1e6f64,
+            charge in 1e-15..1e-6f64,
+            rate in 1e-12..1e-3f64,
+        ) {
+            for method in [Method::BackwardEuler, Method::Trapezoidal, Method::Gear2] {
+                let tolerance = |step: f64| charge.max(rate * step);
+                let error = |step: f64| method.truncation_error(step, divided_difference);
+                let longest = method.longest_step(divided_difference, charge, rate);
+                let met = error(longest) / tolerance(longest);
+                prop_assert!((met - 1.0).abs() < 1e-9, "{method:?}: {met}");
+                let longer = longest * (1.0 + 1e-6);
+                prop_assert!(error(longer) > tolerance(longer), "{method:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_vanishing_divided_difference_bounds_no_step() {
+        let longest = Method::Trapezoidal.longest_step(0.0, 1e-14, 1e-9);
+        assert!(longest.is_infinite());
     }
 
     #[test]
