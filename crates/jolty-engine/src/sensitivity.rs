@@ -36,6 +36,7 @@ use serde::Deserialize;
 
 use crate::ac::{Linearization, over_frequencies};
 use crate::elaborated::{Origin, Origins};
+use crate::newton::{add_product, step_matrix};
 use crate::state::Held;
 use crate::sweep::Swept;
 use crate::transient::{Carried, Tangent};
@@ -601,13 +602,17 @@ impl Simulator {
         // only once time passes.
         self.evaluate(x, Some(0.0), (1.0, options.gmin), false);
         forward.tangents.clear();
+        let inside = options.parallelism.inside(x.len());
         for (twin, moved) in forward.twins.iter_mut().zip(&shifts) {
             twin.evaluate(x, Some(0.0), options.gmin);
             let mut charge = twin.charge(x.len());
             let capacitances = &self.state.workspace.contributions.capacitance;
-            self.elaborated
-                .pattern
-                .add_product(capacitances, moved, &mut charge);
+            add_product(
+                &self.elaborated.pattern,
+                (capacitances, moved),
+                &mut charge,
+                inside,
+            );
             forward.tangents.push(Tangent::new(charge));
         }
         forward.found = vec![at];
@@ -624,16 +629,16 @@ impl Simulator {
         options: &Options,
     ) -> Result<(), SimulationError> {
         self.evaluate(x, Some(time), (1.0, options.gmin), false);
-        let jacobian: Vec<f64> = self
-            .state
-            .workspace
-            .contributions
-            .conductance
-            .iter()
-            .zip(&self.state.workspace.contributions.capacitance)
-            .map(|(conductance, capacitance)| conductance + formula.alpha * capacitance)
-            .collect();
-        let mut factors = self.state.solver.factor(&jacobian)?;
+        let inside = options.parallelism.inside(x.len());
+        let workspace = &mut self.state.workspace;
+        let contributions = &workspace.contributions;
+        step_matrix(
+            &mut workspace.jacobian,
+            contributions,
+            formula.alpha,
+            inside,
+        );
+        let mut factors = self.state.solver.factor(&self.state.workspace.jacobian)?;
         let mut at = vec![Vec::with_capacity(forward.twins.len()); forward.outputs.len()];
         for (twin, tangent) in forward.twins.iter_mut().zip(&mut forward.tangents) {
             twin.evaluate(x, Some(time), options.gmin);
@@ -652,9 +657,12 @@ impl Simulator {
             }
             let mut charge = partial_charge;
             let capacitances = &self.state.workspace.contributions.capacitance;
-            self.elaborated
-                .pattern
-                .add_product(capacitances, &moved, &mut charge);
+            add_product(
+                &self.elaborated.pattern,
+                (capacitances, &moved),
+                &mut charge,
+                inside,
+            );
             tangent.advance(charge, &history, formula, restarted);
         }
         forward.found.push(at);

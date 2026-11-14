@@ -1141,8 +1141,8 @@ fn a_warm_chain_through_a_kernels_numbers_evaluates_each_runs() {
 }
 
 /// The ways the runs below spread their own work: devices evaluated in tasks of 1, 3 and
-/// 64 instances, the Newton iteration's work on each unknown and each stored entry split
-/// in a chunk per thread, and both at once.
+/// 64 instances, the work of Newton iteration and step control on each unknown and each
+/// stored entry split in a chunk per thread, and both at once.
 const SPREADS: [(Option<usize>, Option<usize>); 5] = [
     (Some(1), None),
     (Some(3), None),
@@ -1152,8 +1152,13 @@ const SPREADS: [(Option<usize>, Option<usize>); 5] = [
 ];
 
 /// Asserts that `analyses` of `circuit` with `options`, run on pools of 2, 3 and 8 threads
-/// and spread each way of [`SPREADS`], find the bits they find on the run's own thread.
-fn spread_finds_what_one_thread_finds(circuit: &Circuit, analyses: &[Analysis], options: &Options) {
+/// and spread each way of `spreads`, find the bits they find on the run's own thread.
+fn spread_finds_what_one_thread_finds(
+    circuit: &Circuit,
+    analyses: &[Analysis],
+    options: &Options,
+    spreads: &[(Option<usize>, Option<usize>)],
+) {
     let elaborated = shared(circuit);
     let run = |options: &Options| -> Vec<Bits> {
         let mut simulator =
@@ -1173,7 +1178,7 @@ fn spread_finds_what_one_thread_finds(circuit: &Circuit, analyses: &[Analysis], 
             .num_threads(threads)
             .build()
             .expect("a pool");
-        for (instances, unknowns) in SPREADS {
+        for &(instances, unknowns) in spreads {
             let parallel = Options {
                 parallelism: Parallelism {
                     min_instances_per_task: instances,
@@ -1200,12 +1205,32 @@ fn spread_finds_what_one_thread_finds(circuit: &Circuit, analyses: &[Analysis], 
 #[test]
 fn a_run_spread_over_threads_finds_what_it_finds_on_one() {
     let (circuit, analyses, options) = benchmark("bjt_amp");
-    spread_finds_what_one_thread_finds(&circuit, &analyses, &options);
+    spread_finds_what_one_thread_finds(&circuit, &analyses, &options, &SPREADS);
     let (circuit, _, options) = benchmark("buck");
     let periods: Analysis =
         serde_json::from_value(json!({"transient": {"stop": 2e-5, "method": "trapezoidal"}}))
             .expect("a transient");
-    spread_finds_what_one_thread_finds(&circuit, &[periods], &options);
+    spread_finds_what_one_thread_finds(&circuit, &[periods], &options, &SPREADS);
+}
+
+/// A transient of a circuit of more unknowns than a chunk of the work on each unknown
+/// holds, whose every judged step's divided differences, filtered differences and worst
+/// ratio are found over several chunks, finds the bits it finds on its own thread: the
+/// first tenth of a nanosecond of the chain of 500 inverters, of 3,504 unknowns, its work
+/// on each unknown spread alone and with its devices'.
+#[test]
+fn a_transient_judged_over_many_chunks_finds_what_it_finds_on_one_thread() {
+    let (circuit, _, options) = benchmark("inverter_chain_500");
+    let start: Analysis =
+        serde_json::from_value(json!({"transient": {"stop": 1e-10, "method": "trapezoidal"}}))
+            .expect("a transient");
+    let unknowns = shared(&circuit).unknowns().len();
+    assert!(
+        unknowns > 3 * jolty_numerics::reduce::CHUNK,
+        "{unknowns} unknowns"
+    );
+    let spreads = [(None, Some(1)), (Some(64), Some(1))];
+    spread_finds_what_one_thread_finds(&circuit, &[start], &options, &spreads);
 }
 
 /// Two inverters in a loop, each a pair of MOSFETs: a latch, which holds either state and
@@ -1240,7 +1265,7 @@ fn latch() -> Circuit {
 #[test]
 fn a_deflated_search_spread_over_threads_finds_what_it_finds_on_one() {
     let search = Analysis::OperatingPoints(OperatingPoints { most: 8 });
-    spread_finds_what_one_thread_finds(&latch(), &[search], &Options::default());
+    spread_finds_what_one_thread_finds(&latch(), &[search], &Options::default(), &SPREADS);
 }
 
 /// `options` with the factorization dissected into interiors of at most `interiors`

@@ -7,9 +7,11 @@ use jolty_numerics::integration::{Formula, Method, divided_difference};
 use serde::Deserialize;
 
 use crate::logic::{Checkpoint, Command, Crossing, crossing};
-use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
+use crate::newton::{
+    Failure, Mode, NAMED_UNKNOWNS, Workspace, add_product, all, each_chunk, pieces, step_matrix,
+};
 use crate::observe::{Observer, Read};
-use crate::options::NUMBERS_PER_GIB;
+use crate::options::{Inside, NUMBERS_PER_GIB};
 use crate::periodic::Monodromy;
 use crate::profile::Activity;
 use crate::sensitivity::Forward;
@@ -451,16 +453,21 @@ impl Stepper {
     /// Where Newton iteration starts a step ending at `end`, as SPICE's does: the line
     /// through the last two accepted points carried on to `end`, or the last point after a
     /// corner.
-    fn predicted(&self, end: f64) -> Vec<f64> {
+    ///
+    /// The work on each unknown is split as `inside` says.
+    fn predicted(&self, end: f64, inside: Option<Inside>) -> Vec<f64> {
         let Some((time, before)) = &self.before else {
             return self.x.clone();
         };
         let ratio = (end - self.time) / (self.time - time);
-        self.x
-            .iter()
-            .zip(before)
-            .map(|(&last, &earlier)| last + (last - earlier) * ratio)
-            .collect()
+        let mut predicted = vec![0.0; self.x.len()];
+        each_chunk(&mut predicted, inside, |start, chunk| {
+            let points = self.x[start..].iter().zip(&before[start..]);
+            for (value, (&last, &earlier)) in chunk.iter_mut().zip(points) {
+                *value = last + (last - earlier) * ratio;
+            }
+        });
+        predicted
     }
 
     /// Whether an event at `time`, within a step from the last point to `end`, comes
@@ -752,18 +759,22 @@ impl Simulator {
             stepper.method
         };
         let formula = Formula::new(method, length, stepper.previous);
+        // Each unknown's work is its own, spread as Newton iteration spreads its work on
+        // each unknown.
+        let inside = options.parallelism.inside(stepper.x.len());
         let (last, before) = stepper.history.last_two();
-        for (index, term) in stepper.terms.iter_mut().enumerate() {
-            *term = formula.history(
-                [last[index], before[index]],
-                stepper.history.derivative[index],
-            );
-        }
+        let derivative = &stepper.history.derivative;
+        each_chunk(&mut stepper.terms, inside, |start, chunk| {
+            for (offset, term) in chunk.iter_mut().enumerate() {
+                let index = start + offset;
+                *term = formula.history([last[index], before[index]], derivative[index]);
+            }
+        });
 
         let mut candidate = stepper
             .resume
             .take()
-            .unwrap_or_else(|| stepper.predicted(end));
+            .unwrap_or_else(|| stepper.predicted(end, inside));
         let mode = Mode::Step {
             time: end,
             alpha: formula.alpha,
@@ -782,11 +793,13 @@ impl Simulator {
         // before any other evaluation.
         let read = self.read_recorded();
         let charge = self.state.workspace.contributions.charge.clone();
-        let derivative: Vec<f64> = charge
-            .iter()
-            .zip(&stepper.terms)
-            .map(|(&q, &term)| formula.alpha * q + term)
-            .collect();
+        let mut derivative = vec![0.0; charge.len()];
+        each_chunk(&mut derivative, inside, |start, chunk| {
+            let terms = charge[start..].iter().zip(&stepper.terms[start..]);
+            for (derivative, (&q, &term)) in chunk.iter_mut().zip(terms) {
+                *derivative = formula.alpha * q + term;
+            }
+        });
         let tried = Tried {
             end,
             length,
@@ -1020,28 +1033,26 @@ impl Simulator {
             return false;
         }
         let (oldest, older) = (&history.ringing[0], &history.ringing[1]);
-        self.elaborated
-            .unknowns
-            .iter()
-            .enumerate()
-            .any(|(index, unknown)| {
-                let run = [
-                    oldest[index],
-                    older[index],
-                    history.derivative[index],
-                    newest[index],
-                ];
-                let turns = [run[1] - run[0], run[2] - run[1], run[3] - run[2]];
-                let absolute = options.equation_tolerance(unknown.quantity);
-                let largest = run
-                    .iter()
-                    .fold(0.0_f64, |most, value| most.max(value.abs()));
-                let tolerance = options.truncation_tolerance
-                    * (options.relative_tolerance * largest + absolute);
-                turns[0] * turns[1] < 0.0
-                    && turns[1] * turns[2] < 0.0
-                    && turns.iter().all(|turn| turn.abs() > tolerance)
-            })
+        let unknowns = &self.elaborated.unknowns;
+        let inside = options.parallelism.inside(unknowns.len());
+        !all(unknowns.len(), inside, |index| {
+            let run = [
+                oldest[index],
+                older[index],
+                history.derivative[index],
+                newest[index],
+            ];
+            let turns = [run[1] - run[0], run[2] - run[1], run[3] - run[2]];
+            let absolute = options.equation_tolerance(unknowns[index].quantity);
+            let largest = run
+                .iter()
+                .fold(0.0_f64, |most, value| most.max(value.abs()));
+            let tolerance =
+                options.truncation_tolerance * (options.relative_tolerance * largest + absolute);
+            !(turns[0] * turns[1] < 0.0
+                && turns[1] * turns[2] < 0.0
+                && turns.iter().all(|turn| turn.abs() > tolerance))
+        })
     }
 
     /// The events of a step from the stepper's last point to `end`, where the solution is
@@ -1200,52 +1211,67 @@ impl Simulator {
             *slot = *time;
         }
         times[needed - 1] = new.0;
-        let mut samples = [0.0; HISTORY + 1];
-        let differences: Vec<f64> = (0..new.1.len())
-            .map(|index| {
+        // Each unknown's work is its own, spread as Newton iteration spreads its work on each
+        // unknown.
+        let inside = options.parallelism.inside(new.1.len());
+        let mut differences = vec![0.0; new.1.len()];
+        each_chunk(&mut differences, inside, |start, chunk| {
+            let mut samples = [0.0; HISTORY + 1];
+            for (offset, difference) in chunk.iter_mut().enumerate() {
+                let index = start + offset;
                 for (slot, (_, charge)) in samples.iter_mut().zip(&used) {
                     *slot = charge[index];
                 }
                 samples[needed - 1] = new.1[index];
-                divided_difference(&times[..needed], &samples[..needed])
-            })
-            .collect();
-        let differences = self.filtered(differences, span.alpha);
+                *difference = divided_difference(&times[..needed], &mut samples[..needed]);
+            }
+        });
+        let differences = self.filtered(differences, span.alpha, inside);
         let scale = options.truncation_tolerance * method.factorial();
-        let mut worst = Judgement {
+        let unknowns = &self.elaborated.unknowns;
+        let none = Judgement {
             ratio: 0.0,
             worst: 0,
             longest: f64::INFINITY,
         };
-        for ((index, unknown), &difference) in self
-            .elaborated
-            .unknowns
-            .iter()
-            .enumerate()
-            .zip(&differences)
-        {
-            let error = method.truncation_error(span.length, difference);
-            let absolute_current = options.equation_tolerance(unknown.quantity);
-            let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
-            let charge_tolerance = options.relative_tolerance * charge + options.charge_tolerance;
-            let current = span.derivative.0[index]
-                .abs()
-                .max(span.derivative.1[index].abs());
-            let current_tolerance =
-                span.length * (options.relative_tolerance * current + absolute_current);
-            let tolerance = scale * charge_tolerance.max(current_tolerance);
-            if error / tolerance > worst.ratio {
-                worst.ratio = error / tolerance;
-                worst.worst = index;
+        // The largest ratio, at the first unknown that reaches it, and the shortest of the
+        // longest steps, found in each piece and then over the pieces in their order.
+        let judged = pieces(differences.len(), inside, |range| {
+            let mut worst = none;
+            for index in range {
+                let difference = differences[index];
+                let error = method.truncation_error(span.length, difference);
+                let absolute_current = options.equation_tolerance(unknowns[index].quantity);
+                let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
+                let charge_tolerance =
+                    options.relative_tolerance * charge + options.charge_tolerance;
+                let current = span.derivative.0[index]
+                    .abs()
+                    .max(span.derivative.1[index].abs());
+                let current_tolerance =
+                    span.length * (options.relative_tolerance * current + absolute_current);
+                let tolerance = scale * charge_tolerance.max(current_tolerance);
+                if error / tolerance > worst.ratio {
+                    worst.ratio = error / tolerance;
+                    worst.worst = index;
+                }
+                let longest = method.longest_step(
+                    difference,
+                    scale * charge_tolerance,
+                    scale * current_tolerance / span.length,
+                );
+                worst.longest = worst.longest.min(longest);
             }
-            let longest = method.longest_step(
-                difference,
-                scale * charge_tolerance,
-                scale * current_tolerance / span.length,
-            );
-            worst.longest = worst.longest.min(longest);
-        }
-        Some(worst)
+            worst
+        });
+        Some(judged.into_iter().fold(none, |worst, piece| Judgement {
+            longest: worst.longest.min(piece.longest),
+            ..if piece.ratio > worst.ratio {
+                piece
+            } else {
+                worst
+            }
+        }))
     }
 
     /// The charges' divided `differences` filtered through the step's equations at its end,
@@ -1260,34 +1286,41 @@ impl Simulator {
     /// Statistical Computing 1(1), 1980; Hairer and Wanner, "Solving Ordinary Differential
     /// Equations II", section IV.8). Where the matrix cannot be factored, the differences are
     /// taken as they are.
-    fn filtered(&mut self, mut differences: Vec<f64>, alpha: f64) -> Vec<f64> {
-        let contributions = &self.state.workspace.contributions;
-        let matrix: Vec<f64> = contributions
-            .conductance
-            .iter()
-            .zip(&contributions.capacitance)
-            .map(|(conductance, capacitance)| conductance + alpha * capacitance)
-            .collect();
-        let mut moved: Vec<f64> = differences
-            .iter()
-            .map(|difference| alpha * difference)
-            .collect();
-        let meter = &mut self.state.workspace.meter;
+    ///
+    /// The work on each unknown and each stored entry is split as `inside` says, the same
+    /// bits however it is.
+    fn filtered(&mut self, differences: Vec<f64>, alpha: f64, inside: Option<Inside>) -> Vec<f64> {
+        let Workspace {
+            contributions,
+            jacobian,
+            meter,
+            ..
+        } = &mut self.state.workspace;
+        step_matrix(jacobian, contributions, alpha, inside);
+        let mut moved = vec![0.0; differences.len()];
+        each_chunk(&mut moved, inside, |start, chunk| {
+            for (moved, &difference) in chunk.iter_mut().zip(&differences[start..]) {
+                *moved = alpha * difference;
+            }
+        });
         let previous = meter.enter(Activity::Factoring);
-        let solved = self.state.solver.factor(&matrix).and_then(|mut factors| {
+        let solved = self.state.solver.factor(jacobian).and_then(|mut factors| {
             meter.enter(Activity::Solving);
             factors.solve(&mut moved)
         });
         meter.leave(previous);
-        if solved.is_ok() {
-            differences.fill(0.0);
-            self.elaborated.pattern.add_product(
-                &self.state.workspace.contributions.capacitance,
-                &moved,
-                &mut differences,
-            );
+        if solved.is_err() {
+            return differences;
         }
-        differences
+        let mut filtered = vec![0.0; differences.len()];
+        let capacitance = &contributions.capacitance;
+        add_product(
+            &self.elaborated.pattern,
+            (capacitance, &moved),
+            &mut filtered,
+            inside,
+        );
+        filtered
     }
 }
 

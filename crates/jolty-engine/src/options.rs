@@ -46,8 +46,9 @@ impl Record {
 
 /// How a run spreads its own work across the threads of the rayon pool it runs in: the
 /// frequencies of its small-signal analyses, the right-hand sides of its sensitivities, its
-/// devices' instances, its Newton iteration's work on each unknown, and the factorization
-/// of its matrix's large blocks. Every result is the same bits however the work is split.
+/// devices' instances, its Newton iteration's and step control's work on each unknown, and
+/// the factorization of its matrix's large blocks. Every result is the same bits however
+/// the work is split.
 /// No setting but [`Parallelism::max_unknowns_per_interior`] changes any result: that one
 /// orders the factorization's operations otherwise, so results agree with those of the
 /// factorization on one thread to within its rounding rather than bit for bit.
@@ -73,9 +74,9 @@ pub struct Parallelism {
     /// The device instances a task evaluates when a run evaluates its devices in
     /// parallel; none, by default, to evaluate them on the run's thread.
     pub min_instances_per_task: Option<usize>,
-    /// The fewest unknowns a circuit has for its Newton iteration's work on each unknown and
-    /// each stored entry of its matrix to spread over the threads a run may use; none, by
-    /// default, to keep that work on the run's thread.
+    /// The fewest unknowns a circuit has for its Newton iteration's and its transient step
+    /// control's work on each unknown and each stored entry of its matrix to spread over the
+    /// threads a run may use; none, by default, to keep that work on the run's thread.
     pub min_unknowns_inside: Option<usize>,
     /// The most unknowns of an interior when a run factors its matrix in parallel: each
     /// block of its block triangular form with more is ordered by nested dissection into
@@ -178,8 +179,9 @@ impl Parallelism {
         })
     }
 
-    /// How a run's Newton iteration splits its work on each of the circuit's `unknowns`
-    /// unknowns and on each stored entry of its matrix among threads: in chunks of the
+    /// How a run's Newton iteration and its transient's step control split their work on
+    /// each of the circuit's `unknowns` unknowns and on each stored entry of its matrix
+    /// among threads: in chunks of the
     /// unknowns, or of the entries, a thread the run may use each takes, once the circuit
     /// has at least [`Parallelism::min_unknowns_inside`] unknowns and the run may use two
     /// threads or more; none, to do it all on the run's thread. The bits found are the

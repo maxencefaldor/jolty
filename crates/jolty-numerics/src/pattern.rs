@@ -154,10 +154,22 @@ impl Pattern {
     }
 
     /// Adds the product of the matrix whose stored values are `values` and the vector `x`
-    /// to `into`.
+    /// to `into`, each row's terms in the order of their columns.
     pub fn add_product(&self, values: &[f64], x: &[f64], into: &mut [f64]) {
-        for ((row, column), value) in self.positions().zip(values) {
-            into[row] += value * x[column];
+        self.add_product_from(0, values, x, into);
+    }
+
+    /// Adds to `into`, the rows of the product from `first` on, as many as it holds, what
+    /// [`Pattern::add_product`] adds to them, bit for bit: so the rows can be split among
+    /// threads.
+    pub fn add_product_from(&self, first: usize, values: &[f64], x: &[f64], into: &mut [f64]) {
+        for (offset, value) in into.iter_mut().enumerate() {
+            *value = self
+                .row(first + offset)
+                .iter()
+                .fold(*value, |total, &(slot, column)| {
+                    total + values[slot] * x[column]
+                });
         }
     }
 
@@ -217,6 +229,41 @@ mod tests {
         let mut into = [1.0, 1.0];
         pattern.add_product(&[1.0, 2.0, 3.0], &[1.0, 10.0], &mut into);
         assert!((into[0] - 32.0).abs() < 1e-15 && (into[1] - 3.0).abs() < 1e-15);
+        // The second row alone, as a thread that takes it adds it.
+        let mut second = [1.0];
+        pattern.add_product_from(1, &[1.0, 2.0, 3.0], &[1.0, 10.0], &mut second);
+        assert_eq!(second[0].to_bits(), into[1].to_bits());
+    }
+
+    proptest::proptest! {
+        /// The product added row by row, from any row on, is the product added column by
+        /// column, in the order the values are stored, bit for bit.
+        #[test]
+        fn a_product_by_rows_is_the_product_by_columns(
+            positions in proptest::collection::vec((0..30usize, 0..30usize), 1..200),
+            first in 0..30usize,
+        ) {
+            let mut builder = PatternBuilder::new();
+            for &(row, column) in &positions {
+                builder.entry(row, column);
+            }
+            let pattern = builder.finish(30);
+            #[expect(clippy::cast_precision_loss, reason = "a few hundred entries")]
+            let values: Vec<f64> = (0..pattern.len()).map(|slot| (slot as f64 * 0.7).sin()).collect();
+            let x: Vec<f64> = (0..30).map(|column| (f64::from(column) * 1.3).cos()).collect();
+            let start: Vec<f64> = (0..30).map(|row| f64::from(row) * 0.1).collect();
+            let mut by_columns = start.clone();
+            for ((row, column), value) in pattern.positions().zip(&values) {
+                by_columns[row] += value * x[column];
+            }
+            let mut by_rows = start.clone();
+            pattern.add_product(&values, &x, &mut by_rows);
+            let mut later = start[first..].to_vec();
+            pattern.add_product_from(first, &values, &x, &mut later);
+            let bits = |values: &[f64]| values.iter().map(|value| value.to_bits()).collect::<Vec<_>>();
+            proptest::prop_assert_eq!(bits(&by_rows), bits(&by_columns));
+            proptest::prop_assert_eq!(bits(&later), bits(&by_columns[first..]));
+        }
     }
 
     #[test]

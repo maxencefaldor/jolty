@@ -26,7 +26,7 @@
 use jolty_numerics::integration::Formula;
 use jolty_numerics::solve_in_range;
 
-use crate::newton::NAMED_UNKNOWNS;
+use crate::newton::{NAMED_UNKNOWNS, add_product, step_matrix};
 use crate::options::NUMBERS_PER_GIB;
 use crate::transient::{Carried, Tangent};
 use crate::{Options, SimulationError, Simulator, Transient, Waveforms};
@@ -197,23 +197,28 @@ impl Simulator {
         options: &Options,
     ) -> Result<(), SimulationError> {
         self.evaluate(x, Some(time), (1.0, options.gmin), false);
-        let contributions = &self.state.workspace.contributions;
-        let jacobian: Vec<f64> = contributions
-            .conductance
-            .iter()
-            .zip(&contributions.capacitance)
-            .map(|(conductance, capacitance)| conductance + formula.alpha * capacitance)
-            .collect();
-        let mut factors = self.state.solver.factor(&jacobian)?;
+        let inside = options.parallelism.inside(x.len());
+        let workspace = &mut self.state.workspace;
+        let contributions = &workspace.contributions;
+        step_matrix(
+            &mut workspace.jacobian,
+            contributions,
+            formula.alpha,
+            inside,
+        );
+        let mut factors = self.state.solver.factor(&self.state.workspace.jacobian)?;
         for (tangent, at) in monodromy.tangents.iter_mut().zip(&mut monodromy.at) {
             let history = tangent.history(formula);
             let mut moved: Vec<f64> = history.iter().map(|term| -term).collect();
             factors.solve(&mut moved)?;
             let mut charge = vec![0.0; x.len()];
             let capacitances = &self.state.workspace.contributions.capacitance;
-            self.elaborated
-                .pattern
-                .add_product(capacitances, &moved, &mut charge);
+            add_product(
+                &self.elaborated.pattern,
+                (capacitances, &moved),
+                &mut charge,
+                inside,
+            );
             tangent.advance(charge, &history, formula, restarted);
             *at = moved;
         }

@@ -103,8 +103,9 @@ _INSTANCES_DESCRIPTION = (
     "across threads; replaces the plan's. No result depends on it."
 )
 _INSIDE_DESCRIPTION = (
-    "The fewest unknowns a circuit has for a run to spread its Newton iteration's work "
-    "on each unknown across threads; replaces the plan's. No result depends on it."
+    "The fewest unknowns a circuit has for a run to spread the work of its Newton "
+    "iteration and its step control on each unknown across threads; replaces the "
+    "plan's. No result depends on it."
 )
 _INTERIORS_DESCRIPTION = (
     "The most unknowns of an interior when a run factors its matrix in parallel, each "

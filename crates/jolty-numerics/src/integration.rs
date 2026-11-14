@@ -157,7 +157,9 @@ impl Formula {
     }
 }
 
-/// The divided difference `f[t_0, …, t_k]` of `values` sampled at the distinct `times`.
+/// The divided difference `f[t_0, …, t_k]` of `values` sampled at the distinct `times`,
+/// found in place: the table of differences overwrites `values`, so finding one allocates
+/// nothing.
 ///
 /// For a polynomial of degree `k`, it is the leading coefficient; in general, it approximates
 /// the `k`-th derivative divided by `k!`, which is how truncation errors are estimated.
@@ -166,20 +168,19 @@ impl Formula {
 ///
 /// Panics if `times` and `values` differ in length or are empty.
 #[must_use]
-pub fn divided_difference(times: &[f64], values: &[f64]) -> f64 {
+pub fn divided_difference(times: &[f64], values: &mut [f64]) -> f64 {
     assert_eq!(times.len(), values.len(), "one value per time");
     assert!(
         !values.is_empty(),
         "a divided difference needs at least one point"
     );
-    let mut table = values.to_vec();
-    for level in 1..table.len() {
-        for index in 0..table.len() - level {
-            table[index] =
-                (table[index + 1] - table[index]) / (times[index + level] - times[index]);
+    for level in 1..values.len() {
+        for index in 0..values.len() - level {
+            values[index] =
+                (values[index + 1] - values[index]) / (times[index + level] - times[index]);
         }
     }
-    table[0]
+    values[0]
 }
 
 #[cfg(test)]
@@ -224,8 +225,8 @@ mod tests {
             gaps in proptest::array::uniform3(0.1..1.0f64),
         ) {
             let times = [0.0, gaps[0], gaps[0] + gaps[1], gaps[0] + gaps[1] + gaps[2]];
-            let values = times.map(|t| cubic(c, t).0);
-            prop_assert!((divided_difference(&times, &values) - c[3]).abs() < 1e-8);
+            let mut values = times.map(|t| cubic(c, t).0);
+            prop_assert!((divided_difference(&times, &mut values) - c[3]).abs() < 1e-8);
         }
     }
 
@@ -244,8 +245,8 @@ mod tests {
             // An error e in the derivative becomes an error e / α in the solved charge.
             let actual = (estimate - derivative(times[3])).abs() / formula.alpha;
             let start = times.len() - (method.order() + 2);
-            let values: Vec<f64> = times[start..].iter().map(|&t| q(t)).collect();
-            let dd = divided_difference(&times[start..], &values);
+            let mut values: Vec<f64> = times[start..].iter().map(|&t| q(t)).collect();
+            let dd = divided_difference(&times[start..], &mut values);
             let predicted = method.truncation_error(step, dd);
             assert!(
                 (actual / predicted - 1.0).abs() < 0.05,

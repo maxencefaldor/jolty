@@ -1,7 +1,7 @@
 //! Newton iteration on the circuit's equations.
 
 use jolty_models::{Contributions, Input, Quantity};
-use jolty_numerics::reduce;
+use jolty_numerics::{Pattern, reduce};
 use rayon::prelude::*;
 
 use crate::elaborated::Elaborated;
@@ -41,7 +41,7 @@ fn step_error((value, step): (f64, f64), quantity: Quantity, options: &Options) 
 /// Does `each` for every chunk of `values` and the index of its first value: for one chunk
 /// of them all on the calling thread without `inside`, and else for a chunk per thread
 /// `inside` gives, on the threads of the current rayon pool.
-fn each_chunk<T: Send>(
+pub(crate) fn each_chunk<T: Send>(
     values: &mut [T],
     inside: Option<Inside>,
     each: impl Fn(usize, &mut [T]) + Sync,
@@ -78,7 +78,11 @@ fn each_chunk_pair(
 
 /// Whether `holds` holds of every index below `count`, asked on the calling thread without
 /// `inside`, and else on the threads of the current rayon pool: the same answer either way.
-fn all(count: usize, inside: Option<Inside>, holds: impl Fn(usize) -> bool + Sync + Send) -> bool {
+pub(crate) fn all(
+    count: usize,
+    inside: Option<Inside>,
+    holds: impl Fn(usize) -> bool + Sync + Send,
+) -> bool {
     match inside {
         None => (0..count).all(holds),
         Some(inside) => (0..count)
@@ -86,6 +90,58 @@ fn all(count: usize, inside: Option<Inside>, holds: impl Fn(usize) -> bool + Syn
             .with_min_len(inside.chunk(count))
             .all(holds),
     }
+}
+
+/// What `each` finds of each of the ranges [`reduce::CHUNK`] long that the indices below
+/// `count` fall into, in their order, on the calling thread without `inside`, and else on
+/// the threads of the current rayon pool: the ranges are the same however many threads
+/// take them, so a fold of the findings in their order is the same bits on any number.
+pub(crate) fn pieces<R: Send>(
+    count: usize,
+    inside: Option<Inside>,
+    each: impl Fn(std::ops::Range<usize>) -> R + Sync + Send,
+) -> Vec<R> {
+    let range = |piece: usize| piece * reduce::CHUNK..count.min((piece + 1) * reduce::CHUNK);
+    let pieces = count.div_ceil(reduce::CHUNK);
+    match inside {
+        None => (0..pieces).map(|piece| each(range(piece))).collect(),
+        Some(_) => (0..pieces)
+            .into_par_iter()
+            .map(|piece| each(range(piece)))
+            .collect(),
+    }
+}
+
+/// Writes into `matrix` the matrix `G + αC` of the equations of a time step whose formula
+/// weighs the new charges by `alpha`, from the conductances and capacitances of
+/// `contributions`, its stored entries split as `inside` says.
+pub(crate) fn step_matrix(
+    matrix: &mut [f64],
+    contributions: &Contributions,
+    alpha: f64,
+    inside: Option<Inside>,
+) {
+    let (conductance, capacitance) = (&contributions.conductance, &contributions.capacitance);
+    each_chunk(matrix, inside, |start, chunk| {
+        let stored = conductance[start..].iter().zip(&capacitance[start..]);
+        for (entry, (conductance, capacitance)) in chunk.iter_mut().zip(stored) {
+            *entry = conductance + alpha * capacitance;
+        }
+    });
+}
+
+/// Adds to `into` the product of the matrix of `pattern` whose stored values are `values`
+/// and the vector `x`, each row's terms in the order of their columns, its rows split as
+/// `inside` says: the same bits however they are.
+pub(crate) fn add_product(
+    pattern: &Pattern,
+    (values, x): (&[f64], &[f64]),
+    into: &mut [f64],
+    inside: Option<Inside>,
+) {
+    each_chunk(into, inside, |start, chunk| {
+        pattern.add_product_from(start, values, x, chunk);
+    });
 }
 
 /// The sum of the `count` terms `term` gives, by [`reduce::sum`]'s fixed order, on the
@@ -104,8 +160,10 @@ pub(crate) struct Workspace {
     /// What the devices added; after [`Simulator::combine`], the residual is the full
     /// residual of the system being solved.
     pub(crate) contributions: Contributions,
-    /// The Jacobian of the system being solved, by pattern slot.
-    jacobian: Vec<f64>,
+    /// The Jacobian of the system being solved, by pattern slot; once a Newton iteration
+    /// has ended, the space where the matrix of a step's equations is written to be
+    /// factored, as the next iteration writes it again.
+    pub(crate) jacobian: Vec<f64>,
     /// `|J|·|x|` of each equation: how much its residual moves when every unknown moves by
     /// its own magnitude, which bounds the residual's floating-point resolution.
     resolution: Vec<f64>,
@@ -378,14 +436,7 @@ impl Simulator {
                 }
             }
             Mode::Step { alpha, history, .. } => {
-                let (conductance, capacitance) =
-                    (&contributions.conductance, &contributions.capacitance);
-                each_chunk(jacobian, inside, |start, chunk| {
-                    let stored = conductance[start..].iter().zip(&capacitance[start..]);
-                    for (jacobian, (conductance, capacitance)) in chunk.iter_mut().zip(stored) {
-                        *jacobian = conductance + alpha * capacitance;
-                    }
-                });
+                step_matrix(jacobian, contributions, alpha, inside);
                 let Contributions {
                     residual,
                     scale,
