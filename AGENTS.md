@@ -41,10 +41,10 @@ The Rust workspace, in `crates/`, is ordered.
 Each crate depends only on the crates listed before it:
 
 1. `jolty-ir`: the circuit format, its names and its validation.
-1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, the gather that assembles a system's values in a fixed order, and integration formulas.
+1. `jolty-numerics`: sparsity patterns, sparse LU over real and complex numbers, the gather that assembles a system's values in a fixed order, sums of many terms in one fixed order on any number of threads, and integration formulas.
 1. `jolty-expressions`: the expression language of behavioral sources, compiled and evaluated with its exact gradient.
 1. `jolty-models`: the kernels that compute each device model one instance at a time, the groups that evaluate a kernel's instances together, serially or across threads, into a slab, and the twins that differentiate one instance with respect to one of its parameters, and the standard library of devices.
-1. `jolty-engine`: elaboration of a hierarchy, once per structure, into a circuit that every run of it shares, each run preparing its devices' instances again for the numbers it replaces; Newton iteration with SPICE's convergence aids; the analyses, which count their work and, when asked, time it, and spread their frequencies across threads; the measures specs read of their results; and the batch executor, which runs many runs of one circuit across threads, each a pure function of its index.
+1. `jolty-engine`: elaboration of a hierarchy, once per structure, into a circuit that every run of it shares, each run preparing its devices' instances again for the numbers it replaces; Newton iteration with SPICE's convergence aids, which for a large circuit spreads its work on each unknown across threads; the analyses, which count their work and, when asked, time it, and spread their frequencies across threads; the measures specs read of their results; and the batch executor, which runs many runs of one circuit across threads, each a pure function of its index.
 1. `jolty-checks`: the rules: structural ones, which read the elaborated circuit through the branches each device declares, and those on the circuit linearized at its operating point.
 1. `jolty-python`: the Python extension module `jolty._core`, which adapts the engine and nothing more.
 

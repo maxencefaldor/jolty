@@ -1,8 +1,9 @@
 //! The same circuits simulate the same however many threads or shards run them: a batch at
 //! 1, 2, 3 and 8 threads, and split into ranges, hands on the same outcomes and summary,
-//! and a run's small-signal analyses and sensitivities find the same numbers however
-//! their frequencies and right-hand sides spread. Every comparison is of every number's
-//! bits, with `f64::to_bits`.
+//! and a run finds the same numbers however its small-signal analyses' frequencies, its
+//! sensitivities' right-hand sides, its devices' instances and its Newton iteration's
+//! work on each unknown spread. Every comparison is of every number's bits, with
+//! `f64::to_bits`.
 #![cfg(test)]
 
 use std::collections::BTreeMap;
@@ -15,8 +16,8 @@ use jolty_engine::batch::{Batch, Measured, Outcome, Sink, Summary, Variants};
 use jolty_engine::measure::{Measure, Signal};
 use jolty_engine::variants::{Axis, Explicit, Grid, MonteCarlo, Product, Toleranced, toleranced};
 use jolty_engine::{
-    Analysis, Derivatives, Elaborated, Options, Parallelism, Record, SimulationError, Simulator,
-    Structure, Values,
+    Analysis, Derivatives, Elaborated, OperatingPoints, Options, Parallelism, Record,
+    SimulationError, Simulator, Structure, Values,
 };
 use jolty_ir::{Circuit, Distribution, Lot, Name, Tolerance};
 use jolty_models::Library;
@@ -66,6 +67,11 @@ fn bits(outcome: &Result<jolty_engine::Outcome, SimulationError>) -> Bits {
     let mut numbers = Vec::new();
     match outcome {
         Ok(Found::OperatingPoint(point)) => reals(&point.values, &mut numbers),
+        Ok(Found::OperatingPoints(points)) => {
+            for point in points {
+                reals(&point.values, &mut numbers);
+            }
+        }
         Ok(Found::Ac(response)) => {
             reals(&response.operating_point.values, &mut numbers);
             for row in response.values.iter().chain(&response.currents) {
@@ -1134,46 +1140,105 @@ fn a_warm_chain_through_a_kernels_numbers_evaluates_each_runs() {
     }
 }
 
-/// A run whose options let its devices evaluate in parallel finds, on pools of 2, 3 and 8
-/// threads and in tasks of 1, 3 and 64 instances, the bits it finds on its own thread:
-/// the amplifier's operating point, response and transient, through its transistor's
-/// kernel and every other device's.
-#[test]
-fn devices_evaluated_in_parallel_find_what_they_find_on_one_thread() {
-    let (circuit, analyses, options) = benchmark("bjt_amp");
-    let elaborated = shared(&circuit);
-    let serial: Vec<Bits> = {
+/// The ways the runs below spread their own work: devices evaluated in tasks of 1, 3 and
+/// 64 instances, the Newton iteration's work on each unknown and each stored entry split
+/// in a chunk per thread, and both at once.
+const SPREADS: [(Option<usize>, Option<usize>); 5] = [
+    (Some(1), None),
+    (Some(3), None),
+    (Some(64), None),
+    (None, Some(1)),
+    (Some(3), Some(1)),
+];
+
+/// Asserts that `analyses` of `circuit` with `options`, run on pools of 2, 3 and 8 threads
+/// and spread each way of [`SPREADS`], find the bits they find on the run's own thread.
+fn spread_finds_what_one_thread_finds(circuit: &Circuit, analyses: &[Analysis], options: &Options) {
+    let elaborated = shared(circuit);
+    let run = |options: &Options| -> Vec<Bits> {
         let mut simulator =
             Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
         analyses
             .iter()
-            .map(|analysis| bits(&simulator.run(analysis, &options)))
+            .map(|analysis| bits(&simulator.run(analysis, options)))
             .collect()
     };
+    let serial = run(options);
+    assert!(
+        serial.iter().all(|(numbers, _)| !numbers.is_empty()),
+        "{serial:?}"
+    );
     for threads in [2, 3, 8] {
         let pool = ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .expect("a pool");
-        for instances in [1, 3, 64] {
+        for (instances, unknowns) in SPREADS {
             let parallel = Options {
                 parallelism: Parallelism {
-                    min_instances_per_task: Some(instances),
+                    min_instances_per_task: instances,
+                    min_unknowns_inside: unknowns,
                     ..options.parallelism.clone()
                 },
                 ..options.clone()
             };
             assert!(parallel.parallelism.spreads());
-            let found: Vec<Bits> = pool.install(|| {
-                let mut simulator =
-                    Simulator::from_elaborated(Arc::clone(&elaborated), Values::default())
-                        .expect("a run");
-                analyses
-                    .iter()
-                    .map(|analysis| bits(&simulator.run(analysis, &parallel)))
-                    .collect()
-            });
-            assert_eq!(found, serial, "{threads} threads, tasks of {instances}");
+            let found = pool.install(|| run(&parallel));
+            assert_eq!(
+                found, serial,
+                "{threads} threads, tasks of {instances:?} instances, inside from {unknowns:?}"
+            );
         }
     }
+}
+
+/// A run whose options let its devices evaluate in parallel, or its Newton iteration work
+/// on its unknowns in parallel, or both, finds the bits it finds on its own thread: the
+/// amplifier's operating point, response and transient, through its transistor's kernel
+/// and every other device's, and the first ten of the buck converter's thousand periods,
+/// each with four edges, through its switching transistors' and its filter's.
+#[test]
+fn a_run_spread_over_threads_finds_what_it_finds_on_one() {
+    let (circuit, analyses, options) = benchmark("bjt_amp");
+    spread_finds_what_one_thread_finds(&circuit, &analyses, &options);
+    let (circuit, _, options) = benchmark("buck");
+    let periods: Analysis =
+        serde_json::from_value(json!({"transient": {"stop": 2e-5, "method": "trapezoidal"}}))
+            .expect("a transient");
+    spread_finds_what_one_thread_finds(&circuit, &[periods], &options);
+}
+
+/// Two inverters in a loop, each a pair of MOSFETs: a latch, which holds either state and
+/// balances between them.
+fn latch() -> Circuit {
+    let channel = |id: &str, kind: &str, (drain, gate, source): (&str, &str, &str)| {
+        let threshold = if kind == "n" { 0.7 } else { -0.7 };
+        json!({"id": id, "of": {"device": "mosfet"},
+               "parameters": {"channel": kind, "threshold_voltage": threshold,
+                              "transconductance_parameter": 1e-4,
+                              "channel_length_modulation": 0.02,
+                              "width": 1e-5, "length": 1e-6},
+               "terminals": {"drain": drain, "gate": gate, "source": source, "bulk": source}})
+    };
+    let document = json!({
+        "format": "jolty-circuit", "version": 1, "top": "latch",
+        "components": {"latch": {"ports": [{"name": "0", "role": "ground"}], "instances": [
+            {"id": "VDD", "of": {"device": "voltage_source"},
+             "parameters": {"waveform": {"dc": 3.3}},
+             "terminals": {"positive": "vdd", "negative": "0"}},
+            channel("MP1", "p", ("b", "a", "vdd")),
+            channel("MN1", "n", ("b", "a", "0")),
+            channel("MP2", "p", ("a", "b", "vdd")),
+            channel("MN2", "n", ("a", "b", "0")),
+        ]}}
+    });
+    Circuit::from_json(&document.to_string()).expect("a valid circuit")
+}
+
+/// The search for a latch's every DC solution, which deflates each Newton step by the
+/// solutions found before, finds them spread over threads as it finds them on one.
+#[test]
+fn a_deflated_search_spread_over_threads_finds_what_it_finds_on_one() {
+    let search = Analysis::OperatingPoints(OperatingPoints { most: 8 });
+    spread_finds_what_one_thread_finds(&latch(), &[search], &Options::default());
 }

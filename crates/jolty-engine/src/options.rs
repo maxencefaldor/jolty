@@ -45,9 +45,9 @@ impl Record {
 }
 
 /// How a run spreads its own work across the threads of the rayon pool it runs in: the
-/// frequencies of its small-signal analyses, the right-hand sides of its sensitivities, and,
-/// once its devices evaluate in parallel, their instances and its unknowns. No setting
-/// changes any result: every one of them is the same bits however the work is split.
+/// frequencies of its small-signal analyses, the right-hand sides of its sensitivities, its
+/// devices' instances, and its Newton iteration's work on each unknown. No setting changes
+/// any result: every one of them is the same bits however the work is split.
 ///
 /// The caller owns the pool and runs the engine inside it, with `ThreadPool::install`; a
 /// run uses at most its `threads`, and a [batch](crate::batch::Batch) runs each of its runs
@@ -67,8 +67,9 @@ pub struct Parallelism {
     /// The device instances a task evaluates when a run evaluates its devices in
     /// parallel; none, by default, to evaluate them on the run's thread.
     pub min_instances_per_task: Option<usize>,
-    /// The fewest unknowns a circuit has for its Newton iteration's work on each unknown to
-    /// run in parallel; none until it does.
+    /// The fewest unknowns a circuit has for its Newton iteration's work on each unknown and
+    /// each stored entry of its matrix to spread over the threads a run may use; none, by
+    /// default, to keep that work on the run's thread.
     pub min_unknowns_inside: Option<usize>,
 }
 
@@ -93,24 +94,44 @@ impl Parallelism {
     /// A run that may not touches no thread but its own.
     #[must_use]
     pub const fn spreads(&self) -> bool {
-        self.min_solves_per_task.is_some() || self.min_instances_per_task.is_some()
+        self.min_solves_per_task.is_some()
+            || self.min_instances_per_task.is_some()
+            || self.min_unknowns_inside.is_some()
     }
 
-    /// How a run's devices split their evaluation among threads: tasks of
-    /// [`Parallelism::min_instances_per_task`] instances each, then the circuit's `values`
-    /// values gathered in a task per thread the run may use; none, to evaluate them on the
-    /// run's thread, when that is unset or the run may use one thread alone. The bits
-    /// found are the same either way.
+    /// How a run's devices split their evaluation among threads: every group at once, each
+    /// in tasks of [`Parallelism::min_instances_per_task`] of its instances, then the
+    /// values of the circuit's equations gathered in tasks of as many as a thread the run
+    /// may use takes of its `unknowns` unknowns, the residuals in a task per thread and the
+    /// matrix's stored entries in as many more as there are more of them; none, to evaluate
+    /// them on the run's thread, when that is unset, the circuit's `instances` fill no more
+    /// than one task, or the run may use one thread alone. The bits found are the same
+    /// either way.
     #[must_use]
-    pub fn evaluation(&self, values: usize) -> Option<jolty_models::Tasks> {
-        let instances = NonZeroUsize::new(self.min_instances_per_task?)?;
+    pub fn evaluation(&self, instances: usize, unknowns: usize) -> Option<jolty_models::Tasks> {
+        let per_task = NonZeroUsize::new(self.min_instances_per_task?)?;
         let threads = rayon::current_num_threads();
         let threads = self.threads.map_or(threads, |most| most.min(threads));
-        if threads < 2 {
+        if threads < 2 || instances <= per_task.get() {
             return None;
         }
-        let targets = NonZeroUsize::new(values.div_ceil(threads).max(1))?;
+        let instances = per_task;
+        let targets = NonZeroUsize::new(unknowns.div_ceil(threads).max(1))?;
         Some(jolty_models::Tasks { instances, targets })
+    }
+
+    /// How a run's Newton iteration splits its work on each of the circuit's `unknowns`
+    /// unknowns and on each stored entry of its matrix among threads: in chunks of the
+    /// unknowns, or of the entries, a thread the run may use each takes, once the circuit
+    /// has at least [`Parallelism::min_unknowns_inside`] unknowns and the run may use two
+    /// threads or more; none, to do it all on the run's thread. The bits found are the
+    /// same either way.
+    #[must_use]
+    pub(crate) fn inside(&self, unknowns: usize) -> Option<Inside> {
+        let least = self.min_unknowns_inside?;
+        let threads = rayon::current_num_threads();
+        let threads = self.threads.map_or(threads, |most| most.min(threads));
+        (threads >= 2 && unknowns >= least.max(1)).then_some(Inside { threads })
     }
 
     /// `each` of every one of `items`, in their order, spread over [`Parallelism::tasks`]
@@ -140,6 +161,20 @@ impl Parallelism {
             })
             .collect();
         parts.into_iter().flatten().collect()
+    }
+}
+
+/// How a run's Newton iteration splits its work on each unknown and each stored entry:
+/// among `threads` threads, each taking a chunk of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Inside {
+    pub(crate) threads: usize,
+}
+
+impl Inside {
+    /// The chunk of `count` values a thread takes.
+    pub(crate) fn chunk(self, count: usize) -> usize {
+        count.div_ceil(self.threads).max(1)
     }
 }
 

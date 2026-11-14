@@ -19,7 +19,7 @@ use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::OnceLock;
 
-use jolty_numerics::{Entry, GatherMap, Pattern, UNMAPPED};
+use jolty_numerics::{Entry, Fold, GatherMap, Pattern, UNMAPPED};
 use rayon::prelude::*;
 
 use crate::device::lift;
@@ -704,6 +704,7 @@ impl Groups {
                 .collect(),
             slab: Slab::sized(self.sizes),
             layout: Layout::default(),
+            limited: vec![false; self.kernels.len()],
         }
     }
 }
@@ -770,6 +771,9 @@ pub struct Runs {
     slab: Slab,
     /// The layout each instance prepared again claims, to check its shape.
     layout: Layout,
+    /// Whether an instance of each group limited its voltages, as the group's last
+    /// evaluation in parallel found.
+    limited: Vec<bool>,
 }
 
 impl Clone for Runs {
@@ -778,6 +782,7 @@ impl Clone for Runs {
             groups: self.groups.iter().map(|run| run.cloned()).collect(),
             slab: self.slab.clone(),
             layout: self.layout.clone(),
+            limited: self.limited.clone(),
         }
     }
 }
@@ -1122,9 +1127,9 @@ impl Runs {
 
     /// Evaluates every instance of `groups` at `input` and assembles their contributions in
     /// `into`, which it zeroes first: serially without `tasks`, each instance's block added
-    /// as soon as it is written, and else in parallel, in the tasks `tasks` sets, every
-    /// block written first and then gathered. Returns whether an instance limited its
-    /// voltages.
+    /// as soon as it is written, and else in parallel, every group at once and each in the
+    /// tasks of instances `tasks` sets, every block written first and then gathered.
+    /// Returns whether an instance limited its voltages.
     pub fn evaluate(
         &mut self,
         groups: &Groups,
@@ -1139,35 +1144,62 @@ impl Runs {
             [residual.as_mut_slice(), scale, charge],
             [conductance.as_mut_slice(), capacitance],
         );
-        let mut limited = false;
-        for (group, run) in groups.kernels.iter().zip(&mut self.groups) {
+        let runs = groups.kernels.iter().zip(&mut self.groups);
+        let mut blocks = |group: &Group| {
             let count = group.members.len();
-            let (Some(block), Some(stored)) = (
-                split(&mut rows, count * group.unknowns()),
-                split(&mut entries, count * group.stride()),
-            ) else {
-                continue;
-            };
-            let target = if tasks.is_some() {
-                None
-            } else {
-                Some(&mut *into)
-            };
-            let per_task = tasks.map_or(1, |tasks| tasks.instances.get());
-            limited |= run.evaluate(group, input, (block, stored), target, per_task);
-        }
-        if let Some(tasks) = tasks {
-            let per_task = tasks.targets.get();
-            let [residual, scale, charge] = &self.slab.rows;
-            let [conductance, capacitance] = &self.slab.entries;
-            let (rows, slots) = groups.gathers();
-            rows.add_in_parallel(residual, &mut into.residual, per_task);
-            rows.raise_in_parallel(scale, &mut into.scale, per_task);
-            rows.add_in_parallel(charge, &mut into.charge, per_task);
-            slots.add_in_parallel(conductance, &mut into.conductance, per_task);
-            slots.add_in_parallel(capacitance, &mut into.capacitance, per_task);
-        }
-        limited
+            Some((
+                split(&mut rows, count * group.unknowns())?,
+                split(&mut entries, count * group.stride())?,
+            ))
+        };
+        let Some(tasks) = tasks else {
+            let mut limited = false;
+            for (group, run) in runs {
+                if let Some(blocks) = blocks(group) {
+                    limited |= run.evaluate(group, input, blocks, Some(&mut *into), 1);
+                }
+            }
+            return limited;
+        };
+        // Each group writes blocks of its own, and says in a flag of its own whether it
+        // limited, so the groups evaluate at once, as they would one after another.
+        self.limited.resize(groups.kernels.len(), false);
+        let per_task = tasks.instances.get();
+        rayon::scope(|scope| {
+            for ((group, run), limited) in runs.zip(&mut self.limited) {
+                *limited = false;
+                if let Some(blocks) = blocks(group) {
+                    scope.spawn(move |_| {
+                        *limited = run.evaluate(group, input, blocks, None, per_task);
+                    });
+                }
+            }
+        });
+        let per_task = tasks.targets.get();
+        let [residual, scale, charge] = &self.slab.rows;
+        let [conductance, capacitance] = &self.slab.entries;
+        let (rows, slots) = groups.gathers();
+        let Contributions {
+            residual: sums,
+            scale: largest,
+            charge: held,
+            conductance: conducted,
+            capacitance: stored,
+            ..
+        } = into;
+        rows.fold_in_parallel(
+            [residual, scale, charge],
+            [sums, largest, held],
+            [Fold::Add, Fold::Raise, Fold::Add],
+            per_task,
+        );
+        slots.fold_in_parallel(
+            [conductance, capacitance],
+            [conducted, stored],
+            [Fold::Add, Fold::Add],
+            per_task,
+        );
+        self.limited.iter().any(|&limited| limited)
     }
 }
 

@@ -77,9 +77,30 @@ impl PatternBuilder {
         for column in 0..dimension {
             column_starts[column + 1] += column_starts[column];
         }
+        let mut row_starts = vec![0; dimension + 1];
+        for &row in &rows {
+            row_starts[row + 1] += 1;
+        }
+        for row in 0..dimension {
+            row_starts[row + 1] += row_starts[row];
+        }
+        let mut filled = row_starts.clone();
+        let mut by_row = vec![(0, 0); rows.len()];
+        for column in 0..dimension {
+            let (start, end) = (column_starts[column], column_starts[column + 1]);
+            for (offset, &row) in rows[start..end].iter().enumerate() {
+                by_row[filled[row]] = (start + offset, column);
+                filled[row] += 1;
+            }
+        }
         let structure =
             SymbolicSparseColMat::new_checked(dimension, dimension, column_starts, None, rows);
-        Pattern { structure, slots }
+        Pattern {
+            structure,
+            slots,
+            row_starts,
+            by_row,
+        }
     }
 }
 
@@ -89,6 +110,11 @@ impl PatternBuilder {
 pub struct Pattern {
     structure: SymbolicSparseColMat<usize>,
     slots: Vec<usize>,
+    /// Where each row's entries begin among `by_row`.
+    row_starts: Vec<usize>,
+    /// The stored position and the column of each entry, row by row, each row's in the
+    /// order of their columns.
+    by_row: Vec<(usize, usize)>,
 }
 
 impl Pattern {
@@ -135,6 +161,17 @@ impl Pattern {
         }
     }
 
+    /// The stored position and the column of each entry of `row`, in the order of their
+    /// columns: the order in which [`Pattern::positions`] meets them.
+    #[must_use]
+    pub fn row(&self, row: usize) -> &[(usize, usize)] {
+        let (Some(&start), Some(&end)) = (self.row_starts.get(row), self.row_starts.get(row + 1))
+        else {
+            return &[];
+        };
+        &self.by_row[start..end]
+    }
+
     pub(crate) fn structure(&self) -> &SymbolicSparseColMat<usize> {
         &self.structure
     }
@@ -161,6 +198,11 @@ mod tests {
         assert_eq!(
             [pattern.slot(b), pattern.slot(a), pattern.slot(d)],
             [0, 1, 2]
+        );
+        // Each row's entries, by stored position and column, in the order of the columns.
+        assert_eq!(
+            [pattern.row(0), pattern.row(1), pattern.row(2)],
+            [&[(0, 0)][..], &[(2, 2)], &[(1, 0)]]
         );
     }
 

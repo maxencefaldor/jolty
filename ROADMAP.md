@@ -7,7 +7,6 @@ Items keep their numbers; each leaves this file when it lands on `main`, and its
 
 | # | Item | Waits for |
 | --- | --- | --- |
-| 6 | Devices evaluated and assembled in parallel, bit for bit the same whatever the number of threads, as AC, noise, stability and sensitivity already spread their frequencies and right-hand sides. | 2 |
 | 7 | Fewer transient steps without heuristics, each benchmarked against ngspice: variable-order BDF and dense output at requested times. At default options jolty takes within 2% of ngspice 47's accepted steps on every example. On the benchmarks' synchronous buck it takes 90,774 attempts to ngspice's 56,624 time points, because it bounds the integration error of every charge, the MOSFETs' bulk junctions' among them, where ngspice's `MOS1trunc` judges only the gate charges: ngspice made to judge the junctions too takes 143,339, so at equal error control jolty takes 37% fewer steps. | A circuit where they are |
 | 8 | A benchmark of what jolty gives an agent: the same tasks done with jolty and with ngspice, compared by success and by iterations. | A design |
 | 12 | A parallel sparse LU, by partitioning along the circuit's hierarchy: each component instance's interior factored apart, its ports a border factored last, as in Basker. Pivoting within a level of columns (NICSLU) gives 1.0–1.4× on the benchmarks' meshes, and a pipelined refactorization 1.65× on four threads, so it is not done. | The many-cores plan's Phase 5 |
