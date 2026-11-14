@@ -1087,7 +1087,7 @@ fn toleranced(circuit: &str) -> PyResult<Vec<(String, String, f64, String)>> {
         .collect()
 }
 
-#[pymodule(name = "_core")]
+#[pymodule(name = "_core", gil_used = false)]
 fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     module.add_class::<Simulator>()?;

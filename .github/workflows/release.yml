@@ -33,7 +33,7 @@ jobs:
           test "$tag" = "$python" && test "$tag" = "$rust"
 
   wheels:
-    name: Wheel for ${{ matrix.os }} ${{ matrix.target }}
+    name: Wheel for Python ${{ matrix.python }} on ${{ matrix.os }} ${{ matrix.target }}
     needs: check
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -41,24 +41,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, target: x86_64, manylinux: "2_28" }
-          - { os: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28" }
-          - { os: macos-15, target: aarch64, manylinux: "off" }
-          - { os: macos-15-intel, target: x86_64, manylinux: "off" }
-          - { os: windows-2025, target: x64, manylinux: "off" }
+          - { os: ubuntu-24.04, target: x86_64, manylinux: "2_28", python: "3.15" }
+          - { os: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28", python: "3.15" }
+          - { os: macos-15, target: aarch64, manylinux: "off", python: "3.15" }
+          - { os: macos-15-intel, target: x86_64, manylinux: "off", python: "3.15" }
+          - { os: windows-2025, target: x64, manylinux: "off", python: "3.15" }
+          - { os: ubuntu-24.04, target: x86_64, manylinux: "2_28", python: "3.15t" }
+          - { os: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28", python: "3.15t" }
+          - { os: macos-15, target: aarch64, manylinux: "off", python: "3.15t" }
+          - { os: macos-15-intel, target: x86_64, manylinux: "off", python: "3.15t" }
+          - { os: windows-2025, target: x64, manylinux: "off", python: "3.15t" }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.15"
+          python-version: ${{ matrix.python }}
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
-          args: --release --out dist --interpreter python3.15
+          args: --release --out dist --interpreter python${{ matrix.python }}
       - uses: actions/upload-artifact@v7
         with:
-          name: wheel-${{ matrix.os }}-${{ matrix.target }}
+          name: wheel-${{ matrix.python }}-${{ matrix.os }}-${{ matrix.target }}
           path: dist
 
   sdist:
