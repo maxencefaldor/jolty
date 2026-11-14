@@ -4,11 +4,13 @@
 Usage: ``uv run python benchmarks/run.py [--arm ARM] TASK [AGENT ...]``, where ``TASK``
 is a task's directory, such as ``benchmarks/cost_down``, ``ARM`` the tools the agent
 has, ``jolty`` by default or ``ngspice``, and ``AGENT`` the command that runs the agent,
-Claude Code by default. The runner copies the files the arm gets of the task, and only
-those, into a fresh working directory, runs the agent there with the arm's prompt of the
-task as its last argument, keeps what it printed in ``transcript.txt``, and scores the
-directory with the task's own scorer, which the agent never sees. It prints the working
-directory and the verdict, and exits with 0 when the work meets the task.
+Claude Code by default: every word the runner does not read, verbatim and in order, and
+every word after ``--``, even one the runner reads, such as ``--arm``. The runner copies
+the files the arm gets of the task, and only those, into a fresh working directory,
+runs the agent there with the arm's prompt of the task as its last argument, keeps what
+it printed in ``transcript.txt``, and scores the directory with the task's own scorer,
+which the agent never sees. It prints the working directory and the verdict, and exits
+with 0 when the work meets the task.
 
 An agent of the jolty arm has jolty's command line and MCP server on its path. One of
 the ngspice arm has ngspice, and a Python of its own with numpy, scipy and matplotlib
@@ -21,7 +23,6 @@ With ``-`` as the agent, it only prepares the working directory and prints it, f
 agent started some other way; ``score.py`` scores the directory afterwards.
 """
 
-import argparse
 import json
 import os
 import shlex
@@ -35,8 +36,11 @@ from pathlib import Path
 from typing import Final
 
 from arms import Arm, given, prompt
-from pydantic import BaseModel
+from pydantic import Field
+from pydantic_settings import CliPositionalArg, CliUnknownArgs, SettingsConfigDict
 from verdict import Verdict
+
+from jolty import cli
 
 MCP: dict[str, object] = {"mcpServers": {"jolty": {"command": "jolty-mcp"}}}
 """The MCP configuration that gives the agent jolty's server."""
@@ -244,31 +248,42 @@ def run(task: Path, agent: list[str], work: Path, arm: Arm = Arm.JOLTY) -> int:
     return 0 if ran.verdict.met else 1
 
 
-class Arguments(BaseModel):
-    """The runner's arguments."""
+class Runner(cli.CommandLine):
+    """Run one agent on a benchmark task, on its own, then score what it did.
 
-    arm: Arm
-    task: Path
-    agent: list[str]
+    The agent's command follows the task, or ``--``, after which every word is the
+    agent's: Claude Code by default, or ``-`` to only prepare the working directory.
+    """
 
-
-def main() -> None:
-    """Runs the agent given, or Claude Code, on the task given."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--arm", type=Arm, choices=list(Arm), default=Arm.JOLTY, help="its tools"
+    # The agent's command is the words the runner does not read, verbatim and in order.
+    model_config = SettingsConfigDict(
+        cli_prog_name="benchmarks/run.py", cli_ignore_unknown_args=True
     )
-    parser.add_argument("task", type=Path, help="the task's directory")
-    parser.add_argument("agent", nargs=argparse.REMAINDER, help="the agent's command")
-    arguments = Arguments.model_validate(vars(parser.parse_args()))
-    task = arguments.task.resolve()
-    agent = arguments.agent or default_agent(arguments.arm)
-    work = Path(tempfile.mkdtemp(prefix=f"jolty-{task.name}-"))
-    if agent == ["-"]:
-        prepare(task, work, arguments.arm)
-        print(work)
-        raise SystemExit(0)
-    raise SystemExit(run(task, agent, work, arguments.arm))
+
+    arm: Arm = Field(default=Arm.JOLTY, description="The tools the agent has.")
+    task: CliPositionalArg[Path] = Field(description="The task's directory.")
+    agent: CliUnknownArgs = Field(description="The command that runs the agent.")
+
+    def cli_cmd(self) -> None:
+        """Runs the agent given, or Claude Code, on the task given.
+
+        Raises:
+            SystemExit: With 0 when the work meets the task, or once the directory is
+                prepared, and 1 when it falls short.
+        """
+        task = self.task.resolve()
+        agent = self.agent or default_agent(self.arm)
+        work = Path(tempfile.mkdtemp(prefix=f"jolty-{task.name}-"))
+        if agent == ["-"]:
+            prepare(task, work, self.arm)
+            print(work)
+            raise SystemExit(0)
+        raise SystemExit(run(task, agent, work, self.arm))
+
+
+def main(arguments: list[str] | None = None) -> None:
+    """Runs the command line, `arguments` or the process's own."""
+    cli.run(Runner, arguments)
 
 
 if __name__ == "__main__":

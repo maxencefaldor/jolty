@@ -13,13 +13,15 @@ Each task's own ``scorer.py``, which the agent never sees, defines
 arm writes it, then judges both arms by the same code.
 """
 
-import argparse
 import importlib.util
 from pathlib import Path
 
 from arms import Arm
-from pydantic import BaseModel
+from pydantic import Field
+from pydantic_settings import CliPositionalArg, SettingsConfigDict
 from verdict import Verdict
+
+from jolty import cli
 
 
 def score(task: Path, work: Path, arm: Arm = Arm.JOLTY) -> Verdict:
@@ -38,31 +40,38 @@ def score(task: Path, work: Path, arm: Arm = Arm.JOLTY) -> Verdict:
     return verdict
 
 
-class Arguments(BaseModel):
-    """The scorer's arguments."""
+class Scorer(cli.CommandLine):
+    """Score an agent's work on a benchmark task, independently of the agent."""
 
-    task: Path
-    work: Path
-    arm: Arm
-    verdict: Path | None
+    model_config = SettingsConfigDict(cli_prog_name="benchmarks/score.py")
 
-
-def main() -> None:
-    """Scores the work in the directory given against the task given."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("task", type=Path, help="the task's directory")
-    parser.add_argument("work", type=Path, help="the directory the agent worked in")
-    parser.add_argument(
-        "--arm", type=Arm, choices=list(Arm), default=Arm.JOLTY, help="its tools"
+    task: CliPositionalArg[Path] = Field(description="The task's directory.")
+    work: CliPositionalArg[Path] = Field(
+        description="The directory the agent worked in."
     )
-    parser.add_argument("--verdict", type=Path, help="a file to write the verdict to")
-    arguments = Arguments.model_validate(vars(parser.parse_args()))
-    verdict = score(arguments.task, arguments.work, arguments.arm)
-    written = verdict.model_dump_json(indent=2)
-    if arguments.verdict is not None:
-        arguments.verdict.write_text(written, encoding="utf-8")
-    print(written)
-    raise SystemExit(0 if verdict.met else 1)
+    arm: Arm = Field(default=Arm.JOLTY, description="The tools the agent had.")
+    verdict: Path | None = Field(
+        default=None, description="A file to write the verdict to."
+    )
+
+    def cli_cmd(self) -> None:
+        """Scores the work in the directory given against the task given.
+
+        Raises:
+            SystemExit: With 0 when the work meets the task, and 1 when it falls
+                short.
+        """
+        verdict = score(self.task, self.work, self.arm)
+        written = verdict.model_dump_json(indent=2)
+        if self.verdict is not None:
+            self.verdict.write_text(written, encoding="utf-8")
+        print(written)
+        raise SystemExit(0 if verdict.met else 1)
+
+
+def main(arguments: list[str] | None = None) -> None:
+    """Runs the command line, `arguments` or the process's own."""
+    cli.run(Scorer, arguments)
 
 
 if __name__ == "__main__":

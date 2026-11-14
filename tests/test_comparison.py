@@ -200,12 +200,12 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
     tmp_path: Path,
 ) -> None:
     from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from compare import Report, compare, wilson  # noqa: PLC0415 - importable only once the path holds it
+    from compare import Agent, Report, compare, wilson  # noqa: PLC0415 - importable only once the path holds it
 
     work = tmp_path / "work"
     work.mkdir()
     path = compare(
-        "stub",
+        Agent.STUB,
         tasks=["cost_down"],
         arms=list(Arm),
         repetitions=2,
@@ -263,7 +263,7 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
     )
     with pytest.raises(FileExistsError):
         compare(
-            "stub",
+            Agent.STUB,
             tasks=["cost_down"],
             arms=[Arm.JOLTY],
             repetitions=1,
@@ -275,12 +275,12 @@ def test_the_comparison_runs_no_session_without_its_programs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from compare import compare  # noqa: PLC0415 - importable only once the path holds it
+    from compare import Agent, compare  # noqa: PLC0415 - importable only once the path holds it
 
     monkeypatch.setenv("PATH", str(tmp_path))
     with pytest.raises(FileNotFoundError, match="claude, ngspice, uv not on the path"):
         compare(
-            "claude",
+            Agent.CLAUDE,
             tasks=["cost_down"],
             arms=list(Arm),
             repetitions=1,
@@ -290,7 +290,7 @@ def test_the_comparison_runs_no_session_without_its_programs(
     monkeypatch.undo()
     with pytest.raises(ValueError, match="lies in the repository"):
         compare(
-            "stub",
+            Agent.STUB,
             tasks=["cost_down"],
             arms=[Arm.JOLTY],
             repetitions=1,
@@ -338,3 +338,102 @@ def test_a_scorer_that_crashes_fails_the_work(
     assert verdict.reasons == (
         "the scorer exited with 1, having written RuntimeError: a broken scorer",
     )
+
+
+def test_the_runner_hands_the_agent_its_words_after_the_dashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import tempfile  # noqa: PLC0415 - patched below, where the runner makes its directory
+
+    from run import main  # noqa: PLC0415 - importable only once the path holds it
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    with pytest.raises(SystemExit) as prepared:
+        main(["--arm", "ngspice", str(COST_DOWN), "-"])
+    assert prepared.value.code == 0
+    work = Path(capsys.readouterr().out.strip())
+    assert work.parent == tmp_path
+    assert sorted(path.name for path in work.iterdir()) == [
+        "bias.cir",
+        "catalog.json",
+        "stage.cir",
+    ]
+    # After the dashes, every word is the agent's as it is: one the runner reads
+    # itself, one with commas, and one that holds JSON.
+    words = ["--arm", "ngspice", "a, b", '{"x": [1, 2]}']
+    agent = [
+        sys.executable,
+        "-c",
+        (
+            "import json, pathlib, sys; "
+            "pathlib.Path('words.json').write_text(json.dumps(sys.argv[1:-1]))"
+        ),
+        *words,
+    ]
+    with pytest.raises(SystemExit) as ran:
+        main([str(COST_DOWN), "--", *agent])
+    assert ran.value.code == 1
+    (work,) = (path for path in tmp_path.iterdir() if (path / "words.json").is_file())
+    assert json.loads((work / "words.json").read_text(encoding="utf-8")) == words
+    assert (work / "bias.py").is_file()
+
+
+def test_the_scorer_s_command_line_prints_and_writes_its_verdict(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from score import main  # noqa: PLC0415 - importable only once the path holds it
+    from verdict import Verdict  # noqa: PLC0415 - importable only once the path holds it
+
+    path = tmp_path / "verdict.json"
+    with pytest.raises(SystemExit) as scored:
+        main(
+            [str(COST_DOWN), str(tmp_path), "--arm", "ngspice", "--verdict", str(path)]
+        )
+    assert scored.value.code == 1
+    verdict = Verdict.model_validate_json(path.read_text(encoding="utf-8"))
+    assert verdict.reasons == (f"there is no {tmp_path / 'design.cir'}",)
+    assert Verdict.model_validate_json(capsys.readouterr().out) == verdict
+
+
+def test_the_comparison_s_command_line_reads_lists_and_refuses_bad_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import compare  # noqa: PLC0415 - importable only once the path holds it
+    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
+
+    asked: list[dict[str, object]] = []
+
+    def recorded(agent: compare.Agent, **options: object) -> Path:
+        asked.append({"agent": agent, **options})
+        return tmp_path / "report.json"
+
+    monkeypatch.setattr(compare, "compare", recorded)
+    results = tmp_path / "results"
+    compare.main(
+        [
+            *("--agent", "stub", "--tasks", "cost_down,balun", "--arms", "ngspice"),
+            *("--repetitions", "2", "--results", str(results)),
+        ]
+    )
+    assert asked == [
+        {
+            "agent": compare.Agent.STUB,
+            "tasks": ["cost_down", "balun"],
+            "arms": [Arm.NGSPICE],
+            "repetitions": 2,
+            "results": results,
+            "model": None,
+            "work": None,
+        }
+    ]
+    assert results.is_dir()
+    assert capsys.readouterr().out == f"{tmp_path / 'report.json'}\n"
+    with pytest.raises(SystemExit) as refused:
+        compare.main(["--repetitions", "0", "--tasks", "cost_down,nonesuch"])
+    assert refused.value.code == 2
+    assert capsys.readouterr().err == (
+        "error: invalid arguments: --repetitions: Input should be greater than or "
+        "equal to 1; --tasks: Value error, no task is named nonesuch; there are "
+        f"{', '.join(compare.TASKS)}\n"
+    )
+    assert len(asked) == 1

@@ -2,7 +2,7 @@
 """Compare agents that have jolty with agents that have ngspice alone, task by task.
 
 Usage: ``uv run python benchmarks/compare.py [--agent AGENT] [--model MODEL]
-[--repetitions N] [--tasks TASK ...] [--arms ARM ...] [--results DIRECTORY]
+[--repetitions N] [--tasks TASK,...] [--arms ARM,...] [--results DIRECTORY]
 [--work DIRECTORY]``.
 
 It runs ``N`` sessions of the agent per arm per task, 5 by default, each as run.py runs
@@ -30,7 +30,6 @@ The agents are ``claude``, Claude Code as run.py runs it, on the model ``--model
 names, if any, and ``stub``, stub.py, which writes a known good design for nothing.
 """
 
-import argparse
 import datetime as dt
 import importlib.metadata
 import json
@@ -43,13 +42,17 @@ import sys
 import tempfile
 from collections import Counter
 from collections.abc import Sequence
+from enum import StrEnum
 from pathlib import Path
-from typing import Final, Literal
+from typing import Annotated, Final
 
 from arms import Arm
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic_settings import SettingsConfigDict
 from run import SIMULATIONS, TRANSCRIPT, VERDICT, default_agent, session
 from transcript import Session, read
+
+from jolty import cli
 
 # jolty's own 95 % interval of a yield's rate, which jolty.specs keeps to itself.
 from jolty.specs._requirements import _wilson as wilson
@@ -60,12 +63,18 @@ TASKS: Final = tuple(sorted(path.parent.name for path in BENCHMARKS.glob("*/task
 """Every task, by its directory's name."""
 STUB: Final = BENCHMARKS / "stub.py"
 """The stand-in agent."""
-type Agent = Literal["claude", "stub"]
+
+
+class Agent(StrEnum):
+    """The agents a comparison runs: Claude Code, or the stub in its place."""
+
+    CLAUDE = "claude"
+    STUB = "stub"
 
 
 def command(agent: Agent, task: Path, arm: Arm, model: str | None) -> list[str]:
     """The command that runs `agent` of `arm` on `task`, but its prompt."""
-    if agent == "stub":
+    if agent is Agent.STUB:
         return [sys.executable, str(STUB), str(task), str(arm)]
     return [*default_agent(arm), *([] if model is None else ["--model", model])]
 
@@ -319,7 +328,7 @@ def preflight(agent: Agent, arms: Sequence[Arm]) -> None:
         FileNotFoundError: When Claude Code, for it, or ngspice or uv, for the ngspice
             arm, is not on the path.
     """
-    needed = ["claude"] if agent == "claude" else []
+    needed = ["claude"] if agent is Agent.CLAUDE else []
     if Arm.NGSPICE in arms:
         needed += ["ngspice", "uv"]
     missing = [name for name in needed if shutil.which(name) is None]
@@ -420,45 +429,63 @@ def _task(runs: Sequence[Run]) -> Task:
     )
 
 
-class Arguments(BaseModel):
-    """The comparison's arguments."""
+def _task_named(name: str) -> str:
+    """`name`, a task's.
 
-    agent: Agent
-    model: str | None
-    repetitions: int = Field(ge=1)
-    tasks: list[str]
-    arms: list[Arm]
-    results: Path
-    work: Path | None
+    Raises:
+        ValueError: When no task is named `name`.
+    """
+    if name not in TASKS:
+        message = f"no task is named {name}; there are {', '.join(TASKS)}"
+        raise ValueError(message)
+    return name
 
 
-def main() -> None:
-    """Runs the comparison the arguments describe, and prints where its report is."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--agent", choices=["claude", "stub"], default="claude")
-    parser.add_argument("--model", default=None, help="the model Claude Code runs")
-    parser.add_argument("--repetitions", type=int, default=5)
-    parser.add_argument("--tasks", nargs="+", choices=TASKS, default=list(TASKS))
-    parser.add_argument(
-        "--arms", nargs="+", type=Arm, choices=list(Arm), default=list(Arm)
+class Comparison(cli.CommandLine):
+    """Compare agents that have jolty with agents that have ngspice, task by task."""
+
+    model_config = SettingsConfigDict(cli_prog_name="benchmarks/compare.py")
+
+    agent: Agent = Field(
+        default=Agent.CLAUDE, description="The agent the sessions run."
     )
-    parser.add_argument("--results", type=Path, default=BENCHMARKS / "results")
-    parser.add_argument(
-        "--work", type=Path, default=None, help="where each session's directory is made"
+    model: str | None = Field(default=None, description="The model Claude Code runs.")
+    repetitions: int = Field(
+        default=5, ge=1, description="The sessions per arm per task."
     )
-    arguments = Arguments.model_validate(vars(parser.parse_args()))
-    arguments.results.mkdir(parents=True, exist_ok=True)
-    print(
-        compare(
-            arguments.agent,
-            tasks=arguments.tasks,
-            arms=arguments.arms,
-            repetitions=arguments.repetitions,
-            results=arguments.results,
-            model=arguments.model,
-            work=arguments.work,
+    tasks: list[Annotated[str, AfterValidator(_task_named)]] = Field(
+        default_factory=lambda: list(TASKS),
+        description="The tasks, every one by default.",
+    )
+    arms: list[Arm] = Field(
+        default_factory=lambda: list(Arm), description="The arms, both by default."
+    )
+    results: Path = Field(
+        default=BENCHMARKS / "results", description="Where the report is written."
+    )
+    work: Path | None = Field(
+        default=None, description="Where each session's directory is made."
+    )
+
+    def cli_cmd(self) -> None:
+        """Runs the comparison, and prints where its report is."""
+        self.results.mkdir(parents=True, exist_ok=True)
+        print(
+            compare(
+                self.agent,
+                tasks=self.tasks,
+                arms=self.arms,
+                repetitions=self.repetitions,
+                results=self.results,
+                model=self.model,
+                work=self.work,
+            )
         )
-    )
+
+
+def main(arguments: list[str] | None = None) -> None:
+    """Runs the command line, `arguments` or the process's own."""
+    cli.run(Comparison, arguments)
 
 
 if __name__ == "__main__":
