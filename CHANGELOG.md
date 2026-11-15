@@ -88,6 +88,8 @@ The first release, 0.1.0.
 
 ### Changed
 
+- A Gear2 step's truncation error is estimated with Gear2's error constant at the step's ratio `ω` to the one before it, `(1 + ω)²/(6ω(1 + 2ω))`, and the longest step after it, or in its place where its error rejects it, is solved for at that step's own ratio, where SPICE takes the constant step's 2/9 at every step, which after a step cut to a tenth estimates the error 7.6 times too small.
+  Gear2 runs take other steps, each held to its tolerance after the step's length changes; the trapezoidal formula, the default, and backward Euler, whose constants do not depend on the step before, are unchanged.
 - A yield's Wilson interval is exact at its ends: its lower end is 0 when no sample passes, and its upper end 1 when every sample does, where they were rounding, such as 1.084e-17 for none of 2,000.
 - jolty requires Python 3.15 or newer, the version CI tests and the one whose lazy modules (PEP 810) start a command without importing matplotlib; the extension is built for the stable ABI of 3.15.
 - Monte Carlo samples are drawn by the engine, each factor from the seed, the sample's index and the name of its part or its lot alone, through ChaCha20, so that sample `i` is the same drawn alone or among any others, on any thread, and a part added leaves every other part's draws as they were.

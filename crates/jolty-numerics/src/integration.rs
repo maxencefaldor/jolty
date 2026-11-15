@@ -37,35 +37,132 @@ impl Method {
         }
     }
 
-    /// The local truncation error of a step of length `step`, estimated from the divided
-    /// difference of order `p + 1` of the charge over the step's last `p + 2` points.
-    ///
-    /// The error of a step is `C h^{p+1} q^{(p+1)}`, and the derivative is estimated as
-    /// `q^{(p+1)} ≈ (p+1)! · q[t_{n-p}, …, t_{n+1}]`, where `C` is ½ for backward Euler, 1/12
-    /// for the trapezoidal formula and 2/9 for Gear2.
+    /// Whether a step's formula and its error read the step before it, as Gear2's do; a
+    /// one-step formula's read the step alone.
     #[must_use]
-    pub fn truncation_error(self, step: f64, divided_difference: f64) -> f64 {
-        let power = step.powi(self.exponent());
-        self.constant_times_factorial() * power * divided_difference.abs()
+    pub const fn is_multistep(self) -> bool {
+        matches!(self, Self::Gear2)
     }
 
-    /// The longest step whose truncation error, by `divided_difference`, stays within the
-    /// larger of a tolerance `charge` on the charge and one on the current it carries,
-    /// `rate` times the step.
+    /// The local truncation error of a step of length `step` that follows one of length
+    /// `previous_step`, estimated from the divided difference of order `p + 1` of the charge
+    /// over the step's last `p + 2` points.
     ///
-    /// The error `K h^{p+1}` meets the first at `(charge / K)^{1/(p+1)}` and the second at
-    /// `(rate / K)^{1/p}`, as that tolerance grows with the step; the longest step is the
-    /// longer of the two, and unbounded when the divided difference vanishes.
+    /// The error of a step is `C h^{p+1} q^{(p+1)}`, and the derivative is estimated as
+    /// `q^{(p+1)} ≈ (p+1)! · q[t_{n-p}, …, t_{n+1}]`, the divided difference taken at the
+    /// points' own times. `C` is ½ for backward Euler and 1/12 for the trapezoidal formula,
+    /// whatever the previous step. For Gear2, `C = (1 + ω)² / (6 ω (1 + 2ω))`, where `ω` is
+    /// the step's length over the previous one's: the derivative of the quadratic through
+    /// the step's three points misses `h (h + h/ω) q'''/6`, which the formula's coefficient
+    /// of the derivative, `h (1 + ω)/(1 + 2ω)`, turns into an error in the charge. It is 2/9
+    /// at a constant step, SPICE's constant at any step, and 7.6 times that after a step
+    /// cut to a tenth.
     #[must_use]
-    pub fn longest_step(self, divided_difference: f64, charge: f64, rate: f64) -> f64 {
-        let coefficient = self.constant_times_factorial() * divided_difference.abs();
+    pub fn truncation_error(self, step: f64, previous_step: f64, divided_difference: f64) -> f64 {
+        let power = step.powi(self.exponent());
+        self.constant(step / previous_step) * self.factorial() * power * divided_difference.abs()
+    }
+
+    /// The longest step after one of length `previous_step` whose truncation error, by
+    /// `divided_difference`, stays within the larger of a tolerance `charge` on the charge
+    /// and one on the current it carries, `rate` times the step: the
+    /// [common longest step](Method::longest_common_step) of that one charge, unbounded when
+    /// the divided difference vanishes.
+    #[must_use]
+    pub fn longest_step(
+        self,
+        previous_step: f64,
+        divided_difference: f64,
+        charge: f64,
+        rate: f64,
+    ) -> f64 {
+        let unit = self.unit_steps(divided_difference, charge, rate);
+        let constant_step = longest_at(unit, self.scales(1.0));
+        self.longest_common_step(previous_step, constant_step, |scales| {
+            longest_at(unit, scales)
+        })
+    }
+
+    /// A charge's longest steps at a constant step's error constant: where its error
+    /// `K h^{p+1}`, `K` that constant times its divided difference times `(p+1)!`, meets its
+    /// tolerance `charge` on the charge, at `(charge / K)^{1/(p+1)}`, and meets its tolerance
+    /// on the current it carries, `rate` times the step, at `(rate / K)^{1/p}`; both
+    /// unbounded when the divided difference vanishes. For a step of another ratio to the
+    /// one before it, they are these times its [scales](Method::scales).
+    #[must_use]
+    pub fn unit_steps(self, divided_difference: f64, charge: f64, rate: f64) -> (f64, f64) {
+        let coefficient = self.constant(1.0) * self.factorial() * divided_difference.abs();
         if coefficient == 0.0 {
-            return f64::INFINITY;
+            return (f64::INFINITY, f64::INFINITY);
         }
-        let order = f64::from(self.exponent() - 1);
-        let by_charge = (charge / coefficient).powf((order + 1.0).recip());
-        let by_current = (rate / coefficient).powf(order.recip());
-        by_charge.max(by_current)
+        let (by_charge, by_current) = self.powers();
+        (
+            (charge / coefficient).powf(by_charge),
+            (rate / coefficient).powf(by_current),
+        )
+    }
+
+    /// The factors a step `ratio` times as long as the one before it scales a charge's
+    /// [unit steps](Method::unit_steps) by: `(C/C₁)^{-1/(p+1)}`, for the step its tolerance on
+    /// the charge allows, and `(C/C₁)^{-1/p}`, for the one its tolerance on the current
+    /// allows, `C` the error constant of such a step and `C₁` a constant step's. Both are 1 at
+    /// a ratio of 1, and at any ratio for a one-step formula, whose constant reads no step
+    /// before.
+    #[must_use]
+    pub fn scales(self, ratio: f64) -> (f64, f64) {
+        let relative = self.constant(ratio) / self.constant(1.0);
+        let (by_charge, by_current) = self.powers();
+        (relative.powf(-by_charge), relative.powf(-by_current))
+    }
+
+    /// The longest step after one of length `previous_step` that keeps every charge's
+    /// truncation error within its tolerance, given `constant_step`, the shortest of the
+    /// charges' [longest steps](longest_at) at a constant step's [scales](Method::scales) and
+    /// the tolerance that holds it, and `shortest`, which returns the same at the scales of
+    /// any ratio.
+    ///
+    /// A one-step formula's error constant does not depend on the step, so its longest step is
+    /// the constant step's, and `shortest` is never called. Gear2's depends on the step's ratio `u = h/h₀` to the
+    /// previous one ([`Method::truncation_error`]), the same for every charge, so its longest
+    /// step is the fixed point of `h = Λ(C(h/h₀))`, `Λ` the shortest: in `x = ln h`, the
+    /// difference `ln Λ − x` falls with a slope between −1 and −½, since `ln C` falls with
+    /// `ln u` with a slope between −1 and 0 and `Λ` grows as `C^{-1/3}` or `C^{-1/2}`. Newton's
+    /// iteration on it, from the previous step's length, contracts to the fixed point, and
+    /// stops where a step moves it by less than a float's resolution, or no longer shrinks.
+    pub fn longest_common_step(
+        self,
+        previous_step: f64,
+        constant_step: (f64, Bound),
+        mut shortest: impl FnMut((f64, f64)) -> (f64, Bound),
+    ) -> f64 {
+        if !self.is_multistep() {
+            return constant_step.0;
+        }
+        let (by_charge, by_current) = self.powers();
+        let mut step = previous_step;
+        let mut found = constant_step;
+        let mut moved = f64::INFINITY;
+        loop {
+            let ratio = step / previous_step;
+            let (reach, bound) = found;
+            if !reach.is_finite() || reach <= 0.0 {
+                return reach;
+            }
+            let power = match bound {
+                Bound::Charge => by_charge,
+                Bound::Current => by_current,
+            };
+            // The slope of ln Λ(C(h/h₀)) in ln h, and Newton's step on ln Λ − ln h.
+            let slope = -power * gear2_elasticity(ratio);
+            let next = step * (reach / step).powf((1.0 - slope).recip());
+            let change = (next - step).abs();
+            if change.is_nan() || change <= f64::EPSILON * step || change >= moved {
+                return next.min(step);
+            }
+            moved = change;
+            step = next;
+            found = shortest(self.scales(step / previous_step));
+        }
     }
 
     /// `(p+1)!`, the factorial that turns a divided difference of order `p + 1` into a
@@ -79,15 +176,22 @@ impl Method {
         }
     }
 
-    /// The constant of the leading error term times [`Method::factorial`]: ½ · 2! for
-    /// backward Euler, 1/12 · 3! for the trapezoidal formula and 2/9 · 3! for Gear2.
-    fn constant_times_factorial(self) -> f64 {
-        let constant = match self {
+    /// The constant of the leading error term of a step `ratio` times as long as the one
+    /// before it: ½ for backward Euler and 1/12 for the trapezoidal formula, one-step
+    /// formulas, and `(1 + ω)² / (6 ω (1 + 2ω))` for Gear2 ([`Method::truncation_error`]).
+    fn constant(self, ratio: f64) -> f64 {
+        match self {
             Self::BackwardEuler => 1.0 / 2.0,
             Self::Trapezoidal => 1.0 / 12.0,
-            Self::Gear2 => 2.0 / 9.0,
-        };
-        constant * self.factorial()
+            Self::Gear2 => gear2_constant(ratio),
+        }
+    }
+
+    /// The powers of the error constant's reciprocal in a charge's longest steps,
+    /// `1/(p+1)` by its tolerance on the charge and `1/p` by the one on its current.
+    fn powers(self) -> (f64, f64) {
+        let order = f64::from(self.exponent() - 1);
+        ((order + 1.0).recip(), order.recip())
     }
 
     /// The power of the step in the error of one step, `p + 1`.
@@ -96,6 +200,43 @@ impl Method {
             Self::BackwardEuler => 2,
             Self::Trapezoidal | Self::Gear2 => 3,
         }
+    }
+}
+
+/// Gear2's error constant for a step `ratio` times as long as the one before it,
+/// `(1 + ω)² / (6 ω (1 + 2ω))`, written as `(1 + 1/ω)(1 + ω) / (6 (1 + 2ω))` so that a long
+/// step overflows nothing: from 1/12 for a step far longer than the last, through 2/9 at a
+/// constant step, to `1/(6ω)` for a step far shorter.
+fn gear2_constant(ratio: f64) -> f64 {
+    (1.0 + ratio.recip()) * (1.0 + ratio) / (6.0 * (1.0 + 2.0 * ratio))
+}
+
+/// The logarithmic slope of Gear2's error constant in its step's ratio `u` to the previous
+/// one, `d ln C / d ln u = 2u/(1 + u) − 1 − 2u/(1 + 2u)`: from −1 for a step far shorter than
+/// the last, through −⅔ at a constant step, to 0 for one far longer.
+fn gear2_elasticity(ratio: f64) -> f64 {
+    2.0 * ratio / (1.0 + ratio) - 1.0 - 2.0 * ratio / (1.0 + 2.0 * ratio)
+}
+
+/// Which of a charge's two tolerances holds its longest step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Bound {
+    /// The tolerance on the charge.
+    Charge,
+    /// The tolerance on the current it carries, which grows with the step.
+    Current,
+}
+
+/// A charge's longest step at the error constant whose [scales](Method::scales) are `scales`,
+/// from its [unit steps](Method::unit_steps) `unit`: the longer of the two, and the tolerance
+/// that holds it, its charge's where they are equal.
+#[must_use]
+pub fn longest_at((by_charge, by_current): (f64, f64), scales: (f64, f64)) -> (f64, Bound) {
+    let (charge, current) = (by_charge * scales.0, by_current * scales.1);
+    if charge >= current {
+        (charge, Bound::Charge)
+    } else {
+        (current, Bound::Current)
     }
 }
 
@@ -231,27 +372,60 @@ mod tests {
     }
 
     /// The estimate of a step's error matches the error the formula actually makes on a cubic,
-    /// to leading order in the step.
+    /// to leading order in the step, for a step from a tenth to ten times as long as the one
+    /// before it: Gear2's error grows to 7.6 times its constant step's when its step is cut
+    /// to a tenth.
     #[test]
     fn truncation_errors_predict_the_actual_error() {
         let q = |t: f64| t * t * t;
         let derivative = |t: f64| 3.0 * t * t;
         for method in [Method::BackwardEuler, Method::Trapezoidal, Method::Gear2] {
-            let step = 1e-3;
-            let times = [1.0 - 2.0 * step, 1.0 - step, 1.0, 1.0 + step];
-            let formula = Formula::new(method, step, step);
-            let estimate = formula.alpha * q(times[3])
-                + formula.history([q(times[2]), q(times[1])], derivative(times[2]));
-            // An error e in the derivative becomes an error e / α in the solved charge.
-            let actual = (estimate - derivative(times[3])).abs() / formula.alpha;
-            let start = times.len() - (method.order() + 2);
-            let mut values: Vec<f64> = times[start..].iter().map(|&t| q(t)).collect();
-            let dd = divided_difference(&times[start..], &mut values);
-            let predicted = method.truncation_error(step, dd);
-            assert!(
-                (actual / predicted - 1.0).abs() < 0.05,
-                "{method:?}: {actual} vs {predicted}"
-            );
+            for ratio in [0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0] {
+                let step = 1e-3;
+                let previous_step = step / ratio;
+                let times = [
+                    1.0 - 2.0 * previous_step,
+                    1.0 - previous_step,
+                    1.0,
+                    1.0 + step,
+                ];
+                let formula = Formula::new(method, step, previous_step);
+                let estimate = formula.alpha * q(times[3])
+                    + formula.history([q(times[2]), q(times[1])], derivative(times[2]));
+                // An error e in the derivative becomes an error e / α in the solved charge.
+                let actual = (estimate - derivative(times[3])).abs() / formula.alpha;
+                let start = times.len() - (method.order() + 2);
+                let mut values: Vec<f64> = times[start..].iter().map(|&t| q(t)).collect();
+                let dd = divided_difference(&times[start..], &mut values);
+                let predicted = method.truncation_error(step, previous_step, dd);
+                assert!(
+                    (actual / predicted - 1.0).abs() < 0.05,
+                    "{method:?} at a ratio of {ratio}: {actual} vs {predicted}"
+                );
+            }
+        }
+    }
+
+    /// Gear2's longest step after a step of unit length meets its tolerance on the charge,
+    /// or on the current, exactly, for tolerances that put it from 10⁻¹⁰ to 10¹⁰ times as
+    /// long, and a step a little longer exceeds it.
+    #[test]
+    fn gear2s_longest_step_meets_its_tolerance_at_every_scale() {
+        let method = Method::Gear2;
+        for exponent in (-30..=30).step_by(3) {
+            let tolerance = 10_f64.powi(exponent);
+            for (charge, rate) in [(tolerance, 0.0), (0.0, tolerance)] {
+                let longest = method.longest_step(1.0, 1.0, charge, rate);
+                let error = |step: f64| method.truncation_error(step, 1.0, 1.0);
+                let allowed = |step: f64| charge.max(rate * step);
+                let met = error(longest) / allowed(longest);
+                assert!(
+                    (met - 1.0).abs() < 1e-12,
+                    "{charge:e} and {rate:e}: {longest:e} meets {met}"
+                );
+                let longer = longest * (1.0 + 1e-9);
+                assert!(error(longer) > allowed(longer));
+            }
         }
     }
 
@@ -263,11 +437,13 @@ mod tests {
             divided_difference in 1e-6..1e6f64,
             charge in 1e-15..1e-6f64,
             rate in 1e-12..1e-3f64,
+            previous_step in 1e-12..1e-3f64,
         ) {
             for method in [Method::BackwardEuler, Method::Trapezoidal, Method::Gear2] {
                 let tolerance = |step: f64| charge.max(rate * step);
-                let error = |step: f64| method.truncation_error(step, divided_difference);
-                let longest = method.longest_step(divided_difference, charge, rate);
+                let error =
+                    |step: f64| method.truncation_error(step, previous_step, divided_difference);
+                let longest = method.longest_step(previous_step, divided_difference, charge, rate);
                 let met = error(longest) / tolerance(longest);
                 prop_assert!((met - 1.0).abs() < 1e-9, "{method:?}: {met}");
                 let longer = longest * (1.0 + 1e-6);
@@ -276,10 +452,47 @@ mod tests {
         }
     }
 
+    proptest! {
+        /// The longest step common to several charges is the shortest of each one's own,
+        /// whichever charge, and whichever of its tolerances, holds it at the constant step's
+        /// error constant.
+        #[test]
+        fn the_common_longest_step_is_the_shortest_of_each_charges(
+            charges in proptest::collection::vec(
+                (1e-6..1e6f64, 1e-15..1e-6f64, 1e-12..1e-3f64),
+                1..6,
+            ),
+            previous_step in 1e-12..1e-3f64,
+        ) {
+            for method in [Method::BackwardEuler, Method::Trapezoidal, Method::Gear2] {
+                let units: Vec<(f64, f64)> = charges
+                    .iter()
+                    .map(|&(dd, charge, rate)| method.unit_steps(dd, charge, rate))
+                    .collect();
+                let shortest = |scales| {
+                    units
+                        .iter()
+                        .map(|&unit| longest_at(unit, scales))
+                        .min_by(|a: &(f64, Bound), b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+                        .unwrap_or((f64::INFINITY, Bound::Charge))
+                };
+                let constant_step = shortest(method.scales(1.0));
+                let common = method.longest_common_step(previous_step, constant_step, shortest);
+                let each = charges
+                    .iter()
+                    .map(|&(dd, charge, rate)| method.longest_step(previous_step, dd, charge, rate))
+                    .fold(f64::INFINITY, f64::min);
+                prop_assert!((common / each - 1.0).abs() < 1e-12, "{method:?}: {common} vs {each}");
+            }
+        }
+    }
+
     #[test]
     fn a_vanishing_divided_difference_bounds_no_step() {
-        let longest = Method::Trapezoidal.longest_step(0.0, 1e-14, 1e-9);
-        assert!(longest.is_infinite());
+        for method in [Method::BackwardEuler, Method::Trapezoidal, Method::Gear2] {
+            let longest = method.longest_step(1e-9, 0.0, 1e-14, 1e-9);
+            assert!(longest.is_infinite(), "{method:?}");
+        }
     }
 
     #[test]

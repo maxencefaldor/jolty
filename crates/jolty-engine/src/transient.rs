@@ -3,7 +3,7 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use jolty_models::{Input, Level};
-use jolty_numerics::integration::{Formula, Method, divided_difference};
+use jolty_numerics::integration::{Bound, Formula, Method, divided_difference, longest_at};
 use serde::Deserialize;
 
 use crate::logic::{Checkpoint, Command, Crossing, crossing};
@@ -377,6 +377,8 @@ struct Corner {
 /// derivatives at its end and at its start.
 struct Span<'a> {
     length: f64,
+    /// The length of the step before it, which a multistep formula's error reads.
+    previous: f64,
     /// The coefficient of the new charge in the step's formula.
     alpha: f64,
     charge: (&'a [f64], &'a [f64]),
@@ -406,7 +408,9 @@ struct Judgement {
     ratio: f64,
     /// The index of that charge's equation.
     worst: usize,
-    /// The longest step every charge's error, by the same estimate, allows.
+    /// The longest step every charge's error, by the same estimate, allows next: after the
+    /// step, from its end, where it is accepted, or in its place, from its start, where it is
+    /// rejected, which differ for a multistep formula, whose error reads the step before.
     longest: f64,
 }
 
@@ -856,6 +860,8 @@ impl Simulator {
             // The first step after the corner, by the curvature it shares with this one.
             let span = Span {
                 length: pending.length,
+                // A restart's step follows none, which backward Euler does not read.
+                previous: pending.length,
                 alpha: pending.formula.alpha,
                 charge: (&stepper.history.last.1, &pending.corner.charge),
                 derivative: (&stepper.history.derivative, &pending.corner.derivative),
@@ -875,6 +881,7 @@ impl Simulator {
         } else {
             let span = Span {
                 length: tried.length,
+                previous: stepper.previous,
                 alpha: tried.formula.alpha,
                 charge: (&tried.charge, &stepper.history.last.1),
                 derivative: (&tried.derivative, &stepper.history.derivative),
@@ -1229,49 +1236,81 @@ impl Simulator {
         let differences = self.filtered(differences, span.alpha, inside);
         let scale = options.truncation_tolerance * method.factorial();
         let quantities = &self.elaborated.quantities;
-        let none = Judgement {
-            ratio: 0.0,
-            worst: 0,
-            longest: f64::INFINITY,
+        // Each charge's tolerances, on the charge and on the current it carries over the step,
+        // times the truncation tolerance and the factorial SPICE's estimate leaves out.
+        let tolerances = |index: usize| {
+            let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
+            let current = span.derivative.0[index]
+                .abs()
+                .max(span.derivative.1[index].abs());
+            let absolute_current = options.equation_tolerance(quantities[index]);
+            let charge_tolerance = options.relative_tolerance * charge + options.charge_tolerance;
+            let current_tolerance =
+                span.length * (options.relative_tolerance * current + absolute_current);
+            (scale * charge_tolerance, scale * current_tolerance)
         };
+        let none = (
+            Judgement {
+                ratio: 0.0,
+                worst: 0,
+                longest: f64::INFINITY,
+            },
+            (f64::INFINITY, Bound::Charge),
+        );
         // The largest ratio, at the first unknown that reaches it, and the shortest of the
-        // longest steps, found in each piece and then over the pieces in their order.
-        let judged = pieces(differences.len(), inside, |range| {
-            let mut worst = none;
+        // charges' longest steps at a constant step's error constant, found in each piece and
+        // then over the pieces in their order.
+        // A multistep formula's longest step is found at its own error constant, from each
+        // charge's unit steps, which the pass keeps for it.
+        let constant_step = method.scales(1.0);
+        let keep = method.is_multistep();
+        let found = pieces(differences.len(), inside, |range| {
+            let (mut worst, mut found) = none;
+            let mut units = Vec::with_capacity(if keep { range.len() } else { 0 });
             for index in range {
                 let difference = differences[index];
-                let error = method.truncation_error(span.length, difference);
-                let absolute_current = options.equation_tolerance(quantities[index]);
-                let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
-                let charge_tolerance =
-                    options.relative_tolerance * charge + options.charge_tolerance;
-                let current = span.derivative.0[index]
-                    .abs()
-                    .max(span.derivative.1[index].abs());
-                let current_tolerance =
-                    span.length * (options.relative_tolerance * current + absolute_current);
-                let tolerance = scale * charge_tolerance.max(current_tolerance);
-                if error / tolerance > worst.ratio {
-                    worst.ratio = error / tolerance;
+                let error = method.truncation_error(span.length, span.previous, difference);
+                let (charge, current) = tolerances(index);
+                let ratio = error / charge.max(current);
+                if ratio > worst.ratio {
+                    worst.ratio = ratio;
                     worst.worst = index;
                 }
-                let longest = method.longest_step(
-                    difference,
-                    scale * charge_tolerance,
-                    scale * current_tolerance / span.length,
-                );
-                worst.longest = worst.longest.min(longest);
+                let unit = method.unit_steps(difference, charge, current / span.length);
+                found = least(found, longest_at(unit, constant_step));
+                if keep {
+                    units.push(unit);
+                }
             }
-            worst
+            (worst, found, units)
         });
-        Some(judged.into_iter().fold(none, |worst, piece| Judgement {
-            longest: worst.longest.min(piece.longest),
-            ..if piece.ratio > worst.ratio {
-                piece
-            } else {
-                worst
-            }
-        }))
+        let (worst, shortest_at_constant) =
+            found
+                .iter()
+                .fold(none, |(worst, found), (piece, piece_found, _)| {
+                    let worst = if piece.ratio > worst.ratio {
+                        *piece
+                    } else {
+                        worst
+                    };
+                    (worst, least(found, *piece_found))
+                });
+        let mut found = found;
+        let units: Vec<(f64, f64)> = match found.len() {
+            1 => found.pop().map_or_else(Vec::new, |(_, _, units)| units),
+            _ => found.into_iter().flat_map(|(_, _, units)| units).collect(),
+        };
+        // The longest step they all allow: after this one where it is accepted, in its place
+        // where it is rejected.
+        let previous = if worst.ratio > 1.0 {
+            span.previous
+        } else {
+            span.length
+        };
+        let longest = method.longest_common_step(previous, shortest_at_constant, |scales| {
+            shortest(&units, scales, inside)
+        });
+        Some(Judgement { longest, ..worst })
     }
 
     /// The charges' divided `differences` filtered through the step's equations at its end,
@@ -1324,14 +1363,46 @@ impl Simulator {
     }
 }
 
-/// The length of the step after one `length` long judged `judged`: the longest its error
-/// allows, with a safety factor, within bounds on the change, or the most it may grow to
-/// when its error was not estimated.
+/// The length of the step after one `length` long judged `judged`, or of the step in its
+/// place where its error rejects it: the longest its error allows, with a safety factor,
+/// within bounds on the change, or the most it may grow to when its error was not
+/// estimated.
 fn next_length(length: f64, judged: Option<Judgement>) -> f64 {
     let (shortest, longest) = (FACTOR_BOUNDS.0 * length, FACTOR_BOUNDS.1 * length);
     judged.map_or(longest, |judged| {
         (SAFETY * judged.longest).clamp(shortest, longest)
     })
+}
+
+/// The shortest of the charges' longest steps at the scales `scales`, from their unit steps
+/// `units`, and the tolerance that holds it: on one thread, one charge after another; spread,
+/// by pieces, which find the same, as `least` is a total order.
+fn shortest(units: &[(f64, f64)], scales: (f64, f64), inside: Option<Inside>) -> (f64, Bound) {
+    let none = (f64::INFINITY, Bound::Charge);
+    if inside.is_none() {
+        return units
+            .iter()
+            .map(|&unit| longest_at(unit, scales))
+            .fold(none, least);
+    }
+    pieces(units.len(), inside, |range| {
+        units[range]
+            .iter()
+            .map(|&unit| longest_at(unit, scales))
+            .fold(none, least)
+    })
+    .into_iter()
+    .fold(none, least)
+}
+
+/// The shorter of two charges' longest steps, and the tolerance that holds it: the least by
+/// length, then by tolerance, so that the same is found however the pieces split the charges.
+fn least(a: (f64, Bound), b: (f64, Bound)) -> (f64, Bound) {
+    if b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)).is_lt() {
+        b
+    } else {
+        a
+    }
 }
 
 #[cfg(test)]
