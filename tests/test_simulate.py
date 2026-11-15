@@ -1,7 +1,9 @@
 # Copyright 2026 Maxence Faldor
 
 import math
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -15,6 +17,7 @@ from jolty import (
     DcSweep,
     DimensionError,
     ElaborationError,
+    JoltyError,
     Noise,
     OperatingPoint,
     OperatingPoints,
@@ -32,9 +35,10 @@ from jolty import (
     component,
     devices,
     results,
+    simulate,
 )
-from jolty.plan import decade, linear
-from jolty.simulate import Joined
+from jolty.plan import Explicit, Variant, decade, linear
+from jolty.simulate import Joined, Logged
 from jolty.specs import crossover, gain_margin, phase_margin
 from jolty.units import (
     A,
@@ -1031,3 +1035,54 @@ def test_a_current_source_sweeps_in_amperes() -> None:
     assert simulation.run(OperatingPoint()).voltage("top") == pytest.approx(1.0)
     sweep = simulation.run(DcSweep("I1", [2 * mA, 1 * A]))
     np.testing.assert_allclose(sweep.voltage("top"), [2.0, 1000.0])
+
+
+@pytest.fixture
+def analysis_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """The log the settings name for each analysis run while the test runs."""
+    log = tmp_path / "analyses.jsonl"
+    monkeypatch.setenv("JOLTY_ANALYSIS_LOG", str(log))
+    simulate._settings.cache_clear()  # noqa: SLF001 - read once per process, as here
+    yield log
+    monkeypatch.undo()
+    simulate._settings.cache_clear()  # noqa: SLF001 - read again without the log
+
+
+def test_each_analysis_appends_to_the_log_the_settings_name(analysis_log: Path) -> None:
+    simulation = Simulation(divider(5 * V, 1 * kohm, 1 * kohm))
+    simulation.run(OperatingPoint())
+    # An analysis refused before it runs, as a record naming no instance, runs none.
+    with pytest.raises(SimulationError, match="no instance named 'R9'"):
+        simulation.run(OperatingPoint(record=["R9"]))
+    resistances = [{"R1": {"resistance": value}} for value in (2e3, 3e3, 4e3)]
+    variants = Explicit([Variant(overrides) for overrides in resistances])
+    analyses = {"op": OperatingPoint(), "step": Transient(1 * us)}
+    simulation.batch(analyses, variants)
+    simulation.batch(analyses, variants, runs=range(1, 1))
+    simulation.batch(analyses, variants, runs=range(1, 3))
+    logged = [
+        Logged.model_validate_json(line)
+        for line in analysis_log.read_text(encoding="utf-8").splitlines()
+    ]
+    # Each analysis once, with the runs it runs on, a batch's analyses as one start.
+    assert [(each.analysis, each.runs) for each in logged] == [
+        ("OperatingPoint", 1),
+        ("OperatingPoint", 3),
+        ("Transient", 3),
+        ("OperatingPoint", 2),
+        ("Transient", 2),
+    ]
+    assert [each.time for each in logged] == sorted(each.time for each in logged)
+    assert logged[1].time == logged[2].time
+
+
+def test_an_analysis_the_log_cannot_take_does_not_run(
+    analysis_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unwritable = analysis_log.parent / "missing" / analysis_log.name
+    monkeypatch.setenv("JOLTY_ANALYSIS_LOG", str(unwritable))
+    simulate._settings.cache_clear()  # noqa: SLF001 - read once per process, as here
+    message = f"cannot append to the analysis log {unwritable}: No such file"
+    with pytest.raises(JoltyError, match=re.escape(message)):
+        Simulation(divider(5 * V, 1 * kohm, 1 * kohm)).run(OperatingPoint())
+    assert not unwritable.parent.exists()

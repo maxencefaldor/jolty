@@ -31,7 +31,16 @@ import contextvars
 import functools
 import json
 import math
-from collections.abc import Callable, Collection, Generator, Iterator, Mapping, Sequence
+import time
+from collections.abc import (
+    Callable,
+    Collection,
+    Generator,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -135,13 +144,63 @@ def _engine() -> _core.Pool:
     Raises:
         JoltyError: When the settings are invalid.
     """
-    return _CHOSEN.get() or _configured()
+    return _CHOSEN.get() or pool(_settings().threads)
 
 
 @functools.cache
-def _configured() -> _core.Pool:
-    """The pool of the settings' ``threads``, read once per process."""
-    return pool(Settings.load().threads)
+def _settings() -> Settings:
+    """The settings, read once per process.
+
+    Raises:
+        JoltyError: When the settings are invalid.
+    """
+    return Settings.load()
+
+
+class Logged(BaseModel):
+    """An analysis a simulation ran, as a line of the settings' ``analysis_log``.
+
+    Every analysis a simulation runs, alone or in a batch, whatever runs it, the
+    command line, the MCP server or a script, appends one, as it starts.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    analysis: str = Field(
+        description="Its kind, by the name of its class, such as Transient."
+    )
+    runs: int = Field(
+        ge=1,
+        description="The runs it runs on: 1 alone, and a batch's runs in a batch.",
+    )
+    time: float = Field(description="When it started, in seconds since the epoch.")
+
+
+def _log(analyses: Iterable[Analysis], runs: int) -> None:
+    """Appends each of `analyses`, starting on `runs` runs, to the settings' log.
+
+    It writes nothing when the settings name no log or the runs are none. Its lines go
+    in one write to the file opened to append, so analyses that start at once, in any
+    process, leave whole lines.
+
+    Raises:
+        JoltyError: When the settings are invalid, or the log cannot be written.
+    """
+    log = _settings().analysis_log
+    if log is None or runs == 0:
+        return
+    started = time.time()
+    logged = [
+        Logged(analysis=type(each).__name__, runs=runs, time=started)
+        for each in analyses
+    ]
+    lines = "".join(f"{each.model_dump_json()}\n" for each in logged)
+    try:
+        with log.open("a", encoding="utf-8") as file:
+            file.write(lines)
+    except OSError as error:
+        message = f"cannot append to the analysis log {log}: {error.strerror}"
+        raise JoltyError(message) from None
 
 
 _WILDCARDS: Final = frozenset("*?[")
@@ -304,6 +363,9 @@ class Simulation:
     The engine solves no foundry's device, such as a SKY130 transistor, so ngspice runs
     the analyses of a circuit that holds one, with its kit's models, as
     [`foundry`][jolty.foundry] describes.
+
+    Each analysis it runs, alone or in a batch, appends a line to the log the settings'
+    ``analysis_log`` names, if any, as it starts ([`Logged`][jolty.simulate.Logged]).
     """
 
     circuit: ir.Circuit
@@ -597,10 +659,13 @@ class Simulation:
         Raises:
             SimulationError: When the analysis fails, saying why, or the record names
                 an instance the circuit does not have.
+            JoltyError: When the settings are invalid, or their analysis log cannot be
+                written.
         """
         chosen = Options() if options is None else options
         if self.foundry:
             self.excursions = ()
+            _log([analysis], 1)
             return foundry.run(
                 self.circuit, analysis, chosen, self.conditions, self.unknowns
             )
@@ -608,6 +673,7 @@ class Simulation:
         record = self._record(analysis)
         settings = json.dumps({**chosen.to_json(), "record": record}, allow_nan=False)
         recording = self._recording(json.dumps(record))
+        _log([analysis], 1)
         try:
             outcome = self._core.run(encoded, settings, _engine())
         except _core.SimulationError as error:
@@ -657,6 +723,8 @@ class Simulation:
             KeyError: When `traced` names no unknown.
             ValueError: When `runs` steps by other than one, or does not lie within the
                 variants' runs.
+            JoltyError: When the settings are invalid, or their analysis log cannot be
+                written.
         """
         chosen = Options() if options is None else options
         planned = _Planned.of(self, analyses, chosen, measurements, traced)
@@ -665,6 +733,7 @@ class Simulation:
         if taken.step != 1 or not 0 <= taken.start <= taken.stop <= len(ran):
             message = f"{taken} is not a range of the variants' {len(ran)} runs"
             raise ValueError(message)
+        _log([analyses[name] for name in planned.engine], len(taken))
         found = (
             planned.in_ngspice(ran, taken, each)
             if self.foundry

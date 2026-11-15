@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from differential import SKIP
+from jolty.settings import Settings
 from jolty.specs import wilson
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks"
@@ -85,9 +86,11 @@ def test_the_ngspice_arm_has_ngspice_and_python_but_no_jolty(tmp_path: Path) -> 
     assert not [each for each in prepared.reads if each.is_relative_to(repository)]
 
 
-def test_the_jolty_arm_counts_its_command_lines_runs(tmp_path: Path) -> None:
+def test_the_jolty_arm_counts_its_command_lines_runs_and_its_analyses(
+    tmp_path: Path,
+) -> None:
     from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from run import SIMULATIONS, environment  # noqa: PLC0415 - importable only once the path holds it
+    from run import ANALYSES, ANALYSIS_LOG, SIMULATIONS, environment  # noqa: PLC0415 - importable only once the path holds it
 
     prepared = environment(Arm.JOLTY, tmp_path)
     assert not prepared.packages
@@ -105,6 +108,12 @@ def test_the_jolty_arm_counts_its_command_lines_runs(tmp_path: Path) -> None:
         (tmp_path / "log" / SIMULATIONS).read_text(encoding="utf-8").splitlines()
     )
     assert json.loads(logged)["program"] == "jolty"
+    # Every process of a session names the log of analyses to jolty's settings.
+    assert prepared.analyses == tmp_path / "log" / ANALYSES
+    assert prepared.variables[ANALYSIS_LOG] == str(prepared.analyses)
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setenv(ANALYSIS_LOG, prepared.variables[ANALYSIS_LOG])
+        assert Settings.load().analysis_log == prepared.analyses
 
 
 def test_a_session_holds_nothing_of_the_runner_s_environment(
@@ -135,6 +144,7 @@ def test_a_session_holds_nothing_of_the_runner_s_environment(
         "CLAUDE_CONFIG_DIR",
         "TMPDIR",
         "PATH",
+        "JOLTY_ANALYSIS_LOG",
         "LANG",
         "ANTHROPIC_API_KEY",
         *(name for name in ("LC_ALL", "LC_CTYPE") if name in os.environ),
@@ -342,6 +352,27 @@ def test_a_transcript_of_no_events_says_nothing_of_its_session(tmp_path: Path) -
     assert (session.turns, session.calls, session.seconds) == (1, 1, None)
 
 
+STUB_CALLS = {
+    "jolty": {"Bash": 2, "Write": 2, "mcp__jolty__simulate_circuit": 1},
+    "ngspice": {"Bash": 1, "Write": 2},
+}
+"""The stub's tool calls in each arm, by name, a turn each.
+
+It writes design.py and the plan it simulates it with, then simulates it through each of
+jolty's front ends: the command line's and the MCP server's operating points, and a
+script's transient. Or it writes design.cir and tolerances.json, then runs ngspice once.
+"""
+
+STUB_COUNTED = {
+    "jolty": ({"jolty simulate": 1}, 3, 3, {"OperatingPoint": 2, "Transient": 1}, 3),
+    "ngspice": ({"ngspice --version": 1}, None, None, {}, 1),
+}
+"""What the stub's session counts in each arm: the runs of its simulator's command line
+by command, its analyses, their runs and kinds, and its simulations.
+
+jolty logs every analysis, whatever runs it; ngspice none."""
+
+
 @SKIP
 def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
     tmp_path: Path,
@@ -381,18 +412,26 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
         if mechanism() is not None:
             assert configuration.sandbox is not None
             assert configuration.sandbox.writes[0] == str(Path(run.work).resolve())
-    # The stub writes design.py, or design.cir and tolerances.json, a turn each, then
-    # runs the arm's simulator once in a turn of its own.
-    written = {Arm.JOLTY: 1, Arm.NGSPICE: 2}
     for run in report.runs:
         assert run.session is not None
-        assert run.session.turns == written[run.arm] + 1
-        assert run.session.tool_calls == {"Bash": 1, "Write": written[run.arm]}
-        assert run.simulations.commands == {f"{run.arm} --version": 1}
+        assert run.session.turns == sum(STUB_CALLS[run.arm].values())
+        assert run.session.tool_calls == STUB_CALLS[run.arm]
+        counted = run.simulations
+        assert (
+            counted.commands,
+            counted.analyses,
+            counted.analysis_runs,
+            counted.kinds,
+            counted.count,
+        ) == STUB_COUNTED[run.arm]
         assert bool(run.packages) == (run.arm is Arm.NGSPICE)
         kept = tmp_path / f"{report.date}-stub" / "cost_down" / run.arm
-        for name in ("transcript.txt", "simulations.jsonl"):
-            assert (kept / str(run.repetition) / name).is_file()
+        logs = ("transcript.txt", "simulations.jsonl", "analyses.jsonl")
+        assert [(kept / str(run.repetition) / name).is_file() for name in logs] == [
+            True,
+            True,
+            run.arm is Arm.JOLTY,
+        ]
     task = report.tasks["cost_down"]
     low, high = wilson(2, 2)
     for arm in Arm:
@@ -410,7 +449,9 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
             "high": high,
         }
         assert summary.turns is not None
-        assert summary.turns.median == written[arm] + 1
+        assert summary.turns.median == sum(STUB_CALLS[arm].values())
+        assert summary.simulations is not None
+        assert summary.simulations.median == {Arm.JOLTY: 3, Arm.NGSPICE: 1}[arm]
         assert report.arms[arm] == summary.success
     difference = task.difference
     assert difference is not None
@@ -421,9 +462,9 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
         1 - low,
     )
     assert (difference.turns, difference.tool_calls, difference.simulations) == (
-        -1,
-        -1,
-        0,
+        2,
+        2,
+        2,
     )
     with pytest.raises(FileExistsError):
         compare(

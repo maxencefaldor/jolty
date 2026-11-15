@@ -100,6 +100,14 @@ class Settings(BaseSettings):
         "warn or ignore. A rule's own entry overrides 'all', and rules left out keep "
         "their default level.",
     )
+    analysis_log: Path | None = Field(
+        default=None,
+        description="File each analysis a simulation runs appends a line to, "
+        "whatever runs it: the command line, the MCP server or a script, so a "
+        "session's simulations can be counted. Each line is a JSON object of the "
+        "analysis's kind, the runs it runs on, one alone or a batch's, and when it "
+        "started; by default, none is kept.",
+    )
 
     @classmethod
     def load(cls) -> Self:

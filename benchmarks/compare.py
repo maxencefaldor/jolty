@@ -17,13 +17,16 @@ seconds, and Claude Code stops itself after ``--turns`` turns or once it has spe
 another, the arms and tasks taking turns in each round of repetitions, so a change in
 the agent's service over the hours affects both arms alike. It writes
 ``DIRECTORY/DATE-AGENT.json``, ``benchmarks/results`` by default, and keeps each
-session's transcript, log of simulator runs and verdict beside it, in
-``DIRECTORY/DATE-AGENT/TASK/ARM/REPETITION``. The report holds every session, and for
-each task and arm:
+session's transcript, log of simulator runs, log of jolty's analyses in the jolty arm
+and verdict beside it, in ``DIRECTORY/DATE-AGENT/TASK/ARM/REPETITION``. The report
+holds every session, and for each task and arm:
 
 - the success rate, with its 95 % Wilson interval, as jolty states a yield's;
 - the median and the range of the iterations, the model's turns and tool calls, and
-  the runs of the arm's simulator, and of the session's wall time and cost;
+  the simulations, and of the session's wall time and cost: in the jolty arm, every
+  analysis jolty ran, whatever ran it, its command line, its MCP server or a script
+  through its Python package, a batch's analysis once however many runs it ran on, and
+  in the ngspice arm every run of ngspice, which may run several analyses;
 - the failure kinds: how the sessions ended, finished, out of time, turns or budget,
   or in an error, as the runner saw and the agent reports, and how many fell short in
   each kind the scorer found, and of each spec, each session with its verdict's
@@ -59,6 +62,7 @@ from arms import Arm
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 from pydantic_settings import SettingsConfigDict
 from run import (
+    ANALYSES,
     CREDENTIALS,
     SIMULATIONS,
     TRANSCRIPT,
@@ -75,6 +79,7 @@ from transcript import Session, read
 from verdict import Kind, Shortfall
 
 from jolty import cli
+from jolty.simulate import Logged
 from jolty.specs import wilson
 
 BENCHMARKS: Final = Path(__file__).parent
@@ -135,7 +140,13 @@ def command(
 
 
 class Simulations(BaseModel):
-    """The runs of the arm's simulator a session's log holds."""
+    """The simulations of a session: its simulator's runs and, with jolty, its analyses.
+
+    A run of the arm's simulator is a run of its command line, ``jolty`` or ``ngspice``,
+    as its wrapper logs it. An analysis is one that jolty ran, whatever ran it, as jolty
+    logs it: its command line, its MCP server, which no wrapper sees, or a script
+    through its Python package.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -144,17 +155,64 @@ class Simulations(BaseModel):
         description="The runs by the program and its first argument, such as "
         "'jolty simulate' or 'ngspice -b'."
     )
+    analyses: int | None = Field(
+        description="Every analysis jolty ran, a batch's analysis once however many "
+        "runs it ran on; null in the ngspice arm, whose ngspice logs none."
+    )
+    analysis_runs: int | None = Field(
+        description="The runs of those analyses: one of an analysis run alone, and "
+        "each of a batch's runs of its analyses; null in the ngspice arm."
+    )
+    kinds: dict[str, int] = Field(
+        description="The analyses by kind, such as 'Transient'; none in the ngspice "
+        "arm."
+    )
+
+    @property
+    def count(self) -> int:
+        """The session's simulations, as its arm counts them.
+
+        They are jolty's analyses, whatever ran them, and the runs of ngspice, each of
+        which may run several analyses that its wrapper cannot see.
+        """
+        return self.runs if self.analyses is None else self.analyses
 
 
-def simulations(log: Path) -> Simulations:
-    """The runs of the log at `log`, one JSON object a run."""
+def simulations(work: Path) -> Simulations:
+    """The simulations of the session that worked in `work`, as its logs hold them.
+
+    The log of the simulator's runs holds a JSON object a run, and the log of jolty's
+    analyses, which a session of the jolty arm alone keeps, a `Logged` an analysis.
+    """
+    log, analyses = work / SIMULATIONS, work / ANALYSES
     lines = log.read_text(encoding="utf-8").splitlines() if log.is_file() else []
     runs = [json.loads(line) for line in lines if line]
     counted = Counter(
         " ".join([str(run["program"]), *[str(each) for each in run["arguments"][:1]]])
         for run in runs
     )
-    return Simulations(runs=len(runs), commands=dict(sorted(counted.items())))
+    commands = dict(sorted(counted.items()))
+    if not analyses.is_file():
+        return Simulations(
+            runs=len(runs),
+            commands=commands,
+            analyses=None,
+            analysis_runs=None,
+            kinds={},
+        )
+    logged = [
+        Logged.model_validate_json(line)
+        for line in analyses.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    kinds = Counter(each.analysis for each in logged)
+    return Simulations(
+        runs=len(runs),
+        commands=commands,
+        analyses=len(logged),
+        analysis_runs=sum(each.runs for each in logged),
+        kinds=dict(sorted(kinds.items())),
+    )
 
 
 class Ending(StrEnum):
@@ -315,7 +373,7 @@ class Summary(BaseModel):
             success=Rate.of(runs),
             turns=Spread.of([run.turns for run in runs]),
             tool_calls=Spread.of([run.calls for run in runs]),
-            simulations=Spread.of([run.simulations.runs for run in runs]),
+            simulations=Spread.of([run.simulations.count for run in runs]),
             seconds=Spread.of([run.seconds for run in runs]),
             cost=Spread.of([run.cost for run in runs]),
             endings=dict(sorted(Counter(run.ending for run in runs).items())),
@@ -441,9 +499,9 @@ def versions() -> dict[str, str]:
 
 
 def kept(run: Path, work: Path) -> None:
-    """Keeps in `run` the transcript, simulator log and verdict of `work`'s session."""
+    """Keeps in `run` the transcript, logs and verdict of `work`'s session."""
     run.mkdir(parents=True)
-    for name in (TRANSCRIPT, SIMULATIONS, VERDICT):
+    for name in (TRANSCRIPT, SIMULATIONS, ANALYSES, VERDICT):
         if (work / name).is_file():
             shutil.copy(work / name, run / name)
 
@@ -562,7 +620,7 @@ def compare(  # noqa: PLR0913 - the agent, what it runs on, and where results go
                         shortfalls=ran.verdict.shortfalls,
                         report=None if told is None else told.report,
                         session=told,
-                        simulations=simulations(Path(made) / SIMULATIONS),
+                        simulations=simulations(Path(made)),
                         configuration=ran.configuration,
                         packages=ran.packages,
                     )

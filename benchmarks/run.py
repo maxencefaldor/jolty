@@ -17,7 +17,10 @@ the ngspice arm has ngspice, and a Python of its own with numpy, scipy and matpl
 alone, made afresh for the run, and no directory of its path holds jolty's command line.
 Each simulator the arm has, ``jolty`` or ``ngspice``, is a wrapper that logs every run
 of it before it runs it, and the runner keeps the log beside the transcript, as
-``simulations.jsonl``, one JSON object a run.
+``simulations.jsonl``, one JSON object a run. In the jolty arm, every analysis jolty
+runs, whatever runs it, its command line, its MCP server or a script through its Python
+package, appends a line to the log jolty's setting ``analysis_log`` names, which the
+runner keeps beside them, as ``analyses.jsonl``.
 
 With ``-`` as the agent, it only prepares the working directory and prints it, for an
 agent started some other way; ``score.py`` scores the directory afterwards.
@@ -53,6 +56,12 @@ COUNTED: Final = Path(__file__).with_name("counted.py")
 """The program each simulator's wrapper runs, which logs the run and then runs it."""
 SIMULATIONS: Final = "simulations.jsonl"
 """The log of the runs of the arm's simulators, one JSON object a run."""
+ANALYSES: Final = "analyses.jsonl"
+"""The log of the analyses jolty runs in a session of the jolty arm, whatever runs them,
+a `jolty.simulate.Logged` a line."""
+ANALYSIS_LOG: Final = "JOLTY_ANALYSIS_LOG"
+"""The variable of jolty's setting ``analysis_log``, which names the log of analyses to
+every process of a session of the jolty arm."""
 TRANSCRIPT: Final = "transcript.txt"
 """What the agent printed, its error stream with its output."""
 VERDICT: Final = "verdict.json"
@@ -225,6 +234,8 @@ class Environment:
     reads: tuple[Path, ...]
     writes: tuple[Path, ...]
     packages: dict[str, str] = field(default_factory=dict)
+    analyses: Path | None = None
+    """The log of the analyses jolty runs, in the jolty arm; none in the ngspice arm."""
 
 
 def environment(arm: Arm, directory: Path) -> Environment:
@@ -235,8 +246,9 @@ def environment(arm: Arm, directory: Path) -> Environment:
     which holds nothing, and its temporary directory ``directory/tmp``. Its path holds
     the wrappers of the arm's simulators, in ``directory/bin``, which log to
     ``directory/log/simulations.jsonl``, then the arm's Python's programs, then the
-    system's own, ``confstr("CS_PATH")``. The ngspice arm's Python is made in
-    ``directory/python``.
+    system's own, ``confstr("CS_PATH")``. In the jolty arm, ``JOLTY_ANALYSIS_LOG``
+    names ``directory/log/analyses.jsonl``, which every analysis jolty runs appends to,
+    whatever runs it. The ngspice arm's Python is made in ``directory/python``.
 
     Raises:
         FileNotFoundError: When ngspice, for the ngspice arm, is not on the path.
@@ -258,9 +270,15 @@ def environment(arm: Arm, directory: Path) -> Environment:
     if arm is Arm.JOLTY:
         python = Path(sys.executable)
         wrap(wrappers, python.parent / "jolty", log, python)
+        analyses = logs / ANALYSES
         variables["PATH"] = os.pathsep.join([str(wrappers), str(python.parent), system])
+        variables[ANALYSIS_LOG] = str(analyses)
         return Environment(
-            variables, log, (directory, *imported(python)), (logs, home, temporary)
+            variables,
+            log,
+            (directory, *imported(python)),
+            (logs, home, temporary),
+            analyses=analyses,
         )
     found = shutil.which("ngspice")
     if found is None:
@@ -362,8 +380,8 @@ def session(
 
     It runs in a sandbox wherever this platform has one, and `program` runs only in
     one if it must. The runner stops it after `timeout` seconds, if given, and once it
-    exits, whatever it left running. The transcript, the log of the simulators' runs
-    and the verdict end in `work`.
+    exits, whatever it left running. The transcript, the log of the simulators' runs,
+    in the jolty arm the log of its analyses, and the verdict end in `work`.
 
     Raises:
         RuntimeError: When `program` must run in a sandbox and this platform has none.
@@ -387,10 +405,9 @@ def session(
             )
             timed_out = _waited(process, timeout)
         seconds = time.perf_counter() - started
-        if prepared.log.is_file():
-            shutil.copy(prepared.log, work / SIMULATIONS)
-        else:
-            (work / SIMULATIONS).touch()
+        _keep(prepared.log, work / SIMULATIONS)
+        if prepared.analyses is not None:
+            _keep(prepared.analyses, work / ANALYSES)
     configuration = Configuration(
         command=program.command,
         variables={
@@ -409,6 +426,14 @@ def session(
         configuration,
         prepared.packages,
     )
+
+
+def _keep(log: Path, path: Path) -> None:
+    """Copies the session's `log` to `path`, or writes an empty one if it wrote none."""
+    if log.is_file():
+        shutil.copy(log, path)
+    else:
+        path.touch()
 
 
 def probe(program: Program, arguments: Sequence[str]) -> str:

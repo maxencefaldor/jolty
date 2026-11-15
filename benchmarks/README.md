@@ -56,6 +56,8 @@ Roadmap item 8 asks what jolty gives an agent: each task is done in two arms, wh
   A netlist jolty cannot read fails, as a script that does not build does.
 
 Each arm's simulator, `jolty` or `ngspice`, is a wrapper on the agent's path that logs every run, `counted.py`, and the runner keeps the log beside the transcript, as `simulations.jsonl`.
+A wrapper sees only the runs of a command line, so in the jolty arm jolty logs every analysis it runs itself, whatever runs it: its command line, its MCP server, which no wrapper sees, or a script through its Python package.
+Each process of a session finds the log in jolty's setting `analysis_log`, `JOLTY_ANALYSIS_LOG`, and appends a line as each analysis starts, of its kind, the runs it runs on, one alone or a batch's, and the time; the runner keeps that log beside the transcript too, as `analyses.jsonl`.
 The runner scores the work in a process of its own, through `score.py`, so what an agent's scripts import or change stays there, and keeps the verdict beside them, as `verdict.json`.
 Since scoring runs the agent's scripts, the scorer runs as a session does, in the sandbox and in an environment of its own, which holds no credential, and from an empty directory, so no `pyproject.toml` an agent leaves changes jolty's settings.
 Claude Code prints its session as stream-json events, and `transcript.py` reads its turns, its tool calls by name, what it says it runs with, and its own report of the session's wall time, cost, tokens and end, with its last message.
@@ -98,10 +100,13 @@ Before the paid comparison:
 
 1. Put Claude Code on the path, and give the sessions a credential in the environment, `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` for a subscription: no session sees the user's own login.
 1. Run the stub, below, which proves the harness and the sandbox for free.
-1. Run one session, `--tasks cost_down --arms jolty --repetitions 1` with the limits chosen, and read its transcript and report: its setup should list jolty's MCP server connected and no skill or plugin.
+1. Run one session, `--tasks cost_down --arms jolty --repetitions 1` with the limits chosen, and read its transcript and report: its setup should list jolty's MCP server connected and no skill or plugin, and its `analyses.jsonl` should hold a line for each analysis its calls of the MCP server ran.
+   The stub starts the server with the session's environment, which is how its analyses find the log; this checks that Claude Code starts it so too.
 
-It runs the sessions one at a time, the arms and the tasks taking turns in each round, each in a fresh directory outside the repository, and writes `benchmarks/results/<date>-<agent>.json`, with each session's transcript, log and verdict beside it, in `benchmarks/results/<date>-<agent>/<task>/<arm>/<repetition>`.
-The report holds every session, each arm's success rate on each task with its 95 % Wilson interval, as jolty states a yield's, the median and the range of its turns, tool calls, simulator runs, wall time and cost, and the arms' difference on each task, jolty's less ngspice's, with Newcombe's interval for the success rates'.
+It runs the sessions one at a time, the arms and the tasks taking turns in each round, each in a fresh directory outside the repository, and writes `benchmarks/results/<date>-<agent>.json`, with each session's transcript, logs and verdict beside it, in `benchmarks/results/<date>-<agent>/<task>/<arm>/<repetition>`.
+The report holds every session, each arm's success rate on each task with its 95 % Wilson interval, as jolty states a yield's, the median and the range of its turns, tool calls, simulations, wall time and cost, and the arms' difference on each task, jolty's less ngspice's, with Newcombe's interval for the success rates'.
+A session's simulations are counted where each arm can count them: in the jolty arm, every analysis jolty ran, a batch's analysis once however many runs it ran on, such as a Monte Carlo analysis's samples; in the ngspice arm, every run of ngspice, which may run several analyses that its wrapper cannot see.
+Each session also keeps the runs of its simulator's command line by command, and in the jolty arm its analyses' runs and kinds.
 
 It also holds the failure kinds, each from what is known, never read from words:
 
@@ -112,7 +117,8 @@ It also holds the failure kinds, each from what is known, never read from words:
 Each arm's summary on a task counts its sessions by how they ended, by each kind they fell short in, and by each spec.
 AnalogCoder's problems count as one task, met when all twenty-four are, and each of its sessions keeps the scorer's verdict on every problem.
 
-`--agent stub` runs `stub.py` in the agent's place, which writes a known good design of the cost-down and of AnalogCoder in either arm's form, and costs nothing:
+`--agent stub` runs `stub.py` in the agent's place, which writes a known good design of the cost-down and of AnalogCoder in either arm's form, and costs nothing.
+In the jolty arm it simulates its design through each of jolty's front ends, an analysis each, and in the ngspice arm it runs ngspice once:
 
 ```sh
 uv run python benchmarks/compare.py --agent stub --repetitions 2 --results /tmp/stub
