@@ -91,3 +91,7 @@ ngspice reads a pulse's width of 0 as the transient's stop time, so a pulse with
 Logic devices have no SPICE element, so a circuit that holds one cannot be written.
 `jolty.spice.ngspice` runs it: `run` runs one analysis with tolerances as tight as jolty's, at the temperature where ngspice's thermal voltage is jolty's, and reads the raw file it writes.
 The [gallery](../gallery.md) replicates every example without logic devices this way.
+
+`export.netlist(..., dialect=export.XYCE)` writes the netlist for Xyce 7.10.0 instead, Sandia's simulator, which `jolty.spice.xyce.run` runs as a separate program, as its GPL asks, reading the values it prints and the times it reports.
+The dialect states only where Xyce departs from ngspice, each fact read from Xyce's sources: the parameters each of its models takes, a source's DC level, which Xyce takes as 0 where none is given, a pulse of no width, and temperatures where Xyce's thermal voltage, from SPICE3's constants, is jolty's.
+What Xyce lacks or defines otherwise is refused by name, never dropped: BSIM3, whose Xyce version is 3.2.2, VDMOS and VBIC, other models in Xyce, excess phase, a parameter its model has not, and, for now, every device jolty writes as an expression.

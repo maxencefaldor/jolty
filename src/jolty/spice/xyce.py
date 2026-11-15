@@ -8,6 +8,14 @@ and reads the values Xyce prints, with the times it reports. Each runs at the
 temperature where Xyce's thermal voltage is jolty's,
 [`xyce_celsius`][jolty.spice.xyce.xyce_celsius], so the two engines differ by their
 devices rather than their physical constants.
+
+A suite adds Xyce as one more simulator through `run`: the circuit written by
+`jolty.spice.export.netlist` in Xyce's dialect, a refusal there meaning Xyce cannot
+run it; the analysis as Xyce's command; ``options=()`` for Xyce's defaults, its own
+best configuration; the voltages compared as `printed`; and a `timeout`. A
+`JoltyError` is a run that failed, with what Xyce printed; a `Result` holds the values,
+the time from the process's start to its exit, and the time Xyce reports for its
+analyses. [`execute`][jolty.spice.xyce.execute] runs a deck written otherwise.
 """
 
 import csv
