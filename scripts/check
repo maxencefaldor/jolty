@@ -6,6 +6,7 @@
 #   scripts/check            every group, as the pre-push hook runs it
 #   scripts/check rust       Rust format, lints and tests
 #   scripts/check python     Python format, lints, types, Markdown, tests and examples
+#   scripts/check free-threaded   the Python tests on free-threaded Python, without the GIL
 #   scripts/check docs       the generated reference pages and the documentation site
 #
 # CI runs each group in a job of its own, the Rust and Python groups on Linux and on
@@ -21,6 +22,8 @@ check_rust() {
     export PYO3_PYTHON
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+    cargo deny --locked check licenses
     cargo test --workspace --locked
 }
 
@@ -37,6 +40,15 @@ check_python() {
         xargs -n 1 -P "$(getconf _NPROCESSORS_ONLN)" uv run --locked jolty simulate > /dev/null
 }
 
+# In an environment of its own, so the project's stays as it was. The extension declares
+# it needs no GIL; were it to turn the GIL back on as it loads, Python would warn, which
+# the tests make an error.
+check_free_threaded() (
+    export UV_PYTHON=3.15t UV_PROJECT_ENVIRONMENT=.venv-free-threaded
+    uv sync --locked
+    uv run --locked python -c "import sys, jolty._core; assert not sys._is_gil_enabled()"
+    uv run --locked pytest
+)
 check_docs() {
     uv sync --locked --group docs
     uv run --locked python docs/reference.py > /dev/null
@@ -46,15 +58,17 @@ check_docs() {
 
 case "${1:-all}" in
     rust | python | docs) "check_$1" ;;
+    free-threaded) check_free_threaded ;;
     all)
         # One after another, never joined by `&&`: bash ignores `set -e` inside a
         # function called on the left of `&&`, so a failing check would pass unseen.
         check_rust
         check_python
+        check_free_threaded
         check_docs
         ;;
     *)
-        echo "usage: scripts/check [rust | python | docs]" >&2
+        echo "usage: scripts/check [rust | python | free-threaded | docs]" >&2
         exit 2
         ;;
 esac

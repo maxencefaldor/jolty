@@ -61,6 +61,18 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           args: --release --out dist --interpreter python${{ matrix.python }}
+      # The wheel alone in a fresh environment, its dependencies from PyPI, simulates an
+      # example and meets its specs; a free-threaded one loads without the GIL.
+      - name: Smoke-test the wheel
+        shell: bash
+        run: |
+          python -m venv smoke
+          if [ "$RUNNER_OS" = Windows ]; then bin=smoke/Scripts; else bin=smoke/bin; fi
+          "$bin/python" -m pip install --quiet dist/*.whl
+          if [ "${{ matrix.python }}" = 3.15t ]; then
+            "$bin/python" -c "import sys, jolty._core; assert not sys._is_gil_enabled()"
+          fi
+          "$bin/jolty" simulate examples/rc_filter.py > /dev/null
       - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.python }}-${{ matrix.os }}-${{ matrix.target }}

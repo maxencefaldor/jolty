@@ -68,8 +68,8 @@ Each module imports only from the modules listed before it, and from those liste
 Where the code does not meet a convention yet, a change that touches that code brings it closer, never further.
 
 - **Tools:** use the standard, official, established tool in each category.
-  That means uv, ruff, ty, rumdl, pytest with Hypothesis and pytest-xdist, pydantic and pydantic-settings, numpy for arrays, the official MCP SDK, matplotlib for plots, maturin with PyO3, cargo with clippy and proptest, criterion for Rust's benchmarks, faer for dense linear algebra, rayon for data parallelism, mimalloc as the Python extension's allocator, and `rand` with `rand_chacha` and `rand_distr` for random sampling.
-- **Dependencies:** a new one is the established choice in its category, is maintained, and has a license compatible with Apache-2.0.
+  That means uv, ruff, ty, rumdl, pytest with Hypothesis and pytest-xdist, pydantic and pydantic-settings, numpy for arrays, the official MCP SDK, matplotlib for plots, maturin with PyO3, cargo with clippy and proptest, cargo-deny for the dependencies' licenses, criterion for Rust's benchmarks, faer for dense linear algebra, rayon for data parallelism, mimalloc as the Python extension's allocator, and `rand` with `rand_chacha` and `rand_distr` for random sampling.
+- **Dependencies:** a new one is the established choice in its category, is maintained, and has a license compatible with Apache-2.0, as `deny.toml` lists them for the Rust crates.
   Nothing under the GPL is linked into jolty; a GPL tool runs only as a separate program.
   A process kit or a third-party fixture is pinned and fetched with its digest, never copied into the repository.
 - **Format and lint:** ruff's default format at 88 columns, every ruff rule, every ty rule as an error, rustfmt, clippy's pedantic lints as errors, and Markdown one sentence per line.

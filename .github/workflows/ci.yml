@@ -34,6 +34,10 @@ jobs:
       - name: Install Python, which PyO3 builds against
         run: uv python install
       - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny, which checks the dependencies' licences
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
       - name: Check
         run: scripts/check rust
 
@@ -71,10 +75,6 @@ jobs:
     name: Python tests on free-threaded Python, without the GIL
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    env:
-      # The extension declares it needs no GIL; were it to turn the GIL back on as it
-      # loads, Python would warn, which the tests make an error.
-      UV_PYTHON: "3.15t"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
@@ -86,8 +86,5 @@ jobs:
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           dirname "$(command -v brew)" >> "$GITHUB_PATH"
           brew install ngspice
-      - name: Test
-        run: |
-          uv sync --locked
-          uv run --locked python -c "import sys, jolty._core; assert not sys._is_gil_enabled()"
-          uv run --locked pytest
+      - name: Check
+        run: scripts/check free-threaded
