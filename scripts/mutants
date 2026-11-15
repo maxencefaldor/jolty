@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Copyright 2026 Maxence Faldor
+#
+# How strong the Rust tests are, reported and never checked: cargo-mutants changes the
+# code one mutant at a time, a `<` made `<=` or a function made to return a default, and
+# runs the tests of the crate it changed, which should then fail. A mutant they miss is
+# listed in mutants.out/missed.txt, and the run passes all the same; a run whose tests
+# fail before any mutant does not. .cargo/mutants.toml configures it.
+#
+#   scripts/mutants                  the mutants of the change from main, committed or
+#                                    not, as CI runs them on each change
+#   scripts/mutants BASE             those of the change from the commit BASE
+#   scripts/mutants --all [OPTION...]   every crate's mutants, which cedar is to run
+#                                    weekly, with cargo-mutants' own options, such as
+#                                    -p jolty-ir for one crate's, --jobs 16 to test 16
+#                                    at once across the machine's cores, or --shard 2/3
+#                                    for the third of three machines' shares
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+PYO3_PYTHON="${PYO3_PYTHON:-$(uv python find)}"
+export PYO3_PYTHON
+
+if [ "${1:-}" = --all ]; then
+    shift
+    mutants=(cargo mutants "$@")
+else
+    # From where the change left BASE, so that what BASE gained since is not in it.
+    mkdir -p target
+    git diff "$(git merge-base "${1:-main}" HEAD)" > target/mutants.diff
+    mutants=(cargo mutants --in-diff target/mutants.diff)
+fi
+# cargo-mutants exits with 2 when the tests missed a mutant and 3 when one timed out:
+# both are what the run reports, so neither fails it.
+status=0
+"${mutants[@]}" || status=$?
+case "$status" in
+    0 | 2 | 3) ;;
+    *) exit "$status" ;;
+esac
