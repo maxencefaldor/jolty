@@ -12,8 +12,10 @@
 #   scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
 #   scripts/bench --baseline COMMIT   against COMMIT's results rather than an ancestor's
 #   scripts/bench --break-even NAME   from which size the threshold NAME pays
+#   scripts/bench --robustness        the hard circuits' corpus, in every simulator
 #
-# perf/README.md says what each fixture stresses, and holds the baseline.
+# perf/README.md says what each fixture stresses, and holds the baseline;
+# perf/robustness/README.md says what the corpus holds and how it judges.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

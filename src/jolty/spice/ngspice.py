@@ -2,8 +2,9 @@
 """ngspice, run on a deck of SPICE lines, and the raw files it writes, read.
 
 [`run`][jolty.spice.ngspice.run] runs one analysis of a deck in ngspice, with tolerances
-as tight as jolty's, and reads the raw file it writes, and
-[`runs`][jolty.spice.ngspice.runs] runs several in one ngspice. Each runs at the
+as tight as jolty's, and reads the raw file it writes;
+[`runs`][jolty.spice.ngspice.runs] runs several in one ngspice; and
+[`read`][jolty.spice.ngspice.read] reads the plots of any raw file. Each runs at the
 temperature where ngspice's thermal voltage is jolty's,
 [`spice_celsius`][jolty.spice.ngspice.spice_celsius], so the two engines differ by their
 devices rather than their physical constants.
@@ -226,7 +227,7 @@ def runs(
         if not raw.is_file():
             message = f"ngspice wrote no results:\n{printed}"
             raise JoltyError(message)
-        found = _read_raws(raw.read_text(encoding="utf-8"), printed)
+        found = read(raw.read_text(encoding="utf-8"), printed)
     if len(found) != len(analyses) or any(
         result.plot == "Constant values" for result in found
     ):
@@ -235,8 +236,12 @@ def runs(
     return found
 
 
-def _read_raws(text: str, printed: str) -> tuple[Raw, ...]:
-    """Each plot of a raw file, which begins at its title, with what ngspice printed."""
+def read(text: str, printed: str = "") -> tuple[Raw, ...]:
+    """Each plot of the ASCII raw file `text`, with what ngspice `printed` as it ran.
+
+    A plot begins at its title; ngspice writes one per ``write`` of a deck whose
+    ``filetype`` is ``ascii``, appending each to the last with ``appendwrite``.
+    """
     plots = re.split(r"^(?=Title:)", text, flags=re.MULTILINE)
     return tuple(_read_raw(plot, printed) for plot in plots if plot.strip())
 

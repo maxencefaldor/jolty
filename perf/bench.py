@@ -19,6 +19,7 @@ Usage::
     scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
     scripts/bench --baseline COMMIT   against COMMIT's results, or a results file's
     scripts/bench --break-even NAME   where the threshold NAME of Parallelism pays
+    scripts/bench --robustness        the hard circuits' corpus, in every simulator
 
 Without ``--baseline``, the baseline is the newest ancestor of the checked-out commit
 whose results ``perf/results`` holds. A working tree with changes to tracked files
@@ -34,6 +35,11 @@ threads; it spreads the 50,000 inverters' chain only with ``--largest``.
 every core: on circuits of the fixtures' scripts at several sizes, each run with the
 threshold unset and set, interleaved, and that size's value of the threshold, its
 break-even. ``perf/README.md`` says how it sets each threshold, and what it found.
+
+``--robustness`` runs instead the corpus of hard circuits of ``perf/robustness``, each
+case in every simulator installed, or those ``--simulator`` names, and prints each
+outcome, classified, and each simulator's failure rates; ``perf/robustness/README.md``
+says what it holds and how it judges.
 """
 
 import dataclasses
@@ -81,7 +87,9 @@ ROOT: Final = PERF.parent
 """The repository's root."""
 
 sys.path.insert(0, str(PERF / "circuits"))
+sys.path.insert(0, str(PERF / "robustness"))
 import bjt_amp  # noqa: E402 - beside the scripts
+import corpus  # noqa: E402 - the hard circuits' corpus, beside its cases
 import inverter_chain  # noqa: E402 - beside the scripts
 import rc_mesh  # noqa: E402 - beside the scripts
 from fixture import CIRCUITS, PLANS, Fixture, engine_plan  # noqa: E402 - beside the scripts
@@ -138,6 +146,9 @@ break-evens on the circuits of its script."""
 LONGEST: Final = "inverter_chain_50000"
 """The fixture whose runs ``--scale`` spreads only with ``--largest``: each takes
 minutes."""
+
+ROBUSTNESS_TIMEOUT: Final = corpus.TIMEOUT
+"""The seconds ``--robustness`` lets a run take by default."""
 
 SAMPLES: Final = 1000
 """The samples of a Monte Carlo fixture the suite times: a few seconds on one thread."""
@@ -1002,7 +1013,8 @@ class Bench(cli.CommandLine):
         default_factory=list,
         description=(
             "The fixtures to time, the suite's by default; with --break-even, the "
-            "scripts whose circuits it sweeps, every one it applies to by default."
+            "scripts whose circuits it sweeps, every one it applies to by default; "
+            "with --robustness, the cases it runs, every one by default."
         ),
     )
     scale: bool = Field(
@@ -1036,6 +1048,25 @@ class Bench(cli.CommandLine):
     )
     ngspice: bool = Field(
         default=False, description="Time ngspice instead, for context."
+    )
+    robustness: bool = Field(
+        default=False,
+        description=(
+            "Run the corpus of hard circuits instead: each case in each simulator, "
+            "its outcome classified, and each simulator's failure rates."
+        ),
+    )
+    simulator: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The simulators --robustness runs, by configuration, such as jolty and "
+            "ngspice-sparse; every one installed by default."
+        ),
+    )
+    timeout: float = Field(
+        default=ROBUSTNESS_TIMEOUT,
+        gt=0,
+        description="The seconds --robustness lets a run take before it stops it.",
     )
     baseline: str | None = Field(
         default=None, description="The commit or results file to compare with."
@@ -1113,8 +1144,22 @@ def break_evens(arguments: Bench, threshold: Threshold) -> None:
     save(arguments.output or results_path(), timings)
 
 
+def robustness(arguments: Bench) -> None:
+    """Runs the corpus of hard circuits, and writes its outcomes beside the machine."""
+    output = arguments.output or (
+        PERF / "results" / f"{results_path().stem}-robustness.json"
+    )
+    context = {"commit": git("rev-parse", "HEAD"), "machine": machine()}
+    corpus.measure(
+        arguments.fixtures, arguments.simulator, arguments.timeout, output, context
+    )
+
+
 def measure(arguments: Bench) -> None:
     """Times the fixtures, writes the times, and compares them with a baseline's."""
+    if arguments.robustness:
+        robustness(arguments)
+        return
     if arguments.break_even is not None:
         break_evens(arguments, arguments.break_even)
         return

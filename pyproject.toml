@@ -118,15 +118,16 @@ include = ["src", "tests", "examples", "docs", "benchmarks", "discovery", "perf"
 [tool.ty.environment]
 # The tests import their shared harness, `tests/differential.py`, as pytest does, the
 # benchmarks' scripts, which import each other, as their runs do, the discoveries the
-# parts the examples share, `examples/common.py`, as their scripts do, and the fixtures'
-# scripts what they share, `perf/circuits/fixture.py`, as their runs do.
-extra-paths = ["tests", "benchmarks", "examples", "perf/circuits"]
+# parts the examples share, `examples/common.py`, as their scripts do, the fixtures'
+# scripts what they share, `perf/circuits/fixture.py`, as their runs do, and the corpus
+# of hard circuits its modules, `perf/robustness/corpus.py` and those beside it.
+extra-paths = ["tests", "benchmarks", "examples", "perf/circuits", "perf/robustness"]
 
 [tool.pytest]
 testpaths = ["src", "tests"]
 # The tests share harness modules, `differential` and `strategies`, which they import
-# from there.
-pythonpath = ["tests"]
+# from there, and import the corpus of hard circuits' modules from beside it.
+pythonpath = ["tests", "perf/robustness"]
 # The tests run in a process per processor, pytest-xdist's. Each test of random circuits
 # is one item that runs for minutes, so a process that finishes its share takes tests
 # still waiting behind another's, rather than wait idle: worksteal.

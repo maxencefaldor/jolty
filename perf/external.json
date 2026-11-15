@@ -1,0 +1,140 @@
+{
+  "description": "Third-party decks the benchmarks fetch at a pinned commit and never copy into the repository: each one's address, the commit it is read at, its SHA-256 digest and its licence, as an SPDX identifier. Xyce's regression suite grants its decks, CircuitSim90's among them, under the GPL, version 3 or later, in its README.",
+  "decks": [
+    {
+      "name": "arom",
+      "suite": "CircuitSim90, MOSFET level 3",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/MOS3/arom.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "4db593d3133a5929e7efdcb26921d3fce15e6c6c17e8bcef2fa2a08c4f7d062c",
+      "licence": "GPL-3.0-or-later",
+      "hard": "116 level 3 MOSFETs driven by exponential sources, from initial conditions"
+    },
+    {
+      "name": "gm1",
+      "suite": "CircuitSim90, MOSFET level 3",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/MOS3/gm1.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "417d4fe8629398295bb317ad236781f36b34eebb58e74c7b63757263f55c338c",
+      "licence": "GPL-3.0-or-later",
+      "hard": "A storage cell, its read latches and two transparent latches: bistable nodes from a supply that pulses on"
+    },
+    {
+      "name": "gm17",
+      "suite": "CircuitSim90, MOSFET level 3",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/MOS3/gm17.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "43fc842bd3c7bfbbe285a5d83b4eb08fa6acc1a3c8a5da9ae62c605bd32324a9",
+      "licence": "GPL-3.0-or-later",
+      "hard": "A non-precharged RAM of eight-transistor cells with a latch and a decoder, from initial conditions"
+    },
+    {
+      "name": "gm19",
+      "suite": "CircuitSim90, MOSFET level 3",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/MOS3/gm19.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "0b94a01a96dd0ae19e93fe78b5fc7397411815d350ee13ee118c49548bb62c08",
+      "licence": "GPL-3.0-or-later",
+      "hard": "A clock amplifier and divider: 70 MOSFETs switching for 600 ns"
+    },
+    {
+      "name": "gm2",
+      "suite": "CircuitSim90, MOSFET level 3",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/MOS3/gm2.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "ad4261e8c85a1f0376b24c0bad6f42fa4046a0fa669b84853236ef558fa417fc",
+      "licence": "GPL-3.0-or-later",
+      "hard": "7 level 3 MOSFETs and 2 subcircuits of 4 µm devices, over 200 ns"
+    },
+    {
+      "name": "gm3",
+      "suite": "CircuitSim90, MOSFET level 3",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/MOS3/gm3.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "90ee65bd24818d09d008de93e92f5a398f3422ae2a4a663e5889834e2c1fe071",
+      "licence": "GPL-3.0-or-later",
+      "hard": "18 level 3 MOSFETs and 5 subcircuits, its operating point asked for apart"
+    },
+    {
+      "name": "jge",
+      "suite": "CircuitSim90, MOSFET level 3",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/MOS3/jge.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "c0da4a46792a27496530ea1a57b1253dd980d17380db58ffd6e6434f0156babf",
+      "licence": "GPL-3.0-or-later",
+      "hard": "348 level 3 MOSFETs at 100 °C, from a nodeset"
+    },
+    {
+      "name": "mike2",
+      "suite": "CircuitSim90, MOSFET level 3",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/MOS3/mike2.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "99cf3671f37b401548a991f679ceaeb6ab502c97ac7c98de81b5adbddb4df013",
+      "licence": "GPL-3.0-or-later",
+      "hard": "A NAND gate in 2 µm level 3 MOSFETs by Gear's method"
+    },
+    {
+      "name": "rich3",
+      "suite": "CircuitSim90, MOSFET level 3",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/MOS3/rich3.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "5cf5ebcafb990907419d4844249ed6c8a53e47be8faf06f8e16fd08a5ef353ae",
+      "licence": "GPL-3.0-or-later",
+      "hard": "107 level 3 MOSFETs at 125 °C, driven by exponential sources from initial conditions"
+    },
+    {
+      "name": "todd3",
+      "suite": "CircuitSim90, MOSFET level 3",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/MOS3/todd3.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "adecd1aec7ea465065ee828bea3db6a4f675a9e8abf0e8931137593bb338b57f",
+      "licence": "GPL-3.0-or-later",
+      "hard": "A D latch hardened against single-event upsets, struck by an injection transistor"
+    },
+    {
+      "name": "vreg",
+      "suite": "CircuitSim90, bipolar",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/CircuitSim90/BJT/vreg.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "37e51383099449f21e699332828708241cb233bb59d95721d61cc11d9672bbeb",
+      "licence": "GPL-3.0-or-later",
+      "hard": "A voltage regulator of 20 bipolar transistors, its supply swept from 0 V, where every junction is off"
+    },
+    {
+      "name": "latch",
+      "suite": "CircuitSim90, bipolar",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/MCNC_BJT_LATCH/latch.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "41622f75dcc9297915a1b0614ad27cfe19850cb4e19817f02a8914644e4d6382",
+      "licence": "GPL-3.0-or-later",
+      "hard": "A static latch of two ECL gates, set and reset by pulses"
+    },
+    {
+      "name": "opampal",
+      "suite": "CircuitSim90, bipolar",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/MCNC_BJT_OPAMPAL/opampal.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "690904bc6bc2fc65367e1b13eed7625b647fa8d8131dff71687c558da2a9ca8b",
+      "licence": "GPL-3.0-or-later",
+      "hard": "A bipolar operational amplifier of 37 transistors over a millisecond"
+    },
+    {
+      "name": "rca",
+      "suite": "CircuitSim90, bipolar",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/MCNC_BJT_RCA/rca.cir",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "a90dde190b244726972cfafabadeab0531357008dc0b3eda7d9c6a7ee42e11a3",
+      "licence": "GPL-3.0-or-later",
+      "hard": "The RCA3040 wideband amplifier, a sine of 50 MHz"
+    },
+    {
+      "name": "schmitecl",
+      "suite": "CircuitSim90, bipolar",
+      "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2/Netlists/MCNC_BJT_SCHMITECL/schmitecl.cir_NORUN",
+      "commit": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+      "sha256": "7987e63a33a822bd5fa9fcf0023463b5ac5e792adfa3502b3b3fcd147425d88f",
+      "licence": "GPL-3.0-or-later",
+      "hard": "An ECL-compatible Schmitt trigger driven across its thresholds, which Xyce's suite does not run"
+    }
+  ]
+}
