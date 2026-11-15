@@ -51,7 +51,7 @@ impl Channel {
 /// tail, as ngspice implements it.
 ///
 /// Two junctions join the gate to the channel, one at each end, each carrying a
-/// [junction current](crate::junction) and holding a depletion charge of grading ½. The
+/// junction current and holding a depletion charge of grading ½. The
 /// drain current follows the square law, softened near the threshold by the doping tail
 /// `b`: with `vgst = vgs − vto` and `β' = β · (1 + λ · vds)`, it is
 /// `β' · vgst² · (b + (1 − b) · vgst / (pb − vto))` in saturation. The transistor is

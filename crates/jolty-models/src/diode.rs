@@ -27,7 +27,7 @@ use crate::{
 
 /// A junction diode from terminal `anode` to terminal `cathode`, in the SPICE model.
 ///
-/// The junction carries the [junction current](crate::junction) with exponential slope
+/// The junction carries the ideal junction current with exponential slope
 /// `n·Vt`, plus `gmin · v`, and holds a depletion charge and a diffusion charge. With a
 /// series resistance, the junction sits between an internal node, labelled `junction`, and
 /// the cathode; below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE), the resistance also

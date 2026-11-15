@@ -29,7 +29,7 @@ const DARKNESS: f64 = 1e-6;
 /// lux, and those terminals draw no current. With `r` the resistance at the reference
 /// illuminance `E₀` and `γ` its slope on log scales, the cell's conductance is
 /// `1/r_dark + s/r`, where its response `s` settles to `(E/E₀)^γ`, the illuminance `E` held
-/// at zero or above, smoothly, below [`DARKNESS`]. With a response time `τ`, `s` lags the
+/// at zero or above, smoothly, below a millionth of a lux. With a response time `τ`, `s` lags the
 /// light, `τ · ds/dt = (E/E₀)^γ − s`, as a cadmium sulphide cell's carriers do, and is an
 /// unknown labelled `response`; without one, it follows at once.
 #[derive(Debug, Clone, Copy)]

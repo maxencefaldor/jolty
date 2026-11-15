@@ -105,7 +105,7 @@ pub enum GateMaterial {
 /// with the drain below the source, the two swap.
 ///
 /// Two junctions join the bulk to the drain and the source, each carrying a
-/// [junction current](crate::junction) and holding a depletion charge, bottom and
+/// junction current and holding a depletion charge, bottom and
 /// sidewall. The gate holds overlap charges against the source, the drain and the bulk,
 /// and, given an oxide thickness, Meyer's capacitances across the oxide. These depend on
 /// every terminal voltage and no charge yields them, so each carries a current

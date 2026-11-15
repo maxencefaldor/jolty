@@ -62,7 +62,7 @@ pub enum Construction {
 /// it.
 ///
 /// Two junctions, base-emitter and base-collector, each carry an ideal
-/// [junction current](crate::junction) and a leakage one. The transport current from
+/// junction current and a leakage one. The transport current from
 /// collector to emitter, `(Ibe − Ibc) / qb`, falls with the base charge `qb`, which models
 /// the Early effect and high injection. The base resistance falls from `rb` towards `rbm`
 /// as the base charge or the base current grows. Each junction holds a depletion charge,

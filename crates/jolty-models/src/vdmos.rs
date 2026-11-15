@@ -56,7 +56,7 @@ const LARGEST_DEPLETION_THRESHOLD: f64 = 2.5;
 /// − cgdmin) / (1 + π/2)` and `y = cgdmax − s`. The charge is the capacitance's integral,
 /// so it is conserved where ngspice integrates the capacitance by the trapezoidal rule.
 ///
-/// A body diode, a [`Junction`] with its own parameters, joins the source, through its
+/// A body diode, a junction with its own parameters, joins the source, through its
 /// series resistance, to the drain terminal, and a conductance joins the drain to the
 /// source. The drain, source, gate and body resistances each add an internal node,
 /// labelled `drain`, `source`, `gate` and `body_diode`; one below

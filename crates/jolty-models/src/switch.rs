@@ -81,7 +81,8 @@ impl<R: Real> Law<R> {
 
 /// A voltage-controlled switch, in PSpice's model: a resistance between `positive` and
 /// `negative` that the voltage of `control_positive` over `control_negative` moves smoothly
-/// from the off resistance to the on one, by [PSpice's law](Law). The control terminals
+/// from the off resistance to the on one, by PSpice's law, its logarithm a cubic of the
+/// control that reaches each resistance with zero slope. The control terminals
 /// draw no current.
 #[derive(Debug, Clone, Copy)]
 pub struct VoltageControlledSwitch;
@@ -226,7 +227,8 @@ impl Kernel for VoltageControlledSwitch {
 
 /// A current-controlled switch, in PSpice's model: a resistance between `positive` and
 /// `negative` that the current through its control port moves smoothly from the off
-/// resistance to the on one, by [PSpice's law](Law).
+/// resistance to the on one, by PSpice's law, its logarithm a cubic of the control that
+/// reaches each resistance with zero slope.
 ///
 /// The control port is a short circuit that senses the current through it, as a
 /// current-controlled source's is: the current flows from `control_positive` through the

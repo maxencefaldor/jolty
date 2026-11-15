@@ -64,8 +64,7 @@ impl Branch {
 /// parameters, as a behavioral source's terminals depend on the voltages it reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Interface {
-    /// The terminals' names, in the order [`Binding::terminal`](crate::Binding::terminal)
-    /// indexes them.
+    /// The terminals' names, in the order of [`Binding::terminals`](crate::Binding::terminals).
     pub terminals: Vec<String>,
     /// The branches between the terminals; a terminal on none only senses its node.
     pub branches: Vec<Branch>,

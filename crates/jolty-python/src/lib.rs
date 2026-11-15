@@ -1,11 +1,11 @@
 //! The Python extension module `jolty._core`.
 //!
-//! It exposes a class, [`Simulator`], that elaborates a circuit from its JSON text, checks
+//! It exposes a class, `Simulator`, that elaborates a circuit from its JSON text, checks
 //! its structure, and runs analyses described in JSON, returning arrays as `NumPy` arrays;
-//! a circuit elaborated once, [`Elaborated`], that simulators made at the [`Values`] of
-//! some parameters share; the [`Pool`] of threads the engine runs on, never rayon's global
-//! one; the draws of Monte Carlo samples, [`sample`]; and the table of the structural
-//! checks' [`rules`]. Every call that runs the engine releases the interpreter while it
+//! a circuit elaborated once, `Elaborated`, that simulators made at the `Values` of
+//! some parameters share; the `Pool` of threads the engine runs on, never rayon's global
+//! one; the draws of Monte Carlo samples, `sample`; and the table of the structural
+//! checks' `rules`. Every call that runs the engine releases the interpreter while it
 //! runs. Everything an agent or a person reads, from units to reports, is built on top of
 //! it in Python.
 
