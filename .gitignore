@@ -27,3 +27,6 @@ examples/*.view.html
 # The robustness corpus's results: their messages quote lines of third-party decks,
 # GPL among them, which the repository never holds
 perf/results/*-robustness.json
+# The diagrams and table the precision suite draws beside its results file, which
+# `scripts/precision --plot` draws again from it
+perf/results/precision/*/

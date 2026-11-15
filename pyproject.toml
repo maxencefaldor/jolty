@@ -34,6 +34,7 @@ dev = [
     "hypothesis",
     "maturin",
     "mcp>=2.1",
+    "mpmath>=1.4.1",
     "mypy",
     "pytest",
     "pytest-xdist",
@@ -119,9 +120,18 @@ include = ["src", "tests", "examples", "docs", "benchmarks", "discovery", "perf"
 # The tests import their shared harness, `tests/differential.py`, as pytest does, the
 # benchmarks' scripts, which import each other, as their runs do, the discoveries the
 # parts the examples share, `examples/common.py`, as their scripts do, the fixtures'
-# scripts what they share, `perf/circuits/fixture.py`, as their runs do, and the corpus
-# of hard circuits its modules, `perf/robustness/corpus.py` and those beside it.
-extra-paths = ["tests", "benchmarks", "examples", "perf/circuits", "perf/robustness"]
+# scripts what they share, `perf/circuits/fixture.py`, as their runs do, the corpus of
+# hard circuits its modules, `perf/robustness/corpus.py` and those beside it, and the
+# precision suite its modules and the speed suite's timing, as its run does.
+extra-paths = [
+    "tests",
+    "benchmarks",
+    "examples",
+    "perf/circuits",
+    "perf/robustness",
+    "perf",
+    "perf/precision",
+]
 
 [tool.pytest]
 testpaths = ["src", "tests"]
