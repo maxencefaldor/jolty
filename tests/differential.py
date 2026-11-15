@@ -1,11 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""Running ngspice on jolty's circuits and comparing what both engines find.
+"""Running ngspice or Xyce on jolty's circuits and comparing what the engines find.
 
-A circuit is written as a SPICE netlist by `jolty.spice.export`; a component read from a
-SPICE library is written as an instance of its subcircuit, the library included. Both
-engines run with tight tolerances, ngspice at the temperature where its thermal voltage
-is jolty's. The tests skip where ngspice is not installed, unless the environment sets
-``JOLTY_REQUIRE_NGSPICE=1``, as CI does, when they fail.
+A circuit is written as a SPICE netlist by `jolty.spice.export`, in ngspice's dialect or
+Xyce's; a component read from a SPICE library is written as an instance of its
+subcircuit, the library included. The engines run with tight tolerances, the simulator
+at the temperature where its thermal voltage is jolty's. The tests skip where the
+simulator is not installed, unless the environment sets ``JOLTY_REQUIRE_NGSPICE=1``, as
+CI does, or ``JOLTY_REQUIRE_XYCE=1``, when they fail.
 """
 
 import os
@@ -16,14 +17,15 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from jolty import Simulation, ir, results
+from jolty import Options, Simulation, ir, results
 from jolty.plan import TIGHT
-from jolty.spice import export, ngspice
+from jolty.spice import export, ngspice, xyce
 from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE
 
 __all__ = [
     "REQUIRED",
     "SKIP",
+    "SKIP_XYCE",
     "Values",
     "closest",
     "compare",
@@ -35,6 +37,7 @@ __all__ = [
     "size",
     "unstable",
     "vector",
+    "xyce",
 ]
 
 REQUIRED: Final = os.environ.get("JOLTY_REQUIRE_NGSPICE") == "1"
@@ -44,6 +47,15 @@ SKIP = pytest.mark.skipif(
     ngspice.EXECUTABLE is None and not REQUIRED, reason="ngspice is not installed"
 )
 """Marks tests that need ngspice: skipped without it, unless it is required, when they
+run and fail."""
+
+REQUIRED_XYCE: Final = os.environ.get("JOLTY_REQUIRE_XYCE") == "1"
+"""Whether Xyce must run, as ``JOLTY_REQUIRE_XYCE=1`` in the environment says."""
+
+SKIP_XYCE = pytest.mark.skipif(
+    xyce.EXECUTABLE is None and not REQUIRED_XYCE, reason="Xyce is not installed"
+)
+"""Marks tests that need Xyce: skipped without it, unless it is required, when they
 run and fail."""
 
 type Real = npt.NDArray[np.float64]
@@ -60,17 +72,32 @@ def _libraries(circuit: ir.Circuit) -> set[str]:
 
 
 def netlist(
-    circuit: ir.Circuit, *, excited: str | None = None, transient: bool = False
+    circuit: ir.Circuit,
+    *,
+    excited: str | None = None,
+    transient: bool = False,
+    dialect: export.Dialect = export.NGSPICE,
 ) -> list[str]:
-    """The SPICE lines of a circuit whose top places devices and library subcircuits."""
+    """The SPICE lines of a circuit whose top places devices and library subcircuits.
+
+    They are in the `dialect` of a simulator, ngspice's unless given.
+    """
     return export.netlist(
-        circuit, excited=excited, subcircuits=_libraries(circuit), transient=transient
+        circuit,
+        excited=excited,
+        subcircuits=_libraries(circuit),
+        transient=transient,
+        dialect=dialect,
     )
 
 
-def vector(circuit: ir.Circuit, unknown: results.Unknown) -> str:
-    """The ngspice vector of a jolty unknown of such a circuit."""
-    return export.vector(circuit, unknown, _libraries(circuit))
+def vector(
+    circuit: ir.Circuit,
+    unknown: results.Unknown,
+    dialect: export.Dialect = export.NGSPICE,
+) -> str:
+    """A simulator's vector of an unknown of such a circuit, by default ngspice's."""
+    return export.vector(circuit, unknown, _libraries(circuit), dialect)
 
 
 # The tests.

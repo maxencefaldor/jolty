@@ -1,14 +1,17 @@
 # Copyright 2026 Maxence Faldor
-"""Circuits written as SPICE netlists, and run in ngspice, to check jolty against it.
+"""Circuits written as SPICE netlists, and run in ngspice or Xyce, to check jolty.
 
 [`netlist`][jolty.spice.export.netlist] writes a circuit as SPICE lines, its hierarchy
 flattened into devices whose ids and nets join their paths with underscores, such as
 ``RX1_R1`` and ``x1_mid``; components read from SPICE libraries stay instances of their
-subcircuits. [`jolty.spice.ngspice`][jolty.spice.ngspice] runs those lines, and
-[`vector`][jolty.spice.export.vector] names the ngspice vector of a jolty unknown.
-Logic devices and thermal networks have no SPICE element, and ngspice heats no device by
-what it dissipates into a thermal network, so a circuit that holds one cannot be
-written.
+subcircuits. The lines are in a simulator's dialect:
+[`NGSPICE`][jolty.spice.export.NGSPICE]'s unless [`XYCE`][jolty.spice.export.XYCE]'s is
+asked for.
+[`jolty.spice.ngspice`][jolty.spice.ngspice] and [`jolty.spice.xyce`][jolty.spice.xyce]
+run those lines, and [`vector`][jolty.spice.export.vector] names a simulator's vector of
+a jolty unknown. Logic devices and thermal networks have no SPICE element, and neither
+simulator heats a device by what it dissipates into a thermal network, so a circuit that
+holds one cannot be written.
 """
 
 import json
@@ -25,12 +28,167 @@ from jolty.errors import JoltyError
 from jolty.ir import Role
 from jolty.spice import models, sky130
 from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE, spice_celsius
+from jolty.spice.xyce import xyce_celsius
 from jolty.units import ZERO_CELSIUS
 from jolty.unknowns import Unknown
 
 
 def _unwritable(message: str) -> JoltyError:
     return JoltyError(f"cannot write the circuit as SPICE: {message}")
+
+
+type Card = tuple[str, int]
+"""A device model with a model card, and its level: 1 but for a MOSFET of level 3."""
+
+
+@dataclass(frozen=True)
+class Dialect:
+    """A simulator's SPICE: what it calls jolty's devices, and what it cannot write.
+
+    jolty's tables of SPICE names, `jolty.spice.models`, are ngspice's, so a dialect
+    states only where its simulator departs from them.
+    """
+
+    simulator: str
+    """The simulator's name, as its messages give it."""
+    celsius: Callable[[float], float]
+    """Where the simulator's thermal voltage is jolty's at a temperature in kelvins, in
+    its degrees Celsius."""
+    separator: str
+    """What joins an instance of a subcircuit and a node within it, in the simulator's
+    names of nodes."""
+    instant: float
+    """The width, in seconds, a pulse of no width is written with."""
+    zero_level: bool
+    """Whether a source that varies states its level at time zero as its DC level, as
+    the simulator takes a level of 0 where none is stated, rather than jolty's, its
+    waveform's at time zero."""
+    flicker_over_oxide: bool
+    """Whether a MOSFET's flicker coefficient is written over its oxide's capacitance,
+    with ngspice's ``nlev=1``, rather than as SPICE's own."""
+    cards: Mapping[Card, frozenset[str]] | None
+    """The SPICE parameters, as jolty's tables name them, of each model card the
+    simulator's model takes, or None where it takes every one jolty writes."""
+    passives: Mapping[str, frozenset[str]] | None
+    """The parameters of a resistor, a capacitor and an inductor the simulator's element
+    takes, as SPICE names them, or None where it takes every one jolty writes."""
+    expressions: str | None
+    """Why the simulator reads none of jolty's expressions, or None where it reads
+    them: of behavioral sources, switches, photocells, memristors, and resistors and
+    capacitors whose values bend with their voltages."""
+    refused: Mapping[str, str]
+    """The devices the simulator has no element for that is jolty's, each with why."""
+
+
+NGSPICE: Final = Dialect(
+    simulator="ngspice",
+    celsius=spice_celsius,
+    separator=".",
+    # ngspice reads a width of 0 as the transient's stop time, while 1e-40 s vanishes
+    # beside any rise longer than 1e-24 s.
+    instant=1e-40,
+    zero_level=False,
+    flicker_over_oxide=True,
+    cards=None,
+    passives=None,
+    expressions=None,
+    refused={},
+)
+"""ngspice 47's dialect, in which jolty's tables of SPICE names are written."""
+
+_XYCE_DIODE: Final = frozenset(
+    {"is", "n", "rs", "cjo", "vj", "m", "fc", "tt", "bv", "ibv", "nbv", "eg", "xti"}
+    | {"kf", "af", "tnom"}
+)
+"""What Xyce 7.10.0's diode of level 1 takes of jolty's parameters: its ``addPar`` in
+``src/DeviceModelPKG/OpenModels/N_DEV_Diode.C``, lines 100 to 366. It has no ``TCV``,
+whose place its ``TBV1`` takes relative to the breakdown voltage rather than in
+volts."""
+
+_XYCE_BIPOLAR: Final = frozenset(
+    {"is", "bf", "br", "nf", "nr", "vaf", "var", "ikf", "ikr", "ise", "ne", "isc"}
+    | {"nc", "rb", "rbm", "irb", "re", "rc", "cje", "vje", "mje", "tf", "xtf", "vtf"}
+    | {"itf", "cjc", "vjc", "mjc", "xcjc", "tr", "cjs", "vjs", "mjs", "fc", "eg"}
+    | {"xti", "xtb", "kf", "af", "tnom"}
+)
+"""What Xyce's Gummel-Poon transistor, its BJT of level 1, takes: ``N_DEV_BJT.C``, lines
+120 to 756. It has no substrate junction's current, ``ISS`` and ``NS``, and no ``SUBS``:
+its substrate's capacitance always lies on the collector. Its excess phase, ``PTF``, is
+its own, either way its option ``NEWEXCESSPHASE`` chooses (lines 1187 to 1436): with 60°
+of it, `test_ngspice.py`'s ``delayed_stage`` leaves its collector 16% of its swing from
+jolty's, which is ngspice's, so it is refused too."""
+
+_XYCE_JFET: Final = frozenset(
+    {"vto", "beta", "lambda", "rd", "rs", "cgs", "cgd", "pb", "is", "fc", "b", "kf"}
+    | {"af", "tnom"}
+)
+"""What Xyce's JFET of level 1 takes: ``N_DEV_JFET.C``, lines 81 to 158. It has none of
+the temperature coefficients ``VTOTC``, ``BEX``, ``EG`` and ``XTI``, and no noise."""
+
+_XYCE_MOSFET: Final = frozenset(
+    {"vto", "kp", "gamma", "phi", "lambda", "rd", "rs", "cbd", "cbs", "is", "pb"}
+    | {"cgso", "cgdo", "cgbo", "rsh", "cj", "mj", "cjsw", "mjsw", "js", "tox", "ld"}
+    | {"uo", "fc", "nsub", "nss", "tnom", "kf", "af", "tpg", "level"}
+)
+"""What Xyce's MOSFET of level 1 takes: ``N_DEV_MOSFET1.C``, lines 156 to 331. It has no
+``DELVTO``, ``WD``, ``XL`` or ``XW``."""
+
+_XYCE_LEVEL_THREE: Final = _XYCE_MOSFET | frozenset(
+    {"eta", "delta", "nfs", "theta", "vmax", "kappa", "xj"}
+)
+"""What Xyce's MOSFET of level 3 takes: ``N_DEV_MOSFET3.C``, lines 165 to 370."""
+
+XYCE: Final = Dialect(
+    simulator="Xyce",
+    celsius=xyce_celsius,
+    separator=":",
+    # Xyce reads a width of 0 as no width: only a width it is not given is its stop
+    # time (`N_DEV_SourceData.C`, line 824).
+    instant=0.0,
+    # Xyce's operating point and DC sweeps take a source's DC level, 0 where none is
+    # given, where its transient starts from its waveform at time zero.
+    zero_level=True,
+    flicker_over_oxide=False,
+    expressions=(
+        "jolty writes its expressions in ngspice's language, and not yet in Xyce's, "
+        "whose functions read otherwise"
+    ),
+    cards={
+        ("diode", 1): _XYCE_DIODE,
+        ("bipolar_transistor", 1): _XYCE_BIPOLAR,
+        ("jfet", 1): _XYCE_JFET,
+        ("mosfet", 1): _XYCE_MOSFET,
+        ("mosfet", 3): _XYCE_LEVEL_THREE,
+    },
+    passives={
+        # `N_DEV_Resistor.C`, lines 194 to 204; `N_DEV_Capacitor.C`, 113 to 117;
+        # `N_DEV_Inductor.C`, 89 to 94. Xyce's resistor makes no flicker noise.
+        "resistor": frozenset({"tc1", "tc2", "tce"}),
+        "capacitor": frozenset({"tc1", "tc2"}),
+        "inductor": frozenset({"tc1", "tc2"}),
+    },
+    refused={
+        "bsim3": (
+            "Xyce's BSIM3, its MOSFET of level 9, is version 3.2.2, where jolty's is "
+            "3.3.0"
+        ),
+        "vdmos": (
+            "Xyce's VDMOS, its MOSFET of level 18, is another model than jolty's, "
+            "which is ngspice's"
+        ),
+        "vbic": (
+            "Xyce's VBIC, its BJT of levels 10 to 12, is not compared with jolty's, "
+            "which is ngspice's, yet"
+        ),
+        "foundry_mosfet": "SKY130's process design kit is written for ngspice",
+    },
+)
+"""Xyce 7.10.0's dialect: its devices' parameters, as its sources name them, and the
+devices of jolty's it does not write.
+
+A parameter jolty gives that Xyce's model lacks is refused by name, never dropped, and
+so is a device whose Xyce model is another version or another model than jolty's.
+"""
 
 
 def _node(path: str) -> str:
@@ -232,8 +390,15 @@ def _card_names(
     return kind, names, instance, values
 
 
-def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str]:
-    """The SPICE type and parameters of a device's model card, and its instance's."""
+def _model_card(
+    model: str, values: dict[str, JsonValue], dialect: Dialect
+) -> tuple[str, str, str]:
+    """The SPICE type and parameters of a device's model card, and its instance's.
+
+    Raises:
+        JoltyError: When the device has no model card, or the dialect's model lacks a
+            parameter the device gives.
+    """
     if model == "bsim3":
         return _bsim3_card(values)
     kind, names, instance, values = _card_names(model, values)
@@ -243,8 +408,14 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
         for key, value in values.items()
         if key not in {"channel", "polarity"}
     }
+    _check_card(model, given, names, instance, dialect)
     flicker = given.get("flicker_coefficient")
-    if model == "mosfet" and isinstance(flicker, float) and flicker > 0:
+    if (
+        dialect.flicker_over_oxide
+        and model == "mosfet"
+        and isinstance(flicker, float)
+        and flicker > 0
+    ):
         # jolty's flicker noise is SPICE's, KF (Id/m)^AF over the gate's area and Cox²;
         # ngspice 43 and later take it with nlev=1, over Cox alone.
         thickness = given.get("oxide_thickness")
@@ -256,9 +427,9 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
         given["noise_level"] = 1.0
     # VBIC computes its thermal voltage with its own constants in both engines, so its
     # temperatures are written as they are.
-    plain = model == "vbic"
+    celsius = _plain if model == "vbic" else dialect.celsius
     card = " ".join(
-        f"{names[key][0]}={_spice_value(key, value, names[key][1], plain=plain)}"
+        f"{names[key][0]}={_spice_value(key, value, names[key][1], celsius)}"
         for key, value in given.items()
         if key not in instance
     )
@@ -268,11 +439,52 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
     if model == "vbic":
         card = f"level=4 {card}".rstrip()
     element = " ".join(
-        f"{instance[key][0]}={_spice_value(key, value, instance[key][1], plain=plain)}"
+        f"{instance[key][0]}={_spice_value(key, value, instance[key][1], celsius)}"
         for key, value in given.items()
         if key in instance
     )
     return kind, card, element
+
+
+def _check_card(
+    model: str,
+    given: Mapping[str, JsonValue],
+    names: Mapping[str, tuple[str, float]],
+    instance: Mapping[str, tuple[str, float]],
+    dialect: Dialect,
+) -> None:
+    """Checks that the dialect's model takes every parameter of its card `given`.
+
+    Raises:
+        JoltyError: When it lacks one, named as SPICE names it.
+    """
+    if dialect.cards is None:
+        return
+    level = given.get("level", 1)
+    card = (model, level if isinstance(level, int) else 1)
+    if card not in dialect.cards:
+        message = f"{dialect.simulator} has no model of a {model} of level {card[1]}"
+        raise _unwritable(message)
+    taken = dialect.cards[card]
+    lacking = sorted(
+        names[key][0]
+        for key in given
+        if key not in instance and names[key][0] not in taken
+    )
+    if lacking:
+        message = (
+            f"{dialect.simulator}'s {model} of level {card[1]} has no "
+            + ", ".join(name.upper() for name in lacking)
+        )
+        raise _unwritable(message)
+
+
+def _plain(kelvins: float) -> float:
+    """A temperature in kelvins in degrees Celsius, as it is.
+
+    It is written so for a model whose thermal voltage is its own in every simulator.
+    """
+    return kelvins - ZERO_CELSIUS
 
 
 def _bsim3_card(values: dict[str, JsonValue]) -> tuple[str, str, str]:
@@ -354,11 +566,13 @@ SPICE_OXIDE_THICKNESS: Final = 1e-7
 as jolty does."""
 
 
-def _spice_value(key: str, value: JsonValue, factor: float, *, plain: bool) -> str:
+def _spice_value(
+    key: str, value: JsonValue, factor: float, celsius: Callable[[float], float]
+) -> str:
     """The value of parameter `key` in SPICE's units.
 
-    A nominal temperature is written where ngspice's thermal voltage is jolty's, or as
-    it is where the model is `plain`, its thermal voltage its own in both engines.
+    A nominal temperature is written in degrees `celsius`: where the simulator's thermal
+    voltage is jolty's, or as it is for a model whose thermal voltage is its own.
     """
     match value:
         case str(name):
@@ -366,28 +580,54 @@ def _spice_value(key: str, value: JsonValue, factor: float, *, plain: bool) -> s
         case int(number):
             return repr(number)
         case float() if key == "nominal_temperature":
-            return repr(value - ZERO_CELSIUS if plain else spice_celsius(value))
+            return repr(celsius(value))
         case float():
             return repr(float(value) * factor)
     message = f"no SPICE value for {value}"
     raise _unwritable(message)
 
 
-def element(instance: ir.Instance) -> str:
-    """The SPICE name of a device instance: its model's letter, then its id."""
+_EXPRESSED: Final = frozenset(
+    {
+        "behavioral_voltage_source",
+        "behavioral_current_source",
+        "voltage_controlled_switch",
+        "current_controlled_switch",
+        "photocell",
+        "voltage_controlled_memristor",
+        "current_controlled_memristor",
+    }
+)
+"""The devices written as behavioral sources, whose expressions the simulator reads."""
+
+
+def element(instance: ir.Instance, dialect: Dialect = NGSPICE) -> str:
+    """The SPICE name of a device instance: its model's letter, then its id.
+
+    Raises:
+        JoltyError: When the instance is no device, or the dialect writes none like it:
+            a logic device, a heated one, or one the dialect refuses.
+    """
     if not isinstance(instance.of, ir.DeviceOf):
         message = f"{instance.id} is a component instance, not a device"
         raise _unwritable(message)
-    if instance.of.device not in ELEMENTS:
-        message = f"a {instance.of.device} has no SPICE element"
+    device = instance.of.device
+    if device not in ELEMENTS:
+        message = f"a {device} has no SPICE element"
         raise _unwritable(message)
+    if device in dialect.refused:
+        message = f"{instance.id} is a {device}: {dialect.refused[device]}"
+        raise _unwritable(message)
+    if device in _EXPRESSED and dialect.expressions is not None:
+        message = f"{instance.id} is a {device}, written as an expression: "
+        raise _unwritable(message + dialect.expressions)
     if instance.parameters.get("thermal") is True:
         message = (
-            f"{instance.id} is a heated {instance.of.device}, and ngspice heats no "
+            f"{instance.id} is a heated {device}, and {dialect.simulator} heats no "
             "device on a thermal network"
         )
         raise _unwritable(message)
-    return ELEMENTS[instance.of.device].letter + instance.id
+    return ELEMENTS[device].letter + instance.id
 
 
 _SURROUNDINGS: Final = frozenset({"thermal", "temperature", "temperature_offset"})
@@ -431,20 +671,18 @@ _UNMOVED: Final = frozenset(
 """The devices whose own temperature changes nothing."""
 
 
-def _own_temperature(instance: ir.Instance, model: str) -> str:
+def _own_temperature(instance: ir.Instance, model: str, dialect: Dialect) -> str:
     """The SPICE instance parameter that sets the device's own temperature, if any.
 
-    A temperature it is held at is ngspice's ``TEMP``, and an offset from the
-    simulation's its ``DTEMP``, each where ngspice's thermal voltage is jolty's, or as
-    it is for a VBIC, whose thermal voltage is its own in both engines.
+    A temperature it is held at is SPICE's ``TEMP``, and an offset from the
+    simulation's its ``DTEMP``, each where the simulator's thermal voltage is jolty's,
+    or as it is for a VBIC, whose thermal voltage is its own in every engine.
 
     Raises:
         JoltyError: When the device's own temperature moves it, and its SPICE element
             has none.
     """
-
-    def celsius(kelvins: float) -> float:
-        return kelvins - ZERO_CELSIUS if model == "vbic" else spice_celsius(kelvins)
+    celsius = _plain if model == "vbic" else dialect.celsius
 
     match instance.parameters:
         case {"temperature": int() | float() as held}:
@@ -458,7 +696,8 @@ def _own_temperature(instance: ir.Instance, model: str) -> str:
     if model in _UNMOVED:
         return ""
     message = (
-        f"{instance.id} is a {model} at its own temperature, which ngspice's has not"
+        f"{instance.id} is a {model} at its own temperature, which "
+        f"{dialect.simulator}'s has not"
     )
     raise _unwritable(message)
 
@@ -469,20 +708,21 @@ def netlist(
     excited: str | None = None,
     subcircuits: Collection[str] = (),
     transient: bool = False,
+    dialect: Dialect = NGSPICE,
 ) -> list[str]:
     """The SPICE lines of a circuit; `excited` is the source a small-signal run excites.
 
-    The lines are for a `transient` or for the other analyses: a memristor's state moves
-    in a transient's lines, and holds where it was made in the others', as jolty's
-    does.
+    The lines are in the `dialect` of a simulator, ngspice's unless given. They are for
+    a `transient` or for the other analyses: a memristor's state moves in a transient's
+    lines, and holds where it was made in the others', as jolty's does.
 
     Every component is flattened into its devices, but those named in `subcircuits`,
     components read from SPICE libraries, which become instances of their
     subcircuits, the libraries included.
 
     Raises:
-        JoltyError: When the circuit holds a device SPICE has no element for, such as
-            a logic device or a heated one.
+        JoltyError: When the circuit holds a device the dialect has no element for, such
+            as a logic device or a heated one, or a parameter its model lacks.
     """
     circuit = flatten(circuit, subcircuits)
     top = circuit.components[circuit.top]
@@ -504,16 +744,16 @@ def netlist(
             case ir.ComponentOf():
                 lines.append(_subcircuit(circuit, instance, ground))
             case ir.DeviceOf(device="coupled_inductors"):
-                own = _own_temperature(instance, "coupled_inductors")
-                coupled = _coupled(
-                    instance.id, _cool(instance.parameters), instance.terminals, ground
-                )
+                own = _own_temperature(instance, "coupled_inductors", dialect)
+                coupled = _coupled(instance, ground, dialect)
                 lines.extend(
                     f"{line}{own}" if line.startswith("L") else line for line in coupled
                 )
             case ir.DeviceOf(device=model):
                 lines.extend(
-                    _device(instance, model, ground, excited, transient=transient)
+                    _device(
+                        instance, model, (ground, excited), dialect, transient=transient
+                    )
                 )
     return lines
 
@@ -521,25 +761,28 @@ def netlist(
 def _device(
     instance: ir.Instance,
     model: str,
-    ground: str,
-    excited: str | None,
+    nets: tuple[str, str | None],
+    dialect: Dialect,
     *,
     transient: bool,
 ) -> list[str]:
     """The SPICE lines of a device of `model`: its element's, after any it needs.
 
+    `nets` are the ground's and the source a small-signal run excites, if any.
+
     Raises:
-        JoltyError: When SPICE has no element for the device.
+        JoltyError: When the dialect has no element for the device.
     """
-    element(instance)
+    ground, excited = nets
+    element(instance, dialect)
     values = _cool(instance.parameters)
-    own = _own_temperature(instance, model)
+    own = _own_temperature(instance, model, dialect)
     nodes = " ".join("0" if net == ground else net for net in _nets(instance, model))
     lines: list[str] = []
     match model:
         case "voltage_source" | "current_source":
             ac = " AC 1" if instance.id == excited else ""
-            value = _waveform(values["waveform"]) + ac
+            value = _waveform(values["waveform"], dialect) + ac
         case "current_controlled_current_source" | "current_controlled_voltage_source":
             # ngspice senses a current through a voltage source: a zero-volt one in
             # the control port's place.
@@ -558,7 +801,7 @@ def _device(
             | "bsim3"
             | "vbic"
         ):
-            kind, card, parameters = _model_card(model, values)
+            kind, card, parameters = _model_card(model, values, dialect)
             lines.append(f".model M{instance.id} {kind}({card})")
             value = f"M{instance.id} {parameters}".rstrip()
         case "behavioral_voltage_source" | "behavioral_current_source":
@@ -582,7 +825,9 @@ def _device(
             )
             lines.extend(moving)
         case "resistor" | "capacitor" | "inductor":
-            value = _passive(model, values, nodes.split(), (instance.id, lines))
+            value = _passive(
+                model, values, nodes.split(), dialect, (instance.id, lines)
+            )
         case "foundry_mosfet":
             try:
                 value = sky130.written(values)
@@ -591,7 +836,7 @@ def _device(
         case _:
             (number,) = values.values()
             value = repr(number)
-    lines.append(f"{element(instance)} {nodes} {value}{own}")
+    lines.append(f"{element(instance, dialect)} {nodes} {value}{own}")
     return lines
 
 
@@ -780,6 +1025,7 @@ def _passive(
     model: str,
     values: Mapping[str, JsonValue],
     nodes: list[str],
+    dialect: Dialect,
     card: tuple[str, list[str]] | None = None,
 ) -> str:
     """A resistor's, capacitor's or inductor's value and temperature coefficients.
@@ -790,11 +1036,21 @@ def _passive(
     takes.
 
     Raises:
-        JoltyError: When a parameter has no ngspice counterpart, or a resistor whose
-            value bends with its voltage makes flicker noise: ngspice's expression for
-            a resistance makes no noise.
+        JoltyError: When a parameter has no counterpart in the dialect's element, or a
+            resistor whose value bends with its voltage makes flicker noise: ngspice's
+            expression for a resistance makes no noise.
     """
     number, *rest = values.items()
+    taken = None if dialect.passives is None else dialect.passives[model]
+    lacking = sorted(
+        name.upper()
+        for key, _ in rest
+        for name in [_PASSIVE_DRIFT.get(key) or _FLICKER.get(key)]
+        if taken is not None and name is not None and name not in taken
+    )
+    if lacking:
+        message = f"{dialect.simulator}'s {model} has no {', '.join(lacking)}"
+        raise _unwritable(message)
     flicker = {_FLICKER[key]: amount for key, amount in rest if key in _FLICKER}
     named = ""
     if flicker and card is not None:
@@ -813,6 +1069,12 @@ def _passive(
     linear, quadratic = (values.get(key, 0.0) for key in _CURVATURE)
     if linear == 0 and quadratic == 0:
         return named + " ".join([repr(number[1]), *drift])
+    if dialect.expressions is not None:
+        message = (
+            f"a {model} whose value bends with its voltage is written as an "
+            f"expression: {dialect.expressions}"
+        )
+        raise _unwritable(message)
     if named:
         message = "a resistor whose value bends with its voltage makes no flicker noise"
         raise _unwritable(message + " in ngspice")
@@ -830,17 +1092,15 @@ def _passive(
     return " ".join([written, *drift])
 
 
-def _coupled(
-    id: str,
-    values: Mapping[str, JsonValue],
-    terminals: Mapping[str, str],
-    ground: str,
-) -> list[str]:
+def _coupled(instance: ir.Instance, ground: str, dialect: Dialect) -> list[str]:
     """Coupled inductors as SPICE writes them.
 
     Each winding is an inductor ``L{id}_{k}``, and each coupling a mutual inductance
     ``K{id}_{j}_{k}``.
     """
+    element(instance, dialect)
+    id, terminals = instance.id, instance.terminals
+    values = _cool(instance.parameters)
     lines = []
     match values:
         case {"windings": list(windings), "couplings": list(couplings)}:
@@ -856,7 +1116,7 @@ def _coupled(
             "0" if net == ground else net
             for net in (terminals[f"a{number}"], terminals[f"b{number}"])
         ]
-        written = _passive("inductor", winding, nodes)
+        written = _passive("inductor", winding, nodes, dialect)
         lines.append(f"L{id}_{number} {' '.join(nodes)} {written}")
     for coupling in couplings:
         match coupling:
@@ -1082,18 +1342,21 @@ def _sense(instance: ir.Instance) -> str:
 
 
 def vector(
-    circuit: ir.Circuit, unknown: Unknown, subcircuits: Collection[str] = ()
+    circuit: ir.Circuit,
+    unknown: Unknown,
+    subcircuits: Collection[str] = (),
+    dialect: Dialect = NGSPICE,
 ) -> str:
-    """The name of the ngspice vector of a jolty unknown: a voltage, current or state.
+    """The name of a simulator's vector of a jolty unknown: a voltage, current or state.
 
     A net within a flattened component, such as ``X1/mid``, is the node ``x1_mid``; a
-    net within a placed subcircuit, such as ``U1/11``, is ngspice's ``xu1.11``. A
-    device's state, such as ``M1:state``, is the voltage of the node the netlist gives
-    it, ``_m1_state``.
+    net within a placed subcircuit, such as ``U1/11``, is ngspice's ``xu1.11`` and
+    Xyce's ``xu1:11``, as the `dialect` joins them. A device's state, such as
+    ``M1:state``, is the voltage of the node the netlist gives it, ``_m1_state``.
 
     Raises:
-        JoltyError: When the unknown is a device's internal unknown, which ngspice
-            names its own way.
+        JoltyError: When the unknown is a device's internal unknown, which the
+            simulator names its own way.
     """
     if unknown.quantity == "state":
         path, _, label = unknown.name.rpartition(":")
@@ -1104,34 +1367,43 @@ def vector(
         first, *rest = unknown.name.split("/")
         kept = top.instance(first)
         if rest and kept is not None and isinstance(kept.of, ir.ComponentOf):
-            return f"v({'.'.join([f'x{first}', *rest]).lower()})"
+            return f"v({dialect.separator.join([f'x{first}', *rest]).lower()})"
         return f"v({_node(unknown.name).lower()})"
     path, _, label = unknown.name.rpartition(":")
     id = _node(path)
     found = [instance for instance in top.instances if instance.id == id]
     if not found:
-        message = f"ngspice names the internal unknown {unknown.name} its own way"
+        message = (
+            f"{dialect.simulator} names the internal unknown {unknown.name} its own way"
+        )
         raise _unwritable(message)
     (instance,) = found
     if instance.of == ir.DeviceOf(device="coupled_inductors"):
         return f"i(l{id.lower()}_{label.removeprefix('current')})"
-    source = _sense(instance) if label == "control" else element(instance)
+    source = _sense(instance) if label == "control" else element(instance, dialect)
     return f"i({source.lower()})"
 
 
-_INSTANT: Final = 1e-40
-"""A pulse's width of no time, as ngspice reads it: ngspice reads a width of 0 as the
-transient's stop time, while 1e-40 s vanishes beside any rise longer than 1e-24 s."""
+def _waveform(spec: JsonValue, dialect: Dialect) -> str:
+    """A source's waveform in the dialect's SPICE.
+
+    Its level at time zero comes first as its DC level where the dialect states it.
+    """
+    written = _shape(spec, dialect.instant)
+    if dialect.zero_level and not written.startswith("DC"):
+        return f"DC {_core.level(json.dumps(spec), 0.0)!r} {written}"
+    return written
 
 
-def _waveform(spec: JsonValue) -> str:
+def _shape(spec: JsonValue, instant: float) -> str:
+    """A source's waveform in SPICE, a pulse of no width at the width `instant`."""
     match spec:
         case {"dc": float(level)}:
             return f"DC {level!r}"
         case {"pulse": dict(pulse)}:
             order = ("initial", "pulsed", "delay", "rise", "fall", "width", "period")
             numbers = [
-                _INSTANT if key == "width" and pulse[key] == 0 else pulse[key]
+                instant if key == "width" and pulse[key] == 0 else pulse[key]
                 for key in order
                 if key in pulse
             ]

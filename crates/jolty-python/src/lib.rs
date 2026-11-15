@@ -993,6 +993,15 @@ fn expression_tree(expression: &str) -> PyResult<String> {
     Ok(term_to_json(&parsed.tree()).to_string())
 }
 
+/// The level of `waveform`, a source's waveform as JSON, at `time` in seconds: at time
+/// zero, the level every analysis but a transient one reads.
+#[pyfunction]
+fn level(waveform: &str, time: f64) -> PyResult<f64> {
+    let waveform: jolty_models::waveform::Waveform =
+        serde_json::from_str(waveform).map_err(|error| unreadable(&error))?;
+    Ok(waveform.value(time))
+}
+
 /// The parameters `parameters`, a JSON object, of a device of `model`, as JSON, each one
 /// left out given the value the engine takes, so a SPICE netlist computes what the engine
 /// does.
@@ -1126,6 +1135,7 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(expression_tree, module)?)?;
     module.add_function(wrap_pyfunction!(defaulted, module)?)?;
     module.add_function(wrap_pyfunction!(default_options, module)?)?;
+    module.add_function(wrap_pyfunction!(level, module)?)?;
     module.add_function(wrap_pyfunction!(models, module)?)?;
     module.add_function(wrap_pyfunction!(schema, module)?)?;
     module.add_function(wrap_pyfunction!(mantissas, module)?)?;
