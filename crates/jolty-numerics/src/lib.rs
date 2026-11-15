@@ -21,7 +21,9 @@ pub mod reduce;
 
 pub use dense::solve_in_range;
 pub use gather::{Fold, GatherMap, UNMAPPED};
-pub use lu::{Factors, LinearError, Ordering, Scalar, Shared, SparseLu, Statistics, Workspace};
+pub use lu::{
+    Condensation, Factors, LinearError, Ordering, Scalar, Shared, SparseLu, Statistics, Workspace,
+};
 pub use num_complex::Complex64;
 pub use pattern::{Entry, Pattern, PatternBuilder};
 pub use pencil::{Eigenvalue, PencilError, generalized_eigenvalues};

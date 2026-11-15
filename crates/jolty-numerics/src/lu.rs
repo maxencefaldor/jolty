@@ -17,7 +17,13 @@
 //! dense front of the updates the parts below it leave, once they are done. The work
 //! spreads over the threads a solver is given, and its factors are the same bits on any
 //! number.
+//!
+//! An ordering of a [`Condensation`] orders the unknowns it keeps: its solvers eliminate the
+//! others from each matrix, each by its own pivot, before they factor it, and recover them
+//! after each solve, so that their callers give and take the whole system's matrices and
+//! vectors.
 
+mod condensation;
 mod dissection;
 mod numeric;
 mod ordering;
@@ -32,6 +38,8 @@ use rayon::prelude::*;
 use faer::sparse::FaerError;
 use num_complex::Complex64;
 
+pub use self::condensation::Condensation;
+use self::condensation::Saved;
 use self::numeric::{Factorization, Numeric};
 pub use self::ordering::Ordering;
 use self::tree::Scratch;
@@ -171,11 +179,14 @@ pub struct SparseLu<T: Scalar> {
     /// The threads its work spreads over, as [`SparseLu::spread`] says: one for none.
     threads: usize,
     numeric: Numeric<T>,
-    /// The values of the matrix last factored, which the solves read outside the diagonal
-    /// blocks.
+    /// The values of the matrix last factored, condensed if its ordering condenses, which
+    /// the solves read outside the diagonal blocks.
     factored: Vec<T>,
     /// Whether the factors are those of `factored`.
     current: bool,
+    /// The last matrix condensed, for an ordering that condenses, and what its solves read
+    /// of the unknowns eliminated.
+    condensed: (Vec<T>, Saved<T>),
     /// The solves' workspace.
     workspace: Workspace<T>,
     statistics: Statistics,
@@ -189,16 +200,21 @@ pub struct Workspace<T: Scalar> {
     by_position: Vec<T>,
     /// Each node's, for the blocks dissected, made at the first solve.
     dissected: Vec<Vec<Scratch<T>>>,
+    /// The kept unknowns' right-hand side and solution, for an ordering that condenses,
+    /// made at the first solve.
+    kept: Vec<T>,
 }
 
 impl<T: Scalar> Workspace<T> {
-    /// A workspace for the solves of a matrix of `dimension` rows.
+    /// A workspace for the solves of a matrix whose factored pattern, as
+    /// [`Ordering::factored`] gives it, has `dimension` rows.
     #[must_use]
     pub fn new(dimension: usize) -> Self {
         Self {
             by_row: vec![T::ZERO; dimension],
             by_position: vec![T::ZERO; dimension],
             dissected: Vec::new(),
+            kept: Vec::new(),
         }
     }
 }
@@ -207,13 +223,14 @@ impl<T: Scalar> SparseLu<T> {
     /// A solver for the matrices of `ordering`'s pattern.
     #[must_use]
     pub fn new(ordering: Arc<Ordering>) -> Self {
-        let dimension = ordering.pattern().dimension();
+        let dimension = ordering.factored().dimension();
         Self {
             numeric: Numeric::new(&ordering),
             threads: 1,
             ordering,
             factored: Vec::new(),
             current: false,
+            condensed: (Vec::new(), Saved::new()),
             workspace: Workspace::new(dimension),
             statistics: Statistics::default(),
         }
@@ -333,13 +350,16 @@ impl<T: Scalar> SparseLu<T> {
     /// searched for from the first that does not, each the diagonal entry of the ordering
     /// where it is that large, and else the largest.
     ///
+    /// An ordering that condenses has the matrix condensed first, and the factors are those
+    /// of its kept unknowns' matrix, kept when that is bitwise identical to the last.
+    ///
     /// # Errors
     ///
     /// Returns [`LinearError::Singular`] for every matrix of a structurally singular
     /// pattern, naming its [undetermined](Ordering::undetermined) columns, and for a matrix
     /// with a column that has no nonzero pivot left once the columns before it are
-    /// eliminated, naming that column; and [`LinearError::TooLarge`] when the factors do not
-    /// fit in memory.
+    /// eliminated, or an unknown condensed whose pivot is zero or not finite, naming that
+    /// column; and [`LinearError::TooLarge`] when the factors do not fit in memory.
     ///
     /// # Panics
     ///
@@ -350,6 +370,17 @@ impl<T: Scalar> SparseLu<T> {
             self.ordering.pattern().len(),
             "one value per stored position"
         );
+        let (condensed, saved) = &mut self.condensed;
+        let values = match self.ordering.condensation() {
+            Some(condensation) => {
+                if let Err(error) = condensation.condense(values, condensed, saved) {
+                    self.current = false;
+                    return Err(error);
+                }
+                condensed.as_slice()
+            }
+            None => values,
+        };
         let unchanged = self.factored.len() == values.len()
             && self
                 .factored
@@ -367,7 +398,8 @@ impl<T: Scalar> SparseLu<T> {
                 });
             }
             copy(&mut self.factored, values, self.threads);
-            let counted = match self.numeric.factor(&self.ordering, values, self.threads)? {
+            let factored = self.numeric.factor(&self.ordering, values, self.threads);
+            let counted = match factored.map_err(|error| kept_to_full(&self.ordering, error))? {
                 Factorization::Searched => &mut self.statistics.factorizations,
                 Factorization::Refactored => &mut self.statistics.refactorizations,
                 Factorization::FellBack => &mut self.statistics.fallbacks,
@@ -380,10 +412,25 @@ impl<T: Scalar> SparseLu<T> {
                 ordering: &self.ordering,
                 numeric: &self.numeric,
                 values: &self.factored,
+                saved: &self.condensed.1,
                 threads: self.threads,
             },
             workspace: &mut self.workspace,
         })
+    }
+}
+
+/// `error`, of the factorization of `ordering`'s factored pattern, naming the columns of its
+/// whole pattern: those of the unknowns its condensation keeps, if it condenses.
+fn kept_to_full(ordering: &Ordering, error: LinearError) -> LinearError {
+    match (ordering.condensation(), error) {
+        (Some(condensation), LinearError::Singular { columns }) => LinearError::Singular {
+            columns: columns
+                .into_iter()
+                .map(|column| condensation.unknown(column))
+                .collect(),
+        },
+        (_, error) => error,
     }
 }
 
@@ -453,6 +500,8 @@ pub struct Shared<'a, T: Scalar> {
     ordering: &'a Ordering,
     numeric: &'a Numeric<T>,
     values: &'a [T],
+    /// What the solves read of the unknowns a condensing ordering eliminates.
+    saved: &'a Saved<T>,
     /// The threads a solve spreads over, as [`SparseLu::spread`] says.
     threads: usize,
 }
@@ -466,6 +515,13 @@ impl<T: Scalar> fmt::Debug for Shared<'_, T> {
 }
 
 impl<T: Scalar> Shared<'_, T> {
+    /// A workspace for its solves, as [`Workspace::new`] makes one for its factored
+    /// pattern.
+    #[must_use]
+    pub fn workspace(&self) -> Workspace<T> {
+        Workspace::new(self.ordering.factored().dimension())
+    }
+
     /// Solves `A x = rhs` and leaves `x` in `rhs`, writing to `workspace` as it goes.
     ///
     /// # Errors
@@ -477,10 +533,7 @@ impl<T: Scalar> Shared<'_, T> {
     ///
     /// Panics if `rhs` or `workspace` does not hold one value per row.
     pub fn solve(&self, rhs: &mut [T], workspace: &mut Workspace<T>) -> Result<(), LinearError> {
-        self.check(rhs, workspace);
-        self.numeric
-            .solve((self.ordering, self.values), rhs, workspace, self.threads);
-        finite_on(rhs, self.threads)
+        self.solve_either(rhs, workspace, false)
     }
 
     /// Solves `Aᵀ x = rhs` and leaves `x` in `rhs`, writing to `workspace` as it goes.
@@ -498,21 +551,51 @@ impl<T: Scalar> Shared<'_, T> {
         rhs: &mut [T],
         workspace: &mut Workspace<T>,
     ) -> Result<(), LinearError> {
-        self.check(rhs, workspace);
-        self.numeric
-            .solve_transpose((self.ordering, self.values), rhs, workspace, self.threads);
-        finite_on(rhs, self.threads)
+        self.solve_either(rhs, workspace, true)
     }
 
-    /// Checks that `rhs` and `workspace` hold one value per row.
-    fn check(&self, rhs: &[T], workspace: &Workspace<T>) {
-        let dimension = self.ordering.pattern().dimension();
-        assert_eq!(rhs.len(), dimension, "one right-hand side value per row");
+    /// Solves `A x = rhs`, or `Aᵀ x = rhs` when `transposed`, and leaves `x` in `rhs`: for
+    /// an ordering that condenses, the kept unknowns' system of `rhs` first, then each
+    /// unknown eliminated from it.
+    fn solve_either(
+        &self,
+        rhs: &mut [T],
+        workspace: &mut Workspace<T>,
+        transposed: bool,
+    ) -> Result<(), LinearError> {
+        assert_eq!(
+            rhs.len(),
+            self.ordering.pattern().dimension(),
+            "one right-hand side value per row"
+        );
+        let dimension = self.ordering.factored().dimension();
         assert_eq!(
             workspace.by_row.len(),
             dimension,
-            "a workspace of one value per row"
+            "a workspace of one value per factored row"
         );
+        let Some(condensation) = self.ordering.condensation() else {
+            self.solve_factored(rhs, workspace, transposed);
+            return finite_on(rhs, self.threads);
+        };
+        let mut kept = std::mem::take(&mut workspace.kept);
+        kept.resize(dimension, T::ZERO);
+        condensation.reduce(self.saved, (rhs, transposed), &mut kept);
+        self.solve_factored(&mut kept, workspace, transposed);
+        condensation.expand(self.saved, (&kept, transposed), rhs);
+        workspace.kept = kept;
+        finite_on(rhs, self.threads)
+    }
+
+    /// Solves the factored pattern's system of `rhs`, transposed when `transposed`.
+    fn solve_factored(&self, rhs: &mut [T], workspace: &mut Workspace<T>, transposed: bool) {
+        let factors = (self.ordering, self.values);
+        if transposed {
+            self.numeric
+                .solve_transpose(factors, rhs, workspace, self.threads);
+        } else {
+            self.numeric.solve(factors, rhs, workspace, self.threads);
+        }
     }
 }
 

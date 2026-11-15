@@ -122,6 +122,11 @@ impl Bench {
             .collect()
     }
 
+    /// The unknowns the device's layout claims [pivoted](crate::Layout::pivoted).
+    pub(crate) fn pivoted(&self) -> &[usize] {
+        self.groups.pivoted()
+    }
+
     pub(crate) fn evaluate(&mut self, x: &[f64]) -> Evaluation {
         let time = self.transient.then_some(0.0);
         self.evaluate_with(&Input::new(x, time, 0.0))

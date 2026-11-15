@@ -21,7 +21,7 @@ use jolty_models::{
     ParameterError, Quantity, REFERENCE_TEMPERATURE, Runs, Specification, ThresholdDetector,
     ThresholdDetectorParameters, Unknown, UnknownInfo,
 };
-use jolty_numerics::{Entry, Ordering, Pattern, PatternBuilder};
+use jolty_numerics::{Condensation, Entry, Ordering, Pattern, PatternBuilder};
 use serde_json::Value;
 
 use crate::elaborate::{self, Composite, ElaborationError, ElaborationProblem, Location};
@@ -58,7 +58,11 @@ pub struct Elaborated {
     /// The name of the reference node: the top component's ground port.
     pub(crate) reference: Name,
     pub(crate) pattern: Arc<Pattern>,
-    /// The sparse solver's ordering of the pattern, which every solver of a run shares.
+    /// The unknowns of the pattern's matrices the sparse solver eliminates before it
+    /// factors the rest: the devices' internal unknowns whose pivots are proven.
+    pub(crate) condensation: Arc<Condensation>,
+    /// The sparse solver's ordering of the pattern, which every solver of a run shares: of
+    /// the unknowns the condensation keeps.
     pub(crate) ordering: Arc<Ordering>,
     /// The name of every unknown, by index, as the solvers name them.
     pub(crate) names: Arc<[String]>,
@@ -333,6 +337,7 @@ pub(crate) struct Bound {
     groups: Groups,
     node_diagonals: Vec<(Unknown, Entry)>,
     pattern: Arc<Pattern>,
+    condensation: Arc<Condensation>,
     ordering: Arc<Ordering>,
     names: Arc<[String]>,
     quantities: Vec<Quantity>,
@@ -405,7 +410,11 @@ impl Binder {
         self.groups
             .finish(&mut self.runs, &pattern)
             .map_err(|_| too_large())?;
-        let ordering = Ordering::new(Arc::clone(&pattern))
+        let condensation = Arc::new(Condensation::new(
+            Arc::clone(&pattern),
+            self.groups.pivoted(),
+        ));
+        let ordering = Ordering::condensed(Arc::clone(&condensation), None)
             .map_err(|_| ElaborationError::from(ElaborationProblem::TooLarge))?;
         let names = self
             .unknowns
@@ -424,6 +433,7 @@ impl Binder {
             groups: self.groups,
             node_diagonals: self.node_diagonals,
             pattern,
+            condensation,
             ordering: Arc::new(ordering),
             names,
             quantities,
@@ -491,6 +501,7 @@ impl Elaborated {
             logic,
             reference,
             pattern: bound.pattern,
+            condensation: bound.condensation,
             ordering: bound.ordering,
             names: bound.names,
             quantities: bound.quantities,
@@ -527,7 +538,7 @@ impl Elaborated {
         if let Some(ordering) = kept().get(&interiors) {
             return Ok(Arc::clone(ordering));
         }
-        let made = Ordering::dissected(Arc::clone(&self.pattern), interiors)
+        let made = Ordering::condensed(Arc::clone(&self.condensation), Some(interiors))
             .map_err(|_| SimulationError::TooLarge)?;
         Ok(Arc::clone(
             kept().entry(interiors).or_insert_with(|| Arc::new(made)),
@@ -710,6 +721,7 @@ impl Elaborated {
             logic: self.logic.clone(),
             reference: self.reference.clone(),
             pattern: bound.pattern,
+            condensation: bound.condensation,
             ordering: bound.ordering,
             names: bound.names,
             quantities: bound.quantities,

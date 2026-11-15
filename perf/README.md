@@ -38,7 +38,7 @@ Run a script from the repository root after changing it, such as `uv run python 
 | `rc_mesh_300` | The same mesh of 90,000 nodes | The same, on one large circuit | `--scale` |
 | `monte_carlo` | `bjt_amp`'s analyses on 100,000 samples of its resistors, each within 5% | Many runs of one circuit | the suite, its first 1,000 samples, in Rust as one batch and in Python; `--scale`, every one, in Python |
 
-The MOSFETs of a level 1 model each add three unknowns of their own, the displacements of their Meyer capacitances, so the chains of 500, 5,000 and 50,000 inverters solve for 3,504, 35,004 and 350,004 unknowns.
+The MOSFETs of a level 1 model each add three unknowns of their own, the displacements of their Meyer capacitances, so the chains of 500, 5,000 and 50,000 inverters solve for 3,504, 35,004 and 350,004 unknowns; the sparse solver eliminates the displacements before it factors, so it factors 504, 5,004 and 50,004 of them, and the buck's 17 of its 23.
 The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.1 at the transient's 800 points or so, more than the 2 the engine allows by default.
 
 ## What the times measure

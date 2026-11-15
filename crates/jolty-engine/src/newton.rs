@@ -556,6 +556,8 @@ impl Simulator {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
     use std::time::Duration;
 
     use jolty_ir::Circuit;
@@ -612,6 +614,25 @@ mod tests {
             after.refactorizations - before.refactorizations,
             after.reuses - before.reuses,
         )
+    }
+
+    /// The sparse solver eliminates a MOSFET's three displacements before it factors, so
+    /// it factors the circuit's other unknowns alone: 504 of the 3,504 of the chain of 500
+    /// inverters, as ngspice's matrix holds, and 17 of the buck's 23, its switches' series
+    /// resistances' nodes and currents among them.
+    #[test]
+    fn the_solver_factors_all_but_the_displacements() {
+        let circuits = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf/circuits");
+        for (name, unknowns, factored) in [("inverter_chain_500", 3_504, 504), ("buck", 23, 17)] {
+            let text = fs::read_to_string(circuits.join(format!("{name}.json"))).expect("a file");
+            let circuit = Circuit::from_json(&text).expect("a circuit");
+            let simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+                .expect("an elaborated circuit");
+            let elaborated = &simulator.elaborated;
+            assert_eq!(elaborated.unknowns.len(), unknowns, "{name}");
+            let kept = elaborated.ordering.factored().dimension();
+            assert_eq!(kept, factored, "{name}");
+        }
     }
 
     #[test]

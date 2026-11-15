@@ -689,6 +689,13 @@ impl<R: Real> Oxide<R> {
 /// The displacement current through the whole gate oxide towards one node,
 /// `w = Cox · dv/dt`: a local unknown of the transistor's own, which Meyer's current between
 /// the gate and the node follows.
+///
+/// Its pivot is proven: its equation's diagonal entry is 1, a conductance, and the other
+/// entries of its column are Meyer's current's derivatives `±C/Cox`, conductances too, at
+/// the gate and the node, where Meyer's capacitance `C` never exceeds the oxide's: the
+/// bulk's at most `Cox`, the channel's at most two thirds of it ([`Oxide::meyer`]). So the
+/// layout claims it [pivoted](Layout::pivoted), and the solver eliminates it before it
+/// factors the transistor's nodes, as ngspice's matrix holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Displacement {
     unknown: usize,
@@ -701,7 +708,7 @@ impl Displacement {
     /// Claims a local unknown labelled `label` for the displacement towards the local
     /// unknown `node` from `gate`.
     fn new(layout: &mut Layout, label: &'static str, gate: usize, node: usize) -> Self {
-        let unknown = layout.internal(label, Quantity::Displacement);
+        let unknown = layout.pivoted(label, Quantity::Displacement);
         Self {
             unknown,
             entries: [

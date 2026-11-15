@@ -1,13 +1,14 @@
 //! The sparse LU solver against a dense reference: on random sparse matrices whose large
 //! entries lie off the diagonal, on the matrices of random circuits, real and complex, after
-//! their values change, and on singular and nearly singular matrices.
+//! their values change, with Meyer's displacements condensed, and on singular and nearly
+//! singular matrices.
 #![cfg(test)]
 
 use std::sync::Arc;
 
 use jolty_numerics::{
-    Complex64, Entry, LinearError, Ordering, Pattern, PatternBuilder, Scalar, SparseLu, Statistics,
-    Workspace,
+    Complex64, Condensation, Entry, LinearError, Ordering, Pattern, PatternBuilder, Scalar,
+    SparseLu, Statistics, Workspace,
 };
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -341,6 +342,11 @@ struct Circuit {
     /// Transconductances, in siemens: from a drain to a source, a current of the
     /// transconductance times the voltage from a gate to the source.
     transconductances: Vec<(usize, usize, usize, f64)>,
+    /// Meyer's displacements, each an unknown after the sources' currents: from a gate to
+    /// a node, the current `w = Cox · d(v_gate − v_node)/dt` through an oxide of `Cox`
+    /// farads, and Meyer's current `f · w` from the gate to the node, `f` the fraction of
+    /// the oxide's capacitance Meyer's is, at most 1.
+    displacements: Vec<(usize, usize, f64, f64)>,
     /// A factor for each element's value in a second matrix of the same pattern, taken in
     /// turn.
     changes: Vec<f64>,
@@ -348,7 +354,13 @@ struct Circuit {
 
 impl Circuit {
     fn dimension(&self) -> usize {
-        self.nodes + self.sources.len()
+        self.nodes + self.sources.len() + self.displacements.len()
+    }
+
+    /// The unknowns of the displacements, whose pivots are at least their columns' entries.
+    fn displaced(&self) -> Vec<usize> {
+        let first = self.nodes + self.sources.len();
+        (first..first + self.displacements.len()).collect()
     }
 
     /// The matrix `G + s C`, its element values scaled by `changes` if `changed`.
@@ -409,6 +421,17 @@ impl Circuit {
             stamp(negative, branch, -T::ONE);
             stamp(branch, positive, T::ONE);
             stamp(branch, negative, -T::ONE);
+        }
+        for (unknown, &(gate, other, oxide, fraction)) in
+            self.displaced().into_iter().zip(&self.displacements)
+        {
+            let (own, gate, other) = (Some(unknown), node(gate), node(other));
+            let oxide = s * T::from(scale(oxide));
+            stamp(own, own, T::ONE);
+            stamp(own, gate, -oxide);
+            stamp(own, other, oxide);
+            stamp(gate, own, T::from(fraction));
+            stamp(other, own, -T::from(fraction));
         }
         matrix
     }
@@ -486,11 +509,47 @@ fn circuit() -> impl Strategy<Value = Circuit> {
                             (drain, source, gate, power(exponent))
                         })
                         .collect(),
+                    displacements: Vec::new(),
                     changes: changes.into_iter().map(power).collect(),
                 }
             },
         )
     })
+}
+
+/// A random circuit with Meyer's displacements between random gates and nodes, the
+/// reference among them, each through an oxide of 1 mF to 1 F and a Meyer's capacitance of
+/// any fraction of it.
+fn meyer() -> impl Strategy<Value = Circuit> {
+    circuit().prop_flat_map(|circuit| {
+        let total = circuit.nodes;
+        let displacements = proptest::collection::vec(
+            (0..=total, 0..=total, -3.0..0.0f64, 0.0..=1.0f64),
+            1..2 * total + 2,
+        );
+        (Just(circuit), displacements).prop_map(|(mut circuit, displacements)| {
+            circuit.displacements = displacements
+                .into_iter()
+                .map(|(gate, other, exponent, fraction)| {
+                    (gate, other, 10f64.powf(exponent), fraction)
+                })
+                .collect();
+            circuit
+        })
+    })
+}
+
+/// A solver of `matrix`'s pattern that condenses `circuit`'s displacements, dissected into
+/// interiors of at most `interiors` positions if given.
+fn condensing<T: Scalar>(
+    circuit: &Circuit,
+    matrix: &Matrix<T>,
+    interiors: Option<usize>,
+) -> SparseLu<T> {
+    let (pattern, _) = matrix.pattern();
+    let condensation = Arc::new(Condensation::new(pattern, &circuit.displaced()));
+    let ordering = Ordering::condensed(condensation, interiors).expect("fits");
+    SparseLu::new(Arc::new(ordering))
 }
 
 proptest! {
@@ -635,6 +694,28 @@ proptest! {
         let _ = solved(&mut fresh, &second);
         prop_assert!(fresh.factors_alike(&original));
         prop_assert_eq!(solved(&mut fresh, &first), solved(&mut original, &first));
+    }
+
+    /// A solver that condenses Meyer's displacements, each by its own pivot, factors the
+    /// other unknowns alone and solves the whole system and its transpose as the dense
+    /// reference does: real and complex, dissected or not, and with other values of the
+    /// same pattern, refactored with the pivots of the first.
+    #[test]
+    fn condenses_the_displacements_of_circuits(
+        circuit in meyer(),
+        alpha in -1.0..3.0f64,
+        omega in -1.0..3.0f64,
+    ) {
+        let first = circuit.matrix(10f64.powf(alpha), false);
+        let mut lu = condensing(&circuit, &first, None);
+        let kept = first.dimension - circuit.displacements.len();
+        prop_assert_eq!(lu.ordering().factored().dimension(), kept);
+        check(&mut lu, &first)?;
+        check(&mut lu, &circuit.matrix(10f64.powf(alpha), true))?;
+        let statistics = lu.statistics();
+        prop_assert_eq!(statistics.factorizations, 1);
+        let complex = circuit.matrix(Complex64::new(0.0, 10f64.powf(omega)), false);
+        check(&mut condensing(&circuit, &complex, Some(4)), &complex)?;
     }
 
     /// The real and the complex solvers of one pattern share its ordering.
@@ -869,6 +950,7 @@ fn supplied_ladder(stages: usize) -> Matrix<f64> {
         capacitances: Vec::new(),
         sources: vec![(supply, stages + 1)],
         transconductances: Vec::new(),
+        displacements: Vec::new(),
         changes: vec![1.0],
     };
     circuit.matrix(1.0, false)

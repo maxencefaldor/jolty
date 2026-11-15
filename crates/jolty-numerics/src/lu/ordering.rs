@@ -9,6 +9,7 @@ use faer::sparse::SymbolicSparseColMatRef;
 use faer::sparse::linalg::amd;
 
 use super::LinearError;
+use super::condensation::Condensation;
 use super::dissection::{self, Dissection, Graph};
 use crate::Pattern;
 
@@ -39,8 +40,16 @@ const NONE: usize = usize::MAX;
 /// An ordering [dissected](Ordering::dissected) for interiors of some size orders each
 /// block larger than them by nested dissection instead, into interiors, each ordered by
 /// the minimum degree, and the separators that border them, which factor in parallel.
+///
+/// An ordering of a [`Condensation`] orders the pattern of the unknowns it keeps: a solver
+/// of it condenses each matrix it is given before it factors it, and recovers the unknowns
+/// eliminated after each solve.
 pub struct Ordering {
+    /// The pattern analyzed: the kept unknowns' of a condensation, if any.
     pattern: Arc<Pattern>,
+    /// The condensation of the matrices factored into the pattern analyzed, if it
+    /// eliminates any unknown.
+    condensation: Option<Arc<Condensation>>,
     /// When no matching covers every column, so that every matrix of the pattern is
     /// singular, a set of columns with entries in fewer rows than there are columns, in
     /// increasing order; else empty.
@@ -252,6 +261,30 @@ impl Ordering {
         Self::analyze(pattern, Some(interiors.max(1)))
     }
 
+    /// Analyzes the pattern of the unknowns `condensation` keeps, as [`Ordering::new`]
+    /// does, or as [`Ordering::dissected`] does for `interiors`, if given: its solvers
+    /// factor the matrices of the condensation's full pattern, each condensed first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinearError::TooLarge`] when the minimum degree ordering's workspace does
+    /// not fit in memory or its indices overflow.
+    pub fn condensed(
+        condensation: Arc<Condensation>,
+        interiors: Option<usize>,
+    ) -> Result<Self, LinearError> {
+        let interiors = interiors.map(|most| most.max(1));
+        if condensation.eliminated() == 0 {
+            return Self::analyze(Arc::clone(condensation.full()), interiors);
+        }
+        let mut ordering = Self::analyze(Arc::clone(condensation.kept()), interiors)?;
+        for column in &mut ordering.undetermined {
+            *column = condensation.unknown(*column);
+        }
+        ordering.condensation = Some(condensation);
+        Ok(ordering)
+    }
+
     /// Analyzes `pattern`, dissecting the blocks larger than `interiors`, if given.
     fn analyze(pattern: Arc<Pattern>, interiors: Option<usize>) -> Result<Self, LinearError> {
         let dimension = pattern.dimension();
@@ -263,6 +296,7 @@ impl Ordering {
                 let identity: Vec<usize> = (0..dimension).collect();
                 return Ok(Self {
                     pattern,
+                    condensation: None,
                     undetermined,
                     rows: identity.clone(),
                     columns: identity.clone(),
@@ -338,6 +372,7 @@ impl Ordering {
         }
         Ok(Self {
             pattern,
+            condensation: None,
             undetermined: Vec::new(),
             rows: ordered_rows,
             columns,
@@ -353,10 +388,25 @@ impl Ordering {
         })
     }
 
-    /// The pattern analyzed.
+    /// The pattern of the matrices its solvers factor: the one analyzed, or the full
+    /// pattern of the condensation it orders the kept unknowns of.
     #[must_use]
     pub fn pattern(&self) -> &Arc<Pattern> {
+        self.condensation
+            .as_ref()
+            .map_or(&self.pattern, |condensation| condensation.full())
+    }
+
+    /// The pattern analyzed, whose matrices the factorizations factor: the kept unknowns'
+    /// of the condensation it orders, if any, else [`Ordering::pattern`].
+    #[must_use]
+    pub fn factored(&self) -> &Arc<Pattern> {
         &self.pattern
+    }
+
+    /// The condensation of the matrices factored, if it eliminates any unknown.
+    pub(super) fn condensation(&self) -> Option<&Condensation> {
+        self.condensation.as_deref()
     }
 
     /// The number of diagonal blocks of the block triangular form: one per strongly
@@ -375,7 +425,8 @@ impl Ordering {
 
     /// For a structurally singular pattern, a set of its columns whose entries lie in fewer
     /// rows than there are columns, so that no matrix of the pattern determines their
-    /// unknowns, in increasing order; empty for any other pattern.
+    /// unknowns, in increasing order; empty for any other pattern. The columns are those of
+    /// [`Ordering::pattern`].
     #[must_use]
     pub fn undetermined(&self) -> &[usize] {
         &self.undetermined

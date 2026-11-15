@@ -235,6 +235,9 @@ const INDEXED: usize = 16;
 pub struct Layout {
     terminals: usize,
     internals: Vec<(Cow<'static, str>, Quantity)>,
+    /// The local index of each internal unknown added as [`Layout::pivoted`], in
+    /// increasing order.
+    pivoted: Vec<usize>,
     entries: Vec<(usize, usize)>,
     /// One more than the local index of the entry claimed at each pair of the first
     /// [`INDEXED`] local unknowns, row by row, or zero for none.
@@ -249,6 +252,7 @@ impl Layout {
         Self {
             terminals,
             internals: Vec::new(),
+            pivoted: Vec::new(),
             entries: Vec::new(),
             claimed: [[0; INDEXED]; INDEXED],
         }
@@ -258,6 +262,7 @@ impl Layout {
     pub fn clear(&mut self, terminals: usize) {
         self.terminals = terminals;
         self.internals.clear();
+        self.pivoted.clear();
         self.entries.clear();
         self.claimed = [[0; INDEXED]; INDEXED];
     }
@@ -267,6 +272,21 @@ impl Layout {
     pub fn internal(&mut self, label: impl Into<Cow<'static, str>>, quantity: Quantity) -> usize {
         self.internals.push((label.into(), quantity));
         self.terminals + self.internals.len() - 1
+    }
+
+    /// Adds an internal unknown as [`Layout::internal`] does, one whose equation's diagonal
+    /// entry is at least as large as every other entry of its column at every evaluation:
+    /// in the conductances, in `G + αC` for every `α ≥ 0`, and in `G + jωC` for every `ω`.
+    /// Its pivot so passes the sparse solver's threshold, a tenth of its column's largest,
+    /// whatever the circuit, and the solver eliminates it from each matrix before it
+    /// factors the rest, unless it shares a row or a column with another such unknown.
+    ///
+    /// The kernel that adds one states why its diagonal is that large; a test over the
+    /// library checks it of every evaluation it makes.
+    pub fn pivoted(&mut self, label: impl Into<Cow<'static, str>>, quantity: Quantity) -> usize {
+        let local = self.internal(label, quantity);
+        self.pivoted.push(local);
+        local
     }
 
     /// Claims the local entry at `row` and `column`, local unknowns, and returns its local
@@ -312,6 +332,13 @@ impl Layout {
     #[must_use]
     pub fn internals(&self) -> &[(Cow<'static, str>, Quantity)] {
         &self.internals
+    }
+
+    /// The local index of each internal unknown added as [`Layout::pivoted`], in increasing
+    /// order.
+    #[must_use]
+    pub fn pivots(&self) -> &[usize] {
+        &self.pivoted
     }
 
     /// Each local entry's row and column, by its local index.

@@ -133,7 +133,7 @@ pub(super) struct Numeric<T> {
 impl<T: Scalar> Numeric<T> {
     /// No factors yet of the matrices of `ordering`'s pattern.
     pub(super) fn new(ordering: &Ordering) -> Self {
-        let dimension = ordering.pattern().dimension();
+        let dimension = ordering.factored().dimension();
         Self {
             trees: ordering.dissections().iter().map(Tree::new).collect(),
             pivot_rows: vec![NONE; dimension],
@@ -446,6 +446,7 @@ impl<T: Scalar> Numeric<T> {
             by_row,
             by_position,
             dissected: scratch,
+            ..
         } = workspace;
         scratch.resize_with(self.trees.len(), Vec::new);
         gather(by_row, rhs, ordering.rows(), threads);
@@ -499,6 +500,7 @@ impl<T: Scalar> Numeric<T> {
             by_row,
             by_position,
             dissected: scratch,
+            ..
         } = workspace;
         scratch.resize_with(self.trees.len(), Vec::new);
         gather(by_position, rhs, ordering.columns(), threads);

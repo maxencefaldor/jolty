@@ -30,8 +30,8 @@
 
 use jolty_ir::numbers;
 use jolty_models::{Gradient, Input, Unknown};
+use jolty_numerics::Complex64;
 use jolty_numerics::integration::Formula;
-use jolty_numerics::{Complex64, Workspace};
 use serde::Deserialize;
 
 use crate::ac::{Linearization, over_frequencies};
@@ -388,7 +388,7 @@ impl Simulator {
         let dimension = x.len();
         let adjoints = parallelism.spread(
             &mut outputs.to_vec(),
-            || Workspace::new(dimension),
+            || shared.workspace(),
             |workspace, output| {
                 let mut adjoint = vec![0.0; dimension];
                 adjoint[output.index()] = 1.0;
@@ -472,7 +472,7 @@ impl Simulator {
         // Each twin stays evaluated at the operating point, which the response reads too.
         let moved = options.parallelism.spread(
             twins,
-            || Workspace::new(dimension),
+            || shared.workspace(),
             |workspace, twin| {
                 twin.evaluate(x, None, options.gmin);
                 let mut shift: Vec<f64> = twin

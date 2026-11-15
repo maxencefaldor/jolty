@@ -351,6 +351,65 @@ mod tests {
         value.as_object().cloned().expect("an object")
     }
 
+    /// Every internal unknown a model's layout claims pivoted has a diagonal entry at least
+    /// as large as every other entry of its column, in `G`, `G + αC` and `G + jωC`, at
+    /// every point evaluated, at an operating point and in a transient: the property that
+    /// lets the sparse solver eliminate it without a search. The points spread each
+    /// unknown over ±10, and `α` and `ω` over 0 to 10¹⁵ per second, beyond any step's.
+    #[test]
+    fn every_pivoted_unknowns_diagonal_is_its_columns_largest() {
+        let library = Library::standard();
+        let frequencies: Vec<(f64, f64)> = [0.0, 1e3, 1e9, 1e15]
+            .into_iter()
+            .flat_map(|scale| [(scale, 0.0), (0.0, scale)])
+            .collect();
+        let mut checked = 0;
+        for (name, parameters) in examples() {
+            let Some(model) = library.get(name) else {
+                continue;
+            };
+            for stepping in [false, true] {
+                let bench = testing::Bench::of(
+                    model.as_ref(),
+                    &parameters.to_string(),
+                    REFERENCE_TEMPERATURE,
+                )
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+                let mut bench = if stepping { bench.stepping() } else { bench };
+                let pivoted = bench.pivoted().to_vec();
+                let unknowns = u32::try_from(bench.unknowns().len()).expect("few unknowns");
+                for point in 0..64_u32 {
+                    // Each unknown at its own fraction of ±10, a different one at each point.
+                    let x: Vec<f64> = (0..unknowns)
+                        .map(|index| 20.0 * f64::from((point * 7 + index * 13) % 41) / 40.0 - 10.0)
+                        .collect();
+                    let evaluation = bench.evaluate(&x);
+                    let (conductance, capacitance) =
+                        (&evaluation.conductance, &evaluation.capacitance);
+                    for &pivot in &pivoted {
+                        for &(real, imaginary) in &frequencies {
+                            let entry = |row: usize| {
+                                let (g, c) = (conductance[row][pivot], capacitance[row][pivot]);
+                                (g + real * c).hypot(imaginary * c)
+                            };
+                            let diagonal = entry(pivot);
+                            for row in (0..x.len()).filter(|&row| row != pivot) {
+                                assert!(
+                                    entry(row) <= diagonal,
+                                    "{name}'s unknown {pivot} at {x:?}, s = {real} + {imaginary}j: \
+                                     {} against its diagonal's {diagonal}",
+                                    entry(row)
+                                );
+                            }
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "no model claims a pivoted unknown");
+    }
+
     #[test]
     fn every_model_has_an_example() {
         let mut named: Vec<_> = examples().into_iter().map(|(name, _)| name).collect();

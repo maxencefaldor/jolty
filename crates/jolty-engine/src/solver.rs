@@ -151,6 +151,11 @@ pub(crate) struct Shared<'a, T: Scalar> {
 }
 
 impl<T: Scalar> Shared<'_, T> {
+    /// A workspace for its solves, one for each thread that solves at once.
+    pub(crate) fn workspace(&self) -> Workspace<T> {
+        self.factors.workspace()
+    }
+
     /// Solves `A x = rhs` and leaves `x` in `rhs`, as [`Factors::solve`] does, writing to
     /// `workspace` as it goes.
     ///

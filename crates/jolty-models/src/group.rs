@@ -588,6 +588,9 @@ pub struct Groups {
     /// The layout each instance added claims, and its local unknowns' nodes, kept to be
     /// used again.
     scratch: (Layout, Vec<Node>),
+    /// The circuit's unknown of every internal unknown an instance's layout claims
+    /// [pivoted](Layout::pivoted), in the order the instances were added.
+    pivoted: Vec<usize>,
 }
 
 /// Why a circuit's groups cannot be made: their slab, or the circuit, has more places than
@@ -647,6 +650,13 @@ impl Groups {
             nodes.push(Some(binding.internal(label, *quantity)));
         }
         let node = |local: usize| nodes.get(local).copied().flatten();
+        self.pivoted.extend(
+            layout
+                .pivots()
+                .iter()
+                .filter_map(|&local| node(local))
+                .map(Unknown::index),
+        );
         let group = &mut self.kernels[index];
         let device = self.places.len();
         self.places.push((index, group.members.len()));
@@ -798,6 +808,13 @@ impl Groups {
                 (target, u32::try_from(source).unwrap_or(UNMAPPED))
             })
         })
+    }
+
+    /// The circuit's unknown of every internal unknown an instance's layout claims
+    /// [pivoted](Layout::pivoted), which the sparse solver may eliminate first.
+    #[must_use]
+    pub fn pivoted(&self) -> &[usize] {
+        &self.pivoted
     }
 
     /// The number of groups of kernels' instances.

@@ -443,6 +443,7 @@ A process derived from the substrate doping is derived at the nominal temperatur
 
 A drain or source resistance adds an internal node to the unknowns, as `M1:drain` or `M1:source` for a transistor `M1`; one below 1 Ω adds its current too, as `M1:drain_current` or `M1:source_current`, as a small resistor does.
 Meyer's capacitances depend on every terminal voltage, and no charge yields them, so each carries a current `C(v) · dv/dt` that follows a current of the transistor's own: the displacement current through the whole oxide towards the source, the drain or the bulk, the unknowns `M1:gate_source_displacement`, `M1:gate_drain_displacement` and `M1:gate_bulk_displacement`.
+The sparse solver eliminates the three before it factors the rest, each by its own pivot, 1, which none of Meyer's capacitances outweighs, as none exceeds the oxide's, and recovers them after each solve: the matrix it factors holds the transistor's nodes alone, as ngspice's does, and the displacements are still solved for, judged and recorded.
 The frequency response holds Meyer's capacitances exactly, as ngspice's does.
 With the bulk forward-biased, ngspice's small-signal model and Newton steps take the threshold's slope from the reverse-biased formula; jolty keeps every derivative exact.
 
