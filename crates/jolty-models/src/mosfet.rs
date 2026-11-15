@@ -611,8 +611,9 @@ struct BulkJunction<R: Real> {
 }
 
 impl<R: Real> BulkJunction<R> {
-    /// The junction's current, with `gmin` across it, and its charge, at `voltage`.
-    fn evaluate(&self, voltage: Dual<R, 3>, gmin: f64) -> (Dual<R, 3>, Dual<R, 3>) {
+    /// The junction's current, with `gmin` across it, and its charge, at `voltage`, the
+    /// voltage across it.
+    fn evaluate(&self, voltage: Dual<R, 1>, gmin: f64) -> (Dual<R, 1>, Dual<R, 1>) {
         let at = voltage.value.value();
         let current = voltage.chain(junction_current(
             at,
@@ -738,6 +739,24 @@ impl Displacement {
 /// The gate-source, drain-source and bulk-source voltages of one evaluation, oriented as an
 /// n-channel's.
 type Bias = parts::Bias<3>;
+
+/// The voltage of the stamped node `plus` over `minus` in `bias`, as evaluated and as far
+/// as the applied one lies beyond it.
+fn across(bias: &Bias, (plus, minus): (usize, usize)) -> parts::Bias<1> {
+    // Each voltage of `bias` is a node's over the inner source.
+    let over_source = |values: [f64; 3], node: usize| {
+        VARIABLES
+            .iter()
+            .zip(values)
+            .find_map(|(&(variable, _), value)| (variable == node).then_some(value))
+            .unwrap_or(0.0)
+    };
+    let between = |values: [f64; 3]| over_source(values, plus) - over_source(values, minus);
+    parts::Bias {
+        voltages: [between(bias.voltages)],
+        beyond: [between(bias.beyond)],
+    }
+}
 
 impl Kernel for Mosfet {
     const NAME: &'static str = "mosfet";
@@ -895,19 +914,40 @@ impl Kernel for Mosfet {
         let sums = &mut derivatives;
         added.add_current(stamp, sums, (INNER_DRAIN, INNER_SOURCE), conduction.current);
 
-        let (vgd, vbd) = (vgs - vds, vbs - vds);
-        let [drain, source] = prepared.junctions;
-        for (junction, node, voltage) in [(drain, INNER_DRAIN, vbd), (source, INNER_SOURCE, vbs)] {
+        // A junction's current and charge, and an overlap's charge, follow the voltage
+        // across it alone, of the first node of its pair over the second.
+        let [drain, source] = &prepared.junctions;
+        for (pair, junction) in [((BULK, INNER_DRAIN), drain), ((BULK, INNER_SOURCE), source)] {
+            let across = across(&bias, pair);
+            let added = Oriented {
+                nodes: &shape.stamp,
+                sign,
+                bias: &across,
+                variables: [pair],
+            };
+            let [voltage] = Dual::variables(across.voltages);
             let (current, charge) = junction.evaluate(voltage, at.gmin);
-            added.add_current(stamp, sums, (BULK, node), current);
-            added.add_charge(stamp, sums, (BULK, node), charge);
+            added.add_current(stamp, sums, pair, current);
+            added.add_charge(stamp, sums, pair, charge);
+        }
+        let [source_overlap, drain_overlap, bulk_overlap] = prepared.overlaps;
+        for (pair, overlap) in [
+            ((GATE, INNER_SOURCE), source_overlap),
+            ((GATE, INNER_DRAIN), drain_overlap),
+            ((GATE, BULK), bulk_overlap),
+        ] {
+            let across = across(&bias, pair);
+            let added = Oriented {
+                nodes: &shape.stamp,
+                sign,
+                bias: &across,
+                variables: [pair],
+            };
+            let [voltage] = Dual::variables(across.voltages);
+            added.add_charge(stamp, sums, pair, voltage.scale(overlap));
         }
 
-        let [source_overlap, drain_overlap, bulk_overlap] = prepared.overlaps;
-        added.add_charge(stamp, sums, (GATE, INNER_SOURCE), vgs.scale(source_overlap));
-        added.add_charge(stamp, sums, (GATE, INNER_DRAIN), vgd.scale(drain_overlap));
-        added.add_charge(stamp, sums, (GATE, BULK), (vgs - vbs).scale(bulk_overlap));
-
+        let vgd = vgs - vds;
         if let (Some(oxide), Some(displacements)) = (&prepared.oxide, &shape.displacements) {
             let capacitances = if conduction.forward {
                 oxide.meyer(vgs, vgd, &conduction)
@@ -919,8 +959,8 @@ impl Kernel for Mosfet {
                 *variable = capacitance.value.value();
             }
             let whole = oxide.capacitance;
-            let across = displacements.iter().zip(DISPLACED).zip(capacitances);
-            for ((displacement, node), capacitance) in across {
+            let towards = displacements.iter().zip(DISPLACED).zip(capacitances);
+            for ((displacement, node), capacitance) in towards {
                 let current =
                     displacement.add((&shape.stamp, node), (whole, capacitance.value), at, stamp);
                 let meyer = capacitance.scale(R::constant(sign * current) / whole);
