@@ -1,4 +1,4 @@
-//! Measurements of results: the numbers specs read from an analysis's result.
+//! Measures of results: the numbers specs read from an analysis's result.
 //!
 //! A [`Measure`] reads one number from the [`AnalysisResult`] of one analysis: a signal's value, a
 //! statistic of it over a window, the time of an edge, a gain, a margin, a noise density, a
@@ -7,7 +7,7 @@
 //! units, so it reads a run's results with no names or units; the Python package resolves
 //! them, and says why a measure could not read a result from its [`MeasureError`].
 //!
-//! Every measure reads the same bits jolty's measurements read when numpy computed them, on a
+//! Every measure reads the same bits jolty's measures read when numpy computed them, on a
 //! platform whose numpy rounds a product and a sum once, as arm64's does: its arithmetic
 //! follows numpy's operation for operation, from interpolation to the order of its sums. Only
 //! a distortion reads amplitudes numpy took from a fast Fourier transform, which it takes from

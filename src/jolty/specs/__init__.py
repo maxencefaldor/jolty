@@ -1,11 +1,11 @@
 # Copyright 2026 Maxence Faldor
 """Specs: what a circuit must do, measured on the results of its plan's analyses.
 
-A [`Measurement`][jolty.specs.Measurement] reads one number from the result of a named
+A [`Measure`][jolty.specs.Measure] reads one number from the result of a named
 analysis, such as the gain of ``out`` at 1 kHz in the analysis ``bode``. Comparing it
 with a bound makes a [`Requirement`][jolty.specs.Requirement], and a plan script's
 ``specs()`` returns its requirements as [`Specs`][jolty.specs.Specs]. Each requirement
-passes, fails, or goes unmeasured when its analysis did not end or its measurement
+passes, fails, or goes unmeasured when its analysis did not end or its measure
 cannot be read; one that passes by less than its margin is marginal. A requirement
 holds at the plan's own conditions and at each of its corners, and its
 [`Verdict`][jolty.specs.Verdict] is the worst of them: it states the value read there
@@ -15,15 +15,15 @@ the values read, and the [`Yield`][jolty.specs.Yield] how many samples meet ever
 requirement, with the [`wilson`][jolty.specs.wilson] interval of their share, against
 the specs' yield target.
 
-A measurement reads a signal, an unknown of the circuit such as the voltage ``out`` or
+A measure reads a signal, an unknown of the circuit such as the voltage ``out`` or
 the current ``V1:current``, or a voltage relative to the voltage of a ``reference``.
 Bounds are quantities, such as ``2 * V``; a gain is in decibels, a phase in degrees, an
 overshoot in percent and a damping ratio a plain number, so their bounds are numbers.
 
-The engine reads every measurement this module makes, in Rust, from a result's arrays:
-the measurement resolves its signals to the result's unknowns and its quantities to SI
+The engine reads every measure this module makes, in Rust, from a result's arrays:
+the measure resolves its signals to the result's unknowns and its quantities to SI
 base units, its [`Native`][jolty.specs.Native] form, and the engine computes the number,
-as a batch of runs does without Python. A `Measurement` a script makes with a `read` of
+as a batch of runs does without Python. A `Measure` a script makes with a `read` of
 its own is read in Python.
 
 Examples:
@@ -33,7 +33,7 @@ Examples:
     ['out in op ≥ 2 V', 'gain of out at 1 kHz in bode ≥ -3 dB']
 """
 
-from jolty.specs._measurements import (
+from jolty.specs._measures import (
     LEAST_GAIN_MARGIN,
     LEAST_PHASE_MARGIN,
     Edge,
@@ -66,8 +66,8 @@ from jolty.specs._requirements import (
     Bound,
     ExtendedReal,
     Judged,
-    Measurement,
-    MeasurementError,
+    Measure,
+    MeasureError,
     Native,
     Plain,
     Reading,
@@ -96,8 +96,8 @@ __all__ = [
     "Edge",
     "ExtendedReal",
     "Judged",
-    "Measurement",
-    "MeasurementError",
+    "Measure",
+    "MeasureError",
     "Native",
     "Plain",
     "Reading",

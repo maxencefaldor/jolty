@@ -1150,13 +1150,11 @@ def _stability(name: str, result: results.StabilityResult) -> StabilityReport:
     )
 
 
-def _reading(
-    measurement: specs.Measurement, result: results.AnalysisResult
-) -> float | None:
-    """What `measurement` reads of `result`, or None when it cannot read it."""
+def _reading(measure: specs.Measure, result: results.AnalysisResult) -> float | None:
+    """What `measure` reads of `result`, or None when it cannot read it."""
     try:
-        return measurement.read(result).value
-    except specs.MeasurementError:
+        return measure.read(result).value
+    except specs.MeasureError:
         return None
 
 

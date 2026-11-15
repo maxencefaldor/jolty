@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""jolty's measurements as numpy computed them, the reference the engine's must equal.
+"""jolty's measures as numpy computed them, the reference the engine's must equal.
 
-This is `jolty.specs._measurements` as it stood before the engine read measurements,
+This is `jolty.specs._measures` as it stood before the engine read measures,
 at commit cae321d, verbatim but for its noise and its poles: it reads them with the
 numpy arithmetic `jolty.results` held then, copied at its end, rather than the engine's
-`results` reads with now. `tests/test_native_measures.py` checks that every measurement
+`results` reads with now. `tests/test_native_measures.py` checks that every measure
 of `jolty.specs` reads what the same one of this module reads.
 """
 
@@ -17,7 +17,7 @@ import numpy as np
 import numpy.typing as npt
 
 from jolty import checks, results
-from jolty.specs._requirements import Measurement, MeasurementError, Reading
+from jolty.specs._requirements import Measure, MeasureError, Reading
 from jolty.units import (
     CURRENT,
     DIMENSIONLESS,
@@ -82,7 +82,7 @@ def diagnose(
         try:
             phase = phase_margin(name).read(result).value
             unity = crossover(name).read(result).value
-        except MeasurementError:
+        except MeasureError:
             pass
         else:
             if phase < LEAST_PHASE_MARGIN:
@@ -93,7 +93,7 @@ def diagnose(
                 found.append(_diagnostic(checks.PHASE_MARGIN, message))
         try:
             gain = gain_margin(name).read(result).value
-        except MeasurementError:
+        except MeasureError:
             continue
         if gain < LEAST_GAIN_MARGIN:
             message = f"{loop} has a gain margin of {gain!r} dB"
@@ -113,7 +113,7 @@ def value(
     *,
     at: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The value of `signal` at an operating point, a time or a level.
 
     In a transient or a DC sweep, the value is interpolated `at` a time or a level of
@@ -129,7 +129,7 @@ def value(
                 return Reading(float(values), dimension)
             case results.OperatingPointResult():
                 message = f"an operating point holds one value, not one at {at}"
-                raise MeasurementError(message)
+                raise MeasureError(message)
             case (
                 results.AcResult()
                 | results.SensitivityResult()
@@ -142,16 +142,16 @@ def value(
                     "a value reads an operating point, a transient or a DC sweep, "
                     f"not {_kind(result)}"
                 )
-                raise MeasurementError(message)
+                raise MeasureError(message)
         axis, values, dimension = _traced(result, traced, "a value")
         if at is None:
             message = f"{_kind(result)} holds a value per {axis.noun}, and at is unset"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         point = axis.locate(at, "at")
         return Reading(float(np.interp(point, axis.points, values)), dimension)
 
     described = str(traced) if at is None else f"{traced} at {at}"
-    return Measurement(analysis, described, None, read)
+    return Measure(analysis, described, None, read)
 
 
 def gain(
@@ -161,7 +161,7 @@ def gain(
     at: Quantity,
     over: str | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The gain of `output` at a frequency of a small-signal response, in decibels.
 
     The gain is of `output` over `over`, or per unit excitation, interpolated over log
@@ -177,7 +177,7 @@ def gain(
         gains = _decibels(transfer)
         return Reading(float(np.interp(point, np.log(frequencies), gains)), "dB")
 
-    return Measurement(analysis, f"gain of {_over(traced, over)} at {at}", "dB", read)
+    return Measure(analysis, f"gain of {_over(traced, over)} at {at}", "dB", read)
 
 
 def phase(
@@ -187,7 +187,7 @@ def phase(
     at: Quantity,
     over: str | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The phase of `output` at a frequency of a small-signal response, in degrees.
 
     The phase is relative to `over`, or to the excitation, unwrapped from the lowest
@@ -203,7 +203,7 @@ def phase(
         phases = np.degrees(np.unwrap(np.angle(transfer)))
         return Reading(float(np.interp(point, np.log(frequencies), phases)), "°")
 
-    return Measurement(analysis, f"phase of {_over(traced, over)} at {at}", "°", read)
+    return Measure(analysis, f"phase of {_over(traced, over)} at {at}", "°", read)
 
 
 def bandwidth(
@@ -213,7 +213,7 @@ def bandwidth(
     drop: float = 3.0,
     over: str | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The frequency where the gain of `output` first falls `drop` decibels.
 
     The gain, of `output` over `over` or per unit excitation, or the loop gain of a
@@ -238,11 +238,11 @@ def bandwidth(
                 f"the gain of {_over(traced, over)} stays within {drop:g} dB of its "
                 f"gain at {lowest}"
             )
-            raise MeasurementError(message)
+            raise MeasureError(message)
         return Reading(math.exp(below[0]), FREQUENCY)
 
     described = f"{drop:g} dB bandwidth of {_over(traced, over)}"
-    return Measurement(analysis, described, None, read)
+    return Measure(analysis, described, None, read)
 
 
 def crossover(
@@ -251,7 +251,7 @@ def crossover(
     *,
     over: str | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The frequency where the gain of `output` first falls through 0 dB.
 
     The gain is of `output` over `over`, or per unit excitation, in a small-signal
@@ -266,7 +266,7 @@ def crossover(
         return Reading(math.exp(_unity(logarithms, transfer, traced, over)), FREQUENCY)
 
     described = f"crossover frequency of {_over(traced, over)}"
-    return Measurement(analysis, described, None, read)
+    return Measure(analysis, described, None, read)
 
 
 def phase_margin(
@@ -275,7 +275,7 @@ def phase_margin(
     *,
     over: str | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """180° plus the phase of `output` where its gain first falls through 0 dB.
 
     The gain and the phase are of `output` relative to `over`, or to the excitation, in
@@ -291,7 +291,7 @@ def phase_margin(
         phases = np.degrees(np.unwrap(np.angle(transfer)))
         return Reading(180.0 + float(np.interp(unity, logarithms, phases)), "°")
 
-    return Measurement(analysis, f"phase margin of {_over(traced, over)}", "°", read)
+    return Measure(analysis, f"phase margin of {_over(traced, over)}", "°", read)
 
 
 def gain_margin(
@@ -300,7 +300,7 @@ def gain_margin(
     *,
     over: str | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """Minus the gain of `output` where its phase first falls through -180°, in dB.
 
     The gain and the phase, unwrapped from the lowest frequency, are of `output`
@@ -317,11 +317,11 @@ def gain_margin(
         inverted = _crossings(logarithms, phases, -180.0, "falling")
         if not inverted.size:
             message = f"the phase of {_over(traced, over)} never falls through -180°"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         gains = _decibels(transfer)
         return Reading(-float(np.interp(inverted[0], logarithms, gains)), "dB")
 
-    return Measurement(analysis, f"gain margin of {_over(traced, over)}", "dB", read)
+    return Measure(analysis, f"gain margin of {_over(traced, over)}", "dB", read)
 
 
 def maximum(
@@ -331,7 +331,7 @@ def maximum(
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The highest value of `signal` in a transient or a DC sweep.
 
     The window runs from `start` to `stop`, times or levels, by default over all.
@@ -348,7 +348,7 @@ def minimum(
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The lowest value of `signal` in a transient or a DC sweep.
 
     The window runs from `start` to `stop`, times or levels, by default over all.
@@ -365,7 +365,7 @@ def peak_to_peak(
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The highest less the lowest value of `signal` in a transient or a DC sweep.
 
     The window runs from `start` to `stop`, times or levels, by default over all.
@@ -381,7 +381,7 @@ def average(
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The mean of `signal` in a transient or a DC sweep, by the trapezoidal rule.
 
     The window runs from `start` to `stop`, times or levels, by default over all.
@@ -397,7 +397,7 @@ def rms(
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The root mean square of `signal` in a transient or a DC sweep.
 
     The window runs from `start` to `stop`, times or levels, by default over all, and
@@ -416,7 +416,7 @@ def rise_time(  # noqa: PLR0913 - a window, its signal and the two levels
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The time a transient's `signal` takes to rise, or fall, through its step.
 
     The step runs from the signal's value at the window's start to its value at the
@@ -437,10 +437,10 @@ def rise_time(  # noqa: PLR0913 - a window, its signal and the two levels
         upper = _crossings(times, values, values[0] + high * step, edge)
         if not lower.size or not upper[upper >= lower[0]].size:
             message = f"{window} steps too little to resolve its levels"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         return Reading(float(upper[upper >= lower[0]][0] - lower[0]), TIME)
 
-    return Measurement(analysis, f"rise time of {window}", None, read)
+    return Measure(analysis, f"rise time of {window}", None, read)
 
 
 def overshoot(
@@ -450,7 +450,7 @@ def overshoot(
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """How far a transient's `signal` passes its final value, in percent of its step.
 
     The step runs from the signal's value at the window's start to its final value, at
@@ -463,7 +463,7 @@ def overshoot(
         peak = values.max() if step > 0 else values.min()
         return Reading(100.0 * max(0.0, float(peak - values[-1]) / step), "%")
 
-    return Measurement(analysis, f"overshoot of {window}", "%", read)
+    return Measure(analysis, f"overshoot of {window}", "%", read)
 
 
 def settling_time(  # noqa: PLR0913 - a window, its signal and the band
@@ -474,7 +474,7 @@ def settling_time(  # noqa: PLR0913 - a window, its signal and the band
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The time a transient's `signal` takes to settle within `band` of its step.
 
     The step runs from the signal's value at the window's start to its final value, at
@@ -500,9 +500,7 @@ def settling_time(  # noqa: PLR0913 - a window, its signal and the band
         settled = times[last] + fraction * (times[last + 1] - times[last])
         return Reading(float(settled - times[0]), TIME)
 
-    return Measurement(
-        analysis, f"{100 * band:g}% settling time of {window}", None, read
-    )
+    return Measure(analysis, f"{100 * band:g}% settling time of {window}", None, read)
 
 
 def crossing(  # noqa: PLR0913 - a window, its signal, the level and the edge
@@ -514,7 +512,7 @@ def crossing(  # noqa: PLR0913 - a window, its signal, the level and the edge
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The first time a transient's `signal` crosses `level` the way `edge` says."""
     _check(level, "the level")
     window = _Window(_Signal(signal, reference), start, stop)
@@ -524,13 +522,11 @@ def crossing(  # noqa: PLR0913 - a window, its signal, the level and the edge
         found = _crossings(times, values, level.to(dimension, "the level"), edge)
         if not found.size:
             message = f"{window} does not cross {level}"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         return Reading(float(found[0]), TIME)
 
     way = "" if edge == "either" else f" {edge}"
-    return Measurement(
-        analysis, f"first{way} crossing of {level} by {window}", None, read
-    )
+    return Measure(analysis, f"first{way} crossing of {level} by {window}", None, read)
 
 
 def frequency(  # noqa: PLR0913 - a window, its signal and the level
@@ -541,7 +537,7 @@ def frequency(  # noqa: PLR0913 - a window, its signal and the level
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """How often a transient's `signal` rises through `level`.
 
     The level is by default the midpoint of the signal's lowest and highest values, and
@@ -561,10 +557,10 @@ def frequency(  # noqa: PLR0913 - a window, its signal and the level
         if rises.size < 2:
             through = format_si(float(middle), str(dimension))
             message = f"{window} rises through {through} fewer than twice"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         return Reading(float((rises.size - 1) / (rises[-1] - rises[0])), FREQUENCY)
 
-    return Measurement(analysis, f"frequency of {window}", None, read)
+    return Measure(analysis, f"frequency of {window}", None, read)
 
 
 def distortion(  # noqa: PLR0913 - a window, its signal, the fundamental, the harmonics
@@ -576,7 +572,7 @@ def distortion(  # noqa: PLR0913 - a window, its signal, the fundamental, the ha
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
-) -> Measurement:
+) -> Measure:
     """The total harmonic distortion of a transient's `signal`, in decibels.
 
     It is the root sum of the squares of the amplitudes of harmonics 2 to `harmonics`
@@ -611,25 +607,23 @@ def distortion(  # noqa: PLR0913 - a window, its signal, the fundamental, the ha
         periods = 1 if start is None else math.floor(span * (1 + _ON_AXIS))
         if span * (1 + _ON_AXIS) < periods or periods < 1:
             message = f"{window} spans less than a period of {fundamental}"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         samples = periods * _SAMPLES_PER_PERIOD
         at = times[-1] - periods / frequency * (1 - np.arange(samples) / samples)
         spectrum = np.abs(np.fft.rfft(np.interp(at, times, values)))
         amplitudes = spectrum[periods : periods * harmonics + 1 : periods]
         if amplitudes[0] == 0:
             message = f"{window} has no component at {fundamental}"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         total = math.sqrt(float(np.sum(amplitudes[1:] ** 2)))
         ratio = max(total / float(amplitudes[0]), 1e-300)
         return Reading(20 * math.log10(ratio), "dB")
 
     described = f"distortion of {window} at {fundamental}"
-    return Measurement(analysis, described, "dB", read)
+    return Measure(analysis, described, "dB", read)
 
 
-def noise_density(
-    analysis: str, *, at: Quantity, referred: bool = False
-) -> Measurement:
+def noise_density(analysis: str, *, at: Quantity, referred: bool = False) -> Measure:
     """The noise density of a noise analysis's output at a frequency.
 
     It is the square root of the power density, in V/√Hz for a voltage and A/√Hz for a
@@ -649,7 +643,7 @@ def noise_density(
         )
 
     referral = " referred to the input" if referred else ""
-    return Measurement(analysis, f"noise density{referral} at {at}", None, read)
+    return Measure(analysis, f"noise density{referral} at {at}", None, read)
 
 
 def integrated_noise(
@@ -658,7 +652,7 @@ def integrated_noise(
     start: Quantity | None = None,
     stop: Quantity | None = None,
     referred: bool = False,
-) -> Measurement:
+) -> Measure:
     """The RMS noise of a noise analysis's output from `start` to `stop`.
 
     It is the square root of the power density integrated over the band, by default
@@ -676,7 +670,7 @@ def integrated_noise(
         high = None if stop is None else axis.locate(stop, "stop")
         if low is not None and high is not None and low >= high:
             message = f"the band from {start} to {stop} is empty"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         rms = _rms(spectrum, low, high, referred=referred)
         return Reading(rms, _noise_unit(spectrum, referred=referred))
 
@@ -684,10 +678,10 @@ def integrated_noise(
     lowest = "the lowest frequency" if start is None else str(start)
     highest = "the highest" if stop is None else str(stop)
     described = f"RMS noise{referral} from {lowest} to {highest}"
-    return Measurement(analysis, described, None, read)
+    return Measure(analysis, described, None, read)
 
 
-def solutions(analysis: str) -> Measurement:
+def solutions(analysis: str) -> Measure:
     """How many DC solutions a search for operating points found, a plain number.
 
     ``solutions("states") <= 1`` asks for a unique operating point, and a latch's
@@ -699,13 +693,13 @@ def solutions(analysis: str) -> Measurement:
             message = (
                 f"solutions reads a search for operating points, not {_kind(result)}"
             )
-            raise MeasurementError(message)
+            raise MeasureError(message)
         return Reading(float(len(result.points)), "")
 
-    return Measurement(analysis, "DC solutions", "", read)
+    return Measure(analysis, "DC solutions", "", read)
 
 
-def damping(analysis: str) -> Measurement:
+def damping(analysis: str) -> Measure:
     """The least damping ratio of a pole-zero analysis's poles, a plain number.
 
     A pole's damping ratio is minus its real part over its magnitude: 1 for a real pole
@@ -719,10 +713,10 @@ def damping(analysis: str) -> Measurement:
         poles = _poles(result, "a damping")
         return Reading(float(np.min(_dampings(poles))), "")
 
-    return Measurement(analysis, "least damping ratio of the poles", "", read)
+    return Measure(analysis, "least damping ratio of the poles", "", read)
 
 
-def dominant_pole(analysis: str) -> Measurement:
+def dominant_pole(analysis: str) -> Measure:
     """The natural frequency of a pole-zero analysis's pole nearest the origin.
 
     It is the pole's magnitude over 2π, in hertz: the slowest of the circuit's natural
@@ -733,7 +727,7 @@ def dominant_pole(analysis: str) -> Measurement:
         poles = _poles(result, "a dominant pole")
         return Reading(float(_natural_frequencies(poles).min()), FREQUENCY)
 
-    return Measurement(analysis, "dominant pole", None, read)
+    return Measure(analysis, "dominant pole", None, read)
 
 
 @dataclass(frozen=True, slots=True)
@@ -748,7 +742,7 @@ class _Signal:
 
         Raises:
             KeyError: When the result has no unknown of that name.
-            MeasurementError: When the signal or its reference is not a voltage, yet
+            MeasureError: When the signal or its reference is not a voltage, yet
                 there is a reference.
         """
         index = results.column(result.unknowns, self.name)
@@ -764,7 +758,7 @@ class _Signal:
                 message = (
                     f"{self} names the {unknown.quantity} {unknown.name}, not a voltage"
                 )
-                raise MeasurementError(message)
+                raise MeasureError(message)
         return values - result.values[..., base], dimension
 
     @override
@@ -789,7 +783,7 @@ class _Axis:
 
         Raises:
             DimensionError: When the point is not of the axis's dimension.
-            MeasurementError: When it lies past either end.
+            MeasureError: When it lies past either end.
         """
         located = point.to(self.dimension, name)
         first, last = float(self.points[0]), float(self.points[-1])
@@ -800,7 +794,7 @@ class _Axis:
                 f"{name}, {point}, lies outside the {self.noun}s, "
                 f"{format_si(first, symbol)} to {format_si(last, symbol)}"
             )
-            raise MeasurementError(message)
+            raise MeasureError(message)
         return min(max(located, first), last)
 
 
@@ -824,7 +818,7 @@ class _Window:
         The window's ends are interpolated.
 
         Raises:
-            MeasurementError: When the result is neither a transient nor a sweep, or
+            MeasureError: When the result is neither a transient nor a sweep, or
                 the window is empty or past the axis.
         """
         axis, values, dimension = _traced(result, self.signal, what)
@@ -835,7 +829,7 @@ class _Window:
             last = axis.locate(self.stop, "the stop")
         if not first < last:
             message = f"the window of {self} is empty"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         inside = axis.points[(axis.points > first) & (axis.points < last)]
         points = np.concatenate(([first], inside, [last]))
         return points, np.interp(points, axis.points, values), dimension
@@ -846,12 +840,12 @@ class _Window:
         """The times of the window, the signal's values at each, and their dimension.
 
         Raises:
-            MeasurementError: When the result is not a transient, or the window is
+            MeasureError: When the result is not a transient, or the window is
                 empty or past its times.
         """
         if not isinstance(result, results.TransientResult):
             message = f"{what} reads a transient, not {_kind(result)}"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         return self.values(result, what)
 
     @override
@@ -867,14 +861,14 @@ def _statistic(
     analysis: str,
     window: _Window,
     statistic: Callable[[results.Real, results.Real], float],
-) -> Measurement:
-    """The measurement of `statistic` over `window`, from its points and values."""
+) -> Measure:
+    """The measure of `statistic` over `window`, from its points and values."""
 
     def read(result: results.AnalysisResult) -> Reading:
         points, values, dimension = window.values(result, f"a {name}")
         return Reading(statistic(points, values), dimension)
 
-    return Measurement(analysis, f"{name} of {window}", None, read)
+    return Measure(analysis, f"{name} of {window}", None, read)
 
 
 def _highest(_: results.Real, values: results.Real) -> float:
@@ -903,14 +897,14 @@ def _step(
     """The times and values of a transient's window, and the signal's step across it.
 
     Raises:
-        MeasurementError: When the signal ends the window where it starts it.
+        MeasureError: When the signal ends the window where it starts it.
     """
     times, values, dimension = window.transient(result, what)
     step = float(values[-1] - values[0])
     if step == 0:
         level = format_si(float(values[0]), str(dimension))
         message = f"{window} ends where it starts, at {level}"
-        raise MeasurementError(message)
+        raise MeasureError(message)
     return times, values, step
 
 
@@ -920,7 +914,7 @@ def _traced(
     """The increasing axis of a transient or a sweep, and the signal's values along it.
 
     Raises:
-        MeasurementError: When the result is neither a transient nor a sweep.
+        MeasureError: When the result is neither a transient nor a sweep.
     """
     match result:
         case results.TransientResult():
@@ -930,7 +924,7 @@ def _traced(
             axis = _Axis(result.levels, along, f"level of {result.source}")
         case _:
             message = f"{what} reads a transient or a DC sweep, not {_kind(result)}"
-            raise MeasurementError(message)
+            raise MeasureError(message)
     values, dimension = signal.trace(result)
     if axis.points[0] > axis.points[-1]:
         return replace(axis, points=axis.points[::-1]), values[::-1], dimension
@@ -943,7 +937,7 @@ def _transfer(
     """The frequencies, increasing, and the output over the divisor, or the loop gain.
 
     Raises:
-        MeasurementError: When the result is neither a small-signal response read at an
+        MeasureError: When the result is neither a small-signal response read at an
             output nor a loop gain read at none, a frequency is not positive, or the
             divisor vanishes.
     """
@@ -958,26 +952,26 @@ def _transfer(
                 divisors, _ = divisor.trace(result)
                 if np.any(divisors == 0):
                     message = f"{divisor} vanishes in the response"
-                    raise MeasurementError(message)
+                    raise MeasureError(message)
                 transfer = phasors / divisors
         case results.StabilityResult():
             message = f"a loop gain is read without an output, not at {output}"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         case results.AcResult():
             message = "a small-signal response is read at an output"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         case _:
             message = (
                 "a gain or a phase reads a small-signal response or a loop gain, not "
                 f"{_kind(result)}"
             )
-            raise MeasurementError(message)
+            raise MeasureError(message)
     order = np.argsort(result.frequencies)
     frequencies = result.frequencies[order]
     if frequencies[0] <= 0:
         lowest = format_si(frequencies[0], "Hz")
         message = f"a response is read over log frequency, so not at {lowest}"
-        raise MeasurementError(message)
+        raise MeasureError(message)
     return frequencies, transfer[order]
 
 
@@ -990,12 +984,12 @@ def _unity(
     """The log frequency where the gain of `transfer` first falls through 0 dB.
 
     Raises:
-        MeasurementError: When it never does.
+        MeasureError: When it never does.
     """
     unity = _crossings(logarithms, _decibels(transfer), 0.0, "falling")
     if not unity.size:
         message = f"the gain of {_over(output, over)} never falls through 0 dB"
-        raise MeasurementError(message)
+        raise MeasureError(message)
     return float(unity[0])
 
 
@@ -1034,7 +1028,7 @@ def _crossings(
 def _signals(
     output: str | None, over: str | None, reference: str | None
 ) -> tuple[_Signal | None, _Signal | None]:
-    """What a small-signal measurement reads, and what over; neither for a loop gain.
+    """What a small-signal measure reads, and what over; neither for a loop gain.
 
     Raises:
         ValueError: When there is a divisor or a reference, but no output.
@@ -1055,14 +1049,14 @@ def _spectrum(
     """`result`, a noise analysis's, with a source to refer its noise to if `referred`.
 
     Raises:
-        MeasurementError: When it is not, or has none.
+        MeasureError: When it is not, or has none.
     """
     if not isinstance(result, results.NoiseResult):
         message = f"{what} reads a noise analysis, not {_kind(result)}"
-        raise MeasurementError(message)
+        raise MeasureError(message)
     if referred and result.input is None:
         message = "the noise analysis names no source to refer its noise to"
-        raise MeasurementError(message)
+        raise MeasureError(message)
     return result
 
 
@@ -1070,14 +1064,14 @@ def _poles(result: results.AnalysisResult, what: str) -> results.Complex:
     """The poles of `result`, a pole-zero analysis's.
 
     Raises:
-        MeasurementError: When it is not, or the circuit has no poles.
+        MeasureError: When it is not, or the circuit has no poles.
     """
     if not isinstance(result, results.PoleZeroResult):
         message = f"{what} reads a pole-zero analysis, not {_kind(result)}"
-        raise MeasurementError(message)
+        raise MeasureError(message)
     if not result.poles.size:
         message = "the circuit has no poles"
-        raise MeasurementError(message)
+        raise MeasureError(message)
     return result.poles
 
 

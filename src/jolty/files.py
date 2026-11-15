@@ -56,7 +56,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from jolty import _core, ir, results
 from jolty.errors import JoltyError
 from jolty.plan import Plan
-from jolty.specs import Measurement, MeasurementError, Reading, Requirement, Specs
+from jolty.specs import Measure, MeasureError, Reading, Requirement, Specs
 from jolty.units import Dimension, Quantity
 
 CIRCUIT_SUFFIX: Final = ".jolty.json"
@@ -284,7 +284,7 @@ def build() -> str:
     """A SHA-256 hash of jolty's build: its engine, its Python modules and the Python.
 
     It hashes the bytes of the engine's library and of every module of the package, by
-    their paths within it, and the interpreter's version, since a measurement a script
+    their paths within it, and the interpreter's version, since a measure a script
     writes computes in Python.
     """
     hashed = hashlib.sha256(Path(_core.__file__).read_bytes())
@@ -1075,7 +1075,7 @@ def _traces(data: Mapping[str, np.ndarray], name: str) -> tuple[results.Trace, .
 class Batch:
     """A batch of runs as a batch file holds it, with the requirements it measured.
 
-    Each of its measurements is a requirement's, which `requirements` states in words,
+    Each of its measures is a requirement's, which `requirements` states in words,
     bounded by the `bounds` of each, its least and its most value, in SI base units,
     None for a bound it does not state.
     """
@@ -1099,7 +1099,7 @@ type _Exponents = tuple[str, str, str, str, str]
 
 
 type _Unit = _Exponents | results.Plain | None
-"""A measurement's unit: a dimension's exponents of the base units, as fractions, a
+"""A measure's unit: a dimension's exponents of the base units, as fractions, a
 plain unit, or none."""
 
 
@@ -1144,7 +1144,7 @@ class _Columns(_Model):
 
     analyses: tuple[str, ...]
     parameters: tuple[str, ...]
-    measurements: tuple[str, ...]
+    measures: tuple[str, ...]
     units: tuple[_Unit, ...]
     reasons: tuple[str, ...]
     problems: dict[int, tuple[str, ...]]
@@ -1157,7 +1157,7 @@ class _Columns(_Model):
         return cls(
             analyses=found.analyses,
             parameters=found.parameters,
-            measurements=found.measurements,
+            measures=found.measures,
             units=tuple(_unit(unit) for unit in found.units),
             reasons=found.reasons,
             problems=found.problems,
@@ -1195,7 +1195,7 @@ class _Columns(_Model):
             self.parameters,
             data[f"{name}.values"],
             data[f"{name}.ended"],
-            self.measurements,
+            self.measures,
             tuple(_dimension(unit) for unit in self.units),
             data[f"{name}.measured"],
             data[f"{name}.causes"],
@@ -1226,8 +1226,12 @@ class _Batch(_Columns):
 
 class _Batches(_Model):
     format: Literal["jolty-batches"] = "jolty-batches"
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     batches: dict[str, _Batch]
+
+
+_BATCHES_VERSION: Final = _Batches.model_construct().version
+"""The version of the batch file's format that jolty writes and reads."""
 
 
 def save_batches(path: Path, batches: Mapping[str, Batch]) -> None:
@@ -1255,7 +1259,7 @@ def load_batches(path: Path) -> dict[str, Batch]:
         try:
             header = _Batches.model_validate_json(str(data[_HEADER]))
         except KeyError, ValidationError:
-            message = f"{path} is not a jolty batch file of version 1"
+            message = f"{path} is not a jolty batch file of version {_BATCHES_VERSION}"
             raise JoltyError(message) from None
         return {
             name: Batch(entry.result(name, data), entry.requirements, entry.bounds)
@@ -1273,7 +1277,7 @@ class Shard:
     name. `conditions` holds the batch of the shard's samples at each, row 0 its
     sample `start`, or None where the circuit does not elaborate. `analyses` names
     every analysis of the plan, and `specs` are those its samples were measured
-    against, if any, each requirement's measurement the batch's measurement at its
+    against, if any, each requirement's measure the batch's measure at its
     place. Shards of one run of the analysis share their `fingerprint`, which
     [`jolty.shards`][jolty.shards] makes.
     """
@@ -1297,7 +1301,7 @@ class _Bound(_Model):
 
 
 class _Requirement(_Model):
-    """A requirement as a shard's header states it: its measurement and its bounds."""
+    """A requirement as a shard's header states it: its measure and its bounds."""
 
     analysis: str
     description: str
@@ -1309,23 +1313,23 @@ class _Requirement(_Model):
     @classmethod
     def of(cls, requirement: Requirement) -> _Requirement:
         """How the header states `requirement`."""
-        measurement = requirement.measurement
+        measure = requirement.measure
         return cls(
-            analysis=measurement.analysis,
-            description=measurement.description,
-            plain=measurement.plain,
+            analysis=measure.analysis,
+            description=measure.description,
+            plain=measure.plain,
             minimum=_bound(requirement.minimum),
             maximum=_bound(requirement.maximum),
             margin=_bound(requirement.margin),
         )
 
     def requirement(self) -> Requirement:
-        """The requirement, whose measurement its shard read: it reads no result."""
-        measurement = Measurement(
+        """The requirement, whose measure its shard read: it reads no result."""
+        measure = Measure(
             self.analysis, self.description, self.plain, _read_by_its_shard
         )
         return Requirement(
-            measurement,
+            measure,
             _quantity(self.minimum),
             _quantity(self.maximum),
             _quantity(self.margin),
@@ -1333,14 +1337,14 @@ class _Requirement(_Model):
 
 
 def _read_by_its_shard(result: results.AnalysisResult) -> Reading:
-    """Reads nothing of `result`: a shard's measurement was read where the shard ran.
+    """Reads nothing of `result`: a shard's measure was read where the shard ran.
 
     Raises:
-        MeasurementError: Always.
+        MeasureError: Always.
     """
     del result
-    message = "a shard's file holds what its measurements read, and reads no result"
-    raise MeasurementError(message)
+    message = "a shard's file holds what its measures read, and reads no result"
+    raise MeasureError(message)
 
 
 def _bound(quantity: Quantity | None) -> _Bound | None:
@@ -1357,7 +1361,7 @@ def _quantity(bound: _Bound | None) -> Quantity | None:
 
 class _Shard(_Model):
     format: Literal["jolty-shard"] = "jolty-shard"
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     start: int
     stop: int
     fingerprint: str
@@ -1370,6 +1374,10 @@ class _Shard(_Model):
     requirements: tuple[_Requirement, ...] | None
     yield_target: float | None
     conditions: tuple[_Columns | None, ...]
+
+
+_SHARD_VERSION: Final = _Shard.model_construct().version
+"""The version of the shard file's format that jolty writes and reads."""
 
 
 def save_shard(path: Path, shard: Shard) -> None:
@@ -1406,7 +1414,7 @@ def load_shard(path: Path) -> Shard:
     Raises:
         JoltyError: When the file is not a jolty shard file of this version.
     """
-    unreadable = f"{path} is not a jolty shard file of version 1"
+    unreadable = f"{path} is not a jolty shard file of version {_SHARD_VERSION}"
     try:
         archive = np.load(path, allow_pickle=False)
     except ValueError, OSError, zipfile.BadZipFile:

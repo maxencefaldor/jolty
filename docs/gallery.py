@@ -441,7 +441,7 @@ def _replicate(
         )
         unfinished = {name for _, name in replication.unfinished}
         replication.unreplicated = tuple(
-            requirement.measurement.analysis in unfinished
+            requirement.measure.analysis in unfinished
             for requirement in script_specs.requirements
         )
     return replication

@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""The engine's measurements read what numpy read, on specs' results and random signals.
+"""The engine's measures read what numpy read, on specs' results and random signals.
 
-Every measurement of `jolty.specs` resolves itself against a result, and the engine
-reads it. `numpy_measurements` holds the same measurements as numpy computed them
+Every measure of `jolty.specs` resolves itself against a result, and the engine
+reads it. `numpy_measures` holds the same measures as numpy computed them
 before the engine read them. Where this platform's numpy rounds as the engine does,
-every measurement but a distortion reads the same float, bit for bit, in the same
+every measure but a distortion reads the same float, bit for bit, in the same
 unit, or raises the same error with the same message: numpy then fuses the product and
 the sum of an interpolation, of Smith's complex division and of a complex magnitude
 into one rounding each, as the engine does and as arm64's numpy does, and takes its
@@ -27,13 +27,13 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-import numpy_measurements as reference
+import numpy_measures as reference
 from jolty import Simulation, results, specs
 from jolty.errors import DimensionError, JoltyError
 from jolty.plan import DcSweep, Noise, OperatingPoints, PoleZero
-from jolty.specs import Measurement, MeasurementError
+from jolty.specs import Measure, MeasureError
 from jolty.units import A, Hz, Quantity, V, kHz, s, us
-from numpy_measurements import _Signal, _Window
+from numpy_measures import _Signal, _Window
 
 EXAMPLES: Final = Path(__file__).parent.parent / "examples"
 
@@ -95,18 +95,18 @@ MATH_RANGE: Final = {("OverflowError", "math range error")}
 """What Python's `math` raises when a result of finite arguments overflows."""
 
 type Outcome = tuple[str, str]
-"""What a measurement read: its value's bits and its unit, or its error and message."""
+"""What a measure read: its value's bits and its unit, or its error and message."""
 
 
-def outcome(measurement: Measurement, result: results.AnalysisResult) -> Outcome:
-    """What `measurement` reads of `result`.
+def outcome(measure: Measure, result: results.AnalysisResult) -> Outcome:
+    """What `measure` reads of `result`.
 
     numpy's floating-point warnings, of an overflow or of minus infinity less itself,
     which the tests would make errors, are off, as they change no number numpy reads.
     """
     try:
         with np.errstate(all="ignore"):
-            reading = measurement.read(result)
+            reading = measure.read(result)
     except (JoltyError, KeyError, ValueError, OverflowError) as error:
         return type(error).__name__, str(error.args[0])
     return float(reading.value).hex(), str(reading.unit)
@@ -115,10 +115,10 @@ def outcome(measurement: Measurement, result: results.AnalysisResult) -> Outcome
 def alike(
     name: str,
     result: results.AnalysisResult,
-    *args: Any,  # noqa: ANN401 - the measurement's own arguments
-    **kwargs: Any,  # noqa: ANN401 - the measurement's own arguments
+    *args: Any,  # noqa: ANN401 - the measure's own arguments
+    **kwargs: Any,  # noqa: ANN401 - the measure's own arguments
 ) -> Outcome:
-    """What the measurement `name` reads of `result`, the engine's and numpy's alike."""
+    """What the measure `name` reads of `result`, the engine's and numpy's alike."""
     native = getattr(specs, name)(*args, **kwargs)
     numpy = getattr(reference, name)(*args, **kwargs)
     assert native.native is not None
@@ -200,7 +200,7 @@ def spectrum(
 def windowed(
     result: results.AnalysisResult, start: Quantity | None, stop: Quantity | None
 ) -> None:
-    """Checks every measurement of a window of `result` alike."""
+    """Checks every measure of a window of `result` alike."""
     for name in ("maximum", "minimum", "peak_to_peak", "average", "rms"):
         for signal, signal_reference in (
             ("out", None),
@@ -250,7 +250,7 @@ def small_signal(
     output: str | None,
     over: str | None,
 ) -> None:
-    """Checks every small-signal measurement of `result` alike."""
+    """Checks every small-signal measure of `result` alike."""
     lowest = float(np.min(result.frequencies)) if result.frequencies.size else 1.0
     for at in (lowest * Hz, 1 * kHz, 1.5 * lowest * Hz):
         alike("gain", result, "ac", output, at=at, over=over)
@@ -262,7 +262,7 @@ def small_signal(
 
 
 def noise(result: results.NoiseResult, start: float, stop: float) -> None:
-    """Checks every noise measurement of `result` alike."""
+    """Checks every noise measure of `result` alike."""
     for referred in (False, True):
         for at in (start, stop, (start + stop) / 2, math.sqrt(abs(start * stop))):
             alike("noise_density", result, "n", at=at * Hz, referred=referred)
@@ -374,15 +374,15 @@ def test_a_resolution_error_precedes_a_reading_error() -> None:
     """A window whose start lies past the axis and whose stop is no time.
 
     numpy read the start against the times before it converted the stop, and said the
-    start lay outside; the engine's measurement resolves the stop first, as a batch
-    resolves its measurements before it runs.
+    start lay outside; the engine's measure resolves the stop first, as a batch
+    resolves its measures before it runs.
     """
     step = waveforms(np.linspace(0, 1, 11), np.linspace(0, 1, 11))
     native = specs.maximum("t", "out", start=2 * s, stop=1 * V)
     numpy = reference.maximum("t", "out", start=2 * s, stop=1 * V)
     with pytest.raises(DimensionError, match="the stop"):
         native.read(step)
-    with pytest.raises(MeasurementError, match="lies outside the times"):
+    with pytest.raises(MeasureError, match="lies outside the times"):
         numpy.read(step)
 
 
@@ -531,7 +531,7 @@ def amplitudes(
 ) -> tuple[results.Real, results.Real]:
     """The samples a distortion reads, and numpy's amplitudes of its harmonics.
 
-    They are as `numpy_measurements.distortion` takes them, of harmonics 1 to
+    They are as `numpy_measures.distortion` takes them, of harmonics 1 to
     `harmonics`.
     """
     window = _Window(_Signal("out"), start, None)

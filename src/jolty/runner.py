@@ -657,9 +657,7 @@ def _batches(  # noqa: PLR0913 - the runs, where they run, and what they measure
     tracing the unknowns `traced` names; one whose circuit does not, none.
     """
     analyses = _unrecorded(plan)
-    measurements = (
-        [] if specs is None else [each.measurement for each in specs.requirements]
-    )
+    measures = [] if specs is None else [each.measure for each in specs.requirements]
     found: list[BatchResult | None] = [None] * len(conditions)
     for structure in _structures(conditions, {}):
         for member in structure.members:
@@ -667,7 +665,7 @@ def _batches(  # noqa: PLR0913 - the runs, where they run, and what they measure
                 analyses,
                 Product(_at_temperatures(conditions, [member]), variants),
                 plan.options,
-                measurements=measurements,
+                measures=measures,
                 traced=traced if member == 0 else (),
                 runs=taken,
             )

@@ -397,13 +397,13 @@ def test_batch_files_hold_every_column_of_a_batch(tmp_path: Path) -> None:
         "bode": Ac("V1", decade(1 * kHz, 10 * MHz, 2)),
         "sweep": DcSweep("R1", [1 * kohm, 2 * kohm], parameter="resistance"),
     }
-    measurements = [value("op", "out"), gain("bode", "out", at=1 * MHz)]
+    measures = [value("op", "out"), gain("bode", "out", at=1 * MHz)]
     found = Simulation(filtered()).batch(
         analyses,
         Product(
             Explicit([Variant(), Variant({"R2": {"resistance": -1.0}})]), MonteCarlo(3)
         ),
-        measurements=measurements,
+        measures=measures,
         traced=["out"],
     )
     assert found.problems, "the runs at a negative resistance make problems"

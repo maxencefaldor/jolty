@@ -669,7 +669,7 @@ class Simulation:
         variants: Variants,
         options: Options | None = None,
         *,
-        measurements: Sequence[specs.Measurement] = (),
+        measures: Sequence[specs.Measure] = (),
         traced: Sequence[str] = (),
         each: Callable[[results.Run], object] | None = None,
         runs: range | None = None,
@@ -678,7 +678,7 @@ class Simulation:
 
         It runs the variants' runs `runs`, or every one, row 0 the run at the range's
         start, so that a batch of a range holds the rows of the whole batch that the
-        range names, bit for bit, but for the unit of a measurement Python reads, none
+        range names, bit for bit, but for the unit of a measure Python reads, none
         where the range reads none, and the batches of ranges that tile the runs join
         into it ([`BatchResult.joined`][jolty.results.BatchResult.joined]).
         Run `i` takes the values of the variants' run `i` in place of the simulation's,
@@ -687,7 +687,7 @@ class Simulation:
         however many threads the engine runs the batch on; runs at values that give
         the circuit another structure run on the circuit elaborated once for it. The
         result holds, one row per run, the values each run took, whether each analysis
-        ended, what each of `measurements` read, the engine reading each it can resolve
+        ended, what each of `measures` read, the engine reading each it can resolve
         from the analysis's kind and the circuit's unknowns, and the values of the
         unknowns `traced` names at every point of each operating point, DC sweep,
         response and transient that names its times. `each`, if given, is called with
@@ -706,7 +706,7 @@ class Simulation:
                 written.
         """
         chosen = Options() if options is None else options
-        planned = _Planned.of(self, analyses, chosen, measurements, traced)
+        planned = _Planned.of(self, analyses, chosen, measures, traced)
         ran = self._variants(variants)
         taken = range(len(ran)) if runs is None else runs
         if taken.step != 1 or not 0 <= taken.start <= taken.stop <= len(ran):
@@ -1104,10 +1104,10 @@ class Simulation:
         return json.dumps(kept, allow_nan=False)
 
     def _shape(self, analysis: Analysis) -> results.AnalysisResult:
-        """A result of `analysis` that holds no point, for measurements to resolve.
+        """A result of `analysis` that holds no point, for measures to resolve.
 
         It holds the analysis's kind and the circuit's unknowns, and a sweep's source
-        and quantity and a noise analysis's, all that a measurement resolves against.
+        and quantity and a noise analysis's, all that a measure resolves against.
         """
         unknowns = self.unknowns
         width = len(unknowns)
@@ -1270,11 +1270,11 @@ def mismatch(seed: int, index: int) -> int:
 
 @dataclass(frozen=True, slots=True)
 class _Reading:
-    """How a batch reads one measurement: by the engine, in Python, or not at all."""
+    """How a batch reads one measure: by the engine, in Python, or not at all."""
 
-    measurement: specs.Measurement
+    measure: specs.Measure
     native: specs.Native | None = None
-    """The measurement resolved for the engine, which reads it."""
+    """The measure resolved for the engine, which reads it."""
     slot: int = -1
     """Its place among the measures the engine reads."""
     reason: str | None = None
@@ -1288,7 +1288,7 @@ class _Planned:
     """A batch as the simulation runs it.
 
     It holds its analyses, each as the engine reads it or why it fails on every run,
-    and how it reads each measurement and traces unknowns.
+    and how it reads each measure and traces unknowns.
     """
 
     simulation: Simulation
@@ -1307,8 +1307,8 @@ class _Planned:
     traced: list[tuple[str, list[int]]]
     """Each analysis traced, by name, and the unknowns traced, by their columns."""
     read: dict[tuple[int, int], specs.Reading | str]
-    """What each measurement read in Python read of each run, or why it read nothing,
-    by the run's index and the measurement's."""
+    """What each measure read in Python read of each run, or why it read nothing,
+    by the run's index and the measure's."""
 
     @classmethod
     def of(
@@ -1316,7 +1316,7 @@ class _Planned:
         simulation: Simulation,
         analyses: Mapping[str, Analysis],
         options: Options,
-        measurements: Sequence[specs.Measurement],
+        measures: Sequence[specs.Measure],
         traced: Sequence[str],
     ) -> _Planned:
         """The batch of `analyses` on `simulation`.
@@ -1352,8 +1352,8 @@ class _Planned:
             planned.engine[name] = len(planned.settings)
             planned.records[name] = json.dumps(record)
             planned.settings.append((encoded, json.dumps(settings, allow_nan=False)))
-        for measurement in measurements:
-            planned.readings.append(planned._reading(measurement))
+        for measure in measures:
+            planned.readings.append(planned._reading(measure))
         columns = [results.column(simulation.unknowns, name) for name in traced]
         planned.traced = [
             (name, columns)
@@ -1367,27 +1367,27 @@ class _Planned:
         ]
         return planned
 
-    def _reading(self, measurement: specs.Measurement) -> _Reading:
-        """How the batch reads `measurement`."""
-        name = measurement.analysis
+    def _reading(self, measure: specs.Measure) -> _Reading:
+        """How the batch reads `measure`."""
+        name = measure.analysis
         if name not in self.analyses:
             reason = f"the batch runs no analysis named {name}"
-            return _Reading(measurement, reason=reason, everywhere=True)
+            return _Reading(measure, reason=reason, everywhere=True)
         if name in self.refused:
             reason = f"the analysis {name} failed"
-            return _Reading(measurement, reason=reason, everywhere=True)
-        if measurement.native is None or self.simulation.foundry:
-            return _Reading(measurement)
+            return _Reading(measure, reason=reason, everywhere=True)
+        if measure.native is None or self.simulation.foundry:
+            return _Reading(measure)
         shape = self.simulation._shape(self.analyses[name])  # noqa: SLF001 - one simulation's own
         try:
-            native = measurement.native(shape)
+            native = measure.native(shape)
         except (JoltyError, KeyError) as error:
-            return _Reading(measurement, reason=str(error.args[0]))
+            return _Reading(measure, reason=str(error.args[0]))
         slot = sum(reading.native is not None for reading in self.readings)
-        return _Reading(measurement, native=native, slot=slot)
+        return _Reading(measure, native=native, slot=slot)
 
     def _in_python(self) -> list[int]:
-        """The measurements read in Python, by their indices."""
+        """The measures read in Python, by their indices."""
         return [
             index
             for index, reading in enumerate(self.readings)
@@ -1395,15 +1395,15 @@ class _Planned:
         ]
 
     def _readings(self, index: int, run: results.Run) -> None:
-        """Reads each measurement read in Python of the results of the run `index`."""
+        """Reads each measure read in Python of the results of the run `index`."""
         for place in self._in_python():
-            measurement = self.readings[place].measurement
-            result = run.results.get(measurement.analysis)
+            measure = self.readings[place].measure
+            result = run.results.get(measure.analysis)
             if result is None:
-                self.read[index, place] = f"the analysis {measurement.analysis} failed"
+                self.read[index, place] = f"the analysis {measure.analysis} failed"
                 continue
             try:
-                self.read[index, place] = measurement.read(result)
+                self.read[index, place] = measure.read(result)
             except (JoltyError, KeyError) as error:
                 self.read[index, place] = str(error.args[0])
 
@@ -1416,7 +1416,7 @@ class _Planned:
         """What the engine finds on the runs `runs` of `ran`, each handed to `each`."""
         simulation = self.simulation
         measures = [
-            (self.engine[reading.measurement.analysis], reading.native.measure)
+            (self.engine[reading.measure.analysis], reading.native.measure)
             for reading in self.readings
             if reading.native is not None
         ]
@@ -1593,8 +1593,8 @@ class _Planned:
         """The result of the batch, from what the engine or ngspice `found`.
 
         Raises:
-            OverflowError: Where a measurement's sum overflowed on a run.
-            ValueError: Where a measurement's sum was indeterminate on a run.
+            OverflowError: Where a measure's sum overflowed on a run.
+            ValueError: Where a measure's sum was indeterminate on a run.
             MemoryError: Where a distortion's samples would not fit in memory.
         """
         ended_engine = found["ended"]
@@ -1609,7 +1609,7 @@ class _Planned:
                 columns.engine(place, reading, found)
                 units.append(reading.native.unit)
             elif reading.reason is not None:
-                analysis = reading.measurement.analysis
+                analysis = reading.measure.analysis
                 where = (
                     np.zeros(runs, dtype=np.bool_)
                     if reading.everywhere
@@ -1627,7 +1627,7 @@ class _Planned:
             _labels(found["parameters"]),
             np.asarray(found["values"], dtype=np.float64),
             ended,
-            tuple(str(reading.measurement) for reading in self.readings),
+            tuple(str(reading.measure) for reading in self.readings),
             tuple(units),
             columns.measured,
             columns.causes,
@@ -1643,7 +1643,7 @@ class _Planned:
     def _read_in_python(
         self, place: int, columns: _Columns
     ) -> Dimension | results.Plain | None:
-        """Writes what the measurement at `place` read in Python of each run, or not.
+        """Writes what the measure at `place` read in Python of each run, or not.
 
         Returns the unit of the first run's reading, which every reading takes.
         """
@@ -1716,17 +1716,17 @@ def _labels(parameters: Sequence[tuple[str, str] | None]) -> tuple[str, ...]:
 
 @dataclass(slots=True)
 class _Columns:
-    """What a batch's measurements read of each run, or why not, as it is written."""
+    """What a batch's measures read of each run, or why not, as it is written."""
 
     measured: results.Real
     causes: npt.NDArray[np.int32]
     texts: dict[str, int]
-    """Each reason a measurement read nothing for, by its text, at its place."""
+    """Each reason a measure read nothing for, by its text, at its place."""
     raised: list[tuple[int, int, Exception]]
-    """What the arithmetic of a measurement raised, at the run and the measurement."""
+    """What the arithmetic of a measure raised, at the run and the measure."""
 
     def __init__(self, runs: int, width: int) -> None:
-        """The columns of `width` measurements of `runs` runs, none read yet."""
+        """The columns of `width` measures of `runs` runs, none read yet."""
         self.measured = np.full((runs, width), np.nan)
         self.causes = np.full((runs, width), -1, dtype=np.int32)
         self.texts = {}
@@ -1737,10 +1737,10 @@ class _Columns:
         return np.int32(self.texts.setdefault(reason, len(self.texts)))
 
     def engine(self, place: int, reading: _Reading, found: _core.BatchResult) -> None:
-        """Writes what the engine read of the measurement at `place`, or why not."""
+        """Writes what the engine read of the measure at `place`, or why not."""
         if reading.native is None:
             return
-        failed = f"the analysis {reading.measurement.analysis} failed"
+        failed = f"the analysis {reading.measure.analysis} failed"
         column = found["causes"][:, reading.slot]
         self.measured[:, place] = found["measured"][:, reading.slot]
         table = np.full(len(found["reasons"]) + 1, -1, dtype=np.int32)
@@ -1759,7 +1759,7 @@ class _Columns:
     def unresolved(
         self, place: int, reading: _Reading, where: npt.NDArray[np.bool_]
     ) -> None:
-        """Writes why the measurement at `place`, which resolves against none, read nil.
+        """Writes why the measure at `place`, which resolves against none, read nil.
 
         It is why it does not resolve against a result of its analysis, `where` the
         analysis ended, and else that the analysis failed.
@@ -1770,7 +1770,7 @@ class _Columns:
             if len(where):
                 self.causes[:, place] = self.told(reading.reason)
             return
-        failed = f"the analysis {reading.measurement.analysis} failed"
+        failed = f"the analysis {reading.measure.analysis} failed"
         for mask, reason in ((where, reading.reason), (~where, failed)):
             if mask.any():
                 self.causes[mask, place] = self.told(reason)

@@ -214,7 +214,7 @@ def test_a_batch_draws_a_histogram_per_measurement_and_an_envelope_per_analysis(
     found = Simulation(filtered()).batch(
         {"op": OperatingPoint(), "bode": Ac("V1", decade(1 * kHz, 10 * MHz, 5))},
         MonteCarlo(30),
-        measurements=[requirement.measurement for requirement in requirements],
+        measures=[requirement.measure for requirement in requirements],
         traced=["out", "V1:current"],
     )
     batch = Batch(

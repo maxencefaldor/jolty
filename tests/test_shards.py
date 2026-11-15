@@ -49,7 +49,7 @@ from jolty import (
 )
 from jolty.plan import decade
 from jolty.results import TransientResult
-from jolty.specs import Measurement, MeasurementError, Reading, gain, value
+from jolty.specs import Measure, MeasureError, Reading, gain, value
 from jolty.units import VOLTAGE, Hz, MHz, V, celsius, kohm, nF, us
 
 SEED = 3
@@ -77,7 +77,7 @@ def late(result):
         raise TypeError(result)
     volts = float(result.voltage("out")[-1])
     if volts > 2.5:
-        raise MeasurementError(f"out ends at {volts:.4f} V")
+        raise MeasureError(f"out ends at {volts:.4f} V")
     return Reading(volts, VOLTAGE)
 
 
@@ -98,7 +98,7 @@ def specs():
         [
             value("op", "out").between(2.1 * V, 2.6 * V),
             gain("ac", "out", at=1e5 * Hz) >= -6.5,
-            Measurement("step", "out at its end", None, late) >= 2.2 * V,
+            Measure("step", "out at its end", None, late) >= 2.2 * V,
         ],
         yield_target=0.5,
     )
@@ -198,7 +198,7 @@ def test_merging_1_3_and_7_shards_finds_one_run_s_bits(tmp_path: Path) -> None:
         assert saved.read_bytes() == (alone / runner.BATCHES).read_bytes()
         merged.append(shard)
     first, *others = merged
-    # Some runs read nothing of the measurement Python reads, each for its own reason.
+    # Some runs read nothing of the measure Python reads, each for its own reason.
     plan_s = first.conditions[0]
     assert plan_s is not None
     assert len(plan_s.reasons) > 3
@@ -298,7 +298,7 @@ def test_gaps_and_overlaps_name_the_shards(tmp_path: Path) -> None:
     with pytest.raises(JoltyError, match="there is no shard to merge"):
         shards.merge([])
     (directory / "shard-70-80.npz").write_bytes(b"not a shard")
-    with pytest.raises(JoltyError, match="is not a jolty shard file of version 1"):
+    with pytest.raises(JoltyError, match="is not a jolty shard file of version 2"):
         shards.merge([directory / "shard-70-80.npz"])
 
 

@@ -276,7 +276,7 @@ class SimulateRequest(_Model):
     again, a Monte Carlo analysis that runs them on samples of the circuit's
     tolerances, and variants, the values of many runs of it. It may define specs(),
     which
-    returns jolty Specs: requirements on measurements of the analyses' results, each of
+    returns jolty Specs: requirements on measures of the analyses' results, each of
     which passes, is marginal, fails or goes unmeasured, at its worst corner, and a
     yield target for the Monte Carlo samples. It can be the build script itself.
     Given samples, it runs only those of the Monte Carlo analysis, as a shard, which
@@ -407,7 +407,7 @@ class SimulateResult(CommandResult):
     )
     plots: tuple[Plot, ...] = Field(
         description="A plot per analysis but operating points and sensitivities, "
-        "then a histogram of each batch's measurements and an envelope of each "
+        "then a histogram of each batch's measures and an envelope of each "
         "analysis it traced; empty when plotting is off or nothing ran to its end."
     )
     output: ScriptOutput = Field(description="What the scripts printed.")
@@ -528,7 +528,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         listed=settings.listed_unknowns,
         check=request.check,
         record=request.record,
-        # A shard's outcome is its measurements, and the probes named alone besides.
+        # A shard's outcome is its measures, and the probes named alone besides.
         plot=request.plot and (taken is None or bool(request.probes)),
         probes=request.probes,
         parallelism=runner.Thresholds(
@@ -650,7 +650,7 @@ class MergeResult(CommandResult):
         description="The saved batch of the samples at the plan's own conditions."
     )
     plots: tuple[Plot, ...] = Field(
-        description="A histogram of the batch's measurements and an envelope of each "
+        description="A histogram of the batch's measures and an envelope of each "
         "analysis it traced; empty when plotting is off."
     )
     seconds: float = Field(description="Seconds the command took.")
@@ -839,7 +839,7 @@ def _plot(
 def _plot_batches(results_path: Path, path: Path) -> tuple[Plot, ...]:
     """Plots each batch saved at `path` beside the results at `results_path`.
 
-    A batch draws a histogram of its measurements, if it has any, and an envelope of
+    A batch draws a histogram of its measures, if it has any, and an envelope of
     each analysis it traced along points of an axis.
     """
     drawn = []

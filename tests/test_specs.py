@@ -12,7 +12,7 @@ from hypothesis import strategies as st
 from jolty import results
 from jolty.runner import Built, Failure, Job, run
 from jolty.specs import (
-    MeasurementError,
+    MeasureError,
     Requirement,
     Specs,
     Verdict,
@@ -108,7 +108,7 @@ def low_pass() -> results.AcResult:
 
 
 def verdict_of(requirement: Requirement, result: results.AnalysisResult) -> Verdict:
-    analysis = requirement.measurement.analysis
+    analysis = requirement.measure.analysis
     (verdict,) = evaluate(Specs([requirement]), [analysis], {analysis: result})
     return verdict
 
@@ -168,7 +168,7 @@ def test_a_fall_time_reads_like_a_rise_time() -> None:
     falling = waveforms(step.times, 1 - step.values[:, 0])
     assert rise_time("t", "out").read(falling).value == pytest.approx(TAU * math.log(9))
     assert not crossing("t", "out", 0.5 * V, edge="rising").read(step).value < 0
-    with pytest.raises(MeasurementError, match="does not cross 500 mV"):
+    with pytest.raises(MeasureError, match="does not cross 500 mV"):
         crossing("t", "out", 0.5 * V, edge="rising").read(falling)
 
 
@@ -256,10 +256,10 @@ def test_a_loop_gains_margins_are_read_without_an_output() -> None:
         gain("loop", at=1e-3 * Hz): (20.0, "dB"),
         phase("loop", at=1 * Hz): (-135.0, "°"),
     }
-    for measurement, (value_read, unit) in expected.items():
-        measured = measurement.read(loop)
-        assert measured.unit == unit, measurement
-        assert measured.value == pytest.approx(value_read, rel=1e-6), measurement
+    for measure, (value_read, unit) in expected.items():
+        measured = measure.read(loop)
+        assert measured.unit == unit, measure
+        assert measured.value == pytest.approx(value_read, rel=1e-6), measure
     assert str(phase_margin("loop") >= 45) == "phase margin of the loop in loop ≥ 45 °"
     assert str(gain_margin("loop") >= 6) == "gain margin of the loop in loop ≥ 6 dB"
 
@@ -804,7 +804,7 @@ def judged_runs(draw: st.DrawFn) -> tuple[Specs, list[bool], Readings]:
 
 
 def _batch(readings: Sequence[Sequence[float | None]]) -> results.BatchResult:
-    """A batch of a measurement per requirement that read `readings`, by requirement."""
+    """A batch of a measure per requirement that read `readings`, by requirement."""
     measured = np.array(
         [[math.nan if read is None else read for read in each] for each in readings]
     ).T

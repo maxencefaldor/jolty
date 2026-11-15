@@ -1,4 +1,4 @@
-//! numpy's arithmetic, operation for operation, as jolty's measurements were first written in
+//! numpy's arithmetic, operation for operation, as jolty's measures were first written in
 //! numpy.
 //!
 //! Each function names the numpy or Python function it follows, as numpy 2.5 and Python 3.15

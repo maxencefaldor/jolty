@@ -237,8 +237,8 @@ def test_a_stability_analysis_finds_the_loop_gain_and_its_margins() -> None:
         phase_margin("loop"): 180 - phase_of(unity),
         gain_margin("loop"): -20 * math.log10(abs(open_loop(inverted))),
     }
-    for measurement, wanted in margins.items():
-        assert measurement.read(loop).value == pytest.approx(wanted, rel=1e-3)
+    for measure, wanted in margins.items():
+        assert measure.read(loop).value == pytest.approx(wanted, rel=1e-3)
 
 
 def test_a_probe_is_a_voltage_source_off_the_ground() -> None:

@@ -1,7 +1,7 @@
 # Copyright 2026 Maxence Faldor
 """Requirements, their verdicts, and their spread over Monte Carlo samples.
 
-What [`jolty.specs`][jolty.specs] describes: a measurement compared with a bound, the
+What [`jolty.specs`][jolty.specs] describes: a measure compared with a bound, the
 verdict on it at each of a plan's conditions, and the yield. Over a batch's runs, the
 verdicts are [`Judged`][jolty.specs.Judged] as columns, one entry per run, each what the
 verdict on that run alone states.
@@ -36,10 +36,10 @@ from jolty.units import (
 )
 
 type Plain = results.Plain
-"""The unit of a measurement that reads a plain number: none for a ratio."""
+"""The unit of a measure that reads a plain number: none for a ratio."""
 
 type Bound = Quantity | float
-"""A bound: a quantity, or a number for a measurement in dB, degrees or percent."""
+"""A bound: a quantity, or a number for a measure in dB, degrees or percent."""
 
 type Status = Literal["passed", "marginal", "failed", "unmeasured"]
 """What became of a requirement."""
@@ -80,13 +80,13 @@ type ExtendedReal = Annotated[
 ``"Infinity"`` or ``"-Infinity"``, as a gain of exactly nothing is ``-inf`` dB."""
 
 
-class MeasurementError(JoltyError):
-    """A measurement cannot be read from the result of its analysis."""
+class MeasureError(JoltyError):
+    """A measure cannot be read from the result of its analysis."""
 
 
 @dataclass(frozen=True, slots=True)
 class Reading:
-    """What a measurement read: a value in SI base units, and its unit."""
+    """What a measure read: a value in SI base units, and its unit."""
 
     value: float
     unit: Dimension | Plain
@@ -99,7 +99,7 @@ class Reading:
 
 @dataclass(frozen=True, slots=True)
 class Native:
-    """A measurement resolved for the engine to read, against one kind of result.
+    """A measure resolved for the engine to read, against one kind of result.
 
     Its `measure` holds its signals as the indices of the result's unknowns, and its
     times, levels and frequencies in SI base units, so the engine reads it without
@@ -116,14 +116,14 @@ class Native:
         """What the engine reads of `result`, a result of the kind it was resolved for.
 
         Raises:
-            MeasurementError: When the engine cannot read it.
+            MeasureError: When the engine cannot read it.
             ValueError: When a noise integral's band does not lie within the
                 frequencies, as `results.integrate` raises.
         """
         try:
             value = _engine(self.measure, result)
         except _core.MeasureError as error:
-            raise MeasurementError(self.explain(error)) from None
+            raise MeasureError(self.explain(error)) from None
         return Reading(value, self.unit)
 
 
@@ -159,7 +159,7 @@ def _engine(measure: _core.Measure, result: results.AnalysisResult) -> float:
             # No measure reads sensitivities or a transfer function, so none is resolved
             # against them.
             message = f"the engine measures no {type(result).__name__}"
-            raise MeasurementError(message)
+            raise MeasureError(message)
     return value
 
 
@@ -172,41 +172,41 @@ def _complex(values: np.typing.ArrayLike) -> results.Complex:
 
 
 @dataclass(frozen=True, slots=True)
-class Measurement:
+class Measure:
     """A number read from the result of one named analysis."""
 
     analysis: str
     description: str
-    """What the measurement reads, such as ``gain of out at 1 kHz``."""
+    """What the measure reads, such as ``gain of out at 1 kHz``."""
     plain: Plain | None
-    """The unit of a measurement that reads a plain number; None for a quantity."""
+    """The unit of a measure that reads a plain number; None for a quantity."""
     read: Callable[[results.AnalysisResult], Reading] = field(repr=False, compare=False)
-    """Reads the measurement from the analysis's result; raises a `JoltyError`, or a
+    """Reads the measure from the analysis's result; raises a `JoltyError`, or a
     `KeyError` for an unknown the result lacks, when it cannot."""
     native: Callable[[results.AnalysisResult], Native] | None = field(
         default=None, repr=False, compare=False
     )
-    """Resolves the measurement for the engine to read against a result, from no more
+    """Resolves the measure for the engine to read against a result, from no more
     than the result's kind and unknowns, a sweep's source and quantity, and a noise
     analysis's output's and source's quantities; raises as `read` does when it cannot.
-    None for a measurement only Python reads, such as one a plan script writes."""
+    None for a measure only Python reads, such as one a plan script writes."""
 
     def __ge__(self, minimum: Bound) -> Requirement:
-        """The requirement that the measurement be at least `minimum`."""
+        """The requirement that the measure be at least `minimum`."""
         return Requirement(self, minimum=_quantity(minimum), source=caller())
 
     def __le__(self, maximum: Bound) -> Requirement:
-        """The requirement that the measurement be at most `maximum`."""
+        """The requirement that the measure be at most `maximum`."""
         return Requirement(self, maximum=_quantity(maximum), source=caller())
 
     def between(self, minimum: Bound, maximum: Bound) -> Requirement:
-        """The requirement that the measurement lie between `minimum` and `maximum`."""
+        """The requirement that the measure lie between `minimum` and `maximum`."""
         return Requirement(
             self, _quantity(minimum), _quantity(maximum), source=caller()
         )
 
     def within(self, target: Bound, tolerance: Bound) -> Requirement:
-        """The requirement that the measurement lie within `tolerance` of `target`.
+        """The requirement that the measure lie within `tolerance` of `target`.
 
         Raises:
             DimensionError: When the target and the tolerance differ in dimension.
@@ -216,20 +216,20 @@ class Measurement:
 
     @override
     def __str__(self) -> str:
-        """What the measurement reads, and in which analysis."""
+        """What the measure reads, and in which analysis."""
         return f"{self.description} in {self.analysis}"
 
 
 @dataclass(frozen=True, slots=True)
 class Requirement:
-    """A measurement and the bounds it must lie within.
+    """A measure and the bounds it must lie within.
 
     A requirement's slack is how far the value read lies inside its bounds, negative
     outside them. It passes when its slack is at least its margin, is marginal when
     its slack is less, and fails when its slack is negative.
     """
 
-    measurement: Measurement
+    measure: Measure
     minimum: Quantity | None = None
     maximum: Quantity | None = None
     margin: Quantity | None = None
@@ -244,7 +244,7 @@ class Requirement:
                 margin is negative.
         """
         if self.minimum is None and self.maximum is None:
-            message = f"a requirement on {self.measurement} states a bound"
+            message = f"a requirement on {self.measure} states a bound"
             raise ValueError(message)
         if (
             self.minimum is not None
@@ -252,12 +252,12 @@ class Requirement:
             and self.minimum.value > self.maximum.value
         ):
             message = (
-                f"the minimum of {self.measurement}, {self._text(self.minimum)}, "
+                f"the minimum of {self.measure}, {self._text(self.minimum)}, "
                 f"exceeds its maximum, {self._text(self.maximum)}"
             )
             raise ValueError(message)
         if self.margin is not None and self.margin.value < 0:
-            message = f"the margin of {self.measurement} is negative: {self.margin}"
+            message = f"the margin of {self.measure} is negative: {self.margin}"
             raise ValueError(message)
 
     def with_margin(self, margin: Bound) -> Requirement:
@@ -285,7 +285,7 @@ class Requirement:
         return ("marginal" if slack < margin else "passed"), slack
 
     def _text(self, bound: Quantity) -> str:
-        plain = self.measurement.plain
+        plain = self.measure.plain
         if plain is not None and bound.dimension == DIMENSIONLESS:
             return _format(bound.value, plain)
         return str(bound)
@@ -303,7 +303,7 @@ class Requirement:
             if self.margin is None
             else f" with a margin of {self._text(self.margin)}"
         )
-        return f"{self.measurement} {' and '.join(bounds)}{margin}"
+        return f"{self.measure} {' and '.join(bounds)}{margin}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,7 +551,7 @@ def judged(
 ) -> Judged:
     """`requirement`'s verdict on each of `runs` runs of `batch`, as `evaluate` says.
 
-    `planned` names every analysis of the plan, and the measurement at `place` among
+    `planned` names every analysis of the plan, and the measure at `place` among
     the batch's is the requirement's; with no batch, the circuit does not elaborate,
     and no analysis ends on any run.
     """
@@ -560,9 +560,7 @@ def judged(
     value = np.full(runs, math.nan)
     unit = ""
     found = (
-        None
-        if batch is None or requirement.measurement.analysis not in planned
-        else place
+        None if batch is None or requirement.measure.analysis not in planned else place
     )
     if batch is not None and found is not None:
         read = batch.measured[:, found]
@@ -793,7 +791,7 @@ def _verdict(
         source=requirement.source,
         corner=corner,
     )
-    analysis = requirement.measurement.analysis
+    analysis = requirement.measure.analysis
     if analysis not in planned:
         reason = f"the plan runs no analysis named {analysis}"
         return stated.model_copy(update={"reason": reason})
@@ -801,10 +799,10 @@ def _verdict(
         reason = f"the analysis {analysis} failed"
         return stated.model_copy(update={"reason": reason})
     try:
-        reading = requirement.measurement.read(solved[analysis])
+        reading = requirement.measure.read(solved[analysis])
         if math.isnan(reading.value):
             message = "the value read is not a number"
-            raise MeasurementError(message)
+            raise MeasureError(message)
         status, slack = requirement.judge(reading)
     except (JoltyError, KeyError) as error:
         return stated.model_copy(update={"reason": str(error.args[0])})

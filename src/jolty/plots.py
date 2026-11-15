@@ -13,7 +13,7 @@ apart under the common color-vision deficiencies; a legend names them, and up to
 are also labeled at their end.
 
 A batch of runs plots their distribution, not each run: a histogram of each
-measurement's values over the runs, against its requirement's bounds, and an envelope
+measure's values over the runs, against its requirement's bounds, and an envelope
 of each unknown it traced along an analysis, its least, median and greatest value over
 the runs at each point.
 
@@ -385,7 +385,7 @@ def _decibels(phasors: results.Complex) -> results.Real:
 
 
 def histograms(name: str, batch: files.Batch) -> Figure:
-    """A histogram of each measurement of `batch`, the batch `name`, over its runs.
+    """A histogram of each measure of `batch`, the batch `name`, over its runs.
 
     Each panel counts the runs whose value lies in each bin, numpy's ``auto`` bins of
     the values read, and draws the requirement's bounds across it; its title says how
@@ -393,13 +393,13 @@ def histograms(name: str, batch: files.Batch) -> Figure:
     """
     found = batch.result
     figure = Figure(
-        figsize=(8, 0.8 + 2.4 * max(len(found.measurements), 1)),
+        figsize=(8, 0.8 + 2.4 * max(len(found.measures), 1)),
         dpi=150,
         layout="constrained",
         facecolor=SURFACE,
     )
     figure.suptitle(
-        f"{name}: {found.runs} runs, each measurement's values",
+        f"{name}: {found.runs} runs, each measure's values",
         color=INK,
         x=0.02,
         ha="left",

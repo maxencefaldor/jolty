@@ -22,7 +22,7 @@ timing was measured over, its ``excursions``, as the engine watched it.
 
 A [`BatchResult`][jolty.results.BatchResult] holds what many runs of one circuit found
 as columns, one row per run: the values each run took, whether each analysis ended,
-what each measurement read, and the values of some unknowns at every point of an
+what each measure read, and the values of some unknowns at every point of an
 analysis.
 """
 
@@ -45,7 +45,7 @@ type Real = npt.NDArray[np.float64]
 type Complex = npt.NDArray[np.complex128]
 
 type Plain = Literal["dB", "°", "%", ""]
-"""The unit of a measurement that reads a plain number: none for a ratio."""
+"""The unit of a measure that reads a plain number: none for a ratio."""
 
 
 def _none() -> Real:
@@ -1274,7 +1274,7 @@ class BatchResult:
     Each run took the `values` of the `parameters` its variants vary, each named as
     ``X1/R1 resistance``, or ``temperature``, in kelvins, and ran the `analyses` in
     order; `ended` says whether each analysis of each run ended. `measured` holds what
-    each of the `measurements` read on each run, in its unit among `units`, and not a
+    each of the `measures` read on each run, in its unit among `units`, and not a
     number where it read none, `causes` then indexing `reasons`, the words that say why,
     each once, in the order the cells first name them, row by row, and -1 where it read
     a number. `traced` holds the unknowns a batch traced along its analyses. Every row
@@ -1287,10 +1287,10 @@ class BatchResult:
     parameters: tuple[str, ...]
     values: Real
     ended: npt.NDArray[np.bool_]
-    measurements: tuple[str, ...]
-    """Each measurement, as its requirement names it, such as ``out in op``."""
+    measures: tuple[str, ...]
+    """Each measure, as its requirement names it, such as ``out in op``."""
     units: tuple[Dimension | Plain | None, ...]
-    """The unit of each measurement's values, ``dB``, ``°``, ``%`` or ``""`` for a
+    """The unit of each measure's values, ``dB``, ``°``, ``%`` or ``""`` for a
     plain number, or None where it read none."""
     measured: Real
     causes: npt.NDArray[np.int32]
@@ -1331,9 +1331,9 @@ class BatchResult:
             )
         return None
 
-    def reason(self, run: int, measurement: int) -> str | None:
-        """Why the measurement at `measurement` read nothing on `run`, if it did not."""
-        cause = int(self.causes[run, measurement])
+    def reason(self, run: int, measure: int) -> str | None:
+        """Why the measure at `measure` read nothing on `run`, if it did not."""
+        cause = int(self.causes[run, measure])
         return None if cause < 0 else self.reasons[cause]
 
     def parameter(self, name: str) -> Real:
@@ -1349,33 +1349,33 @@ class BatchResult:
     def joined(parts: Sequence[BatchResult]) -> BatchResult:
         """The runs of `parts`, one after another, as one result: the inverse of `rows`.
 
-        Each part's runs follow the part's before it, each measurement in the unit its
+        Each part's runs follow the part's before it, each measure in the unit its
         parts read it in, and its reasons are those of every part.
 
         Raises:
             ValueError: When there is no part; or the parts ran other analyses, varied
-                other numbers, read other measurements or traced other unknowns or
+                other numbers, read other measures or traced other unknowns or
                 points, naming the first part that differs from the first, by its place;
-                or read a measurement in other units, naming them.
+                or read a measure in other units, naming them.
         """
         if not parts:
             message = "a batch joins one part or more"
             raise ValueError(message)
         first, *rest = parts
         for place, part in enumerate(rest, start=1):
-            if (part.analyses, part.parameters, part.measurements) != (
+            if (part.analyses, part.parameters, part.measures) != (
                 first.analyses,
                 first.parameters,
-                first.measurements,
+                first.measures,
             ) or not _alike(first.traced, part.traced):
                 message = (
                     f"part {place} ran other analyses, varied other numbers, read "
-                    "other measurements or traced otherwise than part 0"
+                    "other measures or traced otherwise than part 0"
                 )
                 raise ValueError(message)
         units = tuple(
-            _unit_of(measurement, [part.units[column] for part in parts])
-            for column, measurement in enumerate(first.measurements)
+            _unit_of(measure, [part.units[column] for part in parts])
+            for column, measure in enumerate(first.measures)
         )
         texts: dict[str, int] = {}
         causes = []
@@ -1414,7 +1414,7 @@ class BatchResult:
             first.parameters,
             np.concatenate([part.values for part in parts]),
             np.concatenate([part.ended for part in parts]),
-            first.measurements,
+            first.measures,
             units,
             np.concatenate([part.measured for part in parts]),
             np.concatenate(causes),
@@ -1439,7 +1439,7 @@ class BatchResult:
             self.parameters,
             self.values[start:stop],
             self.ended[start:stop],
-            self.measurements,
+            self.measures,
             self.units,
             self.measured[start:stop],
             self.causes[start:stop],
@@ -1506,9 +1506,9 @@ def _alike(traced: tuple[Traced, ...], other: tuple[Traced, ...]) -> bool:
 
 
 def _unit_of(
-    measurement: str, units: Sequence[Dimension | Plain | None]
+    measure: str, units: Sequence[Dimension | Plain | None]
 ) -> Dimension | Plain | None:
-    """The one unit among `units` of the parts that read `measurement`, if any read it.
+    """The one unit among `units` of the parts that read `measure`, if any read it.
 
     Raises:
         ValueError: When parts read it in different units.
@@ -1516,6 +1516,6 @@ def _unit_of(
     read = list(dict.fromkeys(unit for unit in units if unit is not None))
     if len(read) > 1:
         listed = ", ".join(repr(str(unit)) for unit in read)
-        message = f"the parts read {measurement} in different units: {listed}"
+        message = f"the parts read {measure} in different units: {listed}"
         raise ValueError(message)
     return read[0] if read else None
