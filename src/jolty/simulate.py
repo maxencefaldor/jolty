@@ -820,6 +820,15 @@ class Simulation:
             if any(rating.stress in {"current", "power"} for rating in instance.ratings)
         )
 
+    @functools.cached_property
+    def transistors(self) -> tuple[str, ...]:
+        """The paths of the devices whose models distinguish regions of operation.
+
+        An operating point that records one reads its region by its path.
+        """
+        recording = self._recording(json.dumps("all"))
+        return tuple(device.path for device in recording.devices if device.regions)
+
     def _recording(self, record: str) -> results.Recording:
         """What the record whose JSON text is `record` keeps, made once each."""
         found = self._recordings.get(record)
@@ -828,7 +837,16 @@ class Simulation:
         devices, composites = self._core.recording(record)
         thermal = {name for name, heat in composites if heat}
         recorded = []
-        for path, terminals, heats, first, count, variables in devices:
+        for (
+            path,
+            terminals,
+            heats,
+            first,
+            count,
+            variables,
+            regions,
+            margins,
+        ) in devices:
             thermal.update(
                 f"{path}.{terminal}"
                 for terminal, heat in zip(terminals, heats, strict=True)
@@ -841,6 +859,8 @@ class Simulation:
                     tuple(terminals),
                     tuple(unknown.name for unknown in internals),
                     tuple(variables),
+                    tuple(regions),
+                    tuple(margins),
                 )
             )
         found = results.Recording(

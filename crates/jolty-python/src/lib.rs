@@ -185,13 +185,16 @@ struct Simulator {
 }
 
 /// A device a recording keeps: its path, its terminals' names, whether each is thermal, the
-/// index of its first internal unknown and their number, and its variables' names.
+/// index of its first internal unknown and their number, its variables' names, and the
+/// names of the regions its variable `region` numbers and of its margins.
 type RecordedDevice = (
     String,
     Vec<String>,
     Vec<bool>,
     usize,
     usize,
+    Vec<&'static str>,
+    Vec<&'static str>,
     Vec<&'static str>,
 );
 
@@ -375,8 +378,9 @@ impl Simulator {
     /// What the record whose JSON text is `record` keeps, in the order of every result's
     /// arrays: each recorded device, as its path, its terminals' names, whether each is
     /// thermal, the index among the unknowns of its first internal unknown and their
-    /// number, and its variables' names; then each recorded terminal of a component instance
-    /// or a logic device, as its name, such as `X1.vdd`, and whether it is thermal.
+    /// number, its variables' names, and the names of its regions and of its margins, none
+    /// for a device that is no transistor; then each recorded terminal of a component
+    /// instance or a logic device, as its name, such as `X1.vdd`, and whether it is thermal.
     fn recording(&self, record: &str) -> PyResult<Recording> {
         let record: Record = serde_json::from_str(record).map_err(|error| unreadable(&error))?;
         let simulator = self.lock();
@@ -390,6 +394,7 @@ impl Simulator {
                     .map(|terminal| device.thermal().contains(&terminal))
                     .collect();
                 let internals = device.internals();
+                let regions = device.regions();
                 (
                     device.path().to_owned(),
                     device.terminals().to_vec(),
@@ -397,6 +402,8 @@ impl Simulator {
                     internals.start,
                     internals.len(),
                     device.variable_names().to_vec(),
+                    regions.names.to_vec(),
+                    regions.margins.to_vec(),
                 )
             })
             .collect();
@@ -1133,6 +1140,7 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("BOLTZMANN", jolty_models::BOLTZMANN)?;
     module.add("ELEMENTARY_CHARGE", jolty_models::ELEMENTARY_CHARGE)?;
     module.add("REFERENCE_TEMPERATURE", jolty_models::REFERENCE_TEMPERATURE)?;
+    module.add("REGION", jolty_models::REGION)?;
     module.add("ElaborationError", py.get_type::<ElaborationError>())?;
     module.add("SimulationError", py.get_type::<SimulationError>())?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;

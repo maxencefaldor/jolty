@@ -122,6 +122,14 @@ class RecordedDevice:
     """Its internal unknowns, by name, such as ``X1/M1:drain``, after its terminals."""
     variables: tuple[str, ...] = ()
     """Its variables' names, such as ``threshold_voltage``."""
+    regions: tuple[str, ...] = ()
+    """The regions of operation its model's equations distinguish, such as
+    ``saturated``, in the order its variable ``region`` numbers them from 0: none for a
+    device that is no transistor."""
+    margins: tuple[str, ...] = ()
+    """Its variables that are its margins to the regions' boundaries, in volts, such as
+    ``saturation_margin``: each is zero on a boundary, where its model's equations
+    switch from one region to the next, and changes sign across it."""
 
     @property
     def unknowns(self) -> tuple[str, ...]:
@@ -150,8 +158,8 @@ class _Index:
     """Each device's first column of the derivatives, and its number of unknowns."""
     variables: dict[tuple[str, str], int]
     """The column of the readings of each variable, by device and name."""
-    paths: frozenset[str]
-    """The devices' paths."""
+    devices: dict[str, RecordedDevice]
+    """The devices, by path."""
 
     @classmethod
     def of(cls, recording: Recording) -> _Index:
@@ -185,7 +193,7 @@ class _Index:
             unknowns,
             tuple(blocks),
             {variable: index for index, variable in enumerate(variables)},
-            frozenset(device.path for device in recording.devices),
+            {device.path: device for device in recording.devices},
         )
 
 
@@ -267,7 +275,7 @@ class Recording:
             if located is None:
                 cut = max(name.rfind("."), name.rfind(":"))
                 device = name[:cut] if cut > 0 else name
-                recorded = device in index.paths
+                recorded = device in index.devices
                 what = f"{'' if recorded else 'device '}unknown named {name!r}"
                 _unrecorded(what, index.unknowns, name, device, recorded=recorded)
             found.append(located)
@@ -289,15 +297,32 @@ class Recording:
         found = index.variables.get((instance, name))
         if found is None:
             labels = [f"{device} {variable}" for device, variable in index.variables]
-            recorded = instance in index.paths
+            recorded = instance in index.devices
             what = f"variable named {name!r}"
             _unrecorded(what, labels, f"{instance} {name}", instance, recorded=recorded)
         return found
 
+    def regions(self, instance: str) -> tuple[str, ...]:
+        """The regions of operation the model of the device `instance` distinguishes.
+
+        Raises:
+            KeyError: When the result recorded no such device, suggesting the closest
+                and how to record it, or its model distinguishes no regions.
+        """
+        index = self._columns()
+        device = index.devices.get(instance)
+        if device is None:
+            what = f"device named {instance!r}"
+            _unrecorded(what, index.devices, instance, instance, recorded=False)
+        if not device.regions:
+            message = f"the model of {instance!r} distinguishes no regions of operation"
+            raise KeyError(message)
+        return device.regions
+
     def _holds(self, instance: str) -> bool:
         """Whether the result recorded the device or the terminals at `instance`."""
         prefix = f"{instance}."
-        return instance in self._columns().paths or any(
+        return instance in self._columns().devices or any(
             composite.startswith(prefix) for composite in self.composites
         )
 
@@ -571,6 +596,21 @@ class OperatingPoint(_Devices[float], _Watched):
     def level(self, net: str) -> float:
         """The level of the logic net `net`: 0, 1, or NaN when unknown."""
         return float(self.logic[net_column(self.nets, net)])
+
+    def region(self, instance: str) -> str:
+        """The region of operation of the transistor `instance`, such as ``saturated``.
+
+        Its model's equations say what it is, numbering it among its recorded device's
+        `regions` with its variable ``region``; its margins to the regions' boundaries
+        are variables too, which the device's `margins` names, such as
+        ``variable("M1", "saturation_margin")``.
+
+        Raises:
+            KeyError: When the result recorded no such device, or its model
+                distinguishes no regions.
+        """
+        regions = self.recording.regions(instance)
+        return regions[int(self.variable(instance, _core.REGION))]
 
     @override
     def _read(self, values: Real) -> float:

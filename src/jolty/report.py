@@ -3,9 +3,11 @@
 
 A report states facts: the value of every unknown at an operating point, and the first,
 lowest, highest and last value of every unknown over a sweep, a frequency response or a
-transient; and the level of every logic net at an operating point, and its first and
-last level and how often it changed over a sweep or a transient. It lists the first
-unknowns and logic nets, up to a limit; the results file holds them all.
+transient; the level of every logic net at an operating point, and its first and last
+level and how often it changed over a sweep or a transient; and each transistor's region
+of operation at an operating point, with its margins to the regions' boundaries, those
+nearest one first. It lists the first unknowns and logic nets, and transistors, up to a
+limit; the results file holds them all.
 A corner's report states whether the circuit elaborates there and which analyses fail,
 and a Monte Carlo analysis's, or a plan's variants', how many runs failed, what each
 requirement read over the runs, as its spread, and the yield, with its Wilson interval.
@@ -94,6 +96,21 @@ class Activity(_Model):
     last: LogicLevel
 
 
+class Margin(_Model):
+    """A transistor's margin to a boundary of its regions of operation, in volts."""
+
+    variable: str = Field(description="Its variable, such as saturation_margin.")
+    value: float
+
+
+class Transistor(_Model):
+    """A transistor's region of operation and its margins to the regions' bounds."""
+
+    path: str
+    region: str = Field(description="Its region, as its model's equations say.")
+    margins: tuple[Margin, ...]
+
+
 class PointReport(_Model):
     """An operating point."""
 
@@ -106,6 +123,14 @@ class PointReport(_Model):
     values: tuple[Value, ...]
     levels: tuple[Level, ...] = ()
     unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
+    transistors: tuple[Transistor, ...] = Field(
+        default=(),
+        description="Each transistor's region, nearest a boundary first: by the least "
+        "magnitude of its margins.",
+    )
+    unlisted_transistors: int = Field(
+        default=0, description="Transistors left out of the list."
+    )
 
     def describe(self) -> str:
         """The report as text."""
@@ -116,7 +141,25 @@ class PointReport(_Model):
         ]
         rows.extend([level.net, _written(level.level)] for level in self.levels)
         head = f"{self.name}: operating point, found by {strategy}"
-        return _join(head, _table(rows), self.unlisted)
+        text = _join(head, _table(rows), self.unlisted)
+        if not self.transistors:
+            return text
+        widest = max(len(transistor.margins) for transistor in self.transistors)
+        regions = [
+            [
+                transistor.path,
+                transistor.region.replace("_", " "),
+                *(
+                    f"{margin.variable} {_shown(margin.value, 'voltage')}"
+                    for margin in transistor.margins
+                ),
+                *[""] * (widest - len(transistor.margins)),
+            ]
+            for transistor in self.transistors
+        ]
+        head = "regions, nearest a boundary first:"
+        listed = _join(head, _table(regions), self.unlisted_transistors)
+        return f"{text}\n{_indented(listed)}"
 
 
 class Solutions(_Model):
@@ -865,12 +908,15 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 Level(net=net, level=_level(float(level)))
                 for net, level in zip(nets, result.logic, strict=False)
             )
+            transistors = _transistors(result)
             return PointReport(
                 name=name,
                 strategy=result.strategy,
                 values=values,
                 levels=levels,
                 unlisted=unlisted,
+                transistors=transistors[:listed],
+                unlisted_transistors=max(len(transistors) - listed, 0),
             )
         case results.Sweep():
             return SweepReport(
@@ -927,6 +973,33 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
             )
         case _:
             return _linear(name, result, listed)
+
+
+def _transistors(point: results.OperatingPoint) -> tuple[Transistor, ...]:
+    """The region and margins of each transistor `point` recorded.
+
+    Those nearest a boundary come first, by the least magnitude of their margins.
+    """
+    found = [
+        Transistor(
+            path=device.path,
+            region=point.region(device.path),
+            margins=tuple(
+                Margin(variable=margin, value=point.variable(device.path, margin))
+                for margin in device.margins
+            ),
+        )
+        for device in point.recording.devices
+        if device.regions
+    ]
+    return tuple(
+        sorted(
+            found,
+            key=lambda transistor: min(
+                (abs(margin.value) for margin in transistor.margins), default=math.inf
+            ),
+        )
+    )
 
 
 def _linear(

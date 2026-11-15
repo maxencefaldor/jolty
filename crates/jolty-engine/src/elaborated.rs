@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{
     Binding, Groups, Instance, Interface, Library, LogicDriver, LogicDriverParameters, Model, Node,
-    ParameterError, Quantity, REFERENCE_TEMPERATURE, Runs, Specification, ThresholdDetector,
-    ThresholdDetectorParameters, Unknown, UnknownInfo,
+    ParameterError, Quantity, REFERENCE_TEMPERATURE, Regions, Runs, Specification,
+    ThresholdDetector, ThresholdDetectorParameters, Unknown, UnknownInfo,
 };
 use jolty_numerics::{Condensation, Entry, Ordering, Pattern, PatternBuilder};
 use serde_json::Value;
@@ -119,6 +119,8 @@ pub struct Placed {
     internals: usize,
     /// The names of the variables it computes.
     variables: &'static [&'static str],
+    /// The regions of operation its equations distinguish.
+    regions: Regions,
     /// Whether it claimed its unknowns and entries as made from its own parameters, at its
     /// circuit's temperature, as a run that replaces none of its numbers makes it.
     nominal: bool,
@@ -237,6 +239,14 @@ impl Placed {
         self.variables
     }
 
+    /// The regions of operation the device's equations distinguish, which its variable
+    /// [`REGION`](jolty_models::REGION) numbers, and its margins to their boundaries: none
+    /// for a device that is no transistor.
+    #[must_use]
+    pub const fn regions(&self) -> Regions {
+        self.regions
+    }
+
     /// Whether the device was made from its own parameters, at its circuit's temperature,
     /// as a run that replaces none of its numbers makes it.
     pub(crate) const fn nominal(&self) -> bool {
@@ -287,12 +297,14 @@ impl StructureKey {
 }
 
 /// What a device claims: its internal unknowns, numbered from those of the elaborated
-/// circuit, the position of each of its entries, in order, and the variables it computes.
+/// circuit, the position of each of its entries, in order, and the variables it computes
+/// and the regions they number.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Layout {
     internals: Vec<UnknownInfo>,
     entries: Vec<(usize, usize)>,
     variables: &'static [&'static str],
+    regions: Regions,
 }
 
 /// The devices and the composite terminals of a circuit, each by index, sorted by path and
@@ -392,6 +404,7 @@ impl Binder {
             first_internal,
             internals: self.unknowns.len() - first_internal,
             variables,
+            regions: instance.regions(),
             nominal,
             template,
         });
@@ -933,6 +946,7 @@ impl Elaborated {
             internals,
             entries: builder.positions().to_vec(),
             variables: instance.variable_names(),
+            regions: instance.regions(),
         })
     }
 

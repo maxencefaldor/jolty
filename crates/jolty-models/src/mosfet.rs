@@ -25,9 +25,10 @@ use crate::junction::{
 };
 use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series, series_value};
 use crate::noise::Flicker;
+use crate::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
-    REFERENCE_TEMPERATURE, Real, Stamp,
+    REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
 /// The vacuum permittivity of SPICE's MOSFET models, in farads per meter: SPICE2's value,
@@ -163,18 +164,45 @@ pub struct MosfetMemory {
     /// one.
     threshold: Option<f64>,
     /// The values of [`VARIABLE_NAMES`] at the last evaluation.
-    variables: [f64; 5],
+    variables: [f64; 8],
 }
 
 /// The variables a transistor reports: its threshold and saturation voltages, in its own
-/// polarity, and Meyer's capacitances from the gate to the source, the drain and the bulk.
-const VARIABLE_NAMES: [&str; 5] = [
+/// polarity, Meyer's capacitances from the gate to the source, the drain and the bulk, and
+/// its region among [`REGIONS`] and its margins.
+const VARIABLE_NAMES: [&str; 8] = [
     "threshold_voltage",
     "saturation_voltage",
     "gate_source_capacitance",
     "gate_drain_capacitance",
     "gate_bulk_capacitance",
+    REGION,
+    OVERDRIVE,
+    SATURATION_MARGIN,
 ];
+
+/// The regions of a transistor's channel, as its level's equations switch between them
+/// (`mos1load.c`, `mos3load.c`), in the order of [`REGIONS`]' names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Region {
+    /// At or below its threshold, conducting nothing.
+    Off,
+    /// Below its threshold at level 3 with fast surface states, its current falling
+    /// exponentially from the threshold's.
+    WeakInversion,
+    /// Above its threshold, with the drain below saturation.
+    Linear,
+    /// Above its threshold, with the drain at or past saturation.
+    Saturated,
+}
+
+/// The regions a transistor's equations distinguish, and its margins to their boundaries:
+/// `vgs − von` and `vds − vdsat`, in its own polarity, with the drain and the source
+/// swapped where the drain lies below the source, as the equations swap them.
+const REGIONS: Regions = Regions {
+    names: &["off", "weak_inversion", "linear", "saturated"],
+    margins: &[OVERDRIVE, SATURATION_MARGIN],
+};
 
 /// Local node indices: the gate and the bulk, then the drain and source behind their
 /// resistances, which are the terminals themselves without one.
@@ -546,6 +574,9 @@ struct Conduction<R: Real> {
     saturation: Dual<R, 3>,
     /// Whether the drain is at or above the source; otherwise the two swap.
     forward: bool,
+    region: Region,
+    /// `vgs − von` and `vds − vdsat`, with the drain at or above the source.
+    margins: [f64; 2],
 }
 
 impl<R: Real> SquareLaw<R> {
@@ -567,21 +598,27 @@ impl<R: Real> SquareLaw<R> {
         };
         let threshold = root.scale(self.body_effect).plus(self.built_in);
         let vgst = vgs - threshold;
-        let current = if vgst.value.value() <= 0.0 {
-            Dual::number(0.0)
+        let saturation = vgst.max(0.0);
+        let region = if vgst.value.value() <= 0.0 {
+            Region::Off
+        } else if vgst.value.value() <= vds.value.value() {
+            Region::Saturated
         } else {
-            let betap = (vds.scale(self.lambda) + 1.0).scale(self.beta);
-            if vgst.value.value() <= vds.value.value() {
-                betap * vgst * vgst * 0.5
-            } else {
-                betap * vds * (vgst - vds * 0.5)
-            }
+            Region::Linear
+        };
+        let betap = (vds.scale(self.lambda) + 1.0).scale(self.beta);
+        let current = match region {
+            Region::Saturated => betap * vgst * vgst * 0.5,
+            Region::Linear => betap * vds * (vgst - vds * 0.5),
+            Region::Off | Region::WeakInversion => Dual::number(0.0),
         };
         Conduction {
             current: if forward { current } else { -current },
             threshold,
-            saturation: vgst.max(0.0),
+            saturation,
             forward,
+            region,
+            margins: [vgst.value.value(), (vds - saturation).value.value()],
         }
     }
 }
@@ -907,12 +944,16 @@ impl Kernel for Mosfet {
         let threshold = conduction.threshold.value.value();
         memory.threshold = Some(threshold);
         let sign = prepared.sign;
+        let [overdrive, margin] = conduction.margins;
         memory.variables = [
             sign * threshold,
             sign * conduction.saturation.value.value(),
             0.0,
             0.0,
             0.0,
+            f64::from(conduction.region as u8),
+            sign * overdrive,
+            sign * margin,
         ];
         let added = Oriented {
             nodes: &shape.stamp,
@@ -992,9 +1033,11 @@ impl Kernel for Mosfet {
     }
 
     fn variables(memory: &MosfetMemory, values: &mut [f64]) {
-        for (value, &variable) in values.iter_mut().zip(&memory.variables) {
-            *value = variable;
-        }
+        parts::write_variables(&memory.variables, values);
+    }
+
+    fn regions() -> Regions {
+        REGIONS
     }
 
     /// The thermal noise of the series resistances and of the channel, `8kT·gm / 3`, and
@@ -1396,8 +1439,8 @@ mod tests {
 
     use super::*;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
-        thermal,
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
+        assert_switches_where_margin_vanishes, source, thermal,
     };
 
     const CHARGED: &str = r#"{"threshold_voltage": 0.8, "transconductance_parameter": 1e-4,
@@ -1465,7 +1508,7 @@ mod tests {
         assert_eq!(names[..2], ["threshold_voltage", "saturation_voltage"]);
         assert!((values[0] - threshold).abs() < 1e-15);
         assert!((values[1] - (2.0 - threshold)).abs() < 1e-15);
-        assert_eq!(values[2..], [0.0; 3], "no oxide, no Meyer capacitance");
+        assert_eq!(values[2..5], [0.0; 3], "no oxide, no Meyer capacitance");
 
         let mut n = Bench::new::<Mosfet>(CHARGED);
         let mut p = Bench::new::<Mosfet>(&p_channel(CHARGED));
@@ -1475,12 +1518,80 @@ mod tests {
         p.settle(&mirrored);
         let (n_values, p_values) = (n.variables(), p.variables());
         assert!(n_values[0] > 0.0 && n_values[2] > 0.0, "{n_values:?}");
-        for (index, (n_value, p_value)) in n_values.iter().zip(&p_values).enumerate() {
-            let mirrored = if index < 2 { -p_value } else { *p_value };
+        let polar = [true, true, false, false, false, false, true, true];
+        for (index, ((n_value, p_value), polar)) in
+            n_values.iter().zip(&p_values).zip(polar).enumerate()
+        {
+            let mirrored = if polar { -p_value } else { *p_value };
             assert!(
                 (n_value - mirrored).abs() <= 1e-15 * n_value.abs(),
                 "{index}"
             );
+        }
+    }
+
+    /// A level 1 transistor is off at or below its threshold, saturated with its drain at
+    /// or past `vgs − vto`, and linear below it, the drain and the source swapping where the
+    /// drain lies below; its margins are `vgs − vto` and `vds − max(vgs − vto, 0)`, which
+    /// vanish where `mos1load.c` switches, and a p-channel's mirror an n-channel's.
+    #[test]
+    fn reports_its_region_and_margins() {
+        let parameters = r#"{"threshold_voltage": 1, "saturation_current": 1e-30}"#;
+        let mut bench = Bench::new::<Mosfet>(parameters);
+        let mut p = Bench::new::<Mosfet>(&parameters.replace(": 1,", ": -1, \"channel\": \"p\","));
+        // The drain, the gate, the source and the bulk.
+        for (x, region, margins) in [
+            ([3.0, 0.5, 0.0, 0.0], "off", [-0.5, 3.0]),
+            ([3.0, 2.0, 0.0, 0.0], "saturated", [1.0, 2.0]),
+            ([0.5, 3.0, 0.0, 0.0], "linear", [2.0, -1.5]),
+            ([0.0, 5.0, 3.0, 0.0], "linear", [4.0, -1.0]),
+        ] {
+            bench.settle(&x);
+            assert_eq!(bench.region(), (region, margins.to_vec()), "{x:?}");
+            p.settle(&x.map(|value| -value));
+            assert_eq!(p.region(), (region, margins.map(|m| -m).to_vec()), "{x:?}");
+        }
+        let switches = [
+            ([3.0, 0.5, 0.0, 0.0], [3.0, 1.5, 0.0, 0.0], OVERDRIVE),
+            (
+                [0.5, 2.0, 0.0, 0.0],
+                [2.0, 2.0, 0.0, 0.0],
+                SATURATION_MARGIN,
+            ),
+        ];
+        for (from, to, margin) in switches {
+            assert_switches_where_margin_vanishes(&mut bench, (&from, &to), margin);
+        }
+    }
+
+    /// A level 3 transistor is off at or below its threshold, or in weak inversion below it
+    /// given fast surface states, and linear or saturated above it, each region switching
+    /// where `mos3load.c` does, where its margin vanishes.
+    #[test]
+    fn reports_its_region_at_level_3() {
+        let parameters = r#"{"level": 3, "threshold_voltage": 1, "saturation_current": 1e-30}"#;
+        let weak = parameters.replace('}', r#", "fast_surface_state_density": 1e15}"#);
+        for (parameters, below) in [(parameters, "off"), (weak.as_str(), "weak_inversion")] {
+            let mut bench = Bench::new::<Mosfet>(parameters);
+            for (x, region) in [
+                ([3.0, 0.5, 0.0, 0.0], below),
+                ([3.0, 2.0, 0.0, 0.0], "saturated"),
+                ([0.2, 3.0, 0.0, 0.0], "linear"),
+            ] {
+                bench.settle(&x);
+                assert_eq!(bench.region().0, region, "{parameters} at {x:?}");
+            }
+            let switches = [
+                ([3.0, 0.5, 0.0, 0.0], [3.0, 2.0, 0.0, 0.0], OVERDRIVE),
+                (
+                    [0.2, 3.0, 0.0, 0.0],
+                    [3.0, 3.0, 0.0, 0.0],
+                    SATURATION_MARGIN,
+                ),
+            ];
+            for (from, to, margin) in switches {
+                assert_switches_where_margin_vanishes(&mut bench, (&from, &to), margin);
+            }
         }
     }
 

@@ -5,7 +5,7 @@
 //! Copyright 1985 - 2018, Regents of the University of California and others. Used under
 //! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
 
-use super::Conduction;
+use super::{Conduction, Region};
 use crate::Real;
 use crate::dual::Dual;
 
@@ -74,20 +74,18 @@ impl<R: Real> Semiempirical<R> {
         let weak = (self.surface_states.value() != 0.0)
             .then(|| (charge / (phibs * 2.0)).plus(self.surface_states + 1.0));
         let von = weak.map_or(vth, |xn| vth + xn.scale(self.thermal_voltage));
-        let off = Conduction {
-            current: Dual::number(0.0),
-            threshold: von,
-            saturation: Dual::number(0.0),
-            forward,
-        };
-        if weak.is_none() && vgs.value.value() <= von.value.value() {
-            return off;
+        let above = (vgs - von).value.value();
+        if weak.is_none() && above <= 0.0 {
+            return Conduction {
+                current: Dual::number(0.0),
+                threshold: von,
+                saturation: Dual::number(0.0),
+                forward,
+                region: Region::Off,
+                margins: [above, vds.value.value()],
+            };
         }
-        let gate = if vgs.value.value() >= von.value.value() {
-            vgs
-        } else {
-            von
-        };
+        let gate = if above >= 0.0 { vgs } else { von };
         let onfg = (gate - vth).scale(self.mobility_modulation) + 1.0;
         let overdrive = (gate - vth) / (fbody + 1.0);
         let critical = (self.max_drift_velocity.value() > 0.0)
@@ -95,11 +93,15 @@ impl<R: Real> Semiempirical<R> {
         let vdsat = critical.map_or(overdrive, |vdsc| {
             overdrive + vdsc - (overdrive * overdrive + vdsc * vdsc).sqrt()
         });
-        let drain = if vds.value.value() <= vdsat.value.value() {
-            vds
+        let margin = (vds - vdsat).value.value();
+        let region = if above < 0.0 {
+            Region::WeakInversion
+        } else if margin <= 0.0 {
+            Region::Linear
         } else {
-            vdsat
+            Region::Saturated
         };
+        let drain = if margin <= 0.0 { vds } else { vdsat };
         let cdo = gate - vth - (fbody + 1.0) * drain * 0.5;
         let mut current = (cdo * drain).scale(self.beta) / onfg;
         let fdrain = critical.map(|vdsc| (drain / vdsc + 1.0).recip());
@@ -110,7 +112,7 @@ impl<R: Real> Semiempirical<R> {
             current = current / (-(shortening.divide(self.length)) + 1.0);
         }
         if let Some(xn) = weak
-            && vgs.value.value() < von.value.value()
+            && region == Region::WeakInversion
         {
             current = current * ((vgs - von) / xn.scale(self.thermal_voltage)).exp();
         }
@@ -119,6 +121,8 @@ impl<R: Real> Semiempirical<R> {
             threshold: von,
             saturation: vdsat,
             forward,
+            region,
+            margins: [above, margin],
         }
     }
 

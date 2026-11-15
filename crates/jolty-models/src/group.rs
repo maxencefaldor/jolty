@@ -34,7 +34,7 @@ use crate::device::lift;
 use crate::surroundings::Own;
 use crate::{
     Binding, Choice, Contributions, Gradient, Input, Kernel, Layout, Level, Local, Node,
-    NoiseSource, ParameterError, Real, Stamp, Unknown,
+    NoiseSource, ParameterError, Real, Regions, Stamp, Unknown,
 };
 
 /// The parameters of an instance of some kernel, read, as an [`Instance`] holds them.
@@ -56,6 +56,8 @@ pub struct Instance<'a> {
     made: MadeBy,
     /// The names of the variables the kernel computes.
     variables: fn() -> &'static [&'static str],
+    /// The regions the kernel's equations distinguish.
+    regions: fn() -> Regions,
     own: Own,
 }
 
@@ -85,6 +87,7 @@ impl<'a> Instance<'a> {
             parameters,
             made: made::<K>,
             variables: K::variable_names,
+            regions: K::regions,
             own: Own::default(),
         }
     }
@@ -99,6 +102,13 @@ impl<'a> Instance<'a> {
     #[must_use]
     pub fn variable_names(&self) -> &'static [&'static str] {
         (self.variables)()
+    }
+
+    /// The regions of operation the instance's equations distinguish, as
+    /// [`Kernel::regions`] gives them.
+    #[must_use]
+    pub fn regions(&self) -> Regions {
+        (self.regions)()
     }
 
     /// Claims, through `binding`, which binds the instance's terminals, the internal
@@ -183,6 +193,9 @@ pub(crate) trait Kind: Send + Sync + 'static {
 
     /// As [`Kernel::variable_names`].
     fn variable_names() -> &'static [&'static str];
+
+    /// As [`Kernel::regions`].
+    fn regions() -> Regions;
 
     /// As [`Kernel::variables`].
     fn variables(memory: &Self::Memory, values: &mut [f64]);
@@ -288,6 +301,10 @@ impl<K: Kernel> Kind for K {
 
     fn variable_names() -> &'static [&'static str] {
         K::variable_names()
+    }
+
+    fn regions() -> Regions {
+        K::regions()
     }
 
     fn variables(memory: &K::Memory, values: &mut [f64]) {

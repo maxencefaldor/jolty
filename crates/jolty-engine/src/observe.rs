@@ -649,14 +649,14 @@ mod tests {
         let everything = recording(Record::All);
         simulator.prepare(&everything).unwrap();
         // V1: 2 terminals and its current, 9 derivatives; R1: 2 terminals, 4 derivatives;
-        // M1: 4 terminals, 16 derivatives and 5 variables; X1: 2 ports.
+        // M1: 4 terminals, 16 derivatives and 8 variables; X1: 2 ports.
         assert_eq!(
             simulator.state.observer.width(),
-            2 * (8 + 2) + 2 * (9 + 4 + 16) + 5
+            2 * (8 + 2) + 2 * (9 + 4 + 16) + 8
         );
         let mosfet = recording(Record::Instances(BTreeSet::from(["X1/M1".to_owned()])));
         simulator.prepare(&mosfet).unwrap();
-        assert_eq!(simulator.state.observer.width(), 2 * 4 + 2 * 16 + 5);
+        assert_eq!(simulator.state.observer.width(), 2 * 4 + 2 * 16 + 8);
         let ports = recording(Record::Instances(BTreeSet::from(["X1".to_owned()])));
         simulator.prepare(&ports).unwrap();
         assert_eq!(simulator.state.observer.width(), 2 * 2);

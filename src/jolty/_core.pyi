@@ -12,6 +12,7 @@ EXPRESSIONS: str
 BOLTZMANN: float
 ELEMENTARY_CHARGE: float
 REFERENCE_TEMPERATURE: float
+REGION: str
 SAMPLES_PER_PERIOD: int
 
 class ElaborationError(Exception):
@@ -231,7 +232,9 @@ class Simulator:
     def recording(
         self, record: str
     ) -> tuple[
-        list[tuple[str, list[str], list[bool], int, int, list[str]]],
+        list[
+            tuple[str, list[str], list[bool], int, int, list[str], list[str], list[str]]
+        ],
         list[tuple[str, bool]],
     ]: ...
     def terminal(
