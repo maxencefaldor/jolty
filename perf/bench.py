@@ -748,8 +748,9 @@ def xyce_fixture(
     """Xyce's runs of the fixture by `launch`, and its deviation from jolty's results.
 
     Each analysis runs in an Xyce of its own, at Xyce's defaults, printing `probes`;
-    a run of the fixture is its analyses' in turn, timed from writing the deck to
-    reading the values, repeated as the Python timing repeats a fixture, or `once`.
+    a run of the fixture is its analyses' in turn, each timed from its process's start
+    to its exit, as ngspice's are, repeated as the Python timing repeats a fixture, or
+    `once`.
     """
     lines = export.netlist(
         loaded.circuit,
@@ -783,7 +784,6 @@ def xyce_fixture(
     ):
         wall = analysis = 0.0
         for name, command in commands:
-            started = time.perf_counter()
             found = xyce.run(
                 lines,
                 command,
@@ -792,7 +792,7 @@ def xyce_fixture(
                 launch=launch,
                 timeout=None,
             )
-            wall += time.perf_counter() - started
+            wall += found.seconds
             analysis += found.solvers
             deviations[name] = deviation(loaded.circuit, jolty[name], found, nets)
         walls.append(wall)

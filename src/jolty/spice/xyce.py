@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,6 +139,9 @@ class Result:
     elapsed: float
     """Xyce's time from its start to its end, parsing included, in seconds, as it
     reports it."""
+    seconds: float
+    """The time from starting Xyce's process to its exit, in seconds, as jolty
+    measures it."""
 
     def real(self, name: str) -> npt.NDArray[np.float64]:
         """The real part of the vector `name`."""
@@ -180,8 +184,7 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
         launch = (EXECUTABLE,)
     nominal = xyce_celsius(_core.REFERENCE_TEMPERATURE)
     deck = [
-        lines[0],
-        *lines[1:],
+        *lines,
         *options,
         f".options device temp={xyce_celsius(temperature)!r} tnom={nominal!r}",
         analysis,
@@ -189,9 +192,57 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
         + " ".join(every if printed is None else printed),
         ".end",
     ]
+    executed = execute(deck, [*launch], timeout=timeout)
+    if executed.returncode != 0 or executed.values is None:
+        message = (
+            f"Xyce failed, exiting with {executed.returncode}:\n{executed.printed}"
+        )
+        raise JoltyError(message)
+    vectors = _read(executed.values)
+    solvers = _SOLVERS.search(executed.printed)
+    elapsed = _ELAPSED.search(executed.printed)
+    if not vectors or solvers is None or elapsed is None:
+        message = f"Xyce printed no values:\n{executed.printed}"
+        raise JoltyError(message)
+    return Result(
+        vectors,
+        executed.printed,
+        float(solvers.group(1)),
+        float(elapsed.group(1)),
+        executed.seconds,
+    )
+
+
+@dataclass(frozen=True)
+class Executed:
+    """What one run of Xyce on a deck left.
+
+    What it printed, the values file it wrote, if any, its exit status, and its time
+    from its start to its exit.
+    """
+
+    printed: str
+    values: str | None
+    returncode: int
+    seconds: float
+
+
+def execute(
+    deck: Sequence[str], launch: Sequence[str], *, timeout: float | None
+) -> Executed:
+    """Runs Xyce by the command `launch` on the lines `deck`, in a directory of its own.
+
+    The deck is written to ``circuit.cir`` in a temporary directory, which the run
+    takes as its own, so the file its ``.print`` names, ``result.csv``, is read back
+    from there; the run is stopped after `timeout` seconds, or never if None.
+
+    Raises:
+        JoltyError: When it runs out of time.
+    """
     with tempfile.TemporaryDirectory() as name:
         directory = Path(name)
         (directory / "circuit.cir").write_text("\n".join(deck) + "\n", encoding="utf-8")
+        started = time.perf_counter()
         try:
             done = subprocess.run(  # noqa: S603 - Xyce runs the deck written here
                 [*launch, "circuit.cir"],
@@ -204,17 +255,10 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
         except subprocess.TimeoutExpired:
             message = f"Xyce ran for more than {timeout:g} s"
             raise JoltyError(message) from None
-        output = done.stdout + done.stderr
+        seconds = time.perf_counter() - started
         values = directory / "result.csv"
-        if done.returncode != 0 or not values.is_file():
-            message = f"Xyce failed, exiting with {done.returncode}:\n{output}"
-            raise JoltyError(message)
-        vectors = _read(values.read_text(encoding="utf-8"))
-    solvers, elapsed = (_SOLVERS.search(output), _ELAPSED.search(output))
-    if not vectors or solvers is None or elapsed is None:
-        message = f"Xyce printed no values:\n{output}"
-        raise JoltyError(message)
-    return Result(vectors, output, float(solvers.group(1)), float(elapsed.group(1)))
+        written = values.read_text(encoding="utf-8") if values.is_file() else None
+    return Executed(done.stdout + done.stderr, written, done.returncode, seconds)
 
 
 _SCALES: Final = {"time": "time", "freq": "frequency"}
