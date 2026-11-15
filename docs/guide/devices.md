@@ -14,6 +14,9 @@ A resistor held at 0 K makes no noise, while a junction needs a temperature abov
 Logic devices, whose pins join logic nets, have a page of their own: [Logic](logic.md).
 
 The diode, the JFET, the bipolar transistors, the MOSFETs of levels 1 and 3 and VDMOS follow ngspice 47's implementations of them, and BSIM3 is derived from BSIM3v3.3.0 of the UC Berkeley BSIM Research Group; the repository's `NOTICE` holds their copyright notices and terms.
+Where the two engines compute differently, the device's section says so, and [Departures from ngspice](departures.md) lists every such place.
+
+The thermal voltage `kT/q` takes the SI's exact Boltzmann constant and elementary charge, 1.380649e-23 J/K and 1.602176634e-19 C, where ngspice 47 takes CODATA 2014's, 1.38064852e-23 J/K and 1.6021766208e-19 C (`const.h`, lines 32 and 37), so jolty's is 3.4e-7 of itself larger at any temperature; a comparison runs ngspice where its thermal voltage is jolty's, as `jolty.spice.ngspice` does.
 
 ## Passive devices
 
@@ -445,6 +448,8 @@ A drain or source resistance adds an internal node to the unknowns, as `M1:drain
 Meyer's capacitances depend on every terminal voltage, and no charge yields them, so each carries a current `C(v) · dv/dt` that follows a current of the transistor's own: the displacement current through the whole oxide towards the source, the drain or the bulk, the unknowns `M1:gate_source_displacement`, `M1:gate_drain_displacement` and `M1:gate_bulk_displacement`.
 The sparse solver eliminates the three before it factors the rest, each by its own pivot, 1, which none of Meyer's capacitances outweighs, as none exceeds the oxide's, and recovers them after each solve: the matrix it factors holds the transistor's nodes alone, as ngspice's does, and the displacements are still solved for, judged and recorded.
 The frequency response holds Meyer's capacitances exactly, as ngspice's does.
+In a transient, ngspice accumulates each Meyer charge as the last one plus the average capacitance times the voltage's change, and integrates it with that capacitance alone as its derivative (`mos1load.c`, lines 821 to 827 and 863 to 868), where jolty's displacement currents carry `C(v) · dv/dt` with exact derivatives; neither conserves charge, as no charge yields the capacitances.
+A transient judges the error of the charge at each of its nodes, the junctions' charges included, where ngspice's levels 1 to 3 judge their gate charges alone (`mos1trun.c`, lines 24 to 26).
 With the bulk forward-biased, ngspice's small-signal model and Newton steps take the threshold's slope from the reverse-biased formula; jolty keeps every derivative exact.
 
 In a [noise analysis](simulation.md#noise), the resistances make thermal noise, the channel thermal noise of `8kT·gm/3` A²/Hz, and the drain current `Id` flicker noise of `m·KF·(|Id|/m)^AF/(f·W·Leff·Cox²)`: each of the `m` parallel copies carries its share of the current over its own effective gate, and their noises add, with an oxide 0.1 µm thick unless given, as in SPICE.
@@ -486,6 +491,8 @@ A heated BSIM3 runs at its thermal net's temperature, as any device that [heats]
 
 The parameters ngspice stops on are refused, and those it clamps with a warning are clamped: `pb`, `pbsw` and `pbswg` below 0.1 V rise to it, and with `paramchk`, `a2` outside 0.01 to 1, a negative `rdsw` and negative overlaps.
 A sheet resistance `rsh` adds an internal node to the unknowns, as `M1:drain` or `M1:source` for a transistor `M1`; one below 1 Ω adds its current too, as `M1:drain_current` or `M1:source_current`, as a small resistor does.
+A Newton iteration in which the transistor limited its gate's, its drain's or a junction's voltage has not converged, as for the other MOSFETs, where ngspice's BSIM3 holds an iteration back only for its junction limiter (`b3ld.c`, lines 187, 359 to 366 and 2437 to 2438).
+A transient judges the error of the charge at each of its nodes, as for any device, where ngspice's judges its bulk, gate and drain charges, the junctions' folded into the first and the last (`b3ld.c`, lines 2797 to 2802).
 jolty keeps every derivative exact, the derivative of the current and charge it computes: ngspice's derivative of the effective bulk voltage drops the slope of its clamp in forward bias, and its capacitances of `capmod` 0 count the poly depletion's slope of the gate voltage twice, so there its frequency response differs from jolty's while their operating points and transients agree.
 
 In a [noise analysis](simulation.md#noise), the sheet resistances make thermal noise, and the channel the thermal and flicker noise of `noimod`: SPICE2's thermal noise of `8kT·|gm + gds + gmbs|/3` A²/Hz at `noimod` 1, 3 and, corrected below saturation, 5 and 6, and BSIM3's of the inversion charge at 2 and 4; SPICE2's flicker noise of `kf·|Id|^af/(f^ef·Leff²·Cox)` at `noimod` 1, 4 and 5, and BSIM3's of the oxide traps `noia`, `noib` and `noic` at 2, 3 and 6, each of the `m` copies' noise added, as in ngspice.
