@@ -10,10 +10,12 @@ temperature where ngspice's thermal voltage is jolty's,
 devices rather than their physical constants.
 """
 
+import functools
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,6 +132,71 @@ class Running(TypedDict, total=False):
     """The seed of ngspice's random numbers, such as a kit's mismatch draws, if any."""
 
 
+class NgspiceTimeoutError(JoltyError):
+    """ngspice ran for longer than it was given."""
+
+
+@dataclass(frozen=True, slots=True)
+class Executed:
+    """What one run of ngspice on a deck printed, and how long it took."""
+
+    printed: str
+    """Its standard output, then its standard error."""
+    code: int
+    """Its exit status, 0 on most errors too: what it printed tells them."""
+    seconds: float
+    """Its time from its start to its exit, by the wall clock."""
+
+
+@functools.cache
+def version() -> str | None:
+    """Ngspice's version and build, as it states them, or None when it is not installed.
+
+    Examples:
+        >>> version() is None or version().startswith("ngspice")
+        True
+    """
+    if EXECUTABLE is None:
+        return None
+    done = subprocess.run(  # noqa: S603 - ngspice states its version
+        [EXECUTABLE, "--version"], capture_output=True, check=False, text=True
+    )
+    lines = [line.strip("* ") for line in done.stdout.splitlines()]
+    return "; ".join(line for line in lines if line.startswith(("ngspice", "Compiled")))
+
+
+def execute(deck: Path, *, timeout: float = TIMEOUT) -> Executed:
+    """Runs ngspice in batch mode on the deck file at `deck`, in its directory.
+
+    The directory holds what the deck writes.
+
+    It is the one way jolty runs ngspice: [`runs`][jolty.spice.ngspice.runs] writes its
+    deck and reads its results around it, and the benchmarks time it.
+
+    Raises:
+        JoltyError: When ngspice is not installed.
+        NgspiceTimeoutError: When it runs for more than `timeout` seconds.
+    """
+    if EXECUTABLE is None:
+        message = "ngspice is not installed"
+        raise JoltyError(message)
+    started = time.perf_counter()
+    try:
+        done = subprocess.run(  # noqa: S603 - ngspice runs the deck it is given
+            [EXECUTABLE, "-b", deck.name],
+            capture_output=True,
+            check=False,  # ngspice exits with 0 on most errors: what it printed tells
+            text=True,
+            timeout=timeout,
+            cwd=deck.parent,
+        )
+    except subprocess.TimeoutExpired:
+        message = f"ngspice ran for more than {timeout:g} s"
+        raise NgspiceTimeoutError(message) from None
+    seconds = time.perf_counter() - started
+    return Executed(done.stdout + done.stderr, done.returncode, seconds)
+
+
 def run(
     lines: list[str],
     analysis: str,
@@ -164,9 +231,6 @@ def runs(
             runs no analysis, aborts one, or finds an operating point only as the end
             of a transient of fixed length, which it does not check to be one.
     """
-    if EXECUTABLE is None:
-        message = "ngspice is not installed"
-        raise JoltyError(message)
     nominal = spice_celsius(_core.REFERENCE_TEMPERATURE)
     temperature = running.get("temperature", _core.REFERENCE_TEMPERATURE)
     deck = [
@@ -198,20 +262,9 @@ def runs(
         if compatibility is not None:
             settings = directory / ".spiceinit"
             settings.write_text(f"set ngbehavior={compatibility}\n", encoding="utf-8")
-        (directory / "circuit.cir").write_text("\n".join(deck) + "\n", encoding="utf-8")
-        try:
-            done = subprocess.run(  # noqa: S603 - ngspice runs the deck written here
-                [EXECUTABLE, "-b", "circuit.cir"],
-                capture_output=True,
-                check=False,  # ngspice exits with 0 on most errors: the raw file tells
-                text=True,
-                timeout=TIMEOUT,
-                cwd=directory,
-            )
-        except subprocess.TimeoutExpired:
-            message = f"ngspice ran for more than {TIMEOUT} s"
-            raise JoltyError(message) from None
-        printed = done.stdout + done.stderr
+        path = directory / "circuit.cir"
+        path.write_text("\n".join(deck) + "\n", encoding="utf-8")
+        printed = execute(path).printed
         # What ngspice printed is read first: a transient it aborted still writes every
         # step it took, which can be hundreds of megabytes of results it has disowned.
         if _ABORTED in printed:

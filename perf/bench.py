@@ -573,18 +573,17 @@ def deck(loaded: Loaded) -> list[str]:
     return [*lines, ".control", *commands, ".endc", ".end"]
 
 
-def ngspice_run(executable: str, path: Path, analyses: int) -> None:
+def ngspice_run(path: Path, analyses: int) -> None:
     """Runs ngspice on the deck at `path`, checking that it ran its `analyses`.
 
     Raises:
         SystemExit: When ngspice fails, or finishes fewer analyses.
     """
-    done = subprocess.run(  # noqa: S603 - ngspice runs the deck written here
-        [executable, "-b", str(path)], capture_output=True, check=False, text=True
-    )
-    printed = done.stdout + done.stderr
-    if done.returncode != 0 or printed.count("No. of Data Rows") != analyses:
-        message = f"ngspice did not run every analysis of {path.name}:\n{printed}"
+    executed = ngspice.execute(path)
+    if executed.code != 0 or executed.printed.count("No. of Data Rows") != analyses:
+        message = (
+            f"ngspice did not run every analysis of {path.name}:\n{executed.printed}"
+        )
         raise SystemExit(message)
 
 
@@ -611,7 +610,7 @@ def spice(
             path = Path(directory) / f"{name}.cir"
             path.write_text("\n".join(deck(loaded)) + "\n", encoding="utf-8")
             analyses = len(loaded.plan.analyses)
-            work = functools.partial(ngspice_run, ngspice.EXECUTABLE, path, analyses)
+            work = functools.partial(ngspice_run, path, analyses)
             timings[f"ngspice/{name}"] = timed(work, once=scale)
     return timings
 

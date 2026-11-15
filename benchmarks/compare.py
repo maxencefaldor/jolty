@@ -81,6 +81,7 @@ from verdict import Kind, Shortfall
 from jolty import cli
 from jolty.simulate import Logged
 from jolty.specs import wilson
+from jolty.spice import ngspice
 
 BENCHMARKS: Final = Path(__file__).parent
 """The benchmarks, a task's directory each."""
@@ -489,12 +490,9 @@ def versions() -> dict[str, str]:
         "python": sys.version,
         "platform": platform.platform(),
     }
-    ngspice = shutil.which("ngspice")
-    if ngspice is not None:
-        banner = subprocess.run(  # noqa: S603 - ngspice, found on the path
-            [ngspice, "--version"], capture_output=True, text=True, check=False
-        )
-        found["ngspice"] = banner.stdout.strip()
+    stated = ngspice.version()
+    if stated is not None:
+        found["ngspice"] = stated
     return found
 
 

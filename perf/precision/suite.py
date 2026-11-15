@@ -31,7 +31,6 @@ import json
 import math
 import re
 import statistics
-import subprocess
 import sys
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -551,15 +550,9 @@ def _results_path() -> Path:
 def _versions() -> dict[str, str]:
     """The versions of jolty, of ngspice, and of the exact answers' arithmetic."""
     found = {"mpmath": metadata.version("mpmath"), "jolty": metadata.version("jolty")}
-    if ngspice.EXECUTABLE is not None:
-        done = subprocess.run(  # noqa: S603 - ngspice prints its version
-            [ngspice.EXECUTABLE, "--version"],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
-        lines = [line.strip("* ") for line in done.stdout.splitlines()]
-        found["ngspice"] = next((line for line in lines if "ngspice-" in line), "")
+    stated = ngspice.version()
+    if stated is not None:
+        found["ngspice"] = stated
     return found
 
 

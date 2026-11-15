@@ -310,17 +310,7 @@ class Ngspice:
 
     def version(self) -> str | None:
         """The version of ngspice, or None when it is not installed."""
-        if ngspice.EXECUTABLE is None:
-            return None
-        done = subprocess.run(  # noqa: S603 - ngspice states its version
-            [ngspice.EXECUTABLE, "--version"],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
-        lines = [line.strip("* ") for line in done.stdout.splitlines()]
-        kept = [line for line in lines if line.startswith(("ngspice", "Compiled"))]
-        return "; ".join(kept)
+        return ngspice.version()
 
     def run(self, case: Case, timeout: float) -> Run:
         """Runs `case` in ngspice, stopped after `timeout` seconds."""
@@ -340,22 +330,13 @@ class Ngspice:
             deck += [".endc", ".end"]
             path = directory / "case.cir"
             path.write_text("\n".join(deck) + "\n", encoding="utf-8")
-            started = time.perf_counter()
             try:
-                done = subprocess.run(  # noqa: S603 - ngspice runs the deck written here
-                    [executable, "-b", path.name],
-                    capture_output=True,
-                    check=False,
-                    text=True,
-                    timeout=timeout,
-                    cwd=directory,
-                )
-            except subprocess.TimeoutExpired:
+                executed = ngspice.execute(path, timeout=timeout)
+            except ngspice.NgspiceTimeoutError:
                 return Run(
                     completed=False, message=f"ran past {timeout:g} s", timed_out=True
                 )
-            seconds = time.perf_counter() - started
-            printed = done.stdout + done.stderr
+            seconds, printed = executed.seconds, executed.printed
             raw = directory / "result.raw"
             plots = (
                 ngspice.read(raw.read_text(encoding="utf-8"), printed)
