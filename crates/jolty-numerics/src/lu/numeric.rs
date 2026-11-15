@@ -11,6 +11,7 @@
 
 use rayon::prelude::*;
 
+use super::ordering::RowsAbove;
 use super::tree::Tree;
 use super::{LinearError, Ordering, Scalar, Workspace};
 use crate::reduce::CHUNK;
@@ -433,7 +434,7 @@ impl<T: Scalar> Numeric<T> {
 
     /// Solves `A x = rhs` and leaves `x` in `rhs`, for the matrix of `ordering`'s pattern
     /// with `values` whose factors these are, writing to `workspace` as it goes, its
-    /// dissected blocks on up to `threads` threads at once.
+    /// dissected blocks spread over `threads` threads as [`super::SparseLu::spread`] says.
     pub(super) fn solve(
         &self,
         (ordering, values): (&Ordering, &[T]),
@@ -476,15 +477,12 @@ impl<T: Scalar> Numeric<T> {
                     }
                 }
             }
-            // Each row above the block takes in the block's columns in increasing position,
-            // the order in which a pass over the columns would take them in.
-            for (row, entries) in ordering.across(block) {
-                let mut value = by_row[row];
-                for &(position, slot) in entries {
-                    value -= values[slot] * by_position[position];
-                }
-                by_row[row] = value;
-            }
+            take_in_above(
+                ordering.across(block),
+                (values, by_position),
+                (by_row, 0),
+                threads,
+            );
         }
         gather(rhs, by_position, ordering.column_positions(), threads);
     }
@@ -545,6 +543,40 @@ impl<T: Scalar> Numeric<T> {
         }
         gather(rhs, by_row, ordering.row_positions(), threads);
     }
+}
+
+/// Has each of `rows`, rows above a diagonal block, take in the block's columns, whose
+/// solution `by_position` holds, through its entries' `values`: of `by_row`, the values of
+/// the rows from `first` on. Each row takes them in in increasing position, the order in
+/// which a pass over the columns would take them in; the rows are independent, so for two
+/// `threads` or more they spread over the current rayon pool's threads in runs of
+/// [`CHUNK`] rows, the same bits either way.
+fn take_in_above<T: Scalar>(
+    rows: RowsAbove<'_>,
+    (values, by_position): (&[T], &[T]),
+    (by_row, first): (&mut [T], usize),
+    threads: usize,
+) {
+    if threads < 2 || rows.len() <= CHUNK {
+        for (row, entries) in rows.iter() {
+            let row = &mut by_row[row - first];
+            let mut value = *row;
+            for &(position, slot) in entries {
+                value -= values[slot] * by_position[position];
+            }
+            *row = value;
+        }
+        return;
+    }
+    // Halved at a whole number of runs, the later rows at and after the first of theirs.
+    let half = rows.len().div_ceil(CHUNK) / 2 * CHUNK;
+    let (before, after) = rows.split_at(half);
+    let at = rows.row(half);
+    let (earlier, later) = by_row.split_at_mut(at - first);
+    rayon::join(
+        || take_in_above(before, (values, by_position), (earlier, first), threads),
+        || take_in_above(after, (values, by_position), (later, at), threads),
+    );
 }
 
 /// Sets each of `into` to the value of `from` at its index in `indices`, in chunks of

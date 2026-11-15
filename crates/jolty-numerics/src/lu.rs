@@ -161,13 +161,14 @@ pub struct Statistics {
 /// A clone factors every matrix after as the solver it was cloned from would, bit for bit,
 /// which lets several threads each go on from one solver's pivots.
 ///
-/// The blocks its ordering [dissects](Ordering::dissected) factor and solve as rayon tasks,
-/// on as many [threads](SparseLu::spread) at once as it is given, one by default; the
-/// factors and the solutions are the same bits on any number.
+/// The blocks its ordering [dissects](Ordering::dissected) factor and solve as rayon tasks
+/// on the pool they run in when it is [spread](SparseLu::spread) over two threads or more,
+/// and on the calling thread alone by default; the factors and the solutions are the same
+/// bits either way.
 #[derive(Clone)]
 pub struct SparseLu<T: Scalar> {
     ordering: Arc<Ordering>,
-    /// The most threads its dissected blocks' factorizations and solves run on at once.
+    /// The threads its work spreads over, as [`SparseLu::spread`] says: one for none.
     threads: usize,
     numeric: Numeric<T>,
     /// The values of the matrix last factored, which the solves read outside the diagonal
@@ -257,18 +258,21 @@ impl<T: Scalar> SparseLu<T> {
         self.threads = threads;
     }
 
-    /// Lets the factorizations and solves of the blocks its ordering dissects run on up to
-    /// `threads` threads of the rayon pool they run in at once, and, for two or more, the
-    /// solves' permutations, the copy of the values factored and the check of the
-    /// solutions spread over that pool's threads, in chunks of [`crate::reduce::CHUNK`];
-    /// for one, everything runs on the calling thread alone. The factors and solutions are
-    /// the same bits either way.
+    /// Spreads its work over the rayon pool it runs in, for two `threads` or more: the
+    /// factorizations and solves of the blocks its ordering dissects as rayon tasks, one for
+    /// each subtree of a block's dissection down to its interiors, which the pool's threads
+    /// take as they free, each separator's front spreading its columns over its share of
+    /// `threads`, in proportion to its subtree's positions; and the solves' permutations,
+    /// the copy of the values factored and the check of the solutions in chunks of
+    /// [`crate::reduce::CHUNK`]. A pool of `threads` threads keeps the work to as many at
+    /// once. For one, everything runs on the calling thread alone. The factors and
+    /// solutions are the same bits either way.
     pub fn spread(&mut self, threads: usize) {
         self.threads = threads.max(1);
     }
 
-    /// The most threads the factorizations and solves of its dissected blocks run on at
-    /// once.
+    /// The threads its work spreads over, as [`SparseLu::spread`] says: one when it
+    /// spreads none.
     #[must_use]
     pub fn threads(&self) -> usize {
         self.threads
@@ -449,7 +453,7 @@ pub struct Shared<'a, T: Scalar> {
     ordering: &'a Ordering,
     numeric: &'a Numeric<T>,
     values: &'a [T],
-    /// The most threads a solve of its dissected blocks runs on at once.
+    /// The threads a solve spreads over, as [`SparseLu::spread`] says.
     threads: usize,
 }
 

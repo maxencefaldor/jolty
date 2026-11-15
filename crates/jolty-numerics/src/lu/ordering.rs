@@ -153,13 +153,66 @@ impl Across {
     }
 
     /// Each row above `block` with an entry in its columns, and its entries there.
-    pub(super) fn of(&self, block: usize) -> impl Iterator<Item = (usize, &[(usize, usize)])> {
-        (self.blocks[block]..self.blocks[block + 1]).map(|index| {
-            (
-                self.rows[index],
-                &self.entries[self.starts[index]..self.starts[index + 1]],
-            )
-        })
+    pub(super) fn of(&self, block: usize) -> RowsAbove<'_> {
+        let (first, end) = (self.blocks[block], self.blocks[block + 1]);
+        RowsAbove {
+            rows: &self.rows[first..end],
+            starts: &self.starts[first..=end],
+            entries: &self.entries,
+        }
+    }
+}
+
+/// Rows above a diagonal block with an entry in its columns, in increasing order, and their
+/// entries there, in increasing position.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RowsAbove<'a> {
+    /// Each row.
+    rows: &'a [usize],
+    /// Where each row's entries start in `entries`, then where the last's end.
+    starts: &'a [usize],
+    /// Each entry: its column's position and its value's slot.
+    entries: &'a [(usize, usize)],
+}
+
+impl<'a> RowsAbove<'a> {
+    /// The number of rows.
+    pub(super) fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// The row at `index`, in increasing order.
+    pub(super) fn row(&self, index: usize) -> usize {
+        self.rows[index]
+    }
+
+    /// Each row and its entries.
+    pub(super) fn iter(&self) -> impl Iterator<Item = (usize, &'a [(usize, usize)])> + use<'a> {
+        let Self {
+            rows,
+            starts,
+            entries,
+        } = *self;
+        rows.iter()
+            .zip(starts.windows(2))
+            .map(move |(&row, bounds)| (row, &entries[bounds[0]..bounds[1]]))
+    }
+
+    /// The rows before `index`, and those from it on.
+    pub(super) fn split_at(&self, index: usize) -> (Self, Self) {
+        let (before, after) = self.rows.split_at(index);
+        (
+            Self {
+                rows: before,
+                starts: &self.starts[..=index],
+                entries: self.entries,
+            },
+            Self {
+                rows: after,
+                starts: &self.starts[index..],
+                entries: self.entries,
+            },
+        )
     }
 }
 
@@ -364,7 +417,7 @@ impl Ordering {
     /// Each row above the diagonal `block` with an entry in its columns, in increasing
     /// order, and its entries there in increasing position, each its column's position in
     /// the ordered matrix and the slot of its value.
-    pub(super) fn across(&self, block: usize) -> impl Iterator<Item = (usize, &[(usize, usize)])> {
+    pub(super) fn across(&self, block: usize) -> RowsAbove<'_> {
         self.across.of(block)
     }
 

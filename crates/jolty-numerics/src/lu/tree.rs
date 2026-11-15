@@ -13,10 +13,12 @@
 //! not pivot, to its parent's frame, delayed rather than perturbed, so the factors stay
 //! exact; the root pivots on any row left.
 //!
-//! The subtrees of a node's children share no entry, so they factor at once, as rayon tasks,
-//! as many at a time as the threads given, and a front's columns spread over its threads;
-//! every number is computed by the same operations in the same order however they are
-//! spread, so the factors and the solutions are the same bits on any number of threads.
+//! The subtrees of a node's children share no entry, so given two threads or more they
+//! factor at once, as rayon tasks split down to the interiors, which the pool's threads
+//! take as they free, and a front's columns spread over its share of the threads given, in
+//! proportion to its subtree's positions; every number is computed by the same operations
+//! in the same order however they are spread, so the factors and the solutions are the same
+//! bits on any number of threads.
 
 use rayon::prelude::*;
 
@@ -95,9 +97,10 @@ impl<T: Scalar> Tree<T> {
         })
     }
 
-    /// Factors the block of `values`, the matrix's values by slot, on up to `threads`
-    /// threads at once: each node keeps its pivots while they reach the threshold and its
-    /// children kept theirs, and else searches for them. Returns whether any node searched.
+    /// Factors the block of `values`, the matrix's values by slot, spread as the module says
+    /// over `threads` threads, or on the calling thread alone for one: each node keeps its
+    /// pivots while they reach the threshold and its children kept theirs, and else
+    /// searches for them. Returns whether any node searched.
     ///
     /// # Errors
     ///
@@ -114,7 +117,7 @@ impl<T: Scalar> Tree<T> {
         let root = dissection.root();
         upward(
             nodes,
-            (root, threads),
+            (root, Visits::on(threads)),
             &mut self.parts,
             &|(index, threads), part, below, searched| {
                 let node = &nodes[index];
@@ -184,8 +187,8 @@ impl<T: Scalar> Tree<T> {
             .sum()
     }
 
-    /// Solves the block's system with the scratch space `scratch`, on up to `threads`
-    /// threads at once: from the right-hand side by row of the ordered matrix in `given`,
+    /// Solves the block's system with the scratch space `scratch`, its subtrees spread as
+    /// the module says for two `threads` or more: from the right-hand side by row of the ordered matrix in `given`,
     /// the solution by column in `solution`, the block's positions of the ordered matrix;
     /// or, `transposed`, from the right-hand side by column, the solution by row.
     pub(super) fn solve(
@@ -200,7 +203,7 @@ impl<T: Scalar> Tree<T> {
         let root = dissection.root();
         let Ok(_) = upward(
             nodes,
-            (root, threads),
+            (root, Visits::on(threads)),
             scratch,
             &|(index, _), space, below, _| {
                 let node = &nodes[index];
@@ -220,7 +223,7 @@ impl<T: Scalar> Tree<T> {
         );
         downward(
             nodes,
-            (root, threads),
+            (root, Visits::on(threads)),
             scratch,
             solution,
             &|index, space, below, solution| {
@@ -309,10 +312,10 @@ impl<T> Default for Scratch<T> {
 }
 
 /// Where the subtrees of `children`, consecutive in the nodes' order, split for two tasks
-/// on `threads` threads: the number of the children before the split, the number of their
-/// subtrees' nodes, and the threads their task takes, in proportion to their positions,
-/// the split where the positions balance. A share that rounds to no thread, or to all of
-/// them, leaves one task the calling thread runs first.
+/// sharing `threads` threads: the number of the children before the split, the number of
+/// their subtrees' nodes, and the share of the threads their task's fronts spread over,
+/// in proportion to their positions, the split where the positions balance; each task's
+/// fronts spread over at least one thread, the other's over the rest.
 fn split(nodes: &[Node], children: &[usize], threads: usize) -> (usize, usize, usize) {
     let positions = |child: usize| nodes[child].end - nodes[child].first;
     let total: usize = children.iter().map(|&child| positions(child)).sum();
@@ -331,75 +334,95 @@ fn split(nodes: &[Node], children: &[usize], threads: usize) -> (usize, usize, u
     (middle, subtrees, share)
 }
 
+/// How the nodes of a subtree are visited: their fronts' share of the threads, and whether
+/// its subtrees are rayon tasks, which any thread of the pool takes as it frees, or are
+/// visited one after another on the calling thread.
+#[derive(Clone, Copy)]
+struct Visits {
+    threads: usize,
+    tasks: bool,
+}
+
+impl Visits {
+    /// The visits of a tree spread over `threads` threads: as tasks for two or more.
+    fn on(threads: usize) -> Self {
+        Self {
+            threads,
+            tasks: threads >= 2,
+        }
+    }
+
+    /// The visits of one of two subtrees, whose fronts take `share` of the threads.
+    fn sharing(self, share: usize) -> Self {
+        Self {
+            threads: share,
+            ..self
+        }
+    }
+}
+
 /// Runs `visit` on each node of the subtree of `index`, whose nodes' states are `states`,
-/// on up to `threads` threads at once, each node after its children: with its index and
-/// the threads it may use, its state, its descendants', from its subtree's earliest node,
-/// and whether any visit of them returned `true`. Returns whether any visit returned
-/// `true`, or the error of the first that failed, in the nodes' order.
+/// each node after its children, as `visits` says: with its index and its fronts' share of
+/// the threads, its state, its descendants', from its subtree's earliest node, and whether
+/// any visit of them returned `true`. Returns whether any visit returned `true`, or the
+/// error of the first that failed, in the nodes' order.
 fn upward<S: Send, E: Send>(
     nodes: &[Node],
-    (index, threads): (usize, usize),
+    (index, visits): (usize, Visits),
     states: &mut [S],
     visit: &(impl Fn((usize, usize), &mut S, &[S], bool) -> Result<bool, E> + Sync),
 ) -> Result<bool, E> {
     let Some((state, below)) = states.split_last_mut() else {
         return Ok(false);
     };
-    let any = upward_all(nodes, (&nodes[index].children, threads), below, visit)?;
-    Ok(visit((index, threads), state, below, any)? || any)
+    let any = upward_all(nodes, (&nodes[index].children, visits), below, visit)?;
+    Ok(visit((index, visits.threads), state, below, any)? || any)
 }
 
 /// Runs [`upward`] on the subtree of each of `children`, whose states tile `states` in
-/// their order, on up to `threads` threads at once: those of the children where their
-/// positions balance on a task of their own with their share of the threads, the rest
-/// with the rest, while two threads or more are left.
+/// their order, as `visits` says: as tasks, those of the children where their positions
+/// balance on one with their share of the threads, the rest on another with the rest, each
+/// splitting again down to the interiors, so that a thread that frees takes whichever is
+/// left; or else one after another.
 fn upward_all<S: Send, E: Send>(
     nodes: &[Node],
-    (children, threads): (&[usize], usize),
+    (children, visits): (&[usize], Visits),
     states: &mut [S],
     visit: &(impl Fn((usize, usize), &mut S, &[S], bool) -> Result<bool, E> + Sync),
 ) -> Result<bool, E> {
     match children {
         [] => return Ok(false),
-        [only] => return upward(nodes, (*only, threads), states, visit),
+        [only] => return upward(nodes, (*only, visits), states, visit),
         _ => {}
     }
-    if threads < 2 {
+    if !visits.tasks {
         let mut any = false;
         let mut rest = states;
         for &child in children {
             let (subtree, after) = rest.split_at_mut(child + 1 - nodes[child].earliest);
-            any |= upward(nodes, (child, 1), subtree, visit)?;
+            any |= upward(nodes, (child, visits), subtree, visit)?;
             rest = after;
         }
         return Ok(any);
     }
-    let (middle, subtrees, share) = split(nodes, children, threads);
+    let (middle, subtrees, share) = split(nodes, children, visits.threads);
     let (first, later) = children.split_at(middle);
     let (before, after) = states.split_at_mut(subtrees);
-    let (one, other) = if share == 0 || share == threads {
-        let (before_threads, after_threads) = if share == 0 {
-            (1, threads)
-        } else {
-            (threads, 1)
-        };
-        let one = upward_all(nodes, (first, before_threads), before, visit);
-        (one, upward_all(nodes, (later, after_threads), after, visit))
-    } else {
-        rayon::join(
-            || upward_all(nodes, (first, share), before, visit),
-            || upward_all(nodes, (later, threads - share), after, visit),
-        )
-    };
+    let rest = visits.threads.saturating_sub(share).max(1);
+    let (one, other) = (visits.sharing(share.max(1)), visits.sharing(rest));
+    let (one, other) = rayon::join(
+        || upward_all(nodes, (first, one), before, visit),
+        || upward_all(nodes, (later, other), after, visit),
+    );
     Ok(one? | other?)
 }
 
 /// Runs `visit` on each node of the subtree of `index`, whose nodes' states are `states`,
-/// on up to `threads` threads at once, each node before its children: with its state, its
-/// descendants' to write to, and the part of `solution` at its subtree's positions.
+/// each node before its children, as `visits` says: with its state, its descendants' to
+/// write to, and the part of `solution` at its subtree's positions.
 fn downward<S: Send, T: Send>(
     nodes: &[Node],
-    (index, threads): (usize, usize),
+    (index, visits): (usize, Visits),
     states: &mut [S],
     solution: &mut [T],
     visit: &(impl Fn(usize, &mut S, &mut [S], &mut [T]) + Sync),
@@ -410,7 +433,7 @@ fn downward<S: Send, T: Send>(
     visit(index, state, below, solution);
     downward_all(
         nodes,
-        (&nodes[index].children, threads),
+        (&nodes[index].children, visits),
         below,
         solution,
         visit,
@@ -418,11 +441,10 @@ fn downward<S: Send, T: Send>(
 }
 
 /// Runs [`downward`] on the subtree of each of `children`, whose states tile `states` and
-/// whose positions tile `solution`'s first, in their order, on up to `threads` threads at
-/// once, as [`upward_all`] does.
+/// whose positions tile `solution`'s first, in their order, as [`upward_all`] does.
 fn downward_all<S: Send, T: Send>(
     nodes: &[Node],
-    (children, threads): (&[usize], usize),
+    (children, visits): (&[usize], Visits),
     states: &mut [S],
     solution: &mut [T],
     visit: &(impl Fn(usize, &mut S, &mut [S], &mut [T]) + Sync),
@@ -432,39 +454,31 @@ fn downward_all<S: Send, T: Send>(
     };
     let solution = &mut solution[..nodes[last_child].end - nodes[first_child].first];
     if let [only] = children {
-        downward(nodes, (*only, threads), states, solution, visit);
+        downward(nodes, (*only, visits), states, solution, visit);
         return;
     }
-    if threads < 2 {
+    if !visits.tasks {
         let (mut rest, mut written) = (states, solution);
         for &child in children {
             let node = &nodes[child];
             let (subtree, after) = rest.split_at_mut(child + 1 - node.earliest);
             let (part, beyond) = written.split_at_mut(node.end - node.first);
-            downward(nodes, (child, 1), subtree, part, visit);
+            downward(nodes, (child, visits), subtree, part, visit);
             (rest, written) = (after, beyond);
         }
         return;
     }
-    let (middle, subtrees, share) = split(nodes, children, threads);
+    let (middle, subtrees, share) = split(nodes, children, visits.threads);
     let (first, later) = children.split_at(middle);
     let (before, after) = states.split_at_mut(subtrees);
     let boundary = nodes[first[first.len() - 1]].end - nodes[first_child].first;
     let (written, beyond) = solution.split_at_mut(boundary);
-    if share == 0 || share == threads {
-        let (before_threads, after_threads) = if share == 0 {
-            (1, threads)
-        } else {
-            (threads, 1)
-        };
-        downward_all(nodes, (first, before_threads), before, written, visit);
-        downward_all(nodes, (later, after_threads), after, beyond, visit);
-    } else {
-        rayon::join(
-            || downward_all(nodes, (first, share), before, written, visit),
-            || downward_all(nodes, (later, threads - share), after, beyond, visit),
-        );
-    }
+    let rest = visits.threads.saturating_sub(share).max(1);
+    let (one, other) = (visits.sharing(share.max(1)), visits.sharing(rest));
+    rayon::join(
+        || downward_all(nodes, (first, one), before, written, visit),
+        || downward_all(nodes, (later, other), after, beyond, visit),
+    );
 }
 
 /// The factors of an interior: of its own rows and columns, by columns, its pivots chosen

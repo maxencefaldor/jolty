@@ -1064,7 +1064,8 @@ fn mesh(side: usize, scale: f64) -> Matrix<f64> {
 #[test]
 fn a_dissected_mesh_is_the_same_bits_on_any_number_of_threads() {
     // A mesh of 1,600 nodes dissected into interiors of at most 40: dozens of interiors
-    // and separators, factored, refactored and solved on 1, 2, 4 and 8 threads.
+    // and separators, factored, refactored and solved on 1, 2, 3, 4 and 8 threads, the
+    // subtrees tasks that any of the threads takes.
     let first = mesh(40, 1.0);
     let second = mesh(40, 3.0);
     let run = || {
@@ -1090,7 +1091,7 @@ fn a_dissected_mesh_is_the_same_bits_on_any_number_of_threads() {
     let once = alone.install(run);
     assert_eq!(once.1.factorizations, 1);
     assert_eq!(once.1.refactorizations + once.1.fallbacks, 2);
-    for threads in [2, 4, 8] {
+    for threads in [2, 3, 4, 8] {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
@@ -1099,15 +1100,16 @@ fn a_dissected_mesh_is_the_same_bits_on_any_number_of_threads() {
     }
 }
 
-/// The equations of a `side` × `side` mesh, as [`mesh`]'s, and of a supply joined to every
-/// third of its nodes, whose voltage a source fixes, its current one more unknown: as a
-/// circuit's supply rail, the supply's equation holds entries above the mesh's block.
-fn supplied(side: usize) -> Matrix<f64> {
+/// The equations of a `side` × `side` mesh, as [`mesh`]'s, and of a supply joined to one
+/// in `every` of its nodes, whose voltage a source fixes, its current one more unknown: as
+/// a circuit's supply rail, the supply's equation holds entries above the mesh's block, and
+/// the rows of the nodes it joins entries above the supply's.
+fn supplied(side: usize, every: usize) -> Matrix<f64> {
     let mut matrix = mesh(side, 1.0);
     let nodes = side * side;
     let (supply, current) = (nodes, nodes + 1);
     matrix.dimension = nodes + 2;
-    for node in (0..nodes).step_by(3) {
+    for node in (0..nodes).step_by(every) {
         for (row, column, value) in [
             (node, node, 0.5),
             (supply, supply, 0.5),
@@ -1127,17 +1129,26 @@ fn supplied(side: usize) -> Matrix<f64> {
 
 #[test]
 fn a_supplied_mesh_is_the_same_bits_on_any_number_of_threads() {
-    // A mesh of 2,304 nodes and a supply joined to 768 of them: the supply's equation
-    // holds 768 entries above the mesh's block, and the solves' permutations span three
-    // chunks. Solved whole and dissected into interiors of at most 40, on 1, 2, 3 and 8
-    // threads.
-    let matrix = supplied(48);
+    // A mesh of 2,304 nodes and a supply joined to 768 of them, and then to all 2,304:
+    // the supply's equation holds as many entries above the mesh's block, and the rows of
+    // the nodes it joins entries above the supply's, which the solve takes in in runs of a
+    // chunk of rows, three of them when it joins every node; the solves' permutations span
+    // three chunks. Solved whole and dissected into interiors of at most 40, on 1, 2, 3
+    // and 8 threads.
+    for every in [3, 1] {
+        same_bits_on_any_number_of_threads(&supplied(48, every));
+    }
+}
+
+/// Asserts that `matrix`, solved whole and dissected into interiors of at most 40, and
+/// solved transposed, gives the same bits on 1, 2, 3 and 8 threads.
+fn same_bits_on_any_number_of_threads(matrix: &Matrix<f64>) {
     let dense = matrix.dense();
     let b: Vec<f64> = rhs(matrix.dimension);
     let run = |interiors: Option<usize>| {
         let (mut lu, entries) = match interiors {
-            Some(most) => dissected(&matrix, most),
-            None => solver(&matrix),
+            Some(most) => dissected(matrix, most),
+            None => solver(matrix),
         };
         assert!(lu.ordering().blocks() >= 3, "the supply's blocks apart");
         lu.spread(rayon::current_num_threads());
