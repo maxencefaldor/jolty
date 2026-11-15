@@ -84,6 +84,13 @@ Each module imports only from the modules listed before it, and from those liste
   The circuit format, the engine and the results hold numbers in SI base units.
 - **Models:** a device model whose equations are not elementary names the paper, manual or datasheet they and its defaults come from.
   Every model is checked against that source, a closed form, or ngspice.
+- **ngspice is a reference, not the truth:** jolty agrees with ngspice where ngspice is right, and goes beyond it where it is not, such as with exact derivatives, conserved charge and error control on every charge.
+  Each departure is stated in the guide with its evidence, a line of ngspice's source or a measurement, and the differential tests compare everything but the departure, saying why.
+- **Knobs over opinions:** a choice that users could reasonably make otherwise, such as ngspice's own behaviour where it differs, is an option with a documented default, when it can be expressed cleanly.
+  The default is the most accurate choice.
+- **Parallelism is a policy:** how a run spreads its work is an option, `Parallelism`, whose every field has a default; serial and fully parallel are two configurations of it.
+  Each default is a measured break-even, stated in the guide with the machine it was measured on.
+  A default may depend on the circuit, never on the number of threads, where it changes the bits.
 - **Determinism:** results are a pure function of the circuit, the plan, the sample index and the options: the same bits for any thread count, shard split or completion order, on the same build and platform.
   Floating-point sums run in a fixed order, random draws depend only on the seed and the sample index, and nothing depends on the order work finishes in.
 - **Kernels:** a device model is a pure function of one instance's prepared parameters, its memory and its local unknowns.
