@@ -128,7 +128,7 @@ class Job(BaseModel):
         default=None,
         description="The script that defines plan(); null to elaborate only.",
     )
-    listed: int = Field(ge=1, description="Unknowns each report lists.")
+    max_unknowns: int = Field(ge=1, description="Unknowns each report lists.")
     check: bool = Field(
         default=True,
         description="Whether to check the rules at the plan's operating point.",
@@ -307,7 +307,9 @@ def _run(job: Job, directory: Path) -> Built:
         )
         return elaborated.model_copy(update={"shard": shard})
     outside: list[fidelity.Outside] = []
-    solved, reports = _analyses(simulation, plan, job.listed, outside, recorded=True)
+    solved, reports = _analyses(
+        simulation, plan, job.max_unknowns, outside, recorded=True
+    )
     at_point = (
         _at_operating_point(simulation, plan) + simulation.check_results(solved)
         if job.check

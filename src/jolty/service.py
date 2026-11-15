@@ -485,7 +485,7 @@ async def build(request: BuildRequest, settings: Settings) -> BuildResult:
     started = time.perf_counter()
     chosen = _levels(request, settings)
     script = await _existing(request.script)
-    job = runner.Job(script=script, listed=settings.listed_unknowns)
+    job = runner.Job(script=script, max_unknowns=settings.max_unknowns)
     path = request.output or files.circuit_path(request.script)
     built, output = await _run(job, settings, results=None)
     circuit = await asyncio.to_thread(_save, built, path)
@@ -525,7 +525,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     job = runner.Job(
         script=script,
         plan=plan,
-        listed=settings.listed_unknowns,
+        max_unknowns=settings.max_unknowns,
         check=request.check,
         record=request.record,
         # A shard's outcome is its measures, and the probes named alone besides.
@@ -1376,7 +1376,7 @@ async def _run(
         )
         try:
             async with asyncio.timeout(settings.timeout):
-                output, code = await _child(directory, settings.output_limit)
+                output, code = await _child(directory, settings.max_output)
         except TimeoutError:
             message = (
                 f"{job.script.name} did not finish within {settings.timeout:g} s "

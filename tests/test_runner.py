@@ -70,7 +70,7 @@ def failed(outcome: Outcome) -> Failure:
 
 
 def test_a_build_elaborates_the_circuit(tmp_path: Path) -> None:
-    job = Job(script=write(tmp_path, DIVIDER), listed=10)
+    job = Job(script=write(tmp_path, DIVIDER), max_unknowns=10)
     outcome = built(run(job, tmp_path))
     assert outcome.circuit.top == "divider"
     assert (outcome.devices, outcome.unknowns) == (3, 3)
@@ -81,7 +81,7 @@ def test_a_build_elaborates_the_circuit(tmp_path: Path) -> None:
 
 def test_a_plan_runs_its_analyses_and_saves_their_results(tmp_path: Path) -> None:
     script = write(tmp_path, DIVIDER)
-    outcome = built(run(Job(script=script, plan=script, listed=10), tmp_path))
+    outcome = built(run(Job(script=script, plan=script, max_unknowns=10), tmp_path))
     point, step = outcome.analyses
     assert isinstance(point, report.OperatingPointReport)
     assert [value.value for value in point.values][1] == 2.5
@@ -121,7 +121,7 @@ def test_the_plan_s_own_operating_points_report_every_transistor_s_region(
     tmp_path: Path,
 ) -> None:
     script = write(tmp_path, AMPLIFIER)
-    outcome = built(run(Job(script=script, plan=script, listed=10), tmp_path))
+    outcome = built(run(Job(script=script, plan=script, max_unknowns=10), tmp_path))
     (point,) = outcome.analyses
     assert isinstance(point, report.OperatingPointReport)
     assert [(each.path, each.region) for each in point.transistors] == [
@@ -146,11 +146,11 @@ def test_an_analysis_records_its_own_record_or_else_the_plan_s(
         "    )"
     )
     script = write(tmp_path, f"{DIVIDER}\n\n{recording}\n")
-    built(run(Job(script=script, plan=script, listed=10), tmp_path))
+    built(run(Job(script=script, plan=script, max_unknowns=10), tmp_path))
     expected = [("V1.positive", "V1.negative", "R1.a", "R1.b"), ("R2.a", "R2.b")]
     assert _recorded(tmp_path) == expected
     # A job's record, as the command line's --record gives it, replaces the plan's.
-    job = Job(script=script, plan=script, listed=10, record=["R1"])
+    job = Job(script=script, plan=script, max_unknowns=10, record=["R1"])
     built(run(job, tmp_path))
     assert _recorded(tmp_path) == [("R1.a", "R1.b"), ("R2.a", "R2.b")]
 
@@ -187,7 +187,7 @@ def test_a_job_s_thresholds_replace_the_plan_s(
     monkeypatch.setattr(Simulation, "run", run_seen)
     # As the command line's --min-solves-per-task gives it.
     thresholds = Thresholds(min_solves_per_task=2)
-    job = Job(script=script, plan=script, listed=10, parallelism=thresholds)
+    job = Job(script=script, plan=script, max_unknowns=10, parallelism=thresholds)
     built(run(job, tmp_path))
     spread = Parallelism(min_solves_per_task=2, min_instances_per_task=8)
     assert ran == [Options(parallelism=spread)]
@@ -200,7 +200,7 @@ def test_a_plan_runs_at_its_temperature(tmp_path: Path) -> None:
     ).replace("import V, kohm, us", "import K, V, kohm, us")
     hot = "def plan():\n    return Plan({'op': OperatingPoint()}, temperature=400 * K)"
     script = write(tmp_path, f"{drifting}\n\n{hot}\n")
-    outcome = built(run(Job(script=script, plan=script, listed=10), tmp_path))
+    outcome = built(run(Job(script=script, plan=script, max_unknowns=10), tmp_path))
     (point,) = outcome.analyses
     assert isinstance(point, report.OperatingPointReport)
     factor = 1 + 1e-2 * (400 - 300.15)
@@ -210,7 +210,7 @@ def test_a_plan_runs_at_its_temperature(tmp_path: Path) -> None:
 def test_a_plan_may_live_in_its_own_script(tmp_path: Path) -> None:
     script = write(tmp_path, DIVIDER)
     plan = write(tmp_path, NO_FREQUENCIES, "plan.py")
-    outcome = built(run(Job(script=script, plan=plan, listed=10), tmp_path))
+    outcome = built(run(Job(script=script, plan=plan, max_unknowns=10), tmp_path))
     (failure,) = outcome.analyses
     assert isinstance(failure, report.FailureReport)
     assert failure.name == "ac"
@@ -222,7 +222,7 @@ def test_problems_come_back_with_the_circuit(tmp_path: Path) -> None:
     script = write(
         tmp_path, DIVIDER.replace('1 * kohm), id="R2"', '-1 * kohm), id="R2"')
     )
-    outcome = built(run(Job(script=script, plan=script, listed=10), tmp_path))
+    outcome = built(run(Job(script=script, plan=script, max_unknowns=10), tmp_path))
     assert outcome.devices is None
     assert outcome.unknowns is None
     (problem,) = outcome.problems
@@ -233,7 +233,7 @@ def test_problems_come_back_with_the_circuit(tmp_path: Path) -> None:
 
 def test_failures_name_the_script_lines_innermost_first(tmp_path: Path) -> None:
     text = "def helper():\n    return 1 / 0\n\n\ndef build():\n    return helper()\n"
-    failure = failed(run(Job(script=write(tmp_path, text), listed=10), tmp_path))
+    failure = failed(run(Job(script=write(tmp_path, text), max_unknowns=10), tmp_path))
     assert failure.error == "ZeroDivisionError"
     assert [frame.line for frame in failure.frames] == [2, 6]
     assert str(failure) == (
@@ -244,7 +244,7 @@ def test_failures_name_the_script_lines_innermost_first(tmp_path: Path) -> None:
 
 def test_errors_inside_jolty_point_at_the_calling_line(tmp_path: Path) -> None:
     script = write(tmp_path, DIVIDER.replace("LEVEL = 5 * V", "LEVEL = 5 * kohm"))
-    failure = failed(run(Job(script=script, listed=10), tmp_path))
+    failure = failed(run(Job(script=script, max_unknowns=10), tmp_path))
     assert failure.error == "DimensionError"
     assert [frame.line for frame in failure.frames] == [9, 21]
     assert "a DC level takes a quantity in V, not 5 kΩ" in failure.message
@@ -252,7 +252,9 @@ def test_errors_inside_jolty_point_at_the_calling_line(tmp_path: Path) -> None:
 
 def test_exits_and_wrong_entry_points_are_failures(tmp_path: Path) -> None:
     def failure_of(text: str) -> str:
-        return str(failed(run(Job(script=write(tmp_path, text), listed=10), tmp_path)))
+        return str(
+            failed(run(Job(script=write(tmp_path, text), max_unknowns=10), tmp_path))
+        )
 
     assert failure_of("import sys\nsys.exit(3)\n") == (
         "script.py:2 at module level: SystemExit: the script exited with 3"
@@ -263,11 +265,11 @@ def test_exits_and_wrong_entry_points_are_failures(tmp_path: Path) -> None:
     )
     no_plan = DIVIDER.replace("def plan():", "def other():")
     script = write(tmp_path, no_plan)
-    failure = failed(run(Job(script=script, plan=script, listed=10), tmp_path))
+    failure = failed(run(Job(script=script, plan=script, max_unknowns=10), tmp_path))
     assert failure.message == "script.py defines no plan() function"
 
 
 def test_scripts_import_the_modules_beside_them(tmp_path: Path) -> None:
     write(tmp_path, "from jolty.units import V\n\nLEVEL = 3 * V\n", "levels.py")
     text = DIVIDER.replace("LEVEL = 5 * V", "from levels import LEVEL")
-    built(run(Job(script=write(tmp_path, text), listed=10), tmp_path))
+    built(run(Job(script=write(tmp_path, text), max_unknowns=10), tmp_path))

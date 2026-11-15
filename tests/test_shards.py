@@ -139,7 +139,7 @@ def _shard(
     job = runner.Job(
         script=script,
         plan=script,
-        listed=10,
+        max_unknowns=10,
         samples=(start, stop),
         parallelism=parallelism or runner.Thresholds(),
     )
@@ -173,7 +173,7 @@ def test_merging_1_3_and_7_shards_finds_one_run_s_bits(tmp_path: Path) -> None:
     alone = tmp_path / "alone"
     alone.mkdir()
     with simulate.threads(1):
-        job = runner.Job(script=script, plan=script, listed=10)
+        job = runner.Job(script=script, plan=script, max_unknowns=10)
         whole = _built(runner.run(job, alone)).monte_carlo
     assert whole is not None
     assert whole.passing is not None
@@ -393,7 +393,7 @@ def test_a_shard_names_samples_of_the_plan_s_monte_carlo_analysis(
         SimulateRequest(script=script, samples="5-9")
     with pytest.raises(ValidationError, match="a directory of shards holds samples"):
         SimulateRequest(script=script, shards=tmp_path)
-    job = runner.Job(script=script, plan=script, listed=10, samples=(60, 71))
+    job = runner.Job(script=script, plan=script, max_unknowns=10, samples=(60, 71))
     failure = runner.run(job, tmp_path)
     assert isinstance(failure, runner.Failure)
     assert "draws 70 samples, not samples (60, 71)" in failure.message
@@ -404,7 +404,7 @@ def test_a_shard_names_samples_of_the_plan_s_monte_carlo_analysis(
         ),
         encoding="utf-8",
     )
-    job = runner.Job(script=plain, plan=plain, listed=10, samples=(0, 1))
+    job = runner.Job(script=plain, plan=plain, max_unknowns=10, samples=(0, 1))
     failure = runner.run(job, tmp_path)
     assert isinstance(failure, runner.Failure)
     assert failure.message == (

@@ -489,7 +489,7 @@ def run_specs(
     monkeypatch.chdir(tmp_path)
     script = tmp_path / "divider.py"
     script.write_text(SCRIPT.replace("SPECS", specs), encoding="utf-8")
-    return run(Job(script=script, plan=script, listed=10), tmp_path)
+    return run(Job(script=script, plan=script, max_unknowns=10), tmp_path)
 
 
 def test_the_runner_evaluates_the_plans_specs(
@@ -561,7 +561,7 @@ def test_requirements_hold_at_their_worst_corner(
     monkeypatch.chdir(tmp_path)
     script = tmp_path / "filter.py"
     script.write_text(CORNERED, encoding="utf-8")
-    outcome = run(Job(script=script, plan=script, listed=10), tmp_path)
+    outcome = run(Job(script=script, plan=script, max_unknowns=10), tmp_path)
     assert isinstance(outcome, Built), str(outcome)
     hot, slow, broken = outcome.corners
     assert (hot.name, hot.temperature) == ("hot", pytest.approx(398.15))

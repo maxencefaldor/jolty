@@ -16,7 +16,7 @@ A report states facts, one section per analysis in the plan's order:
 - a failed analysis says why it failed.
 
 A frequency response lists magnitudes per unit excitation: volts per volt, for a voltage source.
-A report lists the first unknowns, then the first logic nets, up to the setting `listed_unknowns`, and an operating point as many transistors and a sensitivity analysis as many parameters; the results file holds them all.
+A report lists the first unknowns, then the first logic nets, up to the setting `max_unknowns`, and an operating point as many transistors and a sensitivity analysis as many parameters; the results file holds them all.
 With `--output-format json`, the command prints the same report as data.
 
 ## Plots

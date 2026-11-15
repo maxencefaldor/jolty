@@ -204,10 +204,10 @@ def test_invalid_arguments_and_settings_exit_with_2(
     assert "CLI subcommand is required" in capsys.readouterr().err
     assert run("build", "low_pass.py", "--output-format", "yaml") == 2
     capsys.readouterr()
-    monkeypatch.setenv("JOLTY_LISTED_UNKNOWNS", "0")
+    monkeypatch.setenv("JOLTY_MAX_UNKNOWNS", "0")
     assert run("build", "low_pass.py") == 2
     assert capsys.readouterr().err == (
-        "error: invalid settings: listed_unknowns: "
+        "error: invalid settings: max_unknowns: "
         "Input should be greater than or equal to 1\n"
     )
 
@@ -215,6 +215,6 @@ def test_invalid_arguments_and_settings_exit_with_2(
 def test_settings_come_from_pyproject(
     tmp_path: Path, script: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text("[tool.jolty]\nlisted_unknowns = 1\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.jolty]\nmax_unknowns = 1\n")
     assert run("simulate", script.name) == 0
     assert "  ... and 2 more in the results file" in capsys.readouterr().out
