@@ -139,27 +139,42 @@ impl Check {
         );
         let (rows, slots) = elaborated.groups.gathers();
         let ([residual, _, charge], [conductance, capacitance]) = slab;
+        // A stored entry's value gathers the base's, which sums the linear instances'
+        // entries: its terms are those.
+        let (first, summed) = elaborated.groups.base();
         let planes = [
             (
                 "residual",
                 (&assembled.residual, &sums.residual),
-                (rows, residual),
+                (rows, residual, false),
             ),
-            ("charge", (&assembled.charge, &sums.charge), (rows, charge)),
+            (
+                "charge",
+                (&assembled.charge, &sums.charge),
+                (rows, charge, false),
+            ),
             (
                 "conductance",
                 (&assembled.conductance, &sums.conductance),
-                (slots, conductance),
+                (slots, conductance, true),
             ),
             (
                 "capacitance",
                 (&assembled.capacitance, &sums.capacitance),
-                (slots, capacitance),
+                (slots, capacitance, true),
             ),
         ];
-        for (name, (assembled, sums), (map, slab)) in planes {
+        for (name, (assembled, sums), (map, slab, based)) in planes {
             for (index, (&assembled, &sum)) in assembled.iter().zip(sums).enumerate() {
-                let sources = map.sources_of(index);
+                let sources: Vec<u32> = map
+                    .sources_of(index)
+                    .iter()
+                    .flat_map(|source| match (*source as usize).checked_sub(first) {
+                        Some(value) if based => summed.sources_of(value),
+                        _ => std::slice::from_ref(source),
+                    })
+                    .copied()
+                    .collect();
                 let terms = sources.len();
                 let magnitude = sources
                     .iter()
@@ -449,6 +464,116 @@ fn a_parallel_evaluation_of_a_thousand_transistors_is_the_serial_one_bit_for_bit
             assert!(
                 parallel == serial,
                 "on {threads} threads in tasks of {split:?}"
+            );
+        }
+    }
+}
+
+/// A star of `arms` resistors of 1 kΩ from a hub to nodes of their own, each with 1 nF to
+/// the ground, a diode from the hub to the ground and a source of 1 V behind 1 Ω into the
+/// hub.
+fn star(arms: usize) -> Circuit {
+    use serde_json::json;
+    let mut instances = vec![
+        json!({"id": "V1", "of": {"device": "voltage_source"},
+            "parameters": {"waveform": {"dc": 1.0}},
+            "terminals": {"positive": "supply", "negative": "ground"}}),
+        json!({"id": "R0", "of": {"device": "resistor"}, "parameters": {"resistance": 1.0},
+            "terminals": {"a": "supply", "b": "hub"}}),
+        json!({"id": "D1", "of": {"device": "diode"}, "parameters": {},
+            "terminals": {"anode": "hub", "cathode": "ground"}}),
+    ];
+    for arm in 1..=arms {
+        let node = format!("n{arm}");
+        instances.push(
+            json!({"id": format!("R{arm}"), "of": {"device": "resistor"},
+            "parameters": {"resistance": 1e3}, "terminals": {"a": "hub", "b": node}}),
+        );
+        instances.push(
+            json!({"id": format!("C{arm}"), "of": {"device": "capacitor"},
+            "parameters": {"capacitance": 1e-9}, "terminals": {"a": node, "b": "ground"}}),
+        );
+    }
+    let document = json!({
+        "format": "jolty-circuit", "version": 1, "top": "star",
+        "components": {"star": {
+            "ports": [{"name": "ground", "role": "ground"}],
+            "instances": instances
+        }}
+    });
+    Circuit::from_json(&document.to_string()).expect("a circuit")
+}
+
+/// The hub's residual sums 2,002 contributions, of 2,001 resistors and a diode, more than a
+/// chunk, which its gather reads from their copies; its diagonal adds the base's value,
+/// which sums the resistors' conductances once a run, then the diode's. At voltages all
+/// over, each evaluation in parallel, on any number of threads and in tasks of any size,
+/// assembles the serial one's bits, and so does a transient.
+#[test]
+fn a_parallel_evaluation_of_a_star_of_linear_arms_is_the_serial_one_bit_for_bit() {
+    let circuit = star(2000);
+    let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+        .expect("the circuit elaborates");
+    let unknowns = simulator.unknowns().len();
+    let points: Vec<Vec<f64>> = (1..=3)
+        .map(|point| {
+            (0..unknowns)
+                .map(|index| {
+                    #[expect(clippy::cast_precision_loss, reason = "a few thousand indices")]
+                    let index = index as f64;
+                    0.9 * (0.37 * index + f64::from(point)).sin()
+                })
+                .collect()
+        })
+        .collect();
+    let mut evaluations = |tasks: Option<Tasks>| {
+        simulator
+            .reset(crate::Values::default())
+            .expect("the values apply");
+        simulator.state.tasks = tasks;
+        points
+            .iter()
+            .map(|x| {
+                let limited = simulator.evaluate(x, Some(1e-9), (1.0, 1e-12), true);
+                let contributions = &simulator.state.workspace.contributions;
+                format!("{limited} {contributions:?}")
+            })
+            .collect::<Vec<_>>()
+    };
+    let serial = evaluations(None);
+    let transient = [Analysis::Transient(crate::Transient {
+        stop: 2e-6,
+        max_step: None,
+        method: crate::Method::Trapezoidal,
+        times: Vec::new(),
+        periodic: false,
+    })];
+    let (waveforms, _) = outcomes(&circuit, &transient, &Options::default(), |_| {});
+    for threads in [1, 2, 3, 8] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("a pool");
+        for instances in [1, 7, 64, 1000] {
+            let split = Tasks {
+                instances: instances.try_into().expect("a task holds an instance"),
+            };
+            let parallel = pool.install(|| evaluations(Some(split)));
+            assert!(
+                parallel == serial,
+                "on {threads} threads in tasks of {split:?}"
+            );
+            let options = Options {
+                parallelism: crate::Parallelism {
+                    min_instances_per_task: Some(instances),
+                    ..crate::Parallelism::default()
+                },
+                ..Options::default()
+            };
+            let (spread, _) = pool.install(|| outcomes(&circuit, &transient, &options, |_| {}));
+            assert!(
+                spread == waveforms,
+                "a transient on {threads} threads in tasks of {split:?}"
             );
         }
     }

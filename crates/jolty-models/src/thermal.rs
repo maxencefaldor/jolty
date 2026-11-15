@@ -71,6 +71,10 @@ impl Kernel for ThermalResistance {
         Ok(ThermalShape::new(layout))
     }
 
+    fn linear(_: &ThermalShape, _: &f64) -> bool {
+        true
+    }
+
     fn evaluate<R: Real>(
         ThermalShape(pair): &ThermalShape,
         &conductance: &R,
@@ -122,6 +126,10 @@ impl Kernel for ThermalCapacitance {
         layout: &mut Layout,
     ) -> Result<ThermalShape, ParameterError> {
         Ok(ThermalShape::new(layout))
+    }
+
+    fn linear(_: &ThermalShape, _: &f64) -> bool {
+        true
     }
 
     fn evaluate<R: Real>(

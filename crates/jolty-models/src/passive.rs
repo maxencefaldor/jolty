@@ -77,6 +77,11 @@ impl<R: Real> VoltageCoefficients<R> {
         )
     }
 
+    /// Whether the factor is 1 at every voltage: whether both coefficients are zero.
+    fn constant(self) -> bool {
+        self.linear.value() == 0.0 && self.quadratic.value() == 0.0
+    }
+
     /// The integral of the factor from 0 to `voltage`.
     fn integral(self, voltage: f64) -> R {
         let squared = voltage * voltage;
@@ -200,6 +205,12 @@ impl Kernel for Resistor {
                 Form::Conductance(Pair::new(layout, a, b))
             },
         ))
+    }
+
+    /// Linear without voltage coefficients: its conductance, or its resistance where its
+    /// current is an unknown, is then the same at every voltage.
+    fn linear(_: &ResistorShape, prepared: &PreparedResistor<f64>) -> bool {
+        prepared.coefficients.constant()
     }
 
     fn evaluate<R: Real>(
@@ -351,6 +362,12 @@ impl Kernel for Capacitor {
         Ok(CapacitorShape(Pair::new(layout, a, b)))
     }
 
+    /// Linear without voltage coefficients: its capacitance is then the same at every
+    /// voltage.
+    fn linear(_: &CapacitorShape, prepared: &PreparedCapacitor<f64>) -> bool {
+        prepared.coefficients.constant()
+    }
+
     fn evaluate<R: Real>(
         CapacitorShape(pair): &CapacitorShape,
         prepared: &PreparedCapacitor<R>,
@@ -442,6 +459,10 @@ impl Kernel for Inductor {
             branch,
             entry: layout.entry(row, row),
         })
+    }
+
+    fn linear(_: &InductorShape, _: &f64) -> bool {
+        true
     }
 
     fn evaluate<R: Real>(
@@ -601,6 +622,10 @@ impl Kernel for CoupledInductors {
             .map(|(row, column)| layout.entry(row, column))
             .collect();
         Ok(CoupledShape { branches, entries })
+    }
+
+    fn linear(_: &CoupledShape, _: &Vec<f64>) -> bool {
+        true
     }
 
     fn evaluate<R: Real>(

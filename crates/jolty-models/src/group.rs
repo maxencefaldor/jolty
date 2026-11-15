@@ -20,6 +20,14 @@
 //! block is written, to places of the slab beyond the blocks, where every such value's
 //! contributions lie together in their order, and its gather reads them there: the same
 //! values, in the same order.
+//!
+//! A linear instance, as [`Kernel::linear`] says, is evaluated once a run, for its entries,
+//! which its block keeps: they sum, once a run, in the order of the groups and their
+//! instances, into the base, which lies beyond the copies, one value for each stored entry
+//! they add to. Each evaluation then adds to each stored entry the base's value first,
+//! then the entries of the instances that are not linear, in their order, and writes each
+//! linear instance's residuals, their scales and its charges from its entries, as its
+//! kernel's equations are its entries times its local unknowns.
 
 use std::any::{Any, TypeId};
 use std::fmt;
@@ -173,6 +181,9 @@ pub(crate) trait Kind: Send + Sync + 'static {
     /// As [`Kernel::memory`].
     fn memory(shape: &Self::Shape, prepared: &Self::Prepared) -> Self::Memory;
 
+    /// As [`Kernel::linear`].
+    fn linear(shape: &Self::Shape, prepared: &Self::Prepared) -> bool;
+
     /// As [`Kernel::evaluate`].
     fn evaluate(
         shape: &Self::Shape,
@@ -279,6 +290,10 @@ impl<K: Kernel> Kind for K {
         K::memory(shape, prepared)
     }
 
+    fn linear(shape: &K::Shape, prepared: &K::Prepared<f64>) -> bool {
+        K::linear(shape, prepared)
+    }
+
     fn evaluate(
         shape: &K::Shape,
         prepared: &K::Prepared<f64>,
@@ -375,6 +390,9 @@ trait Made: Send {
     /// The shape, as the typed half of a group of it.
     fn shaped(&self) -> &dyn Shaped;
 
+    /// Whether the instance is linear, as [`Kernel::linear`] says.
+    fn linear(&self) -> bool;
+
     /// The instance as [`Any`], for its group's run to take its numbers.
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
@@ -388,6 +406,10 @@ struct Fresh<K: Kind> {
 impl<K: Kind> Made for Fresh<K> {
     fn shaped(&self) -> &dyn Shaped {
         &self.shape
+    }
+
+    fn linear(&self) -> bool {
+        K::linear(&self.shape.0, &self.prepared)
     }
 
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
@@ -462,15 +484,21 @@ impl<K: Kind> Shaped for Shape<K> {
             prepared: std::iter::repeat_with(|| None).take(members).collect(),
             memory: vec![K::Memory::default(); members],
             staged: Vec::new(),
+            terms: Terms::default(),
         })
     }
 }
 
-/// The instances of one kernel and one shape, as a circuit's structure fixes them.
+/// The instances of one kernel and one shape, linear or not, as a circuit's structure fixes
+/// them.
 #[derive(Debug)]
 struct Group {
     shaped: Box<dyn Shaped>,
     layout: Layout,
+    /// Whether its instances are linear, as [`Kernel::linear`] says: evaluated once a run,
+    /// for their entries, which the base sums, and their residuals and charges each
+    /// evaluation from them.
+    linear: bool,
     /// Each instance's device, by its index among the circuit's devices, in their order.
     members: Vec<usize>,
     /// The circuit's unknown of each instance's local unknowns, instance after instance,
@@ -602,6 +630,13 @@ pub struct Groups {
     sizes: (usize, usize),
     /// The copies beyond them of those that contribute to a long value.
     copies: (usize, usize),
+    /// The stored entries the linear instances' entries add to, in increasing order, each
+    /// the target of one value of the base, which lies beyond the copies among the slab's
+    /// places for local entries, in their order.
+    base: Vec<u32>,
+    /// The sources of each value of the base among the linear instances' local entries, in
+    /// the order they add, by its index among the base's values.
+    summed: GatherMap,
     /// The layout each instance added claims, and its local unknowns' nodes, kept to be
     /// used again.
     scratch: (Layout, Vec<Node>),
@@ -643,14 +678,18 @@ impl Groups {
         layout.clear(terminals);
         let temperature = instance.own.temperature(temperature)?;
         let made = (instance.made)(instance.parameters, temperature, layout)?;
+        let linear = made.linear();
         let found = self.kernels.iter().position(|group| {
-            group.shaped.kernel() == instance.kernel && group.shaped.same(made.shaped())
+            group.shaped.kernel() == instance.kernel
+                && group.shaped.same(made.shaped())
+                && group.linear == linear
         });
         let index = found.unwrap_or_else(|| {
             runs.groups.push(made.shaped().run(0));
             self.kernels.push(Group {
                 shaped: made.shaped().boxed(),
                 layout: layout.clone(),
+                linear,
                 members: Vec::new(),
                 nodes: Vec::new(),
                 claims: Vec::new(),
@@ -694,7 +733,8 @@ impl Groups {
 
     /// Whether `instance`, the instance of the device `device` its parameters make at the
     /// temperature `temperature` of its surroundings, has the kernel and the shape of the
-    /// device's group, and so claims the unknowns and the entries the circuit holds.
+    /// device's group, and so claims the unknowns and the entries the circuit holds, and is
+    /// linear as the group's instances are or are not.
     ///
     /// # Errors
     ///
@@ -713,7 +753,17 @@ impl Groups {
         let mut layout = Layout::new(group.layout.terminals());
         let temperature = instance.own.temperature(temperature)?;
         let made = (instance.made)(instance.parameters, temperature, &mut layout)?;
-        Ok(group.shaped.kernel() == instance.kernel && group.shaped.same(made.shaped()))
+        Ok(group.shaped.kernel() == instance.kernel
+            && group.shaped.same(made.shaped())
+            && group.linear == made.linear())
+    }
+
+    /// Whether the instance the device `device` is, if it is a kernel's, is linear.
+    #[cfg(test)]
+    pub(crate) fn is_linear(&self, device: usize) -> bool {
+        self.place(device)
+            .and_then(|(group, _)| self.kernels.get(group))
+            .is_some_and(|group| group.linear)
     }
 
     /// The instance at the device `device`, if it is a kernel's: its group and its index
@@ -742,10 +792,31 @@ impl Groups {
                 .map(|claim| claim.map_or(UNMAPPED, |entry| mapped_slot(pattern.slot(entry))))
                 .collect();
         }
-        // The values of more than a chunk of contributions, whose contributions are copied.
-        let long = |targets: usize, maps: fn(&Group) -> &[u32]| {
+        // The stored entries a linear instance's entries add to, then the index of each's
+        // value of the base, by the entry, or none.
+        let mut added = vec![false; pattern.len()];
+        for group in self.kernels.iter().filter(|group| group.linear) {
+            for &slot in &group.slots {
+                if let Some(added) = added.get_mut(slot as usize) {
+                    *added = true;
+                }
+            }
+        }
+        self.base.clear();
+        let mut valued = vec![UNMAPPED; pattern.len()];
+        for ((slot, value), &added) in (0_u32..).zip(&mut valued).zip(&added) {
+            if added {
+                *value = mapped_slot(self.base.len());
+                self.base.push(slot);
+            }
+        }
+        // The values of more than a chunk of contributions, whose contributions are copied:
+        // a stored entry's are the base's value, then the entries of instances that are not
+        // linear.
+        let long = |targets: usize, maps: fn(&Group) -> &[u32], base: &[u32]| {
             let mut counts = vec![0_usize; targets];
-            for &target in self.kernels.iter().flat_map(maps) {
+            let gathered = self.kernels.iter().filter(|group| !group.linear);
+            for &target in base.iter().chain(gathered.flat_map(maps)) {
                 if let Some(count) = counts.get_mut(target as usize) {
                     *count += 1;
                 }
@@ -756,34 +827,57 @@ impl Groups {
                 .collect::<Vec<_>>()
         };
         let long = (
-            long(pattern.dimension(), |group| &group.nodes),
-            long(pattern.len(), |group| &group.slots),
+            long(pattern.dimension(), |group| &group.nodes, &[]),
+            long(pattern.len(), |group| &group.slots, &self.base),
         );
         let mut copies = (0, 0);
         for group in &mut self.kernels {
             let members = group.members.len();
+            // A linear instance's entries are gathered once a run, into the base, from their
+            // blocks.
+            let entries_long: &[bool] = if group.linear { &[] } else { &long.1 };
             let mut rows = Copied::of(&group.nodes, (members, group.unknowns()), &long.0);
-            let mut entries = Copied::of(&group.slots, (members, group.stride()), &long.1);
+            let mut entries = Copied::of(&group.slots, (members, group.stride()), entries_long);
             (rows.first, entries.first) = copies;
             copies = (copies.0 + rows.len(), copies.1 + entries.len());
             group.copied = [rows, entries];
         }
-        let fit = fits(rows + copies.0) && fits(stored + copies.1);
+        let fit = fits(rows + copies.0) && fits(stored + copies.1 + self.base.len());
         if !(fit && fits(pattern.dimension()) && fits(pattern.len())) {
             return Err(TooLarge);
         }
+        let valued = &valued;
+        let summed = self.kernels.iter().filter(|group| group.linear);
+        let summed = summed.flat_map(|group| {
+            let start = group.starts.1;
+            group.slots.iter().enumerate().map(move |(offset, &slot)| {
+                let value = valued.get(slot as usize).copied().unwrap_or(UNMAPPED);
+                (value, mapped_slot(start + offset))
+            })
+        });
+        self.summed = GatherMap::new(self.base.len(), summed);
         self.sizes = (rows, stored);
         self.copies = copies;
         self.targets = (pattern.dimension(), pattern.len());
         self.scratch = (Layout::default(), Vec::new());
         runs.slab = Slab::sized(self.slab_sizes());
+        runs.stamped = false;
         Ok(())
     }
 
     /// The slab's places for local unknowns and for local entries: the blocks', then the
-    /// copies'.
+    /// copies', then, for local entries, the base's values.
     fn slab_sizes(&self) -> (usize, usize) {
-        (self.sizes.0 + self.copies.0, self.sizes.1 + self.copies.1)
+        let entries = self.sizes.1 + self.copies.1;
+        (self.sizes.0 + self.copies.0, entries + self.base.len())
+    }
+
+    /// Where the base's values begin among the slab's places for local entries, and the
+    /// sources of each among the linear instances' local entries, which sum into it once a
+    /// run, in the order they add.
+    #[must_use]
+    pub fn base(&self) -> (usize, &GatherMap) {
+        (self.sizes.1 + self.copies.1, &self.summed)
     }
 
     /// The maps that gather, from a run's [slab](Runs::slab), the contributions to each
@@ -803,14 +897,24 @@ impl Groups {
 
     /// Each contribution to the circuit's equations, as its target and its place in the
     /// slab, in the order they add: of `kind`, the local unknowns' contributions to the
-    /// unknowns' values for 0, and the local entries' to the stored entries' for 1.
+    /// unknowns' values for 0, and for 1 the base's values, then the local entries of the
+    /// instances that are not linear, to the stored entries' values.
     fn sources(&self, kind: usize) -> impl Iterator<Item = (u32, u32)> + Clone + '_ {
         let beyond = if kind == 0 {
             self.sizes.0
         } else {
             self.sizes.1
         };
-        self.kernels.iter().flat_map(move |group| {
+        let (first, _) = self.base();
+        let base = (kind == 1).then_some(&self.base).into_iter().flatten();
+        let base = (first..)
+            .zip(base)
+            .map(|(place, &target)| (target, mapped_slot(place)));
+        let gathered = self
+            .kernels
+            .iter()
+            .filter(move |group| kind == 0 || !group.linear);
+        base.chain(gathered.flat_map(move |group| {
             let (start, maps, per) = if kind == 0 {
                 (group.starts.0, &group.nodes, group.unknowns())
             } else {
@@ -824,7 +928,7 @@ impl Groups {
                 };
                 (target, u32::try_from(source).unwrap_or(UNMAPPED))
             })
-        })
+        }))
     }
 
     /// The circuit's unknown of every internal unknown an instance's layout claims
@@ -864,6 +968,7 @@ impl Groups {
             slab: Slab::sized(self.slab_sizes()),
             layout: Layout::default(),
             limited: vec![false; self.kernels.len()],
+            stamped: false,
         }
     }
 }
@@ -930,6 +1035,10 @@ pub struct Runs {
     /// Whether an instance of each group limited its voltages, as the group's last
     /// evaluation in parallel found.
     limited: Vec<bool>,
+    /// Whether the linear instances' blocks hold their entries, at their numbers now, and
+    /// the slab the base they sum to: false until the first evaluation, and again once an
+    /// instance is prepared afresh or the slab forgotten.
+    stamped: bool,
 }
 
 impl Clone for Runs {
@@ -939,6 +1048,7 @@ impl Clone for Runs {
             slab: self.slab.clone(),
             layout: self.layout.clone(),
             limited: self.limited.clone(),
+            stamped: self.stamped,
         }
     }
 }
@@ -1169,13 +1279,41 @@ impl Runs {
     }
 
     /// Evaluates the instance the device `device` is, if it is a kernel's, alone at
-    /// `input`, into a block of its own, from what it remembers, which it updates.
+    /// `input`, into a block of its own, from what it remembers, which it updates, as its
+    /// group evaluates it: a linear instance's rows from its entries.
     pub fn evaluate_alone(
         &mut self,
         groups: &Groups,
         device: usize,
         input: &Input<'_>,
     ) -> Option<Alone> {
+        self.alone(groups, device, input, true)
+    }
+
+    /// Evaluates the instance the device `device` is as [`Runs::evaluate_alone`] does, but
+    /// by its kernel at `input` even where it is linear.
+    #[cfg(test)]
+    pub(crate) fn evaluate_by_kernel(
+        &mut self,
+        groups: &Groups,
+        device: usize,
+        input: &Input<'_>,
+    ) -> Option<Alone> {
+        self.alone(groups, device, input, false)
+    }
+
+    /// [`Runs::evaluate_alone`], a linear instance's rows from its entries when `linear`,
+    /// and else by its kernel.
+    fn alone(
+        &mut self,
+        groups: &Groups,
+        device: usize,
+        input: &Input<'_>,
+        linear: bool,
+    ) -> Option<Alone> {
+        if linear && !self.stamped {
+            self.stamp(groups);
+        }
         let (group, member) = groups.place(device)?;
         let (of, run) = (groups.kernels.get(group)?, self.groups.get_mut(group)?);
         let (unknowns, stride) = (of.unknowns(), of.stride());
@@ -1194,7 +1332,7 @@ impl Runs {
         let [conductance, capacitance] = &mut alone.entries;
         alone.limited = run.evaluate_alone(
             member,
-            of,
+            (of, linear),
             input,
             ([residual, scale, charge], [conductance, capacitance]),
         );
@@ -1249,7 +1387,9 @@ impl Runs {
     /// it remembers.
     pub fn commit(&mut self) {
         for run in &mut self.groups {
-            run.commit();
+            if run.commit() {
+                self.stamped = false;
+            }
         }
     }
 
@@ -1262,6 +1402,7 @@ impl Runs {
         for values in self.slab.rows.iter_mut().chain(&mut self.slab.entries) {
             values.fill(0.0);
         }
+        self.stamped = false;
     }
 
     /// The slab as the last evaluation wrote it: each instance's residuals, scales and
@@ -1282,12 +1423,47 @@ impl Runs {
         }
     }
 
+    /// Writes into the block of each linear instance of `groups` its entries, as its kernel
+    /// evaluates them at [`Input::ZERO`], as at any state, and sums them into the base, each
+    /// value from zero, its sources one after another in their order.
+    fn stamp(&mut self, groups: &Groups) {
+        let [residual, scale, charge] = &mut self.slab.rows;
+        let [conductance, capacitance] = &mut self.slab.entries;
+        let (mut rows, mut entries) = (
+            [residual.as_mut_slice(), scale, charge],
+            [conductance.as_mut_slice(), capacitance],
+        );
+        for (group, run) in groups.kernels.iter().zip(&mut self.groups) {
+            let count = group.members.len();
+            let (Some(rows), Some(entries)) = (
+                split(&mut rows, count * group.unknowns()),
+                split(&mut entries, count * group.stride()),
+            ) else {
+                break;
+            };
+            if group.linear {
+                run.stamp(group, (rows, entries));
+            }
+        }
+        let (first, summed) = groups.base();
+        for plane in &mut self.slab.entries {
+            if first <= plane.len() {
+                let (blocks, base) = plane.split_at_mut(first);
+                base.fill(0.0);
+                summed.add(blocks, base);
+            }
+        }
+        self.stamped = true;
+    }
+
     /// Evaluates every instance of `groups` at `input` and assembles their contributions in
-    /// `into`, whatever it held: serially without `tasks`, `into` zeroed and each instance's
-    /// block added as soon as it is written, and else in parallel, every group at once and
-    /// each in the tasks of instances `tasks` sets, every block written first and then
-    /// gathered into `into`, each value from zero, as the threads take them. Returns whether
-    /// an instance limited its voltages.
+    /// `into`, whatever it held: serially without `tasks`, `into` zeroed, the base added to
+    /// it and each instance's block added as soon as it is written, and else in parallel,
+    /// every group at once and each in the tasks of instances `tasks` sets, every block
+    /// written first and then gathered into `into`, each value from zero, the base's first,
+    /// as the threads take them. A linear instance's block keeps its entries, which the base
+    /// sums, and its residuals, their scales and its charges come from them. Returns
+    /// whether an instance limited its voltages.
     pub fn evaluate(
         &mut self,
         groups: &Groups,
@@ -1295,17 +1471,21 @@ impl Runs {
         into: &mut Contributions,
         tasks: Option<Tasks>,
     ) -> bool {
+        if !self.stamped {
+            self.stamp(groups);
+        }
         let [residual, scale, charge] = &mut self.slab.rows;
         let [conductance, capacitance] = &mut self.slab.entries;
         let (mut rows, mut entries) = (
             [residual.as_mut_slice(), scale, charge],
             [conductance.as_mut_slice(), capacitance],
         );
-        // The copies lie beyond every group's blocks.
+        // The copies lie beyond every group's blocks, and the base beyond the copies.
         let (mut row_copies, mut entry_copies) = (
             beyond(&mut rows, groups.sizes.0),
             beyond(&mut entries, groups.sizes.1),
         );
+        let [conducted, stored] = beyond(&mut entry_copies, groups.copies.1);
         let runs = groups.kernels.iter().zip(&mut self.groups);
         let mut blocks = |group: &Group| {
             blocks_of(
@@ -1316,6 +1496,7 @@ impl Runs {
         };
         let Some(tasks) = tasks else {
             into.clear();
+            add_base(&groups.base, [conducted, stored], into);
             let mut limited = false;
             for (group, run) in runs {
                 if let Some(blocks) = blocks(group) {
@@ -1367,6 +1548,22 @@ impl Runs {
             },
         );
         self.limited.iter().any(|&limited| limited)
+    }
+}
+
+/// Adds the base's values, `[conductances, capacitances]`, to their stored entries of
+/// `into`, `targets`, in their order.
+fn add_base(targets: &[u32], [conducted, stored]: [&mut [f64]; 2], into: &mut Contributions) {
+    let values = targets.iter().zip(conducted.iter().zip(stored.iter()));
+    for (&target, (&conductance, &capacitance)) in values {
+        let target = target as usize;
+        if let (Some(sum), Some(held)) = (
+            into.conductance.get_mut(target),
+            into.capacitance.get_mut(target),
+        ) {
+            *sum += conductance;
+            *held += capacitance;
+        }
     }
 }
 
@@ -1483,12 +1680,14 @@ trait GroupRun: fmt::Debug + Send {
         found: &mut [Vec<Choice>; 2],
     ) -> Option<f64>;
 
-    /// Evaluates the instance `member` of `group` alone at `input`, into `block`, which it
-    /// zeroes first. Returns whether it limited its voltages.
+    /// Evaluates the instance `member` of the group of `of` alone at `input`, into `block`,
+    /// which it zeroes first: a linear instance's entries by its kernel at [`Input::ZERO`]
+    /// and its rows from them when the second of `of` says so, and else by its kernel.
+    /// Returns whether it limited its voltages.
     fn evaluate_alone(
         &mut self,
         member: usize,
-        group: &Group,
+        of: (&Group, bool),
         input: &Input<'_>,
         block: Blocks<'_>,
     ) -> bool;
@@ -1520,19 +1719,24 @@ trait GroupRun: fmt::Debug + Send {
     ) -> Result<bool, ParameterError>;
 
     /// Takes the numbers kept apart, each instance prepared again starting from its
-    /// initial memory.
-    fn commit(&mut self);
+    /// initial memory. Returns whether it took any.
+    fn commit(&mut self) -> bool;
 
-    /// Forgets every instance's memory.
+    /// Forgets every instance's memory, and a linear group's terms.
     fn forget(&mut self);
 
     /// Forgets the numbers kept apart.
     fn discard(&mut self);
 
+    /// Writes into the block of each instance of `group`, which is linear, of `blocks`,
+    /// its entries, as its kernel evaluates them at [`Input::ZERO`], zero for one not prepared.
+    fn stamp(&mut self, group: &Group, blocks: Blocks<'_>);
+
     /// Evaluates each instance of `group` at `input` into its block of `blocks`, the
     /// first of the pair, copying its contributions to a long value to their places among
     /// the second, the group's copies: one after another, each block added to `into` as
     /// soon as it is written, or without `into`, in parallel, `per_task` instances a task.
+    /// An instance of a linear group writes only the rows of its block, from its entries.
     /// Returns whether one limited its voltages.
     fn evaluate(
         &mut self,
@@ -1551,6 +1755,8 @@ struct KernelRun<K: Kind> {
     memory: Vec<K::Memory>,
     /// The numbers prepared and not yet taken, by instance.
     staged: Vec<(usize, K::Prepared)>,
+    /// The terms of a linear group's residuals and charges, as its last stamp found them.
+    terms: Terms,
 }
 
 impl<K: Kind> fmt::Debug for KernelRun<K> {
@@ -1560,6 +1766,7 @@ impl<K: Kind> fmt::Debug for KernelRun<K> {
             .field("prepared", &self.prepared)
             .field("memory", &self.memory)
             .field("staged", &self.staged)
+            .field("terms", &self.terms)
             .finish()
     }
 }
@@ -1580,6 +1787,7 @@ impl<K: Kind> GroupRun for KernelRun<K> {
             prepared: self.prepared.clone(),
             memory: self.memory.clone(),
             staged: self.staged.clone(),
+            terms: self.terms.clone(),
         })
     }
 
@@ -1686,7 +1894,7 @@ impl<K: Kind> GroupRun for KernelRun<K> {
     fn evaluate_alone(
         &mut self,
         member: usize,
-        group: &Group,
+        (group, linear): (&Group, bool),
         input: &Input<'_>,
         ([residual, scale, charge], [conductance, capacitance]): Blocks<'_>,
     ) -> bool {
@@ -1698,6 +1906,14 @@ impl<K: Kind> GroupRun for KernelRun<K> {
             return false;
         };
         let mut stamp = Stamp::zeroed([residual, scale, charge], [conductance, capacitance]);
+        if group.linear && linear {
+            stamp_entries::<K>(&self.shape, prepared, map, &mut stamp);
+            let at = input.local(map);
+            let entries = [&*conductance, &*capacitance];
+            self.terms
+                .write(entries, &at, [residual, scale, charge], None);
+            return false;
+        }
         K::evaluate(&self.shape, prepared, memory, &input.local(map), &mut stamp);
         stamp.is_limited()
     }
@@ -1728,6 +1944,9 @@ impl<K: Kind> GroupRun for KernelRun<K> {
             return Ok(false);
         };
         let prepared = K::prepare(parameters, instance.own.temperature(temperature)?)?;
+        if K::linear(&self.shape, &prepared) != group.linear {
+            return Ok(false);
+        }
         if let Some(layout) = layout {
             layout.clear(group.layout.terminals());
             if K::layout(parameters, &prepared, layout)? != self.shape {
@@ -1738,7 +1957,8 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         Ok(true)
     }
 
-    fn commit(&mut self) {
+    fn commit(&mut self) -> bool {
+        let took = !self.staged.is_empty();
         for (member, prepared) in self.staged.drain(..) {
             if let Some(memory) = self.memory.get_mut(member) {
                 *memory = K::memory(&self.shape, &prepared);
@@ -1747,9 +1967,11 @@ impl<K: Kind> GroupRun for KernelRun<K> {
                 *slot = Some(prepared);
             }
         }
+        took
     }
 
     fn forget(&mut self) {
+        self.terms = Terms::default();
         for (memory, prepared) in self.memory.iter_mut().zip(&self.prepared) {
             *memory = prepared
                 .as_ref()
@@ -1760,6 +1982,33 @@ impl<K: Kind> GroupRun for KernelRun<K> {
 
     fn discard(&mut self) {
         self.staged.clear();
+    }
+
+    fn stamp(
+        &mut self,
+        group: &Group,
+        ([residual, scale, charge], [conductance, capacitance]): Blocks<'_>,
+    ) {
+        let (unknowns, stride) = (group.unknowns(), group.stride());
+        if unknowns == 0 {
+            return;
+        }
+        let blocks = residual
+            .chunks_mut(unknowns)
+            .zip(scale.chunks_mut(unknowns))
+            .zip(charge.chunks_mut(unknowns))
+            .zip(conductance.chunks_mut(stride))
+            .zip(capacitance.chunks_mut(stride));
+        let instances = self.prepared.iter().zip(group.nodes.chunks(unknowns));
+        for (((((residual, scale), charge), conductance), capacitance), (prepared, map)) in
+            blocks.zip(instances)
+        {
+            let mut stamp = Stamp::zeroed([residual, scale, charge], [conductance, capacitance]);
+            if let Some(prepared) = prepared {
+                stamp_entries::<K>(&self.shape, prepared, map, &mut stamp);
+            }
+        }
+        self.terms = Terms::of(&group.layout, stride, [conductance, capacitance]);
     }
 
     fn evaluate(
@@ -1773,6 +2022,17 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         let sizes = (group.unknowns(), group.stride());
         let (unknowns, stride) = sizes;
         if unknowns == 0 {
+            return false;
+        }
+        if group.linear {
+            let blocks = ([residual, scale, charge], [&*conductance, &*capacitance]);
+            evaluate_linear(
+                (group, &self.terms),
+                input,
+                (blocks, copies),
+                into,
+                per_task,
+            );
             return false;
         }
         let shape = &self.shape;
@@ -2021,6 +2281,206 @@ fn evaluate_chunk<K: Kind>(
         }
     }
     limited
+}
+
+/// Writes into `stamp` what a linear instance of `shape` with the numbers `prepared`, whose
+/// local unknowns are the circuit's of `map`, contributes at [`Input::ZERO`], from its
+/// initial memory: its entries, which are the same at every state.
+fn stamp_entries<K: Kind>(
+    shape: &K::Shape,
+    prepared: &K::Prepared,
+    map: &[u32],
+    stamp: &mut Stamp<'_>,
+) {
+    let mut memory = K::memory(shape, prepared);
+    K::evaluate(shape, prepared, &mut memory, &Input::ZERO.local(map), stamp);
+}
+
+/// A linear group's blocks: the rows of its instances' local unknowns, which their
+/// evaluations write, and the entries of their local entries, which they read.
+type LinearBlocks<'a> = ([&'a mut [f64]; 3], [&'a [f64]; 2]);
+
+/// Writes the rows of each block of `group`, which is linear, of `blocks`, the first of the
+/// pair, from its entries, at `input`, copying its contributions to a long value to their
+/// places among the second, the group's copies: one after another, each block's rows added
+/// to `into` as soon as they are written, or without `into`, in parallel, `per_task`
+/// instances a task.
+fn evaluate_linear(
+    (group, terms): (&Group, &Terms),
+    input: &Input<'_>,
+    (([residual, scale, charge], [conductance, capacitance]), copies): (
+        LinearBlocks<'_>,
+        Blocks<'_>,
+    ),
+    into: Option<&mut Contributions>,
+    per_task: usize,
+) {
+    let sizes = (group.unknowns(), group.stride());
+    let (unknowns, stride) = sizes;
+    let Some(into) = into else {
+        let (rows, stored) = (unknowns * per_task, stride * per_task);
+        let Some(copies) = task_copies(group, copies, per_task) else {
+            return;
+        };
+        residual
+            .par_chunks_mut(rows)
+            .zip(scale.par_chunks_mut(rows))
+            .zip(charge.par_chunks_mut(rows))
+            .zip(conductance.par_chunks(stored))
+            .zip(capacitance.par_chunks(stored))
+            .zip(group.nodes.par_chunks(rows))
+            .zip(copies)
+            .enumerate()
+            .for_each(|(task, chunk)| {
+                let ((((((residual, scale), charge), conductance), capacitance), nodes), copies) =
+                    chunk;
+                let blocks = (
+                    [&mut *residual, &mut *scale, &mut *charge],
+                    [conductance, capacitance],
+                );
+                linear_chunk(terms, sizes, input, blocks, nodes, None);
+                let written = ([&*residual, scale, charge], [conductance, capacitance]);
+                copy_long(sizes, written, copies, (&group.copied, task * per_task));
+            });
+        return;
+    };
+    let blocks = (
+        [&mut *residual, &mut *scale, &mut *charge],
+        [conductance, capacitance],
+    );
+    linear_chunk(terms, sizes, input, blocks, &group.nodes, Some(into));
+    let written = ([&*residual, scale, charge], [conductance, capacitance]);
+    copy_long(sizes, written, copies, (&group.copied, 0));
+}
+
+/// Writes the rows of each block of a chunk of a linear group, of `sizes` local unknowns
+/// and places for local entries each, whose residuals and charges sum `terms`, at `input`,
+/// from the block's entries, and adds each row to `into`, when given, as soon as it is
+/// written, through the circuit's unknowns of the instances' local ones, `nodes`.
+fn linear_chunk(
+    terms: &Terms,
+    (unknowns, stride): (usize, usize),
+    input: &Input<'_>,
+    ([residual, scale, charge], [conductance, capacitance]): LinearBlocks<'_>,
+    nodes: &[u32],
+    mut into: Option<&mut Contributions>,
+) {
+    let blocks = residual
+        .chunks_mut(unknowns)
+        .zip(scale.chunks_mut(unknowns))
+        .zip(charge.chunks_mut(unknowns))
+        .zip(conductance.chunks(stride))
+        .zip(capacitance.chunks(stride));
+    for (((((residual, scale), charge), conductance), capacitance), map) in
+        blocks.zip(nodes.chunks(unknowns))
+    {
+        let at = input.local(map);
+        let rows = [residual, scale, charge];
+        terms.write([conductance, capacitance], &at, rows, into.as_deref_mut());
+    }
+}
+
+/// The terms of the residuals and the charges of a linear group's instances: for its
+/// conductances, then its capacitances, each local unknown's row with an entry that is not
+/// zero in some instance, and those of its entries, each with its column, in the order of
+/// their local indices. Every other term of the group's is zero at every state, as is the
+/// row of one that has none: leaving it out of a sum, which starts from zero and so is
+/// never `-0`, changes no bit of it.
+#[derive(Debug, Clone, Default)]
+struct Terms {
+    /// For each plane, each row's local unknown, and where its entries begin and end among
+    /// the plane's.
+    rows: [Vec<(usize, usize, usize)>; 2],
+    /// For each plane, each row's entries, row after row: the local unknown of its column
+    /// and its local index.
+    entries: [Vec<(usize, usize)>; 2],
+}
+
+impl Terms {
+    /// The terms of the instances of `layout` whose blocks' entries, a `stride` apart, are
+    /// `[conductances, capacitances]`.
+    fn of(layout: &Layout, stride: usize, planes: [&[f64]; 2]) -> Self {
+        let mut terms = Self::default();
+        let claimed = layout.entries();
+        for (plane, values) in planes.into_iter().enumerate() {
+            let (rows, entries) = (&mut terms.rows[plane], &mut terms.entries[plane]);
+            for row in 0..layout.unknowns() {
+                let start = entries.len();
+                for (entry, &(_, column)) in claimed
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &(claim, _))| claim == row)
+                {
+                    let mut instances = values.iter().skip(entry).step_by(stride.max(1));
+                    if instances.any(|&value| value != 0.0) {
+                        entries.push((column, entry));
+                    }
+                }
+                if entries.len() > start {
+                    rows.push((row, start, entries.len()));
+                }
+            }
+        }
+        terms
+    }
+
+    /// Writes the rows of one instance's block at `at` from its entries,
+    /// `[conductances, capacitances]`: each listed residual and charge the sum of its terms,
+    /// its entries times the local unknowns of their columns, from zero, in their order,
+    /// and each listed residual's scale its magnitude, as a kernel's [`Stamp`] keeps the
+    /// largest of the one term it adds; and adds each, when `into` is given, to its
+    /// unknown's there, through `at`'s map, as soon as it is written. Those on the
+    /// reference, [`UNMAPPED`], go nowhere.
+    #[inline]
+    fn write(
+        &self,
+        [conductance, capacitance]: [&[f64]; 2],
+        at: &Local<'_>,
+        [residual, scale, charge]: [&mut [f64]; 3],
+        mut into: Option<&mut Contributions>,
+    ) {
+        let sum = |plane: usize, values: &[f64], (start, end): (usize, usize)| {
+            self.entries[plane]
+                .get(start..end)
+                .unwrap_or(&[])
+                .iter()
+                .fold(0.0, |sum, &(column, entry)| {
+                    sum + values.get(entry).copied().unwrap_or(0.0) * at.value(column)
+                })
+        };
+        let unknown = |row: usize| {
+            at.map()
+                .get(row)
+                .map_or(usize::MAX, |&unknown| unknown as usize)
+        };
+        for &(row, start, end) in &self.rows[0] {
+            let total = sum(0, conductance, (start, end));
+            let largest = 0.0_f64.max(total.abs());
+            if let (Some(residual), Some(scale)) = (residual.get_mut(row), scale.get_mut(row)) {
+                (*residual, *scale) = (total, largest);
+            }
+            if let Some(into) = into.as_deref_mut()
+                && let (Some(sum), Some(scale)) = (
+                    into.residual.get_mut(unknown(row)),
+                    into.scale.get_mut(unknown(row)),
+                )
+            {
+                *sum += total;
+                *scale = scale.max(largest);
+            }
+        }
+        for &(row, start, end) in &self.rows[1] {
+            let total = sum(1, capacitance, (start, end));
+            if let Some(charge) = charge.get_mut(row) {
+                *charge = total;
+            }
+            if let Some(into) = into.as_deref_mut()
+                && let Some(held) = into.charge.get_mut(unknown(row))
+            {
+                *held += total;
+            }
+        }
+    }
 }
 
 /// Copies the contributions to a long value of each instance of a chunk of a group, of
