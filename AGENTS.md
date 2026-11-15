@@ -121,6 +121,10 @@ Where the code does not meet a convention yet, a change that touches that code b
   The command line and the MCP server derive from it and never redefine arguments.
   Each fact about a model, such as a parameter's name, SPICE name, dimension and default, or its terminals and SPICE letter, is declared once beside its kernel, and everything else derives from it or is tested against it.
 - **One way to do one job:** when a better way lands, it replaces the old everywhere in the change that brings it, or that change lists every place it leaves and a test fails until they move.
+- **Names:** each concept has one name everywhere, in the engine, the Python API, the command line, the MCP server, the files, the benchmarks and the documentation, and each name one concept.
+  Names are uniform, consistent and symmetric: the same word for the same thing in every layer, the same shape for the same kind of name, and an operation and its inverse, or a bound and its opposite, named as a pair, as `save_results` and `load_results`, `min_` and `max_`.
+  They are formal, strict and principled: a name says what the thing is, in the domain's established terms, never how it happens to be computed, stored or used.
+  A name that breaks this is renamed everywhere in the change that finds it, as one way to do one job requires.
 - **Feedback is facts:** jolty tells the agent what is true about its circuit and never fixes it or says how to.
   A problem names the instance by its path and the script line that placed it.
   The engine reports every problem it finds, not only the first.
