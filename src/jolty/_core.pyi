@@ -170,18 +170,18 @@ class SourceLocation(TypedDict):
     line: int
     function: str | None
 
-class InstanceOutcome(TypedDict):
+class Location(TypedDict):
     path: str
     source_location: SourceLocation | None
 
 class Problem(TypedDict):
     message: str
-    instance: InstanceOutcome | None
+    instance: Location | None
 
 class Diagnostic(TypedDict):
     rule: str
     message: str
-    instances: list[InstanceOutcome]
+    instances: list[Location]
     nets: list[str]
 
 class Excursion(TypedDict):

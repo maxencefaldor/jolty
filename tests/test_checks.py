@@ -18,7 +18,7 @@ from jolty import (
     devices,
     results,
 )
-from jolty.checks import Diagnostic, Instance, levels, report, rules
+from jolty.checks import Diagnostic, Location, levels, report, rules
 from jolty.cli import main
 from jolty.files import save_circuit
 from jolty.ir import SourceLocation
@@ -263,7 +263,7 @@ def finding(rule: str, level: Level = Level.ERROR) -> Diagnostic:
         level=level,
         message=f"a fact of {rule}",
         instances=(
-            Instance(
+            Location(
                 path="X1/C1",
                 source_location=SourceLocation(file="f.py", line=3, function="rc"),
             ),

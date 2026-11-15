@@ -95,7 +95,7 @@ class _Model(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
-class Instance(_Model):
+class Location(_Model):
     """An instance a diagnostic names, and the script line that placed it."""
 
     path: str = Field(description="The instance's path, such as 'X1/C1'.")
@@ -119,7 +119,7 @@ class Diagnostic(_Model):
     rule: str = Field(description="The rule's name, such as 'no-dc-path'.")
     level: Level = Field(description="'error' or 'warn'.")
     message: str = Field(description="What is true, naming instances and nets.")
-    instances: tuple[Instance, ...] = Field(description="The instances involved.")
+    instances: tuple[Location, ...] = Field(description="The instances involved.")
     nets: tuple[str, ...] = Field(description="The nets involved, by path.")
 
     def describe(self) -> str:
@@ -193,9 +193,9 @@ def diagnostics(found: Iterable[_core.Diagnostic]) -> tuple[Diagnostic, ...]:
     )
 
 
-def _instance(found: _core.InstanceOutcome) -> Instance:
+def _instance(found: _core.Location) -> Location:
     source = found["source_location"]
-    return Instance(
+    return Location(
         path=found["path"],
         source_location=None
         if source is None
