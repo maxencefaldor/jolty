@@ -34,10 +34,6 @@ jobs:
       - name: Install Python, which PyO3 builds against
         run: uv python install
       - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-deny, which checks the dependencies' licences
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny
       - name: Check
         run: scripts/check rust
 
