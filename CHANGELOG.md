@@ -9,6 +9,7 @@ The first release, 0.1.0.
 
 ### Added
 
+- `NOTICE`, the copyright notices and terms of the software jolty's device models derive from: BSIM3v3.3.0 of the UC Berkeley BSIM Research Group, which jolty's BSIM3 is derived from, and ngspice, whose implementations its diode, JFET, bipolar transistors, MOSFETs of levels 1 and 3 and VDMOS follow; each model's documentation carries its source's notice, and the wheels and the `jolty-models` crate carry the file.
 - A transfer function analysis, `TransferFunction(source, output, reference=None)`, SPICE's `.tf`: the gain at DC from an independent source to a net's voltage or a voltage source's current, the resistance the source sees and the one the output sees, infinite where no current can flow, in reports, results files (version 7 of their format) and the MCP server's guide.
 - A wheel for free-threaded Python 3.15 beside the regular one, its extension declaring it needs no GIL, so that a script's own threads, a batch's `each` and its custom measurements among them, run at once; CI runs the tests on it, and a test checks that importing the engine leaves the GIL off and that simulations from eight Python threads at once find the bits one finds.
 - Circuits as Python build scripts of reusable components, compiled into a canonical, validated circuit format, with every problem named by instance path and script line.

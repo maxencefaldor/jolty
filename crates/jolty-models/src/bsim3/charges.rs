@@ -1,6 +1,10 @@
 //! The charges of a BSIM3 transistor, as ngspice 47's `b3ld.c` computes them: the
 //! intrinsic charges of `capmod` 0 to 3 under the gate, partitioned between the drain and
 //! the source by `xpart`, the overlaps' charges, and the junctions' depletion charges.
+//!
+//! Part of jolty's BSIM3, derived from BSIM3v3.3.0 of the UC Berkeley BSIM Research Group:
+//! Copyright 2004 Regents of the University of California. All rights reserved. Used
+//! under the BSIM terms of use, which the repository's `NOTICE` reproduces.
 
 use super::channel::Operating;
 use super::prepare::{Core, Junction, Junctions, Overlaps};

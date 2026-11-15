@@ -4,6 +4,11 @@
 //! The equations and the limiting follow SPICE, as ngspice implements them, so a junction
 //! behaves the same in every model that has one: the diode, the JFET's gate and the
 //! bipolar transistor's base.
+//!
+//! Derived from ngspice 47's implementations of junctions, in `src/spicelib/devices/dio/`
+//! and `devsup.c`, their limiting among them:
+//! Copyright 1985 - 2018, Regents of the University of California and others. Used under
+//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
 
 #![cfg_attr(
     not(test),

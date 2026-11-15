@@ -4,6 +4,10 @@
 //! The defaults are those of ngspice 47's `b3set.c`; a parameter whose default derives
 //! from others, as `vth0` from `vfb`, is optional, and its documentation says what it
 //! derives from.
+//!
+//! Part of jolty's BSIM3, derived from BSIM3v3.3.0 of the UC Berkeley BSIM Research Group:
+//! Copyright 2004 Regents of the University of California. All rights reserved. Used
+//! under the BSIM terms of use, which the repository's `NOTICE` reproduces.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

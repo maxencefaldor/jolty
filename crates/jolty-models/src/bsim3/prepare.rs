@@ -1,5 +1,9 @@
 //! A BSIM3 transistor's numbers at its temperature and size, as ngspice 47's `b3temp.c`
 //! prepares them, checked as its `b3check.c` checks them.
+//!
+//! Part of jolty's BSIM3, derived from BSIM3v3.3.0 of the UC Berkeley BSIM Research Group:
+//! Copyright 2004 Regents of the University of California. All rights reserved. Used
+//! under the BSIM terms of use, which the repository's `NOTICE` reproduces.
 
 use super::parameters::{Binned, Bsim3Parameters};
 use super::{

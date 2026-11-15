@@ -15,6 +15,11 @@
 //! write them, constants and all. They are written once, on numbers carrying their
 //! derivatives with respect to the voltages, so the conductances and capacitances are the
 //! exact derivatives of the currents and charges computed.
+//!
+//! This model, here and in its submodules, is derived from BSIM3v3.3.0, developed by the UC
+//! Berkeley BSIM Research Group: Copyright 2004 Regents of the University of California.
+//! All rights reserved. It is used under the BSIM terms of use, which the repository's
+//! `NOTICE` reproduces.
 
 mod channel;
 mod charges;

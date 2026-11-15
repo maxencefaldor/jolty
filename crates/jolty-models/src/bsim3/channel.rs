@@ -1,6 +1,10 @@
 //! The drain current of a BSIM3 transistor and the substrate current of its impact
 //! ionization, as ngspice 47's `b3ld.c` computes them, oriented as an n-channel's with
 //! the drain at or above the source.
+//!
+//! Part of jolty's BSIM3, derived from BSIM3v3.3.0 of the UC Berkeley BSIM Research Group:
+//! Copyright 2004 Regents of the University of California. All rights reserved. Used
+//! under the BSIM terms of use, which the repository's `NOTICE` reproduces.
 
 use super::prepare::Core;
 use super::{D, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, Mobility, Q, ln};

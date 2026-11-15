@@ -1,4 +1,9 @@
 //! The channel of SPICE's level 3 MOSFET: a semi-empirical law of short channels.
+//!
+//! Part of the MOSFET of level 3, derived from ngspice 47's implementation of it in
+//! `src/spicelib/devices/mos3/`:
+//! Copyright 1985 - 2018, Regents of the University of California and others. Used under
+//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
 
 use super::Conduction;
 use crate::Real;

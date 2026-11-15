@@ -6,6 +6,10 @@
         reason = "a kernel never panics, and reads fixed arrays through `get`"
     )
 )]
+//! The VDMOS power MOSFET, derived from ngspice 47's implementation of it in
+//! `src/spicelib/devices/vdmos/`:
+//! Copyright 1985 - 2018, Regents of the University of California and others. Used under
+//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
 
 use std::f64::consts::FRAC_PI_2;
 

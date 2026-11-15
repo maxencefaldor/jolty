@@ -100,3 +100,4 @@ The plan says how to simulate the circuit, and the specs what its results must s
 ## License
 
 [Apache License 2.0](LICENSE).
+Some device models are derived from ngspice and from BSIM3v3.3 of the UC Berkeley BSIM Research Group; [NOTICE](NOTICE) holds their copyright notices and terms.

@@ -6,6 +6,10 @@
         reason = "a kernel never panics, and reads fixed arrays through `get`"
     )
 )]
+//! The JFET, derived from ngspice 47's implementation of it in
+//! `src/spicelib/devices/jfet/`:
+//! Copyright 1985 - 2018, Regents of the University of California and others. Used under
+//! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

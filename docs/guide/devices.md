@@ -13,6 +13,8 @@ A resistor held at 0 K makes no noise, while a junction needs a temperature abov
 
 Logic devices, whose pins join logic nets, have a page of their own: [Logic](logic.md).
 
+The diode, the JFET, the bipolar transistors, the MOSFETs of levels 1 and 3 and VDMOS follow ngspice 47's implementations of them, and BSIM3 is derived from BSIM3v3.3.0 of the UC Berkeley BSIM Research Group; the repository's `NOTICE` holds their copyright notices and terms.
+
 ## Passive devices
 
 | Function | Terminals | Parameter |
@@ -453,6 +455,7 @@ A netlist written for ngspice gives it as ngspice's `nlev=1`, `KF/Cox` its coeff
 The drain current folds in the threshold's short-channel, narrow-width and drain-induced barrier lowering terms, the poly gate's depletion, the mobility's degradation by the gate field of `mobmod` 1 to 3, the carriers' velocity saturation, the channel-length modulation, the barrier lowering's and the substrate current's effects on the output resistance, and the source and drain resistance `rdsw`; the impact ionization's substrate current flows from the drain to the bulk.
 The charges under the gate follow `capmod` 0 to 3, the drain's share of the channel's charge `xpart`, beside the overlaps' charges, and two diodes join the bulk to the drain and the source, each with its depletion charge.
 The transistor is symmetric: with the drain below the source, the two swap.
+jolty's BSIM3 is derived from BSIM3v3.3.0, developed by the UC Berkeley BSIM Research Group, Copyright 2004 Regents of the University of California, and used under the BSIM terms of use, which `NOTICE` reproduces.
 
 Its instance takes a MOSFET's geometry, and a card of the manual's parameters by their names, `card={"vth0": 0.5 * V, "tox": 7.6 * nm, ...}`:
 
