@@ -846,10 +846,12 @@ TIGHT: Final = Options(
     relative_tolerance=ngspice.RELATIVE_TOLERANCE,
     voltage_tolerance=ngspice.VOLTAGE_TOLERANCE,
     current_tolerance=ngspice.CURRENT_TOLERANCE,
-    charge_tolerance=ngspice.CHARGE_TOLERANCE,
 )
 """jolty's options as tight as the ones [`jolty.spice.ngspice`][jolty.spice.ngspice]
-gives ngspice, which the comparisons of the two run with."""
+gives ngspice, which the comparisons of the two run with.
+
+The charge tolerance is both engines' default, 1e-14 C, as both read it alike: the least
+charge the relative tolerance is taken of, so a charge is held to 1e-20 C at least."""
 
 
 @dataclass(frozen=True, slots=True)

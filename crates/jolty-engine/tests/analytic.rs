@@ -529,12 +529,47 @@ fn rc_ramp_response(time: f64, delay: f64, rise: f64, tau: f64) -> f64 {
     1.0 - tau / rise * ((rise / tau).exp() - 1.0) * (-(time - delay) / tau).exp()
 }
 
-/// The largest error of an RC low-pass's response to a fast ramp, simulated with `method` and
+/// An RC low-pass under a ramp from 0 to 1 V: its resistance and capacitance, when the ramp
+/// starts and how long it lasts, and when the transient stops.
+struct Ramped {
+    resistance: f64,
+    capacitance: f64,
+    delay: f64,
+    rise: f64,
+    stop: f64,
+}
+
+/// A low-pass of a microsecond, 1 kΩ and 1 nF, under a ramp of a nanosecond at 1 µs, for 6 µs:
+/// its charge of 1 nC lies far above the default charge tolerance.
+const MICROSECOND: Ramped = Ramped {
+    resistance: 1e3,
+    capacitance: 1e-9,
+    delay: 1e-6,
+    rise: 1e-9,
+    stop: 6e-6,
+};
+
+/// The same low-pass a thousand times as fast, of 1 MΩ and 1 fF: its charge of 1 fC, as an
+/// integrated circuit's nets hold, is a tenth of the default charge tolerance.
+const FEMTOFARAD: Ramped = Ramped {
+    resistance: 1e6,
+    capacitance: 1e-15,
+    delay: 1e-9,
+    rise: 1e-12,
+    stop: 6e-9,
+};
+
+/// The largest error of `ramped`'s response after its ramp, simulated with `method` and
 /// `options`, and the number of steps it took.
-fn rc_step_error(method: Method, options: &Options) -> (f64, usize) {
-    let (resistance, capacitance) = (1e3, 1e-9);
+fn rc_step_error(ramped: &Ramped, method: Method, options: &Options) -> (f64, usize) {
+    let Ramped {
+        resistance,
+        capacitance,
+        delay,
+        rise,
+        stop,
+    } = *ramped;
     let tau = resistance * capacitance;
-    let (delay, rise) = (1e-6, 1e-9);
     let circuit = circuit(&[
         (
             "V1",
@@ -559,7 +594,7 @@ fn rc_step_error(method: Method, options: &Options) -> (f64, usize) {
     ]);
     let mut simulator = simulator(&circuit);
     let transient = Transient {
-        stop: 6e-6,
+        stop,
         max_step: None,
         method,
         times: Vec::new(),
@@ -574,7 +609,7 @@ fn rc_step_error(method: Method, options: &Options) -> (f64, usize) {
         "times increase"
     );
     assert!(waveforms.times.contains(&delay) && waveforms.times.contains(&(delay + rise)));
-    assert_eq!(waveforms.times.last(), Some(&6e-6));
+    assert_eq!(waveforms.times.last(), Some(&stop));
     let mut error: f64 = 0.0;
     for (&time, values) in waveforms.times.iter().zip(&waveforms.values) {
         if time <= delay {
@@ -593,12 +628,13 @@ fn rc_step_error(method: Method, options: &Options) -> (f64, usize) {
 /// tolerance to the power `1/(p+1)`, so the error the steps add up to shrinks as the
 /// tolerance to the power `p/(p+1)`. From a relative tolerance of 1e-6 to one of 1e-8, the
 /// tolerances and not the longest step limit every method's steps, and the error shrinks
-/// with an exponent within a tenth of that.
+/// with an exponent within a tenth of that. The charge tolerance is the least charge the
+/// relative tolerance is taken of, so the floor its default sets shrinks with the relative
+/// tolerance too.
 #[test]
 fn an_rc_charges_exponentially_with_every_method() {
     let tight = |relative_tolerance| Options {
         relative_tolerance,
-        charge_tolerance: 1e-18,
         ..Options::default()
     };
     for (method, bound) in [
@@ -606,13 +642,13 @@ fn an_rc_charges_exponentially_with_every_method() {
         (Method::Trapezoidal, 2e-3),
         (Method::Gear2, 2e-3),
     ] {
-        let (loose_error, _) = rc_step_error(method, &Options::default());
+        let (loose_error, _) = rc_step_error(&MICROSECOND, method, &Options::default());
         assert!(
             loose_error < bound,
             "{method:?}: error {loose_error:e} at default tolerances"
         );
-        let (tight_error, steps) = rc_step_error(method, &tight(1e-6));
-        let (tighter_error, _) = rc_step_error(method, &tight(1e-8));
+        let (tight_error, steps) = rc_step_error(&MICROSECOND, method, &tight(1e-6));
+        let (tighter_error, _) = rc_step_error(&MICROSECOND, method, &tight(1e-8));
         let order = f64::from(u32::try_from(method.order()).unwrap());
         let exponent = (tight_error / tighter_error).log10() / 2.0;
         assert!(
@@ -621,6 +657,103 @@ fn an_rc_charges_exponentially_with_every_method() {
         );
         assert!(steps < 2000, "{method:?}: {steps} steps");
     }
+}
+
+/// On a net whose charge stays below the charge tolerance, the tolerance on the charge is the
+/// relative tolerance of the charge tolerance itself, as SPICE's `reltol · max(|q|, chgtol)`
+/// (ngspice 47's `cktterr.c`, lines 40 and 41), so its error shrinks with the relative
+/// tolerance as any net's does.
+///
+/// The femtofarad low-pass's 1 fC is a tenth of the default charge tolerance, so its charge
+/// is held as a charge ten times its own would be: at relative tolerances of 1e-7 and 1e-9 its
+/// steps are as long, in its time constants, as the microsecond low-pass's at 1e-6 and 1e-8,
+/// and its error shrinks with an exponent within a tenth of `p/(p+1)`, as there. The current
+/// tolerance is set far below, so that its absolute part cannot hold the steps in the charge's
+/// place at 1e-9. A charge tolerance added to the relative one, `reltol · |q| + chgtol`,
+/// would hold every step of this net to it alone, so that its error would not move.
+#[test]
+fn a_femtofarad_nets_error_shrinks_with_the_relative_tolerance() {
+    let tight = |relative_tolerance| Options {
+        relative_tolerance,
+        current_tolerance: 1e-18,
+        ..Options::default()
+    };
+    for (method, order) in ORDERS {
+        let (tight_error, _) = rc_step_error(&FEMTOFARAD, method, &tight(1e-7));
+        let (tighter_error, _) = rc_step_error(&FEMTOFARAD, method, &tight(1e-9));
+        let exponent = (tight_error / tighter_error).log10() / 2.0;
+        assert!(
+            exponent > order / (order + 1.0) - 0.1,
+            "{method:?}: {tight_error:e} at 1e-7, {tighter_error:e} at 1e-9"
+        );
+    }
+}
+
+/// A charge that settles within picoseconds of a corner is resolved to its tolerance, with
+/// steps no shorter than SPICE's shortest, 1e-11 of the longest: a current of 46 mA rising in
+/// 1 ps, a millisecond into a run of two, into 1 nF beside 10 mΩ, as the benchmarks' buck's
+/// lower switch's internal source takes its gate's displacement current when the gate starts
+/// to fall, settles within 10 ps, and at a relative tolerance of 1e-5 its 0.46 pC is held to
+/// 1e-19 C where it starts from nothing. That takes steps of about 2e-14 s, shorter than
+/// 1e-9 of the longest step, 40 µs.
+#[test]
+fn a_charge_settling_in_picoseconds_is_resolved_to_its_tolerance() {
+    let (current, resistance, capacitance) = (0.046, 0.01, 1e-9);
+    let (delay, rise) = (1e-3, 1e-12);
+    let circuit = circuit(&[
+        (
+            "I1",
+            "current_source",
+            json!({"waveform": {"pulse": {
+                "initial": 0, "pulsed": current, "delay": delay, "rise": rise, "fall": rise,
+                "width": 1e-4,
+            }}}),
+            &[("positive", "s"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": resistance}),
+            &[("a", "s"), ("b", "0")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "s"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let transient = Transient {
+        stop: 2e-3,
+        max_step: None,
+        method: Method::Trapezoidal,
+        times: Vec::new(),
+        periodic: false,
+    };
+    let options = Options {
+        relative_tolerance: 1e-5,
+        ..Options::default()
+    };
+    let waveforms = simulator.transient(&transient, &options).unwrap();
+    // Within its rise and its first nanosecond, the node follows the closed form within the
+    // voltage tolerance, 1e-6 V, a five-hundredth of its 0.46 mV.
+    let s = index(&simulator, "s");
+    let tau = resistance * capacitance;
+    let settled = current * resistance;
+    let mut checked = 0;
+    for (&time, values) in waveforms.times.iter().zip(&waveforms.values) {
+        if time > delay + rise && time < delay + 1e-9 {
+            let expected = settled * rc_ramp_response(time, delay, rise, tau);
+            assert!(
+                (values[s].abs() - expected).abs() < 1e-6,
+                "at {time:e}: {} against {expected:e}",
+                values[s]
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 10, "{checked} points within the settling");
 }
 
 /// No step is longer than the longest allowed, though its error would let it grow and a
@@ -1217,7 +1350,11 @@ fn transient(circuit: &Circuit, stop: f64, options: &Options) -> Result<Outcome,
 #[test]
 fn a_transient_names_the_unknowns_that_stopped_converging() {
     // The only equation of `a`, v(a)² = v(c), loses its solution as the source falls below
-    // zero at 0.5 ms, so no step past it converges, however short.
+    // zero at 0.5 ms, so no step past it converges, however short. Its two roots meet there,
+    // where Newton's iteration converges linearly, halving its distance at each step; going
+    // on while it contracts, it follows the solution to the fold, and stops within the time
+    // the source takes to fall, at 2,000 V/s, by the 1e-9 V of `v(c)` the residual's
+    // tolerance, 1e-12 A, leaves at 1e-3 S: 5e-13 s.
     let circuit = circuit(&[
         (
             "V1",
@@ -1241,7 +1378,10 @@ fn a_transient_names_the_unknowns_that_stopped_converging() {
     else {
         panic!("{error}")
     };
-    assert!((0.4e-3..=0.5e-3).contains(time), "it failed at {time} s");
+    assert!(
+        (time - 0.5e-3).abs() <= 5e-13,
+        "it failed at {time} s, not at the fold"
+    );
     assert_eq!(worst.first().map(String::as_str), Some("a"), "{error}");
     assert!(
         error

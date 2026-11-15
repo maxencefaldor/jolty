@@ -39,14 +39,12 @@ VOLTAGE_TOLERANCE: Final = 1e-9
 CURRENT_TOLERANCE: Final = 1e-14
 """The absolute tolerance on currents ngspice runs with, in amperes."""
 
-CHARGE_TOLERANCE: Final = 1e-18
-"""The absolute tolerance on charges ngspice runs with, in coulombs."""
-
 OPTIONS: Final = (
     f".options reltol={RELATIVE_TOLERANCE!r} vntol={VOLTAGE_TOLERANCE!r}"
-    f" abstol={CURRENT_TOLERANCE!r} chgtol={CHARGE_TOLERANCE!r}"
+    f" abstol={CURRENT_TOLERANCE!r}"
 )
-"""ngspice's options, as tight as jolty's tightest."""
+"""ngspice's options, as tight as jolty's tightest, the charge tolerance both engines'
+default."""
 
 _SPICE_THERMAL_VOLTAGE_PER_KELVIN: Final = 1.38064852e-23 / 1.6021766208e-19
 """ngspice's Boltzmann constant over the elementary charge, from CODATA 2014."""

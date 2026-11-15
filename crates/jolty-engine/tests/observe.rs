@@ -148,32 +148,42 @@ fn terminal(simulator: &Simulator, name: &str) -> usize {
     Columns::of(simulator, &Record::All).terminal(name)
 }
 
-/// The sum of the currents into the device terminals on each node, which Kirchhoff's
-/// current law makes zero, relative to the largest of them, from `currents` as every
-/// device's record holds them.
-fn imbalance<T: Copy + Into<Complex64>>(simulator: &Simulator, currents: &[T]) -> f64 {
-    let mut sums = vec![Complex64::default(); simulator.unknowns().len()];
-    let mut largest = vec![0.0_f64; simulator.unknowns().len()];
+/// On each node, the sum of some values at the device terminals on it, the largest of them
+/// in magnitude, and the sum of their magnitudes.
+type PerNode = Vec<(Complex64, f64, f64)>;
+
+/// [`PerNode`] of `values`, as every device's record holds them.
+fn per_node<T: Copy + Into<Complex64>>(simulator: &Simulator, values: &[T]) -> PerNode {
+    let mut nodes = vec![(Complex64::default(), 0.0_f64, 0.0_f64); simulator.unknowns().len()];
     let mut index = 0;
     for placed in simulator.devices() {
         for node in placed.nodes() {
-            let current: Complex64 = currents[index].into();
+            let value: Complex64 = values[index].into();
             if let Some(node) = node {
-                sums[node.index()] += current;
-                largest[node.index()] = largest[node.index()].max(current.norm());
+                let (sum, largest, magnitudes) = &mut nodes[node.index()];
+                *sum += value;
+                *largest = largest.max(value.norm());
+                *magnitudes += value.norm();
             }
             index += 1;
         }
     }
     assert_eq!(
         index + simulator.composites().len(),
-        currents.len(),
-        "a current per terminal"
+        values.len(),
+        "a value per terminal"
     );
-    sums.iter()
-        .zip(&largest)
-        .filter(|(_, largest)| **largest > 0.0)
-        .map(|(sum, largest)| sum.norm() / largest)
+    nodes
+}
+
+/// The sum of the currents into the device terminals on each node, which Kirchhoff's
+/// current law makes zero, relative to the largest of them, from `currents` as every
+/// device's record holds them.
+fn imbalance<T: Copy + Into<Complex64>>(simulator: &Simulator, currents: &[T]) -> f64 {
+    per_node(simulator, currents)
+        .iter()
+        .filter(|(_, largest, _)| *largest > 0.0)
+        .map(|(sum, largest, _)| sum.norm() / largest)
         .fold(0.0, f64::max)
 }
 
@@ -286,9 +296,39 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
             .unwrap();
         let (capacitor, resistor) = (terminal(&simulator, "C1.a"), terminal(&simulator, "R1.b"));
         let mut charging = 0.0_f64;
-        for (values, found) in waveforms.values.iter().zip(waveforms.observations.iter()) {
-            let off = imbalance(&simulator, found.currents);
-            assert!(off < 1e-8, "{method:?}: {off}");
+        // Each node's currents sum to zero within Newton's tolerance on its equation, 1e-9 of
+        // its largest term, ten times over for the rounding of the terms it sums. The
+        // trapezoidal formula carries each charge's derivative on from step to step
+        // undamped, and the engine takes each node's from the node's charge, the rounded sum
+        // of its terminals', where the record takes each terminal's: the two part by the
+        // rounding of each step's `α q_{n+1} + β₀ q_n + γ q̇_n`, four roundings in each at
+        // most, of terms no larger than `2/h` times the charges and the derivative before,
+        // which here is no larger than twice the currents into the node, as every charge on
+        // it is a capacitance at its voltage, the capacitor's the largest; and the formula
+        // carries that rounding on.
+        let mut carried = vec![0.0_f64; simulator.unknowns().len()];
+        let mut last: Option<(f64, PerNode, PerNode)> = None;
+        let points = waveforms.times.iter().zip(&waveforms.values);
+        for ((&time, values), found) in points.zip(waveforms.observations.iter()) {
+            let (currents, charges) = (
+                per_node(&simulator, found.currents),
+                per_node(&simulator, found.charges),
+            );
+            if let (Method::Trapezoidal, Some((before, held, flowing))) = (method, &last) {
+                let alpha = 2.0 / (time - before);
+                for (node, carried) in carried.iter_mut().enumerate() {
+                    let terms = alpha * (charges[node].2 + held[node].2) + 2.0 * flowing[node].2;
+                    *carried += 8.0 * f64::EPSILON * terms;
+                }
+            }
+            for ((sum, largest, _), carried) in currents.iter().zip(&carried) {
+                assert!(
+                    sum.norm() <= 1e-8 * largest + carried,
+                    "{method:?} at {time:e} s: {:e} A of {largest:e} A, {carried:e} A carried",
+                    sum.norm()
+                );
+            }
+            last = Some((time, charges, currents));
             assert!((found.charges[capacitor] - 1e-10 * values[out]).abs() < 1e-22);
             charging = charging.max(found.currents[capacitor]);
             assert!(found.currents[resistor] <= 3.0 / 1e3);

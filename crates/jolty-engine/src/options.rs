@@ -241,13 +241,17 @@ pub struct Options {
     pub voltage_tolerance: f64,
     /// The absolute tolerance on currents, in amperes; default 1e-12.
     pub current_tolerance: f64,
-    /// The absolute tolerance on charges, in coulombs; default 1e-14.
+    /// The least charge a time step's tolerance on a charge is relative to, in coulombs, as
+    /// SPICE's `CHGTOL`: the tolerance on a charge `q` is `relative_tolerance` times the
+    /// larger of `|q|` and this, or the tolerance on the current it carries over the step
+    /// where that is larger, either times the truncation tolerance; default 1e-14.
     pub charge_tolerance: f64,
     /// The conductance placed across every nonlinear junction, in siemens; default 1e-12.
     pub gmin: f64,
     /// The Newton iterations allowed for one DC solution; default 100.
     pub dc_iterations: usize,
-    /// The Newton iterations allowed for one time step before the step is shortened; default 10.
+    /// The Newton iterations one time step takes before it goes on only while each step is
+    /// shorter than the one before, and is shortened once one is not; default 10.
     pub transient_iterations: usize,
     /// How many times the tolerances a step's truncation error may reach, as SPICE estimates
     /// the error, before the step is rejected; default 7, SPICE's `TRTOL`. SPICE's estimate

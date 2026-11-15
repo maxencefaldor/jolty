@@ -896,7 +896,7 @@ def test_coupled_windings_are_plain_inductors_whose_tolerances_carry_over() -> N
 
 def test_the_step_response_of_a_low_pass_filter() -> None:
     waveforms = Simulation(low_pass()).run(
-        Transient(stop=5 * us), Options(relative_tolerance=1e-6, charge_tolerance=1e-18)
+        Transient(stop=5 * us), Options(relative_tolerance=1e-6)
     )
     late = waveforms.times > 0.1e-6
     exact = 1 - np.exp(-(waveforms.times[late] - 0.5e-9) / 1e-6)

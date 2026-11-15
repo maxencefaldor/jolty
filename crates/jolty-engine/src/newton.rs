@@ -57,20 +57,35 @@ pub(crate) fn each_chunk<T: Send>(
 }
 
 /// Does `each` for every chunk of the `N` `planes`, of one length, and the index of their
-/// first value, as [`each_chunk`] does for one, and returns whether it returned `true` of
-/// every chunk, each chunk done whatever the others return.
-fn each_chunk_of<const N: usize>(
+/// first value, as [`each_chunk`] does for one, and returns what it returned of every
+/// chunk joined by `join`, from `none`, each chunk done whatever the others return.
+///
+/// `join` must give the same whatever order and grouping it joins the chunks' findings
+/// in, as `&&` and the largest do, so that the finding is the same bits on any number of
+/// threads.
+fn each_chunk_of<const N: usize, R: Copy + Send + Sync>(
     planes: [&mut [f64]; N],
     inside: Option<Inside>,
-    each: impl Fn(usize, [&mut [f64]; N]) -> bool + Sync,
-) -> bool {
+    (none, join): (R, impl Fn(R, R) -> R + Sync + Send),
+    each: impl Fn(usize, [&mut [f64]; N]) -> R + Sync,
+) -> R {
     if inside.is_none() {
         return each(0, planes);
     }
     let whole = Planes { first: 0, planes };
     rayon::iter::split(whole, Planes::halve)
         .map(|part| each(part.first, part.planes))
-        .reduce(|| true, |one, other| one && other)
+        .reduce(|| none, join)
+}
+
+/// The larger of `one` and `other`, or NaN if either is: a join of
+/// [`each_chunk_of`]'s, as it gives the same in any order and grouping.
+fn largest(one: f64, other: f64) -> f64 {
+    if one.is_nan() || one >= other {
+        one
+    } else {
+        other
+    }
 }
 
 /// Consecutive values of `N` planes, from the index `first` on.
@@ -268,7 +283,8 @@ pub(crate) enum Failure {
     /// The solver could not factor the Jacobian, or solve for its step: the error says
     /// whether it was singular, naming the unknowns it leaves undetermined, or too large.
     Solver(SimulationError),
-    /// The iteration limit was reached.
+    /// The iteration limit was reached, and for a time step's iteration its steps stopped
+    /// shrinking.
     Diverged,
 }
 
@@ -321,6 +337,15 @@ impl Simulator {
     /// The iteration has converged when the last step was within tolerance of the unknowns,
     /// every residual is within tolerance of the terms it sums, and no device limited its
     /// voltage.
+    ///
+    /// It fails after `limit` iterations, but for a time step's, which goes on past them as
+    /// long as each step is shorter than the one before, as its largest move of an unknown
+    /// against its tolerance: an iteration that contracts is converging, however slowly,
+    /// as Newton's does at a double root, halving its distance each time, and stops once a
+    /// step no longer shrinks. As it contracts by `θ` from one step to the next, a time
+    /// step's last step is within tolerance only once `θ/(1 − θ)` times it is too, the
+    /// distance such an iteration leaves to the solution (Deuflhard, "Newton Methods for
+    /// Nonlinear Problems", 2004, section 2.1).
     pub(crate) fn newton(
         &mut self,
         x: &mut [f64],
@@ -340,7 +365,16 @@ impl Simulator {
         // A DC solution starts afresh from its guess; a time step goes on from the last.
         let afresh = matches!(mode, Mode::Dc { .. });
         let mut stepped_within_tolerance = false;
-        for iteration in 0..limit {
+        // The largest move of the last step, as a multiple of its tolerance, and whether it
+        // was shorter than the step before.
+        let (mut moved, mut contracting) = (f64::INFINITY, true);
+        let mut iteration = 0;
+        loop {
+            // A DC solution, which other strategies take up where it fails, stops at its
+            // limit.
+            if iteration >= limit && (afresh || !contracting) {
+                return Err(Failure::Diverged);
+            }
             let limiting = iteration > 0 || !afresh;
             let limited = self.evaluate(x, time, (source_scale, options.gmin), limiting);
             // The residuals are judged only once the last step was within tolerance and no
@@ -369,9 +403,21 @@ impl Simulator {
             if let Mode::Dc { deflated, .. } = mode {
                 self.deflate(x, deflated, inside);
             }
-            stepped_within_tolerance = self.take_step(x, options, inside);
+            let largest = self.take_step(x, options, inside);
+            // An iteration that contracts by `θ` a step lies about `θ/(1 − θ)` times its
+            // last step from the solution, more than the step itself once `θ` passes ½: a
+            // time step's step is within tolerance only once that distance is.
+            let ratio = largest / moved;
+            contracting = ratio < 1.0;
+            let distance = if afresh || !contracting {
+                largest
+            } else {
+                largest * (ratio / (1.0 - ratio)).max(1.0)
+            };
+            stepped_within_tolerance = distance <= 1.0;
+            moved = largest;
+            iteration += 1;
         }
-        Err(Failure::Diverged)
     }
 
     /// Turns the Newton step of `f(x) = 0` at `x` into that of the deflated equations
@@ -471,6 +517,7 @@ impl Simulator {
         let within = each_chunk_of(
             [residual, scale, resolution, step],
             inside,
+            (true, |one, other| one && other),
             |start, [residual, scale, resolution, step]| {
                 let mut within = true;
                 let rows = residual.iter_mut().zip(scale.iter_mut());
@@ -513,19 +560,20 @@ impl Simulator {
         judged.is_some() && within
     }
 
-    /// Moves `x` by the step solved, and returns whether the step was within tolerance of
-    /// every unknown it moved, in one pass over the unknowns split as `inside` says.
-    fn take_step(&self, x: &mut [f64], options: &Options, inside: Option<Inside>) -> bool {
+    /// Moves `x` by the step solved, and returns the largest of its moves of the unknowns,
+    /// each as a multiple of its tolerance, or NaN if one is, in one pass over the unknowns
+    /// split as `inside` says: the step is within tolerance when it is at most 1.
+    fn take_step(&self, x: &mut [f64], options: &Options, inside: Option<Inside>) -> f64 {
         let (step, quantities) = (&self.state.workspace.step, &self.elaborated.quantities);
-        each_chunk_of([x], inside, |start, [chunk]| {
-            let mut within = true;
+        each_chunk_of([x], inside, (0.0, largest), |start, [chunk]| {
+            let mut most = 0.0;
             for (offset, value) in chunk.iter_mut().enumerate() {
                 let index = start + offset;
                 *value += step[index];
                 let error = step_error((*value, step[index]), quantities[index], options);
-                within &= error <= 1.0;
+                most = largest(most, error);
             }
-            within
+            most
         })
     }
 

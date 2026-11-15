@@ -238,7 +238,6 @@ BENCHES = {
         options=replace(TIGHT, current_tolerance=1e-12),
         spice_options=(
             f".options reltol=1e-6 vntol={VOLTAGE_TOLERANCE!r} abstol=1e-12"
-            " chgtol=1e-18"
         ),
     ),
     # ngspice finds this amplifier's operating point at its default tolerances only. It

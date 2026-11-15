@@ -273,7 +273,6 @@ fn a_qz_iteration_that_stalls_is_taken_again_on_the_reversed_pencil() {
         relative_tolerance: 1e-6,
         voltage_tolerance: 1e-9,
         current_tolerance: 1e-14,
-        charge_tolerance: 1e-18,
         ..Options::default()
     };
     assert_eq!(simulator.growing_modes(&tight).expect("the modes"), []);

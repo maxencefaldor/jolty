@@ -25,8 +25,12 @@ use crate::{
 /// The first step after the start or a breakpoint, as a fraction of the shorter of the step
 /// before and the gap to the next breakpoint, so a short waveform segment takes several steps.
 const RESTART_FRACTION: f64 = 0.1;
-/// The smallest step allowed, as a fraction of the longest.
-const SMALLEST_STEP_FRACTION: f64 = 1e-9;
+/// The smallest step allowed, as a fraction of the longest: SPICE's `delmin` (ngspice 47's
+/// `traninit.c`, line 36). A charge behind a small resistance settles within picoseconds
+/// after a corner, such as the benchmarks' buck's switches' internal sources, 10 mΩ to 1 nF,
+/// in 10 ps, and resolving that to SPICE's charge tolerance at a relative tolerance of 1e-5
+/// takes steps of 2e-14 s, below 1e-9 of the buck's longest.
+const SMALLEST_STEP_FRACTION: f64 = 1e-11;
 /// The factor a step shrinks by when Newton iteration fails.
 const FAILURE_SHRINK: f64 = 0.125;
 /// The bounds on the factor the truncation error changes the step by.
@@ -1196,11 +1200,12 @@ impl Simulator {
     /// many as the method's order and two, filtered through the step's own equations;
     /// `None` while too few points follow the last corner to estimate it.
     ///
-    /// A charge's tolerance is the larger of a relative tolerance on the charge itself and one
-    /// on the current it carries over the step, scaled by the truncation tolerance. That
-    /// tolerance bounds the error as SPICE's `TRTOL` does, as SPICE estimates it: the error
-    /// constant times the divided difference, without the factorial that makes the
-    /// divided difference a derivative, so the error itself may be `(p+1)!` times larger.
+    /// A charge's tolerance is the larger of a relative tolerance on the charge itself, or on
+    /// the charge tolerance where the charge is smaller, and one on the current it carries
+    /// over the step, scaled by the truncation tolerance. That tolerance bounds the error as
+    /// SPICE's `TRTOL` does, as SPICE estimates it: the error constant times the divided
+    /// difference, without the factorial that makes the divided difference a derivative, so
+    /// the error itself may be `(p+1)!` times larger.
     fn judge(
         &mut self,
         method: Method,
@@ -1239,14 +1244,18 @@ impl Simulator {
         let scale = options.truncation_tolerance * method.factorial();
         let quantities = &self.elaborated.quantities;
         // Each charge's tolerances, on the charge and on the current it carries over the step,
-        // times the truncation tolerance and the factorial SPICE's estimate leaves out.
+        // times the truncation tolerance and the factorial SPICE's estimate leaves out. The
+        // one on the charge is SPICE's, `reltol · max(|q|, chgtol)` (ngspice 47's
+        // `cktterr.c`, lines 40 and 41): the charge tolerance is the least charge the
+        // relative tolerance is taken of, not a tolerance added to it.
         let tolerances = |index: usize| {
             let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
             let current = span.derivative.0[index]
                 .abs()
                 .max(span.derivative.1[index].abs());
             let absolute_current = options.equation_tolerance(quantities[index]);
-            let charge_tolerance = options.relative_tolerance * charge + options.charge_tolerance;
+            let charge_tolerance =
+                options.relative_tolerance * charge.max(options.charge_tolerance);
             let current_tolerance =
                 span.length * (options.relative_tolerance * current + absolute_current);
             (scale * charge_tolerance, scale * current_tolerance)
