@@ -252,19 +252,19 @@ def circuit_hash(circuit: ir.Circuit) -> str:
     """A SHA-256 hash, in hexadecimal, of what a simulation reads of `circuit`.
 
     It hashes the circuit in the circuit format without each instance's
-    [`Source`][jolty.ir.Source], the script line that placed it, which names where a
-    problem lies and which no simulation reads: the same circuit built by scripts in two
-    places, or on two machines, hashes alike.
+    [`SourceLocation`][jolty.ir.SourceLocation], the script line that placed it, which
+    names where a problem lies and which no simulation reads: the same circuit built by
+    scripts in two places, or on two machines, hashes alike.
 
     Examples:
-        >>> from jolty.ir import Circuit, Component, DeviceOf, Instance, Source
+        >>> from jolty.ir import Circuit, Component, DeviceOf, Instance, SourceLocation
         >>> def placed(file: str, resistance: float) -> Circuit:
         ...     resistor = Instance(
         ...         id="R1",
         ...         of=DeviceOf(device="resistor"),
         ...         parameters={"resistance": resistance},
         ...         terminals={"a": "in", "b": "out"},
-        ...         source=Source(file=file, line=3),
+        ...         source_location=SourceLocation(file=file, line=3),
         ...     )
         ...     return Circuit(
         ...         top="top", components={"top": Component(instances=(resistor,))}
@@ -274,7 +274,9 @@ def circuit_hash(circuit: ir.Circuit) -> str:
         >>> circuit_hash(placed("a.py", 1e3)) == circuit_hash(placed("a.py", 2e3))
         False
     """
-    sourceless = {"components": {"__all__": {"instances": {"__all__": {"source"}}}}}
+    sourceless = {
+        "components": {"__all__": {"instances": {"__all__": {"source_location"}}}}
+    }
     text = circuit.model_dump_json(exclude=sourceless)
     return hashlib.sha256(text.encode()).hexdigest()
 

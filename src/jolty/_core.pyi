@@ -165,14 +165,14 @@ type AnalysisResult = (
     | TransferFunctionResult
 )
 
-class SourceOutcome(TypedDict):
+class SourceLocation(TypedDict):
     file: str
     line: int
     function: str | None
 
 class InstanceOutcome(TypedDict):
     path: str
-    source: SourceOutcome | None
+    source_location: SourceLocation | None
 
 class Problem(TypedDict):
     message: str

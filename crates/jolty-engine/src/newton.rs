@@ -643,7 +643,7 @@ mod tests {
             }));
         }
         let document = json!({
-            "format": "jolty-circuit", "version": 1, "top": "ladder",
+            "format": "jolty-circuit", "version": 2, "top": "ladder",
             "components": {"ladder": {
                 "ports": [{"name": "ground", "role": "ground"}],
                 "instances": instances

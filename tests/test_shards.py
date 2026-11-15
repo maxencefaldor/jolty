@@ -232,7 +232,9 @@ def test_shards_of_one_circuit_built_in_two_places_merge(tmp_path: Path) -> None
     # Each instance's source names the script that placed it, in its own directory.
     built = [circuit(runpy.run_path(str(place))["build"]()) for place in places]
     resistors = [each.find("R1") for each in built]
-    assert [each.source.file for each in resistors if each and each.source] == [
+    assert [
+        each.source_location.file for each in resistors if each and each.source_location
+    ] == [
         "one/divider.py",
         "two/divider.py",
     ]

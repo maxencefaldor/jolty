@@ -36,7 +36,7 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
         })
         .collect();
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit file")
@@ -1204,7 +1204,7 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
 #[test]
 fn hierarchy_gives_the_flat_answer() {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "top",
+        "format": "jolty-circuit", "version": 2, "top": "top",
         "components": {
             "top": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                 {"id": "V1", "of": {"device": "voltage_source"}, "parameters": dc(3.0),

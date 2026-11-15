@@ -227,7 +227,7 @@ class Failure(BaseModel):
     kind: Literal["failure"] = "failure"
     error: str = Field(description="The exception's type, such as 'BuildError'.")
     message: str = Field(description="The exception's message.")
-    frames: tuple[ir.Source, ...] = Field(
+    frames: tuple[ir.SourceLocation, ...] = Field(
         default=(), description="The script lines of the traceback, innermost first."
     )
 
@@ -1214,7 +1214,7 @@ def _importable(*scripts: Path | None) -> Generator[None]:
 def _failure(error: BaseException, message: str) -> Failure:
     """Describes `error` by the script lines it passed through, innermost first."""
     frames = [
-        ir.Source(
+        ir.SourceLocation(
             file=_relative(frame.f_code.co_filename),
             line=line or 1,
             function=frame.f_code.co_name,

@@ -360,9 +360,9 @@ def test_requirements_state_their_bounds_in_the_unit_read() -> None:
 
 def test_requirements_record_the_line_that_states_them() -> None:
     requirement = value("op", "out") >= 1 * V
-    assert requirement.source is not None
-    assert requirement.source.file.endswith("test_specs.py")
-    assert requirement.source.function == (
+    assert requirement.source_location is not None
+    assert requirement.source_location.file.endswith("test_specs.py")
+    assert requirement.source_location.function == (
         "test_requirements_record_the_line_that_states_them"
     )
 
@@ -501,8 +501,11 @@ def test_the_runner_evaluates_the_plans_specs(
     assert isinstance(outcome, Built)
     (verdict,) = outcome.specs
     assert (verdict.status, verdict.value) == ("passed", pytest.approx(2.5))
-    assert verdict.source is not None
-    assert (verdict.source.file, verdict.source.function) == ("divider.py", "specs")
+    assert verdict.source_location is not None
+    assert (verdict.source_location.file, verdict.source_location.function) == (
+        "divider.py",
+        "specs",
+    )
 
 
 def test_specs_must_be_specs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

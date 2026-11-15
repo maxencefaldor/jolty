@@ -99,14 +99,18 @@ class Instance(_Model):
     """An instance a diagnostic names, and the script line that placed it."""
 
     path: str = Field(description="The instance's path, such as 'X1/C1'.")
-    source: ir.Source | None = Field(
+    source_location: ir.SourceLocation | None = Field(
         default=None, description="The script line that placed it."
     )
 
     @override
     def __str__(self) -> str:
         """The path, then the script line, such as ``X1/C1, filter.py:12 in rc()``."""
-        return self.path if self.source is None else f"{self.path}, {self.source}"
+        return (
+            self.path
+            if self.source_location is None
+            else f"{self.path}, {self.source_location}"
+        )
 
 
 class Diagnostic(_Model):
@@ -160,7 +164,7 @@ def problem(found: _core.Problem) -> str:
         >>> source = {"file": "amp.py", "line": 9, "function": "amp"}
         >>> found = {
         ...     "message": "resistance must be positive, not -1.0",
-        ...     "instance": {"path": "R1", "source": source},
+        ...     "instance": {"path": "R1", "source_location": source},
         ... }
         >>> print(problem(found))
         error: resistance must be positive, not -1.0
@@ -190,10 +194,12 @@ def diagnostics(found: Iterable[_core.Diagnostic]) -> tuple[Diagnostic, ...]:
 
 
 def _instance(found: _core.InstanceOutcome) -> Instance:
-    source = found["source"]
+    source = found["source_location"]
     return Instance(
         path=found["path"],
-        source=None if source is None else ir.Source.model_validate(source),
+        source_location=None
+        if source is None
+        else ir.SourceLocation.model_validate(source),
     )
 
 

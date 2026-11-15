@@ -25,7 +25,7 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
         })
         .collect();
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit file")

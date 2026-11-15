@@ -963,7 +963,7 @@ mod tests {
     /// source ramps, and the operating point lies on D1's side, past the fold.
     fn folded() -> Simulator {
         let document = json!({
-            "format": "jolty-circuit", "version": 1, "top": "test",
+            "format": "jolty-circuit", "version": 2, "top": "test",
             "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                     "instances": [
                 {"id": "V1", "of": {"device": "voltage_source"},

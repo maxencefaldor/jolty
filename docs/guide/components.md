@@ -72,7 +72,7 @@ A port has no node of its own: it is the net it connects to outside.
 A script's `build()` returns the top component, and jolty calls `circuit` on it.
 The top component has exactly one ground port, the reference node of every voltage.
 
-## Provenance
+## Source locations
 
 Every instance records the line of the script that placed it.
 Problems name the instance by its path and that line, as a compiler names the line of an error, so the agent knows what to edit:

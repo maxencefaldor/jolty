@@ -332,7 +332,7 @@ impl Network {
             }));
         }
         let document = json!({
-            "format": "jolty-circuit", "version": 1, "top": "network",
+            "format": "jolty-circuit", "version": 2, "top": "network",
             "components": {"network": {
                 "ports": [{"name": "0", "role": "ground"}], "instances": instances,
             }}
@@ -550,7 +550,7 @@ fn a_reset_forgets_the_logic() {
         ),
     ];
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "ring",
+        "format": "jolty-circuit", "version": 2, "top": "ring",
         "components": {"ring": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
@@ -583,7 +583,7 @@ fn a_reset_forgets_the_logic() {
 /// unknown of its own.
 fn divider() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "divider",
+        "format": "jolty-circuit", "version": 2, "top": "divider",
         "components": {"divider": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "V1", "of": {"device": "voltage_source"},
              "parameters": {"waveform": {"dc": 1.0}},
@@ -674,7 +674,7 @@ fn a_resistor_overridden_across_one_ohm_changes_the_structure() {
 #[test]
 fn values_report_every_number_they_cannot_replace() {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "top",
+        "format": "jolty-circuit", "version": 2, "top": "top",
         "components": {"top": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "V1", "of": {"device": "voltage_source"},
              "parameters": {"waveform": {"dc": 1.0}},

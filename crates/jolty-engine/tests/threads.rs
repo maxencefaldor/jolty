@@ -120,7 +120,7 @@ fn ladder() -> Circuit {
          "terminals": {"a": middle, "b": "0"}}
     ));
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "ladder",
+        "format": "jolty-circuit", "version": 2, "top": "ladder",
         "components": {"ladder": {"ports": [{"name": "0", "role": "ground"}],
                                   "instances": instances}}
     });

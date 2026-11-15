@@ -21,7 +21,7 @@ from jolty import (
 from jolty.checks import Diagnostic, Instance, levels, report, rules
 from jolty.cli import main
 from jolty.files import save_circuit
-from jolty.ir import Source
+from jolty.ir import SourceLocation
 from jolty.service import SimulateResult
 from jolty.settings import Level
 from jolty.specs import diagnose
@@ -171,7 +171,7 @@ def test_no_dc_path() -> None:
     assert diagnostic.message == "`mid` and `out` have no DC path to `ground`"
     assert diagnostic.nets == ("mid", "out")
     assert [instance.path for instance in diagnostic.instances] == ["C1", "R1", "C2"]
-    source = diagnostic.instances[0].source
+    source = diagnostic.instances[0].source_location
     assert source is not None
     assert source.file == "tests/test_checks.py"
 
@@ -263,7 +263,10 @@ def finding(rule: str, level: Level = Level.ERROR) -> Diagnostic:
         level=level,
         message=f"a fact of {rule}",
         instances=(
-            Instance(path="X1/C1", source=Source(file="f.py", line=3, function="rc")),
+            Instance(
+                path="X1/C1",
+                source_location=SourceLocation(file="f.py", line=3, function="rc"),
+            ),
         ),
         nets=(),
     )

@@ -193,16 +193,16 @@ class Measure:
 
     def __ge__(self, minimum: Bound) -> Requirement:
         """The requirement that the measure be at least `minimum`."""
-        return Requirement(self, minimum=_quantity(minimum), source=caller())
+        return Requirement(self, minimum=_quantity(minimum), source_location=caller())
 
     def __le__(self, maximum: Bound) -> Requirement:
         """The requirement that the measure be at most `maximum`."""
-        return Requirement(self, maximum=_quantity(maximum), source=caller())
+        return Requirement(self, maximum=_quantity(maximum), source_location=caller())
 
     def between(self, minimum: Bound, maximum: Bound) -> Requirement:
         """The requirement that the measure lie between `minimum` and `maximum`."""
         return Requirement(
-            self, _quantity(minimum), _quantity(maximum), source=caller()
+            self, _quantity(minimum), _quantity(maximum), source_location=caller()
         )
 
     def within(self, target: Bound, tolerance: Bound) -> Requirement:
@@ -212,7 +212,9 @@ class Measure:
             DimensionError: When the target and the tolerance differ in dimension.
         """
         centre, spread = _quantity(target), _quantity(tolerance)
-        return Requirement(self, centre - spread, centre + spread, source=caller())
+        return Requirement(
+            self, centre - spread, centre + spread, source_location=caller()
+        )
 
     @override
     def __str__(self) -> str:
@@ -233,7 +235,7 @@ class Requirement:
     minimum: Quantity | None = None
     maximum: Quantity | None = None
     margin: Quantity | None = None
-    source: ir.Source | None = field(default=None, compare=False)
+    source_location: ir.SourceLocation | None = field(default=None, compare=False)
     """The script line that stated the requirement."""
 
     def __post_init__(self) -> None:
@@ -364,7 +366,7 @@ class Verdict(BaseModel):
     reason: str | None = Field(
         default=None, description="Why the requirement is unmeasured."
     )
-    source: ir.Source | None = Field(
+    source_location: ir.SourceLocation | None = Field(
         default=None, description="The script line that stated the requirement."
     )
 
@@ -377,7 +379,11 @@ class Verdict(BaseModel):
             read = _format(self.value, self.unit)
             slack = _format(self.slack, self.unit)
             head = f"{self.status}: {self.requirement}: read {read}{at}, slack {slack}"
-        return head if self.source is None else f"{head}\n  = {self.source}"
+        return (
+            head
+            if self.source_location is None
+            else f"{head}\n  = {self.source_location}"
+        )
 
 
 class Values(BaseModel):
@@ -788,7 +794,7 @@ def _verdict(
     stated = Verdict(
         requirement=str(requirement),
         status="unmeasured",
-        source=requirement.source,
+        source_location=requirement.source_location,
         corner=corner,
     )
     analysis = requirement.measure.analysis

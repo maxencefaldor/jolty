@@ -342,7 +342,7 @@ impl Network {
             ));
         }
         let document = json!({
-            "format": "jolty-circuit", "version": 1, "top": "network",
+            "format": "jolty-circuit", "version": 2, "top": "network",
             "components": {"network": {
                 "ports": [{"name": "0", "role": "ground"}], "instances": instances,
             }}
@@ -503,7 +503,7 @@ proptest! {
 #[test]
 fn frequencies_whose_pivots_change_find_the_same_in_any_spread() {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "ladder",
+        "format": "jolty-circuit", "version": 2, "top": "ladder",
         "components": {"ladder": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 0.0}},
              "terminals": {"positive": "in", "negative": "0"}},
@@ -691,7 +691,7 @@ fn a_part_added_leaves_every_other_draw_alone() {
 /// A divider whose upper resistance each run of `upper` replaces.
 fn divider() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "divider",
+        "format": "jolty-circuit", "version": 2, "top": "divider",
         "components": {"divider": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
              "terminals": {"positive": "top", "negative": "0"}},
@@ -845,7 +845,7 @@ fn runs_that_alternate_between_structures_share_each_structure() {
 /// comes before the source's among the unknowns.
 fn shunted() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "shunted",
+        "format": "jolty-circuit", "version": 2, "top": "shunted",
         "components": {"shunted": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 2.0},
              "terminals": {"a": "out", "b": "0"}},
@@ -1035,7 +1035,7 @@ fn a_product_runs_every_sample_at_every_corner() {
 /// A diode forward from a 1 V source through 1 kΩ, its saturation current 10 fA.
 fn forward_diode() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "forward",
+        "format": "jolty-circuit", "version": 2, "top": "forward",
         "components": {"forward": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
              "terminals": {"positive": "top", "negative": "0"}},
@@ -1248,7 +1248,7 @@ fn latch() -> Circuit {
                "terminals": {"drain": drain, "gate": gate, "source": source, "bulk": source}})
     };
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "latch",
+        "format": "jolty-circuit", "version": 2, "top": "latch",
         "components": {"latch": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "VDD", "of": {"device": "voltage_source"},
              "parameters": {"waveform": {"dc": 3.3}},

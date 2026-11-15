@@ -444,7 +444,7 @@ impl Simulator {
 
     /// Every diagnostic of the structural checks, each a dictionary of its `rule`, its
     /// `message`, its `instances` and its `nets`; each instance is a dictionary of its `path`
-    /// and its `source`, the script line that placed it or `None`.
+    /// and its `source_location`, the script line that placed it or `None`.
     fn check<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let found = py.detach(|| jolty_checks::check(&self.lock()));
         diagnostics_to_python(py, found)
@@ -860,12 +860,12 @@ pub(crate) fn problems_to_python<'py>(
     Ok(problems)
 }
 
-/// An instance as a dictionary of its `path` and its `source`, the script line that placed
+/// An instance as a dictionary of its `path` and its `source_location`, the script line that placed
 /// it, as a dictionary of its `file`, `line` and `function`, or `None`.
 fn location_to_python<'py>(py: Python<'py>, location: &Location) -> PyResult<Bound<'py, PyDict>> {
     let instance = PyDict::new(py);
     instance.set_item("path", &location.path)?;
-    let source = match &location.source {
+    let source = match &location.source_location {
         Some(source) => {
             let line = PyDict::new(py);
             line.set_item("file", &source.file)?;
@@ -875,7 +875,7 @@ fn location_to_python<'py>(py: Python<'py>, location: &Location) -> PyResult<Bou
         }
         None => None,
     };
-    instance.set_item("source", source)?;
+    instance.set_item("source_location", source)?;
     Ok(instance)
 }
 

@@ -2111,6 +2111,10 @@ class Stressed:
             rule=rule.name,
             level=rule.level,
             message=f"{described} {moves} {value!r} {unit} {where}, {judged}",
-            instances=(checks.Instance(path=self.path, source=self.instance.source),),
+            instances=(
+                checks.Instance(
+                    path=self.path, source_location=self.instance.source_location
+                ),
+            ),
             nets=(),
         )

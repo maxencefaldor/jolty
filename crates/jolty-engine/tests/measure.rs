@@ -27,7 +27,7 @@ fn low_pass() -> Simulator {
          "terminals": {"a": "out", "b": "0"}}
     ]);
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
