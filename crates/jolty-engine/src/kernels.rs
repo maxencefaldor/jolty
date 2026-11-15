@@ -408,7 +408,8 @@ fn a_parallel_evaluation_of_a_thousand_transistors_is_the_serial_one_bit_for_bit
     let unknowns = simulator.unknowns().len();
     // Voltages and currents all over, at which every transistor limits its steps from the
     // last, and some evaluate in reverse; each evaluation in parallel sets every value its
-    // gather writes, over what the one before left.
+    // gather writes, over what the one before left. The supply's diagonal sums 2,000
+    // contributions, more than a chunk, which the gather reads from their copies.
     let points: Vec<Vec<f64>> = (1..=3)
         .map(|point| {
             (0..unknowns)

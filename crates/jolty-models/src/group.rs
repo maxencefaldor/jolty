@@ -13,12 +13,20 @@
 //! evaluated serially adds each instance's block as soon as it is written; one evaluated in
 //! parallel writes every block first, then gathers them through a [`GatherMap`] in the same
 //! order. Either way, the sums are the same bits.
+//!
+//! A value of more than [`CHUNK`] contributions, such as a supply's, joined to every device,
+//! would make its gather read one place of nearly every block, one after another on one
+//! thread. Each instance's contributions to such a value are also copied, as soon as its
+//! block is written, to places of the slab beyond the blocks, where every such value's
+//! contributions lie together in their order, and its gather reads them there: the same
+//! values, in the same order.
 
 use std::any::{Any, TypeId};
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::OnceLock;
 
+use jolty_numerics::reduce::CHUNK;
 use jolty_numerics::{Entry, Fold, GatherMap, Pattern, UNMAPPED};
 use rayon::prelude::*;
 
@@ -460,6 +468,77 @@ struct Group {
     /// Where the group's blocks begin among the slab's local unknowns and its local
     /// entries.
     starts: (usize, usize),
+    /// Its instances' local unknowns, then their local entries, that contribute to a long
+    /// value, whose copies lie beyond the blocks.
+    copied: [Copied; 2],
+}
+
+/// The locals of a group's instances, its local unknowns or its local entries, that
+/// contribute to a long value of the circuit's equations, one of more than [`CHUNK`]
+/// contributions, and where their copies lie among the slab's.
+#[derive(Debug, Default)]
+struct Copied {
+    /// Where each instance's begin among the group's copies, then where the last's end.
+    starts: Vec<usize>,
+    /// The local index of each, instance after instance, in increasing order.
+    locals: Vec<usize>,
+    /// Where the group's copies begin among the slab's.
+    first: usize,
+}
+
+impl Copied {
+    /// The locals of each of `members` instances of `per` locals, whose targets are
+    /// `targets`, instance after instance, that contribute to a target `long` marks.
+    fn of(targets: &[u32], (members, per): (usize, usize), long: &[bool]) -> Self {
+        let mut copied = Self {
+            starts: Vec::with_capacity(members + 1),
+            locals: Vec::new(),
+            first: 0,
+        };
+        copied.starts.push(0);
+        for member in 0..members {
+            let instance = targets.get(member * per..(member + 1) * per).unwrap_or(&[]);
+            for (local, &target) in instance.iter().enumerate() {
+                if long.get(target as usize).copied().unwrap_or(false) {
+                    copied.locals.push(local);
+                }
+            }
+            copied.starts.push(copied.locals.len());
+        }
+        copied
+    }
+
+    /// The number of copies.
+    fn len(&self) -> usize {
+        self.locals.len()
+    }
+
+    /// Where among the group's copies the copy of the local `local` of the instance
+    /// `member` lies, if it contributes to a long value.
+    fn place(&self, member: usize, local: usize) -> Option<usize> {
+        let (start, end) = (*self.starts.get(member)?, *self.starts.get(member + 1)?);
+        let locals = self.locals.get(start..end)?;
+        let rank = locals.iter().position(|&each| each == local)?;
+        Some(start + rank)
+    }
+
+    /// Copies the values `block` holds, in its planes, of the locals it lists of the
+    /// instance `member` to their places among `copies`, the copies from the group's
+    /// `base`th on.
+    fn copy<const N: usize>(
+        &self,
+        (member, base): (usize, usize),
+        block: [&[f64]; N],
+        copies: &mut [&mut [f64]; N],
+    ) {
+        let (start, end) = (self.starts[member], self.starts[member + 1]);
+        let locals = &self.locals[start..end];
+        for (copy, plane) in copies.iter_mut().zip(block) {
+            for (into, &local) in copy[start - base..end - base].iter_mut().zip(locals) {
+                *into = plane[local];
+            }
+        }
+    }
 }
 
 impl Group {
@@ -504,6 +583,8 @@ pub struct Groups {
     targets: (usize, usize),
     /// The slab's local unknowns and local entries.
     sizes: (usize, usize),
+    /// The copies beyond them of those that contribute to a long value.
+    copies: (usize, usize),
     /// The layout each instance added claims, and its local unknowns' nodes, kept to be
     /// used again.
     scratch: (Layout, Vec<Node>),
@@ -555,6 +636,7 @@ impl Groups {
                 claims: Vec::new(),
                 slots: Vec::new(),
                 starts: (0, 0),
+                copied: [Copied::default(), Copied::default()],
             });
             self.kernels.len() - 1
         });
@@ -633,46 +715,89 @@ impl Groups {
                 .map(|claim| claim.map_or(UNMAPPED, |entry| mapped_slot(pattern.slot(entry))))
                 .collect();
         }
-        if !(fits(rows) && fits(stored) && fits(pattern.dimension()) && fits(pattern.len())) {
+        // The values of more than a chunk of contributions, whose contributions are copied.
+        let long = |targets: usize, maps: fn(&Group) -> &[u32]| {
+            let mut counts = vec![0_usize; targets];
+            for &target in self.kernels.iter().flat_map(maps) {
+                if let Some(count) = counts.get_mut(target as usize) {
+                    *count += 1;
+                }
+            }
+            counts
+                .into_iter()
+                .map(|count| count > CHUNK)
+                .collect::<Vec<_>>()
+        };
+        let long = (
+            long(pattern.dimension(), |group| &group.nodes),
+            long(pattern.len(), |group| &group.slots),
+        );
+        let mut copies = (0, 0);
+        for group in &mut self.kernels {
+            let members = group.members.len();
+            let mut rows = Copied::of(&group.nodes, (members, group.unknowns()), &long.0);
+            let mut entries = Copied::of(&group.slots, (members, group.stride()), &long.1);
+            (rows.first, entries.first) = copies;
+            copies = (copies.0 + rows.len(), copies.1 + entries.len());
+            group.copied = [rows, entries];
+        }
+        let fit = fits(rows + copies.0) && fits(stored + copies.1);
+        if !(fit && fits(pattern.dimension()) && fits(pattern.len())) {
             return Err(TooLarge);
         }
         self.sizes = (rows, stored);
+        self.copies = copies;
         self.targets = (pattern.dimension(), pattern.len());
         self.scratch = (Layout::default(), Vec::new());
-        runs.slab = Slab::sized(self.sizes);
+        runs.slab = Slab::sized(self.slab_sizes());
         Ok(())
+    }
+
+    /// The slab's places for local unknowns and for local entries: the blocks', then the
+    /// copies'.
+    fn slab_sizes(&self) -> (usize, usize) {
+        (self.sizes.0 + self.copies.0, self.sizes.1 + self.copies.1)
     }
 
     /// The maps that gather, from a run's [slab](Runs::slab), the contributions to each
     /// unknown's residual, scale and charge, and to each stored entry's conductance and
-    /// capacitance, in the order they add.
+    /// capacitance, in the order they add: a long value's from their copies.
     #[must_use]
     pub fn gathers(&self) -> (&GatherMap, &GatherMap) {
         let (rows, slots) = self.gathers.get_or_init(|| {
-            let sources = |starts: fn(&Group) -> usize, maps: fn(&Group) -> &[u32]| {
-                self.kernels.iter().flat_map(move |group| {
-                    let start = starts(group);
-                    maps(group)
-                        .iter()
-                        .enumerate()
-                        .map(move |(offset, &target)| {
-                            (target, u32::try_from(start + offset).unwrap_or(UNMAPPED))
-                        })
-                })
-            };
             let (unknowns, stored) = self.targets;
             (
-                GatherMap::new(
-                    unknowns,
-                    sources(|group| group.starts.0, |group| &group.nodes),
-                ),
-                GatherMap::new(
-                    stored,
-                    sources(|group| group.starts.1, |group| &group.slots),
-                ),
+                GatherMap::new(unknowns, self.sources(0)),
+                GatherMap::new(stored, self.sources(1)),
             )
         });
         (rows, slots)
+    }
+
+    /// Each contribution to the circuit's equations, as its target and its place in the
+    /// slab, in the order they add: of `kind`, the local unknowns' contributions to the
+    /// unknowns' values for 0, and the local entries' to the stored entries' for 1.
+    fn sources(&self, kind: usize) -> impl Iterator<Item = (u32, u32)> + Clone + '_ {
+        let beyond = if kind == 0 {
+            self.sizes.0
+        } else {
+            self.sizes.1
+        };
+        self.kernels.iter().flat_map(move |group| {
+            let (start, maps, per) = if kind == 0 {
+                (group.starts.0, &group.nodes, group.unknowns())
+            } else {
+                (group.starts.1, &group.slots, group.stride())
+            };
+            let copied = &group.copied[kind];
+            maps.iter().enumerate().map(move |(offset, &target)| {
+                let source = match copied.place(offset / per, offset % per) {
+                    Some(copy) => beyond + copied.first + copy,
+                    None => start + offset,
+                };
+                (target, u32::try_from(source).unwrap_or(UNMAPPED))
+            })
+        })
     }
 
     /// The number of groups of kernels' instances.
@@ -702,7 +827,7 @@ impl Groups {
                 .iter()
                 .map(|group| group.shaped.run(group.members.len()))
                 .collect(),
-            slab: Slab::sized(self.sizes),
+            slab: Slab::sized(self.slab_sizes()),
             layout: Layout::default(),
             limited: vec![false; self.kernels.len()],
         }
@@ -1107,7 +1232,8 @@ impl Runs {
 
     /// The slab as the last evaluation wrote it: each instance's residuals, scales and
     /// charges of its local unknowns, and conductances and capacitances of its local
-    /// entries, at the places [`Groups::gathers`] reads them.
+    /// entries, and beyond every block the copies of those that contribute to a long
+    /// value, at the places [`Groups::gathers`] reads them.
     #[must_use]
     pub fn slab(&self) -> ([&[f64]; 3], [&[f64]; 2]) {
         let [residual, scale, charge] = &self.slab.rows;
@@ -1141,12 +1267,24 @@ impl Runs {
             [residual.as_mut_slice(), scale, charge],
             [conductance.as_mut_slice(), capacitance],
         );
+        // The copies lie beyond every group's blocks.
+        let (mut row_copies, mut entry_copies) = (
+            beyond(&mut rows, groups.sizes.0),
+            beyond(&mut entries, groups.sizes.1),
+        );
         let runs = groups.kernels.iter().zip(&mut self.groups);
         let mut blocks = |group: &Group| {
             let count = group.members.len();
+            let [copied_rows, copied_entries] = &group.copied;
             Some((
-                split(&mut rows, count * group.unknowns())?,
-                split(&mut entries, count * group.stride())?,
+                (
+                    split(&mut rows, count * group.unknowns())?,
+                    split(&mut entries, count * group.stride())?,
+                ),
+                (
+                    split(&mut row_copies, copied_rows.len())?,
+                    split(&mut entry_copies, copied_entries.len())?,
+                ),
             ))
         };
         let Some(tasks) = tasks else {
@@ -1203,6 +1341,19 @@ impl Runs {
         );
         self.limited.iter().any(|&limited| limited)
     }
+}
+
+/// The values of each of `planes` from `at` on, which keep those before it; none of any
+/// when one holds fewer.
+fn beyond<'a, const N: usize>(planes: &mut [&'a mut [f64]; N], at: usize) -> [&'a mut [f64]; N] {
+    if planes.iter().any(|plane| plane.len() < at) {
+        return [(); N].map(|()| <&mut [f64]>::default());
+    }
+    planes.each_mut().map(|plane| {
+        let (before, after) = std::mem::take(plane).split_at_mut(at);
+        *plane = before;
+        after
+    })
 }
 
 /// The first `count` values of each of `planes`, which keep the rest, or `None` when one
@@ -1324,15 +1475,16 @@ trait GroupRun: fmt::Debug + Send {
     /// Forgets the numbers kept apart.
     fn discard(&mut self);
 
-    /// Evaluates each instance of `group` at `input` into its block of `blocks`: one
-    /// after another, each block added to `into` as soon as it is written, or without
-    /// `into`, in parallel, `per_task` instances a task. Returns whether one limited its
-    /// voltages.
+    /// Evaluates each instance of `group` at `input` into its block of `blocks`, the
+    /// first of the pair, copying its contributions to a long value to their places among
+    /// the second, the group's copies: one after another, each block added to `into` as
+    /// soon as it is written, or without `into`, in parallel, `per_task` instances a task.
+    /// Returns whether one limited its voltages.
     fn evaluate(
         &mut self,
         group: &Group,
         input: &Input<'_>,
-        blocks: Blocks<'_>,
+        blocks: (Blocks<'_>, Blocks<'_>),
         into: Option<&mut Contributions>,
         per_task: usize,
     ) -> bool;
@@ -1560,7 +1712,7 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         &mut self,
         group: &Group,
         input: &Input<'_>,
-        ([residual, scale, charge], [conductance, capacitance]): Blocks<'_>,
+        (([residual, scale, charge], [conductance, capacitance]), copies): (Blocks<'_>, Blocks<'_>),
         into: Option<&mut Contributions>,
         per_task: usize,
     ) -> bool {
@@ -1572,6 +1724,9 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         let shape = &self.shape;
         let Some(into) = into else {
             let (rows, stored) = (unknowns * per_task, stride * per_task);
+            let Some(copies) = task_copies(group, copies, per_task) else {
+                return false;
+            };
             return residual
                 .par_chunks_mut(rows)
                 .zip(scale.par_chunks_mut(rows))
@@ -1581,34 +1736,43 @@ impl<K: Kind> GroupRun for KernelRun<K> {
                 .zip(self.memory.par_chunks_mut(per_task))
                 .zip(self.prepared.par_chunks(per_task))
                 .zip(group.nodes.par_chunks(rows))
-                .map(|chunk| {
+                .zip(copies)
+                .enumerate()
+                .map(|(task, chunk)| {
                     let (
                         (
-                            (((((residual, scale), charge), conductance), capacitance), memory),
-                            prepared,
+                            (
+                                (((((residual, scale), charge), conductance), capacitance), memory),
+                                prepared,
+                            ),
+                            nodes,
                         ),
-                        nodes,
+                        copies,
                     ) = chunk;
                     let blocks = ([residual, scale, charge], [conductance, capacitance]);
                     evaluate_chunk::<K>(
                         shape,
                         sizes,
                         input,
-                        (blocks, memory, prepared),
-                        (nodes, &[]),
+                        ((blocks, copies), memory, prepared),
+                        ((nodes, &[]), (&group.copied, task * per_task)),
                         None,
                     )
                 })
                 .reduce(|| false, |one, other| one | other);
         };
         let blocks = ([residual, scale, charge], [conductance, capacitance]);
-        let instances = (blocks, self.memory.as_mut_slice(), self.prepared.as_slice());
+        let instances = (
+            (blocks, copies),
+            self.memory.as_mut_slice(),
+            self.prepared.as_slice(),
+        );
         evaluate_chunk::<K>(
             shape,
             sizes,
             input,
             instances,
-            (&group.nodes, &group.slots),
+            ((&group.nodes, &group.slots), (&group.copied, 0)),
             Some(into),
         )
     }
@@ -1708,27 +1872,60 @@ fn by_unknown<'a>(
         .map(|(&node, &value)| (node as usize, value))
 }
 
-/// The instances of a chunk of a group: their blocks, their memory and their prepared
-/// numbers.
+/// The instances of a chunk of a group: their blocks and their copies, their memory and
+/// their prepared numbers.
 type Chunk<'a, K> = (
-    Blocks<'a>,
+    (Blocks<'a>, Blocks<'a>),
     &'a mut [<K as Kind>::Memory],
     &'a [Option<<K as Kind>::Prepared>],
 );
 
+/// Where the contributions of a chunk's instances go: the circuit's unknowns of their local
+/// unknowns and the stored positions of their local entries, which a serial evaluation
+/// adds them to, and the locals each copies, of the instances from the chunk's first on.
+type Maps<'a> = ((&'a [u32], &'a [u32]), (&'a [Copied; 2], usize));
+
+/// The copies of `group`'s instances, `copies`, split among its tasks of `per_task`
+/// instances each, in their order; `None` when they hold fewer than the group copies.
+fn task_copies<'a>(
+    group: &Group,
+    (mut rows, mut entries): Blocks<'a>,
+    per_task: usize,
+) -> Option<Vec<Blocks<'a>>> {
+    let members = group.members.len();
+    let [copied_rows, copied_entries] = &group.copied;
+    (0..members.div_ceil(per_task))
+        .map(|task| {
+            let (first, end) = (task * per_task, members.min((task + 1) * per_task));
+            let counted = |copied: &Copied| copied.starts[end] - copied.starts[first];
+            Some((
+                split(&mut rows, counted(copied_rows))?,
+                split(&mut entries, counted(copied_entries))?,
+            ))
+        })
+        .collect()
+}
+
 /// Evaluates each instance of a chunk of a group of `shape`, of `sizes` local unknowns and
-/// places for local entries each, at `input`, into its block, which it zeroes first, and
-/// adds each block to `into`, when given, as soon as it is written, through the circuit's
-/// unknowns and stored positions of the instances' local ones, `maps`. Returns whether an
-/// instance limited its voltages.
+/// places for local entries each, at `input`, into its block, which it zeroes first, adds
+/// each block to `into`, when given, as soon as it is written, through the circuit's
+/// unknowns and stored positions of the instances' local ones, `maps`, and then copies
+/// the instances' contributions to a long value that `copied` lists, for the instances
+/// from `first` on, to their places among the chunk's copies. Returns whether an instance
+/// limited its voltages.
 fn evaluate_chunk<K: Kind>(
     shape: &K::Shape,
     (unknowns, stride): (usize, usize),
     input: &Input<'_>,
-    (([residual, scale, charge], [conductance, capacitance]), memory, prepared): Chunk<'_, K>,
-    (nodes, slots): (&[u32], &[u32]),
+    (blocks, memory, prepared): Chunk<'_, K>,
+    ((nodes, slots), (copied, first)): Maps<'_>,
     mut into: Option<&mut Contributions>,
 ) -> bool {
+    let (
+        ([residual, scale, charge], [conductance, capacitance]),
+        (mut row_copies, mut entry_copies),
+    ) = blocks;
+    let [copied_rows, copied_entries] = copied;
     for plane in [
         &mut *residual,
         &mut *scale,
@@ -1771,6 +1968,24 @@ fn evaluate_chunk<K: Kind>(
                 (map, slots),
                 ([residual, scale, charge], [conductance, capacitance]),
             );
+        }
+    }
+    if copied_rows.len() + copied_entries.len() > 0 {
+        // Each block as it stands, zero for an instance not prepared, while it is fresh.
+        let bases = (copied_rows.starts[first], copied_entries.starts[first]);
+        let blocks = residual
+            .chunks(unknowns)
+            .zip(scale.chunks(unknowns))
+            .zip(charge.chunks(unknowns))
+            .zip(conductance.chunks(stride))
+            .zip(capacitance.chunks(stride));
+        for (member, ((((residual, scale), charge), conductance), capacitance)) in
+            (first..).zip(blocks)
+        {
+            let rows = [residual, scale, charge];
+            copied_rows.copy((member, bases.0), rows, &mut row_copies);
+            let entries = [conductance, capacitance];
+            copied_entries.copy((member, bases.1), entries, &mut entry_copies);
         }
     }
     limited
