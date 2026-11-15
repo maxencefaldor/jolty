@@ -17,7 +17,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from jolty import Options, Simulation, ir, results
+from jolty import Simulation, ir, results
 from jolty.plan import TIGHT
 from jolty.spice import export, ngspice, xyce
 from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE

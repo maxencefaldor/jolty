@@ -26,7 +26,7 @@ Scripts write circuits with the builder, from devices whose values carry units a
 
 ::: jolty.spice.xyce
     options:
-      members: [run, execute, Result, Executed, xyce_celsius, OPTIONS]
+      members: [run, execute, version, Result, Executed, xyce_celsius, OPTIONS]
 
 ::: jolty.waveforms
 

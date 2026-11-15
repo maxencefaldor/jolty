@@ -19,6 +19,7 @@ analyses. [`execute`][jolty.spice.xyce.execute] runs a deck written otherwise.
 """
 
 import csv
+import functools
 import re
 import shutil
 import subprocess
@@ -109,6 +110,23 @@ values: every node's voltage and every current, or the noise densities."""
 _PRECISION: Final = 16
 """The digits Xyce prints after a value's point, 17 significant ones, so that each
 number reads back as the same double."""
+
+
+@functools.cache
+def version() -> str | None:
+    """Xyce's version, as it states it, or None when it is not installed.
+
+    Examples:
+        >>> version() is None or "Xyce" in version()
+        True
+    """
+    if EXECUTABLE is None:
+        return None
+    done = subprocess.run(  # noqa: S603 - Xyce states its version
+        [EXECUTABLE, "-v"], capture_output=True, check=False, text=True
+    )
+    lines = done.stdout.strip().splitlines()
+    return lines[0] if lines else ""
 
 
 def xyce_celsius(temperature: float) -> float:

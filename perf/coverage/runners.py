@@ -11,19 +11,14 @@ it with a ``.print`` of each read in CSV, found on the path or named by ``--xyce
 import csv
 import io
 import re
-import shutil
-import subprocess
-import tempfile
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Final
 
 import numpy as np
 from probes import ROOM, Documented, NotOffered, Read, Row, Spice, Values
 
-from jolty import _core
 from jolty.errors import JoltyError
-from jolty.spice import ngspice
+from jolty.spice import ngspice, xyce
 
 TIMEOUT: Final = 60
 """The seconds a SPICE simulator may run a probe; each takes well under one."""
@@ -157,19 +152,6 @@ def run_ngspice(row: Row, options: str = "") -> Values:
     return values if probe.derive is None else probe.derive(values)
 
 
-XYCE_BOLTZMANN: Final = 1.3806226e-23
-"""Xyce 7.10's Boltzmann constant (``CONSTboltz``, ``N_DEV_Const.h:45``)."""
-
-XYCE_CHARGE: Final = 1.6021918e-19
-"""Xyce 7.10's elementary charge (``CONSTQ``, ``N_DEV_Const.h:43``)."""
-
-
-def xyce_celsius(temperature: float) -> float:
-    """Where Xyce's thermal voltage is jolty's at `temperature`, in degrees Celsius."""
-    thermal_voltage = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
-    return thermal_voltage * XYCE_CHARGE / XYCE_BOLTZMANN - 273.15
-
-
 def _columns(reads: Mapping[str, Read]) -> list[str]:
     """The expressions Xyce prints for the reads, each complex one as its two parts."""
     columns: list[str] = []
@@ -185,8 +167,8 @@ def _columns(reads: Mapping[str, Read]) -> list[str]:
     return columns
 
 
-def run_xyce(row: Row, executable: str) -> Values:
-    """Runs a row's probe in Xyce, the program at `executable`.
+def run_xyce(row: Row) -> Values:
+    """Runs a row's probe in Xyce, the program on the path, by `jolty.spice.xyce`.
 
     The deck's lines go to Xyce as written, with the probe's statements, its
     temperature where Xyce's thermal voltage is jolty's, and a ``.print`` of every
@@ -202,7 +184,8 @@ def run_xyce(row: Row, executable: str) -> Values:
     statements, kind = probe.xyce
     columns = _columns(probe.reads)
     if probe.thermal:
-        nominal, temperature = xyce_celsius(ROOM), xyce_celsius(probe.temperature)
+        nominal = xyce.xyce_celsius(ROOM)
+        temperature = xyce.xyce_celsius(probe.temperature)
     else:
         nominal, temperature = ROOM - 273.15, probe.temperature - 273.15
     deck = [
@@ -210,29 +193,20 @@ def run_xyce(row: Row, executable: str) -> Values:
         *statements,
         f".options device temp={temperature!r} tnom={nominal!r}",
         ".options nonlin reltol=1e-6 abstol=1e-14",
-        f".print {kind} format=csv file=probe.csv {' '.join(columns)}",
+        f".print {kind} format=csv file=result.csv {' '.join(columns)}",
         ".end",
     ]
-    with tempfile.TemporaryDirectory() as name:
-        directory = Path(name)
-        (directory / "probe.cir").write_text("\n".join(deck) + "\n", encoding="utf-8")
-        try:
-            done = subprocess.run(  # noqa: S603 - Xyce runs the deck written here
-                [executable, "probe.cir"],
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=TIMEOUT,
-                cwd=directory,
-            )
-        except subprocess.TimeoutExpired:
-            message = f"Xyce ran for more than {TIMEOUT} s"
-            raise Failed(message) from None
-        printed = done.stdout + done.stderr
-        table = directory / "probe.csv"
-        if done.returncode != 0 or not table.is_file():
-            raise _refused(printed, XYCE_REFUSALS)
-        text = table.read_text(encoding="utf-8")
+    if xyce.EXECUTABLE is None:
+        message = "Xyce is not installed"
+        raise NotOffered(message)
+    try:
+        executed = xyce.execute(deck, [xyce.EXECUTABLE], timeout=TIMEOUT)
+    except JoltyError as error:
+        raise Failed(str(error)) from None
+    printed = executed.printed
+    if executed.returncode != 0 or executed.values is None:
+        raise _refused(printed, XYCE_REFUSALS)
+    text = executed.values
     rows = list(csv.reader(io.StringIO(text)))
     header = [cell.strip().upper() for cell in rows[0]]
     data = np.array([[float(cell) for cell in line] for line in rows[1:] if line])
@@ -254,16 +228,3 @@ def run_xyce(row: Row, executable: str) -> Values:
             vector = found[key].astype(complex)
         values[name] = _at(scale, vector, read) ** read.power
     return values if probe.derive is None else probe.derive(values)
-
-
-def xyce_version(executable: str) -> str:
-    """The version Xyce prints of itself."""
-    done = subprocess.run(  # noqa: S603 - Xyce prints its version
-        [executable, "-v"], capture_output=True, check=False, text=True
-    )
-    return done.stdout.strip().splitlines()[0] if done.stdout.strip() else ""
-
-
-def find_xyce(given: str | None) -> str | None:
-    """The Xyce program to run: the one given, else the one on the path."""
-    return given or shutil.which("Xyce")

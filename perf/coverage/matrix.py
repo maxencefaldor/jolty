@@ -21,7 +21,7 @@ Usage::
 
     scripts/bench --coverage                 every row, in jolty and ngspice
     scripts/bench --coverage op ac           only these rows
-    scripts/bench --coverage --simulator xyce --xyce PATH   Xyce's column, where it runs
+    scripts/bench --coverage --simulator xyce   Xyce's column, where Xyce is on the path
 
 The cells go to ``perf/coverage/coverage.json``, a run replacing only the cells of the
 rows and simulators it ran, and the matrix is rendered from it into
@@ -40,7 +40,7 @@ import runners
 from probes import Category, Documented, Known, NotOffered, Row, Values, rows
 from pydantic import BaseModel, Field, JsonValue
 
-from jolty.spice import ngspice
+from jolty.spice import ngspice, xyce
 
 COVERAGE: Final = Path(__file__).resolve().parent
 """The ``perf/coverage`` directory."""
@@ -153,7 +153,7 @@ def _number(value: complex) -> str:
     return f"{value.real:.7g}{value.imag:+.7g}j"
 
 
-def probe(row: Row, simulator: Simulator, xyce: str | None, root: Path) -> Cell:
+def probe(row: Row, simulator: Simulator, root: Path) -> Cell:
     """Runs `row`'s probe in `simulator`, its cell not yet judged.
 
     Its messages name the files of the repository at `root` from there.
@@ -167,9 +167,9 @@ def probe(row: Row, simulator: Simulator, xyce: str | None, root: Path) -> Cell:
             case Simulator.NGSPICE_KLU:
                 found = runners.run_ngspice(row, ".options klu")
             case Simulator.XYCE:
-                if xyce is None:
+                if xyce.EXECUTABLE is None:
                     return Cell(status=Status.UNKNOWN, evidence="Xyce is not installed")
-                found = runners.run_xyce(row, xyce)
+                found = runners.run_xyce(row)
     except NotOffered as refused:
         return Cell(status=Status.ABSENT, evidence=_relative(str(refused), root))
     except Documented as manual:
@@ -207,7 +207,7 @@ def rejudge(document: Document, every: Mapping[str, Row]) -> None:
             )
 
 
-def versions(simulator: Simulator, xyce: str | None) -> str:
+def versions(simulator: Simulator) -> str:
     """The version of the program a simulator configuration runs."""
     match simulator:
         case Simulator.JOLTY:
@@ -215,7 +215,7 @@ def versions(simulator: Simulator, xyce: str | None) -> str:
         case Simulator.NGSPICE | Simulator.NGSPICE_KLU:
             return ngspice.version() or ""
         case Simulator.XYCE:
-            return "" if xyce is None else runners.xyce_version(xyce)
+            return xyce.version() or ""
 
 
 class Context(BaseModel):
@@ -230,13 +230,12 @@ class Context(BaseModel):
 def measure(
     names: Sequence[str],
     configurations: Sequence[str],
-    xyce: str | None,
     context: Context,
 ) -> None:
     """Runs the rows `names` in the simulators named, and renders the matrix.
 
     Every row runs without names, and jolty's and ngspice's configurations without
-    `configurations`; `xyce` is the Xyce program, the one on the path by default.
+    `configurations`; Xyce runs where it is on the path.
 
     Raises:
         SystemExit: When a row or a simulator named does not exist.
@@ -259,10 +258,9 @@ def measure(
         if RESULTS.is_file()
         else Document()
     )
-    program = runners.find_xyce(xyce)
     for simulator in chosen:
         document.simulators[simulator] = Ran(
-            version=versions(simulator, program),
+            version=versions(simulator),
             commit=context.commit,
             machine=context.machine,
             load=context.load,
@@ -281,7 +279,7 @@ def measure(
         )
         cells = []
         for simulator in chosen:
-            cell = probe(row, simulator, program, context.root)
+            cell = probe(row, simulator, context.root)
             line.cells[simulator] = cell
             cells.append(f"{simulator} {cell.status}")
         document.rows[name] = line

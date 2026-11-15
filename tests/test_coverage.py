@@ -24,7 +24,7 @@ COMMITTED = matrix.Document.model_validate_json(
 @pytest.mark.parametrize("key", list(ROWS))
 def test_jolty_column_is_what_its_probe_finds(key: str) -> None:
     row = ROWS[key]
-    cell = matrix.probe(row, matrix.Simulator.JOLTY, None, matrix.COVERAGE.parents[1])
+    cell = matrix.probe(row, matrix.Simulator.JOLTY, matrix.COVERAGE.parents[1])
     document = matrix.Document(
         rows={
             key: matrix.Line(

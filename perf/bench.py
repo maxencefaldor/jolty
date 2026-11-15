@@ -1425,19 +1425,28 @@ def coverage(arguments: Bench) -> None:
         load=load_average(),
         root=ROOT,
     )
-    matrix.measure(arguments.fixtures, arguments.simulator, None, context)
+    matrix.measure(arguments.fixtures, arguments.simulator, context)
+
+
+def instead(arguments: Bench) -> bool:
+    """Runs the suite `arguments` name instead of the timing, if they name one.
+
+    Returns whether they did: ``--robustness``, ``--coverage`` or ``--break-even``.
+    """
+    if arguments.robustness:
+        robustness(arguments)
+    elif arguments.coverage:
+        coverage(arguments)
+    elif arguments.break_even is not None:
+        break_evens(arguments, arguments.break_even)
+    else:
+        return False
+    return True
 
 
 def measure(arguments: Bench) -> None:
     """Times the fixtures, writes the times, and compares them with a baseline's."""
-    if arguments.robustness:
-        robustness(arguments)
-        return
-    if arguments.coverage:
-        coverage(arguments)
-        return
-    if arguments.break_even is not None:
-        break_evens(arguments, arguments.break_even)
+    if instead(arguments):
         return
     if arguments.largest and not arguments.scale:
         message = "--largest spreads a fixture of --scale; give --scale too"

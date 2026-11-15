@@ -51,7 +51,6 @@ import pytest
 
 from differential import (
     SKIP_XYCE,
-    TIGHT,
     closest,
     compare,
     compared,
@@ -73,7 +72,7 @@ from jolty import (
     ir,
 )
 from jolty.errors import JoltyError
-from jolty.plan import decade, linear
+from jolty.plan import TIGHT, decade, linear
 from jolty.spice.export import XYCE
 from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE
 from jolty.units import Hz, MHz, Quantity, V, ms, ns, us
