@@ -300,7 +300,7 @@ A circuit of a foundry's devices runs each run in ngspice instead, as many at on
 
 ## Options
 
-`Options` sets the tolerances, each one left out taking SPICE's default, and what results record.
+`Options` sets the tolerances, each one left out taking SPICE's default, and how a run spends its iterations, memory and threads; what a run records is its plan's.
 
 | Option | Default | Meaning |
 | --- | --- | --- |

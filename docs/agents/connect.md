@@ -50,6 +50,7 @@ The server offers one tool per command:
 | --- | --- |
 | `build_circuit` | `jolty build` |
 | `simulate_circuit` | `jolty simulate` |
+| `merge_shards` | `jolty merge` |
 | `plot_results` | `jolty plot` |
 | `draw_schematic` | `jolty draw` |
 | `write_viewer` | `jolty view` |
