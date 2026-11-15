@@ -19,7 +19,7 @@ use crate::junction::{
     BOLTZMANN, Depletion, ELEMENTARY_CHARGE, Temperatures, band_gap, below_one, critical_voltage,
     depletion_charge, junction_current, limit_channel, limit_junction,
 };
-use crate::kernel::parts::{self, Nodes, Oriented, Series, series_value};
+use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series, series_value};
 use crate::noise::Flicker;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
@@ -178,6 +178,10 @@ const GATE: usize = 0;
 const BULK: usize = 1;
 const INNER_DRAIN: usize = 2;
 const INNER_SOURCE: usize = 3;
+
+/// The stamped nodes across the oxide from the gate, towards which its displacement
+/// currents flow: the source, the drain and the bulk.
+const DISPLACED: [usize; 3] = [INNER_SOURCE, INNER_DRAIN, BULK];
 
 /// The pairs of nodes across which the voltages the transistor's equations take as
 /// variables lie: gate-source, drain-source and bulk-source.
@@ -683,27 +687,18 @@ impl<R: Real> Oxide<R> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Displacement {
     unknown: usize,
-    /// The index among the transistor's stamped nodes of the node across the oxide from the
-    /// gate.
-    node: usize,
     /// The local entries at (unknown, unknown), (unknown, gate), (unknown, node),
     /// (gate, unknown) and (node, unknown).
     entries: [usize; 5],
 }
 
 impl Displacement {
-    /// Claims a local unknown labelled `label` for the displacement towards `node`, the node
-    /// at index `index` among the stamped ones, from `gate`.
-    fn new(
-        layout: &mut Layout,
-        label: &'static str,
-        gate: usize,
-        (index, node): (usize, usize),
-    ) -> Self {
+    /// Claims a local unknown labelled `label` for the displacement towards the local
+    /// unknown `node` from `gate`.
+    fn new(layout: &mut Layout, label: &'static str, gate: usize, node: usize) -> Self {
         let unknown = layout.internal(label, Quantity::Displacement);
         Self {
             unknown,
-            node: index,
             entries: [
                 layout.entry(unknown, unknown),
                 layout.entry(unknown, gate),
@@ -716,11 +711,11 @@ impl Displacement {
 
     /// Adds the displacement's equation, `w − Cox · d(v_gate − v_node)/dt = 0`, for the
     /// `oxide`'s whole capacitance, and the derivatives with respect to `w` of Meyer's
-    /// current from the gate to the node, `C · w / Cox`, for the Meyer `capacitance`.
-    /// Returns `w`.
+    /// current from the gate to the node, `C · w / Cox`, for the Meyer `capacitance`, the
+    /// node at index `index` among the stamped `nodes`. Returns `w`.
     fn add<R: Real>(
         &self,
-        nodes: &Nodes<4>,
+        (nodes, index): (&Nodes<4>, usize),
         (oxide, capacitance): (R, R),
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
@@ -728,7 +723,7 @@ impl Displacement {
         let row = self.unknown;
         let [own, gate, node, from_gate, from_node] = self.entries;
         let displacement = at.value(row);
-        let voltage = nodes.voltage(at, GATE) - nodes.voltage(at, self.node);
+        let voltage = nodes.voltage(at, GATE) - nodes.voltage(at, index);
         stamp.add_residual(row, R::constant(displacement));
         stamp.add_charge(row, -oxide * voltage);
         stamp.add_conductance(own, R::constant(1.0));
@@ -849,11 +844,13 @@ impl Kernel for Mosfet {
         );
         let stamp = Nodes::new(layout, [gate, bulk, inner_drain, inner_source]);
         let displacements = parameters.has_oxide().then(|| {
-            let mut displacement = |label, node| Displacement::new(layout, label, gate, node);
+            let mut displacement =
+                |label, index| Displacement::new(layout, label, gate, stamp.node(index));
+            let [source, drain, bulk] = DISPLACED;
             [
-                displacement("gate_source_displacement", (INNER_SOURCE, inner_source)),
-                displacement("gate_drain_displacement", (INNER_DRAIN, inner_drain)),
-                displacement("gate_bulk_displacement", (BULK, bulk)),
+                displacement("gate_source_displacement", source),
+                displacement("gate_drain_displacement", drain),
+                displacement("gate_bulk_displacement", bulk),
             ]
         });
         Ok(MosfetShape {
@@ -893,20 +890,23 @@ impl Kernel for Mosfet {
             bias: &bias,
             variables: VARIABLES,
         };
-        added.current(stamp, (INNER_DRAIN, INNER_SOURCE), conduction.current);
+        // Every derivative among the stamped nodes is summed here, and written once.
+        let mut derivatives = Derivatives::new();
+        let sums = &mut derivatives;
+        added.add_current(stamp, sums, (INNER_DRAIN, INNER_SOURCE), conduction.current);
 
         let (vgd, vbd) = (vgs - vds, vbs - vds);
         let [drain, source] = prepared.junctions;
         for (junction, node, voltage) in [(drain, INNER_DRAIN, vbd), (source, INNER_SOURCE, vbs)] {
             let (current, charge) = junction.evaluate(voltage, at.gmin);
-            added.current(stamp, (BULK, node), current);
-            added.charge(stamp, (BULK, node), charge);
+            added.add_current(stamp, sums, (BULK, node), current);
+            added.add_charge(stamp, sums, (BULK, node), charge);
         }
 
         let [source_overlap, drain_overlap, bulk_overlap] = prepared.overlaps;
-        added.charge(stamp, (GATE, INNER_SOURCE), vgs.scale(source_overlap));
-        added.charge(stamp, (GATE, INNER_DRAIN), vgd.scale(drain_overlap));
-        added.charge(stamp, (GATE, BULK), (vgs - vbs).scale(bulk_overlap));
+        added.add_charge(stamp, sums, (GATE, INNER_SOURCE), vgs.scale(source_overlap));
+        added.add_charge(stamp, sums, (GATE, INNER_DRAIN), vgd.scale(drain_overlap));
+        added.add_charge(stamp, sums, (GATE, BULK), (vgs - vbs).scale(bulk_overlap));
 
         if let (Some(oxide), Some(displacements)) = (&prepared.oxide, &shape.displacements) {
             let capacitances = if conduction.forward {
@@ -919,12 +919,15 @@ impl Kernel for Mosfet {
                 *variable = capacitance.value.value();
             }
             let whole = oxide.capacitance;
-            for (displacement, capacitance) in displacements.iter().zip(capacitances) {
-                let current = displacement.add(&shape.stamp, (whole, capacitance.value), at, stamp);
+            let across = displacements.iter().zip(DISPLACED).zip(capacitances);
+            for ((displacement, node), capacitance) in across {
+                let current =
+                    displacement.add((&shape.stamp, node), (whole, capacitance.value), at, stamp);
                 let meyer = capacitance.scale(R::constant(sign * current) / whole);
-                added.current(stamp, (GATE, displacement.node), meyer);
+                added.add_current(stamp, sums, (GATE, node), meyer);
             }
         }
+        derivatives.stamp(&shape.stamp, stamp);
     }
 
     /// The prepared threshold, which a transistor's first step is limited from, moves with

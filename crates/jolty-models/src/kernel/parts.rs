@@ -507,4 +507,199 @@ impl<const M: usize, const N: usize> Oriented<'_, M, N> {
             nodes.capacitance(stamp, (on, against), variable, derivative);
         }
     }
+
+    /// As [`Oriented::current`], its derivatives summed into `derivatives` rather than
+    /// written to `stamp`.
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined where its nodes are constants, its sums stay in registers"
+    )]
+    #[inline(always)]
+    pub(crate) fn add_current<R: Real>(
+        &self,
+        stamp: &mut Stamp<'_, R>,
+        derivatives: &mut Derivatives<R, M>,
+        (from, to): (usize, usize),
+        current: Dual<R, N>,
+    ) {
+        self.nodes.current(
+            stamp,
+            from,
+            to,
+            current.extend(self.bias.beyond) * self.sign,
+        );
+        let conductances = &mut derivatives.conductance;
+        for (variable, derivative) in self.variables.into_iter().zip(current.gradient) {
+            conductances.add((from, to), variable, derivative);
+        }
+    }
+
+    /// As [`Oriented::charge`], its derivatives summed into `derivatives` rather than
+    /// written to `stamp`.
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined where its nodes are constants, its sums stay in registers"
+    )]
+    #[inline(always)]
+    pub(crate) fn add_charge<R: Real>(
+        &self,
+        stamp: &mut Stamp<'_, R>,
+        derivatives: &mut Derivatives<R, M>,
+        (on, against): (usize, usize),
+        charge: Dual<R, N>,
+    ) {
+        self.nodes.charge(
+            stamp,
+            on,
+            against,
+            charge.extend(self.bias.beyond) * self.sign,
+        );
+        let capacitances = &mut derivatives.capacitance;
+        for (variable, derivative) in self.variables.into_iter().zip(charge.gradient) {
+            capacitances.add((on, against), variable, derivative);
+        }
+    }
+}
+
+/// The conductances and capacitances an instance adds among its `M` stamped nodes, each
+/// the sum, in the order they come, of the derivatives that [`Oriented::add_current`] and
+/// [`Oriented::add_charge`] add at its pair of them, so that [`Derivatives::stamp`] writes
+/// each local entry among them once.
+///
+/// Each is the sum [`Oriented::current`] and [`Oriented::charge`] make in the stamp one
+/// write at a time, of the same terms in the same order, and so the same bits at an entry
+/// that held nothing before; at one that held a value, as a series resistance leaves at
+/// the node behind it, the sum adds to the value at once.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Derivatives<R: Real, const M: usize> {
+    conductance: Entries<R, M>,
+    capacitance: Entries<R, M>,
+}
+
+impl<R: Real, const M: usize> Derivatives<R, M> {
+    /// No derivative yet.
+    pub(crate) fn new() -> Self {
+        let zero = Entries([[R::constant(0.0); M]; M]);
+        Self {
+            conductance: zero,
+            capacitance: zero,
+        }
+    }
+
+    /// Adds each conductance and capacitance to its local entry of `nodes` in `stamp`.
+    pub(crate) fn stamp(&self, nodes: &Nodes<M>, stamp: &mut Stamp<'_, R>) {
+        let rows = self.conductance.0.iter().zip(&self.capacitance.0);
+        for (row, (conductances, capacitances)) in rows.enumerate() {
+            let columns = conductances.iter().zip(capacitances);
+            for (column, (&conductance, &capacitance)) in columns.enumerate() {
+                let entry = nodes.entry(row, column);
+                stamp.add_conductance(entry, conductance);
+                stamp.add_capacitance(entry, capacitance);
+            }
+        }
+    }
+}
+
+/// One number for each pair of an instance's `M` stamped nodes, by row and column.
+#[derive(Debug, Clone, Copy)]
+struct Entries<R: Real, const M: usize>([[R; M]; M]);
+
+impl<R: Real, const M: usize> Entries<R, M> {
+    /// Adds `value`, the derivative of what flows from `from` to `to` with respect to the
+    /// voltage of `plus` over `minus`, as [`Nodes::conductance`] adds it in a stamp.
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined where its nodes are constants, its sums stay in registers"
+    )]
+    #[inline(always)]
+    fn add(&mut self, (from, to): (usize, usize), (plus, minus): (usize, usize), value: R) {
+        for (row, column, value) in [
+            (from, plus, value),
+            (from, minus, -value),
+            (to, plus, -value),
+            (to, minus, value),
+        ] {
+            if let Some(entry) = self.0.get_mut(row).and_then(|row| row.get_mut(column)) {
+                *entry += value;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    /// The residuals, scales and charges of 4 local unknowns, and the conductances and
+    /// capacitances of the entries among them, that `add` writes into a stamp.
+    fn stamped(add: impl FnOnce(&mut Stamp<'_, f64>)) -> [Vec<u64>; 5] {
+        let mut rows = [vec![0.0; 4], vec![0.0; 4], vec![0.0; 4]];
+        let mut entries = [vec![0.0; 16], vec![0.0; 16]];
+        let [residual, scale, charge] = &mut rows;
+        let [conductance, capacitance] = &mut entries;
+        add(&mut Stamp::zeroed(
+            [residual, scale, charge],
+            [conductance, capacitance],
+        ));
+        let [residual, scale, charge] = rows;
+        let [conductance, capacitance] = entries;
+        [residual, scale, charge, conductance, capacitance]
+            .map(|values| values.iter().map(|value| value.to_bits()).collect())
+    }
+
+    proptest! {
+        /// Summing a transistor's derivatives in place and writing each entry once stamps
+        /// the same bits as writing each derivative as it comes.
+        #[test]
+        fn summed_derivatives_stamp_what_each_write_does(
+            numbers in proptest::collection::vec(-1e3..1e3f64, 4 * 8),
+            beyond in proptest::array::uniform3(-1e-3..1e-3f64),
+            sign in proptest::bool::ANY,
+        ) {
+            let mut layout = Layout::new(4);
+            let nodes = Nodes::new(&mut layout, [1, 3, 0, 2]);
+            let bias = Bias { voltages: [0.0; 3], beyond };
+            let added = Oriented {
+                nodes: &nodes,
+                sign: if sign { 1.0 } else { -1.0 },
+                bias: &bias,
+                variables: [(0, 3), (2, 3), (1, 3)],
+            };
+            // Currents and charges between pairs of the nodes, some pairs again.
+            let pairs = [(2, 3), (1, 2), (1, 3), (0, 3), (0, 2), (0, 1), (1, 3), (2, 3)];
+            let terms: Vec<_> = numbers
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(pairs)
+                .enumerate()
+                .map(|(index, (&[value, gs, ds, bs], pair))| {
+                    (index % 3 == 1, pair, Dual { value, gradient: [gs, ds, bs] })
+                })
+                .collect();
+            let written = stamped(|stamp| {
+                for &(charge, pair, term) in &terms {
+                    if charge {
+                        added.charge(stamp, pair, term);
+                    } else {
+                        added.current(stamp, pair, term);
+                    }
+                }
+            });
+            let summed = stamped(|stamp| {
+                let mut derivatives = Derivatives::new();
+                for &(charge, pair, term) in &terms {
+                    if charge {
+                        added.add_charge(stamp, &mut derivatives, pair, term);
+                    } else {
+                        added.add_current(stamp, &mut derivatives, pair, term);
+                    }
+                }
+                derivatives.stamp(&nodes, stamp);
+            });
+            prop_assert_eq!(written, summed);
+        }
+    }
 }
