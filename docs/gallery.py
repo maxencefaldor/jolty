@@ -228,8 +228,8 @@ DISCOVERIES: Final = (
 class Replication:
     """What ngspice found of an example, and how far it lies from jolty's results."""
 
-    solved: dict[str, results.Result] = field(default_factory=dict)
-    corners: dict[str, dict[str, results.Result]] = field(default_factory=dict)
+    solved: dict[str, results.AnalysisResult] = field(default_factory=dict)
+    corners: dict[str, dict[str, results.AnalysisResult]] = field(default_factory=dict)
     deviations: dict[str, dict[str, tuple[int, float]]] = field(default_factory=dict)
     """Per analysis, per quantity, the signals compared and the largest deviation,
     relative to each signal's largest value."""
@@ -373,7 +373,7 @@ def _replicate(
     plan: Plan,
     script_specs: Specs | None,
     circuits: Mapping[str | None, ir.Circuit],
-    solved: Mapping[str, results.Result],
+    solved: Mapping[str, results.AnalysisResult],
     *,
     free_running: bool,
 ) -> Replication:
@@ -390,14 +390,14 @@ def _replicate(
     for corner, temperature in conditions:
         kelvins = (temperature or celsius(27)).value
         circuit = circuits.get(corner, circuits[None])
-        found: dict[str, results.Result] = {}
+        found: dict[str, results.AnalysisResult] = {}
         for name, analysis in plan.analyses.items():
             commands = _commands(analysis, circuit)
             jolty = solved.get(name)
             if (
                 commands is None
                 or jolty is None
-                or isinstance(jolty, results.Sensitivities)
+                or isinstance(jolty, results.SensitivityResult)
             ):
                 continue
             texts, excited, option = commands
@@ -412,19 +412,19 @@ def _replicate(
             table, shared = _from_raw(raw, circuit, jolty.unknowns)
             found[name] = _result(jolty, raw, table)
             if corner is None and not (
-                free_running and isinstance(jolty, results.Waveforms)
+                free_running and isinstance(jolty, results.TransientResult)
             ):
                 replication.deviations[name] = {
-                    quantity: (
+                    nature: (
                         len(columns),
                         _deviation(jolty, found[name], columns),
                     )
-                    for quantity in ("voltage", "current")
+                    for nature in ("voltage", "current")
                     if (
                         columns := [
                             column
                             for column in shared
-                            if jolty.unknowns[column].quantity == quantity
+                            if jolty.unknowns[column].nature == nature
                         ]
                     )
                 }
@@ -441,38 +441,40 @@ def _replicate(
         )
         unfinished = {name for _, name in replication.unfinished}
         replication.unreplicated = tuple(
-            requirement.measurement.analysis in unfinished
+            requirement.measure.analysis in unfinished
             for requirement in script_specs.requirements
         )
     return replication
 
 
 def _result(
-    jolty: results.Result, raw: ngspice.Raw, table: np.ndarray
-) -> results.Result:
+    jolty: results.AnalysisResult, raw: ngspice.Raw, table: np.ndarray
+) -> results.AnalysisResult:
     """The results ngspice found, as jolty's, on the same unknowns."""
     match jolty:
-        case results.OperatingPoint():
-            return results.OperatingPoint(jolty.unknowns, table[0].real, "ngspice")
-        case results.Sweep():
+        case results.OperatingPointResult():
+            return results.OperatingPointResult(
+                jolty.unknowns, table[0].real, "ngspice"
+            )
+        case results.DcSweepResult():
             sweep = raw.vectors.get("v(v-sweep)")
             levels = jolty.levels if sweep is None else sweep.real
             levels = jolty.levels if len(levels) != len(table) else levels
-            return results.Sweep(
-                jolty.unknowns, jolty.source, jolty.quantity, levels, table.real
+            return results.DcSweepResult(
+                jolty.unknowns, jolty.source, jolty.nature, levels, table.real
             )
-        case results.Response():
+        case results.AcResult():
             frequencies = raw.vectors["frequency"].real
-            return results.Response(
+            return results.AcResult(
                 jolty.unknowns,
                 jolty.source,
                 frequencies,
                 table,
                 jolty.operating_point,
             )
-        case results.Waveforms():
+        case results.TransientResult():
             times = raw.vectors["time"].real
-            return results.Waveforms(
+            return results.TransientResult(
                 jolty.unknowns, times, table.real, jolty.statistics
             )
     message = f"no ngspice counterpart to {type(jolty).__name__}"
@@ -480,7 +482,7 @@ def _result(
 
 
 def _deviation(
-    jolty: results.Result, spice: results.Result, shared: Sequence[int]
+    jolty: results.AnalysisResult, spice: results.AnalysisResult, shared: Sequence[int]
 ) -> float:
     """The largest deviation between the engines, relative to each signal's size.
 
@@ -491,11 +493,11 @@ def _deviation(
     worst = 0.0
     for column in shared:
         match jolty, spice:
-            case results.OperatingPoint(), results.OperatingPoint():
+            case results.OperatingPointResult(), results.OperatingPointResult():
                 ours, theirs = jolty.values[[column]], spice.values[[column]]
-            case results.Sweep(), results.Sweep():
+            case results.DcSweepResult(), results.DcSweepResult():
                 ours, theirs = jolty.values[:, column], spice.values[:, column]
-            case results.Response(), results.Response():
+            case results.AcResult(), results.AcResult():
                 common = np.isin(
                     np.round(np.log10(jolty.frequencies), 9),
                     np.round(np.log10(spice.frequencies), 9),
@@ -506,7 +508,7 @@ def _deviation(
                 )
                 ours = jolty.values[common, column]
                 theirs = spice.values[matched, column]
-            case results.Waveforms(), results.Waveforms():
+            case results.TransientResult(), results.TransientResult():
                 window = float(np.max(np.diff(jolty.times)))
                 theirs = spice.values[:, column]
                 ours = _closest(
@@ -515,7 +517,7 @@ def _deviation(
             case _:
                 continue
         size = float(np.max(np.abs(ours))) if len(ours) else 0.0
-        floor = 1e-9 if jolty.unknowns[column].quantity == "voltage" else 1e-12
+        floor = 1e-9 if jolty.unknowns[column].nature == "voltage" else 1e-12
         scale = max(size, float(np.max(np.abs(theirs))) if len(theirs) else 0.0)
         if scale <= floor:
             continue
@@ -624,7 +626,10 @@ def build(entry: Entry) -> Built:
         )
         for name, found in replication.solved.items():
             ours = solved[name]
-            if isinstance(found, (results.Sweep, results.Response, results.Waveforms)):
+            if isinstance(
+                found,
+                (results.DcSweepResult, results.AcResult, results.TransientResult),
+            ):
                 target = IMAGES / f"{entry.name}.{name}.replication.png"
                 _replication_plot(name, ours, found).savefig(target)
                 replicated_plots.append(target.name)
@@ -649,7 +654,7 @@ def build(entry: Entry) -> Built:
 
 
 def _replication_plot(
-    name: str, ours: results.Result, theirs: results.Result
+    name: str, ours: results.AnalysisResult, theirs: results.AnalysisResult
 ) -> Figure:
     """The signals jolty found, solid, and ngspice's, dashed, on one plot."""
     probes = plots.default_probes(ours.unknowns)[:4]
@@ -667,13 +672,13 @@ def _replication_plot(
         x_theirs, y_theirs = _trace(theirs, column)
         axes.plot(x_ours, y_ours, color=color, linewidth=1.6, label=probe)
         axes.plot(x_theirs, y_theirs, color="#0b0b0b", linewidth=0.9, linestyle="--")
-    if isinstance(ours, results.Response):
+    if isinstance(ours, results.AcResult):
         axes.set_xscale("log")
         axes.set_ylabel("magnitude (dB)", color="#52514e")
         axes.xaxis.set_major_formatter(EngFormatter(unit="Hz", sep=" "))
-    elif isinstance(ours, results.Sweep):
+    elif isinstance(ours, results.DcSweepResult):
         axes.set_ylabel("voltage (V)", color="#52514e")
-        unit = "A" if ours.quantity == "current" else "V"
+        unit = "A" if ours.nature == "current" else "V"
         axes.xaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
     else:
         axes.set_ylabel("voltage (V)", color="#52514e")
@@ -686,15 +691,17 @@ def _replication_plot(
     return figure
 
 
-def _trace(result: results.Result, column: int) -> tuple[np.ndarray, np.ndarray]:
+def _trace(
+    result: results.AnalysisResult, column: int
+) -> tuple[np.ndarray, np.ndarray]:
     """The abscissa and one unknown of a result, magnitudes in decibels."""
     match result:
-        case results.Response():
+        case results.AcResult():
             magnitude = np.abs(result.values[:, column])
             return result.frequencies, 20 * np.log10(np.maximum(magnitude, 1e-300))
-        case results.Sweep():
+        case results.DcSweepResult():
             return result.levels, result.values[:, column].real
-        case results.Waveforms():
+        case results.TransientResult():
             return result.times, result.values[:, column].real
     return np.empty(0), np.empty(0)
 
@@ -794,10 +801,10 @@ def _replication_section(built: Built) -> list[str]:
             ),
             "| --- | --- | --- | --- | --- |",
         ]
-        for name, quantities in replication.deviations.items():
+        for name, natures in replication.deviations.items():
             cells = []
-            for quantity in ("voltage", "current"):
-                count, deviation = quantities.get(quantity, (0, 0.0))
+            for nature in ("voltage", "current"):
+                count, deviation = natures.get(nature, (0, 0.0))
                 cells += [str(count), _ratio(deviation) if count else "—"]
             lines.append(f"| `{name}` | {' | '.join(cells)} |")
         lines.append("")
@@ -896,9 +903,9 @@ def _trimmed(lines: Sequence[str]) -> list[str]:
 def _worst_voltage(replication: Replication) -> float | None:
     """The largest deviation of a voltage between the engines, or None."""
     found = [
-        quantities["voltage"][1]
-        for quantities in replication.deviations.values()
-        if "voltage" in quantities
+        natures["voltage"][1]
+        for natures in replication.deviations.values()
+        if "voltage" in natures
     ]
     return max(found) if found else None
 

@@ -129,9 +129,9 @@ def test_results_files_keep_the_logic() -> None:
         save_results(path, analyses)
         loaded = load_results(path)
     point, step = loaded["op"], loaded["step"]
-    assert isinstance(point, results.OperatingPoint)
+    assert isinstance(point, results.OperatingPointResult)
     assert point.nets == simulation.nets
-    assert isinstance(step, results.Waveforms)
+    assert isinstance(step, results.TransientResult)
     assert step.level("y").times.tolist() == pytest.approx([0, 4e-9])
 
 

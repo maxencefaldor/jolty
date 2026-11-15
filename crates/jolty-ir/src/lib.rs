@@ -15,7 +15,7 @@
 //!
 //! let circuit = Circuit::from_json(r#"{
 //!     "format": "jolty-circuit",
-//!     "version": 1,
+//!     "version": 2,
 //!     "top": "divider",
 //!     "components": {
 //!         "divider": {
@@ -55,7 +55,7 @@ pub use validate::{Problem, Problems};
 pub const FORMAT: &str = "jolty-circuit";
 
 /// The version of the circuit format this crate reads and writes.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// The parameters of a device instance, by name, as JSON values in SI base units.
 pub type Parameters = serde_json::Map<String, serde_json::Value>;
@@ -133,7 +133,7 @@ pub struct Instance {
     pub part: Option<String>,
     /// The line of source code that placed the instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<Source>,
+    pub source_location: Option<SourceLocation>,
 }
 
 /// A limit a part's maker states on one of its stresses, which a simulation checks: the
@@ -267,7 +267,7 @@ pub enum Of {
 /// The line of source code that placed an instance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Source {
+pub struct SourceLocation {
     /// The path of the file, as the build script's runner reported it.
     pub file: String,
     /// The line number, counted from 1.
@@ -358,14 +358,14 @@ mod tests {
 
     fn divider() -> &'static str {
         r#"{
-            "format": "jolty-circuit", "version": 1, "top": "divider",
+            "format": "jolty-circuit", "version": 2, "top": "divider",
             "components": {"divider": {
                 "ports": [{"name": "ground", "role": "ground"}],
                 "instances": [
                     {"id": "R1", "of": {"device": "resistor"},
                      "parameters": {"resistance": 1000.0},
                      "terminals": {"a": "top", "b": "ground"},
-                     "source": {"file": "divider.py", "line": 7, "function": "divider"}}
+                     "source_location": {"file": "divider.py", "line": 7, "function": "divider"}}
                 ]
             }}
         }"#

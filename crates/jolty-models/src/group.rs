@@ -126,8 +126,8 @@ impl<'a> Instance<'a> {
             &mut layout,
         )?;
         let mut nodes = binding.terminals().to_vec();
-        for (label, quantity) in layout.internals() {
-            nodes.push(Some(binding.internal(label, *quantity)));
+        for (label, nature) in layout.internals() {
+            nodes.push(Some(binding.internal(label, *nature)));
         }
         let node = |local: usize| nodes.get(local).copied().flatten();
         for &(row, column) in layout.entries() {
@@ -663,8 +663,8 @@ impl Groups {
         runs.groups[index].push(made.into_any());
         nodes.clear();
         nodes.extend_from_slice(binding.terminals());
-        for (label, quantity) in layout.internals() {
-            nodes.push(Some(binding.internal(label, *quantity)));
+        for (label, nature) in layout.internals() {
+            nodes.push(Some(binding.internal(label, *nature)));
         }
         let node = |local: usize| nodes.get(local).copied().flatten();
         self.pivoted.extend(

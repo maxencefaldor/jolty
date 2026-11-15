@@ -48,7 +48,7 @@ A shard's fingerprint is a SHA-256 hash of what its numbers depend on: each cond
 Shards of other fingerprints do not merge, as their numbers could differ: the bits are the same on one build and one platform, and only agree within tolerance across platforms, whose math libraries round apart.
 So every machine runs the same build of jolty, such as the same wheel, on the same platform, and the same scripts, from the same directory, since a circuit names the script lines that placed its instances.
 The parallelism of the options changes no result but `max_unknowns_per_interior`'s, which reorders the factorization's arithmetic and so the last digits, and the fingerprint leaves the rest out, as it does the threads.
-A measurement a script writes is hashed by its words, not its code.
+A measure a script writes is hashed by its words, not its code.
 
 ## Launching
 
@@ -123,6 +123,6 @@ The merge reads every shard on one machine, so its time grows with the samples, 
 
 ## Small outputs
 
-A shard's outcome is its measurements: for each sample, at each condition, 8 bytes for each number the samples vary, 12 for each requirement, a number and why it read none, and one for each analysis, whether it ended.
+A shard's outcome is its measures: for each sample, at each condition, 8 bytes for each number the samples vary, 12 for each requirement, a number and why it read none, and one for each analysis, whether it ended.
 It holds waveforms only of the unknowns `--probes` names, 8 bytes at each point of each, 16 for a response's phasors.
 So the size of every shard's arrays is known from one shard's, and a shard's report warns when the shards of every sample would hold more than 10 GB.

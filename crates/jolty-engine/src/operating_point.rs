@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
-use jolty_models::{Input, Level, Quantity};
+use jolty_models::{Input, Level, Nature};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
@@ -58,7 +58,7 @@ const SETTLE_ROUNDS: usize = 4;
 
 /// A DC solution: every unknown's value, every logic net's level, and how it was found.
 #[derive(Debug, Clone, PartialEq)]
-pub struct OperatingPoint {
+pub struct OperatingPointResult {
     /// The value of every unknown, in the simulator's order.
     pub values: Vec<f64>,
     /// What the devices its options record did: the current into each recorded terminal
@@ -101,7 +101,7 @@ pub(crate) struct Remembered {
     /// The DC solution from zero, before the logic settled with it.
     solved: Solved,
     /// The operating point, its observation what the options it was solved under record.
-    point: OperatingPoint,
+    point: OperatingPointResult,
     events: Events,
     /// The sparse solver as solving the point left it: its pivots and its factors, which
     /// the analyses after an operating point factor from.
@@ -222,7 +222,7 @@ impl Simulator {
     pub fn operating_point(
         &mut self,
         options: &Options,
-    ) -> Result<OperatingPoint, SimulationError> {
+    ) -> Result<OperatingPointResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             self.prepare(options)?;
@@ -238,7 +238,7 @@ impl Simulator {
     fn settled_from_zero(
         &mut self,
         options: &Options,
-    ) -> Result<(Solved, OperatingPoint), SimulationError> {
+    ) -> Result<(Solved, OperatingPointResult), SimulationError> {
         if let Some(remembered) = &self.state.remembered
             && remembered.solved_under(&self.state.held, options)
         {
@@ -435,7 +435,7 @@ impl Simulator {
         &mut self,
         search: &OperatingPoints,
         options: &Options,
-    ) -> Result<Vec<OperatingPoint>, SimulationError> {
+    ) -> Result<Vec<OperatingPointResult>, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             self.prepare(options)?;
@@ -504,7 +504,7 @@ impl Simulator {
                     .unknowns
                     .iter()
                     .zip(&mut beside)
-                    .filter(|(unknown, _)| unknown.quantity == Quantity::Voltage);
+                    .filter(|(unknown, _)| unknown.nature == Nature::Voltage);
                 for (turn, (_, value)) in voltages.enumerate() {
                     let alternate = if turn % 2 == 0 { 1.0 } else { -1.0 };
                     *value += sign * alternate * NUDGE;
@@ -549,7 +549,7 @@ impl Simulator {
             .zip(first.iter().zip(second))
             .all(|(unknown, (a, b))| {
                 let tolerance = options.relative_tolerance * a.abs().max(b.abs())
-                    + options.value_tolerance(unknown.quantity);
+                    + options.value_tolerance(unknown.nature);
                 (a - b).abs() <= DISTINCT * tolerance
             })
     }
@@ -627,7 +627,7 @@ impl Simulator {
         &mut self,
         mut solved: Solved,
         options: &Options,
-    ) -> Result<OperatingPoint, SimulationError> {
+    ) -> Result<OperatingPointResult, SimulationError> {
         let detectors = self.elaborated.logic.detectors.len();
         let mut previous = vec![Level::Unknown; detectors];
         let mut unsettled = vec![false; detectors];
@@ -669,7 +669,7 @@ impl Simulator {
         }
         self.measure_loads(&solved.values, options);
         self.watch_supplies(&solved.values, 0.0, options);
-        Ok(OperatingPoint {
+        Ok(OperatingPointResult {
             observation: self.observe_dc(&solved.values, options),
             values: solved.values,
             logic: self.state.events.levels().to_vec(),
@@ -872,7 +872,7 @@ impl Simulator {
                             let magnitude = value.abs().max(before.abs());
                             (value - before).abs()
                                 <= options.relative_tolerance * magnitude
-                                    + options.value_tolerance(unknown.quantity)
+                                    + options.value_tolerance(unknown.nature)
                         },
                     );
                     last.copy_from_slice(values);
@@ -963,7 +963,7 @@ mod tests {
     /// source ramps, and the operating point lies on D1's side, past the fold.
     fn folded() -> Simulator {
         let document = json!({
-            "format": "jolty-circuit", "version": 1, "top": "test",
+            "format": "jolty-circuit", "version": 2, "top": "test",
             "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                     "instances": [
                 {"id": "V1", "of": {"device": "voltage_source"},

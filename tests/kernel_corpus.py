@@ -47,7 +47,9 @@ class _Simulator:
     def __getattr__(self, name: str) -> object:
         return getattr(self._inner, name)
 
-    def run(self, analysis: str, options: str, pool: _core.Pool) -> _core.Outcome:
+    def run(
+        self, analysis: str, options: str, pool: _core.Pool
+    ) -> _core.AnalysisResult:
         runs = self._record["runs"]
         assert isinstance(runs, list)
         runs.append([json.loads(analysis), json.loads(options)])

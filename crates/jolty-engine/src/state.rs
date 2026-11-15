@@ -415,7 +415,7 @@ mod tests {
                    "terminals": terminals})
         };
         let ring = json!({
-            "format": "jolty-circuit", "version": 1, "top": "ring",
+            "format": "jolty-circuit", "version": 2, "top": "ring",
             "components": {"ring": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                 device("VDD", "voltage_source", json!({"waveform": {"dc": 1.0}}),
                        json!({"positive": "vdd", "negative": "0"})),

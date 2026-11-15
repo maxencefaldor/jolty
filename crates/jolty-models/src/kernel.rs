@@ -32,7 +32,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::{Choice, Interface, Level, NoiseSource, ParameterError, Quantity, Real, Regions};
+use crate::{Choice, Interface, Level, Nature, NoiseSource, ParameterError, Real, Regions};
 
 /// A device model computed one instance at a time, as a pure function of the instance's
 /// prepared parameters, its memory and its local unknowns.
@@ -242,7 +242,7 @@ const INDEXED: usize = 16;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Layout {
     terminals: usize,
-    internals: Vec<(Cow<'static, str>, Quantity)>,
+    internals: Vec<(Cow<'static, str>, Nature)>,
     /// The local index of each internal unknown added as [`Layout::pivoted`], in
     /// increasing order.
     pivoted: Vec<usize>,
@@ -275,10 +275,10 @@ impl Layout {
         self.claimed = [[0; INDEXED]; INDEXED];
     }
 
-    /// Adds an internal unknown, of `quantity`, labelled `label` after the instance's path,
+    /// Adds an internal unknown, of `nature`, labelled `label` after the instance's path,
     /// and returns its local index.
-    pub fn internal(&mut self, label: impl Into<Cow<'static, str>>, quantity: Quantity) -> usize {
-        self.internals.push((label.into(), quantity));
+    pub fn internal(&mut self, label: impl Into<Cow<'static, str>>, nature: Nature) -> usize {
+        self.internals.push((label.into(), nature));
         self.terminals + self.internals.len() - 1
     }
 
@@ -291,8 +291,8 @@ impl Layout {
     ///
     /// The kernel that adds one states why its diagonal is that large; a test over the
     /// library checks it of every evaluation it makes.
-    pub fn pivoted(&mut self, label: impl Into<Cow<'static, str>>, quantity: Quantity) -> usize {
-        let local = self.internal(label, quantity);
+    pub fn pivoted(&mut self, label: impl Into<Cow<'static, str>>, nature: Nature) -> usize {
+        let local = self.internal(label, nature);
         self.pivoted.push(local);
         local
     }
@@ -338,7 +338,7 @@ impl Layout {
 
     /// Each internal unknown's label and quantity, in the order of their local indices.
     #[must_use]
-    pub fn internals(&self) -> &[(Cow<'static, str>, Quantity)] {
+    pub fn internals(&self) -> &[(Cow<'static, str>, Nature)] {
         &self.internals
     }
 

@@ -55,11 +55,11 @@ def test_a_component_declares_ports_and_connects_terminals_to_nets() -> None:
 
 def test_each_instance_records_the_line_that_placed_it() -> None:
     resistor, capacitor = low_pass(1 * kohm, 1 * nF).definition.instances
-    assert resistor.source == ir.Source(
+    assert resistor.source_location == ir.SourceLocation(
         file="tests/test_builder.py", line=line_of('id="R")'), function="low_pass"
     )
-    assert capacitor.source is not None
-    assert capacitor.source.line == line_of('id="C")')
+    assert capacitor.source_location is not None
+    assert capacitor.source_location.line == line_of('id="C")')
 
 
 def test_the_same_arguments_build_the_same_component_once() -> None:

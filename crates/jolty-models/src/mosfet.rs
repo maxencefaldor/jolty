@@ -27,7 +27,7 @@ use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series, series_va
 use crate::noise::Flicker;
 use crate::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
     REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
@@ -745,7 +745,7 @@ impl Displacement {
     /// Claims a local unknown labelled `label` for the displacement towards the local
     /// unknown `node` from `gate`.
     fn new(layout: &mut Layout, label: &'static str, gate: usize, node: usize) -> Self {
-        let unknown = layout.pivoted(label, Quantity::Displacement);
+        let unknown = layout.pivoted(label, Nature::Displacement);
         Self {
             unknown,
             entries: [

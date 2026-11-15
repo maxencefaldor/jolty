@@ -59,7 +59,9 @@ def test_jolty_reads_the_deck_s_elements_at_their_lines() -> None:
     built = deck().jolty()
     top = built.circuit.components[built.circuit.top]
     lines = {
-        instance.id: None if instance.source is None else instance.source.line
+        instance.id: None
+        if instance.source_location is None
+        else instance.source_location.line
         for instance in top.instances
     }
     assert lines == {"v1": 4, "r1": 5, "x1": 6}

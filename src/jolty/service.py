@@ -276,7 +276,7 @@ class SimulateRequest(_Model):
     again, a Monte Carlo analysis that runs them on samples of the circuit's
     tolerances, and variants, the values of many runs of it. It may define specs(),
     which
-    returns jolty Specs: requirements on measurements of the analyses' results, each of
+    returns jolty Specs: requirements on measures of the analyses' results, each of
     which passes, is marginal, fails or goes unmeasured, at its worst corner, and a
     yield target for the Monte Carlo samples. It can be the build script itself.
     Given samples, it runs only those of the Monte Carlo analysis, as a shard, which
@@ -407,7 +407,7 @@ class SimulateResult(CommandResult):
     )
     plots: tuple[Plot, ...] = Field(
         description="A plot per analysis but operating points and sensitivities, "
-        "then a histogram of each batch's measurements and an envelope of each "
+        "then a histogram of each batch's measures and an envelope of each "
         "analysis it traced; empty when plotting is off or nothing ran to its end."
     )
     output: ScriptOutput = Field(description="What the scripts printed.")
@@ -485,7 +485,7 @@ async def build(request: BuildRequest, settings: Settings) -> BuildResult:
     started = time.perf_counter()
     chosen = _levels(request, settings)
     script = await _existing(request.script)
-    job = runner.Job(script=script, listed=settings.listed_unknowns)
+    job = runner.Job(script=script, max_unknowns=settings.max_unknowns)
     path = request.output or files.circuit_path(request.script)
     built, output = await _run(job, settings, results=None)
     circuit = await asyncio.to_thread(_save, built, path)
@@ -525,10 +525,10 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     job = runner.Job(
         script=script,
         plan=plan,
-        listed=settings.listed_unknowns,
+        max_unknowns=settings.max_unknowns,
         check=request.check,
         record=request.record,
-        # A shard's outcome is its measurements, and the probes named alone besides.
+        # A shard's outcome is its measures, and the probes named alone besides.
         plot=request.plot and (taken is None or bool(request.probes)),
         probes=request.probes,
         parallelism=runner.Thresholds(
@@ -650,7 +650,7 @@ class MergeResult(CommandResult):
         description="The saved batch of the samples at the plan's own conditions."
     )
     plots: tuple[Plot, ...] = Field(
-        description="A histogram of the batch's measurements and an envelope of each "
+        description="A histogram of the batch's measures and an envelope of each "
         "analysis it traced; empty when plotting is off."
     )
     seconds: float = Field(description="Seconds the command took.")
@@ -773,7 +773,7 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
     return PlotResult(plots=drawn)
 
 
-def _load(path: Path) -> dict[str, results.Result]:
+def _load(path: Path) -> dict[str, results.AnalysisResult]:
     """The results saved at `path`, by analysis.
 
     Raises:
@@ -788,7 +788,7 @@ def _load(path: Path) -> dict[str, results.Result]:
 
 def _plot(
     path: Path,
-    loaded: Mapping[str, results.Result],
+    loaded: Mapping[str, results.AnalysisResult],
     analyses: list[str],
     probes: list[str],
 ) -> tuple[Plot, ...]:
@@ -808,22 +808,25 @@ def _plot(
             continue
         if isinstance(
             result,
-            results.OperatingPoint
-            | results.OperatingPoints
-            | results.Sensitivities
-            | results.Transfer,
+            results.OperatingPointResult
+            | results.OperatingPointsResult
+            | results.SensitivityResult
+            | results.TransferFunctionResult,
         ):
             if analyses:
                 message = f"{name} is taken at DC solutions: nothing to plot"
                 raise JoltyError(message)
             continue
         nets = (
-            result.nets if isinstance(result, results.Sweep | results.Waveforms) else ()
+            result.nets
+            if isinstance(result, results.DcSweepResult | results.TransientResult)
+            else ()
         )
         chosen = (
             ()
             if isinstance(
-                result, results.LoopGain | results.NoiseSpectrum | results.PolesZeros
+                result,
+                results.StabilityResult | results.NoiseResult | results.PoleZeroResult,
             )
             else tuple(probes) or plots.default_probes(result.unknowns, nets)
         )
@@ -836,7 +839,7 @@ def _plot(
 def _plot_batches(results_path: Path, path: Path) -> tuple[Plot, ...]:
     """Plots each batch saved at `path` beside the results at `results_path`.
 
-    A batch draws a histogram of its measurements, if it has any, and an envelope of
+    A batch draws a histogram of its measures, if it has any, and an envelope of
     each analysis it traced along points of an axis.
     """
     drawn = []
@@ -1033,7 +1036,7 @@ async def cost(request: CostRequest, settings: Settings) -> CostResult:
         raise JoltyError(error.args[0]) from None
 
 
-class KicadRequest(_Model):
+class ExportKicadRequest(_Model):
     """Write a saved circuit's top component, or an instance's, as a KiCad netlist.
 
     Each part of its bill of materials becomes a footprint, which its catalog part
@@ -1056,7 +1059,7 @@ class KicadRequest(_Model):
     )
 
 
-class KicadResult(CommandResult):
+class ExportKicadResult(CommandResult):
     """The KiCad netlist written, or what keeps the component off a board."""
 
     netlist: kicad.Netlist | None = Field(
@@ -1084,7 +1087,9 @@ class KicadResult(CommandResult):
         return f"wrote {self.path}: {self.netlist.describe()}"
 
 
-async def write_kicad(request: KicadRequest, settings: Settings) -> KicadResult:
+async def export_kicad(
+    request: ExportKicadRequest, settings: Settings
+) -> ExportKicadResult:
     """Writes a component of a saved circuit as a KiCad netlist; settings play no part.
 
     Raises:
@@ -1099,10 +1104,10 @@ async def write_kicad(request: KicadRequest, settings: Settings) -> KicadResult:
             kicad.netlist, circuit, parts, request.instance
         )
     except (ElaborationError, NetlistError) as error:
-        return KicadResult(problems=error.problems)
+        return ExportKicadResult(problems=error.problems)
     target = request.output or files.netlist_path(request.circuit, request.instance)
     await asyncio.to_thread(written.save, target)
-    return KicadResult(netlist=written, path=target)
+    return ExportKicadResult(netlist=written, path=target)
 
 
 def _load_catalog(path: Path) -> catalog.Catalog:
@@ -1126,7 +1131,7 @@ def _draw(
     path: Path,
     instance: str = "",
     *,
-    point: results.OperatingPoint | None = None,
+    point: results.OperatingPointResult | None = None,
     marked: Collection[str] = (),
 ) -> Path:
     """Draws the component at `instance` to `path`, and returns `path`.
@@ -1141,14 +1146,14 @@ def _draw(
 
 
 def _first_point(
-    loaded: Mapping[str, results.Result],
-) -> results.OperatingPoint | None:
+    loaded: Mapping[str, results.AnalysisResult],
+) -> results.OperatingPointResult | None:
     """The first operating point among the results, if any."""
     return next(
         (
             result
             for result in loaded.values()
-            if isinstance(result, results.OperatingPoint)
+            if isinstance(result, results.OperatingPointResult)
         ),
         None,
     )
@@ -1373,7 +1378,7 @@ async def _run(
         )
         try:
             async with asyncio.timeout(settings.timeout):
-                output, code = await _child(directory, settings.output_limit)
+                output, code = await _child(directory, settings.max_output)
         except TimeoutError:
             message = (
                 f"{job.script.name} did not finish within {settings.timeout:g} s "

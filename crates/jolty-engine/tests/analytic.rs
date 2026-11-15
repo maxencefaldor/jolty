@@ -4,7 +4,7 @@
 use std::f64::consts::{PI, TAU};
 
 use jolty_engine::{
-    Ac, Analysis, Conditions, DcSweep, Method, Options, Outcome, Rejection, SimulationError,
+    Ac, Analysis, AnalysisResult, Conditions, DcSweep, Method, Options, Rejection, SimulationError,
     Simulator, Strategy, Transient,
 };
 use jolty_ir::Circuit;
@@ -36,7 +36,7 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
         })
         .collect();
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit file")
@@ -365,7 +365,7 @@ fn a_dc_sweep_steps_any_number_of_a_device() {
     };
     let result = simulator.dc_sweep(&sweep, &Options::default()).unwrap();
     assert_eq!(
-        (result.parameter.as_deref(), result.quantity),
+        (result.parameter.as_deref(), result.nature),
         (Some("resistance"), None)
     );
     let out = index(&simulator, "out");
@@ -1040,7 +1040,7 @@ fn a_sine_through_an_rc_settles_to_the_ac_amplitude() {
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
         .unwrap();
-    let Outcome::Transient(waveforms) = outcome else {
+    let AnalysisResult::Transient(waveforms) = outcome else {
         panic!("a transient outcome")
     };
     let out = index(&simulator, "out");
@@ -1092,7 +1092,7 @@ fn the_trapezoidal_formula_stops_ringing_after_a_corner() {
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
         .unwrap();
-    let Outcome::Transient(waveforms) = outcome else {
+    let AnalysisResult::Transient(waveforms) = outcome else {
         panic!("a transient outcome")
     };
     let current = index(&simulator, "B1:current");
@@ -1182,7 +1182,7 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
         let outcome = simulator
             .run(&Analysis::Transient(transient), &options)
             .unwrap();
-        let Outcome::Transient(waveforms) = outcome else {
+        let AnalysisResult::Transient(waveforms) = outcome else {
             panic!("a transient outcome")
         };
         let cap = index(&simulator, "cap");
@@ -1204,7 +1204,7 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
 #[test]
 fn hierarchy_gives_the_flat_answer() {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "top",
+        "format": "jolty-circuit", "version": 2, "top": "top",
         "components": {
             "top": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                 {"id": "V1", "of": {"device": "voltage_source"}, "parameters": dc(3.0),
@@ -1336,7 +1336,11 @@ fn analyses_name_what_they_cannot_find() {
 }
 
 /// A transient of `circuit` until `stop`, in steps of at most a hundredth of it.
-fn transient(circuit: &Circuit, stop: f64, options: &Options) -> Result<Outcome, SimulationError> {
+fn transient(
+    circuit: &Circuit,
+    stop: f64,
+    options: &Options,
+) -> Result<AnalysisResult, SimulationError> {
     let transient = Transient {
         stop,
         max_step: Some(stop / 100.0),
@@ -1516,7 +1520,7 @@ fn a_transient_follows_a_source_that_only_its_transistor_holds() {
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
         .unwrap();
-    let Outcome::Transient(waveforms) = outcome else {
+    let AnalysisResult::Transient(waveforms) = outcome else {
         panic!("a transient outcome")
     };
     let source = index(&simulator, "source");
@@ -1583,7 +1587,7 @@ fn a_transient_couples_an_edge_beside_a_node_at_a_hundred_megavolts() {
     let outcome = simulator
         .run(&Analysis::Transient(transient), &Options::default())
         .unwrap();
-    let Outcome::Transient(waveforms) = outcome else {
+    let AnalysisResult::Transient(waveforms) = outcome else {
         panic!("a transient outcome")
     };
     let risen = waveforms
@@ -1796,7 +1800,7 @@ fn a_step_starts_from_its_prediction() {
         ),
     ]);
     let outcome = transient(&circuit, 1e-3, &Options::default()).expect("a transient");
-    let Outcome::Transient(waveforms) = outcome else {
+    let AnalysisResult::Transient(waveforms) = outcome else {
         panic!("not a transient: {outcome:?}")
     };
     let statistics = &waveforms.statistics;

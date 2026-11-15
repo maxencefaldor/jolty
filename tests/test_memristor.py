@@ -72,7 +72,7 @@ def _driven(memristor: devices.Device, frequency: float = FREQUENCY) -> Componen
     return driven(memristor, frequency)
 
 
-def _run(memristor: devices.Device, periods: float = 2) -> results.Waveforms:
+def _run(memristor: devices.Device, periods: float = 2) -> results.TransientResult:
     """The memristor's waveforms over `periods` of the sine, in fine steps.
 
     VTEAM's state turns as the sine crosses a threshold, where no step need land; a
@@ -239,7 +239,7 @@ def test_a_periodic_steady_state_keeps_a_state_its_drive_leaves_alone() -> None:
     np.testing.assert_allclose(steady.voltage("out"), AMPLITUDE * expected, atol=1e-3)
 
 
-def _lobe_area(waveforms: results.Waveforms, period: float) -> float:
+def _lobe_area(waveforms: results.TransientResult, period: float) -> float:
     """The area of the loop's positive lobe in the second period, ``∫ i dv``.
 
     The lobes of a pinched loop turn opposite ways, so over a whole period their areas

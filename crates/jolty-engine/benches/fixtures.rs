@@ -23,8 +23,8 @@ use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion
 use jolty_engine::batch::{Batch, Sink};
 use jolty_engine::variants::{MonteCarlo, toleranced};
 use jolty_engine::{
-    Analysis, Conditions, Elaborated, Options, Outcome, SimulationError, Simulator, Structure,
-    Values,
+    Analysis, AnalysisResult, Conditions, Elaborated, Options, SimulationError, Simulator,
+    Structure, Values,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -82,9 +82,9 @@ impl Fixture {
     }
 
     /// The outcomes of the plan's analyses, run in order on a simulator set up afresh.
-    fn run(&self, library: &Library) -> Result<Vec<Outcome>, Box<dyn Error>> {
+    fn run(&self, library: &Library) -> Result<Vec<AnalysisResult>, Box<dyn Error>> {
         let mut simulator = self.setup(library)?;
-        let outcomes: Result<Vec<Outcome>, SimulationError> = self
+        let outcomes: Result<Vec<AnalysisResult>, SimulationError> = self
             .plan
             .analyses
             .iter()

@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 /// A circuit whose top component has a ground port `0` and places `instances`.
 fn circuit_of(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit")

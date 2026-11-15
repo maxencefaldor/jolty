@@ -15,7 +15,7 @@ The guide explains jolty one concept per page.
 - [Departures from ngspice](departures.md): every place where the engine computes otherwise than ngspice 47, each with its evidence.
 - [Across machines](machines.md): a Monte Carlo analysis's samples run in shards, by any number of processes on any number of machines, and merged into one run's report.
 - [Results](results.md): the report, the plots, the results file, and how to read a result by net and by instance.
-- [Specs](specs.md): requirements on measurements of the results, and the verdict on each.
+- [Specs](specs.md): requirements on measures of the results, and the verdict on each.
 - [Fidelity](fidelity.md): logic cells characterized from components' circuits that stand in for them, and the spot checks that hold them to their contracts.
 - [Parts and costs](parts.md): real parts with their makers' numbers and ratings, catalogs of orderable parts, the E series of preferred values, the bill of materials of a component, and its netlist for KiCad to lay out its board.
 

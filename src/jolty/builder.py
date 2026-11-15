@@ -183,7 +183,7 @@ class _Placement:
     of: ir.DeviceOf | ir.ComponentOf
     parameters: dict[str, JsonValue]
     terminals: tuple[str, ...]
-    source: ir.Source | None
+    source_location: ir.SourceLocation | None
     tolerances: dict[str, ir.Tolerance] = field(default_factory=dict)
     ratings: tuple[ir.Rating, ...] = ()
     part: str | None = None
@@ -296,7 +296,7 @@ class Builder:
                     tolerances=placement.tolerances,
                     ratings=placement.ratings,
                     part=placement.part,
-                    source=placement.source,
+                    source_location=placement.source_location,
                 )
             )
         ports = tuple(
@@ -441,7 +441,7 @@ def _digest(value: object) -> str:
     return hashlib.sha256(repr(value).encode()).hexdigest()[:8]
 
 
-def caller() -> ir.Source | None:
+def caller() -> ir.SourceLocation | None:
     """The script line that called the function calling this, such as a method.
 
     Its file is relative to the working directory when it lies within it.
@@ -450,7 +450,7 @@ def caller() -> ir.Source | None:
     line = frame.f_back.f_back if frame and frame.f_back else None
     if line is None:
         return None
-    return ir.Source(
+    return ir.SourceLocation(
         file=_script_path(line.f_code.co_filename, Path.cwd()),
         line=line.f_lineno,
         function=line.f_code.co_name,

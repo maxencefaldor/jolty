@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
     Real, Stamp, Unknown,
 };
 
@@ -157,7 +157,7 @@ impl Kernel for Photocell {
         let [a, b, light_positive, light_negative] = TERMINALS;
         let entries = [a, b].map(|row| TERMINALS.map(|column| layout.entry(row, column)));
         let lag = (prepared.time.value() > 0.0).then(|| {
-            let response = layout.internal("response", Quantity::State);
+            let response = layout.internal("response", Nature::State);
             Lag {
                 response,
                 terminals: [a, b].map(|node| layout.entry(node, response)),

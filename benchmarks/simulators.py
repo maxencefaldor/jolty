@@ -82,7 +82,7 @@ class Jolty:
 
     def run(
         self, circuit: ir.Circuit, analyses: Mapping[str, Analysis], options: Options
-    ) -> dict[str, results.Result]:
+    ) -> dict[str, results.AnalysisResult]:
         """Elaborates `circuit`, and runs the `analyses` on it in turn, by name."""
         simulation = Simulation(circuit)
         return {

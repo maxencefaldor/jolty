@@ -20,12 +20,12 @@
 //! probe's terminals. Negative feedback makes `T` positive at low frequencies, and divides
 //! each response it encloses by `1 + T`.
 
-use jolty_models::Quantity;
+use jolty_models::Nature;
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
 use crate::ac::{Linearization, over_frequencies};
-use crate::{OperatingPoint, Options, SimulationError, Simulator};
+use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// A stability analysis: the loop gain through a probe, at each frequency.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -41,11 +41,11 @@ pub struct Stability {
 
 /// The loop gain through a probe, at each frequency.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LoopGain {
+pub struct StabilityResult {
     /// The path of the probe.
     pub probe: String,
     /// The operating point the circuit was linearized at.
-    pub operating_point: OperatingPoint,
+    pub operating_point: OperatingPointResult,
     /// The frequencies, in hertz.
     pub frequencies: Vec<f64>,
     /// The loop gain `T` at each frequency, positive at low frequencies under negative
@@ -68,7 +68,7 @@ impl Simulator {
         &mut self,
         stability: &Stability,
         options: &Options,
-    ) -> Result<LoopGain, SimulationError> {
+    ) -> Result<StabilityResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             let not_a_probe = || SimulationError::NotAProbe(stability.probe.clone());
@@ -78,7 +78,7 @@ impl Simulator {
                     SimulationError::NotASource(_) => not_a_probe(),
                     other => other,
                 })?;
-            if self.source_quantity(index) != Quantity::Voltage {
+            if self.source_nature(index) != Nature::Voltage {
                 return Err(not_a_probe());
             }
             let &[Some(entered), Some(_)] = self.elaborated.devices[index].nodes() else {
@@ -109,7 +109,7 @@ impl Simulator {
                     Ok(-u / (1.0 + u))
                 },
             )?;
-            Ok(LoopGain {
+            Ok(StabilityResult {
                 probe: stability.probe.clone(),
                 operating_point,
                 frequencies: stability.frequencies.clone(),

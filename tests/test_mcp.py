@@ -75,11 +75,11 @@ def test_tools_mirror_the_service_requests() -> None:
         "merge_shards",
         "plot_results",
         "draw_schematic",
-        "write_viewer",
+        "view_circuit",
         "check_circuit",
-        "explain_rule",
-        "price_circuit",
-        "write_kicad_netlist",
+        "explain_rules",
+        "cost_circuit",
+        "export_kicad_netlist",
     }
     simulate = tools["simulate_circuit"]
     assert set(simulate.input_schema["properties"]) == {
@@ -110,7 +110,7 @@ def test_tools_mirror_the_service_requests() -> None:
         annotations = tools[name].annotations
         assert annotations is not None
         assert annotations.destructive_hint is True  # a script runs any Python
-    for name in ("check_circuit", "explain_rule", "price_circuit"):
+    for name in ("check_circuit", "explain_rules", "cost_circuit"):
         annotations = tools[name].annotations
         assert annotations is not None
         assert annotations.read_only_hint is True
@@ -127,7 +127,7 @@ def test_simulate_answers_with_text_and_structured_content(script: Path) -> None
     assert data is not None
     assert data["circuit"]["unknowns"] == 3
     (point,) = data["analyses"]
-    assert point["values"][1] == {"unknown": "out", "quantity": "voltage", "value": 2.5}
+    assert point["values"][1] == {"unknown": "out", "nature": "voltage", "value": 2.5}
 
 
 def test_errors_come_back_as_tool_errors(tmp_path: Path) -> None:

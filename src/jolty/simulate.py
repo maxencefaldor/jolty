@@ -474,7 +474,7 @@ class Simulation:
         self._records: dict[tuple[str, ...], frozenset[str]] = {}
         self._core = core
         self.unknowns = tuple(
-            results.Unknown(name, quantity) for name, quantity in self._core.unknowns
+            results.Unknown(name, nature) for name, nature in self._core.unknowns
         )
         self.nets = tuple(self._core.nets)
         self.devices = self._core.devices
@@ -536,7 +536,7 @@ class Simulation:
         return checks.diagnostics(found)
 
     def check_results(
-        self, solved: Mapping[str, results.Result]
+        self, solved: Mapping[str, results.AnalysisResult]
     ) -> tuple[checks.Diagnostic, ...]:
         """Every diagnostic of the rules on the analyses' results `solved`.
 
@@ -558,11 +558,11 @@ class Simulation:
         ]
         for name, result in solved.items():
             match result:
-                case results.OperatingPoint():
+                case results.OperatingPointResult():
                     values = result.values[np.newaxis, :]
                     currents = result.currents.reshape(1, -1)
                     times = None
-                case results.Waveforms():
+                case results.TransientResult():
                     values, currents, times = (
                         result.values,
                         result.currents,
@@ -592,42 +592,44 @@ class Simulation:
     @overload
     def run(
         self, analysis: OperatingPoint, options: Options | None = None
-    ) -> results.OperatingPoint: ...
+    ) -> results.OperatingPointResult: ...
     @overload
     def run(
         self, analysis: OperatingPoints, options: Options | None = None
-    ) -> results.OperatingPoints: ...
+    ) -> results.OperatingPointsResult: ...
     @overload
     def run(
         self, analysis: DcSweep, options: Options | None = None
-    ) -> results.Sweep: ...
+    ) -> results.DcSweepResult: ...
     @overload
-    def run(self, analysis: Ac, options: Options | None = None) -> results.Response: ...
+    def run(self, analysis: Ac, options: Options | None = None) -> results.AcResult: ...
     @overload
     def run(
         self, analysis: Transient, options: Options | None = None
-    ) -> results.Waveforms: ...
+    ) -> results.TransientResult: ...
     @overload
     def run(
         self, analysis: Sensitivity, options: Options | None = None
-    ) -> results.Sensitivities: ...
+    ) -> results.SensitivityResult: ...
     @overload
     def run(
         self, analysis: Stability, options: Options | None = None
-    ) -> results.LoopGain: ...
+    ) -> results.StabilityResult: ...
     @overload
     def run(
         self, analysis: Noise, options: Options | None = None
-    ) -> results.NoiseSpectrum: ...
+    ) -> results.NoiseResult: ...
     @overload
     def run(
         self, analysis: TransferFunction, options: Options | None = None
-    ) -> results.Transfer: ...
+    ) -> results.TransferFunctionResult: ...
     @overload
     def run(
         self, analysis: PoleZero, options: Options | None = None
-    ) -> results.PolesZeros: ...
-    def run(self, analysis: Analysis, options: Options | None = None) -> results.Result:
+    ) -> results.PoleZeroResult: ...
+    def run(
+        self, analysis: Analysis, options: Options | None = None
+    ) -> results.AnalysisResult:
         """Runs `analysis` with `options`, or with the engine's defaults.
 
         The result records the instances the analysis's ``record`` names, and at an
@@ -667,7 +669,7 @@ class Simulation:
         variants: Variants,
         options: Options | None = None,
         *,
-        measurements: Sequence[specs.Measurement] = (),
+        measures: Sequence[specs.Measure] = (),
         traced: Sequence[str] = (),
         each: Callable[[results.Run], object] | None = None,
         runs: range | None = None,
@@ -676,7 +678,7 @@ class Simulation:
 
         It runs the variants' runs `runs`, or every one, row 0 the run at the range's
         start, so that a batch of a range holds the rows of the whole batch that the
-        range names, bit for bit, but for the unit of a measurement Python reads, none
+        range names, bit for bit, but for the unit of a measure Python reads, none
         where the range reads none, and the batches of ranges that tile the runs join
         into it ([`BatchResult.joined`][jolty.results.BatchResult.joined]).
         Run `i` takes the values of the variants' run `i` in place of the simulation's,
@@ -685,7 +687,7 @@ class Simulation:
         however many threads the engine runs the batch on; runs at values that give
         the circuit another structure run on the circuit elaborated once for it. The
         result holds, one row per run, the values each run took, whether each analysis
-        ended, what each of `measurements` read, the engine reading each it can resolve
+        ended, what each of `measures` read, the engine reading each it can resolve
         from the analysis's kind and the circuit's unknowns, and the values of the
         unknowns `traced` names at every point of each operating point, DC sweep,
         response and transient that names its times. `each`, if given, is called with
@@ -704,7 +706,7 @@ class Simulation:
                 written.
         """
         chosen = Options() if options is None else options
-        planned = _Planned.of(self, analyses, chosen, measurements, traced)
+        planned = _Planned.of(self, analyses, chosen, measures, traced)
         ran = self._variants(variants)
         taken = range(len(ran)) if runs is None else runs
         if taken.step != 1 or not 0 <= taken.start <= taken.stop <= len(ran):
@@ -727,7 +729,7 @@ class Simulation:
         """
         return _labels(self._variants(variants).parameters)
 
-    def run_plan(self, plan: Plan) -> dict[str, results.Result]:
+    def run_plan(self, plan: Plan) -> dict[str, results.AnalysisResult]:
         """Runs every analysis of `plan`, by name, with its options.
 
         Raises:
@@ -897,8 +899,8 @@ class Simulation:
         return sweep.levels[0].dimension
 
     def _result(
-        self, outcome: _core.Outcome, recording: results.Recording
-    ) -> results.Result:
+        self, outcome: _core.AnalysisResult, recording: results.Recording
+    ) -> results.AnalysisResult:
         """The result of `outcome`, which recorded what `recording` says."""
         unknowns, nets = self.unknowns, self.nets
         match outcome["kind"]:
@@ -908,12 +910,12 @@ class Simulation:
                 points = tuple(
                     self._point(point, recording) for point in outcome["points"]
                 )
-                return results.OperatingPoints(unknowns, points)
+                return results.OperatingPointsResult(unknowns, points)
             case "dc_sweep":
-                return results.Sweep(
+                return results.DcSweepResult(
                     unknowns,
                     outcome["source"],
-                    outcome["quantity"],
+                    outcome["nature"],
                     outcome["levels"],
                     outcome["values"],
                     nets,
@@ -922,7 +924,7 @@ class Simulation:
                     parameter=outcome["parameter"],
                 )
             case "ac":
-                return results.Response(
+                return results.AcResult(
                     unknowns,
                     outcome["source"],
                     outcome["frequencies"],
@@ -936,7 +938,7 @@ class Simulation:
                 traces = tuple(
                     results.Trace(times, levels) for times, levels in outcome["logic"]
                 )
-                return results.Waveforms(
+                return results.TransientResult(
                     unknowns,
                     outcome["times"],
                     outcome["values"],
@@ -950,13 +952,13 @@ class Simulation:
 
     def _linear(
         self,
-        outcome: _core.SensitivityOutcome
-        | _core.StabilityOutcome
-        | _core.NoiseOutcome
-        | _core.PoleZeroOutcome
-        | _core.TransferFunctionOutcome,
+        outcome: _core.SensitivityResult
+        | _core.StabilityResult
+        | _core.NoiseResult
+        | _core.PoleZeroResult
+        | _core.TransferFunctionResult,
         recording: results.Recording,
-    ) -> results.Result:
+    ) -> results.AnalysisResult:
         """The result of an analysis of the linearized circuit."""
         unknowns = self.unknowns
         match outcome["kind"]:
@@ -970,17 +972,17 @@ class Simulation:
                 differentiated = self._result(outcome["result"], recording)
                 if not isinstance(
                     differentiated,
-                    results.OperatingPoint
-                    | results.Sweep
-                    | results.Response
-                    | results.Waveforms,
+                    results.OperatingPointResult
+                    | results.DcSweepResult
+                    | results.AcResult
+                    | results.TransientResult,
                 ):
                     message = f"the engine differentiated {outcome['result']['kind']}"
                     raise SimulationError(message)
                 derivatives = outcome["derivatives"]
-                if isinstance(differentiated, results.OperatingPoint):
+                if isinstance(differentiated, results.OperatingPointResult):
                     derivatives = derivatives[0]
-                return results.Sensitivities(
+                return results.SensitivityResult(
                     unknowns,
                     tuple(outcome["outputs"]),
                     parameters,
@@ -988,7 +990,7 @@ class Simulation:
                     differentiated,
                 )
             case "transfer_function":
-                return results.Transfer(
+                return results.TransferFunctionResult(
                     unknowns,
                     outcome["source"],
                     outcome["input"],
@@ -1000,7 +1002,7 @@ class Simulation:
                     self._point(outcome["operating_point"], recording),
                 )
             case "stability":
-                return results.LoopGain(
+                return results.StabilityResult(
                     unknowns,
                     outcome["probe"],
                     outcome["frequencies"],
@@ -1012,13 +1014,13 @@ class Simulation:
                 noise_input = None
                 if found is not None:
                     noise_input = results.NoiseInput(
-                        found["source"], found["quantity"], found["gains"]
+                        found["source"], found["nature"], found["gains"]
                     )
-                return results.NoiseSpectrum(
+                return results.NoiseResult(
                     unknowns,
                     outcome["output"],
                     outcome["reference"],
-                    outcome["quantity"],
+                    outcome["nature"],
                     outcome["frequencies"],
                     outcome["densities"],
                     tuple(
@@ -1030,7 +1032,7 @@ class Simulation:
                     self._point(outcome["operating_point"], recording),
                 )
             case "pole_zero":
-                return results.PolesZeros(
+                return results.PoleZeroResult(
                     unknowns,
                     outcome["poles"],
                     outcome["zeros"],
@@ -1101,44 +1103,44 @@ class Simulation:
         ]
         return json.dumps(kept, allow_nan=False)
 
-    def _shape(self, analysis: Analysis) -> results.Result:
-        """A result of `analysis` that holds no point, for measurements to resolve.
+    def _shape(self, analysis: Analysis) -> results.AnalysisResult:
+        """A result of `analysis` that holds no point, for measures to resolve.
 
         It holds the analysis's kind and the circuit's unknowns, and a sweep's source
-        and quantity and a noise analysis's, all that a measurement resolves against.
+        and quantity and a noise analysis's, all that a measure resolves against.
         """
         unknowns = self.unknowns
         width = len(unknowns)
-        point = results.OperatingPoint(unknowns, np.zeros(width), "")
+        point = results.OperatingPointResult(unknowns, np.zeros(width), "")
         no, rows = np.empty(0), np.empty((0, width))
         match analysis:
             case OperatingPoint():
                 return point
             case OperatingPoints():
-                return results.OperatingPoints(unknowns, ())
+                return results.OperatingPointsResult(unknowns, ())
             case DcSweep():
-                quantity = self._quantity(analysis)
-                return results.Sweep(
+                nature = self._nature(analysis)
+                return results.DcSweepResult(
                     unknowns,
                     analysis.source,
-                    quantity,
+                    nature,
                     no,
                     rows,
                     parameter=analysis.parameter,
                 )
             case Ac():
                 phasors = np.empty((0, width), dtype=np.complex128)
-                return results.Response(unknowns, analysis.source, no, phasors, point)
+                return results.AcResult(unknowns, analysis.source, no, phasors, point)
             case Transient():
                 statistics = results.Statistics("", 0, 0, 0, 0)
-                return results.Waveforms(unknowns, no, rows, statistics)
+                return results.TransientResult(unknowns, no, rows, statistics)
         return self._linear_shape(analysis, point)
 
     def _linear_shape(
         self,
         analysis: Sensitivity | Stability | Noise | PoleZero | TransferFunction,
-        point: results.OperatingPoint,
-    ) -> results.Result:
+        point: results.OperatingPointResult,
+    ) -> results.AnalysisResult:
         """A small-signal result or sensitivities, as `_shape` makes it.
 
         It is of `analysis`, about the operating point `point`.
@@ -1149,10 +1151,10 @@ class Simulation:
             case Sensitivity():
                 rows = np.empty((0, len(unknowns)))
                 outputs = tuple(analysis.outputs)
-                return results.Sensitivities(unknowns, outputs, (), rows, point)
+                return results.SensitivityResult(unknowns, outputs, (), rows, point)
             case Stability():
                 frequencies = np.empty(0)
-                return results.LoopGain(
+                return results.StabilityResult(
                     unknowns, analysis.probe, frequencies, roots, point
                 )
             case Noise():
@@ -1161,7 +1163,7 @@ class Simulation:
                 # A voltage source's current is an unknown of its own, named after it.
                 branch = f"{analysis.source}:current"
                 held = any(unknown.name == branch for unknown in unknowns)
-                return results.Transfer(
+                return results.TransferFunctionResult(
                     unknowns,
                     analysis.source,
                     "voltage" if held else "current",
@@ -1174,7 +1176,7 @@ class Simulation:
                 )
             case PoleZero():
                 transfer = analysis.source is not None and analysis.output is not None
-                return results.PolesZeros(
+                return results.PoleZeroResult(
                     unknowns,
                     roots,
                     roots if transfer else None,
@@ -1185,17 +1187,17 @@ class Simulation:
                 )
 
     def _noise_shape(
-        self, noise: Noise, point: results.OperatingPoint
-    ) -> results.NoiseSpectrum:
+        self, noise: Noise, point: results.OperatingPointResult
+    ) -> results.NoiseResult:
         """A noise analysis's result that holds no frequency, as `_shape` makes it."""
-        names = {unknown.name: unknown.quantity for unknown in self.unknowns}
+        names = {unknown.name: unknown.nature for unknown in self.unknowns}
         given = None
         if noise.source is not None:
-            quantity = "current" if self._source(noise.source) == CURRENT else "voltage"
+            nature = "current" if self._source(noise.source) == CURRENT else "voltage"
             gains = np.empty(0, dtype=np.complex128)
-            given = results.NoiseInput(noise.source, quantity, gains)
+            given = results.NoiseInput(noise.source, nature, gains)
         no = np.empty(0)
-        return results.NoiseSpectrum(
+        return results.NoiseResult(
             self.unknowns,
             noise.output,
             noise.reference,
@@ -1217,7 +1219,7 @@ class Simulation:
                 return VOLTAGE
         return None
 
-    def _quantity(self, sweep: DcSweep) -> results.Quantity | None:
+    def _nature(self, sweep: DcSweep) -> results.Nature | None:
         """Whether `sweep`'s levels are voltages or currents; None for a parameter's."""
         if sweep.parameter is not None:
             return None
@@ -1238,8 +1240,8 @@ class Simulation:
 
     def _point(
         self, solved: _core.SolvedPoint, recording: results.Recording
-    ) -> results.OperatingPoint:
-        return results.OperatingPoint(
+    ) -> results.OperatingPointResult:
+        return results.OperatingPointResult(
             self.unknowns,
             solved["values"],
             solved["strategy"],
@@ -1268,11 +1270,11 @@ def mismatch(seed: int, index: int) -> int:
 
 @dataclass(frozen=True, slots=True)
 class _Reading:
-    """How a batch reads one measurement: by the engine, in Python, or not at all."""
+    """How a batch reads one measure: by the engine, in Python, or not at all."""
 
-    measurement: specs.Measurement
+    measure: specs.Measure
     native: specs.Native | None = None
-    """The measurement resolved for the engine, which reads it."""
+    """The measure resolved for the engine, which reads it."""
     slot: int = -1
     """Its place among the measures the engine reads."""
     reason: str | None = None
@@ -1286,7 +1288,7 @@ class _Planned:
     """A batch as the simulation runs it.
 
     It holds its analyses, each as the engine reads it or why it fails on every run,
-    and how it reads each measurement and traces unknowns.
+    and how it reads each measure and traces unknowns.
     """
 
     simulation: Simulation
@@ -1305,8 +1307,8 @@ class _Planned:
     traced: list[tuple[str, list[int]]]
     """Each analysis traced, by name, and the unknowns traced, by their columns."""
     read: dict[tuple[int, int], specs.Reading | str]
-    """What each measurement read in Python read of each run, or why it read nothing,
-    by the run's index and the measurement's."""
+    """What each measure read in Python read of each run, or why it read nothing,
+    by the run's index and the measure's."""
 
     @classmethod
     def of(
@@ -1314,7 +1316,7 @@ class _Planned:
         simulation: Simulation,
         analyses: Mapping[str, Analysis],
         options: Options,
-        measurements: Sequence[specs.Measurement],
+        measures: Sequence[specs.Measure],
         traced: Sequence[str],
     ) -> _Planned:
         """The batch of `analyses` on `simulation`.
@@ -1350,8 +1352,8 @@ class _Planned:
             planned.engine[name] = len(planned.settings)
             planned.records[name] = json.dumps(record)
             planned.settings.append((encoded, json.dumps(settings, allow_nan=False)))
-        for measurement in measurements:
-            planned.readings.append(planned._reading(measurement))
+        for measure in measures:
+            planned.readings.append(planned._reading(measure))
         columns = [results.column(simulation.unknowns, name) for name in traced]
         planned.traced = [
             (name, columns)
@@ -1365,27 +1367,27 @@ class _Planned:
         ]
         return planned
 
-    def _reading(self, measurement: specs.Measurement) -> _Reading:
-        """How the batch reads `measurement`."""
-        name = measurement.analysis
+    def _reading(self, measure: specs.Measure) -> _Reading:
+        """How the batch reads `measure`."""
+        name = measure.analysis
         if name not in self.analyses:
             reason = f"the batch runs no analysis named {name}"
-            return _Reading(measurement, reason=reason, everywhere=True)
+            return _Reading(measure, reason=reason, everywhere=True)
         if name in self.refused:
             reason = f"the analysis {name} failed"
-            return _Reading(measurement, reason=reason, everywhere=True)
-        if measurement.native is None or self.simulation.foundry:
-            return _Reading(measurement)
+            return _Reading(measure, reason=reason, everywhere=True)
+        if measure.native is None or self.simulation.foundry:
+            return _Reading(measure)
         shape = self.simulation._shape(self.analyses[name])  # noqa: SLF001 - one simulation's own
         try:
-            native = measurement.native(shape)
+            native = measure.native(shape)
         except (JoltyError, KeyError) as error:
-            return _Reading(measurement, reason=str(error.args[0]))
+            return _Reading(measure, reason=str(error.args[0]))
         slot = sum(reading.native is not None for reading in self.readings)
-        return _Reading(measurement, native=native, slot=slot)
+        return _Reading(measure, native=native, slot=slot)
 
     def _in_python(self) -> list[int]:
-        """The measurements read in Python, by their indices."""
+        """The measures read in Python, by their indices."""
         return [
             index
             for index, reading in enumerate(self.readings)
@@ -1393,15 +1395,15 @@ class _Planned:
         ]
 
     def _readings(self, index: int, run: results.Run) -> None:
-        """Reads each measurement read in Python of the results of the run `index`."""
+        """Reads each measure read in Python of the results of the run `index`."""
         for place in self._in_python():
-            measurement = self.readings[place].measurement
-            result = run.results.get(measurement.analysis)
+            measure = self.readings[place].measure
+            result = run.results.get(measure.analysis)
             if result is None:
-                self.read[index, place] = f"the analysis {measurement.analysis} failed"
+                self.read[index, place] = f"the analysis {measure.analysis} failed"
                 continue
             try:
-                self.read[index, place] = measurement.read(result)
+                self.read[index, place] = measure.read(result)
             except (JoltyError, KeyError) as error:
                 self.read[index, place] = str(error.args[0])
 
@@ -1410,11 +1412,11 @@ class _Planned:
         ran: _core.Variants,
         runs: range,
         each: Callable[[results.Run], object] | None,
-    ) -> _core.BatchOutcome:
+    ) -> _core.BatchResult:
         """What the engine finds on the runs `runs` of `ran`, each handed to `each`."""
         simulation = self.simulation
         measures = [
-            (self.engine[reading.measurement.analysis], reading.native.measure)
+            (self.engine[reading.measure.analysis], reading.native.measure)
             for reading in self.readings
             if reading.native is not None
         ]
@@ -1424,8 +1426,8 @@ class _Planned:
         def hand(
             index: int,
             structure: _core.Simulator | None,
-            problems: list[_core.ProblemOutcome] | None,
-            outcomes: list[_core.Outcome | str],
+            problems: list[_core.Problem] | None,
+            outcomes: list[_core.AnalysisResult | str],
         ) -> None:
             view = simulation
             if structure is not None:
@@ -1455,15 +1457,15 @@ class _Planned:
         self,
         view: Simulation,
         index: int,
-        problems: list[_core.ProblemOutcome] | None,
-        outcomes: list[_core.Outcome | str],
+        problems: list[_core.Problem] | None,
+        outcomes: list[_core.AnalysisResult | str],
     ) -> results.Run:
         """What the run `index` found, its outcomes read by `view`."""
         if problems is not None:
             return results.Run(
                 index, {}, {}, tuple(checks.problem(each) for each in problems)
             )
-        found: dict[str, results.Result] = {}
+        found: dict[str, results.AnalysisResult] = {}
         errors = dict(self.refused)
         for name, place in self.engine.items():
             outcome = outcomes[place]
@@ -1480,7 +1482,7 @@ class _Planned:
         ran: _core.Variants,
         runs: range,
         each: Callable[[results.Run], object] | None,
-    ) -> _core.BatchOutcome:
+    ) -> _core.BatchResult:
         """What ngspice finds on the runs `runs` of `ran`, each handed to `each`.
 
         The runs go as many at once as the engine has threads, each waiting on its own
@@ -1491,7 +1493,7 @@ class _Planned:
             found = list(executor.map(functools.partial(self._ngspice, ran), runs))
         count = len(found)
         ended = np.zeros((count, len(self.names)), dtype=np.bool_)
-        problems: dict[int, list[_core.ProblemOutcome]] = {}
+        problems: dict[int, list[_core.Problem]] = {}
         errors: dict[int, list[tuple[int, str]]] = {}
         traced: list[results.Real | results.Complex] = []
         for name, columns in self.traced:
@@ -1536,7 +1538,7 @@ class _Planned:
 
     def _ngspice(
         self, ran: _core.Variants, index: int
-    ) -> tuple[results.Run, list[_core.ProblemOutcome] | None, list[float]]:
+    ) -> tuple[results.Run, list[_core.Problem] | None, list[float]]:
         """What ngspice finds on the run `index` of `ran`, and the values it took.
 
         It returns the problems the run's values make too, if any.
@@ -1572,7 +1574,7 @@ class _Planned:
             overrides,
             None if sample is None else mismatch(*sample),
         )
-        solved: dict[str, results.Result] = {}
+        solved: dict[str, results.AnalysisResult] = {}
         failed: dict[str, str] = {}
         for name, analysis in self.analyses.items():
             try:
@@ -1587,12 +1589,12 @@ class _Planned:
                 failed[name] = str(error)
         return results.Run(index, solved, failed), None, numbers
 
-    def result(self, found: _core.BatchOutcome) -> results.BatchResult:
+    def result(self, found: _core.BatchResult) -> results.BatchResult:
         """The result of the batch, from what the engine or ngspice `found`.
 
         Raises:
-            OverflowError: Where a measurement's sum overflowed on a run.
-            ValueError: Where a measurement's sum was indeterminate on a run.
+            OverflowError: Where a measure's sum overflowed on a run.
+            ValueError: Where a measure's sum was indeterminate on a run.
             MemoryError: Where a distortion's samples would not fit in memory.
         """
         ended_engine = found["ended"]
@@ -1607,7 +1609,7 @@ class _Planned:
                 columns.engine(place, reading, found)
                 units.append(reading.native.unit)
             elif reading.reason is not None:
-                analysis = reading.measurement.analysis
+                analysis = reading.measure.analysis
                 where = (
                     np.zeros(runs, dtype=np.bool_)
                     if reading.everywhere
@@ -1625,7 +1627,7 @@ class _Planned:
             _labels(found["parameters"]),
             np.asarray(found["values"], dtype=np.float64),
             ended,
-            tuple(str(reading.measurement) for reading in self.readings),
+            tuple(str(reading.measure) for reading in self.readings),
             tuple(units),
             columns.measured,
             columns.causes,
@@ -1641,7 +1643,7 @@ class _Planned:
     def _read_in_python(
         self, place: int, columns: _Columns
     ) -> Dimension | results.Plain | None:
-        """Writes what the measurement at `place` read in Python of each run, or not.
+        """Writes what the measure at `place` read in Python of each run, or not.
 
         Returns the unit of the first run's reading, which every reading takes.
         """
@@ -1661,9 +1663,7 @@ class _Planned:
             columns.measured[index, place] = read.value
         return unit
 
-    def _errors(
-        self, found: _core.BatchOutcome, runs: int
-    ) -> dict[int, dict[str, str]]:
+    def _errors(self, found: _core.BatchResult, runs: int) -> dict[int, dict[str, str]]:
         """Why each analysis that failed on a run failed, by the run, then by name."""
         problems = found["problems"]
         failed: dict[int, dict[str, str]] = {}
@@ -1682,7 +1682,7 @@ class _Planned:
             for index, errors in sorted(failed.items())
         }
 
-    def _traces(self, found: _core.BatchOutcome) -> tuple[results.Traced, ...]:
+    def _traces(self, found: _core.BatchResult) -> tuple[results.Traced, ...]:
         """Each analysis traced, from the arrays `found` holds."""
         simulation = self.simulation
         traces = []
@@ -1697,7 +1697,7 @@ class _Planned:
                     tuple(simulation.unknowns[column] for column in columns),
                     values,
                     source,
-                    simulation._quantity(analysis)  # noqa: SLF001 - one simulation's own
+                    simulation._nature(analysis)  # noqa: SLF001 - one simulation's own
                     if isinstance(analysis, DcSweep)
                     else None,
                     analysis.parameter if isinstance(analysis, DcSweep) else None,
@@ -1716,17 +1716,17 @@ def _labels(parameters: Sequence[tuple[str, str] | None]) -> tuple[str, ...]:
 
 @dataclass(slots=True)
 class _Columns:
-    """What a batch's measurements read of each run, or why not, as it is written."""
+    """What a batch's measures read of each run, or why not, as it is written."""
 
     measured: results.Real
     causes: npt.NDArray[np.int32]
     texts: dict[str, int]
-    """Each reason a measurement read nothing for, by its text, at its place."""
+    """Each reason a measure read nothing for, by its text, at its place."""
     raised: list[tuple[int, int, Exception]]
-    """What the arithmetic of a measurement raised, at the run and the measurement."""
+    """What the arithmetic of a measure raised, at the run and the measure."""
 
     def __init__(self, runs: int, width: int) -> None:
-        """The columns of `width` measurements of `runs` runs, none read yet."""
+        """The columns of `width` measures of `runs` runs, none read yet."""
         self.measured = np.full((runs, width), np.nan)
         self.causes = np.full((runs, width), -1, dtype=np.int32)
         self.texts = {}
@@ -1736,11 +1736,11 @@ class _Columns:
         """The place of `reason` among the reasons, added if it is new."""
         return np.int32(self.texts.setdefault(reason, len(self.texts)))
 
-    def engine(self, place: int, reading: _Reading, found: _core.BatchOutcome) -> None:
-        """Writes what the engine read of the measurement at `place`, or why not."""
+    def engine(self, place: int, reading: _Reading, found: _core.BatchResult) -> None:
+        """Writes what the engine read of the measure at `place`, or why not."""
         if reading.native is None:
             return
-        failed = f"the analysis {reading.measurement.analysis} failed"
+        failed = f"the analysis {reading.measure.analysis} failed"
         column = found["causes"][:, reading.slot]
         self.measured[:, place] = found["measured"][:, reading.slot]
         table = np.full(len(found["reasons"]) + 1, -1, dtype=np.int32)
@@ -1759,7 +1759,7 @@ class _Columns:
     def unresolved(
         self, place: int, reading: _Reading, where: npt.NDArray[np.bool_]
     ) -> None:
-        """Writes why the measurement at `place`, which resolves against none, read nil.
+        """Writes why the measure at `place`, which resolves against none, read nil.
 
         It is why it does not resolve against a result of its analysis, `where` the
         analysis ended, and else that the analysis failed.
@@ -1770,7 +1770,7 @@ class _Columns:
             if len(where):
                 self.causes[:, place] = self.told(reading.reason)
             return
-        failed = f"the analysis {reading.measurement.analysis} failed"
+        failed = f"the analysis {reading.measure.analysis} failed"
         for mask, reason in ((where, reading.reason), (~where, failed)):
             if mask.any():
                 self.causes[mask, place] = self.told(reason)
@@ -1813,7 +1813,7 @@ def _axis(analysis: Analysis, simulation: Simulation) -> results.Real:
 
 
 def _at(
-    result: results.Result | None,
+    result: results.AnalysisResult | None,
     analysis: Analysis,
     unknowns: Sequence[results.Unknown],
 ) -> results.Real | results.Complex:
@@ -1825,16 +1825,16 @@ def _at(
     points = _points(analysis)
     if isinstance(analysis, Ac):
         phasors = np.full((points, len(unknowns)), np.nan, dtype=np.complex128)
-        if isinstance(result, results.Response):
+        if isinstance(result, results.AcResult):
             _picked(result.values, result.unknowns, unknowns, phasors)
         return phasors
     found = np.full((points, len(unknowns)), np.nan)
     match result:
-        case results.OperatingPoint():
+        case results.OperatingPointResult():
             _picked(result.values[np.newaxis, :], result.unknowns, unknowns, found)
-        case results.Sweep():
+        case results.DcSweepResult():
             _picked(result.values, result.unknowns, unknowns, found)
-        case results.Waveforms() if isinstance(analysis, Transient):
+        case results.TransientResult() if isinstance(analysis, Transient):
             times = [time.to(TIME, "a time to step onto") for time in analysis.times]
             rows = np.array(
                 [
@@ -1896,7 +1896,7 @@ def _observed(
     }
 
 
-def _statistics(outcome: _core.StatisticsOutcome) -> results.Statistics:
+def _statistics(outcome: _core.Statistics) -> results.Statistics:
     """How the transient of `outcome` went, its work and its profile included."""
     profile = outcome["profile"]
     return results.Statistics(
@@ -2111,6 +2111,10 @@ class Stressed:
             rule=rule.name,
             level=rule.level,
             message=f"{described} {moves} {value!r} {unit} {where}, {judged}",
-            instances=(checks.Instance(path=self.path, source=self.instance.source),),
+            instances=(
+                checks.Location(
+                    path=self.path, source_location=self.instance.source_location
+                ),
+            ),
             nets=(),
         )

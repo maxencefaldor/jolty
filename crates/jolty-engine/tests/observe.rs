@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 fn simulator(instances: &Value) -> Simulator {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
@@ -443,7 +443,7 @@ fn nested(outside: (&str, &str)) -> Simulator {
     };
     let signal = |name: &str| json!({"name": name, "role": "signal"});
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {
             "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                 {"id": "V1", "of": {"device": "voltage_source"},

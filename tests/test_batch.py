@@ -3,10 +3,10 @@
 
 [`Simulation.batch`][jolty.simulate.Simulation.batch] runs a plan's analyses on every
 run of its variants in one call to the engine, across its threads. Each run's
-measurements, traced unknowns and failures are those of a simulation made for its
+measures, traced unknowns and failures are those of a simulation made for its
 values alone, bit for bit, on any number of threads; a run whose values make problems
 is reported and the batch goes on; a run whose values give the circuit another
-structure measures the unknowns of the names its measurements read.
+structure measures the unknowns of the names its measures read.
 
 The runs compared with simulations made alone take their numbers as those do, through
 the same JSON text, so that both read the same numbers; a Monte Carlo sample is drawn
@@ -48,7 +48,7 @@ from jolty.plan import (
     runs,
 )
 from jolty.simulate import Elaborated
-from jolty.specs import Measurement, MeasurementError, Reading, gain, maximum, value
+from jolty.specs import Measure, MeasureError, Reading, gain, maximum, value
 from jolty.units import CURRENT, VOLTAGE, Hz, MHz, V, celsius, kHz, kohm, nF, ohm, us
 from jolty.variation import sample, toleranced
 from jolty.waveforms import Pulse
@@ -94,7 +94,9 @@ MEASUREMENTS = (
 
 def _alone(
     built: ir.Circuit, variant: Variant
-) -> tuple[Simulation, results.OperatingPoint, results.Response, results.Waveforms]:
+) -> tuple[
+    Simulation, results.OperatingPointResult, results.AcResult, results.TransientResult
+]:
     """A simulation made for `variant` alone, and what its analyses find."""
     elaborated = Elaborated(built, variant.temperature)
     simulation = Simulation.of(elaborated, variant.overrides)
@@ -123,7 +125,7 @@ VARIANTS = Explicit(
 def test_a_batch_finds_what_each_run_alone_finds() -> None:
     built = circuit(clipper())
     found = Simulation(built).batch(
-        ANALYSES, VARIANTS, measurements=MEASUREMENTS, traced=["out", "in"]
+        ANALYSES, VARIANTS, measures=MEASUREMENTS, traced=["out", "in"]
     )
     assert found.runs == len(VARIANTS.variants)
     assert found.analyses == ("op", "bode", "step")
@@ -163,7 +165,7 @@ def test_a_batch_finds_the_same_on_any_number_of_threads() -> None:
         with simulate.threads(count):
             found.append(
                 simulation.batch(
-                    ANALYSES, variants, measurements=MEASUREMENTS, traced=["out"]
+                    ANALYSES, variants, measures=MEASUREMENTS, traced=["out"]
                 )
             )
     first, *others = found
@@ -186,19 +188,19 @@ def _same(found: results.BatchResult, other: results.BatchResult) -> None:
     for mine, theirs in zip(found.traced, other.traced, strict=True):
         assert np.array_equal(_bits(mine.values), _bits(theirs.values))
         assert np.array_equal(_bits(mine.axis), _bits(theirs.axis))
-    rest = ("analyses", "parameters", "measurements", "units", "reasons")
+    rest = ("analyses", "parameters", "measures", "units", "reasons")
     for name in (*rest, "problems", "errors"):
         assert getattr(found, name) == getattr(other, name), name
 
 
-def _peak(result: results.Result) -> Reading:
+def _peak(result: results.AnalysisResult) -> Reading:
     """The output's highest voltage, unread above 0.656 V, why naming the voltage."""
-    if not isinstance(result, results.Waveforms):
+    if not isinstance(result, results.TransientResult):
         raise TypeError(result)
     volts = float(result.voltage("out").max())
     if volts > 0.656:  # About half the samples' peaks lie above.
         message = f"out peaks at {volts:.6f} V"
-        raise MeasurementError(message)
+        raise MeasureError(message)
     return Reading(volts, VOLTAGE)
 
 
@@ -208,15 +210,15 @@ def test_ranges_of_a_batch_hold_its_rows_and_join_into_it() -> None:
         MonteCarlo(15, seed=5),
         Explicit([Variant(), Variant({"R1": {"resistance": -1.0}})]),
     )
-    measurements = [
+    measures = [
         *MEASUREMENTS,
-        Measurement("step", "peak of out", None, _peak),
+        Measure("step", "peak of out", None, _peak),
         value("op", "nowhere"),
     ]
 
     def batch(taken: range | None = None) -> results.BatchResult:
         return simulation.batch(
-            ANALYSES, variants, measurements=measurements, traced=["out"], runs=taken
+            ANALYSES, variants, measures=measures, traced=["out"], runs=taken
         )
 
     whole = batch()
@@ -228,7 +230,7 @@ def test_ranges_of_a_batch_hold_its_rows_and_join_into_it() -> None:
     parts = []
     for start, stop in itertools.pairwise(cuts):
         part = batch(range(start, stop))
-        # A measurement Python reads takes the unit of its first reading: none where
+        # A measure Python reads takes the unit of its first reading: none where
         # a range reads none.
         assert all(
             mine in {None, theirs}
@@ -320,7 +322,7 @@ def test_a_run_that_fails_is_reported_and_the_batch_goes_on() -> None:
         ]
     )
     found = Simulation(built).batch(
-        ANALYSES, variants, measurements=[value("op", "out"), value("op", "nowhere")]
+        ANALYSES, variants, measures=[value("op", "out"), value("op", "nowhere")]
     )
     failed = [index for index in range(7) if index % 3 == 1]
     assert np.nonzero(found.failed)[0].tolist() == failed
@@ -370,7 +372,7 @@ def test_a_run_of_another_structure_measures_its_own_unknowns() -> None:
     found = Simulation(built).batch(
         {"op": OperatingPoint()},
         variants,
-        measurements=[value("op", "V1:current")],
+        measures=[value("op", "V1:current")],
         each=lambda run: seen.setdefault(run.index, run),
     )
     assert sorted(seen) == list(range(6))
@@ -380,14 +382,14 @@ def test_a_run_of_another_structure_measures_its_own_unknowns() -> None:
         )
         assert found.measured[index, 0] == alone.current("V1"), f"run {index}"
         point = seen[index].results["op"]
-        assert isinstance(point, results.OperatingPoint)
+        assert isinstance(point, results.OperatingPointResult)
         assert point.unknowns == alone.unknowns
         assert point.current("V1") == alone.current("V1")
 
 
 def test_a_measurement_only_python_reads_reads_each_run() -> None:
-    def doubled(result: results.Result) -> Reading:
-        if not isinstance(result, results.OperatingPoint):
+    def doubled(result: results.AnalysisResult) -> Reading:
+        if not isinstance(result, results.OperatingPointResult):
             raise TypeError(result)
         return Reading(2 * result.voltage("out"), VOLTAGE)
 
@@ -395,9 +397,9 @@ def test_a_measurement_only_python_reads_reads_each_run() -> None:
     found = Simulation(built).batch(
         {"op": OperatingPoint()},
         VARIANTS,
-        measurements=[
+        measures=[
             value("op", "out"),
-            Measurement("op", "twice out", None, doubled),
+            Measure("op", "twice out", None, doubled),
         ],
     )
     assert found.units == (VOLTAGE, VOLTAGE)
@@ -417,7 +419,7 @@ def test_a_sweep_of_a_parameter_names_it() -> None:
 
     levels = [1 * kohm, 2 * kohm, 4 * kohm]
     sweep = Simulation(divider()).run(DcSweep("R2", levels, parameter="resistance"))
-    assert (sweep.source, sweep.parameter, sweep.quantity) == ("R2", "resistance", None)
+    assert (sweep.source, sweep.parameter, sweep.nature) == ("R2", "resistance", None)
     # The divider's output, 5 V times R2 over R1 and R2, within a part in 10¹⁵.
     expected = [5 * lower / (1e3 + lower) for lower in (1e3, 2e3, 4e3)]
     assert sweep.voltage("out") == pytest.approx(expected, rel=1e-15)

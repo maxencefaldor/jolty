@@ -13,7 +13,7 @@ apart under the common color-vision deficiencies; a legend names them, and up to
 are also labeled at their end.
 
 A batch of runs plots their distribution, not each run: a histogram of each
-measurement's values over the runs, against its requirement's bounds, and an envelope
+measure's values over the runs, against its requirement's bounds, and an envelope
 of each unknown it traced along an analysis, its least, median and greatest value over
 the runs at each point.
 
@@ -22,7 +22,7 @@ Examples:
     >>> from jolty import results
     >>> unknowns = (results.Unknown("out", "voltage"),)
     >>> statistics = results.Statistics("direct", 1, 0, 0, 2)
-    >>> step = results.Waveforms(
+    >>> step = results.TransientResult(
     ...     unknowns, np.array([0.0, 1e-6]), np.array([[0.0], [1.0]]), statistics
     ... )
     >>> figure = plot("step", step, default_probes(unknowns))
@@ -72,12 +72,12 @@ GRID: Final = "#e4e3df"
 _UNITS: Final = {"voltage": "V", "current": "A", "temperature": "K", "state": ""}
 
 type Plotted = (
-    results.Sweep
-    | results.Response
-    | results.Waveforms
-    | results.LoopGain
-    | results.NoiseSpectrum
-    | results.PolesZeros
+    results.DcSweepResult
+    | results.AcResult
+    | results.TransientResult
+    | results.StabilityResult
+    | results.NoiseResult
+    | results.PoleZeroResult
 )
 """A result a plot draws; an operating point has no axis to draw along."""
 
@@ -102,7 +102,7 @@ def default_probes(
     nodes = [
         unknown.name
         for unknown in unknowns
-        if unknown.quantity in {"voltage", "temperature"}
+        if unknown.nature in {"voltage", "temperature"}
     ]
     named = [
         name for name in [*nodes, *nets] if not any(mark in name for mark in "/.:")
@@ -120,28 +120,26 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
         JoltyError: When a probe names no unknown, or there are more than
             [`MAX_SERIES`][jolty.plots.MAX_SERIES] probes.
     """
-    if isinstance(result, results.LoopGain):
+    if isinstance(result, results.StabilityResult):
         return _loop(name, result)
-    if isinstance(result, results.NoiseSpectrum):
+    if isinstance(result, results.NoiseResult):
         return _noise(name, result)
-    if isinstance(result, results.PolesZeros):
+    if isinstance(result, results.PoleZeroResult):
         return _poles_zeros(name, result)
     if len(probes) > MAX_SERIES:
         message = f"a plot draws at most {MAX_SERIES} unknowns, not {len(probes)}"
         raise JoltyError(message)
     groups, columns = _grouped(result, probes)
-    quantities = list(groups)
-    panels = (
-        2 * len(quantities) if isinstance(result, results.Response) else len(quantities)
-    )
+    natures = list(groups)
+    panels = 2 * len(natures) if isinstance(result, results.AcResult) else len(natures)
     figure, axes = _figure(name, result, panels)
     colors = {probe: COLORS[index] for index, probe in enumerate(probes)}
     x, x_unit = _abscissa(result)
-    if isinstance(result, results.Response):
-        for index, quantity in enumerate(quantities):
+    if isinstance(result, results.AcResult):
+        for index, nature in enumerate(natures):
             phasors = [
                 (probe, colors[probe], result.values[:, columns[probe]])
-                for probe in groups[quantity]
+                for probe in groups[nature]
             ]
             magnitudes = [
                 (probe, color, _decibels(values)) for probe, color, values in phasors
@@ -150,31 +148,31 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
                 (probe, color, np.degrees(np.unwrap(np.angle(values))))
                 for probe, color, values in phasors
             ]
-            _draw(axes[2 * index], x, magnitudes, f"{quantity} magnitude", "dB")
-            _draw(axes[2 * index + 1], x, phases, f"{quantity} phase", "°")
+            _draw(axes[2 * index], x, magnitudes, f"{nature} magnitude", "dB")
+            _draw(axes[2 * index + 1], x, phases, f"{nature} phase", "°")
         for each in axes:
             each.set_xscale("log")
     else:
-        for index, quantity in enumerate(quantities):
-            if quantity == "logic":
+        for index, nature in enumerate(natures):
+            if nature == "logic":
                 lanes = [
                     (probe, colors[probe], *_steps(result, probe))
-                    for probe in groups[quantity]
+                    for probe in groups[nature]
                 ]
                 _draw_logic(axes[index], lanes)
                 continue
             series = [
                 (probe, colors[probe], result.values[:, columns[probe]])
-                for probe in groups[quantity]
+                for probe in groups[nature]
             ]
-            label = "temperature rise" if quantity == "temperature" else quantity
-            _draw(axes[index], x, series, label, _UNITS[quantity])
+            label = "temperature rise" if nature == "temperature" else nature
+            _draw(axes[index], x, series, label, _UNITS[nature])
     _label_abscissa(axes[-1], result, x_unit)
     return figure
 
 
 def _grouped(
-    result: results.Sweep | results.Response | results.Waveforms,
+    result: results.DcSweepResult | results.AcResult | results.TransientResult,
     probes: Sequence[str],
 ) -> tuple[dict[_Quantity, list[str]], dict[str, int]]:
     """The `probes` by quantity, each quantity that has one, and each unknown's column.
@@ -182,7 +180,7 @@ def _grouped(
     Raises:
         JoltyError: When a probe names neither an unknown nor a logic net.
     """
-    nets = () if isinstance(result, results.Response) else result.nets
+    nets = () if isinstance(result, results.AcResult) else result.nets
     columns = {}
     groups: dict[_Quantity, list[str]] = {
         "voltage": [],
@@ -199,11 +197,11 @@ def _grouped(
             columns[probe] = results.column(result.unknowns, probe)
         except KeyError as error:
             raise JoltyError(error.args[0]) from None
-        groups[result.unknowns[columns[probe]].quantity].append(probe)
-    return {quantity: found for quantity, found in groups.items() if found}, columns
+        groups[result.unknowns[columns[probe]].nature].append(probe)
+    return {nature: found for nature, found in groups.items() if found}, columns
 
 
-def _loop(name: str, result: results.LoopGain) -> Figure:
+def _loop(name: str, result: results.StabilityResult) -> Figure:
     """The Bode plot of a loop gain, against 0 dB and -180°, where its margins are read.
 
     Its frequencies are the positive ones, increasing, as a log axis needs.
@@ -224,7 +222,7 @@ def _loop(name: str, result: results.LoopGain) -> Figure:
     return figure
 
 
-def _noise(name: str, result: results.NoiseSpectrum) -> Figure:
+def _noise(name: str, result: results.NoiseResult) -> Figure:
     """The noise density of the output, with its noisiest sources', on log axes.
 
     The sources are the noisiest over the frequencies, as many as colors remain; the
@@ -249,7 +247,7 @@ def _noise(name: str, result: results.NoiseSpectrum) -> Figure:
         for index, color in zip(noisiest, COLORS[1:], strict=False)
     )
     figure, axes = _figure(name, result, 1 if result.input is None else 2)
-    unit = f"{_UNITS[result.quantity]}/\N{SQUARE ROOT}Hz"
+    unit = f"{_UNITS[result.nature]}/\N{SQUARE ROOT}Hz"
     _draw(axes[0], frequencies, series, "noise density", unit)
     if result.input is not None:
         referred = np.sqrt(result.referred()[order])
@@ -259,7 +257,7 @@ def _noise(name: str, result: results.NoiseSpectrum) -> Figure:
             frequencies,
             [(label, COLORS[0], referred)],
             "input noise density",
-            f"{_UNITS[result.input.quantity]}/\N{SQUARE ROOT}Hz",
+            f"{_UNITS[result.input.nature]}/\N{SQUARE ROOT}Hz",
         )
     for each in axes:
         each.set_xscale("log")
@@ -268,7 +266,7 @@ def _noise(name: str, result: results.NoiseSpectrum) -> Figure:
     return figure
 
 
-def _poles_zeros(name: str, result: results.PolesZeros) -> Figure:
+def _poles_zeros(name: str, result: results.PoleZeroResult) -> Figure:
     """Each pole and zero at its natural frequency, on a log axis, and damping ratio.
 
     A damping ratio below zero is a root in the right half-plane, across the line at
@@ -323,14 +321,14 @@ def _label_abscissa(axes: Axes, result: Plotted, unit: str) -> None:
 
 
 def _steps(
-    result: results.Sweep | results.Waveforms, net: str
+    result: results.DcSweepResult | results.TransientResult, net: str
 ) -> tuple[results.Real, results.Real]:
     """Where the level of the logic net `net` changes, and the level from each on.
 
     A transient's last level holds until it stops; a sweep's levels change halfway
     between the source's levels.
     """
-    if isinstance(result, results.Waveforms):
+    if isinstance(result, results.TransientResult):
         trace = result.level(net)
         return (
             np.append(trace.times, result.times[-1]),
@@ -385,7 +383,7 @@ def _decibels(phasors: results.Complex) -> results.Real:
 
 
 def histograms(name: str, batch: files.Batch) -> Figure:
-    """A histogram of each measurement of `batch`, the batch `name`, over its runs.
+    """A histogram of each measure of `batch`, the batch `name`, over its runs.
 
     Each panel counts the runs whose value lies in each bin, numpy's ``auto`` bins of
     the values read, and draws the requirement's bounds across it; its title says how
@@ -393,13 +391,13 @@ def histograms(name: str, batch: files.Batch) -> Figure:
     """
     found = batch.result
     figure = Figure(
-        figsize=(8, 0.8 + 2.4 * max(len(found.measurements), 1)),
+        figsize=(8, 0.8 + 2.4 * max(len(found.measures), 1)),
         dpi=150,
         layout="constrained",
         facecolor=SURFACE,
     )
     figure.suptitle(
-        f"{name}: {found.runs} runs, each measurement's values",
+        f"{name}: {found.runs} runs, each measure's values",
         color=INK,
         x=0.02,
         ha="left",
@@ -455,9 +453,9 @@ def envelope(name: str, traced: results.Traced) -> Figure:
     response draws its magnitude and its phase, each run's phase unwrapped first. The
     unknowns of each quantity share a panel, as a plot's do.
     """
-    quantities = list(dict.fromkeys(unknown.quantity for unknown in traced.unknowns))
+    natures = list(dict.fromkeys(unknown.nature for unknown in traced.unknowns))
     response = traced.along == "frequency"
-    panels = 2 * len(quantities) if response else len(quantities)
+    panels = 2 * len(natures) if response else len(natures)
     figure = Figure(
         figsize=(8, 0.8 + 2.4 * max(panels, 1)),
         dpi=150,
@@ -477,11 +475,11 @@ def envelope(name: str, traced: results.Traced) -> Figure:
         unknown.name: COLORS[index % len(COLORS)]
         for index, unknown in enumerate(traced.unknowns)
     }
-    for index, quantity in enumerate(quantities):
+    for index, nature in enumerate(natures):
         columns = [
             (place, unknown)
             for place, unknown in enumerate(traced.unknowns)
-            if unknown.quantity == quantity
+            if unknown.nature == nature
         ]
         if response:
             phasors = [
@@ -499,28 +497,26 @@ def envelope(name: str, traced: results.Traced) -> Figure:
                 (name, color, np.degrees(np.unwrap(np.angle(values), axis=1)))
                 for name, color, values in phasors
             ]
-            _band(
-                axes[2 * index], traced.axis, magnitudes, f"{quantity} magnitude", "dB"
-            )
-            _band(axes[2 * index + 1], traced.axis, phases, f"{quantity} phase", "°")
+            _band(axes[2 * index], traced.axis, magnitudes, f"{nature} magnitude", "dB")
+            _band(axes[2 * index + 1], traced.axis, phases, f"{nature} phase", "°")
             continue
         series = [
             (unknown.name, colors[unknown.name], np.real(traced.values[:, :, place]))
             for place, unknown in columns
         ]
-        label = "temperature rise" if quantity == "temperature" else quantity
-        _band(axes[index], traced.axis, series, label, _UNITS[quantity])
+        label = "temperature rise" if nature == "temperature" else nature
+        _band(axes[index], traced.axis, series, label, _UNITS[nature])
     if response:
         for each in axes:
             each.set_xscale("log")
     unit = {"time": "s", "frequency": "Hz"}.get(traced.along, "")
-    if traced.along == "level" and traced.quantity is not None:
-        unit = _UNITS[traced.quantity]
+    if traced.along == "level" and traced.nature is not None:
+        unit = _UNITS[traced.nature]
     axes[-1].xaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
     along = {
         "time": "time",
         "frequency": "frequency",
-        "level": f"{traced.source} {traced.parameter or traced.quantity}",
+        "level": f"{traced.source} {traced.parameter or traced.nature}",
         "point": "",
     }[traced.along]
     axes[-1].set_xlabel(along, color=MUTED)
@@ -566,19 +562,19 @@ def save(figure: Figure, path: Path) -> None:
 
 def _describe(result: Plotted) -> str:
     match result:
-        case results.Waveforms():
+        case results.TransientResult():
             return "transient"
-        case results.Sweep():
+        case results.DcSweepResult():
             swept = "" if result.parameter is None else f"'s {result.parameter}"
             return f"DC sweep of {result.source}{swept}"
-        case results.Response():
+        case results.AcResult():
             return f"response to a unit excitation of {result.source}"
-        case results.LoopGain():
+        case results.StabilityResult():
             return f"loop gain through {result.probe}"
-        case results.NoiseSpectrum():
+        case results.NoiseResult():
             over = "" if result.reference is None else f" over {result.reference}"
             return f"noise at {result.output}{over}"
-        case results.PolesZeros():
+        case results.PoleZeroResult():
             over = "" if result.reference is None else f" over {result.reference}"
             zeros = f", and zeros of {result.output}{over} per {result.source}"
             return "poles" + ("" if result.zeros is None else zeros)
@@ -586,26 +582,26 @@ def _describe(result: Plotted) -> str:
 
 def _abscissa(result: Plotted) -> tuple[results.Real, str]:
     match result:
-        case results.Waveforms():
+        case results.TransientResult():
             return result.times, "s"
-        case results.Sweep():
-            unit = "" if result.quantity is None else _UNITS[result.quantity]
+        case results.DcSweepResult():
+            unit = "" if result.nature is None else _UNITS[result.nature]
             return result.levels, unit
-        case results.Response() | results.LoopGain() | results.NoiseSpectrum():
+        case results.AcResult() | results.StabilityResult() | results.NoiseResult():
             return result.frequencies, "Hz"
-        case results.PolesZeros():
+        case results.PoleZeroResult():
             return results.natural_frequencies(result.poles), "Hz"
 
 
 def _abscissa_label(result: Plotted) -> str:
     match result:
-        case results.Waveforms():
+        case results.TransientResult():
             return "time"
-        case results.Sweep():
-            return f"{result.source} {result.parameter or result.quantity}"
-        case results.Response() | results.LoopGain() | results.NoiseSpectrum():
+        case results.DcSweepResult():
+            return f"{result.source} {result.parameter or result.nature}"
+        case results.AcResult() | results.StabilityResult() | results.NoiseResult():
             return "frequency"
-        case results.PolesZeros():
+        case results.PoleZeroResult():
             return "natural frequency"
 
 

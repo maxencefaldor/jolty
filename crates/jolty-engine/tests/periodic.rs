@@ -4,8 +4,8 @@
 use std::f64::consts::TAU;
 
 use jolty_engine::{
-    Analysis, Conditions, Method, Options, Outcome, SimulationError, Simulator, Transient,
-    Waveforms,
+    Analysis, AnalysisResult, Conditions, Method, Options, SimulationError, Simulator, Transient,
+    TransientResult,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 /// A circuit of `instances` whose ground is `0`.
 fn circuit(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
@@ -45,7 +45,7 @@ fn two_terminal(id: &str, (device, name, value): (&str, &str, f64), a: &str, b: 
 
 /// A transient until `stop`, or the periodic steady state of that period, its steps at
 /// most `longest`.
-fn run(simulator: &mut Simulator, (stop, longest): (f64, f64), periodic: bool) -> Waveforms {
+fn run(simulator: &mut Simulator, (stop, longest): (f64, f64), periodic: bool) -> TransientResult {
     run_with(simulator, (stop, longest), periodic, &Options::default())
 }
 
@@ -54,7 +54,7 @@ fn run_with(
     (stop, longest): (f64, f64),
     periodic: bool,
     options: &Options,
-) -> Waveforms {
+) -> TransientResult {
     let transient = Transient {
         stop,
         max_step: Some(longest),
@@ -63,7 +63,7 @@ fn run_with(
         periodic,
     };
     match simulator.run(&Analysis::Transient(transient), options) {
-        Ok(Outcome::Transient(waveforms)) => waveforms,
+        Ok(AnalysisResult::Transient(waveforms)) => waveforms,
         other => panic!("a transient outcome, not {other:?}"),
     }
 }
@@ -154,7 +154,7 @@ fn a_rectifier_repeats_the_last_period_of_a_long_transient() {
     let until = f64::from(settled) / frequency;
     let transient = run_with(&mut long, (until, longest), false, &options);
     let out = index(&shooting, "out");
-    let last = |waveforms: &Waveforms, from: f64| {
+    let last = |waveforms: &TransientResult, from: f64| {
         let values = waveforms
             .times
             .iter()
@@ -249,7 +249,7 @@ fn a_memristor_and_a_capacitor_keep_the_charge_they_share() {
     let settled = 20;
     let mut long = simulator(&instances);
     let transient = run(&mut long, (f64::from(settled) / frequency, longest), false);
-    let range = |waveforms: &Waveforms, from: f64, unknown: usize| {
+    let range = |waveforms: &TransientResult, from: f64, unknown: usize| {
         let values = waveforms
             .times
             .iter()

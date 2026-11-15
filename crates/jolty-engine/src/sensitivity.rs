@@ -40,7 +40,10 @@ use crate::newton::{add_product, step_matrix};
 use crate::state::Held;
 use crate::sweep::Swept;
 use crate::transient::{Carried, Tangent};
-use crate::{Ac, DcSweep, OperatingPoint, Options, Outcome, SimulationError, Simulator, Transient};
+use crate::{
+    Ac, AnalysisResult, DcSweep, OperatingPointResult, Options, SimulationError, Simulator,
+    Transient,
+};
 
 /// How far the operating point moves, along its derivative, in the central difference
 /// of `G` and `C`: its largest voltage moves this many volts either way.
@@ -102,7 +105,7 @@ pub enum Derivatives {
 
 /// The sensitivities of a [`Sensitivity`] analysis.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Sensitivities {
+pub struct SensitivityResult {
     /// The unknowns, by name, in the order of the derivatives' outputs.
     pub outputs: Vec<String>,
     /// Every parameter the derivatives are with respect to.
@@ -110,7 +113,7 @@ pub struct Sensitivities {
     /// The derivatives, by point, then output, then parameter.
     pub derivatives: Derivatives,
     /// The result of the analysis differentiated.
-    pub result: Box<Outcome>,
+    pub result: Box<AnalysisResult>,
 }
 
 /// A device's instance computing with the derivative of every number with respect to one
@@ -211,7 +214,7 @@ impl Simulator {
         &mut self,
         sensitivity: &Sensitivity,
         options: &Options,
-    ) -> Result<Sensitivities, SimulationError> {
+    ) -> Result<SensitivityResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             let outputs = sensitivity
@@ -229,7 +232,7 @@ impl Simulator {
                     let found = self.adjoint(&outputs, &mut twins, &point.values, options)?;
                     (
                         Derivatives::Real(vec![found]),
-                        Outcome::OperatingPoint(point),
+                        AnalysisResult::OperatingPoint(point),
                     )
                 }
                 Differentiated::DcSweep(sweep) => {
@@ -238,12 +241,12 @@ impl Simulator {
                     let found =
                         self.along_sweep(&outputs, &mut twins, (swept, sweep), &result, options);
                     self.hold(swept, None)?;
-                    (Derivatives::Real(found?), Outcome::DcSweep(result))
+                    (Derivatives::Real(found?), AnalysisResult::DcSweep(result))
                 }
                 Differentiated::Ac(ac) => {
                     let response = self.ac(ac, options)?;
                     let found = self.over_frequency(&outputs, &mut twins, &response, options)?;
-                    (Derivatives::Complex(found), Outcome::Ac(response))
+                    (Derivatives::Complex(found), AnalysisResult::Ac(response))
                 }
                 Differentiated::Transient(transient) => {
                     if transient.periodic {
@@ -264,11 +267,11 @@ impl Simulator {
                     twins = forward.twins;
                     (
                         Derivatives::Real(forward.found),
-                        Outcome::Transient(waveforms),
+                        AnalysisResult::Transient(waveforms),
                     )
                 }
             };
-            Ok(Sensitivities {
+            Ok(SensitivityResult {
                 outputs: sensitivity.outputs.clone(),
                 parameters: twins.into_iter().map(|twin| twin.parameter).collect(),
                 derivatives,
@@ -290,7 +293,7 @@ impl Simulator {
     pub fn gmin_dependence(
         &mut self,
         options: &Options,
-    ) -> Result<(OperatingPoint, Vec<f64>), SimulationError> {
+    ) -> Result<(OperatingPointResult, Vec<f64>), SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             let point = self.operating_point(options)?;
@@ -430,7 +433,7 @@ impl Simulator {
         outputs: &[Unknown],
         twins: &mut [Twin],
         (swept, sweep): (Swept, &DcSweep),
-        result: &crate::Sweep,
+        result: &crate::DcSweepResult,
         options: &Options,
     ) -> Result<Vec<Vec<Vec<f64>>>, SimulationError> {
         let mut found = Vec::with_capacity(result.levels.len());
@@ -457,7 +460,7 @@ impl Simulator {
         &mut self,
         outputs: &[Unknown],
         twins: &mut [Twin],
-        response: &crate::Response,
+        response: &crate::AcResult,
         options: &Options,
     ) -> Result<Vec<Vec<Vec<Complex64>>>, SimulationError> {
         let x = &response.operating_point.values;
@@ -543,7 +546,7 @@ impl Simulator {
             .unknowns
             .iter()
             .zip(shift)
-            .filter(|(unknown, _)| !unknown.quantity.is_current())
+            .filter(|(unknown, _)| !unknown.nature.is_current())
             .fold(0.0_f64, |most, (_, value)| most.max(value.abs()));
         if largest == 0.0 || !largest.is_finite() {
             return None;

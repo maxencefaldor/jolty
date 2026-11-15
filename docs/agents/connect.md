@@ -53,11 +53,11 @@ The server offers one tool per command:
 | `merge_shards` | `jolty merge` |
 | `plot_results` | `jolty plot` |
 | `draw_schematic` | `jolty draw` |
-| `write_viewer` | `jolty view` |
+| `view_circuit` | `jolty view` |
 | `check_circuit` | `jolty check` |
-| `explain_rule` | `jolty explain` |
-| `price_circuit` | `jolty cost` |
-| `write_kicad_netlist` | `jolty kicad` |
+| `explain_rules` | `jolty explain` |
+| `cost_circuit` | `jolty cost` |
+| `export_kicad_netlist` | `jolty export-kicad` |
 
 Each tool answers with the text the command prints, with the result itself as structured content, and with the schematics and plots it drew as images.
 Scripts run in a process of their own, with the configured time limit, so nothing a script prints can reach the protocol stream.

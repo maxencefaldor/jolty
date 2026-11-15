@@ -139,7 +139,7 @@ def test_the_yield_matches_an_independent_monte_carlo_run(
     monkeypatch.chdir(tmp_path)
     script = tmp_path / "divider.py"
     script.write_text(DIVIDER.replace("SAMPLES", str(SAMPLES)), encoding="utf-8")
-    outcome = run(Job(script=script, plan=script, listed=10), tmp_path)
+    outcome = run(Job(script=script, plan=script, max_unknowns=10), tmp_path)
     assert isinstance(outcome, Built), str(outcome)
     report = outcome.monte_carlo
     assert report is not None
@@ -319,7 +319,7 @@ def test_each_sample_runs_on_the_same_parts_at_every_corner(
     monkeypatch.chdir(tmp_path)
     script = tmp_path / "divider.py"
     script.write_text(CORNERED, encoding="utf-8")
-    outcome = run(Job(script=script, plan=script, listed=10), tmp_path)
+    outcome = run(Job(script=script, plan=script, max_unknowns=10), tmp_path)
     assert isinstance(outcome, Built), str(outcome)
     report = outcome.monte_carlo
     assert report is not None
@@ -403,7 +403,7 @@ def test_a_worst_case_sets_each_tolerance_at_the_extreme_that_worsens_it(
     monkeypatch.chdir(tmp_path)
     script = tmp_path / "divider.py"
     script.write_text(WORST, encoding="utf-8")
-    outcome = run(Job(script=script, plan=script, listed=10), tmp_path)
+    outcome = run(Job(script=script, plan=script, max_unknowns=10), tmp_path)
     assert isinstance(outcome, Built), str(outcome)
     report = outcome.worst_case
     assert report is not None
@@ -488,7 +488,7 @@ def test_a_plans_variants_run_at_its_conditions_and_every_corner(
     monkeypatch.chdir(tmp_path)
     script = tmp_path / "divider.py"
     script.write_text(GRIDDED, encoding="utf-8")
-    outcome = run(Job(script=script, plan=script, listed=10), tmp_path)
+    outcome = run(Job(script=script, plan=script, max_unknowns=10), tmp_path)
     assert isinstance(outcome, Built), str(outcome)
     report = outcome.variants
     assert report is not None
@@ -520,7 +520,7 @@ def test_the_runner_saves_its_batches_tracing_what_their_plots_draw(
     monkeypatch.chdir(tmp_path)
     script = tmp_path / "divider.py"
     script.write_text(DIVIDER.replace("SAMPLES", "20"), encoding="utf-8")
-    outcome = run(Job(script=script, plan=script, listed=10, plot=True), tmp_path)
+    outcome = run(Job(script=script, plan=script, max_unknowns=10, plot=True), tmp_path)
     assert isinstance(outcome, Built), str(outcome)
     ((name, batch),) = files.load_batches(tmp_path / BATCHES).items()
     assert name == MONTE_CARLO
@@ -535,5 +535,5 @@ def test_the_runner_saves_its_batches_tracing_what_their_plots_draw(
     # Without plots, a batch traces nothing.
     unplotted = tmp_path / "unplotted"
     unplotted.mkdir()
-    run(Job(script=script, plan=script, listed=10), unplotted)
+    run(Job(script=script, plan=script, max_unknowns=10), unplotted)
     assert files.load_batches(unplotted / BATCHES)[MONTE_CARLO].result.traced == ()

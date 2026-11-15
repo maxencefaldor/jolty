@@ -10,8 +10,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use jolty_engine::{
-    Analysis, Conditions, Derivatives, Elaborated, ElaborationProblem, Options, Outcome, Record,
-    SimulationError, Simulator, Structure, Values,
+    Analysis, AnalysisResult, Conditions, Derivatives, Elaborated, ElaborationProblem, Options,
+    Record, SimulationError, Simulator, Structure, Values,
 };
 use jolty_ir::{Circuit, Parameters};
 use jolty_models::Library;
@@ -42,7 +42,7 @@ fn complexes(values: &[Complex64], into: &mut Vec<u64>) {
     }
 }
 
-fn point(point: &jolty_engine::OperatingPoint, into: &mut Vec<u64>) {
+fn point(point: &jolty_engine::OperatingPointResult, into: &mut Vec<u64>) {
     reals(&point.values, into);
     let observation = &point.observation;
     for values in [
@@ -57,7 +57,7 @@ fn point(point: &jolty_engine::OperatingPoint, into: &mut Vec<u64>) {
 }
 
 /// The bits of the outcome of a run, or its error.
-fn bits(outcome: &Result<Outcome, SimulationError>) -> Bits {
+fn bits(outcome: &Result<AnalysisResult, SimulationError>) -> Bits {
     let mut numbers = Vec::new();
     if let Ok(found) = outcome {
         numbers_of(found, &mut numbers);
@@ -69,17 +69,17 @@ fn bits(outcome: &Result<Outcome, SimulationError>) -> Bits {
 }
 
 /// Every number of `outcome`, as its bits.
-fn numbers_of(outcome: &Outcome, numbers: &mut Vec<u64>) {
+fn numbers_of(outcome: &AnalysisResult, numbers: &mut Vec<u64>) {
     match outcome {
-        Outcome::OperatingPoint(found) => point(found, numbers),
-        Outcome::Ac(response) => {
+        AnalysisResult::OperatingPoint(found) => point(found, numbers),
+        AnalysisResult::Ac(response) => {
             point(&response.operating_point, numbers);
             reals(&response.frequencies, numbers);
             for row in response.values.iter().chain(&response.currents) {
                 complexes(row, numbers);
             }
         }
-        Outcome::Transient(waveforms) => {
+        AnalysisResult::Transient(waveforms) => {
             reals(&waveforms.times, numbers);
             for row in &waveforms.values {
                 reals(row, numbers);
@@ -98,13 +98,13 @@ fn numbers_of(outcome: &Outcome, numbers: &mut Vec<u64>) {
                 numbers.extend(trace.iter().map(|(time, _)| time.to_bits()));
             }
         }
-        Outcome::DcSweep(sweep) => {
+        AnalysisResult::DcSweep(sweep) => {
             reals(&sweep.levels, numbers);
             for row in &sweep.values {
                 reals(row, numbers);
             }
         }
-        Outcome::Sensitivity(found) => {
+        AnalysisResult::Sensitivity(found) => {
             numbers.extend(
                 found
                     .parameters
@@ -332,7 +332,7 @@ impl Network {
             }));
         }
         let document = json!({
-            "format": "jolty-circuit", "version": 1, "top": "network",
+            "format": "jolty-circuit", "version": 2, "top": "network",
             "components": {"network": {
                 "ports": [{"name": "0", "role": "ground"}], "instances": instances,
             }}
@@ -550,7 +550,7 @@ fn a_reset_forgets_the_logic() {
         ),
     ];
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "ring",
+        "format": "jolty-circuit", "version": 2, "top": "ring",
         "components": {"ring": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
@@ -583,7 +583,7 @@ fn a_reset_forgets_the_logic() {
 /// unknown of its own.
 fn divider() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "divider",
+        "format": "jolty-circuit", "version": 2, "top": "divider",
         "components": {"divider": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "V1", "of": {"device": "voltage_source"},
              "parameters": {"waveform": {"dc": 1.0}},
@@ -674,7 +674,7 @@ fn a_resistor_overridden_across_one_ohm_changes_the_structure() {
 #[test]
 fn values_report_every_number_they_cannot_replace() {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "top",
+        "format": "jolty-circuit", "version": 2, "top": "top",
         "components": {"top": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "V1", "of": {"device": "voltage_source"},
              "parameters": {"waveform": {"dc": 1.0}},

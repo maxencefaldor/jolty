@@ -319,7 +319,7 @@ def test_the_kicad_command_writes_the_netlist_beside_the_circuit(
     save_circuit(saved, circuit(bench()))
     PARTS.save(catalog)
     assert Catalog.load(catalog) == PARTS
-    arguments = ["kicad", str(saved), "--catalog", str(catalog)]
+    arguments = ["export-kicad", str(saved), "--catalog", str(catalog)]
     assert _run(*arguments, "--instance", "X1") == 0
     written = tmp_path / "bench.X1.net"
     assert capsys.readouterr().out.startswith(

@@ -44,7 +44,7 @@ from matplotlib.patches import Circle, Polygon, Rectangle
 from jolty import ir
 from jolty.errors import JoltyError
 from jolty.layout import Net, Placed, Point, layout, split_name
-from jolty.results import OperatingPoint
+from jolty.results import OperatingPointResult
 from jolty.units import format_si
 
 _INK: Final = "#0b0b0b"
@@ -68,7 +68,7 @@ def draw(
     circuit: ir.Circuit,
     path: str = "",
     *,
-    point: OperatingPoint | None = None,
+    point: OperatingPointResult | None = None,
     marked: Collection[str] = (),
 ) -> Figure:
     """The schematic of the component the instance at `path` places, or of the top.
@@ -121,7 +121,9 @@ class _Scope:
         """The path in the circuit of the component's `net`, which names its voltage."""
         return self.ports.get(net, self.prefix + net)
 
-    def voltages(self, point: OperatingPoint, nets: Iterable[str]) -> dict[str, float]:
+    def voltages(
+        self, point: OperatingPointResult, nets: Iterable[str]
+    ) -> dict[str, float]:
         """The voltage `point` holds for each of `nets` of the component, by net.
 
         A net `point` holds no voltage for, such as the ground, is left out.
@@ -129,7 +131,7 @@ class _Scope:
         solved = {
             unknown.name: float(value)
             for unknown, value in zip(point.unknowns, point.values, strict=True)
-            if unknown.quantity == "voltage"
+            if unknown.nature == "voltage"
         }
         return {net: solved[self.path(net)] for net in nets if self.path(net) in solved}
 

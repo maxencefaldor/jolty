@@ -129,7 +129,7 @@ Price a component of a saved circuit file with a catalog.
 | `--catalog` | required | A catalog file of parts and their prices. |
 | `--instance` |  | The path of the component instance to price, such as 'X1'; the top component by default. |
 
-## `jolty kicad`
+## `jolty export-kicad`
 
 Write a component of a saved circuit file as a KiCad netlist.
 

@@ -15,7 +15,7 @@ from jolty import (
     files,
     results,
 )
-from jolty.report import TransferReport, report
+from jolty.report import TransferFunctionReport, report
 from jolty.units import V, kohm, mA
 
 
@@ -69,7 +69,9 @@ def test_a_current_input_gains_in_ohms_and_an_idle_source_sees_no_load() -> None
     assert idle.input_resistance == math.inf
     written = report("idle", idle, 8).model_dump_json()
     assert '"input_resistance":"Infinity"' in written
-    assert TransferReport.model_validate_json(written).input_resistance == math.inf
+    assert (
+        TransferFunctionReport.model_validate_json(written).input_resistance == math.inf
+    )
 
 
 def test_a_transfer_function_survives_its_results_file(tmp_path: Path) -> None:
@@ -77,7 +79,7 @@ def test_a_transfer_function_survives_its_results_file(tmp_path: Path) -> None:
     path = tmp_path / "driven.results.npz"
     files.save_results(path, {"tf": found})
     (loaded,) = files.load_results(path).values()
-    assert isinstance(loaded, results.Transfer)
+    assert isinstance(loaded, results.TransferFunctionResult)
     numbers = ("gain", "input_resistance", "output_resistance")
     assert [getattr(loaded, name) for name in numbers] == [
         getattr(found, name) for name in numbers

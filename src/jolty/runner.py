@@ -69,7 +69,7 @@ from jolty.plan import (
     WorstCase,
     runs,
 )
-from jolty.results import BatchResult, Result, Run
+from jolty.results import AnalysisResult, BatchResult, Run
 from jolty.simulate import Simulation, kelvins
 from jolty.specs import Requirement, Specs, Verdict, evaluate, judge, reading
 from jolty.units import TEMPERATURE, Quantity
@@ -128,7 +128,7 @@ class Job(BaseModel):
         default=None,
         description="The script that defines plan(); null to elaborate only.",
     )
-    listed: int = Field(ge=1, description="Unknowns each report lists.")
+    max_unknowns: int = Field(ge=1, description="Unknowns each report lists.")
     check: bool = Field(
         default=True,
         description="Whether to check the rules at the plan's operating point.",
@@ -227,7 +227,7 @@ class Failure(BaseModel):
     kind: Literal["failure"] = "failure"
     error: str = Field(description="The exception's type, such as 'BuildError'.")
     message: str = Field(description="The exception's message.")
-    frames: tuple[ir.Source, ...] = Field(
+    frames: tuple[ir.SourceLocation, ...] = Field(
         default=(), description="The script lines of the traceback, innermost first."
     )
 
@@ -307,7 +307,9 @@ def _run(job: Job, directory: Path) -> Built:
         )
         return elaborated.model_copy(update={"shard": shard})
     outside: list[fidelity.Outside] = []
-    solved, reports = _analyses(simulation, plan, job.listed, outside, recorded=True)
+    solved, reports = _analyses(
+        simulation, plan, job.max_unknowns, outside, recorded=True
+    )
     at_point = (
         _at_operating_point(simulation, plan) + simulation.check_results(solved)
         if job.check
@@ -403,7 +405,7 @@ def _at_operating_point(
 def _fidelity(
     chosen: fidelity.Fidelity,
     plan: Plan,
-    solved: Mapping[str, Result],
+    solved: Mapping[str, AnalysisResult],
     specs: Specs | None,
 ) -> FidelityReport | None:
     """The models `chosen` holds, and the spot checks of `plan`'s results `solved`.
@@ -464,7 +466,7 @@ class _Condition:
     temperature: Quantity
     chosen: fidelity.Fidelity | None
     """The models chosen there, None where the circuit does not elaborate."""
-    solved: Mapping[str, Result] = field(default_factory=dict)
+    solved: Mapping[str, AnalysisResult] = field(default_factory=dict)
     """The results there of the analyses that end, by name."""
     failures: Mapping[str, str] = field(default_factory=dict)
     """Why each analysis that failed there failed, by name."""
@@ -504,7 +506,7 @@ def _corners(  # noqa: PLR0913 - the script, the plan, and what its own run foun
     cache: fidelity.Cache,
     *,
     chosen: fidelity.Fidelity,
-    solved: Mapping[str, Result],
+    solved: Mapping[str, AnalysisResult],
 ) -> tuple[list[_Condition], tuple[report.CornerReport, ...]]:
     """The plan's own conditions and its corners', and what each corner found.
 
@@ -657,9 +659,7 @@ def _batches(  # noqa: PLR0913 - the runs, where they run, and what they measure
     tracing the unknowns `traced` names; one whose circuit does not, none.
     """
     analyses = _unrecorded(plan)
-    measurements = (
-        [] if specs is None else [each.measurement for each in specs.requirements]
-    )
+    measures = [] if specs is None else [each.measure for each in specs.requirements]
     found: list[BatchResult | None] = [None] * len(conditions)
     for structure in _structures(conditions, {}):
         for member in structure.members:
@@ -667,7 +667,7 @@ def _batches(  # noqa: PLR0913 - the runs, where they run, and what they measure
                 analyses,
                 Product(_at_temperatures(conditions, [member]), variants),
                 plan.options,
-                measurements=measurements,
+                measures=measures,
                 traced=traced if member == 0 else (),
                 runs=taken,
             )
@@ -922,7 +922,7 @@ def _worst_case(
     circuit elaborates. The runs of the conditions whose circuits are one make a batch.
     """
     requirements = () if specs is None else specs.requirements
-    found: list[list[tuple[int, str | None, Mapping[str, Result]]]] = [
+    found: list[list[tuple[int, str | None, Mapping[str, AnalysisResult]]]] = [
         [] for _ in requirements
     ]
     runs = 0
@@ -953,7 +953,7 @@ def _worst_case(
     )
 
 
-def _condition(judged: tuple[int, str | None, Mapping[str, Result]]) -> int:
+def _condition(judged: tuple[int, str | None, Mapping[str, AnalysisResult]]) -> int:
     """The place among the plan's conditions of the condition a result comes from."""
     return judged[0]
 
@@ -964,7 +964,7 @@ def _extremes(
     plan: Plan,
     worst_case: WorstCase,
     requirements: Sequence[Requirement],
-) -> tuple[int, list[list[tuple[int, str | None, Mapping[str, Result]]]]]:
+) -> tuple[int, list[list[tuple[int, str | None, Mapping[str, AnalysisResult]]]]]:
     """How many runs a worst case makes at the conditions of `structure`, and more.
 
     It returns what each requirement is judged on there too: at each condition, by its
@@ -1019,7 +1019,7 @@ def _extremes(
         if extremes
         else []
     )
-    judged: list[list[tuple[int, str | None, Mapping[str, Result]]]] = [
+    judged: list[list[tuple[int, str | None, Mapping[str, AnalysisResult]]]] = [
         [] for _ in requirements
     ]
     for member, condition, keys in wanted:
@@ -1049,7 +1049,7 @@ def _keyed(
 
 def _slopes(
     requirements: Sequence[Requirement],
-    nominal: Mapping[str, Result],
+    nominal: Mapping[str, AnalysisResult],
     moved: Sequence[Run],
 ) -> list[list[float]]:
     """How far each requirement's value moves, per run of `moved`, one parameter moved.
@@ -1119,7 +1119,7 @@ def _analyses(
     outside: list[fidelity.Outside] | None = None,
     *,
     recorded: bool = False,
-) -> tuple[dict[str, Result], tuple[report.AnalysisReport, ...]]:
+) -> tuple[dict[str, AnalysisResult], tuple[report.AnalysisReport, ...]]:
     """The results of the analyses of `plan` that end, by name, and a report on each.
 
     The excursions outside its logic devices' domains of each analysis that ends join
@@ -1129,7 +1129,7 @@ def _analyses(
     checks read otherwise, as a corner's, a sample's and a spot check's are, which only
     specs and contracts read.
     """
-    solved: dict[str, Result] = {}
+    solved: dict[str, AnalysisResult] = {}
     reports: list[report.AnalysisReport] = []
     for name, analysis in plan.analyses.items():
         try:
@@ -1216,7 +1216,7 @@ def _importable(*scripts: Path | None) -> Generator[None]:
 def _failure(error: BaseException, message: str) -> Failure:
     """Describes `error` by the script lines it passed through, innermost first."""
     frames = [
-        ir.Source(
+        ir.SourceLocation(
             file=_relative(frame.f_code.co_filename),
             line=line or 1,
             function=frame.f_code.co_name,

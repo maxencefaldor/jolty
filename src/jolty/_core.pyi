@@ -16,7 +16,7 @@ REGION: str
 SAMPLES_PER_PERIOD: int
 
 class ElaborationError(Exception):
-    args: tuple[list[ProblemOutcome]]
+    args: tuple[list[Problem]]
 
 class SimulationError(Exception): ...
 
@@ -42,23 +42,23 @@ class SolvedPoint(Observed):
     logic: npt.NDArray[np.float64]
     strategy: str
 
-class OperatingPointOutcome(SolvedPoint):
+class OperatingPointResult(SolvedPoint):
     kind: Literal["operating_point"]
 
-class OperatingPointsOutcome(TypedDict):
+class OperatingPointsResult(TypedDict):
     kind: Literal["operating_points"]
     points: list[SolvedPoint]
 
-class SweepOutcome(Observed):
+class DcSweepResult(Observed):
     kind: Literal["dc_sweep"]
     source: str
     parameter: str | None
-    quantity: Nature | None
+    nature: Nature | None
     levels: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
 
-class ResponseOutcome(TypedDict):
+class AcResult(TypedDict):
     kind: Literal["ac"]
     source: str
     frequencies: npt.NDArray[np.float64]
@@ -66,14 +66,14 @@ class ResponseOutcome(TypedDict):
     currents: npt.NDArray[np.complex128]
     operating_point: SolvedPoint
 
-class WorkOutcome(TypedDict):
+class Work(TypedDict):
     iterations: int
     factorizations: int
     refactorizations: int
     fallbacks: int
     reuses: int
 
-class ProfileOutcome(TypedDict):
+class Profile(TypedDict):
     preparing: float
     evaluating: float
     assembling: float
@@ -83,56 +83,56 @@ class ProfileOutcome(TypedDict):
     recording: float
     other: float
 
-class StatisticsOutcome(TypedDict):
+class Statistics(TypedDict):
     initial: str
     accepted: int
     rejected: int
     landed: int
     iterations: int
     periods: int | None
-    work: WorkOutcome
-    profile: ProfileOutcome | None
+    work: Work
+    profile: Profile | None
 
-class WaveformsOutcome(Observed):
+class TransientResult(Observed):
     kind: Literal["transient"]
     times: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
     logic: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
-    statistics: StatisticsOutcome
+    statistics: Statistics
 
-class SensitivityOutcome(TypedDict):
+class SensitivityResult(TypedDict):
     kind: Literal["sensitivity"]
     outputs: list[str]
     parameters: list[tuple[str, str]]
     values: npt.NDArray[np.float64]
     derivatives: npt.NDArray[np.float64] | npt.NDArray[np.complex128]
-    result: Outcome
+    result: AnalysisResult
 
-class StabilityOutcome(TypedDict):
+class StabilityResult(TypedDict):
     kind: Literal["stability"]
     probe: str
     frequencies: npt.NDArray[np.float64]
     gains: npt.NDArray[np.complex128]
     operating_point: SolvedPoint
 
-class NoiseInputOutcome(TypedDict):
+class NoiseInput(TypedDict):
     source: str
-    quantity: Nature
+    nature: Nature
     gains: npt.NDArray[np.complex128]
 
-class NoiseOutcome(TypedDict):
+class NoiseResult(TypedDict):
     kind: Literal["noise"]
     output: str
     reference: str | None
-    quantity: Nature
+    nature: Nature
     frequencies: npt.NDArray[np.float64]
     densities: npt.NDArray[np.float64]
-    input: NoiseInputOutcome | None
+    input: NoiseInput | None
     sources: list[tuple[str, str]]
     contributions: npt.NDArray[np.float64]
     operating_point: SolvedPoint
 
-class PoleZeroOutcome(TypedDict):
+class PoleZeroResult(TypedDict):
     kind: Literal["pole_zero"]
     source: str | None
     output: str | None
@@ -141,7 +141,7 @@ class PoleZeroOutcome(TypedDict):
     zeros: npt.NDArray[np.complex128] | None
     operating_point: SolvedPoint
 
-class TransferFunctionOutcome(TypedDict):
+class TransferFunctionResult(TypedDict):
     kind: Literal["transfer_function"]
     source: str
     input: Nature
@@ -152,39 +152,39 @@ class TransferFunctionOutcome(TypedDict):
     output_resistance: float
     operating_point: SolvedPoint
 
-type Outcome = (
-    OperatingPointOutcome
-    | SweepOutcome
-    | ResponseOutcome
-    | WaveformsOutcome
-    | SensitivityOutcome
-    | StabilityOutcome
-    | NoiseOutcome
-    | PoleZeroOutcome
-    | OperatingPointsOutcome
-    | TransferFunctionOutcome
+type AnalysisResult = (
+    OperatingPointResult
+    | DcSweepResult
+    | AcResult
+    | TransientResult
+    | SensitivityResult
+    | StabilityResult
+    | NoiseResult
+    | PoleZeroResult
+    | OperatingPointsResult
+    | TransferFunctionResult
 )
 
-class SourceOutcome(TypedDict):
+class SourceLocation(TypedDict):
     file: str
     line: int
     function: str | None
 
-class InstanceOutcome(TypedDict):
+class Location(TypedDict):
     path: str
-    source: SourceOutcome | None
+    source_location: SourceLocation | None
 
-class ProblemOutcome(TypedDict):
+class Problem(TypedDict):
     message: str
-    instance: InstanceOutcome | None
+    instance: Location | None
 
-class DiagnosticOutcome(TypedDict):
+class Diagnostic(TypedDict):
     rule: str
     message: str
-    instances: list[InstanceOutcome]
+    instances: list[Location]
     nets: list[str]
 
-class ExcursionOutcome(TypedDict):
+class Excursion(TypedDict):
     path: str
     bound: Literal["input transition", "load", "supply"]
     low: float
@@ -258,12 +258,10 @@ class Simulator:
     def devices(self) -> int: ...
     @property
     def foundry_devices(self) -> list[str]: ...
-    def check(self) -> list[DiagnosticOutcome]: ...
-    def check_operating_point(
-        self, options: str, pool: Pool
-    ) -> list[DiagnosticOutcome]: ...
-    def excursions(self) -> list[ExcursionOutcome]: ...
-    def run(self, analysis: str, options: str, pool: Pool) -> Outcome: ...
+    def check(self) -> list[Diagnostic]: ...
+    def check_operating_point(self, options: str, pool: Pool) -> list[Diagnostic]: ...
+    def excursions(self) -> list[Excursion]: ...
+    def run(self, analysis: str, options: str, pool: Pool) -> AnalysisResult: ...
     @property
     def elaborated(self) -> Elaborated: ...
     def batch(
@@ -275,20 +273,20 @@ class Simulator:
         traced: list[tuple[int, list[int]]],
         pool: Pool,
         each: Callable[
-            [int, Simulator | None, list[ProblemOutcome] | None, list[Outcome | str]],
+            [int, Simulator | None, list[Problem] | None, list[AnalysisResult | str]],
             None,
         ]
         | None = None,
-    ) -> BatchOutcome: ...
+    ) -> BatchResult: ...
 
-class BatchOutcome(TypedDict):
+class BatchResult(TypedDict):
     values: npt.NDArray[np.float64]
     parameters: list[tuple[str, str] | None]
     measured: npt.NDArray[np.float64]
     causes: npt.NDArray[np.int32]
     reasons: list[tuple[str, list[float], str]]
     ended: npt.NDArray[np.bool_]
-    problems: dict[int, list[ProblemOutcome]]
+    problems: dict[int, list[Problem]]
     errors: dict[int, list[tuple[int, str]]]
     traced: list[npt.NDArray[np.float64] | npt.NDArray[np.complex128]]
 
@@ -390,13 +388,13 @@ class Measure:
     def damping() -> Measure: ...
     @staticmethod
     def dominant_pole() -> Measure: ...
-    def read_point(self, values: Real) -> float: ...
-    def read_sweep(self, levels: Real, values: Real) -> float: ...
+    def read_operating_point(self, values: Real) -> float: ...
+    def read_dc_sweep(self, levels: Real, values: Real) -> float: ...
     def read_transient(self, times: Real, values: Real) -> float: ...
-    def read_response(self, frequencies: Real, values: Complex) -> float: ...
-    def read_loop(self, frequencies: Real, gains: Complex) -> float: ...
+    def read_ac(self, frequencies: Real, values: Complex) -> float: ...
+    def read_stability(self, frequencies: Real, gains: Complex) -> float: ...
     def read_noise(
         self, frequencies: Real, densities: Real, gains: Complex | None
     ) -> float: ...
-    def read_poles(self, poles: Complex) -> float: ...
-    def read_solutions(self, count: int) -> float: ...
+    def read_pole_zero(self, poles: Complex) -> float: ...
+    def read_operating_points(self, count: int) -> float: ...

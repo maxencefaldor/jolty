@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 
 use jolty_engine::{
-    Analysis, Conditions, Observation, Observations, Options, Outcome, Parallelism, Record,
-    Simulator, Waveforms,
+    Analysis, AnalysisResult, Conditions, Observation, Observations, Options, Parallelism, Record,
+    Simulator, TransientResult,
 };
 use jolty_ir::Circuit;
 use jolty_models::{
@@ -120,7 +120,7 @@ fn ladder() -> Circuit {
          "terminals": {"a": middle, "b": "0"}}
     ));
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "ladder",
+        "format": "jolty-circuit", "version": 2, "top": "ladder",
         "components": {"ladder": {"ports": [{"name": "0", "role": "ground"}],
                                   "instances": instances}}
     });
@@ -158,14 +158,14 @@ fn run(options: &Options) -> (Vec<String>, BTreeSet<(u64, u64)>) {
                 .run(analysis, &options)
                 .expect("the analysis runs")
             {
-                Outcome::OperatingPoint(mut point) => {
+                AnalysisResult::OperatingPoint(mut point) => {
                     spied(&point.observation.variables);
                     point.observation = Observation::default();
                     format!("{point:?}")
                 }
-                Outcome::Transient(waveforms) => {
+                AnalysisResult::Transient(waveforms) => {
                     spied(&waveforms.observations.variables);
-                    let waveforms = Waveforms {
+                    let waveforms = TransientResult {
                         observations: Observations::default(),
                         ..waveforms
                     };

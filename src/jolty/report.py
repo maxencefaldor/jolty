@@ -24,9 +24,9 @@ from jolty import results, specs
 from jolty.specs import Spread, Verdict, Yield
 from jolty.units import format_si
 
-type Quantity = results.Quantity
+type Nature = results.Nature
 
-_SYMBOLS: dict[Quantity, str] = {
+_SYMBOLS: dict[Nature, str] = {
     "voltage": "V",
     "current": "A",
     "temperature": "K",
@@ -34,14 +34,14 @@ _SYMBOLS: dict[Quantity, str] = {
 }
 
 
-def _shown(value: float, quantity: Quantity) -> str:
-    """`value`, an unknown's of `quantity`, with an SI prefix to its unit.
+def _shown(value: float, nature: Nature) -> str:
+    """`value`, an unknown's of `nature`, with an SI prefix to its unit.
 
     A device's state has no unit, and is written as a plain number.
     """
-    if quantity == "state":
+    if nature == "state":
         return f"{value:.4g}"
-    return format_si(value, _SYMBOLS[quantity])
+    return format_si(value, _SYMBOLS[nature])
 
 
 _STRATEGIES = {
@@ -61,7 +61,7 @@ class Value(_Model):
     """The value of one unknown, in volts or amperes."""
 
     unknown: str
-    quantity: Quantity
+    nature: Nature
     value: float
 
 
@@ -69,7 +69,7 @@ class Extent(_Model):
     """The values one unknown takes over an analysis, in volts or amperes."""
 
     unknown: str
-    quantity: Quantity
+    nature: Nature
     first: float
     minimum: float
     maximum: float
@@ -111,7 +111,7 @@ class Transistor(_Model):
     margins: tuple[Margin, ...]
 
 
-class PointReport(_Model):
+class OperatingPointReport(_Model):
     """An operating point."""
 
     kind: Literal["operating_point"] = "operating_point"
@@ -136,8 +136,7 @@ class PointReport(_Model):
         """The report as text."""
         strategy = _STRATEGIES.get(self.strategy, self.strategy)
         rows = [
-            [value.unknown, _shown(value.value, value.quantity)]
-            for value in self.values
+            [value.unknown, _shown(value.value, value.nature)] for value in self.values
         ]
         rows.extend([level.net, _written(level.level)] for level in self.levels)
         head = f"{self.name}: operating point, found by {strategy}"
@@ -166,11 +165,11 @@ class Solutions(_Model):
     """The value of one unknown at each DC solution, in volts or amperes."""
 
     unknown: str
-    quantity: Quantity
+    nature: Nature
     values: tuple[float, ...] = Field(description="Its value at each solution.")
 
 
-class PointsReport(_Model):
+class OperatingPointsReport(_Model):
     """Every DC solution a search found, the operating point first."""
 
     kind: Literal["operating_points"] = "operating_points"
@@ -191,20 +190,20 @@ class PointsReport(_Model):
         rows = [
             [
                 solutions.unknown,
-                *(_shown(value, solutions.quantity) for value in solutions.values),
+                *(_shown(value, solutions.nature) for value in solutions.values),
             ]
             for solutions in self.values
         ]
         return _join(head, _table(rows), self.unlisted)
 
 
-class SweepReport(_Model):
+class DcSweepReport(_Model):
     """A DC sweep."""
 
     kind: Literal["dc_sweep"] = "dc_sweep"
     name: str
     source: str = Field(description="The swept instance's path.")
-    quantity: Quantity | None = Field(
+    nature: Nature | None = Field(
         description="Whether its levels are voltages or currents; null for a "
         "parameter's."
     )
@@ -222,11 +221,11 @@ class SweepReport(_Model):
 
     def describe(self) -> str:
         """The report as text."""
-        if self.quantity is None:
+        if self.nature is None:
             swept = f"{self.source}'s {self.parameter}"
             first, last = f"{self.first:.4g}", f"{self.last:.4g}"
         else:
-            unit = _SYMBOLS[self.quantity]
+            unit = _SYMBOLS[self.nature]
             swept = self.source
             first, last = format_si(self.first, unit), format_si(self.last, unit)
         head = (
@@ -237,7 +236,7 @@ class SweepReport(_Model):
         return _join(head, lines, self.unlisted)
 
 
-class ResponseReport(_Model):
+class AcReport(_Model):
     """A small-signal frequency response, as magnitudes per unit excitation."""
 
     kind: Literal["ac"] = "ac"
@@ -351,7 +350,7 @@ class StabilityReport(_Model):
         return "\n".join(lines)
 
 
-class TransferReport(_Model):
+class TransferFunctionReport(_Model):
     """The small-signal transfer function at DC: a gain and two resistances."""
 
     kind: Literal["transfer_function"] = "transfer_function"
@@ -415,7 +414,7 @@ class NoiseReport(_Model):
     reference: str | None = Field(
         description="The node the output voltage is over; null for the ground."
     )
-    quantity: Quantity = Field(description="What the output is.")
+    nature: Nature = Field(description="What the output is.")
     lowest: float = Field(description="Lowest frequency, in hertz.")
     highest: float = Field(description="Highest frequency, in hertz.")
     frequencies: int = Field(description="Frequencies the analysis solved.")
@@ -438,7 +437,7 @@ class NoiseReport(_Model):
         description="The RMS noise referred to the source over the frequencies, in "
         "the unit of its level; null without a source or for one frequency."
     )
-    referred_quantity: Quantity | None = Field(
+    referred_nature: Nature | None = Field(
         description="What the source's level is; null without a source."
     )
     contributors: tuple[NoiseContributor, ...] = Field(
@@ -450,7 +449,7 @@ class NoiseReport(_Model):
         """The report as text."""
         lowest, highest = format_si(self.lowest, "Hz"), format_si(self.highest, "Hz")
         over = "" if self.reference is None else f" over {self.reference}"
-        unit = _SYMBOLS[self.quantity]
+        unit = _SYMBOLS[self.nature]
         head = (
             f"{self.name}: noise at {self.output}{over} at {self.frequencies} "
             f"frequencies from {lowest} to {highest}"
@@ -460,8 +459,8 @@ class NoiseReport(_Model):
         lines = [head, f"  {first} at {lowest}, {last} at {highest}"]
         if self.rms is not None:
             total = f"  {format_si(self.rms, unit)} RMS over the frequencies"
-            if self.referred is not None and self.referred_quantity is not None:
-                referred = format_si(self.referred, _SYMBOLS[self.referred_quantity])
+            if self.referred is not None and self.referred_nature is not None:
+                referred = format_si(self.referred, _SYMBOLS[self.referred_nature])
                 total += f", {referred} RMS referred to {self.source}"
             lines.append(total)
             lines.extend(
@@ -561,7 +560,7 @@ class OutputSensitivity(_Model):
     """An output's derivatives with respect to the parameters."""
 
     output: str
-    quantity: Quantity
+    nature: Nature
     value: float | None = Field(
         default=None,
         description="Its value at the operating point, in volts or amperes; null "
@@ -622,7 +621,7 @@ class SensitivityReport(_Model):
             if output.value is None:
                 lines.append(f"  {output.output}")
             else:
-                value = _shown(output.value, output.quantity)
+                value = _shown(output.value, output.nature)
                 lines.append(f"  {output.output} = {value}")
             rows = [
                 [
@@ -871,23 +870,23 @@ class WorstCaseReport(_Model):
 
 
 type AnalysisReport = Annotated[
-    PointReport
-    | PointsReport
-    | SweepReport
-    | ResponseReport
+    OperatingPointReport
+    | OperatingPointsReport
+    | DcSweepReport
+    | AcReport
     | TransientReport
     | SensitivityReport
     | StabilityReport
     | NoiseReport
     | PoleZeroReport
-    | TransferReport
+    | TransferFunctionReport
     | FailureReport,
     Field(discriminator="kind"),
 ]
 """The report of any analysis."""
 
 
-def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
+def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisReport:
     """The report of the analysis `name`.
 
     It lists its first `listed` unknowns, then its first logic nets, up to `listed` in
@@ -897,11 +896,9 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
     nets = _nets(result)[: listed - len(unknowns)]
     unlisted = len(result.unknowns) + len(_nets(result)) - len(unknowns) - len(nets)
     match result:
-        case results.OperatingPoint():
+        case results.OperatingPointResult():
             values = tuple(
-                Value(
-                    unknown=unknown.name, quantity=unknown.quantity, value=float(value)
-                )
+                Value(unknown=unknown.name, nature=unknown.nature, value=float(value))
                 for unknown, value in zip(unknowns, result.values[:listed], strict=True)
             )
             levels = tuple(
@@ -909,7 +906,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 for net, level in zip(nets, result.logic, strict=False)
             )
             transistors = _transistors(result)
-            return PointReport(
+            return OperatingPointReport(
                 name=name,
                 strategy=result.strategy,
                 values=values,
@@ -918,11 +915,11 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 transistors=transistors[:listed],
                 unlisted_transistors=max(len(transistors) - listed, 0),
             )
-        case results.Sweep():
-            return SweepReport(
+        case results.DcSweepResult():
+            return DcSweepReport(
                 name=name,
                 source=result.source,
-                quantity=result.quantity,
+                nature=result.nature,
                 parameter=result.parameter,
                 first=float(result.levels[0]),
                 last=float(result.levels[-1]),
@@ -931,8 +928,8 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 activities=tuple(_activity(net, result.level(net)) for net in nets),
                 unlisted=unlisted,
             )
-        case results.Response():
-            return ResponseReport(
+        case results.AcResult():
+            return AcReport(
                 name=name,
                 source=result.source,
                 lowest=float(result.frequencies[0]),
@@ -941,7 +938,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 magnitudes=_extents_of(unknowns, np.abs(result.values[:, :listed])),
                 unlisted=unlisted,
             )
-        case results.Waveforms():
+        case results.TransientResult():
             return TransientReport(
                 name=name,
                 stop=float(result.times[-1]),
@@ -955,14 +952,14 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 ),
                 unlisted=unlisted,
             )
-        case results.OperatingPoints():
-            return PointsReport(
+        case results.OperatingPointsResult():
+            return OperatingPointsReport(
                 name=name,
                 strategies=tuple(point.strategy for point in result.points),
                 values=tuple(
                     Solutions(
                         unknown=unknown.name,
-                        quantity=unknown.quantity,
+                        nature=unknown.nature,
                         values=tuple(
                             float(point.values[index]) for point in result.points
                         ),
@@ -975,7 +972,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
             return _linear(name, result, listed)
 
 
-def _transistors(point: results.OperatingPoint) -> tuple[Transistor, ...]:
+def _transistors(point: results.OperatingPointResult) -> tuple[Transistor, ...]:
     """The region and margins of each transistor `point` recorded.
 
     Those nearest a boundary come first, by the least magnitude of their margins.
@@ -1004,28 +1001,30 @@ def _transistors(point: results.OperatingPoint) -> tuple[Transistor, ...]:
 
 def _linear(
     name: str,
-    result: results.Sensitivities
-    | results.LoopGain
-    | results.NoiseSpectrum
-    | results.PolesZeros
-    | results.Transfer,
+    result: results.SensitivityResult
+    | results.StabilityResult
+    | results.NoiseResult
+    | results.PoleZeroResult
+    | results.TransferFunctionResult,
     listed: int,
 ) -> AnalysisReport:
     """The report of a small-signal analysis or of sensitivities."""
     match result:
-        case results.Transfer():
+        case results.TransferFunctionResult():
             return _transfer(name, result)
-        case results.Sensitivities():
+        case results.SensitivityResult():
             return _sensitivities(name, result, listed)
-        case results.LoopGain():
+        case results.StabilityResult():
             return _stability(name, result)
-        case results.NoiseSpectrum():
+        case results.NoiseResult():
             return _noise(name, result, listed)
-        case results.PolesZeros():
+        case results.PoleZeroResult():
             return _poles_zeros(name, result, listed)
 
 
-def _poles_zeros(name: str, result: results.PolesZeros, listed: int) -> PoleZeroReport:
+def _poles_zeros(
+    name: str, result: results.PoleZeroResult, listed: int
+) -> PoleZeroReport:
     """The report of the pole-zero analysis `name`, its first `listed` roots."""
     poles = _roots(result.poles)
     zeros = None if result.zeros is None else _roots(result.zeros)
@@ -1059,7 +1058,7 @@ def _roots(roots: results.Complex) -> tuple[Root, ...]:
     )
 
 
-def _noise(name: str, result: results.NoiseSpectrum, listed: int) -> NoiseReport:
+def _noise(name: str, result: results.NoiseResult, listed: int) -> NoiseReport:
     """The report of the noise analysis `name`, its `listed` noisiest sources."""
     order = np.argsort(result.frequencies)
     frequencies = result.frequencies[order]
@@ -1085,7 +1084,7 @@ def _noise(name: str, result: results.NoiseSpectrum, listed: int) -> NoiseReport
         name=name,
         output=result.output,
         reference=result.reference,
-        quantity=result.quantity,
+        nature=result.nature,
         lowest=float(frequencies[0]),
         highest=float(frequencies[-1]),
         frequencies=len(frequencies),
@@ -1096,18 +1095,20 @@ def _noise(name: str, result: results.NoiseSpectrum, listed: int) -> NoiseReport
         referred=result.rms(referred=True)
         if banded and noise_input is not None
         else None,
-        referred_quantity=None if noise_input is None else noise_input.quantity,
+        referred_nature=None if noise_input is None else noise_input.nature,
         contributors=contributors,
         unlisted=len(result.sources) - len(contributors),
     )
 
 
-def _transfer(name: str, result: results.Transfer) -> TransferReport:
+def _transfer(
+    name: str, result: results.TransferFunctionResult
+) -> TransferFunctionReport:
     """The report of the transfer function analysis `name`."""
     output = next(
-        unknown.quantity for unknown in result.unknowns if unknown.name == result.output
+        unknown.nature for unknown in result.unknowns if unknown.name == result.output
     )
-    return TransferReport(
+    return TransferFunctionReport(
         name=name,
         source=result.source,
         output=result.output,
@@ -1119,7 +1120,7 @@ def _transfer(name: str, result: results.Transfer) -> TransferReport:
     )
 
 
-def _stability(name: str, result: results.LoopGain) -> StabilityReport:
+def _stability(name: str, result: results.StabilityResult) -> StabilityReport:
     """The report of the stability analysis `name`.
 
     Its margins are read over the positive frequencies, as log frequency needs.
@@ -1146,29 +1147,29 @@ def _stability(name: str, result: results.LoopGain) -> StabilityReport:
     )
 
 
-def _reading(measurement: specs.Measurement, result: results.Result) -> float | None:
-    """What `measurement` reads of `result`, or None when it cannot read it."""
+def _reading(measure: specs.Measure, result: results.AnalysisResult) -> float | None:
+    """What `measure` reads of `result`, or None when it cannot read it."""
     try:
-        return measurement.read(result).value
-    except specs.MeasurementError:
+        return measure.read(result).value
+    except specs.MeasureError:
         return None
 
 
 def _sensitivities(
-    name: str, result: results.Sensitivities, listed: int
+    name: str, result: results.SensitivityResult, listed: int
 ) -> SensitivityReport:
     """The report of the sensitivity analysis `name`, its first `listed` parameters."""
     listed_parameters = min(listed, len(result.parameters))
     match result.result:
-        case results.OperatingPoint() as point:
+        case results.OperatingPointResult() as point:
             of, points, strategy, unit = "operating_point", 1, point.strategy, ""
-        case results.Sweep() as sweep:
+        case results.DcSweepResult() as sweep:
             of, points, strategy = "dc_sweep", len(sweep.levels), None
-            unit = "" if sweep.quantity is None else _SYMBOLS[sweep.quantity]
-        case results.Response() as response:
+            unit = "" if sweep.nature is None else _SYMBOLS[sweep.nature]
+        case results.AcResult() as response:
             of, points, unit = "ac", len(response.frequencies), "Hz"
             strategy = response.operating_point.strategy
-        case results.Waveforms() as waveforms:
+        case results.TransientResult() as waveforms:
             of, points, strategy, unit = "transient", len(waveforms.times), None, "s"
     return SensitivityReport(
         name=name,
@@ -1185,7 +1186,7 @@ def _sensitivities(
 
 
 def _output(
-    result: results.Sensitivities, output: str, listed: int
+    result: results.SensitivityResult, output: str, listed: int
 ) -> OutputSensitivity:
     """The value of `output`, and its derivatives by the first `listed` parameters.
 
@@ -1193,12 +1194,16 @@ def _output(
     """
     gradient = result.gradient(output)
     column = results.column(result.unknowns, output)
-    quantity = result.unknowns[column].quantity
+    nature = result.unknowns[column].nature
     match result.result:
-        case results.OperatingPoint() as point:
+        case results.OperatingPointResult() as point:
             value = float(point.values[column])
             found = [(float(derivative.real), None) for derivative in gradient[:listed]]
-        case results.Sweep() | results.Response() | results.Waveforms() as along:
+        case (
+            results.DcSweepResult()
+            | results.AcResult()
+            | results.TransientResult() as along
+        ):
             value = None
             axis = _axis(along)
             found = []
@@ -1220,32 +1225,34 @@ def _output(
         )
     )
     return OutputSensitivity(
-        output=output, quantity=quantity, value=value, derivatives=derivatives
+        output=output, nature=nature, value=value, derivatives=derivatives
     )
 
 
-def _axis(result: results.Sweep | results.Response | results.Waveforms) -> results.Real:
+def _axis(
+    result: results.DcSweepResult | results.AcResult | results.TransientResult,
+) -> results.Real:
     """The levels, frequencies or times of `result`."""
     match result:
-        case results.Sweep():
+        case results.DcSweepResult():
             return result.levels
-        case results.Response():
+        case results.AcResult():
             return result.frequencies
-        case results.Waveforms():
+        case results.TransientResult():
             return result.times
 
 
-def _nets(result: results.Result) -> tuple[str, ...]:
+def _nets(result: results.AnalysisResult) -> tuple[str, ...]:
     """The logic nets of `result`; small-signal results and sensitivities have none."""
     if isinstance(
         result,
-        results.Response
-        | results.Sensitivities
-        | results.LoopGain
-        | results.NoiseSpectrum
-        | results.PolesZeros
-        | results.Transfer
-        | results.OperatingPoints,
+        results.AcResult
+        | results.SensitivityResult
+        | results.StabilityResult
+        | results.NoiseResult
+        | results.PoleZeroResult
+        | results.TransferFunctionResult
+        | results.OperatingPointsResult,
     ):
         return ()
     return result.nets
@@ -1296,7 +1303,7 @@ def _extents_of(
     return tuple(
         Extent(
             unknown=unknown.name,
-            quantity=unknown.quantity,
+            nature=unknown.nature,
             first=float(values[0, column]),
             minimum=float(values[:, column].min()),
             maximum=float(values[:, column].max()),
@@ -1311,7 +1318,7 @@ def _extents(extents: tuple[Extent, ...]) -> list[str]:
         return []
 
     def si(value: float, extent: Extent) -> str:
-        return _shown(value, extent.quantity)
+        return _shown(value, extent.nature)
 
     header = ["", "first", "min", "max", "last"]
     rows = [

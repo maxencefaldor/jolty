@@ -2,7 +2,9 @@
 //! known in closed form.
 #![cfg(test)]
 
-use jolty_engine::{Conditions, Options, SimulationError, Simulator, Transfer, TransferFunction};
+use jolty_engine::{
+    Conditions, Options, SimulationError, Simulator, TransferFunction, TransferFunctionResult,
+};
 use jolty_ir::Circuit;
 use jolty_models::Library;
 use serde_json::{Value, json};
@@ -23,7 +25,7 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
         })
         .collect();
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit file")
@@ -43,7 +45,7 @@ fn transfer(
     source: &str,
     output: &str,
     reference: Option<&str>,
-) -> Result<Transfer, SimulationError> {
+) -> Result<TransferFunctionResult, SimulationError> {
     let mut simulator = Simulator::new(
         &circuit(devices),
         &Library::standard(),

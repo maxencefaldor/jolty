@@ -1358,12 +1358,12 @@ def vector(
         JoltyError: When the unknown is a device's internal unknown, which the
             simulator names its own way.
     """
-    if unknown.quantity == "state":
+    if unknown.nature == "state":
         path, _, label = unknown.name.rpartition(":")
         return f"v(_{_node(path)}_{label})".lower()
     flat = flatten(circuit, subcircuits)
     top = flat.components[flat.top]
-    if unknown.quantity == "voltage":
+    if unknown.nature == "voltage":
         first, *rest = unknown.name.split("/")
         kept = top.instance(first)
         if rest and kept is not None and isinstance(kept.of, ir.ComponentOf):

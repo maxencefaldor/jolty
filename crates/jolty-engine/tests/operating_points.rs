@@ -2,7 +2,7 @@
 #![cfg(test)]
 
 use jolty_engine::{
-    Conditions, OperatingPoint, OperatingPoints, Options, SimulationError, Simulator,
+    Conditions, OperatingPointResult, OperatingPoints, Options, SimulationError, Simulator,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 /// A circuit of `instances` whose ground is `0`.
 fn circuit(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
@@ -32,7 +32,7 @@ fn resistor(id: &str, resistance: f64, a: &str, b: &str) -> Value {
 fn search(
     circuit: &Circuit,
     most: usize,
-) -> Result<(Simulator, Vec<OperatingPoint>), SimulationError> {
+) -> Result<(Simulator, Vec<OperatingPointResult>), SimulationError> {
     let mut simulator = Simulator::new(circuit, &Library::standard(), &Conditions::default())
         .expect("the circuit elaborates");
     let points = simulator.operating_points(&OperatingPoints { most }, &Options::default())?;
@@ -40,7 +40,7 @@ fn search(
 }
 
 /// The value of `name` in each of `points`, sorted.
-fn sorted(simulator: &Simulator, points: &[OperatingPoint], name: &str) -> Vec<f64> {
+fn sorted(simulator: &Simulator, points: &[OperatingPointResult], name: &str) -> Vec<f64> {
     let unknown = simulator.unknown(name).expect("an unknown");
     let mut values: Vec<f64> = points
         .iter()
