@@ -46,7 +46,7 @@ from exact import EPSILON
 from fixtures import Compared, Fixture, Found, Quantity, fixtures
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from matplotlib.ticker import EngFormatter
+from matplotlib.ticker import EngFormatter, FuncFormatter
 from pydantic import BaseModel, Field, JsonValue
 from pydantic_settings import CliPositionalArg, SettingsConfigDict
 
@@ -194,10 +194,13 @@ def jolty(prepared: Prepared, setting: Setting, repeats: int) -> Ran:
 
     Each simulation of the circuit elaborated once starts with nothing remembered, so
     every repeat solves its operating point again; the time is that of
-    ``Simulation.run``, the engine's work and its results made in Python.
+    ``Simulation.run``, the engine's work and its results made in Python, after one
+    run to warm up.
     """
     options = setting.options()
     seconds: list[float] = []
+    # One run to warm up first, as the speed suite's timing does, its time left out.
+    Simulation.of(prepared.elaborated).run(prepared.fixture.analysis, options)
     result: results.Result | None = None
     for _ in range(repeats):
         simulation = Simulation.of(prepared.elaborated)
@@ -703,27 +706,21 @@ def diagram(name: str, measured: Measured, document: Document) -> Figure:
     )
     machine = document.machine
     cpu = machine.get("cpu", "") if isinstance(machine, dict) else ""
+    loads = [each.load for each in measured.runs]
     figure.suptitle(
-        f"{name}: correct digits against engine time, {cpu}",
+        f"{name}: correct digits against engine time\n{cpu}, each time the median "
+        f"of {document.repeats} runs,\nat a load average of {min(loads):.1f} to "
+        f"{max(loads):.1f}; commit {document.commit[:7]}",
         color=INK,
         x=0.02,
         ha="left",
-        fontsize=10,
+        fontsize=9,
     )
     panels = figure.subplots(1, len(measured.quantities), squeeze=False)[0]
     for axes, quantity in zip(panels, measured.quantities, strict=True):
         _panel(axes, quantity, measured.runs)
     panels[-1].legend(
         loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False, fontsize=7
-    )
-    loads = [each.load for each in measured.runs]
-    figure.text(
-        0.02,
-        0.005,
-        f"Each time the median of {document.repeats} runs, at a load average of "
-        f"{min(loads):.1f} to {max(loads):.1f}; commit {document.commit[:7]}.",
-        color=MUTED,
-        fontsize=6,
     )
     return figure
 
@@ -795,7 +792,7 @@ def _panel(axes: Axes, quantity: Quantity, runs: Sequence[Run]) -> None:
     )
     axes.set_xscale("log")
     axes.xaxis.set_major_formatter(EngFormatter(unit="s", sep=" "))
-    axes.xaxis.set_minor_formatter(EngFormatter(unit="s", sep=" "))
+    axes.xaxis.set_minor_formatter(FuncFormatter(_minor))
     axes.tick_params(axis="x", which="minor", labelsize=6, labelcolor=MUTED)
     axes.set_xlabel("engine time", color=MUTED)
     axes.set_ylabel(f"correct digits of {quantity.name}, {quantity.score}", color=MUTED)
@@ -804,6 +801,17 @@ def _panel(axes: Axes, quantity: Quantity, runs: Sequence[Run]) -> None:
     axes.set_axisbelow(True)
     for side in ("top", "right"):
         axes.spines[side].set_visible(False)
+
+
+LABELED: Final = frozenset({2, 5})
+"""The leading digits of the minor ticks a log axis labels, so that labels never
+crowd: 2 and 5 times each power of ten."""
+
+
+def _minor(value: float, _: int | None) -> str:
+    """A minor tick's label: its time with an SI prefix, at 2 and 5 times a decade."""
+    leading = round(value / 10 ** math.floor(math.log10(value)))
+    return EngFormatter(unit="s", sep=" ")(value) if leading in LABELED else ""
 
 
 def defaults_table(document: Document) -> str:

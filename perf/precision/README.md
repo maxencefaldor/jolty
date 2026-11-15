@@ -69,7 +69,7 @@ Each fixture runs at each simulator's defaults, ringed on its diagram, and along
 
 | Configuration | How it runs | Its engine time |
 | --- | --- | --- |
-| `jolty` | `Simulation.run` on a fresh simulation of the circuit elaborated once, so that every repeat solves its operating point again | the wall time of `Simulation.run`: the engine's work and its results made in Python |
+| `jolty` | `Simulation.run` on a fresh simulation of the circuit elaborated once, so that every repeat solves its operating point again, after one run to warm up, as the speed suite's timing does | the wall time of `Simulation.run`: the engine's work and its results made in Python |
 | `ngspice-sparse` | ngspice 47 on the netlist `jolty.spice.export` writes, saving the vectors the fixture reads, at the temperature where its thermal voltage is jolty's, as `jolty.spice.ngspice` runs it, with Sparse 1.3, its default | the growth of its own `Total analysis time` from `rusage`, which reads a wall clock: a run paused for 25 s reported 29.9 s where it took 4.9 unpaused |
 | `ngspice-klu` | the same with `.options klu` | the same |
 
