@@ -80,7 +80,7 @@ DEFAULTS: Final = {
     "charge_tolerance": 1e-14,
 }
 """The tolerances' defaults, SPICE's own, jolty's and ngspice's alike: the guide's
-table of options, and ngspice's manual, section 11.1.2."""
+table of options, and ngspice's manual on ``.options``."""
 
 SPICE_NAMES: Final = {
     "relative_tolerance": "reltol",
@@ -131,7 +131,7 @@ class Setting:
     relative_tolerance: float
 
     def options(self) -> Options:
-        """Jolty's options for the run, the others at their defaults."""
+        """The options jolty runs with, the others at their defaults."""
         given = self.tolerances()
         return Options(
             relative_tolerance=given.get("relative_tolerance"),
@@ -265,7 +265,8 @@ def spice(
 
     Raises:
         Unsupported: When the configuration cannot run the analysis.
-        JoltyError: When ngspice fails, aborts the analysis, or runs another solver.
+        JoltyError: When ngspice fails, aborts the analysis, runs another solver, or
+            prints a time for another number of runs.
     """
     fixture = prepared.fixture
     reason = fixture.unsupported.get(simulator)
@@ -306,6 +307,9 @@ def spice(
         for name, pattern in STATISTICS.items()
     }
     totals = printed.pop("seconds")
+    if len(totals) != repeats:
+        message = f"ngspice printed {len(totals)} analysis times for {repeats} runs"
+        raise JoltyError(message)
     seconds = [b - a for a, b in zip([0.0, *totals], totals, strict=False)]
     kept = (
         printed

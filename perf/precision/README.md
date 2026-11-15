@@ -48,6 +48,7 @@ A small circuit's modes come from mpmath's eigensolver on its state equations.
 A network's come from its symmetric pencil `C^{-1/2} G C^{-1/2}`, a tree whose elimination fills nothing: each eigenvalue by Newton's iteration on its determinant from LAPACK's estimate, checked by Sylvester's inertia to be the one its place stands for, its eigenvector by inverse iteration, and every node's residues checked to sum to its gain of one.
 The diode's voltage is Lambert's W, the AC response, the noise and the periodic steady state are closed forms, and the poles are the eigenvalues of the ladder's state equations, all in mpmath.
 `tests/test_precision.py` checks each against another way of finding it: the tree solver against mpmath's general one, the modes against the RC's closed form, the Butterworth ladder's poles against its circle, and the diode's voltage against the currents it balances.
+It also runs `rc_step` in jolty and in ngspice, when it is installed, and scores what each found, so that the suite's own reading of both is tested where the other tests run.
 
 ## Scoring
 

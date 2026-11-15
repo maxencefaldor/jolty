@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 from mpmath import mp, mpf
 
+from differential import SKIP
 from jolty import _core
 
 PRECISION = Path(__file__).parent.parent / "perf" / "precision"
@@ -178,3 +179,34 @@ def test_every_fixture_names_what_it_scores_and_how_its_answer_is_found() -> Non
         assert fixture.quantities
         assert fixture.reference
         assert mp.dps >= 50
+
+
+@SKIP
+def test_both_simulators_run_a_fixture_and_score_it() -> None:
+    from fixtures import fixtures  # noqa: PLC0415 - importable only once the path holds it
+    from suite import (  # noqa: PLC0415 - importable only once the path holds it
+        DEFAULTS,
+        Prepared,
+        Setting,
+        Simulator,
+        jolty,
+        score,
+        spice,
+    )
+
+    prepared = Prepared.of(fixtures()["rc_step"])
+    setting = Setting("scaled", DEFAULTS["relative_tolerance"] / 100)
+    quantity = prepared.fixture.quantities[0]
+    for ran in (
+        jolty(prepared, setting, 2),
+        spice(prepared, setting, 2, Simulator.NGSPICE_SPARSE),
+    ):
+        assert len(ran.seconds) == 2
+        assert all(seconds > 0 for seconds in ran.seconds)
+        assert ran.counts["accepted"] > 0
+        compared = prepared.fixture.compare(ran.found)[quantity.name]
+        mixed = score(compared, quantity)["mixed"]
+        # Both take trapezoidal steps of at most a fiftieth of the run, a tenth of the
+        # time constant, whose error is at most about (h/τ)²/12 = 8e-4 of the 1 V
+        # swing, and far above the exact answer's rounding.
+        assert 3 < mixed.digits < mixed.limit
