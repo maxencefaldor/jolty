@@ -383,11 +383,11 @@ impl Simulator {
     /// Journal on Scientific Computing 37(4), 2015).
     fn deflate(&mut self, x: &[f64], known: &[Vec<f64>], inside: Option<Inside>) {
         let step = &mut self.state.workspace.step;
-        let unknowns = &self.elaborated.unknowns;
+        let quantities = &self.elaborated.quantities;
         let mut slope = 0.0;
         for root in known {
             // Each term over the node voltages, zero for the others.
-            let apart = |index: usize| match unknowns[index].quantity {
+            let apart = |index: usize| match quantities[index] {
                 Quantity::Voltage => x[index] - root[index],
                 _ => 0.0,
             };
@@ -462,10 +462,10 @@ impl Simulator {
             charge,
             ..
         } = contributions;
-        let (pattern, jacobian, unknowns) = (
+        let (pattern, jacobian, quantities) = (
             &self.elaborated.pattern,
             &*jacobian,
-            &self.elaborated.unknowns,
+            &self.elaborated.quantities,
         );
         let charge = &*charge;
         let within = each_chunk_of(
@@ -492,7 +492,7 @@ impl Simulator {
                         });
                     let rounding = rounding(*resolution);
                     if let Some(options) = judged {
-                        let absolute = options.equation_tolerance(unknowns[index].quantity);
+                        let absolute = options.equation_tolerance(quantities[index]);
                         within &= residual.abs()
                             <= options.relative_tolerance * *scale + absolute + rounding;
                     }
@@ -516,13 +516,13 @@ impl Simulator {
     /// Moves `x` by the step solved, and returns whether the step was within tolerance of
     /// every unknown it moved, in one pass over the unknowns split as `inside` says.
     fn take_step(&self, x: &mut [f64], options: &Options, inside: Option<Inside>) -> bool {
-        let (step, unknowns) = (&self.state.workspace.step, &self.elaborated.unknowns);
+        let (step, quantities) = (&self.state.workspace.step, &self.elaborated.quantities);
         each_chunk_of([x], inside, |start, [chunk]| {
             let mut within = true;
             for (offset, value) in chunk.iter_mut().enumerate() {
                 let index = start + offset;
                 *value += step[index];
-                let error = step_error((*value, step[index]), unknowns[index].quantity, options);
+                let error = step_error((*value, step[index]), quantities[index], options);
                 within &= error <= 1.0;
             }
             within
@@ -540,7 +540,7 @@ impl Simulator {
             .map(|index| {
                 let (step, quantity) = (
                     self.state.workspace.step[index],
-                    self.elaborated.unknowns[index].quantity,
+                    self.elaborated.quantities[index],
                 );
                 (step_error((x[index], step), quantity, options), index)
             })

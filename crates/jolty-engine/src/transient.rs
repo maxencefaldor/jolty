@@ -1033,9 +1033,9 @@ impl Simulator {
             return false;
         }
         let (oldest, older) = (&history.ringing[0], &history.ringing[1]);
-        let unknowns = &self.elaborated.unknowns;
-        let inside = options.parallelism.inside(unknowns.len());
-        !all(unknowns.len(), inside, |index| {
+        let quantities = &self.elaborated.quantities;
+        let inside = options.parallelism.inside(quantities.len());
+        !all(quantities.len(), inside, |index| {
             let run = [
                 oldest[index],
                 older[index],
@@ -1043,7 +1043,7 @@ impl Simulator {
                 newest[index],
             ];
             let turns = [run[1] - run[0], run[2] - run[1], run[3] - run[2]];
-            let absolute = options.equation_tolerance(unknowns[index].quantity);
+            let absolute = options.equation_tolerance(quantities[index]);
             let largest = run
                 .iter()
                 .fold(0.0_f64, |most, value| most.max(value.abs()));
@@ -1228,7 +1228,7 @@ impl Simulator {
         });
         let differences = self.filtered(differences, span.alpha, inside);
         let scale = options.truncation_tolerance * method.factorial();
-        let unknowns = &self.elaborated.unknowns;
+        let quantities = &self.elaborated.quantities;
         let none = Judgement {
             ratio: 0.0,
             worst: 0,
@@ -1241,7 +1241,7 @@ impl Simulator {
             for index in range {
                 let difference = differences[index];
                 let error = method.truncation_error(span.length, difference);
-                let absolute_current = options.equation_tolerance(unknowns[index].quantity);
+                let absolute_current = options.equation_tolerance(quantities[index]);
                 let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
                 let charge_tolerance =
                     options.relative_tolerance * charge + options.charge_tolerance;
