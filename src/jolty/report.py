@@ -886,20 +886,24 @@ type AnalysisReport = Annotated[
 """The report of any analysis."""
 
 
-def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisReport:
+def report(
+    name: str, result: results.AnalysisResult, max_unknowns: int
+) -> AnalysisReport:
     """The report of the analysis `name`.
 
-    It lists its first `listed` unknowns, then its first logic nets, up to `listed` in
-    all.
+    It lists its first `max_unknowns` unknowns, then its first logic nets, up to
+    `max_unknowns` in all.
     """
-    unknowns = result.unknowns[:listed]
-    nets = _nets(result)[: listed - len(unknowns)]
+    unknowns = result.unknowns[:max_unknowns]
+    nets = _nets(result)[: max_unknowns - len(unknowns)]
     unlisted = len(result.unknowns) + len(_nets(result)) - len(unknowns) - len(nets)
     match result:
         case results.OperatingPointResult():
             values = tuple(
                 Value(unknown=unknown.name, nature=unknown.nature, value=float(value))
-                for unknown, value in zip(unknowns, result.values[:listed], strict=True)
+                for unknown, value in zip(
+                    unknowns, result.values[:max_unknowns], strict=True
+                )
             )
             levels = tuple(
                 Level(net=net, level=_level(float(level)))
@@ -912,8 +916,8 @@ def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisRe
                 values=values,
                 levels=levels,
                 unlisted=unlisted,
-                transistors=transistors[:listed],
-                unlisted_transistors=max(len(transistors) - listed, 0),
+                transistors=transistors[:max_unknowns],
+                unlisted_transistors=max(len(transistors) - max_unknowns, 0),
             )
         case results.DcSweepResult():
             return DcSweepReport(
@@ -924,7 +928,7 @@ def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisRe
                 first=float(result.levels[0]),
                 last=float(result.levels[-1]),
                 levels=len(result.levels),
-                extents=_extents_of(unknowns, result.values[:, :listed]),
+                extents=_extents_of(unknowns, result.values[:, :max_unknowns]),
                 activities=tuple(_activity(net, result.level(net)) for net in nets),
                 unlisted=unlisted,
             )
@@ -935,7 +939,9 @@ def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisRe
                 lowest=float(result.frequencies[0]),
                 highest=float(result.frequencies[-1]),
                 frequencies=len(result.frequencies),
-                magnitudes=_extents_of(unknowns, np.abs(result.values[:, :listed])),
+                magnitudes=_extents_of(
+                    unknowns, np.abs(result.values[:, :max_unknowns])
+                ),
                 unlisted=unlisted,
             )
         case results.TransientResult():
@@ -946,7 +952,7 @@ def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisRe
                 rejected=result.statistics.rejected,
                 landed=result.statistics.landed,
                 periods=result.statistics.periods,
-                extents=_extents_of(unknowns, result.values[:, :listed]),
+                extents=_extents_of(unknowns, result.values[:, :max_unknowns]),
                 activities=tuple(
                     _activity(net, result.level(net).levels) for net in nets
                 ),
@@ -969,7 +975,7 @@ def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisRe
                 unlisted=len(result.unknowns) - len(unknowns),
             )
         case _:
-            return _linear(name, result, listed)
+            return _linear(name, result, max_unknowns)
 
 
 def _transistors(point: results.OperatingPointResult) -> tuple[Transistor, ...]:
@@ -1006,31 +1012,31 @@ def _linear(
     | results.NoiseResult
     | results.PoleZeroResult
     | results.TransferFunctionResult,
-    listed: int,
+    max_unknowns: int,
 ) -> AnalysisReport:
     """The report of a small-signal analysis or of sensitivities."""
     match result:
         case results.TransferFunctionResult():
             return _transfer(name, result)
         case results.SensitivityResult():
-            return _sensitivities(name, result, listed)
+            return _sensitivities(name, result, max_unknowns)
         case results.StabilityResult():
             return _stability(name, result)
         case results.NoiseResult():
-            return _noise(name, result, listed)
+            return _noise(name, result, max_unknowns)
         case results.PoleZeroResult():
-            return _poles_zeros(name, result, listed)
+            return _poles_zeros(name, result, max_unknowns)
 
 
 def _poles_zeros(
-    name: str, result: results.PoleZeroResult, listed: int
+    name: str, result: results.PoleZeroResult, max_unknowns: int
 ) -> PoleZeroReport:
-    """The report of the pole-zero analysis `name`, its first `listed` roots."""
+    """The report of the pole-zero analysis `name`, its first `max_unknowns` roots."""
     poles = _roots(result.poles)
     zeros = None if result.zeros is None else _roots(result.zeros)
     every = len(poles) + len(zeros or ())
-    shown_poles = poles[:listed]
-    shown_zeros = None if zeros is None else zeros[: listed - len(shown_poles)]
+    shown_poles = poles[:max_unknowns]
+    shown_zeros = None if zeros is None else zeros[: max_unknowns - len(shown_poles)]
     return PoleZeroReport(
         name=name,
         source=result.source,
@@ -1058,8 +1064,8 @@ def _roots(roots: results.Complex) -> tuple[Root, ...]:
     )
 
 
-def _noise(name: str, result: results.NoiseResult, listed: int) -> NoiseReport:
-    """The report of the noise analysis `name`, its `listed` noisiest sources."""
+def _noise(name: str, result: results.NoiseResult, max_unknowns: int) -> NoiseReport:
+    """The report of the noise analysis `name`, its `max_unknowns` noisiest sources."""
     order = np.argsort(result.frequencies)
     frequencies = result.frequencies[order]
     banded = len(frequencies) > 1
@@ -1068,7 +1074,9 @@ def _noise(name: str, result: results.NoiseResult, listed: int) -> NoiseReport:
         for row in result.contributions
     ]
     total = math.fsum(powers)
-    noisiest = sorted(range(len(powers)), key=lambda index: -powers[index])[:listed]
+    noisiest = sorted(range(len(powers)), key=lambda index: -powers[index])[
+        :max_unknowns
+    ]
     contributors = tuple(
         NoiseContributor(
             instance=result.sources[index].instance,
@@ -1156,10 +1164,10 @@ def _reading(measure: specs.Measure, result: results.AnalysisResult) -> float | 
 
 
 def _sensitivities(
-    name: str, result: results.SensitivityResult, listed: int
+    name: str, result: results.SensitivityResult, max_unknowns: int
 ) -> SensitivityReport:
-    """The report of the sensitivity analysis `name`, its first `listed` parameters."""
-    listed_parameters = min(listed, len(result.parameters))
+    """The report of the sensitivity `name`, its first `max_unknowns` parameters."""
+    listed_parameters = min(max_unknowns, len(result.parameters))
     match result.result:
         case results.OperatingPointResult() as point:
             of, points, strategy, unit = "operating_point", 1, point.strategy, ""
@@ -1186,9 +1194,9 @@ def _sensitivities(
 
 
 def _output(
-    result: results.SensitivityResult, output: str, listed: int
+    result: results.SensitivityResult, output: str, max_unknowns: int
 ) -> OutputSensitivity:
-    """The value of `output`, and its derivatives by the first `listed` parameters.
+    """The value of `output` and its derivatives by the first `max_unknowns` parameters.
 
     Along an analysis other than the operating point, each is where it is largest.
     """
@@ -1198,7 +1206,9 @@ def _output(
     match result.result:
         case results.OperatingPointResult() as point:
             value = float(point.values[column])
-            found = [(float(derivative.real), None) for derivative in gradient[:listed]]
+            found = [
+                (float(derivative.real), None) for derivative in gradient[:max_unknowns]
+            ]
         case (
             results.DcSweepResult()
             | results.AcResult()
@@ -1207,7 +1217,7 @@ def _output(
             value = None
             axis = _axis(along)
             found = []
-            for derivatives in gradient[:, :listed].T:
+            for derivatives in gradient[:, :max_unknowns].T:
                 largest = int(np.argmax(np.abs(derivatives)))
                 peak = derivatives[largest]
                 signed = float(abs(peak)) if np.iscomplexobj(peak) else float(peak)
@@ -1221,7 +1231,7 @@ def _output(
             at=at,
         )
         for parameter, (derivative, at) in zip(
-            result.parameters[:listed], found, strict=True
+            result.parameters[:max_unknowns], found, strict=True
         )
     )
     return OutputSensitivity(

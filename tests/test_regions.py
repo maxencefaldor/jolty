@@ -140,7 +140,7 @@ def test_the_report_lists_each_transistor_nearest_a_boundary_first() -> None:
     )
     simulation = Simulation(c.finish())
     point = simulation.run(OperatingPoint(record=simulation.transistors))
-    summary = report.report("op", point, listed=40)
+    summary = report.report("op", point, max_unknowns=40)
     assert isinstance(summary, report.OperatingPointReport)
     # Above a threshold of 1 V, M1's gate at 3 V and drain at 5 V leave it 2 V of
     # overdrive and 3 V past saturation; M2's gate and drain at 2 V, 1 V of each.
@@ -156,7 +156,7 @@ def test_the_report_lists_each_transistor_nearest_a_boundary_first() -> None:
         "    M2  saturated  overdrive_voltage 1 V  saturation_margin 1 V",
         "    M1  saturated  overdrive_voltage 2 V  saturation_margin 3 V",
     ]
-    shortened = report.report("op", point, listed=1)
+    shortened = report.report("op", point, max_unknowns=1)
     assert isinstance(shortened, report.OperatingPointReport)
     assert [transistor.path for transistor in shortened.transistors] == ["M2"]
     assert shortened.unlisted_transistors == 1

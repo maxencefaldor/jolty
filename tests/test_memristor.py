@@ -441,7 +441,7 @@ def test_a_state_has_a_panel_of_its_own_and_reads_as_a_number() -> None:
     labels = [axes.get_ylabel() for axes in figure.axes]
     assert labels == ["voltage", "state"]
     point = simulation.run(OperatingPoint())
-    written = report("point", point, listed=10).describe()
+    written = report("point", point, max_unknowns=10).describe()
     assert re.search(r"M1:state\s+0\.3\b", written), written
 
 

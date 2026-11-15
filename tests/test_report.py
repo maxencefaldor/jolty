@@ -19,7 +19,7 @@ def test_an_operating_point_lists_each_value() -> None:
     point = results.OperatingPointResult(
         UNKNOWNS, np.array([5.0, 2.5, -2.5e-3]), "direct"
     )
-    summary = report.report("op", point, listed=10)
+    summary = report.report("op", point, max_unknowns=10)
     assert summary == report.OperatingPointReport(
         name="op",
         strategy="direct",
@@ -46,7 +46,7 @@ def test_a_transient_states_the_range_of_each_unknown() -> None:
     waveforms = results.TransientResult(
         UNKNOWNS, np.array([0.0, 1e-6, 2e-6]), values, statistics
     )
-    summary = report.report("step", waveforms, listed=2)
+    summary = report.report("step", waveforms, max_unknowns=2)
     assert isinstance(summary, report.TransientReport)
     assert summary.extents[1] == report.Extent(
         unknown="out", nature="voltage", first=0, minimum=0, maximum=0.9, last=0.9
@@ -66,7 +66,7 @@ def test_a_periodic_steady_state_states_its_periods() -> None:
     waveforms = results.TransientResult(
         UNKNOWNS, np.array([0.0, 1e-6]), np.zeros((2, 3)), statistics
     )
-    summary = report.report("steady", waveforms, listed=3)
+    summary = report.report("steady", waveforms, max_unknowns=3)
     assert summary.describe().splitlines()[0] == (
         "steady: periodic steady state of period 1 µs, found in 3 periods, "
         "the last in 2 steps, 0 rejected"
@@ -77,7 +77,7 @@ def test_a_response_states_magnitudes() -> None:
     point = results.OperatingPointResult(UNKNOWNS, np.zeros(3), "direct")
     values = np.array([[1.0, 1.0, 0.0], [1.0, -1j, 1e-3j]])
     response = results.AcResult(UNKNOWNS, "V1", np.array([1e3, 1e6]), values, point)
-    summary = report.report("bode", response, listed=10)
+    summary = report.report("bode", response, max_unknowns=10)
     assert isinstance(summary, report.AcReport)
     assert (summary.lowest, summary.highest, summary.frequencies) == (1e3, 1e6, 2)
     assert [extent.maximum for extent in summary.magnitudes] == [1.0, 1.0, 1e-3]
@@ -93,7 +93,7 @@ def test_a_loop_gain_states_its_margins() -> None:
     frequencies = np.logspace(-2, 2, 4001)
     gains = np.asarray(5 / (1 + 1j * frequencies) ** 3, dtype=np.complex128)
     loop = results.StabilityResult(UNKNOWNS, "VP", frequencies, gains, point)
-    summary = report.report("loop", loop, listed=10)
+    summary = report.report("loop", loop, max_unknowns=10)
     assert isinstance(summary, report.StabilityReport)
     assert summary.crossover == pytest.approx(math.sqrt(5 ** (2 / 3) - 1), rel=1e-4)
     assert summary.describe() == (
@@ -106,7 +106,7 @@ def test_a_loop_gain_states_its_margins() -> None:
         UNKNOWNS, "VP", frequencies[:2], gains[:2] / 100, point
     )
     assert (
-        report.report("loop", stable, listed=10)
+        report.report("loop", stable, max_unknowns=10)
         .describe()
         .endswith(
             "  it never falls through 0 dB\n  its phase never falls through -180°"
@@ -125,7 +125,7 @@ def test_sensitivities_list_each_derivative_in_the_circuit_s_order() -> None:
     sensitivities = results.SensitivityResult(
         UNKNOWNS, ("out", "V1:current"), parameters, derivatives, point
     )
-    summary = report.report("sens", sensitivities, listed=2)
+    summary = report.report("sens", sensitivities, max_unknowns=2)
     assert isinstance(summary, report.SensitivityReport)
     out, current = summary.outputs
     assert out.derivatives[1] == report.Derivative(
@@ -159,7 +159,7 @@ def test_sensitivities_along_an_analysis_state_where_each_is_largest() -> None:
     sensitivities = results.SensitivityResult(
         UNKNOWNS, ("out",), (parameter,), derivatives, response
     )
-    summary = report.report("sens", sensitivities, listed=5)
+    summary = report.report("sens", sensitivities, max_unknowns=5)
     assert isinstance(summary, report.SensitivityReport)
     assert (summary.of, summary.points, summary.unit) == ("ac", 2, "Hz")
     assert summary.describe() == (
@@ -178,7 +178,7 @@ def test_sensitivities_along_an_analysis_state_where_each_is_largest() -> None:
         np.array([[[0.5]], [[-2.0]], [[1.0]]]),
         waveforms,
     )
-    summary = report.report("t", falling, listed=5)
+    summary = report.report("t", falling, max_unknowns=5)
     assert isinstance(summary, report.SensitivityReport)
     (derivative,) = summary.outputs[0].derivatives
     assert (derivative.derivative, derivative.at) == (-2.0, 1e-6)
@@ -210,7 +210,7 @@ def test_a_noise_spectrum_states_its_noisiest_sources() -> None:
         results.NoiseInput("V1", "voltage", np.full(3, 0.5 + 0j)),
         point,
     )
-    summary = report.report("hiss", spectrum, listed=1)
+    summary = report.report("hiss", spectrum, max_unknowns=1)
     assert isinstance(summary, report.NoiseReport)
     # Each source's noise is a power law, integrated exactly; their sum is none.
     white_power = 16e-18 * (1e5 - 10)
@@ -237,7 +237,7 @@ def test_a_noise_spectrum_states_its_noisiest_sources() -> None:
         contributions=spectrum.contributions[:, :1],
         input=None,
     )
-    quiet = report.report("hiss", single, listed=10)
+    quiet = report.report("hiss", single, max_unknowns=10)
     assert isinstance(quiet, report.NoiseReport)
     assert (quiet.rms, quiet.referred, quiet.contributors) == (None, None, ())
 
@@ -253,7 +253,7 @@ def test_poles_and_zeros_list_each_pair_once() -> None:
         None,
         point,
     )
-    summary = report.report("pz", found, listed=10)
+    summary = report.report("pz", found, max_unknowns=10)
     assert isinstance(summary, report.PoleZeroReport)
     assert [root.damping for root in summary.poles] == [pytest.approx(0.6), 1.0]
     assert summary.zeros is not None
@@ -264,7 +264,7 @@ def test_poles_and_zeros_list_each_pair_once() -> None:
         "  pole  -1 Mrad/s              159.2 kHz  damping 1\n"
         "  zero  0 rad/s                0 Hz"
     )
-    short = report.report("pz", found, listed=1)
+    short = report.report("pz", found, max_unknowns=1)
     assert isinstance(short, report.PoleZeroReport)
     assert (len(short.poles), short.zeros, short.unlisted) == (1, (), 2)
 
@@ -277,7 +277,7 @@ def test_dc_solutions_list_each_unknown_at_each() -> None:
         UNKNOWNS, np.array([3.3, 3.3, -2e-3]), "gmin_stepping"
     )
     found = results.OperatingPointsResult(UNKNOWNS, (first, second))
-    summary = report.report("states", found, listed=2)
+    summary = report.report("states", found, max_unknowns=2)
     assert isinstance(summary, report.OperatingPointsReport)
     assert summary.strategies == ("direct", "gmin_stepping")
     assert summary.describe() == (

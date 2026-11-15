@@ -1115,7 +1115,7 @@ def _specs(script: Path, namespaces: dict[Path, dict[str, object]]) -> Specs | N
 def _analyses(
     simulation: Simulation,
     plan: Plan,
-    listed: int,
+    max_unknowns: int,
     outside: list[fidelity.Outside] | None = None,
     *,
     recorded: bool = False,
@@ -1142,7 +1142,7 @@ def _analyses(
             reports.append(report.FailureReport(name=name, error=str(error)))
         else:
             solved[name] = result
-            reports.append(report.report(name, result, listed))
+            reports.append(report.report(name, result, max_unknowns))
             if outside is not None:
                 outside.extend(
                     fidelity.Outside(analysis=name, excursion=excursion)
