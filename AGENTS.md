@@ -15,7 +15,7 @@ A schematic's layout only draws a circuit as feedback; it lays out no board.
 
 ```sh
 scripts/check               # every check below, exactly as CI runs them
-scripts/bench               # the benchmarks of perf/, against a baseline's times
+scripts/bench               # the benchmarks of benchmarks/: the speed suite against a baseline's times, or another suite
 uv sync                     # build the engine, install Python 3.15 and every tool from uv.lock
 uv run pytest               # Python tests and doctests over every processor, or one with -n 0; warnings are errors
 uv run ruff format          # format Python
@@ -114,7 +114,7 @@ Where the code does not meet a convention yet, a change that touches that code b
   One that users could reasonably choose otherwise is an option, and a choice that a cost jolty can compute decides is decided by computing it.
 - **Claims are measured:** a claim of speed, accuracy, reliability, coverage or help to agents names its measurement: the suite, the fixture, the machine, the versions and the results file.
   Accuracy is claimed only against an independent reference, a closed form, a manufactured solution or a computation by another method in higher precision, never against another simulator; a time is compared with another simulator's only where both found the same solution, with the error each reached; losses are reported with wins.
-- **Performance:** `scripts/bench` runs the benchmarks, the fixtures of `perf/` timed in Rust and in Python, and compares their times with a baseline's.
+- **Performance:** `scripts/bench` runs the benchmarks, each suite of `benchmarks/` by its mode: by default the speed suite, the fixtures of `benchmarks/speed/` timed in Rust and in Python, whose times it compares with a baseline's.
   A change that slows any of them by more than 5% says why in its pull request.
   The benchmarks stay out of `scripts/check`, which must stay fast and deterministic.
 - **One definition:** each command is a request model plus a function in `jolty.service`.

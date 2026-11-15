@@ -142,14 +142,23 @@ class NgspiceTimeoutError(JoltyError):
 
 @dataclass(frozen=True, slots=True)
 class Executed:
-    """What one run of ngspice on a deck printed, and how long it took."""
+    """What one run of ngspice on a deck left, and how long it took."""
 
     printed: str
     """Its standard output, then its standard error."""
     code: int
     """Its exit status, 0 on most errors too: what it printed tells them."""
     seconds: float
-    """Its time from its start to its exit, by the wall clock."""
+    """Its time from its start to its exit, by the wall clock, writing the deck left
+    out."""
+    values: str | None
+    """The file of values the deck writes, `VALUES`, as text, or None if it wrote
+    none."""
+
+
+VALUES: Final = "result.raw"
+"""The raw file a deck run by [`execute`][jolty.spice.ngspice.execute] writes its values
+to, which it reads back."""
 
 
 @functools.cache
@@ -169,13 +178,23 @@ def version() -> str | None:
     return "; ".join(line for line in lines if line.startswith(("ngspice", "Compiled")))
 
 
-def execute(deck: Path, *, timeout: float = TIMEOUT) -> Executed:
-    """Runs ngspice in batch mode on the deck file at `deck`, in its directory.
+def execute(
+    deck: Sequence[str],
+    *,
+    compatibility: Compatibility | None = None,
+    timeout: float | None = TIMEOUT,
+) -> Executed:
+    """Runs ngspice in batch mode on the lines `deck`, in a directory of its own.
 
-    The directory holds what the deck writes.
+    The deck is written to ``circuit.cir`` in a temporary directory, which the run
+    takes as its own, with a ``.spiceinit`` that sets the `compatibility` mode if one
+    is given, so the raw file its ``write`` names, `VALUES`, is read back from there;
+    the run is stopped after `timeout` seconds, or never if None.
 
-    It is the one way jolty runs ngspice: [`runs`][jolty.spice.ngspice.runs] writes its
-    deck and reads its results around it, and the benchmarks time it.
+    It is the one way jolty runs ngspice, as
+    [`xyce.execute`][jolty.spice.xyce.execute] is Xyce's:
+    [`runs`][jolty.spice.ngspice.runs] writes its deck and reads its results around
+    it, and the benchmarks run their decks by it.
 
     Raises:
         JoltyError: When ngspice is not installed.
@@ -184,21 +203,30 @@ def execute(deck: Path, *, timeout: float = TIMEOUT) -> Executed:
     if EXECUTABLE is None:
         message = "ngspice is not installed"
         raise JoltyError(message)
-    started = time.perf_counter()
-    try:
-        done = subprocess.run(  # noqa: S603 - ngspice runs the deck it is given
-            [EXECUTABLE, "-b", deck.name],
-            capture_output=True,
-            check=False,  # ngspice exits with 0 on most errors: what it printed tells
-            text=True,
-            timeout=timeout,
-            cwd=deck.parent,
-        )
-    except subprocess.TimeoutExpired:
-        message = f"ngspice ran for more than {timeout:g} s"
-        raise NgspiceTimeoutError(message) from None
-    seconds = time.perf_counter() - started
-    return Executed(done.stdout + done.stderr, done.returncode, seconds)
+    with tempfile.TemporaryDirectory() as name:
+        directory = Path(name)
+        if compatibility is not None:
+            settings = directory / ".spiceinit"
+            settings.write_text(f"set ngbehavior={compatibility}\n", encoding="utf-8")
+        (directory / "circuit.cir").write_text("\n".join(deck) + "\n", encoding="utf-8")
+        started = time.perf_counter()
+        try:
+            done = subprocess.run(  # noqa: S603 - ngspice runs the deck written here
+                [EXECUTABLE, "-b", "circuit.cir"],
+                capture_output=True,
+                # ngspice exits with 0 on most errors: what it printed tells them.
+                check=False,
+                text=True,
+                timeout=timeout,
+                cwd=directory,
+            )
+        except subprocess.TimeoutExpired:
+            message = f"ngspice ran for more than {timeout:g} s"
+            raise NgspiceTimeoutError(message) from None
+        seconds = time.perf_counter() - started
+        values = directory / VALUES
+        written = values.read_text(encoding="utf-8") if values.is_file() else None
+    return Executed(done.stdout + done.stderr, done.returncode, seconds, written)
 
 
 def run(
@@ -256,35 +284,27 @@ def runs(
         "set filetype=ascii",
         "set appendwrite",
         _SHORTEST_TRANSIENT_OPERATING_POINT,
-        *(f"{analysis}\nwrite result.raw all" for analysis in analyses),
+        *(f"{analysis}\nwrite {VALUES} all" for analysis in analyses),
         ".endc",
         ".end",
     ]
-    with tempfile.TemporaryDirectory() as name:
-        directory = Path(name)
-        compatibility = running.get("compatibility")
-        if compatibility is not None:
-            settings = directory / ".spiceinit"
-            settings.write_text(f"set ngbehavior={compatibility}\n", encoding="utf-8")
-        path = directory / "circuit.cir"
-        path.write_text("\n".join(deck) + "\n", encoding="utf-8")
-        printed = execute(path).printed
-        # What ngspice printed is read first: a transient it aborted still writes every
-        # step it took, which can be hundreds of megabytes of results it has disowned.
-        if _ABORTED in printed:
-            message = f"ngspice aborted the analysis:\n{printed}"
-            raise JoltyError(message)
-        if _TRANSIENT_OPERATING_POINT in printed:
-            message = (
-                "ngspice found no operating point but by a transient of fixed length, "
-                f"whose end it does not check to be one:\n{printed}"
-            )
-            raise JoltyError(message)
-        raw = directory / "result.raw"
-        if not raw.is_file():
-            message = f"ngspice wrote no results:\n{printed}"
-            raise JoltyError(message)
-        found = read(raw.read_text(encoding="utf-8"), printed)
+    executed = execute(deck, compatibility=running.get("compatibility"))
+    printed = executed.printed
+    # What ngspice printed is read first: a transient it aborted still writes every
+    # step it took, which can be hundreds of megabytes of results it has disowned.
+    if _ABORTED in printed:
+        message = f"ngspice aborted the analysis:\n{printed}"
+        raise JoltyError(message)
+    if _TRANSIENT_OPERATING_POINT in printed:
+        message = (
+            "ngspice found no operating point but by a transient of fixed length, "
+            f"whose end it does not check to be one:\n{printed}"
+        )
+        raise JoltyError(message)
+    if executed.values is None:
+        message = f"ngspice wrote no results:\n{printed}"
+        raise JoltyError(message)
+    found = read(executed.values, printed)
     if len(found) != len(analyses) or any(
         result.plot == "Constant values" for result in found
     ):

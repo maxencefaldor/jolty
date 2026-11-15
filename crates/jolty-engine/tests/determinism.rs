@@ -410,7 +410,7 @@ fn shared(circuit: &Circuit) -> Arc<Elaborated> {
         .expect("the circuit elaborates")
 }
 
-/// A plan of the engine's benchmarks, `perf/plans/<name>.json`.
+/// A plan of the engine's benchmarks, `benchmarks/speed/plans/<name>.json`.
 #[derive(Deserialize)]
 struct Plan {
     circuit: String,
@@ -420,12 +420,12 @@ struct Plan {
 
 /// The circuit, the analyses and the options of the benchmark `name`.
 fn benchmark(name: &str) -> (Circuit, Vec<Analysis>, Options) {
-    let perf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf");
+    let speed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed");
     let plan: Plan = serde_json::from_str(
-        &fs::read_to_string(perf.join(format!("plans/{name}.json"))).expect("the plan reads"),
+        &fs::read_to_string(speed.join(format!("plans/{name}.json"))).expect("the plan reads"),
     )
     .expect("a plan");
-    let text = fs::read_to_string(perf.join(format!("circuits/{}.json", plan.circuit)))
+    let text = fs::read_to_string(speed.join(format!("circuits/{}.json", plan.circuit)))
         .expect("the circuit reads");
     let circuit = Circuit::from_json(&text).expect("a circuit");
     let analyses = plan

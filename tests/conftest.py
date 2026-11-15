@@ -17,8 +17,8 @@ from pathlib import Path
 
 import jolty
 
-BENCHMARKS = Path(__file__).parent.parent / "benchmarks"
-"""The benchmarks, whose shared scripts their tests import."""
+BENCHMARKS = Path(__file__).parent.parent / "benchmarks" / "agents"
+"""The agents' benchmark, whose shared scripts their tests import."""
 
 for found in pkgutil.walk_packages(jolty.__path__, f"{jolty.__name__}."):
     # The command line's entry point runs the command line as it loads.

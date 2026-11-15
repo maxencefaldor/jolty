@@ -670,7 +670,8 @@ mod tests {
     /// resistances' nodes and currents among them.
     #[test]
     fn the_solver_factors_all_but_the_displacements() {
-        let circuits = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf/circuits");
+        let circuits =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed/circuits");
         for (name, unknowns, factored) in [("inverter_chain_500", 3_504, 504), ("buck", 23, 17)] {
             let text = fs::read_to_string(circuits.join(format!("{name}.json"))).expect("a file");
             let circuit = Circuit::from_json(&text).expect("a circuit");

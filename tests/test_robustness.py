@@ -25,14 +25,14 @@ r3 9 9 1k
 """A deck of each kind of statement the corpus reads, and a line after its end."""
 
 
-def deck() -> decks.DeckProblem:
+def deck() -> decks.DeckCircuit:
     entry = decks.Entry("divider", "tests", "file:divider.cir", "", "", "", "")
-    return decks.DeckProblem(decks.Deck.read(entry, DECK))
+    return decks.DeckCircuit(decks.Deck.read(entry, DECK))
 
 
 def test_a_deck_splits_into_its_analyses_options_and_rules() -> None:
     read = deck().deck
-    assert read.analyses == [corpus.Point(), corpus.Tran(1e-9, 1e-8)]
+    assert read.analyses == [corpus.Point(), corpus.Transient(1e-9, 1e-8)]
     assert read.rules == ("xyce-options", "output-requests")
     assert read.options() == Options(relative_tolerance=1e-4)
     assert read.method() == "gear2"
@@ -70,7 +70,7 @@ def test_jolty_reads_the_deck_s_elements_at_their_lines() -> None:
 
 
 def test_runs_are_judged_against_every_solution() -> None:
-    case = corpus.Case(
+    fixture = corpus.Fixture(
         "latch/op",
         corpus.Kind.DC,
         "tests",
@@ -81,24 +81,24 @@ def test_runs_are_judged_against_every_solution() -> None:
     )
     reference = corpus.Reference((({"q": 0.0}, {"q": 3.3}),))
 
-    def judged(run: corpus.Run) -> tuple[str, str]:
-        outcome = corpus.judge(case, run, reference, Options())
+    def judged(run: corpus.FixtureRun) -> tuple[str, str]:
+        outcome = corpus.judge(fixture, run, reference, Options())
         return outcome.status.value, outcome.detail
 
     # Within 1e-3 of 3.3 V plus twice 1 µV, the default tolerances.
-    near = corpus.Run(completed=True, values=({"q": 3.3032},))
-    assert judged(near) == ("right", "solution 2 of 2")
-    far = corpus.Run(completed=True, values=({"q": 3.304},))
-    assert judged(far) == ("other", "agrees with no DC solution")
-    failed = corpus.Run(completed=False, message="no operating point")
+    near = corpus.FixtureRun(completed=True, values=({"q": 3.3032},))
+    assert judged(near) == ("agreed", "solution 2 of 2")
+    far = corpus.FixtureRun(completed=True, values=({"q": 3.304},))
+    assert judged(far) == ("disagreed", "agrees with no DC solution")
+    failed = corpus.FixtureRun(completed=False, message="no operating point")
     assert judged(failed) == ("failed", "no operating point")
-    refused = corpus.Run(completed=False, unsupported=True, message="no PULSE")
+    refused = corpus.FixtureRun(completed=False, unsupported=True, message="no PULSE")
     assert judged(refused) == ("unsupported", "no PULSE")
 
 
 def test_failure_rates_leave_out_what_a_simulator_does_not_support() -> None:
     counts = {
-        corpus.Status.RIGHT: 7,
+        corpus.Status.AGREED: 7,
         corpus.Status.FAILED: 2,
         corpus.Status.TIMED_OUT: 1,
         corpus.Status.UNSUPPORTED: 5,

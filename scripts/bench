@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
 # Copyright 2026 Maxence Faldor
 #
-# The benchmarks: the criterion benchmarks of the engine and a Python timing of the same
-# fixtures, from perf/, written to perf/results/<commit>.json and compared with a
+# The benchmarks of benchmarks/, every suite's one command line. By default the speed
+# suite: the criterion benchmarks of the engine and a Python timing of the same
+# fixtures, written to benchmarks/speed/results/<commit>.json and compared with a
 # baseline's, every change over 5 % flagged. They stay out of scripts/check, which must
 # stay fast and deterministic.
 #
-#   scripts/bench                     the suite, a few minutes, before and after a change
+#   scripts/bench                     the speed suite, a few minutes, before and after a change
 #   scripts/bench --scale             the large fixtures, each run once, and spread
 #   scripts/bench --scale --largest   and the 50,000 inverters' chain spread too
 #   scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
+#   scripts/bench --xyce              Xyce on them, and how far it lies from jolty
 #   scripts/bench --baseline COMMIT   against COMMIT's results rather than an ancestor's
 #   scripts/bench --break-even NAME   from which size the threshold NAME pays
 #   scripts/bench --robustness        the hard circuits' corpus, in every simulator
-#   scripts/bench --coverage          the coverage matrix, each row's probe in each simulator
+#   scripts/bench --coverage          the coverage matrix, each row's fixture in each simulator
+#   scripts/bench --precision         each simulator's error against exact answers, and its cost
 #
-# perf/README.md says what each fixture stresses, and holds the baseline;
-# perf/robustness/README.md says what the corpus holds and how it judges;
-# perf/coverage/README.md says how the coverage matrix's probes are made and judged.
+# benchmarks/speed/README.md says what each fixture stresses, and holds the baseline;
+# benchmarks/precision/README.md says what each fixture measures, and what it found;
+# benchmarks/robustness/README.md says what the corpus holds and how it judges;
+# benchmarks/coverage/README.md says how the coverage matrix's fixtures are made and judged.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 uv sync --locked
-exec uv run --locked python perf/bench.py "$@"
+exec uv run --locked python benchmarks/speed/bench.py "$@"
