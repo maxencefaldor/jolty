@@ -93,6 +93,15 @@ def plan() -> Plan:
     )
 
 
+def wide(per_decade: int = 1111) -> Plan:
+    """The response at `per_decade` frequencies a decade from 1 Hz to 1 GHz.
+
+    ``ac_wide`` takes 1,111, which make 10,000 frequencies; ``scripts/bench
+    --break-even min_solves_per_task`` takes fewer.
+    """
+    return Plan({"ac": Ac("V1", decade(1 * Hz, 1 * GHz, per_decade))})
+
+
 def circuits() -> dict[str, Component]:
     """The amplifier's one circuit, by the name of its file."""
     return {"bjt_amp": build()}
@@ -103,9 +112,7 @@ def fixtures() -> dict[str, Fixture]:
     one = plan()
     return {
         "bjt_amp": Fixture("bjt_amp", one),
-        "ac_wide": Fixture(
-            "bjt_amp", Plan({"ac": Ac("V1", decade(1 * Hz, 1 * GHz, 1111))})
-        ),
+        "ac_wide": Fixture("bjt_amp", wide()),
         "monte_carlo": Fixture(
             "bjt_amp", Plan(one.analyses, monte_carlo=MonteCarlo(100_000))
         ),

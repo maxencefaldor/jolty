@@ -17,14 +17,22 @@ Usage::
     scripts/bench --scale             the large fixtures, each run once in Python
     scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
     scripts/bench --baseline COMMIT   against COMMIT's results, or a results file's
+    scripts/bench --break-even NAME   where the threshold NAME of Parallelism pays
 
 Without ``--baseline``, the baseline is the newest ancestor of the checked-out commit
 whose results ``perf/results`` holds. A working tree with changes to tracked files
 writes ``<commit>-dirty.json``, which is never taken as a baseline.
+
+``--break-even`` measures instead from which size of circuit setting one threshold of
+``Parallelism`` makes one run faster than leaving it unset, on 2, 4, 8 threads and
+every core: on circuits of the fixtures' scripts at several sizes, each run with the
+threshold unset and set, interleaved, and that size's value of the threshold, its
+break-even. ``perf/README.md`` says how it sets each threshold, and what it found.
 """
 
 import dataclasses
 import functools
+import hashlib
 import importlib
 import json
 import math
@@ -35,17 +43,27 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from types import ModuleType
 from typing import Final
 
+import numpy as np
 from pydantic import Field
 from pydantic_settings import CliPositionalArg, SettingsConfigDict
 
 from jolty import circuit, cli, ir, results, simulate
-from jolty.plan import Ac, MonteCarlo, OperatingPoint, Plan, Transient
+from jolty.plan import (
+    Ac,
+    MonteCarlo,
+    OperatingPoint,
+    Options,
+    Parallelism,
+    Plan,
+    Transient,
+)
 from jolty.simulate import Elaborated, Simulation
 from jolty.spice import export, ngspice
 from jolty.units import FREQUENCY, TIME
@@ -57,6 +75,9 @@ ROOT: Final = PERF.parent
 """The repository's root."""
 
 sys.path.insert(0, str(PERF / "circuits"))
+import bjt_amp  # noqa: E402 - beside the scripts
+import inverter_chain  # noqa: E402 - beside the scripts
+import rc_mesh  # noqa: E402 - beside the scripts
 from fixture import CIRCUITS, PLANS, Fixture, engine_plan  # noqa: E402 - beside the scripts
 
 SUITE: Final = (
@@ -92,13 +113,56 @@ FEWEST_SECONDS: Final = 5.0
 """The least time the Python timing repeats a fixture for, as long as criterion
 measures each benchmark."""
 
+FEWEST_ROUNDS: Final = 3
+"""The fewest rounds a break-even's sweep runs a circuit's settings in, one after
+another: the fewest whose median no one slow run moves."""
+
+SWEPT_THREADS: Final = (2, 4, 8)
+"""The threads a break-even is measured on, as far as there are cores, and then
+every core."""
+
+
+class Threshold(StrEnum):
+    """A threshold of `Parallelism`, whose break-even ``--break-even`` measures."""
+
+    MIN_SOLVES_PER_TASK = "min_solves_per_task"
+    MIN_INSTANCES_PER_TASK = "min_instances_per_task"
+    MIN_UNKNOWNS_INSIDE = "min_unknowns_inside"
+    MAX_UNKNOWNS_PER_INTERIOR = "max_unknowns_per_interior"
+
+
+SWEPT: Final[Mapping[Threshold, Mapping[str, tuple[int, ...]]]] = {
+    Threshold.MIN_SOLVES_PER_TASK: {"bjt_amp": (1, 2, 5, 10, 20, 50, 100, 1111)},
+    Threshold.MIN_INSTANCES_PER_TASK: {
+        "inverter_chain": (1, 2, 5, 10, 20, 50, 100, 500),
+        "rc_mesh": (10, 20, 50, 100, 300),
+    },
+    Threshold.MIN_UNKNOWNS_INSIDE: {
+        "inverter_chain": (100, 500, 1000, 2000, 5000),
+        "rc_mesh": (10, 20, 50, 100, 300),
+    },
+    Threshold.MAX_UNKNOWNS_PER_INTERIOR: {
+        "inverter_chain": (10, 100, 500, 1000, 2000, 5000),
+        "rc_mesh": (10, 20, 50, 100, 300),
+    },
+}
+"""The circuits each threshold's break-even is measured on: those of the scripts of
+``perf/circuits`` it applies to, at the sizes each script's circuits take, a chain's
+inverters, a mesh's nodes along a side, or the amplifier's frequencies a decade; the
+fixtures' own among them, and others around the break-even."""
+
 
 @dataclass(frozen=True, slots=True)
 class Timing:
-    """A time measured: the median of its runs, in seconds, and their number."""
+    """A time measured: the median of its runs, in seconds, and their number.
+
+    Beside them, the machine's load average over the last minute as they began, when
+    it was measured.
+    """
 
     seconds: float
     runs: int
+    load: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,11 +214,22 @@ def load(fixture: Fixture) -> Loaded:
     return Loaded(ir.Circuit.model_validate_json(text), fixture.plan)
 
 
-def run(loaded: Loaded) -> None:
-    """Elaborates the circuit, and runs the plan's analyses on it."""
+def run(loaded: Loaded, options: Options | None = None) -> dict[str, results.Result]:
+    """Elaborates the circuit, and runs the plan's analyses on it, with `options`.
+
+    The options are the plan's unless given. Returns each analysis's result, by name.
+    """
     simulation = Simulation(loaded.circuit)
-    for analysis in loaded.plan.analyses.values():
-        simulation.run(analysis, loaded.plan.options)
+    chosen = loaded.plan.options if options is None else options
+    return {
+        name: simulation.run(analysis, chosen)
+        for name, analysis in loaded.plan.analyses.items()
+    }
+
+
+def load_average() -> float:
+    """The machine's load average over the last minute."""
+    return os.getloadavg()[0]
 
 
 def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
@@ -180,10 +255,11 @@ def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
 
 def timed(work: Callable[[], object], *, once: bool = False) -> Timing:
     """The median time of `work`, once warmed up, over enough runs; or of one run."""
+    load = load_average()
     if once:
         started = time.perf_counter()
         work()
-        return Timing(time.perf_counter() - started, 1)
+        return Timing(time.perf_counter() - started, 1, load)
     work()
     times: list[float] = []
     begun = time.perf_counter()
@@ -191,7 +267,7 @@ def timed(work: Callable[[], object], *, once: bool = False) -> Timing:
         started = time.perf_counter()
         work()
         times.append(time.perf_counter() - started)
-    return Timing(statistics.median(times), len(times))
+    return Timing(statistics.median(times), len(times), load)
 
 
 def python(
@@ -567,6 +643,249 @@ def read(path: Path) -> dict[str, Timing]:
     return {key: Timing(**value) for key, value in document["timings"].items()}
 
 
+def fingerprint(found: Mapping[str, results.Result]) -> str:
+    """The first 16 hexadecimal digits of the SHA-256 of `found`'s arrays.
+
+    The arrays of each analysis's result, by name, in order: the same digits for the
+    same bits.
+    """
+    digest = hashlib.sha256()
+    for name, result in found.items():
+        digest.update(name.encode())
+        for each in dataclasses.fields(result):
+            value = getattr(result, each.name)
+            if isinstance(value, np.ndarray):
+                digest.update(value.tobytes())
+    return digest.hexdigest()[:16]
+
+
+@dataclass(frozen=True, slots=True)
+class Sized:
+    """A circuit of a fixture's script at one size, and what the thresholds count."""
+
+    size: int
+    loaded: Loaded
+    devices: int
+    """The devices of its hierarchy, flattened, which tasks of instances split."""
+    unknowns: int
+    """Its unknowns, which the work inside and a dissection count."""
+    solves: int
+    """The frequencies of its responses but each one's first, which tasks of solves
+    split."""
+
+
+def devices(built: ir.Circuit) -> int:
+    """The devices of `built`, each component's counted as often as it is placed."""
+
+    @functools.cache
+    def within(name: str) -> int:
+        return sum(
+            within(instance.of.component)
+            if isinstance(instance.of, ir.ComponentOf)
+            else 1
+            for instance in built.components[name].instances
+        )
+
+    return within(built.top)
+
+
+def sized(script: str, size: int) -> Sized:
+    """The circuit of `script` at `size`, and the plan its fixtures run on it.
+
+    A chain of `size` inverters and a mesh of `size` nodes a side run their fixtures'
+    transients, and the amplifier the response of ``ac_wide`` at `size` frequencies a
+    decade.
+
+    Raises:
+        ValueError: When `script` is none of the three.
+    """
+    match script:
+        case "inverter_chain":
+            loaded = Loaded(circuit(inverter_chain.build(size)), inverter_chain.plan())
+        case "rc_mesh":
+            loaded = Loaded(circuit(rc_mesh.build(size)), rc_mesh.plan())
+        case "bjt_amp":
+            loaded = Loaded(circuit(bjt_amp.build()), bjt_amp.wide(size))
+        case _:
+            message = f"no break-even is measured on {script}'s circuits"
+            raise ValueError(message)
+    solves = sum(
+        len(analysis.frequencies) - 1
+        for analysis in loaded.plan.analyses.values()
+        if isinstance(analysis, Ac)
+    )
+    unknowns = len(Simulation(loaded.circuit).unknowns)
+    return Sized(size, loaded, devices(loaded.circuit), unknowns, solves)
+
+
+def setting(threshold: Threshold, at: Sized, count: int) -> int:
+    """The value of `threshold` that spreads `at`'s work over `count` threads.
+
+    Tasks of a `count`-th of its devices or of its solves, interiors of at most a
+    `count`-th of its unknowns, or the work on each unknown, however few.
+    """
+    match threshold:
+        case Threshold.MIN_SOLVES_PER_TASK:
+            return max(1, at.solves // count)
+        case Threshold.MIN_INSTANCES_PER_TASK:
+            return -(-at.devices // count)
+        case Threshold.MIN_UNKNOWNS_INSIDE:
+            return 1
+        case Threshold.MAX_UNKNOWNS_PER_INTERIOR:
+            return -(-at.unknowns // count)
+
+
+def break_even(threshold: Threshold, at: Sized, count: int) -> int:
+    """`threshold`'s value at its break-even on `count` threads, at `at`.
+
+    `at` is the smallest circuit setting it pays on. The value is the circuit's
+    unknowns for the work inside, which then spreads from `at`'s size on, and else the
+    `setting` there, a task's devices or solves or an interior's most unknowns, which
+    then spreads a circuit of `at`'s size over every thread in pieces as large as
+    there, and a larger one in more pieces as large.
+    """
+    if threshold is Threshold.MIN_UNKNOWNS_INSIDE:
+        return at.unknowns
+    return setting(threshold, at, count)
+
+
+def on(
+    count: int, work: Callable[[], dict[str, results.Result]]
+) -> Callable[[], dict[str, results.Result]]:
+    """`work`, run on the engine's pool of `count` threads."""
+
+    def within() -> dict[str, results.Result]:
+        with simulate.threads(count):
+            return work()
+
+    return within
+
+
+def interleaved(
+    works: Sequence[Callable[[], dict[str, results.Result]]],
+) -> tuple[list[Timing], list[str]]:
+    """The median time of each of `works`, run in turn, and what each first found.
+
+    Each work runs once a round, one after another, so that each side of a comparison
+    runs under the same load as the others, and what it found in the first round is
+    fingerprinted. The rounds go on until there are `FEWEST_ROUNDS` of them and they
+    have taken `FEWEST_SECONDS` for each work; none is warmed up, the median
+    discarding a first slow run.
+    """
+    load = load_average()
+    times: list[list[float]] = [[] for _ in works]
+    prints: list[str] = []
+    begun = time.perf_counter()
+    while len(
+        times[0]
+    ) < FEWEST_ROUNDS or time.perf_counter() - begun < FEWEST_SECONDS * len(works):
+        for each, work in zip(times, works, strict=True):
+            started = time.perf_counter()
+            found = work()
+            each.append(time.perf_counter() - started)
+            if len(prints) < len(works):
+                prints.append(fingerprint(found))
+    timings = [Timing(statistics.median(each), len(each), load) for each in times]
+    return timings, prints
+
+
+SIZE: Final = {"inverter_chain": "inverters", "rc_mesh": "side", "bjt_amp": "a decade"}
+"""What a size counts of each script's circuits."""
+
+
+def table(cells: Sequence[str], widths: Sequence[int]) -> str:
+    """A row of `cells`, each right-aligned to its width, two spaces apart."""
+    return "  ".join(
+        f"{cell:>{width}}" for cell, width in zip(cells, widths, strict=True)
+    ).rstrip()
+
+
+def pays_from(changes: Sequence[float]) -> int | None:
+    """The index of the first of `changes` from which each is a gain, if any."""
+    first: int | None = None
+    for index, change in enumerate(changes):
+        if change >= 0:
+            first = None
+        elif first is None:
+            first = index
+    return first
+
+
+def sweep(
+    threshold: Threshold, script: str, sizes: Sequence[int], counts: Sequence[int]
+) -> dict[str, Timing]:
+    """The times of `script`'s circuits at `sizes`, `threshold` unset and set.
+
+    Each circuit runs with `threshold` unset, which runs on one thread, and set to
+    spread it over each of `counts` threads, on so many, interleaved. The times are
+    printed as they are measured, and then the smallest size from which setting it
+    pays on each count, and its break-even there.
+
+    Raises:
+        SystemExit: When a run with `threshold` set finds other bits than the run
+            left unset, but for a dissection, whose interiors, a size for each number
+            of threads, order the factorization otherwise.
+    """
+    labels = [f"{count} thread{'s' if count > 1 else ''}" for count in counts]
+    heads = [SIZE[script], "devices", "unknowns", "solves", "unset"]
+    widths = [10, 9, 9, 7, 10, *(len(label) + 18 for label in labels), 0]
+    print(f"\n{threshold} on {script}'s circuits, unset and set, to the value in")
+    print("brackets, to spread each circuit over each number of threads:")
+    print(table([*heads, *labels, "load"], widths), flush=True)
+    timings: dict[str, Timing] = {}
+    measured: list[tuple[Sized, list[float]]] = []
+    for size in sizes:
+        at = sized(script, size)
+        values = [setting(threshold, at, count) for count in counts]
+        works = [on(1, functools.partial(run, at.loaded))]
+        for count, value in zip(counts, values, strict=True):
+            spread = Parallelism(**{threshold.value: value})
+            options = dataclasses.replace(at.loaded.plan.options, parallelism=spread)
+            works.append(on(count, functools.partial(run, at.loaded, options)))
+        found, prints = interleaved(works)
+        # Interiors of other sizes order the factorization otherwise, so only the
+        # other thresholds, which change no result, must find the unset run's bits.
+        dissected = threshold is Threshold.MAX_UNKNOWNS_PER_INTERIOR
+        if not dissected and len(set(prints)) != 1:
+            message = (
+                f"{script} at {size} found other bits with {threshold} set: "
+                + ", ".join(prints)
+            )
+            raise SystemExit(message)
+        unset = found[0].seconds
+        changes = [each.seconds / unset - 1 for each in found[1:]]
+        measured.append((at, changes))
+        key = f"python/break-even/{threshold}/{script}_{size}"
+        timings[f"{key}/unset"] = found[0]
+        for label, each in zip(labels, found[1:], strict=True):
+            timings[f"{key}/{label}"] = each
+        cells = [f"{each:,}" for each in (size, at.devices, at.unknowns, at.solves)]
+        cells.append(duration(unset))
+        cells += [
+            f"{duration(each.seconds)} {change:+.1%} ({value:,})"
+            for each, change, value in zip(found[1:], changes, values, strict=True)
+        ]
+        cells.append(f"{found[0].load:.2f} to {load_average():.2f}")
+        print(table(cells, widths), flush=True)
+    for place, label in enumerate(labels):
+        changes = [each[place] for _, each in measured]
+        first = pays_from(changes)
+        if first is None:
+            print(f"on {label}: no gain from any size up to {sizes[-1]:,}")
+            continue
+        at = measured[first][0]
+        before = (
+            ""
+            if first == 0
+            else f", after {changes[first - 1]:+.1%} at {sizes[first - 1]:,}"
+        )
+        print(
+            f"on {label}: pays from {at.size:,}, {changes[first]:+.1%}{before}; "
+            f"break-even {break_even(threshold, at, counts[place]):,}"
+        )
+    return timings
+
+
 class Bench(cli.CommandLine):
     """Time the fixtures, write the times, and compare them with a baseline's."""
 
@@ -574,10 +893,39 @@ class Bench(cli.CommandLine):
 
     fixtures: CliPositionalArg[list[str]] = Field(
         default_factory=list,
-        description="The fixtures to time; the suite's by default.",
+        description=(
+            "The fixtures to time, the suite's by default; with --break-even, the "
+            "scripts whose circuits it sweeps, every one it applies to by default."
+        ),
     )
     scale: bool = Field(
         default=False, description="Time the large fixtures, once each."
+    )
+    break_even: Threshold | None = Field(
+        default=None,
+        description=(
+            "Measure this threshold's break-even instead: the circuits of the "
+            "fixtures' scripts it applies to, unset and set, from which size on "
+            "setting it pays."
+        ),
+    )
+    largest: bool = Field(
+        default=False,
+        description=(
+            "With --scale, spread the 50,000 inverters' chain over threads too: some "
+            "20 minutes more."
+        ),
+    )
+    sizes: list[int] = Field(
+        default_factory=list,
+        description="The sizes --break-even sweeps; the README's by default.",
+    )
+    threads: list[int] = Field(
+        default_factory=list,
+        description=(
+            "The threads --break-even sets the threshold on, 2, 4, 8 and every core "
+            "by default, or --scale spreads a run on, 1, 2, 4, 8 and every core."
+        ),
     )
     ngspice: bool = Field(
         default=False, description="Time ngspice instead, for context."
@@ -597,8 +945,67 @@ def main(argv: list[str] | None = None) -> None:
     cli.run(Bench, argv)
 
 
+def every(counts: Iterable[int]) -> list[int]:
+    """Each of `counts` that is fewer than the cores, and then every core."""
+    cores = os.cpu_count() or 1
+    return [count for count in counts if count < cores] + [cores]
+
+
+def save(
+    output: Path,
+    timings: Mapping[str, Timing],
+    profiles: Mapping[str, object] | None = None,
+) -> None:
+    """Writes `timings` and `profiles` to the results `output`, adding to its own."""
+    earlier = json.loads(output.read_text("utf-8")) if output.is_file() else {}
+    written = {**earlier.get("timings", {})}
+    written |= {
+        key: {"seconds": each.seconds, "runs": each.runs}
+        | ({} if each.load is None else {"load": each.load})
+        for key, each in timings.items()
+    }
+    document = {
+        "commit": git("rev-parse", "HEAD"),
+        "machine": machine(),
+        "timings": written,
+        "profiles": earlier.get("profiles", {}) | dict(profiles or {}),
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"wrote {output.relative_to(ROOT) if output.is_relative_to(ROOT) else output}"
+    )
+
+
+def break_evens(arguments: Bench, threshold: Threshold) -> None:
+    """Measures `threshold`'s break-even on the scripts named, and writes the times.
+
+    Raises:
+        SystemExit: When a script named is not one the threshold applies to.
+    """
+    swept = SWEPT[threshold]
+    scripts = arguments.fixtures or list(swept)
+    unknown = [script for script in scripts if script not in swept]
+    if unknown:
+        message = (
+            f"{threshold} is measured on {', '.join(swept)}, not {', '.join(unknown)}"
+        )
+        raise SystemExit(message)
+    counts = arguments.threads or every(SWEPT_THREADS)
+    started = time.perf_counter()
+    timings: dict[str, Timing] = {}
+    for script in scripts:
+        sizes = arguments.sizes or swept[script]
+        timings |= sweep(threshold, script, sizes, counts)
+    print(f"\nmeasured in {duration(time.perf_counter() - started)}")
+    save(arguments.output or results_path(), timings)
+
+
 def measure(arguments: Bench) -> None:
     """Times the fixtures, writes the times, and compares them with a baseline's."""
+    if arguments.break_even is not None:
+        break_evens(arguments, arguments.break_even)
+        return
     found = fixtures()
     names = arguments.fixtures or (SCALE if arguments.scale else SUITE)
     unknown = [name for name in names if name not in found]
@@ -619,29 +1026,16 @@ def measure(arguments: Bench) -> None:
         found_profiles = profiles(names, found)
     print(f"\nmeasured in {duration(time.perf_counter() - started)}")
     shares(found_profiles)
-    earlier = json.loads(output.read_text("utf-8")) if output.is_file() else {}
-    written = {**earlier.get("timings", {})}
-    written |= {
-        key: {"seconds": each.seconds, "runs": each.runs}
-        for key, each in timings.items()
-    }
-    document = {
-        "commit": git("rev-parse", "HEAD"),
-        "machine": machine(),
-        "timings": written,
-        "profiles": earlier.get("profiles", {})
-        | {
+    save(
+        output,
+        timings,
+        profiles={
             name: {
                 analysis: dataclasses.asdict(profiled)
                 for analysis, profiled in analyses.items()
             }
             for name, analyses in found_profiles.items()
         },
-    }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-    print(
-        f"wrote {output.relative_to(ROOT) if output.is_relative_to(ROOT) else output}"
     )
     if against is not None and against.resolve() != output.resolve():
         compare(timings, read(against), against.name)

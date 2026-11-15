@@ -12,6 +12,7 @@ scripts/bench bjt_amp buck         # only these fixtures
 scripts/bench --scale              # the large fixtures, each run once
 scripts/bench --ngspice            # ngspice on the fixtures' netlists, for context
 scripts/bench --baseline COMMIT    # against COMMIT's times, rather than an ancestor's
+scripts/bench --break-even min_unknowns_inside  # from which size a threshold pays
 ```
 
 `scripts/bench` first checks that each fixture's files are what its script writes, then times the fixtures, writes the times to `results/<commit>.json`, and prints them against a baseline's, flagging every change over 5%.
@@ -112,3 +113,29 @@ The many-cores plan's figures came from a two-core machine, on circuits of their
 jolty's level 1 MOSFETs now carry their Meyer displacements as unknowns, so 500 inverters solve for 3,504 unknowns, where the plan's solved for 504.
 ngspice keeps 52,982 points of `buck`'s 2 ms, where jolty accepts 122,587 steps and rejects 32,900, and takes a fifth of jolty's time.
 It takes two fifths of jolty's time on the chain of 500 inverters and half on the chain of 5,000, but a fifth more on the chain of 50,000, and, with its default sparse solver, Sparse 1.3, 17 and 40 times jolty's on the meshes.
+
+## One run spread over threads
+
+A run does all its work on its own thread unless a threshold of `Parallelism` lets a kind of it spread, as [the guide](../docs/guide/simulation.md#options) says, and no fixture's plan sets one, so the suite times the serial paths alone.
+
+### Break-evens
+
+`scripts/bench --break-even NAME` measures from which size of circuit setting the threshold `NAME` makes one run faster than leaving it unset.
+It sweeps circuits of the fixtures' scripts at several sizes: chains of inverters and meshes for the three thresholds a transient reads, and `ac_wide`'s response at fewer frequencies a decade for `min_solves_per_task`.
+Each circuit runs its fixtures' plan with the threshold unset, on one thread, and set, on 2, 4 and 8 threads and every core, one after another, round after round, until there are three rounds at least and they have taken five seconds for each.
+Each time is the median of its rounds, printed beside the load average as they began and as they ended.
+A run with the threshold set must find the bits of the run left unset, or the sweep stops, but for a dissection: its interiors, of a size for each number of threads, order the factorization otherwise.
+`--sizes` and `--threads` sweep other sizes and threads, and naming a script, such as `inverter_chain`, sweeps its circuits alone.
+
+On each number of threads, the threshold is set at each size so that it spreads the circuit's work over every thread, however small the circuit:
+
+| Threshold | Set to | So that |
+| --- | --- | --- |
+| `min_instances_per_task` | the circuit's devices over the threads, rounded up | its devices evaluate in a task a thread |
+| `min_unknowns_inside` | 1 | its work on each unknown spreads, in chunks of 1,024 |
+| `max_unknowns_per_interior` | its unknowns over the threads, rounded up | its matrix's block is dissected into an interior a thread or more |
+| `min_solves_per_task` | its solves, its frequencies but the first, over the threads, rounded down | its frequencies are solved in a task a thread |
+
+The break-even on a number of threads is the smallest size measured from which setting the threshold made every run faster.
+Its value is the circuit's unknowns for `min_unknowns_inside`, which then spreads from that size on, and for each other threshold the value it was set to there: a task's devices or solves, or an interior's most unknowns.
+Set to it, such a threshold spreads a circuit of that size over every thread in pieces as large as there, and a larger one in more pieces as large; it spreads a smaller circuit in fewer pieces than threads, which may lose, from two tasks' worth of solves, from one task's worth of devices, and from a block larger than an interior.

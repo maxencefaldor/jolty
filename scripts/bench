@@ -10,6 +10,7 @@
 #   scripts/bench --scale             the large fixtures, each run once
 #   scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
 #   scripts/bench --baseline COMMIT   against COMMIT's results rather than an ancestor's
+#   scripts/bench --break-even NAME   from which size the threshold NAME of Parallelism pays
 #
 # perf/README.md says what each fixture stresses, and holds the baseline.
 
