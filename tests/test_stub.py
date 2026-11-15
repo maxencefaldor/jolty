@@ -1,13 +1,17 @@
 # Copyright 2026 Maxence Faldor
-"""Each outcome the extension returns holds exactly the keys its stub's TypedDict names.
+"""The extension's stub, ``_core.pyi``, says what the extension module is.
 
-The stub, ``_core.pyi``, types the dictionaries the extension builds, which no type
-checker sees built: a key renamed in the Rust code and not in the stub would type a
-value that is never there. The stub's TypedDicts exist for the type checker alone, so
-the test runs the stub as Python to get them, runs every kind of analysis through
-`Simulation.run`, and reads each outcome the extension returned against them.
+ty reads the stub, never the module, so nothing else holds the two together. The stub
+declares every name the module has and no other, each class with the methods the
+module's has, final where the module's cannot be subclassed. It also types the
+dictionaries the extension builds, which no type checker sees built: a key renamed in
+the Rust code and not in the stub would type a value that is never there. Its
+TypedDicts exist for the type checker alone, so the tests run the stub as Python to get
+them, run every kind of analysis through `Simulation.run`, and read each outcome the
+extension returned against them.
 """
 
+import ast
 import runpy
 import types
 import typing
@@ -17,7 +21,7 @@ from pathlib import Path
 import pytest
 
 import jolty
-from jolty import Builder, Role, Simulation, circuit, component, devices
+from jolty import Builder, Role, Simulation, _core, circuit, component, devices
 from jolty.plan import (
     Ac,
     Analysis,
@@ -33,8 +37,81 @@ from jolty.plan import (
 )
 from jolty.units import MHz, V, kHz, kohm, nF, us
 
-STUB: typing.Final = runpy.run_path(str(Path(jolty.__file__).with_name("_core.pyi")))
+STUB_PATH: typing.Final = Path(jolty.__file__).with_name("_core.pyi")
+"""The extension's stub."""
+
+STUB: typing.Final = runpy.run_path(str(STUB_PATH))
 """The stub's names, run as Python."""
+
+TREE: typing.Final = ast.parse(STUB_PATH.read_text(encoding="utf-8"))
+"""The stub's statements."""
+
+
+def _type_only(statement: ast.stmt) -> bool:
+    """Whether `statement` declares a type the module has no object for.
+
+    A TypedDict types a dictionary the extension builds, and a type alias names a type.
+    """
+    if isinstance(statement, ast.TypeAlias):
+        return True
+    return isinstance(statement, ast.ClassDef) and typing.is_typeddict(
+        STUB[statement.name]
+    )
+
+
+def _declared(statements: list[ast.stmt]) -> dict[str, ast.stmt]:
+    """The names `statements` declare, by name, but the types for the checker alone."""
+    found: dict[str, ast.stmt] = {}
+    for statement in statements:
+        if _type_only(statement):
+            continue
+        if isinstance(statement, ast.ClassDef | ast.FunctionDef):
+            found[statement.name] = statement
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            found[statement.target.id] = statement
+    return found
+
+
+def _public(names: typing.Iterable[str]) -> set[str]:
+    """Of `names`, those a user reads, `__new__` and `__version__` among them."""
+    return {
+        name
+        for name in names
+        if not name.startswith("_") or name in {"__new__", "__version__"}
+    }
+
+
+def test_the_stub_declares_every_name_of_the_module_and_no_other() -> None:
+    declared = set(_declared(TREE.body))
+    assert declared == _public(vars(_core))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [s.name for s in TREE.body if isinstance(s, ast.ClassDef) and not _type_only(s)],
+)
+def test_each_class_of_the_stub_is_the_module_s(name: str) -> None:
+    statement = _declared(TREE.body)[name]
+    assert isinstance(statement, ast.ClassDef)
+    runtime = getattr(_core, name)
+    methods = _public(_declared(statement.body)) - {"__new__"}
+    # Every name the stub gives the class it has, its own or inherited, such as an
+    # exception's `args`, and every name of its own the stub gives.
+    assert methods <= _public(dir(runtime)), name
+    assert _public(vars(runtime)) - {"__new__"} <= methods, name
+    final = any(
+        isinstance(decorator, ast.Name) and decorator.id == "final"
+        for decorator in statement.decorator_list
+    )
+    try:
+        type("Derived", (runtime,), {})
+    except TypeError:
+        subclassed = False
+    else:
+        subclassed = True
+    assert final != subclassed, f"{name} is final in the stub: {final}"
 
 
 def _hints(typed: object) -> dict[str, object]:
