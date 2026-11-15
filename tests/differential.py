@@ -16,14 +16,14 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from jolty import Options, Simulation, ir, results
+from jolty import Simulation, ir, results
+from jolty.plan import TIGHT
 from jolty.spice import export, ngspice
 from jolty.spice.ngspice import CURRENT_TOLERANCE, VOLTAGE_TOLERANCE
 
 __all__ = [
     "REQUIRED",
     "SKIP",
-    "TIGHT",
     "Values",
     "closest",
     "compare",
@@ -48,14 +48,6 @@ run and fail."""
 
 type Real = npt.NDArray[np.float64]
 type Values = float | Real | npt.NDArray[np.complex128]
-
-TIGHT = Options(
-    relative_tolerance=1e-6,
-    voltage_tolerance=VOLTAGE_TOLERANCE,
-    current_tolerance=CURRENT_TOLERANCE,
-    charge_tolerance=1e-18,
-)
-"""jolty's options, as tight as ngspice's."""
 
 
 def _libraries(circuit: ir.Circuit) -> set[str]:

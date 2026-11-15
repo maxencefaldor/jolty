@@ -22,7 +22,6 @@ import pytest
 
 from differential import (
     SKIP,
-    TIGHT,
     closest,
     compare,
     compared,
@@ -49,7 +48,7 @@ from jolty import (
     results,
     spice,
 )
-from jolty.plan import decade, linear
+from jolty.plan import TIGHT, decade, linear
 from jolty.units import (
     A,
     F,

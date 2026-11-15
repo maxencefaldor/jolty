@@ -31,6 +31,7 @@ from typing import Final, Literal
 from pydantic import JsonValue
 
 from jolty import _core
+from jolty.spice import ngspice
 from jolty.units import (
     FREQUENCY,
     TEMPERATURE,
@@ -839,6 +840,16 @@ class Characterized:
         if self.spot_checks < 0 or self.tolerance < 0:
             message = "the spot checks and the tolerance are zero or more"
             raise ValueError(message)
+
+
+TIGHT: Final = Options(
+    relative_tolerance=ngspice.RELATIVE_TOLERANCE,
+    voltage_tolerance=ngspice.VOLTAGE_TOLERANCE,
+    current_tolerance=ngspice.CURRENT_TOLERANCE,
+    charge_tolerance=ngspice.CHARGE_TOLERANCE,
+)
+"""jolty's options as tight as the ones [`jolty.spice.ngspice`][jolty.spice.ngspice]
+gives ngspice, which the comparisons of the two run with."""
 
 
 @dataclass(frozen=True, slots=True)

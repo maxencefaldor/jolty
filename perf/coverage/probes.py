@@ -29,6 +29,7 @@ from jolty import Builder, Component, Role, circuit, devices, ir, results
 from jolty.builder import Net
 from jolty.errors import JoltyError
 from jolty.plan import (
+    TIGHT,
     Ac,
     Analysis,
     Axis,
@@ -39,7 +40,6 @@ from jolty.plan import (
     Noise,
     OperatingPoint,
     OperatingPoints,
-    Options,
     PoleZero,
     Sensitivity,
     Stability,
@@ -73,15 +73,6 @@ type Values = dict[str, complex]
 ``i(v1)``, either at a point such as ``v(out)@2``, or another number an analysis
 gives."""
 
-TIGHT: Final = Options(
-    relative_tolerance=1e-6,
-    voltage_tolerance=ngspice.VOLTAGE_TOLERANCE,
-    current_tolerance=ngspice.CURRENT_TOLERANCE,
-    charge_tolerance=1e-18,
-)
-"""The options jolty runs every probe with: the differential tests' (``TIGHT`` of
-``tests/differential.py``), as tight as the options ``jolty.spice.ngspice`` gives
-ngspice."""
 
 SOLVED: Final = 1e-6
 """The relative tolerance a solved value agrees within, of the largest value of its
@@ -357,7 +348,7 @@ class Op:
         return solved(deck_circuit(self.deck), OperatingPoint(), self.names)
 
     def spice(self, **given: object) -> Spice:
-        """The probe in the SPICE simulators."""
+        """The probe in the SPICE runners."""
         return Spice(
             deck=self.deck,
             ngspice=("op",),

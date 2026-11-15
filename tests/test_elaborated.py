@@ -23,7 +23,6 @@ from hypothesis import event, given
 from hypothesis import strategies as st
 from pydantic import JsonValue
 
-from differential import TIGHT
 from jolty import (
     Ac,
     Builder,
@@ -38,7 +37,7 @@ from jolty import (
     results,
 )
 from jolty.errors import ElaborationError
-from jolty.plan import decade
+from jolty.plan import TIGHT, decade
 from jolty.simulate import Elaborated
 from jolty.units import GHz, Hz, K, V, ohm, s
 from strategies import SETTINGS, STEP, STOP, circuits, parasitic, pulsed

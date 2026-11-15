@@ -45,19 +45,16 @@ from corpus import (
 
 from jolty import _core, ir
 from jolty.errors import JoltyError
-from jolty.plan import DcSweep, OperatingPoint, OperatingPoints, Options, Transient
+from jolty.plan import (
+    TIGHT,
+    DcSweep,
+    OperatingPoint,
+    OperatingPoints,
+    Transient,
+)
 from jolty.simulate import Simulation
 from jolty.spice import ngspice
 from jolty.units import CURRENT, VOLTAGE, K, Quantity, s
-
-TIGHT: Final = Options(
-    relative_tolerance=1e-6,
-    voltage_tolerance=ngspice.VOLTAGE_TOLERANCE,
-    current_tolerance=ngspice.CURRENT_TOLERANCE,
-    charge_tolerance=1e-18,
-)
-"""The tolerances the reference's DC solutions are found at: the differential tests'
-(``tests/differential.py``'s ``TIGHT``), as tight as ngspice's tightest."""
 
 _REACHED: Final = re.compile(r"at t = (\S+) s")
 """Where jolty's message says a transient stopped: its step fell below the smallest

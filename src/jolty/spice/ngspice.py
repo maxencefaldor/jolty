@@ -30,15 +30,21 @@ from jolty.errors import JoltyError
 EXECUTABLE: Final = shutil.which("ngspice")
 """The ngspice executable on the path, or None when it is not installed."""
 
+RELATIVE_TOLERANCE: Final = 1e-6
+"""The relative tolerance ngspice runs with."""
+
 VOLTAGE_TOLERANCE: Final = 1e-9
 """The absolute tolerance on voltages ngspice runs with, in volts."""
 
 CURRENT_TOLERANCE: Final = 1e-14
 """The absolute tolerance on currents ngspice runs with, in amperes."""
 
+CHARGE_TOLERANCE: Final = 1e-18
+"""The absolute tolerance on charges ngspice runs with, in coulombs."""
+
 OPTIONS: Final = (
-    ".options reltol=1e-6"
-    f" vntol={VOLTAGE_TOLERANCE!r} abstol={CURRENT_TOLERANCE!r} chgtol=1e-18"
+    f".options reltol={RELATIVE_TOLERANCE!r} vntol={VOLTAGE_TOLERANCE!r}"
+    f" abstol={CURRENT_TOLERANCE!r} chgtol={CHARGE_TOLERANCE!r}"
 )
 """ngspice's options, as tight as jolty's tightest."""
 

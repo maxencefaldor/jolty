@@ -28,7 +28,6 @@ rows and simulators it ran, and the matrix is rendered from it into
 ``perf/coverage/matrix.md``. ``perf/coverage/README.md`` says how each probe is made.
 """
 
-import subprocess
 import time
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
@@ -37,7 +36,7 @@ from pathlib import Path
 from typing import Final
 
 import documented
-import simulators
+import runners
 from probes import Category, Documented, Known, NotOffered, Row, Values, rows
 from pydantic import BaseModel, Field, JsonValue
 
@@ -162,20 +161,20 @@ def probe(row: Row, simulator: Simulator, xyce: str | None, root: Path) -> Cell:
     try:
         match simulator:
             case Simulator.JOLTY:
-                found = simulators.jolty(row)
+                found = runners.jolty(row)
             case Simulator.NGSPICE:
-                found = simulators.run_ngspice(row)
+                found = runners.run_ngspice(row)
             case Simulator.NGSPICE_KLU:
-                found = simulators.run_ngspice(row, ".options klu")
+                found = runners.run_ngspice(row, ".options klu")
             case Simulator.XYCE:
                 if xyce is None:
                     return Cell(status=Status.UNKNOWN, evidence="Xyce is not installed")
-                found = simulators.run_xyce(row, xyce)
+                found = runners.run_xyce(row, xyce)
     except NotOffered as refused:
         return Cell(status=Status.ABSENT, evidence=_relative(str(refused), root))
     except Documented as manual:
         return Cell(status=Status.DOCUMENTED, evidence=str(manual))
-    except simulators.Failed as failure:
+    except runners.Failed as failure:
         return Cell(status=Status.FAILS, evidence=_relative(str(failure), root))
     return Cell(status=Status.RUNS, found=_pairs(found))
 
@@ -214,18 +213,9 @@ def versions(simulator: Simulator, xyce: str | None) -> str:
         case Simulator.JOLTY:
             return f"jolty {metadata.version('jolty')}"
         case Simulator.NGSPICE | Simulator.NGSPICE_KLU:
-            if ngspice.EXECUTABLE is None:
-                return ""
-            done = subprocess.run(  # noqa: S603 - ngspice prints its version
-                [ngspice.EXECUTABLE, "--version"],
-                capture_output=True,
-                check=False,
-                text=True,
-            )
-            lines = [line.strip("* ") for line in done.stdout.splitlines()]
-            return next((line for line in lines if "ngspice-" in line), "")
+            return ngspice.version() or ""
         case Simulator.XYCE:
-            return "" if xyce is None else simulators.xyce_version(xyce)
+            return "" if xyce is None else runners.xyce_version(xyce)
 
 
 class Context(BaseModel):
@@ -269,7 +259,7 @@ def measure(
         if RESULTS.is_file()
         else Document()
     )
-    program = simulators.find_xyce(xyce)
+    program = runners.find_xyce(xyce)
     for simulator in chosen:
         document.simulators[simulator] = Ran(
             version=versions(simulator, program),

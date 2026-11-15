@@ -17,7 +17,6 @@ import pytest
 
 from differential import (
     SKIP,
-    TIGHT,
     closest,
     compare,
     compared,
@@ -39,7 +38,7 @@ from jolty import (
     devices,
     spice,
 )
-from jolty.plan import decade, linear
+from jolty.plan import TIGHT, decade, linear
 from jolty.spice.ngspice import OPTIONS, VOLTAGE_TOLERANCE, Compatibility
 from jolty.units import Hz, MHz, Quantity, V, celsius, kHz, kohm, ms, us
 from jolty.waveforms import Sine

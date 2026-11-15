@@ -22,7 +22,7 @@ import numpy as np
 from hypothesis import event, given
 from hypothesis import strategies as st
 
-from differential import TIGHT, Values, differing, nearest, unstable
+from differential import Values, differing, nearest, unstable
 from jolty import (
     Ac,
     OperatingPoint,
@@ -33,7 +33,7 @@ from jolty import (
     ir,
     results,
 )
-from jolty.plan import decade
+from jolty.plan import TIGHT, decade
 from jolty.spice.ngspice import CURRENT_TOLERANCE
 from jolty.units import GHz, Hz, V, ohm, s
 from strategies import (

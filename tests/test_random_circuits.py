@@ -16,7 +16,6 @@ from hypothesis import event, given
 
 from differential import (
     SKIP,
-    TIGHT,
     compared,
     differing,
     nearest,
@@ -35,7 +34,7 @@ from jolty import (
     ir,
     results,
 )
-from jolty.plan import decade
+from jolty.plan import TIGHT, decade
 from jolty.units import GHz, Hz, s
 from strategies import SETTINGS, STEP, STOP, circuits, parasitic, pulsed
 

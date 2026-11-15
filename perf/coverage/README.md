@@ -44,7 +44,7 @@ A row with no answer yet, such as BSIM4's until its QA results are fetched, is `
 
 A number agrees when it lies within the row's tolerance of the largest known number of its kind in the row, the kind its name begins with, such as `v` or `i`.
 The tolerance is 1e-6 for solved values, the relative tolerance every simulator runs with, within which the differential tests compare operating points, sweeps and responses, and 1e-3 for transients, the differential tests' tolerance on them.
-A simulator's message says whether it refused or failed: `simulators.py` lists the words of each simulator's refusals.
+A simulator's message says whether it refused or failed: `runners.py` lists the words of each simulator's refusals.
 
 ## Simulators
 
