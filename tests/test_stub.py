@@ -32,6 +32,7 @@ from jolty.plan import (
     PoleZero,
     Sensitivity,
     Stability,
+    TransferFunction,
     Transient,
     decade,
 )
@@ -190,6 +191,7 @@ ANALYSES: typing.Final[Mapping[str, Analysis]] = {
     "stability": Stability("VP", FREQUENCIES),
     "noise": Noise("out", FREQUENCIES, source="V1"),
     "pole_zero": PoleZero(source="V1", output="out"),
+    "transfer_function": TransferFunction("V1", "out"),
 }
 
 
@@ -211,6 +213,11 @@ def test_each_outcome_holds_the_keys_its_stub_names(
     assert isinstance(outcome, Mapping)
     assert outcome["kind"] == name
     assert _mismatches(outcome, STUB["Outcome"], name) == []
+
+
+def test_every_analysis_is_run() -> None:
+    analyses = set(typing.get_args(Analysis.__value__))
+    assert {type(analysis) for analysis in ANALYSES.values()} == analyses
 
 
 def test_every_kind_of_outcome_is_run() -> None:

@@ -933,10 +933,11 @@ class Simulation:
         outcome: _core.SensitivityOutcome
         | _core.StabilityOutcome
         | _core.NoiseOutcome
-        | _core.PoleZeroOutcome,
+        | _core.PoleZeroOutcome
+        | _core.TransferFunctionOutcome,
         recording: results.Recording,
     ) -> results.Result:
-        """The result of sensitivities, a loop gain, a noise spectrum or poles."""
+        """The result of an analysis of the linearized circuit."""
         unknowns = self.unknowns
         match outcome["kind"]:
             case "sensitivity":

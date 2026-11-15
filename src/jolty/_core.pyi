@@ -27,6 +27,7 @@ type Complex = npt.NDArray[np.complex128]
 type Signal = tuple[int, int | None]
 type Transfer = tuple[Signal, Signal | None] | None
 type Window = tuple[float | None, float | None]
+type Nature = Literal["voltage", "current", "temperature", "state"]
 
 class Observed(TypedDict):
     currents: npt.NDArray[np.float64]
@@ -51,7 +52,7 @@ class SweepOutcome(Observed):
     kind: Literal["dc_sweep"]
     source: str
     parameter: str | None
-    quantity: Literal["voltage", "current", "temperature", "state"] | None
+    quantity: Nature | None
     levels: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
@@ -115,14 +116,14 @@ class StabilityOutcome(TypedDict):
 
 class NoiseInputOutcome(TypedDict):
     source: str
-    quantity: Literal["voltage", "current", "temperature", "state"]
+    quantity: Nature
     gains: npt.NDArray[np.complex128]
 
 class NoiseOutcome(TypedDict):
     kind: Literal["noise"]
     output: str
     reference: str | None
-    quantity: Literal["voltage", "current", "temperature", "state"]
+    quantity: Nature
     frequencies: npt.NDArray[np.float64]
     densities: npt.NDArray[np.float64]
     input: NoiseInputOutcome | None
@@ -139,6 +140,17 @@ class PoleZeroOutcome(TypedDict):
     zeros: npt.NDArray[np.complex128] | None
     operating_point: SolvedPoint
 
+class TransferFunctionOutcome(TypedDict):
+    kind: Literal["transfer_function"]
+    source: str
+    input: Nature
+    output: str
+    reference: str | None
+    gain: float
+    input_resistance: float
+    output_resistance: float
+    operating_point: SolvedPoint
+
 type Outcome = (
     OperatingPointOutcome
     | SweepOutcome
@@ -149,6 +161,7 @@ type Outcome = (
     | NoiseOutcome
     | PoleZeroOutcome
     | OperatingPointsOutcome
+    | TransferFunctionOutcome
 )
 
 class SourceOutcome(TypedDict):
