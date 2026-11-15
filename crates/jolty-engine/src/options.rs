@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use jolty_models::Quantity;
+use jolty_models::Nature;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
@@ -296,22 +296,22 @@ impl Default for Options {
 }
 
 impl Options {
-    /// The absolute tolerance on the value of an unknown of `quantity`: the current
+    /// The absolute tolerance on the value of an unknown of `nature`: the current
     /// tolerance for a current, the voltage tolerance for a voltage, a temperature or a
     /// device's state.
-    pub(crate) fn value_tolerance(&self, quantity: Quantity) -> f64 {
-        if quantity.is_current() {
+    pub(crate) fn value_tolerance(&self, nature: Nature) -> f64 {
+        if nature.is_current() {
             self.current_tolerance
         } else {
             self.voltage_tolerance
         }
     }
 
-    /// The absolute tolerance on the residual of an unknown of `quantity`'s equation: the
+    /// The absolute tolerance on the residual of an unknown of `nature`'s equation: the
     /// current tolerance for an equation that sums currents, the voltage tolerance for one
     /// that constrains a voltage or moves a device's state.
-    pub(crate) fn equation_tolerance(&self, quantity: Quantity) -> f64 {
-        if quantity.sums_currents() {
+    pub(crate) fn equation_tolerance(&self, nature: Nature) -> f64 {
+        if nature.sums_currents() {
             self.current_tolerance
         } else {
             self.voltage_tolerance

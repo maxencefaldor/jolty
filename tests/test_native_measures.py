@@ -441,13 +441,13 @@ def test_transients_read_alike(data: st.DataObject) -> None:
 @given(st.data())
 def test_sweeps_read_alike(data: st.DataObject) -> None:
     levels = data.draw(st.lists(st.floats(-10, 10), min_size=1, max_size=24))
-    quantity = data.draw(st.sampled_from(QUANTITIES))
+    nature = data.draw(st.sampled_from(NATURES))
     count = len(levels)
     values = np.column_stack(
         [data.draw(st.lists(FINITE, min_size=count, max_size=count)) for _ in UNKNOWNS]
     )
-    result = results.DcSweepResult(UNKNOWNS, "V1", quantity, np.array(levels), values)
-    unit = V if quantity == "voltage" else A
+    result = results.DcSweepResult(UNKNOWNS, "V1", nature, np.array(levels), values)
+    unit = V if nature == "voltage" else A
     windowed(result, data.draw(ends(levels, unit)), data.draw(ends(levels, unit)))
     alike("value", result, "dc", "out", at=data.draw(ends(levels, unit)))
 
@@ -459,7 +459,7 @@ Densities 308 decades apart make a power law between them overflow, and Python's
 `math`, which numpy's noise took its logarithms with, raises there, where the engine's
 reads infinity or not a number, which leaves the requirement unmeasured."""
 
-QUANTITIES: Final[tuple[results.Quantity, ...]] = ("voltage", "current")
+NATURES: Final[tuple[results.Nature, ...]] = ("voltage", "current")
 """What a sweep's source levels can be."""
 
 PHASORS: Final = st.builds(complex, st.floats(-1e3, 1e3), st.floats(-1e3, 1e3))

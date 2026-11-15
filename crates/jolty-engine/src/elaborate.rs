@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use jolty_ir::{Circuit, Component, Name, Of, Parameters, Problem, Role, Source, set_parameter};
 use jolty_models::{
-    Interface, Kernel, Library, Logic, LogicDriver, LogicDriverParameters, LogicModel, Model, Node,
-    Pins, Quantity, Specification, ThresholdDetector, ThresholdDetectorParameters, Unknown,
+    Interface, Kernel, Library, Logic, LogicDriver, LogicDriverParameters, LogicModel, Model,
+    Nature, Node, Pins, Specification, ThresholdDetector, ThresholdDetectorParameters, Unknown,
     UnknownInfo,
 };
 
@@ -570,10 +570,10 @@ fn classify(nets: &[NetRecord], ground: String) -> (Vec<UnknownInfo>, Classes<'_
             nodes[index] = Some(Unknown::new(unknowns.len()));
             unknowns.push(UnknownInfo {
                 name: net.name.clone(),
-                quantity: if net.electrical {
-                    Quantity::Voltage
+                nature: if net.electrical {
+                    Nature::Voltage
                 } else {
-                    Quantity::Temperature
+                    Nature::Temperature
                 },
             });
         } else {

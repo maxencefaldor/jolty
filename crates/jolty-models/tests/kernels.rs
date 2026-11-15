@@ -8,7 +8,7 @@
 mod cases;
 
 use jolty_models::{
-    Binding, Contributions, Groups, Input, Library, Node, Quantity, Runs, Unknown, UnknownInfo,
+    Binding, Contributions, Groups, Input, Library, Nature, Node, Runs, Unknown, UnknownInfo,
 };
 use jolty_numerics::PatternBuilder;
 
@@ -31,7 +31,7 @@ fn allocations(name: &str, parameters: &str, x: &[f64]) -> u64 {
     let mut unknowns: Vec<UnknownInfo> = (0..terminals)
         .map(|index| UnknownInfo {
             name: format!("n{index}"),
-            quantity: Quantity::Voltage,
+            nature: Nature::Voltage,
         })
         .collect();
     let mut builder = PatternBuilder::new();

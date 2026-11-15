@@ -6,7 +6,7 @@ use std::f64::consts::TAU;
 use jolty_engine::{Conditions, Noise, NoiseResult, Options, SimulationError, Simulator};
 use jolty_ir::Circuit;
 use jolty_models::{
-    BOLTZMANN, ELEMENTARY_CHARGE, Library, Quantity, REFERENCE_TEMPERATURE, thermal_voltage,
+    BOLTZMANN, ELEMENTARY_CHARGE, Library, Nature, REFERENCE_TEMPERATURE, thermal_voltage,
 };
 use serde_json::{Value, json};
 
@@ -90,10 +90,10 @@ fn a_dividers_noise_is_its_parallel_resistances_and_refers_to_its_input() {
     let referred = spectrum.referred().expect("a source");
     let input = spectrum.input.as_ref().expect("an input");
     assert_eq!(
-        (input.source.as_str(), input.quantity),
-        ("V1", Quantity::Voltage)
+        (input.source.as_str(), input.nature),
+        ("V1", Nature::Voltage)
     );
-    assert_eq!(spectrum.quantity, Quantity::Voltage);
+    assert_eq!(spectrum.nature, Nature::Voltage);
     for (index, (&density, gain)) in spectrum.densities.iter().zip(&input.gains).enumerate() {
         assert_close(density, FOUR_KT * parallel);
         assert_close(
@@ -143,7 +143,7 @@ fn a_small_resistors_noise_is_a_voltage_in_series() {
         assert_close(spectrum.densities[index], FOUR_KT * 1000.5);
         let input = spectrum.input.as_ref().expect("an input");
         assert_close(input.gains[index].re, 1000.5);
-        assert_eq!(input.quantity, Quantity::Current);
+        assert_eq!(input.nature, Nature::Current);
     }
 }
 
@@ -162,7 +162,7 @@ fn outputs_can_be_differential_or_currents() {
     // The source's current: the resistors' noise currents, in series.
     let current = noise(&divider, "V1:current", None, None).unwrap();
     assert_close(current.densities[0], FOUR_KT / 4e3);
-    assert_eq!(current.quantity, Quantity::Current);
+    assert_eq!(current.nature, Nature::Current);
 }
 
 #[test]

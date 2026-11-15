@@ -19,7 +19,7 @@ use jolty_engine::{
     OperatingPointResult, Options, PoleZeroResult, Record, Statistics,
 };
 use jolty_ir::Circuit;
-use jolty_models::{Level, Library, Model, ParameterError, Quantity};
+use jolty_models::{Level, Library, Model, Nature, ParameterError};
 use numpy::{Element, PyArray1, PyArray2, PyArray3, PyArrayMethods};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
@@ -208,7 +208,7 @@ impl Simulator {
         let unknowns = inner
             .unknowns()
             .iter()
-            .map(|unknown| (unknown.name.clone(), quantity_name(unknown.quantity)))
+            .map(|unknown| (unknown.name.clone(), quantity_name(unknown.nature)))
             .collect();
         let nets = inner
             .logic_nets()
@@ -536,11 +536,11 @@ pub(crate) fn unreadable(error: &impl std::fmt::Display) -> PyErr {
 }
 
 /// The name of a quantity: `"voltage"`, `"current"`, `"temperature"` or `"state"`.
-fn quantity_name(quantity: Quantity) -> &'static str {
-    match quantity {
-        Quantity::Temperature => "temperature",
-        Quantity::State => "state",
-        _ if quantity.is_current() => "current",
+fn quantity_name(nature: Nature) -> &'static str {
+    match nature {
+        Nature::Temperature => "temperature",
+        Nature::State => "state",
+        _ if nature.is_current() => "current",
         _ => "voltage",
     }
 }
@@ -560,7 +560,7 @@ pub(crate) fn outcome_to_python(
             result.set_item("kind", "dc_sweep")?;
             result.set_item("source", sweep.source)?;
             result.set_item("parameter", sweep.parameter)?;
-            result.set_item("quantity", sweep.quantity.map(quantity_name))?;
+            result.set_item("nature", sweep.nature.map(quantity_name))?;
             result.set_item("levels", PyArray1::from_vec(py, sweep.levels))?;
             result.set_item("values", stacked(py, sweep.values)?)?;
             add_observations(&result, sweep.observations)?;
@@ -659,7 +659,7 @@ fn add_noise(result: &Bound<'_, PyDict>, spectrum: NoiseResult) -> PyResult<()> 
     let py = result.py();
     result.set_item("output", spectrum.output)?;
     result.set_item("reference", spectrum.reference)?;
-    result.set_item("quantity", quantity_name(spectrum.quantity))?;
+    result.set_item("nature", quantity_name(spectrum.nature))?;
     let count = spectrum.frequencies.len();
     result.set_item("frequencies", PyArray1::from_vec(py, spectrum.frequencies))?;
     result.set_item("densities", PyArray1::from_vec(py, spectrum.densities))?;
@@ -667,7 +667,7 @@ fn add_noise(result: &Bound<'_, PyDict>, spectrum: NoiseResult) -> PyResult<()> 
         Some(input) => {
             let found = PyDict::new(py);
             found.set_item("source", input.source)?;
-            found.set_item("quantity", quantity_name(input.quantity))?;
+            found.set_item("nature", quantity_name(input.nature))?;
             found.set_item("gains", PyArray1::from_vec(py, input.gains))?;
             Some(found)
         }

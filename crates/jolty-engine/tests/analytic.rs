@@ -365,7 +365,7 @@ fn a_dc_sweep_steps_any_number_of_a_device() {
     };
     let result = simulator.dc_sweep(&sweep, &Options::default()).unwrap();
     assert_eq!(
-        (result.parameter.as_deref(), result.quantity),
+        (result.parameter.as_deref(), result.nature),
         (Some("resistance"), None)
     );
     let out = index(&simulator, "out");

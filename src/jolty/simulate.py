@@ -474,7 +474,7 @@ class Simulation:
         self._records: dict[tuple[str, ...], frozenset[str]] = {}
         self._core = core
         self.unknowns = tuple(
-            results.Unknown(name, quantity) for name, quantity in self._core.unknowns
+            results.Unknown(name, nature) for name, nature in self._core.unknowns
         )
         self.nets = tuple(self._core.nets)
         self.devices = self._core.devices
@@ -915,7 +915,7 @@ class Simulation:
                 return results.DcSweepResult(
                     unknowns,
                     outcome["source"],
-                    outcome["quantity"],
+                    outcome["nature"],
                     outcome["levels"],
                     outcome["values"],
                     nets,
@@ -1014,13 +1014,13 @@ class Simulation:
                 noise_input = None
                 if found is not None:
                     noise_input = results.NoiseInput(
-                        found["source"], found["quantity"], found["gains"]
+                        found["source"], found["nature"], found["gains"]
                     )
                 return results.NoiseResult(
                     unknowns,
                     outcome["output"],
                     outcome["reference"],
-                    outcome["quantity"],
+                    outcome["nature"],
                     outcome["frequencies"],
                     outcome["densities"],
                     tuple(
@@ -1119,11 +1119,11 @@ class Simulation:
             case OperatingPoints():
                 return results.OperatingPointsResult(unknowns, ())
             case DcSweep():
-                quantity = self._quantity(analysis)
+                nature = self._nature(analysis)
                 return results.DcSweepResult(
                     unknowns,
                     analysis.source,
-                    quantity,
+                    nature,
                     no,
                     rows,
                     parameter=analysis.parameter,
@@ -1190,12 +1190,12 @@ class Simulation:
         self, noise: Noise, point: results.OperatingPointResult
     ) -> results.NoiseResult:
         """A noise analysis's result that holds no frequency, as `_shape` makes it."""
-        names = {unknown.name: unknown.quantity for unknown in self.unknowns}
+        names = {unknown.name: unknown.nature for unknown in self.unknowns}
         given = None
         if noise.source is not None:
-            quantity = "current" if self._source(noise.source) == CURRENT else "voltage"
+            nature = "current" if self._source(noise.source) == CURRENT else "voltage"
             gains = np.empty(0, dtype=np.complex128)
-            given = results.NoiseInput(noise.source, quantity, gains)
+            given = results.NoiseInput(noise.source, nature, gains)
         no = np.empty(0)
         return results.NoiseResult(
             self.unknowns,
@@ -1219,7 +1219,7 @@ class Simulation:
                 return VOLTAGE
         return None
 
-    def _quantity(self, sweep: DcSweep) -> results.Quantity | None:
+    def _nature(self, sweep: DcSweep) -> results.Nature | None:
         """Whether `sweep`'s levels are voltages or currents; None for a parameter's."""
         if sweep.parameter is not None:
             return None
@@ -1697,7 +1697,7 @@ class _Planned:
                     tuple(simulation.unknowns[column] for column in columns),
                     values,
                     source,
-                    simulation._quantity(analysis)  # noqa: SLF001 - one simulation's own
+                    simulation._nature(analysis)  # noqa: SLF001 - one simulation's own
                     if isinstance(analysis, DcSweep)
                     else None,
                     analysis.parameter if isinstance(analysis, DcSweep) else None,

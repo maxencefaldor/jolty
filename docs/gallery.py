@@ -415,16 +415,16 @@ def _replicate(
                 free_running and isinstance(jolty, results.TransientResult)
             ):
                 replication.deviations[name] = {
-                    quantity: (
+                    nature: (
                         len(columns),
                         _deviation(jolty, found[name], columns),
                     )
-                    for quantity in ("voltage", "current")
+                    for nature in ("voltage", "current")
                     if (
                         columns := [
                             column
                             for column in shared
-                            if jolty.unknowns[column].quantity == quantity
+                            if jolty.unknowns[column].nature == nature
                         ]
                     )
                 }
@@ -461,7 +461,7 @@ def _result(
             levels = jolty.levels if sweep is None else sweep.real
             levels = jolty.levels if len(levels) != len(table) else levels
             return results.DcSweepResult(
-                jolty.unknowns, jolty.source, jolty.quantity, levels, table.real
+                jolty.unknowns, jolty.source, jolty.nature, levels, table.real
             )
         case results.AcResult():
             frequencies = raw.vectors["frequency"].real
@@ -517,7 +517,7 @@ def _deviation(
             case _:
                 continue
         size = float(np.max(np.abs(ours))) if len(ours) else 0.0
-        floor = 1e-9 if jolty.unknowns[column].quantity == "voltage" else 1e-12
+        floor = 1e-9 if jolty.unknowns[column].nature == "voltage" else 1e-12
         scale = max(size, float(np.max(np.abs(theirs))) if len(theirs) else 0.0)
         if scale <= floor:
             continue
@@ -678,7 +678,7 @@ def _replication_plot(
         axes.xaxis.set_major_formatter(EngFormatter(unit="Hz", sep=" "))
     elif isinstance(ours, results.DcSweepResult):
         axes.set_ylabel("voltage (V)", color="#52514e")
-        unit = "A" if ours.quantity == "current" else "V"
+        unit = "A" if ours.nature == "current" else "V"
         axes.xaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
     else:
         axes.set_ylabel("voltage (V)", color="#52514e")
@@ -801,10 +801,10 @@ def _replication_section(built: Built) -> list[str]:
             ),
             "| --- | --- | --- | --- | --- |",
         ]
-        for name, quantities in replication.deviations.items():
+        for name, natures in replication.deviations.items():
             cells = []
-            for quantity in ("voltage", "current"):
-                count, deviation = quantities.get(quantity, (0, 0.0))
+            for nature in ("voltage", "current"):
+                count, deviation = natures.get(nature, (0, 0.0))
                 cells += [str(count), _ratio(deviation) if count else "—"]
             lines.append(f"| `{name}` | {' | '.join(cells)} |")
         lines.append("")
@@ -903,9 +903,9 @@ def _trimmed(lines: Sequence[str]) -> list[str]:
 def _worst_voltage(replication: Replication) -> float | None:
     """The largest deviation of a voltage between the engines, or None."""
     found = [
-        quantities["voltage"][1]
-        for quantities in replication.deviations.values()
-        if "voltage" in quantities
+        natures["voltage"][1]
+        for natures in replication.deviations.values()
+        if "voltage" in natures
     ]
     return max(found) if found else None
 

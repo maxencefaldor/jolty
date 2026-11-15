@@ -275,7 +275,7 @@ def test_a_noise_analysis_finds_each_resistors_noise_and_refers_it_back() -> Non
     across = simulation.run(Noise("in", [1 * kHz], reference="out"))
     assert across.densities[0] == pytest.approx(FOUR_KT * parallel, rel=1e-9)
     current = simulation.run(Noise("V1:current", [1 * kHz]))
-    assert current.quantity == "current"
+    assert current.nature == "current"
     assert current.densities[0] == pytest.approx(FOUR_KT / (upper + lower), rel=1e-9)
     with pytest.raises(KeyError, match="no noise source named 'R3'"):
         spectrum.contribution("R3")

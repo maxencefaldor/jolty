@@ -19,7 +19,7 @@ the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 devices outside their domains. Its header also states the results'
 [`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
 simulated them, and the hashes of the circuit and the plan they are of. The header is
-in version 10 of the format, which holds that provenance and the regions of operation
+in version 11 of the format, which holds that provenance and the regions of operation
 each recorded transistor's model distinguishes; a file of another version is not
 read.
 
@@ -99,7 +99,7 @@ class _OperatingPointsResult(_Model):
 class _DcSweepResult(_Model):
     kind: Literal["dc_sweep"] = "dc_sweep"
     source: str
-    quantity: results.Quantity | None
+    nature: results.Nature | None
     parameter: str | None = None
     recording: int
 
@@ -133,14 +133,14 @@ class _StabilityResult(_Model):
 
 class _NoiseInput(_Model):
     source: str
-    quantity: results.Quantity
+    nature: results.Nature
 
 
 class _NoiseResult(_Model):
     kind: Literal["noise"] = "noise"
     output: str
     reference: str | None
-    quantity: results.Quantity
+    nature: results.Nature
     sources: tuple[tuple[str, str], ...]
     input: _NoiseInput | None
     strategy: str
@@ -159,7 +159,7 @@ class _PoleZeroResult(_Model):
 class _TransferFunctionResult(_Model):
     kind: Literal["transfer_function"] = "transfer_function"
     source: str
-    input: results.Quantity
+    input: results.Nature
     output: str
     reference: str | None
     strategy: str
@@ -376,7 +376,7 @@ class Provenance(BaseModel):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[10] = 10
+    version: Literal[11] = 11
     provenance: Provenance
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
@@ -672,7 +672,7 @@ def _save(
             arrays.update(_observed_arrays(name, result))
             return _DcSweepResult(
                 source=result.source,
-                quantity=result.quantity,
+                nature=result.nature,
                 parameter=result.parameter,
                 recording=_indexed(recordings, result.recording),
             )
@@ -782,12 +782,12 @@ def _save_linear(
             if result.input is not None:
                 arrays[f"{name}.gains"] = result.input.gains
                 found = _NoiseInput(
-                    source=result.input.source, quantity=result.input.quantity
+                    source=result.input.source, nature=result.input.nature
                 )
             return _NoiseResult(
                 output=result.output,
                 reference=result.reference,
-                quantity=result.quantity,
+                nature=result.nature,
                 sources=tuple(
                     (source.instance, source.name) for source in result.sources
                 ),
@@ -831,11 +831,11 @@ def _load(
                 for index, strategy in enumerate(strategies)
             )
             return results.OperatingPointsResult(unknowns, points)
-        case _DcSweepResult(source=source, quantity=quantity, recording=recording):
+        case _DcSweepResult(source=source, nature=nature, recording=recording):
             return results.DcSweepResult(
                 unknowns,
                 source,
-                quantity,
+                nature,
                 data[f"{name}.levels"],
                 data[f"{name}.values"],
                 nets,
@@ -943,13 +943,13 @@ def _load_linear(
             found_input = None
             if entry.input is not None:
                 found_input = results.NoiseInput(
-                    entry.input.source, entry.input.quantity, data[f"{name}.gains"]
+                    entry.input.source, entry.input.nature, data[f"{name}.gains"]
                 )
             return results.NoiseResult(
                 unknowns,
                 entry.output,
                 entry.reference,
-                entry.quantity,
+                entry.nature,
                 data[f"{name}.frequencies"],
                 data[f"{name}.densities"],
                 tuple(
@@ -1090,7 +1090,7 @@ class _Traced(_Model):
     along: Literal["point", "level", "frequency", "time"]
     unknowns: tuple[results.Unknown, ...]
     source: str | None = None
-    quantity: results.Quantity | None = None
+    nature: results.Nature | None = None
     parameter: str | None = None
 
 
@@ -1168,7 +1168,7 @@ class _Columns(_Model):
                     along=traced.along,
                     unknowns=traced.unknowns,
                     source=traced.source,
-                    quantity=traced.quantity,
+                    nature=traced.nature,
                     parameter=traced.parameter,
                 )
                 for traced in found.traced
@@ -1185,7 +1185,7 @@ class _Columns(_Model):
                 each.unknowns,
                 data[f"{name}.traced.{index}"],
                 each.source,
-                each.quantity,
+                each.nature,
                 each.parameter,
             )
             for index, each in enumerate(self.traced)

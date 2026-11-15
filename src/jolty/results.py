@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from jolty import _core
 from jolty.units import Dimension
-from jolty.unknowns import Quantity, Unknown
+from jolty.unknowns import Nature, Unknown
 
 type Real = npt.NDArray[np.float64]
 type Complex = npt.NDArray[np.complex128]
@@ -61,7 +61,7 @@ def _no_phasors() -> Complex:
 
 
 def column(
-    unknowns: tuple[Unknown, ...], name: str, quantity: Quantity | None = None
+    unknowns: tuple[Unknown, ...], name: str, nature: Nature | None = None
 ) -> int:
     """The column of the unknown `name` in the values of a result over `unknowns`.
 
@@ -71,16 +71,16 @@ def column(
 
     Raises:
         KeyError: When no unknown has that name, the message suggesting the closest
-            names, or when `quantity` is given and the unknown is not of it.
+            names, or when `nature` is given and the unknown is not of it.
     """
     index = _columns(_Same(unknowns)).get(name)
     if index is None:
         names = [unknown.name for unknown in unknowns]
         message = f"the circuit has no unknown named {name!r}{close_names(names, name)}"
         raise KeyError(message)
-    found = unknowns[index].quantity
-    if quantity is not None and found != quantity:
-        message = f"{name!r} holds a {found}, not a {quantity}"
+    found = unknowns[index].nature
+    if nature is not None and found != nature:
+        message = f"{name!r} holds a {found}, not a {nature}"
         raise KeyError(message)
     return index
 
@@ -471,8 +471,8 @@ class _Unknowns[T]:
         """`values`, a number or a column, as a reading."""
         raise NotImplementedError
 
-    def _unknown(self, name: str, quantity: Quantity | None = None) -> T:
-        return self._read(self.values[..., column(self.unknowns, name, quantity)])
+    def _unknown(self, name: str, nature: Nature | None = None) -> T:
+        return self._read(self.values[..., column(self.unknowns, name, nature)])
 
     def voltage(self, net: str, reference: str | None = None) -> T:
         """The voltage of `net`, relative to `reference` or to ground."""
@@ -654,7 +654,7 @@ class DcSweepResult(_Devices[Real], _Watched):
     unknowns: tuple[Unknown, ...]
     source: str
     """The path of the swept instance, such as ``V1``."""
-    quantity: Quantity | None
+    nature: Nature | None
     """Whether the levels are voltages or currents; None for a parameter's."""
     levels: Real
     values: Real
@@ -936,7 +936,7 @@ class TransferFunctionResult(_Watched):
     unknowns: tuple[Unknown, ...]
     source: str
     """The path of the input source, such as ``V1``."""
-    input: Quantity
+    input: Nature
     """What the source's level is: ``voltage`` or ``current``."""
     output: str
     """The output: a net, such as ``out``, or a voltage source's current."""
@@ -964,7 +964,7 @@ class NoiseInput:
 
     source: str
     """The source's path, such as ``V1``."""
-    quantity: Quantity
+    nature: Nature
     """What the source's level is."""
     gains: Complex
     """The gain from the source's level to the output at each frequency."""
@@ -1007,7 +1007,7 @@ class NoiseResult(_Watched):
     """The output's unknown, by name."""
     reference: str | None
     """The node the output voltage is taken over; the ground if None."""
-    quantity: Quantity
+    nature: Nature
     """What the output is."""
     frequencies: Real
     densities: Real
@@ -1238,7 +1238,7 @@ class Traced:
     values: Real | Complex
     source: str | None = None
     """The swept or excited source, or the swept instance, of a sweep or a response."""
-    quantity: Quantity | None = None
+    nature: Nature | None = None
     """Whether a sweep's levels are voltages or currents; None for a parameter's."""
     parameter: str | None = None
     """The parameter a sweep steps, if any."""
@@ -1404,7 +1404,7 @@ class BatchResult:
                 each.unknowns,
                 np.concatenate([part.traced[index].values for part in parts]),
                 each.source,
-                each.quantity,
+                each.nature,
                 each.parameter,
             )
             for index, each in enumerate(first.traced)
@@ -1454,7 +1454,7 @@ class BatchResult:
                     traced.unknowns,
                     traced.values[start:stop],
                     traced.source,
-                    traced.quantity,
+                    traced.nature,
                     traced.parameter,
                 )
                 for traced in self.traced
@@ -1491,13 +1491,13 @@ def _canonical(
 def _alike(traced: tuple[Traced, ...], other: tuple[Traced, ...]) -> bool:
     """Whether `other` traces the unknowns `traced` does, along the same points."""
     return len(traced) == len(other) and all(
-        (one.analysis, one.along, one.unknowns, one.source, one.quantity, one.parameter)
+        (one.analysis, one.along, one.unknowns, one.source, one.nature, one.parameter)
         == (
             two.analysis,
             two.along,
             two.unknowns,
             two.source,
-            two.quantity,
+            two.nature,
             two.parameter,
         )
         and np.array_equal(one.axis, two.axis)

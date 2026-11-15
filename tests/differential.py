@@ -116,7 +116,7 @@ def compare(
     Values within the engines' absolute tolerance for the unknown's quantity are noise,
     and agree too.
     """
-    noise = CURRENT_TOLERANCE if unknown.quantity == "current" else VOLTAGE_TOLERANCE
+    noise = CURRENT_TOLERANCE if unknown.nature == "current" else VOLTAGE_TOLERANCE
     np.testing.assert_allclose(jolty, spice, rtol=0, atol=tolerance * scale + noise)
 
 
@@ -157,7 +157,7 @@ def compared(simulation: Simulation) -> list[tuple[int, results.Unknown]]:
     return [
         (column, unknown)
         for column, unknown in enumerate(simulation.unknowns)
-        if unknown.quantity == "state" or _shared(unknown.name)
+        if unknown.nature == "state" or _shared(unknown.name)
     ]
 
 
@@ -172,7 +172,7 @@ def _shared(name: str) -> bool:
 def differing(
     jolty: Mapping[str, Values],
     reference: Mapping[str, Values],
-    quantities: Mapping[str, str],
+    natures: Mapping[str, str],
     tolerance: float = 1e-6,
 ) -> list[str]:
     """The unknowns, by name, whose values jolty and a reference disagree on.
@@ -185,19 +185,19 @@ def differing(
     """
     scales: dict[str, float] = {}
     for name, values in reference.items():
-        quantity = quantities[name]
-        scales[quantity] = max(scales.get(quantity, 0.0), size(values))
+        nature = natures[name]
+        scales[nature] = max(scales.get(nature, 0.0), size(values))
     return [
         name
         for name, values in reference.items()
         if np.max(np.abs(np.asarray(jolty[name]) - values))
-        > tolerance * scales[quantities[name]] + 2 * _noise(quantities[name])
+        > tolerance * scales[natures[name]] + 2 * _noise(natures[name])
     ]
 
 
-def _noise(quantity: str) -> float:
-    """The engines' absolute tolerance on an unknown of `quantity`."""
-    return CURRENT_TOLERANCE if quantity == "current" else VOLTAGE_TOLERANCE
+def _noise(nature: str) -> float:
+    """The engines' absolute tolerance on an unknown of `nature`."""
+    return CURRENT_TOLERANCE if nature == "current" else VOLTAGE_TOLERANCE
 
 
 def nearest(times: Real, targets: Real) -> npt.NDArray[np.intp]:

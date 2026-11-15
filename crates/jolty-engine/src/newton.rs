@@ -1,6 +1,6 @@
 //! Newton iteration on the circuit's equations.
 
-use jolty_models::{Contributions, Input, Quantity};
+use jolty_models::{Contributions, Input, Nature};
 use jolty_numerics::{Pattern, reduce};
 use rayon::prelude::*;
 
@@ -30,11 +30,11 @@ fn rounding(resolution: f64) -> f64 {
     RESIDUAL_ROUNDINGS * f64::EPSILON * resolution
 }
 
-/// The step `step` of an unknown of `quantity` that the step left at `value`, as a multiple
+/// The step `step` of an unknown of `nature` that the step left at `value`, as a multiple
 /// of its tolerance.
-fn step_error((value, step): (f64, f64), quantity: Quantity, options: &Options) -> f64 {
+fn step_error((value, step): (f64, f64), nature: Nature, options: &Options) -> f64 {
     let magnitude = value.abs().max((value - step).abs());
-    let absolute = options.value_tolerance(quantity);
+    let absolute = options.value_tolerance(nature);
     step.abs() / (options.relative_tolerance * magnitude + absolute)
 }
 
@@ -429,12 +429,12 @@ impl Simulator {
     /// Journal on Scientific Computing 37(4), 2015).
     fn deflate(&mut self, x: &[f64], known: &[Vec<f64>], inside: Option<Inside>) {
         let step = &mut self.state.workspace.step;
-        let quantities = &self.elaborated.quantities;
+        let natures = &self.elaborated.natures;
         let mut slope = 0.0;
         for root in known {
             // Each term over the node voltages, zero for the others.
-            let apart = |index: usize| match quantities[index] {
-                Quantity::Voltage => x[index] - root[index],
+            let apart = |index: usize| match natures[index] {
+                Nature::Voltage => x[index] - root[index],
                 _ => 0.0,
             };
             let distance = sum(x.len(), |index| apart(index) * apart(index), inside);
@@ -508,10 +508,10 @@ impl Simulator {
             charge,
             ..
         } = contributions;
-        let (pattern, jacobian, quantities) = (
+        let (pattern, jacobian, natures) = (
             &self.elaborated.pattern,
             &*jacobian,
-            &self.elaborated.quantities,
+            &self.elaborated.natures,
         );
         let charge = &*charge;
         let within = each_chunk_of(
@@ -539,7 +539,7 @@ impl Simulator {
                         });
                     let rounding = rounding(*resolution);
                     if let Some(options) = judged {
-                        let absolute = options.equation_tolerance(quantities[index]);
+                        let absolute = options.equation_tolerance(natures[index]);
                         within &= residual.abs()
                             <= options.relative_tolerance * *scale + absolute + rounding;
                     }
@@ -564,13 +564,13 @@ impl Simulator {
     /// each as a multiple of its tolerance, or NaN if one is, in one pass over the unknowns
     /// split as `inside` says: the step is within tolerance when it is at most 1.
     fn take_step(&self, x: &mut [f64], options: &Options, inside: Option<Inside>) -> f64 {
-        let (step, quantities) = (&self.state.workspace.step, &self.elaborated.quantities);
+        let (step, natures) = (&self.state.workspace.step, &self.elaborated.natures);
         each_chunk_of([x], inside, (0.0, largest), |start, [chunk]| {
             let mut most = 0.0;
             for (offset, value) in chunk.iter_mut().enumerate() {
                 let index = start + offset;
                 *value += step[index];
-                let error = step_error((*value, step[index]), quantities[index], options);
+                let error = step_error((*value, step[index]), natures[index], options);
                 most = largest(most, error);
             }
             most
@@ -586,11 +586,11 @@ impl Simulator {
     ) -> Vec<String> {
         let mut errors: Vec<(f64, usize)> = (0..x.len())
             .map(|index| {
-                let (step, quantity) = (
+                let (step, nature) = (
                     self.state.workspace.step[index],
-                    self.elaborated.quantities[index],
+                    self.elaborated.natures[index],
                 );
-                (step_error((x[index], step), quantity, options), index)
+                (step_error((x[index], step), nature, options), index)
             })
             .collect();
         errors.sort_by(|a, b| b.0.total_cmp(&a.0));

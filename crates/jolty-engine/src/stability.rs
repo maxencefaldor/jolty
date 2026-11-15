@@ -20,7 +20,7 @@
 //! probe's terminals. Negative feedback makes `T` positive at low frequencies, and divides
 //! each response it encloses by `1 + T`.
 
-use jolty_models::Quantity;
+use jolty_models::Nature;
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
@@ -78,7 +78,7 @@ impl Simulator {
                     SimulationError::NotASource(_) => not_a_probe(),
                     other => other,
                 })?;
-            if self.source_quantity(index) != Quantity::Voltage {
+            if self.source_nature(index) != Nature::Voltage {
                 return Err(not_a_probe());
             }
             let &[Some(entered), Some(_)] = self.elaborated.devices[index].nodes() else {

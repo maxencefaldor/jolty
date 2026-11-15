@@ -24,9 +24,9 @@ from jolty import results, specs
 from jolty.specs import Spread, Verdict, Yield
 from jolty.units import format_si
 
-type Quantity = results.Quantity
+type Nature = results.Nature
 
-_SYMBOLS: dict[Quantity, str] = {
+_SYMBOLS: dict[Nature, str] = {
     "voltage": "V",
     "current": "A",
     "temperature": "K",
@@ -34,14 +34,14 @@ _SYMBOLS: dict[Quantity, str] = {
 }
 
 
-def _shown(value: float, quantity: Quantity) -> str:
-    """`value`, an unknown's of `quantity`, with an SI prefix to its unit.
+def _shown(value: float, nature: Nature) -> str:
+    """`value`, an unknown's of `nature`, with an SI prefix to its unit.
 
     A device's state has no unit, and is written as a plain number.
     """
-    if quantity == "state":
+    if nature == "state":
         return f"{value:.4g}"
-    return format_si(value, _SYMBOLS[quantity])
+    return format_si(value, _SYMBOLS[nature])
 
 
 _STRATEGIES = {
@@ -61,7 +61,7 @@ class Value(_Model):
     """The value of one unknown, in volts or amperes."""
 
     unknown: str
-    quantity: Quantity
+    nature: Nature
     value: float
 
 
@@ -69,7 +69,7 @@ class Extent(_Model):
     """The values one unknown takes over an analysis, in volts or amperes."""
 
     unknown: str
-    quantity: Quantity
+    nature: Nature
     first: float
     minimum: float
     maximum: float
@@ -136,8 +136,7 @@ class OperatingPointReport(_Model):
         """The report as text."""
         strategy = _STRATEGIES.get(self.strategy, self.strategy)
         rows = [
-            [value.unknown, _shown(value.value, value.quantity)]
-            for value in self.values
+            [value.unknown, _shown(value.value, value.nature)] for value in self.values
         ]
         rows.extend([level.net, _written(level.level)] for level in self.levels)
         head = f"{self.name}: operating point, found by {strategy}"
@@ -166,7 +165,7 @@ class Solutions(_Model):
     """The value of one unknown at each DC solution, in volts or amperes."""
 
     unknown: str
-    quantity: Quantity
+    nature: Nature
     values: tuple[float, ...] = Field(description="Its value at each solution.")
 
 
@@ -191,7 +190,7 @@ class OperatingPointsReport(_Model):
         rows = [
             [
                 solutions.unknown,
-                *(_shown(value, solutions.quantity) for value in solutions.values),
+                *(_shown(value, solutions.nature) for value in solutions.values),
             ]
             for solutions in self.values
         ]
@@ -204,7 +203,7 @@ class DcSweepReport(_Model):
     kind: Literal["dc_sweep"] = "dc_sweep"
     name: str
     source: str = Field(description="The swept instance's path.")
-    quantity: Quantity | None = Field(
+    nature: Nature | None = Field(
         description="Whether its levels are voltages or currents; null for a "
         "parameter's."
     )
@@ -222,11 +221,11 @@ class DcSweepReport(_Model):
 
     def describe(self) -> str:
         """The report as text."""
-        if self.quantity is None:
+        if self.nature is None:
             swept = f"{self.source}'s {self.parameter}"
             first, last = f"{self.first:.4g}", f"{self.last:.4g}"
         else:
-            unit = _SYMBOLS[self.quantity]
+            unit = _SYMBOLS[self.nature]
             swept = self.source
             first, last = format_si(self.first, unit), format_si(self.last, unit)
         head = (
@@ -415,7 +414,7 @@ class NoiseReport(_Model):
     reference: str | None = Field(
         description="The node the output voltage is over; null for the ground."
     )
-    quantity: Quantity = Field(description="What the output is.")
+    nature: Nature = Field(description="What the output is.")
     lowest: float = Field(description="Lowest frequency, in hertz.")
     highest: float = Field(description="Highest frequency, in hertz.")
     frequencies: int = Field(description="Frequencies the analysis solved.")
@@ -438,7 +437,7 @@ class NoiseReport(_Model):
         description="The RMS noise referred to the source over the frequencies, in "
         "the unit of its level; null without a source or for one frequency."
     )
-    referred_quantity: Quantity | None = Field(
+    referred_nature: Nature | None = Field(
         description="What the source's level is; null without a source."
     )
     contributors: tuple[NoiseContributor, ...] = Field(
@@ -450,7 +449,7 @@ class NoiseReport(_Model):
         """The report as text."""
         lowest, highest = format_si(self.lowest, "Hz"), format_si(self.highest, "Hz")
         over = "" if self.reference is None else f" over {self.reference}"
-        unit = _SYMBOLS[self.quantity]
+        unit = _SYMBOLS[self.nature]
         head = (
             f"{self.name}: noise at {self.output}{over} at {self.frequencies} "
             f"frequencies from {lowest} to {highest}"
@@ -460,8 +459,8 @@ class NoiseReport(_Model):
         lines = [head, f"  {first} at {lowest}, {last} at {highest}"]
         if self.rms is not None:
             total = f"  {format_si(self.rms, unit)} RMS over the frequencies"
-            if self.referred is not None and self.referred_quantity is not None:
-                referred = format_si(self.referred, _SYMBOLS[self.referred_quantity])
+            if self.referred is not None and self.referred_nature is not None:
+                referred = format_si(self.referred, _SYMBOLS[self.referred_nature])
                 total += f", {referred} RMS referred to {self.source}"
             lines.append(total)
             lines.extend(
@@ -561,7 +560,7 @@ class OutputSensitivity(_Model):
     """An output's derivatives with respect to the parameters."""
 
     output: str
-    quantity: Quantity
+    nature: Nature
     value: float | None = Field(
         default=None,
         description="Its value at the operating point, in volts or amperes; null "
@@ -622,7 +621,7 @@ class SensitivityReport(_Model):
             if output.value is None:
                 lines.append(f"  {output.output}")
             else:
-                value = _shown(output.value, output.quantity)
+                value = _shown(output.value, output.nature)
                 lines.append(f"  {output.output} = {value}")
             rows = [
                 [
@@ -899,9 +898,7 @@ def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisRe
     match result:
         case results.OperatingPointResult():
             values = tuple(
-                Value(
-                    unknown=unknown.name, quantity=unknown.quantity, value=float(value)
-                )
+                Value(unknown=unknown.name, nature=unknown.nature, value=float(value))
                 for unknown, value in zip(unknowns, result.values[:listed], strict=True)
             )
             levels = tuple(
@@ -922,7 +919,7 @@ def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisRe
             return DcSweepReport(
                 name=name,
                 source=result.source,
-                quantity=result.quantity,
+                nature=result.nature,
                 parameter=result.parameter,
                 first=float(result.levels[0]),
                 last=float(result.levels[-1]),
@@ -962,7 +959,7 @@ def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisRe
                 values=tuple(
                     Solutions(
                         unknown=unknown.name,
-                        quantity=unknown.quantity,
+                        nature=unknown.nature,
                         values=tuple(
                             float(point.values[index]) for point in result.points
                         ),
@@ -1087,7 +1084,7 @@ def _noise(name: str, result: results.NoiseResult, listed: int) -> NoiseReport:
         name=name,
         output=result.output,
         reference=result.reference,
-        quantity=result.quantity,
+        nature=result.nature,
         lowest=float(frequencies[0]),
         highest=float(frequencies[-1]),
         frequencies=len(frequencies),
@@ -1098,7 +1095,7 @@ def _noise(name: str, result: results.NoiseResult, listed: int) -> NoiseReport:
         referred=result.rms(referred=True)
         if banded and noise_input is not None
         else None,
-        referred_quantity=None if noise_input is None else noise_input.quantity,
+        referred_nature=None if noise_input is None else noise_input.nature,
         contributors=contributors,
         unlisted=len(result.sources) - len(contributors),
     )
@@ -1109,7 +1106,7 @@ def _transfer(
 ) -> TransferFunctionReport:
     """The report of the transfer function analysis `name`."""
     output = next(
-        unknown.quantity for unknown in result.unknowns if unknown.name == result.output
+        unknown.nature for unknown in result.unknowns if unknown.name == result.output
     )
     return TransferFunctionReport(
         name=name,
@@ -1168,7 +1165,7 @@ def _sensitivities(
             of, points, strategy, unit = "operating_point", 1, point.strategy, ""
         case results.DcSweepResult() as sweep:
             of, points, strategy = "dc_sweep", len(sweep.levels), None
-            unit = "" if sweep.quantity is None else _SYMBOLS[sweep.quantity]
+            unit = "" if sweep.nature is None else _SYMBOLS[sweep.nature]
         case results.AcResult() as response:
             of, points, unit = "ac", len(response.frequencies), "Hz"
             strategy = response.operating_point.strategy
@@ -1197,7 +1194,7 @@ def _output(
     """
     gradient = result.gradient(output)
     column = results.column(result.unknowns, output)
-    quantity = result.unknowns[column].quantity
+    nature = result.unknowns[column].nature
     match result.result:
         case results.OperatingPointResult() as point:
             value = float(point.values[column])
@@ -1228,7 +1225,7 @@ def _output(
         )
     )
     return OutputSensitivity(
-        output=output, quantity=quantity, value=value, derivatives=derivatives
+        output=output, nature=nature, value=value, derivatives=derivatives
     )
 
 
@@ -1306,7 +1303,7 @@ def _extents_of(
     return tuple(
         Extent(
             unknown=unknown.name,
-            quantity=unknown.quantity,
+            nature=unknown.nature,
             first=float(values[0, column]),
             minimum=float(values[:, column].min()),
             maximum=float(values[:, column].max()),
@@ -1321,7 +1318,7 @@ def _extents(extents: tuple[Extent, ...]) -> list[str]:
         return []
 
     def si(value: float, extent: Extent) -> str:
-        return _shown(value, extent.quantity)
+        return _shown(value, extent.nature)
 
     header = ["", "first", "min", "max", "last"]
     rows = [

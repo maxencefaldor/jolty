@@ -223,7 +223,7 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
         assert_same(read[name], result, name)
     sweep = read["sweep"]
     assert isinstance(sweep, results.DcSweepResult)
-    assert (sweep.source, sweep.quantity) == ("V1", "voltage")
+    assert (sweep.source, sweep.nature) == ("V1", "voltage")
     op = read["op"]
     assert isinstance(op, results.OperatingPointResult)
     assert op.current("C1", "a") == 1e-3
@@ -311,7 +311,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 10
+    assert header["version"] == 11
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {
@@ -440,4 +440,4 @@ def test_results_files_hold_a_sweep_of_a_parameter(tmp_path: Path) -> None:
     read = load_results(path)["sweep"]
     assert_same(read, sweep, "sweep")
     assert isinstance(read, results.DcSweepResult)
-    assert (read.parameter, read.quantity) == ("resistance", None)
+    assert (read.parameter, read.nature) == ("resistance", None)

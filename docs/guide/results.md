@@ -204,4 +204,4 @@ A name that is not an unknown, a recorded terminal, derivative or variable, or a
 
 The file is a NumPy archive: a JSON header names the unknowns and the logic nets, lists each recording the analyses made once, however many share it, as each recorded device's path, terminals, internal unknowns, variables, regions and margins, and the composites, and says what each analysis is and which recording it made, then each analysis's arrays follow under keys such as `step.times`.
 Any program that reads NumPy files reads it.
-The header is in version 10 of the format; a file of an earlier version is not read, and simulating again writes it anew.
+The header is in version 11 of the format; a file of an earlier version is not read, and simulating again writes it anew.

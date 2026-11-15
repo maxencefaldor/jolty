@@ -23,7 +23,7 @@ use crate::kernel::parts::{self, CurrentBranch, Nodes, Series, series_value};
 use crate::noise::Flicker;
 use crate::region::Bipolar;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
     REFERENCE_TEMPERATURE, Real, Regions, Stamp, Unknown,
 };
 
@@ -605,8 +605,8 @@ impl ExcessPhase {
     /// The filter between the internal `nodes`: base, emitter and collector.
     fn new(layout: &mut Layout, [base, emitter, collector]: [usize; 3]) -> Self {
         let unknowns = [
-            layout.internal("delayed_transport", Quantity::Current),
-            layout.internal("delayed_transport_slope", Quantity::Current),
+            layout.internal("delayed_transport", Nature::Current),
+            layout.internal("delayed_transport_slope", Nature::Current),
         ];
         let [x, y] = unknowns;
         Self {
@@ -1077,7 +1077,7 @@ impl Kernel for BipolarTransistor {
             ("collector", "collector_current"),
         );
         let inner_base = if parameters.base_resistance.value() > 0.0 {
-            layout.internal("base", Quantity::Voltage)
+            layout.internal("base", Nature::Voltage)
         } else {
             base_terminal
         };

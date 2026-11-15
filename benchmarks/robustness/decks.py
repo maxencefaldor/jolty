@@ -403,7 +403,7 @@ class DeckCircuit:
         nets = tuple(
             unknown.name
             for unknown in unknowns
-            if unknown.quantity == "voltage" and not {"/", ":", "."} & set(unknown.name)
+            if unknown.nature == "voltage" and not {"/", ":", "."} & set(unknown.name)
         )
         return Built(built, self.deck.temperature(), self.deck.options(), nets)
 

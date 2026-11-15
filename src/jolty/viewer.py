@@ -195,7 +195,7 @@ def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | 
         case results.DcSweepResult() if result.parameter is not None:
             return "dc_sweep", result.levels, f"{result.source} {result.parameter}", ""
         case results.DcSweepResult():
-            unit = "A" if result.quantity == "current" else "V"
+            unit = "A" if result.nature == "current" else "V"
             return "dc_sweep", result.levels, f"{result.source} level", unit
         case results.TransientResult():
             return "transient", result.times, "time", "s"
@@ -313,7 +313,7 @@ def _analysis(name: str, result: results.AnalysisResult) -> dict[str, JsonValue]
     nets: dict[str, JsonValue] = {
         unknown.name: _series(values[frames, index])
         for index, unknown in enumerate(result.unknowns)
-        if unknown.quantity == "voltage"
+        if unknown.nature == "voltage"
     }
     logic: dict[str, JsonValue] = {
         net: [None if math.isnan(level) else float(level) for level in levels[frames]]

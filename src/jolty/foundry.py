@@ -192,7 +192,7 @@ class _Deck:
         )
 
     def sweep(self, sweep: DcSweep) -> results.DcSweepResult:
-        command, levels, quantity = _sweep(self.flat, sweep)
+        command, levels, nature = _sweep(self.flat, sweep)
         (raw,) = self.runs((command,))
         values = _table(raw, self.read)
         if values.shape[0] != len(levels):
@@ -204,7 +204,7 @@ class _Deck:
         return results.DcSweepResult(
             unknowns=self.unknowns(),
             source=sweep.source,
-            quantity=quantity,
+            nature=nature,
             levels=levels,
             values=values,
         )
@@ -261,11 +261,11 @@ class _Deck:
         sources, contributions = self.contributions(spectra)
         given = None
         if noise.source is not None:
-            _, quantity = _source(self.flat, noise.source)
+            _, nature = _source(self.flat, noise.source)
             transfer = _difference(output)
             given = results.NoiseInput(
                 source=noise.source,
-                quantity=quantity,
+                nature=nature,
                 gains=np.array(
                     [
                         raw.vectors[transfer[0]][0]
@@ -278,7 +278,7 @@ class _Deck:
             unknowns=self.unknowns(),
             output=noise.output,
             reference=noise.reference,
-            quantity="voltage",
+            nature="voltage",
             frequencies=np.array(frequencies),
             densities=densities,
             sources=sources,
@@ -454,7 +454,7 @@ def _table(
     )
 
 
-def _source(flat: ir.Circuit, path: str) -> tuple[ir.Instance, results.Quantity]:
+def _source(flat: ir.Circuit, path: str) -> tuple[ir.Instance, results.Nature]:
     """The independent source at `path` in the flattened circuit `flat`, and its level.
 
     Its level is a voltage or a current.
@@ -474,15 +474,15 @@ def _source(flat: ir.Circuit, path: str) -> tuple[ir.Instance, results.Quantity]
 
 def _sweep(
     flat: ir.Circuit, sweep: DcSweep
-) -> tuple[str, results.Real, results.Quantity]:
+) -> tuple[str, results.Real, results.Nature]:
     """The command ngspice runs `sweep` by, its levels, and whether they are voltages.
 
     Raises:
         SimulationError: When the swept instance is no independent source, or the
             levels do not rise or fall in even steps, as ngspice sweeps a source.
     """
-    found, quantity = _source(flat, sweep.source)
-    dimension = VOLTAGE if quantity == "voltage" else CURRENT
+    found, nature = _source(flat, sweep.source)
+    dimension = VOLTAGE if nature == "voltage" else CURRENT
     given = [level.to(dimension, "a sweep level") for level in sweep.levels]
     levels = np.array(given)
     if len(levels) < 2:  # noqa: PLR2004 - a sweep's first and last levels
@@ -495,7 +495,7 @@ def _sweep(
         message = f"ngspice sweeps {sweep.source} in even steps, and its levels are not"
         raise SimulationError(message)
     command = f"dc {export.element(found)} {first!r} {last!r} {step!r}"
-    return command, levels, quantity
+    return command, levels, nature
 
 
 _STATISTICS: Final = {

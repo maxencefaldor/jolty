@@ -546,7 +546,7 @@ impl Simulator {
             .unknowns
             .iter()
             .zip(shift)
-            .filter(|(unknown, _)| !unknown.quantity.is_current())
+            .filter(|(unknown, _)| !unknown.nature.is_current())
             .fold(0.0_f64, |most, (_, value)| most.max(value.abs()));
         if largest == 0.0 || !largest.is_finite() {
             return None;

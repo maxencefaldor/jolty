@@ -2,7 +2,7 @@
 
 use std::f64::consts::TAU;
 
-use jolty_models::{Contributions, Quantity, Unknown};
+use jolty_models::{Contributions, Nature, Unknown};
 use jolty_numerics::Complex64;
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -125,7 +125,7 @@ impl Simulator {
         &self,
         output: &str,
         reference: Option<&str>,
-    ) -> Result<(Option<Unknown>, Option<Unknown>, Quantity), SimulationError> {
+    ) -> Result<(Option<Unknown>, Option<Unknown>, Nature), SimulationError> {
         let found = self.node(output)?;
         let base = reference.map(|name| self.node(name)).transpose()?.flatten();
         if found == base {
@@ -133,21 +133,21 @@ impl Simulator {
                 "the output `{output}` is taken over itself"
             )));
         }
-        let quantity = |node: Option<Unknown>| {
-            node.map_or(Quantity::Voltage, |unknown| {
-                self.elaborated.unknowns[unknown.index()].quantity
+        let nature = |node: Option<Unknown>| {
+            node.map_or(Nature::Voltage, |unknown| {
+                self.elaborated.unknowns[unknown.index()].nature
             })
         };
-        let quantity = match (quantity(found), quantity(base), reference) {
-            (quantity, _, None) => quantity,
-            (Quantity::Voltage, Quantity::Voltage, Some(_)) => Quantity::Voltage,
+        let nature = match (nature(found), nature(base), reference) {
+            (nature, _, None) => nature,
+            (Nature::Voltage, Nature::Voltage, Some(_)) => Nature::Voltage,
             (_, _, Some(name)) => {
                 return Err(SimulationError::InvalidAnalysis(format!(
                     "an output over a node is a voltage, but `{output}` over `{name}` is not"
                 )));
             }
         };
-        Ok((found, base, quantity))
+        Ok((found, base, nature))
     }
 
     /// The node or unknown named `name`: none for the reference node.

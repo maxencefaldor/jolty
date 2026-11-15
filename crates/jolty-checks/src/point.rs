@@ -5,7 +5,7 @@ use std::f64::consts::TAU;
 use jolty_engine::{
     Mode, OperatingPointResult, OperatingPoints, Options, SimulationError, Simulator,
 };
-use jolty_models::Quantity;
+use jolty_models::Nature;
 
 use crate::structure::{list, prose};
 use crate::{Diagnostic, Level, Rule};
@@ -110,7 +110,7 @@ fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Opti
         .iter()
         .zip(values.iter().zip(moves))
         .filter(|(unknown, (value, moved))| {
-            unknown.quantity == Quantity::Voltage
+            unknown.nature == Nature::Voltage
                 && !unknown.name.contains(':')
                 && moved.abs() > GMIN_MOVE * value.abs().max(VOLT)
         })
@@ -145,7 +145,7 @@ fn multiple_operating_points(
         .unknowns()
         .iter()
         .zip(point.values.iter().zip(&other.values))
-        .filter(|(unknown, _)| unknown.quantity == Quantity::Voltage && !unknown.name.contains(':'))
+        .filter(|(unknown, _)| unknown.nature == Nature::Voltage && !unknown.name.contains(':'))
         .map(|(unknown, (&value, &another))| (unknown.name.as_str(), value, another))
         .collect();
     let difference = |&(_, value, another): &(&str, f64, f64)| (another - value).abs();
@@ -177,7 +177,7 @@ fn unstable_pole(simulator: &Simulator, mode: &Mode) -> Diagnostic {
         .unknowns()
         .iter()
         .zip(&mode.shape)
-        .filter(|(unknown, _)| unknown.quantity == Quantity::Voltage && !unknown.name.contains(':'))
+        .filter(|(unknown, _)| unknown.nature == Nature::Voltage && !unknown.name.contains(':'))
         .map(|(unknown, amplitude)| (amplitude.norm(), unknown.name.as_str()))
         .collect();
     let largest = nets

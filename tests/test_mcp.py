@@ -127,7 +127,7 @@ def test_simulate_answers_with_text_and_structured_content(script: Path) -> None
     assert data is not None
     assert data["circuit"]["unknowns"] == 3
     (point,) = data["analyses"]
-    assert point["values"][1] == {"unknown": "out", "quantity": "voltage", "value": 2.5}
+    assert point["values"][1] == {"unknown": "out", "nature": "voltage", "value": 2.5}
 
 
 def test_errors_come_back_as_tool_errors(tmp_path: Path) -> None:

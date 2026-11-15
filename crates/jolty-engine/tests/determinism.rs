@@ -1368,7 +1368,7 @@ fn a_dissected_factorization_finds_the_operating_point_within_tolerance() {
             .zip(&serial.values)
             .zip(&dissected.values)
         {
-            let absolute = if unknown.quantity.is_current() {
+            let absolute = if unknown.nature.is_current() {
                 options.current_tolerance
             } else {
                 options.voltage_tolerance

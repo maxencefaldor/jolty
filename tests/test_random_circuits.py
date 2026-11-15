@@ -58,7 +58,7 @@ def _spice_point(
         guesses = [
             f"{vector(circuit, unknown)}={float(value)!r}"
             for unknown, value in zip(start.unknowns, start.values, strict=True)
-            if unknown.quantity == "voltage" and unknown.name in shared
+            if unknown.nature == "voltage" and unknown.name in shared
         ]
         lines = [*lines, ".nodeset " + " ".join(guesses)]
     try:
@@ -73,9 +73,9 @@ def _spice_point(
 
 def _agrees(point: results.OperatingPointResult, spice: dict[str, float]) -> bool:
     """Whether jolty's operating point is ngspice's."""
-    quantities = {unknown.name: unknown.quantity for unknown in point.unknowns}
-    values = dict(zip(quantities, point.values, strict=True))
-    return not differing(values, spice, quantities)
+    natures = {unknown.name: unknown.nature for unknown in point.unknowns}
+    values = dict(zip(natures, point.values, strict=True))
+    return not differing(values, spice, natures)
 
 
 @SETTINGS
@@ -135,8 +135,8 @@ def test_frequency_responses_agree(circuit: ir.Circuit) -> None:
     spice = {
         unknown.name: raw.vectors[vector(circuit, unknown)] for _, unknown in shared
     }
-    quantities = {unknown.name: unknown.quantity for _, unknown in shared}
-    assert not differing(jolty, spice, quantities), "the responses differ"
+    natures = {unknown.name: unknown.nature for _, unknown in shared}
+    assert not differing(jolty, spice, natures), "the responses differ"
 
 
 type Waveforms = dict[str, Real]
@@ -187,7 +187,7 @@ def _excused(
     simulation: Simulation,
     jolty: Waveforms,
     times: Real,
-    quantities: Mapping[str, str],
+    natures: Mapping[str, str],
 ) -> str | None:
     """Why the engines' waveforms at `times`, jolty's being `jolty`, may differ, if so.
 
@@ -205,14 +205,14 @@ def _excused(
             return _stopped_short(simulation.circuit, step)
         if shorter is None:
             return "ngspice stopped short"
-        if not differing(*shorter[:2], quantities, 1e-3):
+        if not differing(*shorter[:2], natures, 1e-3):
             return "agree once both take shorter steps"
     step = STEP / SHORTENED[-1]
     try:
         finest = _jolty(simulation, step, times)
     except SimulationError:
         return _stopped_short(simulation.circuit, step)
-    if differing(finest, jolty, quantities, 1e-3):
+    if differing(finest, jolty, natures, 1e-3):
         return "a waveform that shorter steps move"
     return None
 
@@ -254,7 +254,7 @@ def test_transients_agree(circuit: ir.Circuit) -> None:
         # A mode that grows away from rest makes no waveform to agree on.
         event("an unstable operating point")
         return
-    quantities = {unknown.name: unknown.quantity for _, unknown in compared(simulation)}
+    natures = {unknown.name: unknown.nature for _, unknown in compared(simulation)}
     try:
         found = _transients(simulation, STEP)
     except SimulationError:
@@ -264,7 +264,7 @@ def test_transients_agree(circuit: ir.Circuit) -> None:
         event("ngspice stopped short")
         return
     jolty, spice, times = found
-    if differing(jolty, spice, quantities, 1e-3):
-        excuse = _excused(simulation, jolty, times, quantities)
+    if differing(jolty, spice, natures, 1e-3):
+        excuse = _excused(simulation, jolty, times, natures)
         assert excuse is not None, "the waveforms differ"
         event(excuse)

@@ -10,7 +10,7 @@ as ``V1:current``. [`jolty.results`][jolty.results] reads results by these names
 from dataclasses import dataclass
 from typing import Literal
 
-type Quantity = Literal["voltage", "current", "temperature", "state"]
+type Nature = Literal["voltage", "current", "temperature", "state"]
 """What an unknown is: a node's voltage, a branch's current, a thermal net's
 temperature above the ambient, in kelvins, or a device's dimensionless state, such as a
 memristor's."""
@@ -21,4 +21,4 @@ class Unknown:
     """An unknown solved for: a voltage, a current, a temperature or a state."""
 
     name: str
-    quantity: Quantity
+    nature: Nature

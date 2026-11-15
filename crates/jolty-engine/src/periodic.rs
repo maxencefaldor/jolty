@@ -154,7 +154,7 @@ impl Simulator {
             .zip(start.iter().zip(end))
             .map(|(unknown, (start, end))| {
                 options.relative_tolerance * start.abs().max(end.abs())
-                    + options.value_tolerance(unknown.quantity)
+                    + options.value_tolerance(unknown.nature)
             })
             .collect()
     }

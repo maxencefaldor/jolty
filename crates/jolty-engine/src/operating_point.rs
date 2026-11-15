@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
-use jolty_models::{Input, Level, Quantity};
+use jolty_models::{Input, Level, Nature};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
@@ -504,7 +504,7 @@ impl Simulator {
                     .unknowns
                     .iter()
                     .zip(&mut beside)
-                    .filter(|(unknown, _)| unknown.quantity == Quantity::Voltage);
+                    .filter(|(unknown, _)| unknown.nature == Nature::Voltage);
                 for (turn, (_, value)) in voltages.enumerate() {
                     let alternate = if turn % 2 == 0 { 1.0 } else { -1.0 };
                     *value += sign * alternate * NUDGE;
@@ -549,7 +549,7 @@ impl Simulator {
             .zip(first.iter().zip(second))
             .all(|(unknown, (a, b))| {
                 let tolerance = options.relative_tolerance * a.abs().max(b.abs())
-                    + options.value_tolerance(unknown.quantity);
+                    + options.value_tolerance(unknown.nature);
                 (a - b).abs() <= DISTINCT * tolerance
             })
     }
@@ -872,7 +872,7 @@ impl Simulator {
                             let magnitude = value.abs().max(before.abs());
                             (value - before).abs()
                                 <= options.relative_tolerance * magnitude
-                                    + options.value_tolerance(unknown.quantity)
+                                    + options.value_tolerance(unknown.nature)
                         },
                     );
                     last.copy_from_slice(values);

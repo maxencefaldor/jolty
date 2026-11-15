@@ -419,7 +419,7 @@ def test_a_sweep_of_a_parameter_names_it() -> None:
 
     levels = [1 * kohm, 2 * kohm, 4 * kohm]
     sweep = Simulation(divider()).run(DcSweep("R2", levels, parameter="resistance"))
-    assert (sweep.source, sweep.parameter, sweep.quantity) == ("R2", "resistance", None)
+    assert (sweep.source, sweep.parameter, sweep.nature) == ("R2", "resistance", None)
     # The divider's output, 5 V times R2 over R1 and R2, within a part in 10¹⁵.
     expected = [5 * lower / (1e3 + lower) for lower in (1e3, 2e3, 4e3)]
     assert sweep.voltage("out") == pytest.approx(expected, rel=1e-15)

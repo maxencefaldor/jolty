@@ -39,7 +39,7 @@ from jolty.unknowns import Unknown
 type Edge = Literal["rising", "falling", "either"]
 """Which way a signal crosses a level."""
 
-_DIMENSIONS: Final[dict[results.Quantity, Dimension]] = {
+_DIMENSIONS: Final[dict[results.Nature, Dimension]] = {
     "voltage": VOLTAGE,
     "current": CURRENT,
     "temperature": TEMPERATURE,
@@ -733,15 +733,15 @@ class _Signal:
                 there is a reference.
         """
         index = results.column(unknowns, self.name)
-        dimension = _DIMENSIONS[unknowns[index].quantity]
+        dimension = _DIMENSIONS[unknowns[index].nature]
         if self.reference is None:
             return (index, None), dimension
         base = results.column(unknowns, self.reference)
         for position in (index, base):
             unknown = unknowns[position]
-            if unknown.quantity != "voltage":
+            if unknown.nature != "voltage":
                 message = (
-                    f"{self} names the {unknown.quantity} {unknown.name}, not a voltage"
+                    f"{self} names the {unknown.nature} {unknown.name}, not a voltage"
                 )
                 raise MeasureError(message)
         return (index, base), dimension
@@ -979,10 +979,10 @@ def _axis(result: results.AnalysisResult, what: str) -> _Axis:
     match result:
         case results.TransientResult():
             return _Axis(TIME, "time")
-        case results.DcSweepResult() if result.quantity is None:
+        case results.DcSweepResult() if result.nature is None:
             return _Axis(None, f"value of {result.source}'s {result.parameter}")
         case results.DcSweepResult():
-            along = VOLTAGE if result.quantity == "voltage" else CURRENT
+            along = VOLTAGE if result.nature == "voltage" else CURRENT
             return _Axis(along, f"level of {result.source}")
         case _:
             message = f"{what} reads a transient or a DC sweep, not {_kind(result)}"
@@ -1041,10 +1041,10 @@ _POLES: Final[_Explainer] = {"no_poles": lambda _: "the circuit has no poles"}
 
 def _noise_unit(spectrum: results.NoiseResult, *, referred: bool) -> Dimension:
     """The unit of the noise's amplitude: the output's, or the input's if `referred`."""
-    quantity = spectrum.quantity
+    nature = spectrum.nature
     if referred and spectrum.input is not None:
-        quantity = spectrum.input.quantity
-    return VOLTAGE if quantity == "voltage" else CURRENT
+        nature = spectrum.input.nature
+    return VOLTAGE if nature == "voltage" else CURRENT
 
 
 _MALFORMED: Final[_Explainer] = {

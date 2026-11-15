@@ -131,7 +131,7 @@ class _Scope:
         solved = {
             unknown.name: float(value)
             for unknown, value in zip(point.unknowns, point.values, strict=True)
-            if unknown.quantity == "voltage"
+            if unknown.nature == "voltage"
         }
         return {net: solved[self.path(net)] for net in nets if self.path(net) in solved}
 

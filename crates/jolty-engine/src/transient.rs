@@ -1046,9 +1046,9 @@ impl Simulator {
             return false;
         }
         let (oldest, older) = (&history.ringing[0], &history.ringing[1]);
-        let quantities = &self.elaborated.quantities;
-        let inside = options.parallelism.inside(quantities.len());
-        !all(quantities.len(), inside, |index| {
+        let natures = &self.elaborated.natures;
+        let inside = options.parallelism.inside(natures.len());
+        !all(natures.len(), inside, |index| {
             let run = [
                 oldest[index],
                 older[index],
@@ -1056,7 +1056,7 @@ impl Simulator {
                 newest[index],
             ];
             let turns = [run[1] - run[0], run[2] - run[1], run[3] - run[2]];
-            let absolute = options.equation_tolerance(quantities[index]);
+            let absolute = options.equation_tolerance(natures[index]);
             let largest = run
                 .iter()
                 .fold(0.0_f64, |most, value| most.max(value.abs()));
@@ -1242,7 +1242,7 @@ impl Simulator {
         });
         let differences = self.filtered(differences, span.alpha, inside);
         let scale = options.truncation_tolerance * method.factorial();
-        let quantities = &self.elaborated.quantities;
+        let natures = &self.elaborated.natures;
         // Each charge's tolerances, on the charge and on the current it carries over the step,
         // times the truncation tolerance and the factorial SPICE's estimate leaves out. The
         // one on the charge is SPICE's, `reltol · max(|q|, chgtol)` (ngspice 47's
@@ -1253,7 +1253,7 @@ impl Simulator {
             let current = span.derivative.0[index]
                 .abs()
                 .max(span.derivative.1[index].abs());
-            let absolute_current = options.equation_tolerance(quantities[index]);
+            let absolute_current = options.equation_tolerance(natures[index]);
             let charge_tolerance =
                 options.relative_tolerance * charge.max(options.charge_tolerance);
             let current_tolerance =

@@ -24,9 +24,9 @@ def test_an_operating_point_lists_each_value() -> None:
         name="op",
         strategy="direct",
         values=(
-            report.Value(unknown="in", quantity="voltage", value=5.0),
-            report.Value(unknown="out", quantity="voltage", value=2.5),
-            report.Value(unknown="V1:current", quantity="current", value=-2.5e-3),
+            report.Value(unknown="in", nature="voltage", value=5.0),
+            report.Value(unknown="out", nature="voltage", value=2.5),
+            report.Value(unknown="V1:current", nature="current", value=-2.5e-3),
         ),
         unlisted=0,
     )
@@ -49,7 +49,7 @@ def test_a_transient_states_the_range_of_each_unknown() -> None:
     summary = report.report("step", waveforms, listed=2)
     assert isinstance(summary, report.TransientReport)
     assert summary.extents[1] == report.Extent(
-        unknown="out", quantity="voltage", first=0, minimum=0, maximum=0.9, last=0.9
+        unknown="out", nature="voltage", first=0, minimum=0, maximum=0.9, last=0.9
     )
     assert summary.describe() == (
         "step: transient to 2 µs in 2 steps, 1 rejected, "

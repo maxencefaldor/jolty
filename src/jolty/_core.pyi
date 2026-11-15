@@ -53,7 +53,7 @@ class DcSweepResult(Observed):
     kind: Literal["dc_sweep"]
     source: str
     parameter: str | None
-    quantity: Nature | None
+    nature: Nature | None
     levels: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
@@ -117,14 +117,14 @@ class StabilityResult(TypedDict):
 
 class NoiseInput(TypedDict):
     source: str
-    quantity: Nature
+    nature: Nature
     gains: npt.NDArray[np.complex128]
 
 class NoiseResult(TypedDict):
     kind: Literal["noise"]
     output: str
     reference: str | None
-    quantity: Nature
+    nature: Nature
     frequencies: npt.NDArray[np.float64]
     densities: npt.NDArray[np.float64]
     input: NoiseInput | None

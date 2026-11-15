@@ -9,7 +9,7 @@
 //! their densities add. The same weights give the gain from an input source's level, and
 //! the output's noise over the gain's square is the noise referred to that input.
 
-use jolty_models::{Input, Node, NoiseSource, Quantity};
+use jolty_models::{Input, Nature, Node, NoiseSource};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
@@ -43,7 +43,7 @@ pub struct NoiseResult {
     /// The node the output voltage is taken over, if not the reference node.
     pub reference: Option<String>,
     /// What the output is: a voltage, or a current.
-    pub quantity: Quantity,
+    pub nature: Nature,
     /// The operating point the circuit was linearized at.
     pub operating_point: OperatingPointResult,
     /// The frequencies, in hertz.
@@ -64,7 +64,7 @@ pub struct NoiseInput {
     /// The path of the source.
     pub source: String,
     /// What the source's level is: a voltage, or a current.
-    pub quantity: Quantity,
+    pub nature: Nature,
     /// The gain from the source's level to the output at each frequency.
     pub gains: Vec<Complex64>,
 }
@@ -133,7 +133,7 @@ impl Simulator {
     ) -> Result<NoiseResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
-            let (output, reference, quantity) =
+            let (output, reference, nature) =
                 self.measured(&noise.output, noise.reference.as_deref())?;
             let unknowns = self.elaborated.unknowns.len();
             let (mut input, level) = match &noise.source {
@@ -145,7 +145,7 @@ impl Simulator {
                         .excite(&self.elaborated.groups, index, &mut level);
                     let input = NoiseInput {
                         source: path.clone(),
-                        quantity: self.source_quantity(index),
+                        nature: self.source_nature(index),
                         gains: Vec::with_capacity(noise.frequencies.len()),
                     };
                     (Some(input), level)
@@ -209,7 +209,7 @@ impl Simulator {
             Ok(NoiseResult {
                 output: noise.output.clone(),
                 reference: noise.reference.clone(),
-                quantity,
+                nature,
                 operating_point,
                 frequencies: noise.frequencies.clone(),
                 densities,
