@@ -1036,7 +1036,7 @@ async def cost(request: CostRequest, settings: Settings) -> CostResult:
         raise JoltyError(error.args[0]) from None
 
 
-class KicadRequest(_Model):
+class ExportKicadRequest(_Model):
     """Write a saved circuit's top component, or an instance's, as a KiCad netlist.
 
     Each part of its bill of materials becomes a footprint, which its catalog part
@@ -1059,7 +1059,7 @@ class KicadRequest(_Model):
     )
 
 
-class KicadResult(CommandResult):
+class ExportKicadResult(CommandResult):
     """The KiCad netlist written, or what keeps the component off a board."""
 
     netlist: kicad.Netlist | None = Field(
@@ -1087,7 +1087,9 @@ class KicadResult(CommandResult):
         return f"wrote {self.path}: {self.netlist.describe()}"
 
 
-async def write_kicad(request: KicadRequest, settings: Settings) -> KicadResult:
+async def export_kicad(
+    request: ExportKicadRequest, settings: Settings
+) -> ExportKicadResult:
     """Writes a component of a saved circuit as a KiCad netlist; settings play no part.
 
     Raises:
@@ -1102,10 +1104,10 @@ async def write_kicad(request: KicadRequest, settings: Settings) -> KicadResult:
             kicad.netlist, circuit, parts, request.instance
         )
     except (ElaborationError, NetlistError) as error:
-        return KicadResult(problems=error.problems)
+        return ExportKicadResult(problems=error.problems)
     target = request.output or files.netlist_path(request.circuit, request.instance)
     await asyncio.to_thread(written.save, target)
-    return KicadResult(netlist=written, path=target)
+    return ExportKicadResult(netlist=written, path=target)
 
 
 def _load_catalog(path: Path) -> catalog.Catalog:

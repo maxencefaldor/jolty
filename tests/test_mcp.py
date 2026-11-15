@@ -75,11 +75,11 @@ def test_tools_mirror_the_service_requests() -> None:
         "merge_shards",
         "plot_results",
         "draw_schematic",
-        "write_viewer",
+        "view_circuit",
         "check_circuit",
-        "explain_rule",
-        "price_circuit",
-        "write_kicad_netlist",
+        "explain_rules",
+        "cost_circuit",
+        "export_kicad_netlist",
     }
     simulate = tools["simulate_circuit"]
     assert set(simulate.input_schema["properties"]) == {
@@ -110,7 +110,7 @@ def test_tools_mirror_the_service_requests() -> None:
         annotations = tools[name].annotations
         assert annotations is not None
         assert annotations.destructive_hint is True  # a script runs any Python
-    for name in ("check_circuit", "explain_rule", "price_circuit"):
+    for name in ("check_circuit", "explain_rules", "cost_circuit"):
         annotations = tools[name].annotations
         assert annotations is not None
         assert annotations.read_only_hint is True

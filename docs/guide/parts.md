@@ -76,14 +76,14 @@ An instance that names a part number, a device or a whole component instance suc
 Each other resistor, capacitor and inductor takes the cheapest part of its value whose tolerance is within its own, the tolerance its script gives it.
 No instance takes an obsolete part.
 An instance that states no tolerance, that comes from a lot, whose shared spread no part states, that no orderable part matches, or that is another device without a number, stays unpriced: the bill says why, the total leaves it out, and the command exits with 1.
-The MCP server's `price_circuit` tool does the same, and `jolty.catalog.bill` in Python.
+The MCP server's `cost_circuit` tool does the same, and `jolty.catalog.bill` in Python.
 
 ## Boards
 
-`jolty kicad` writes a saved circuit's top component, or the component at `--instance`, as a KiCad netlist, which KiCad's PCB editor imports with **File > Import > Netlist** to lay out its board:
+`jolty export-kicad` writes a saved circuit's top component, or the component at `--instance`, as a KiCad netlist, which KiCad's PCB editor imports with **File > Import > Netlist** to lay out its board:
 
 ```sh
-jolty kicad bench.jolty.json --catalog parts.json --instance X1
+jolty export-kicad bench.jolty.json --catalog parts.json --instance X1
 ```
 
 Each instance its [bill of materials](#bills-of-materials) prices becomes a footprint, its catalog part's, whose pads join the nets of the terminals its part's pins name.
@@ -95,7 +95,7 @@ Its identifier comes from its instance's path, so a footprint keeps it from one 
 
 The netlist is written only when every instance is placed, and otherwise the command lists what keeps each off the board and exits with 1: no part prices it, its part states no footprint, or its part's pins name a terminal it lacks or one on a thermal net, leave out one on an electrical net, or put a pad on two nets.
 The netlist is saved beside the circuit, as `bench.X1.net` here, unless `--output` says where.
-The MCP server's `write_kicad_netlist` tool does the same, and `jolty.kicad.netlist` in Python.
+The MCP server's `export_kicad_netlist` tool does the same, and `jolty.kicad.netlist` in Python.
 
 ## Preferred values
 
