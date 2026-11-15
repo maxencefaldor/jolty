@@ -2,6 +2,8 @@
 
 use jolty_numerics::{Pattern, PatternBuilder};
 
+mod cases;
+
 use crate::{
     BOLTZMANN, Binding, Contributions, Gradient, Groups, Input, Kernel, Model, Native, Node,
     NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, Runs, Unknown, UnknownInfo,
@@ -521,4 +523,32 @@ pub(crate) fn assert_close(actual: &[f64], expected: &[f64]) {
             .zip(expected)
             .all(|(a, e)| (a - e).abs() <= 1e-12 * a.abs().max(e.abs()));
     assert!(close, "{actual:?} differs from {expected:?}");
+}
+
+mod tests {
+    use super::{Bench, REFERENCE_TEMPERATURE, assert_bench_jacobians_match, cases};
+    use crate::Library;
+
+    /// Every analog model's conductances and capacitances are the derivatives of its
+    /// residuals and charges, at each case of it, as a central difference finds them.
+    #[test]
+    fn every_models_jacobian_is_the_derivative_of_its_residuals_and_charges() {
+        let library = Library::standard();
+        let analog: Vec<&str> = library
+            .names()
+            .filter(|name| library.get(name).is_some())
+            .collect();
+        assert_eq!(
+            cases::covered(),
+            analog,
+            "a case of every analog model, and no more"
+        );
+        for &(name, parameters, given) in cases::CASES {
+            let model = library.get(name).expect("a model of the library");
+            let mut bench = Bench::of(&**model, parameters, REFERENCE_TEMPERATURE)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let x = cases::values(given, bench.unknowns.len());
+            assert_bench_jacobians_match(&mut bench, name, &x);
+        }
+    }
 }
