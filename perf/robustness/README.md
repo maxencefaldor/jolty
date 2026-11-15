@@ -15,6 +15,7 @@ scripts/bench --robustness --timeout 60             # stop each run after 60 s r
 Each case runs in each simulator in a process of its own, which the timeout stops.
 The command prints each outcome as it comes, then the table of cases by simulator, each simulator's failure rates, and each outcome's detail, and writes them to `results/<commit>-robustness.json` beside the machine, each simulator's version and the timeout, unless `--output` names another file.
 It prints the load average as each case began; the corpus measures outcomes, and the times beside them are what one run took on a machine that may be shared.
+The results file stays out of the repository, as `.gitignore` says: jolty's messages quote the lines of the decks they are about, and the GPL's decks are never copied into it.
 
 ## Cases
 

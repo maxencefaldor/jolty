@@ -23,3 +23,7 @@ discovery/*/*.png
 
 # The 3D viewers the commands write; the gallery's are pages of the docs
 examples/*.view.html
+
+# The robustness corpus's results: their messages quote lines of third-party decks,
+# GPL among them, which the repository never holds
+perf/results/*-robustness.json

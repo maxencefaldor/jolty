@@ -319,7 +319,8 @@ class Ngspice:
             text=True,
         )
         lines = [line.strip("* ") for line in done.stdout.splitlines()]
-        return "; ".join(line for line in lines if line)
+        kept = [line for line in lines if line.startswith(("ngspice", "Compiled"))]
+        return "; ".join(kept)
 
     def run(self, case: Case, timeout: float) -> Run:
         """Runs `case` in ngspice, stopped after `timeout` seconds."""
