@@ -65,10 +65,13 @@ Each module imports only from the modules listed before it, and from those liste
 
 ## Conventions
 
+Where the code does not meet a convention yet, a change that touches that code brings it closer, never further.
+
 - **Tools:** use the standard, official, established tool in each category.
   That means uv, ruff, ty, rumdl, pytest with Hypothesis and pytest-xdist, pydantic and pydantic-settings, numpy for arrays, the official MCP SDK, matplotlib for plots, maturin with PyO3, cargo with clippy and proptest, criterion for Rust's benchmarks, faer for dense linear algebra, rayon for data parallelism, mimalloc as the Python extension's allocator, and `rand` with `rand_chacha` and `rand_distr` for random sampling.
 - **Dependencies:** a new one is the established choice in its category, is maintained, and has a license compatible with Apache-2.0.
   Nothing under the GPL is linked into jolty; a GPL tool runs only as a separate program.
+  A process kit or a third-party fixture is pinned and fetched with its digest, never copied into the repository.
 - **Format and lint:** ruff's default format at 88 columns, every ruff rule, every ty rule as an error, rustfmt, clippy's pedantic lints as errors, and Markdown one sentence per line.
   A rule is switched off for the whole code base only in `pyproject.toml` or `Cargo.toml`, or for Markdown's code blocks in `.rumdl.toml`, which rumdl alone reads them from, as narrowly as it can be, with its reason beside it.
   A single site is excused only by a suppression that names the rule and gives its reason beside it, such as `# noqa: S603 - reason` in Python or `#[expect(lint, reason = "...")]` in Rust, never a bare `allow`.
@@ -82,29 +85,47 @@ Each module imports only from the modules listed before it, and from those liste
 - **Circuit format:** a change to it bumps `jolty_ir::VERSION`, and a file of another version is refused with both versions named.
 - **Units:** quantities carry their dimension in Python, and every device constructor in `jolty.devices` checks the dimension of each parameter as it reads it.
   The circuit format, the engine and the results hold numbers in SI base units.
+  Every name and dimension a script, a plan or a spec uses is checked before the first analysis runs, and every user-facing number with a dimension is a quantity.
 - **Models:** a device model whose equations are not elementary names the paper, manual or datasheet they and its defaults come from.
   Every model is checked against that source, a closed form, or ngspice.
+  A model's reference is what defines it: for a CMC standard its Verilog-A release and QA tests, for SPICE3's models ngspice, otherwise its paper, manual or datasheet; a model takes a standard's name only once it passes that standard's QA tests.
+  Verilog-A is compiled into kernels, never loaded as foreign code.
+  A model derived from another's source carries that source's copyright notice and terms, in its documentation and in `NOTICE`.
+  A reactive model is a charge function `q(x)`, or its documentation says that it does not conserve charge.
 - **ngspice is a reference, not the truth:** jolty agrees with ngspice where ngspice is right, and goes beyond it where it is not, such as with exact derivatives, conserved charge and error control on every charge.
   Each departure is stated in the guide with its evidence, a line of ngspice's source or a measurement, and the differential tests compare everything but the departure, saying why.
 - **Knobs over opinions:** a choice that users could reasonably make otherwise, such as ngspice's own behaviour where it differs, is an option with a documented default, when it can be expressed cleanly.
   The default is the most accurate choice.
-- **Parallelism is a policy:** how a run spreads its work is an option, `Parallelism`, whose every field has a default; serial and fully parallel are two configurations of it.
+  An option named after SPICE's means SPICE's quantity, or the guide states where it differs.
+- **Parallelism is a policy:** how a run spreads its work is an option, `Parallelism`, whose every field has a default; serial and fully parallel are two configurations of it, and it changes no bits: a setting that reorders the arithmetic, such as the dissected factorization's interiors, is a numerical option.
   Each default is a measured break-even, stated in the guide with the machine it was measured on.
   A default may depend on the circuit, never on the number of threads, where it changes the bits.
 - **Determinism:** results are a pure function of the circuit, the plan, the sample index and the options: the same bits for any thread count, shard split or completion order, on the same build and platform.
   Floating-point sums run in a fixed order, random draws depend only on the seed and the sample index, and nothing depends on the order work finishes in.
+  Whatever a command reuses from an earlier one, a warm process, a cache or a session's state, gives a fresh run's bits and report.
+  The same bits on every platform is the aim: a kernel may choose its vector width at run time only if every lane computes alike, with no implicit fused multiply-add, and the elementary functions are to be jolty's own, correctly rounded.
 - **Kernels:** a device model is a pure function of one instance's prepared parameters, its memory and its local unknowns.
   It allocates nothing, never panics, and knows nothing of threads, batches or the global matrix.
   Clippy's `panic` and `indexing_slicing` lints are denied in the kernels' modules, and a test counts a kernel's allocations with `allocation-counter`.
+- **Exact before approximate:** speed comes first from exact means; an approximation, such as device bypass or multirate integration, is a knob a run opts into, never a default, and its results state their measured error.
+- **Sound numerics:** a step is accepted only once its Newton iteration has converged, and iteration limits are to follow from the iteration's observed convergence rather than a count.
+  A failure is named as mathematics: a fold, an impasse point, a singular structure, a divergence.
+- **Constants:** each constant of the engine, the models and the checks names where it comes from: a reference's line, a paper, a derivation or a measurement with its machine.
+  One that users could reasonably choose otherwise is an option, and a choice that a cost jolty can compute decides is decided by computing it.
+- **Claims are measured:** a claim of speed, accuracy, reliability, coverage or help to agents names its measurement: the suite, the fixture, the machine, the versions and the results file.
+  Accuracy is claimed only against an independent reference, a closed form, a manufactured solution or a computation by another method in higher precision, never against another simulator; a time is compared with another simulator's only where both found the same solution, with the error each reached; losses are reported with wins.
 - **Performance:** `scripts/bench` runs the benchmarks, the fixtures of `perf/` timed in Rust and in Python, and compares their times with a baseline's.
   A change that slows any of them by more than 5% says why in its pull request.
   The benchmarks stay out of `scripts/check`, which must stay fast and deterministic.
 - **One definition:** each command is a request model plus a function in `jolty.service`.
   The command line and the MCP server derive from it and never redefine arguments.
+  Each fact about a model, such as a parameter's name, SPICE name, dimension and default, or its terminals and SPICE letter, is declared once beside its kernel, and everything else derives from it or is tested against it.
+- **One way to do one job:** when a better way lands, it replaces the old everywhere in the change that brings it, or that change lists every place it leaves and a test fails until they move.
 - **Feedback is facts:** jolty tells the agent what is true about its circuit and never fixes it or says how to.
   A problem names the instance by its path and the script line that placed it.
   The engine reports every problem it finds, not only the first.
   A number in a message is exact, or says how it was estimated, such as to first order.
+  A computation the agent asks for, such as a requirement's derivative or an optimum over parameters it names, is a fact jolty states, never a choice it makes.
 - **Problems and rules:** a problem stops the engine from elaborating a circuit, such as a negative resistance, and always fails a build.
   A rule states a fact about a circuit that elaborates, such as a node with no DC path to the ground, at a level people configure.
 - **Rules, as in ty:** a rule's name is lowercase words joined by hyphens, and its level is `error`, `warn` or `ignore`.
@@ -114,6 +135,9 @@ Each module imports only from the modules listed before it, and from those liste
   A batch of runs plots their distribution, not each run.
   A schematic comes from the connections alone: a script holds no coordinates.
   Plots never put two quantities on one axis, and take their colors in a fixed order checked for color-vision deficiencies.
+- **For agents:** what an agent needs to use jolty reads offline from jolty itself, and the MCP instructions derive from the code.
+  Every response has a budget by default, images included; the complete data go to a file or come on request.
+  Every command can take its circuit and plan as data, not code.
 - **Scripts run in their own process** (`jolty.runner`), never in the command line or the MCP server: their output is captured, a timeout stops them, and a crash ends only the runner.
 - **Numbers in messages** are written in their shortest exact form, such as `-1e-9`; reports write them with SI prefixes, such as `-1 nV`.
 - **Tests:** the engine is checked against closed-form solutions, and by property tests of the laws every circuit obeys, such as Kirchhoff's current law.
@@ -122,6 +146,9 @@ Each module imports only from the modules listed before it, and from those liste
   The same random circuits must simulate the same however they are written (`tests/test_metamorphic.py`).
   The same circuits must simulate the same however many threads or shards run them (`tests/test_determinism.py`, `tests/test_shards.py`, `crates/jolty-engine/tests/determinism.rs`).
   The layout is checked by property tests over random circuits: nets never touch, and wires never cross a symbol.
+  A property every model or analysis must have is tested over the whole library, so a new one cannot be left out: a law suite of charge, polarity mirrors, symmetry, continuity and finite values among them.
+  Every error estimate is tested in each condition it is used in, such as each order and step ratio.
+  Every code block of the guide and the README runs in the tests, and every output they quote comes from a run.
   A bug fix comes with a test that fails without it.
   A test's tolerance says where it comes from, and is never loosened to let a change pass.
 
