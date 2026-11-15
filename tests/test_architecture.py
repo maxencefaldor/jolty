@@ -15,15 +15,12 @@ runs the command line.
 
 import ast
 import re
-import shutil
-import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import Final
 
-from pydantic import TypeAdapter
+from workspace import ROOT, crates
 
-ROOT: Final = Path(__file__).resolve().parent.parent
 PACKAGE: Final = ROOT / "src" / "jolty"
 
 _ITEM: Final = re.compile(r"1\. ((?:`[^`]+`, )*`[^`]+`): ")
@@ -94,48 +91,20 @@ def _breaks(order: Order, user: str, used: str) -> bool:
     return order[used] >= order[user]
 
 
-class _Dependency(TypedDict):
-    name: str
-    kind: str | None
-
-
-class _Crate(TypedDict):
-    name: str
-    dependencies: list[_Dependency]
-
-
-class _Metadata(TypedDict):
-    packages: list[_Crate]
-
-
-def _crates() -> list[_Crate]:
-    """The workspace's crates, as `cargo metadata` describes them."""
-    cargo = shutil.which("cargo")
-    assert cargo is not None, "cargo, which builds the engine, is not on the PATH"
-    described = subprocess.run(  # noqa: S603 - cargo, reading the workspace's manifests
-        [cargo, "metadata", "--format-version", "1", "--no-deps", "--offline"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return TypeAdapter(_Metadata).validate_json(described.stdout)["packages"]
-
-
 def test_agents_md_lists_every_crate_once() -> None:
     listed = [name for names in CRATE_LINES for name in names]
-    assert set(listed) == {crate["name"] for crate in _crates()}
+    assert set(listed) == {crate["name"] for crate in crates(dependencies=False)}
     assert len(set(listed)) == len(listed), "a crate is listed twice"
 
 
 def test_each_crate_depends_only_on_the_crates_listed_before_it() -> None:
-    crates = _crates()
-    workspace = {crate["name"] for crate in crates}
+    members = crates(dependencies=False)
+    workspace = {crate["name"] for crate in members}
     broken = [
         f"{_layer(crate['name'], CRATES)} depends on "
         f"{_layer(dependency['name'], CRATES)}"
         + ("" if dependency["kind"] is None else f" for {dependency['kind']}")
-        for crate in crates
+        for crate in members
         for dependency in crate["dependencies"]
         if dependency["name"] in workspace
         and _breaks(CRATES, crate["name"], dependency["name"])

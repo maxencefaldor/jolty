@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly on main as well, so that an advisory published against a locked dependency
+  # fails a run though nothing was pushed.
+  schedule:
+    - cron: "0 6 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -34,10 +38,10 @@ jobs:
       - name: Install Python, which PyO3 builds against
         run: uv python install
       - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-deny, which checks the dependencies' licences
+      - name: Install cargo-audit, which checks the crates against RustSec's advisories
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-audit
       - name: Check
         run: scripts/check rust
 
@@ -88,3 +92,70 @@ jobs:
           brew install ngspice
       - name: Check
         run: scripts/check free-threaded
+
+  coverage:
+    name: Coverage of the Rust and Python tests, reported, never checked
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      JOLTY_REQUIRE_NGSPICE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - name: Install Python, which PyO3 builds against
+        run: uv python install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install llvm-tools, with which cargo-llvm-cov reads the profiles
+        run: |
+          rustup toolchain install
+          rustup component add llvm-tools
+      - name: Install cargo-llvm-cov, which measures Rust's coverage
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Install ngspice, the reference simulator of the differential tests
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          dirname "$(command -v brew)" >> "$GITHUB_PATH"
+          brew install ngspice
+      - name: Measure
+        run: scripts/coverage
+      - name: Keep the reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: |
+            target/coverage/*.lcov
+            target/coverage/rust
+            target/coverage/python
+
+  mutants:
+    name: Mutants of the change, reported, never checked
+    # A change is a push or a pull request; cedar is to run every mutant weekly.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Install Python, which PyO3 builds against
+        run: uv python install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-mutants, which mutates the code the change touches
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: Mutate
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: scripts/mutants "$BASE"
+      - name: Keep the outcomes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutants
+          path: mutants.out

@@ -31,6 +31,7 @@ Issues = "https://github.com/maxencefaldor/jolty/issues"
 
 [dependency-groups]
 dev = [
+    "coverage>=7.17.3",
     "hypothesis",
     "maturin",
     "mcp>=2.1",
@@ -140,6 +141,15 @@ extra-paths = [
     "benchmarks/precision",
     "benchmarks/coverage",
 ]
+
+# coverage.py, which scripts/coverage runs the Python tests under: the package's lines
+# and branches, in every process the tests start, pytest-xdist's workers and the scripts
+# jolty.runner runs among them, each writing a data file of its own until combined.
+[tool.coverage.run]
+source_pkgs = ["jolty"]
+branch = true
+parallel = true
+patch = ["subprocess"]
 
 [tool.pytest]
 testpaths = ["src", "tests"]
