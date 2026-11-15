@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly on main as well, so that an advisory published against a locked dependency
+  # fails a run though nothing was pushed.
+  schedule:
+    - cron: "0 6 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -34,6 +38,10 @@ jobs:
       - name: Install Python, which PyO3 builds against
         run: uv python install
       - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit, which checks the crates against RustSec's advisories
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Check
         run: scripts/check rust
 

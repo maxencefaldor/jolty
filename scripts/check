@@ -4,15 +4,17 @@
 # Every check a change must pass, exactly as CI runs them.
 #
 #   scripts/check            every group, as the pre-push hook runs it
-#   scripts/check rust       Rust format, lints and tests
-#   scripts/check python     Python format, lints, types, Markdown, tests and examples
+#   scripts/check rust       Rust format, lints, advisories and tests
+#   scripts/check python     Python advisories, format, lints, types, Markdown, tests and
+#                            examples
 #   scripts/check free-threaded   the Python tests on free-threaded Python, without the GIL
 #   scripts/check docs       the generated reference pages and the documentation site
 #
 # CI runs each group in a job of its own, the Rust and Python groups on Linux and on
 # macOS, after installing what the group needs, so a change that passes here passes
 # there. The Python group's differential tests run when ngspice is installed; without
-# it they skip, or fail where JOLTY_REQUIRE_NGSPICE=1, as CI sets.
+# it they skip, or fail where JOLTY_REQUIRE_NGSPICE=1, as CI sets. The advisories are
+# fetched from the network.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -23,11 +25,18 @@ check_rust() {
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --locked -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+    # The crates of Cargo.lock against RustSec's advisories, fetched afresh: a known
+    # vulnerability fails; an unmaintained, unsound or yanked crate is printed.
+    cargo audit
     cargo test --workspace --locked
 }
 
 check_python() {
     uv sync --locked
+    # Every package of uv.lock, of every group, against OSV's advisories and PyPI's
+    # project statuses, such as a quarantine: a known vulnerability fails. The command
+    # is in preview, which the flag acknowledges.
+    uv audit --locked --preview-features audit-command
     uv run --locked ruff format --check
     uv run --locked ruff check
     uv run --locked ty check
