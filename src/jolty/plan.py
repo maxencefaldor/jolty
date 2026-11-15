@@ -20,14 +20,17 @@ Examples:
 
 import decimal
 import itertools
+import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Final, Literal
 
 from pydantic import JsonValue
 
+from jolty import _core
 from jolty.units import (
     FREQUENCY,
     TEMPERATURE,
@@ -401,6 +404,22 @@ class Parallelism:
         """The thresholds in the engine's format, without those left to defaults."""
         values = {setting.name: getattr(self, setting.name) for setting in fields(self)}
         return {name: value for name, value in values.items() if value is not None}
+
+
+DEFAULTS: Final[Mapping[str, float]] = MappingProxyType(
+    {
+        name: value
+        for name, value in json.loads(_core.default_options()).items()
+        if isinstance(value, int | float) and not isinstance(value, bool)
+    }
+)
+"""The engine's default of each numerical option of [`Options`][jolty.plan.Options], by
+name, SPICE's: what an option left unset takes, as the engine defines it.
+
+Examples:
+    >>> DEFAULTS["charge_tolerance"]
+    1e-14
+"""
 
 
 @dataclass(frozen=True, slots=True)

@@ -50,7 +50,7 @@ from matplotlib.ticker import EngFormatter, FuncFormatter
 from pydantic import BaseModel, Field, JsonValue
 from pydantic_settings import CliPositionalArg, SettingsConfigDict
 
-from jolty import circuit, cli, ir, plots, results
+from jolty import circuit, cli, foundry, ir, plan, plots, results
 from jolty.errors import JoltyError
 from jolty.plan import Ac, DcSweep, Noise, Options, PoleZero, Transient
 from jolty.simulate import Elaborated, Simulation
@@ -73,21 +73,18 @@ RELATIVE_TOLERANCES: Final = tuple(10 ** (-2 - step / 4) for step in range(25))
 """The relative tolerances each sweep runs: 1e-2 to 1e-8 in quarter decades, as the
 IVP test set's diagrams sweep theirs (Lioen and de Swart, 1998)."""
 
-DEFAULTS: Final = {
-    "relative_tolerance": 1e-3,
-    "voltage_tolerance": 1e-6,
-    "current_tolerance": 1e-12,
-    "charge_tolerance": 1e-14,
-}
-"""The tolerances' defaults, SPICE's own, jolty's and ngspice's alike: the guide's
-table of options, and ngspice's manual on ``.options``."""
+TOLERANCES: Final = (
+    "relative_tolerance",
+    "voltage_tolerance",
+    "current_tolerance",
+    "charge_tolerance",
+)
+"""The tolerances the scaled sweep scales together."""
 
-SPICE_NAMES: Final = {
-    "relative_tolerance": "reltol",
-    "voltage_tolerance": "vntol",
-    "current_tolerance": "abstol",
-    "charge_tolerance": "chgtol",
-}
+DEFAULTS: Final = {name: plan.DEFAULTS[name] for name in TOLERANCES}
+"""The tolerances' defaults, the engine's, SPICE's own, which ngspice's are too."""
+
+SPICE_NAMES: Final = {name: foundry.SPICE_OPTIONS[name] for name in TOLERANCES}
 """ngspice's name of each tolerance."""
 
 STATISTICS: Final = {
@@ -672,13 +669,6 @@ COLORS: Final = {
 STYLES: Final = {Sweep.RELTOL: "-", Sweep.SCALED: "--"}
 """Each sweep's line: solid for the relative tolerance alone, dashed for all scaled."""
 
-SURFACE: Final = "#fcfcfb"
-INK: Final = "#0b0b0b"
-MUTED: Final = "#52514e"
-GRID: Final = "#e4e3df"
-"""The surface, ink, muted ink and grid of jolty's plots, as the gallery draws its
-own."""
-
 
 def draw(document: Document, directory: Path) -> None:
     """Draws each fixture's diagram into `directory`, and writes the table at defaults.
@@ -706,7 +696,7 @@ def diagram(name: str, measured: Measured, document: Document) -> Figure:
         figsize=(4.2 * len(measured.quantities) + 1.8, 4.2),
         dpi=150,
         layout="constrained",
-        facecolor=SURFACE,
+        facecolor=plots.SURFACE,
     )
     machine = document.machine
     cpu = machine.get("cpu", "") if isinstance(machine, dict) else ""
@@ -715,7 +705,7 @@ def diagram(name: str, measured: Measured, document: Document) -> Figure:
         f"{name}: correct digits against engine time\n{cpu}, each time the median "
         f"of {document.repeats} runs,\nat a load average of {min(loads):.1f} to "
         f"{max(loads):.1f}; commit {document.commit[:7]}",
-        color=INK,
+        color=plots.INK,
         x=0.02,
         ha="left",
         fontsize=9,
@@ -778,7 +768,7 @@ def _panel(axes: Axes, quantity: Quantity, runs: Sequence[Run]) -> None:
     if limits:
         axes.axhline(
             min(limits),
-            color=MUTED,
+            color=plots.MUTED,
             linewidth=0.8,
             linestyle=":",
             label="the exact answer's own digits",
@@ -790,18 +780,20 @@ def _panel(axes: Axes, quantity: Quantity, runs: Sequence[Run]) -> None:
         markersize=9,
         markerfacecolor="none",
         markeredgewidth=1.6,
-        color=MUTED,
+        color=plots.MUTED,
         linestyle="none",
         label="defaults",
     )
     axes.set_xscale("log")
     axes.xaxis.set_major_formatter(EngFormatter(unit="s", sep=" "))
     axes.xaxis.set_minor_formatter(FuncFormatter(_minor))
-    axes.tick_params(axis="x", which="minor", labelsize=6, labelcolor=MUTED)
-    axes.set_xlabel("engine time", color=MUTED)
-    axes.set_ylabel(f"correct digits of {quantity.name}, {quantity.score}", color=MUTED)
-    axes.set_facecolor(SURFACE)
-    axes.grid(visible=True, color=GRID, linewidth=0.6)
+    axes.tick_params(axis="x", which="minor", labelsize=6, labelcolor=plots.MUTED)
+    axes.set_xlabel("engine time", color=plots.MUTED)
+    axes.set_ylabel(
+        f"correct digits of {quantity.name}, {quantity.score}", color=plots.MUTED
+    )
+    axes.set_facecolor(plots.SURFACE)
+    axes.grid(visible=True, color=plots.GRID, linewidth=0.6)
     axes.set_axisbelow(True)
     for side in ("top", "right"):
         axes.spines[side].set_visible(False)

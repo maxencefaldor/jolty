@@ -48,7 +48,7 @@ from jolty.units import CURRENT, FREQUENCY, TIME, VOLTAGE, Quantity
 STRATEGY: Final = "ngspice"
 """The strategy of an operating point ngspice found."""
 
-_OPTIONS: Final = {
+SPICE_OPTIONS: Final = {
     "relative_tolerance": "reltol",
     "voltage_tolerance": "vntol",
     "current_tolerance": "abstol",
@@ -58,6 +58,8 @@ _OPTIONS: Final = {
     "transient_iterations": "itl4",
     "truncation_tolerance": "trtol",
 }
+"""ngspice's ``.options`` name of each option of [`Options`][jolty.plan.Options] it
+reads alike, by the option's name."""
 """ngspice's name of each of jolty's options."""
 
 _METHODS: Final = {
@@ -434,8 +436,8 @@ def _readable(
 def _options(options: Options, analysis: Analysis) -> str:
     """The options line ngspice reads: the plan's options, and a transient's method."""
     given = [
-        f"{_OPTIONS[name]}={value!r}"
-        for name, value in ((name, getattr(options, name)) for name in _OPTIONS)
+        f"{SPICE_OPTIONS[name]}={value!r}"
+        for name, value in ((name, getattr(options, name)) for name in SPICE_OPTIONS)
         if value is not None
     ]
     if isinstance(analysis, Transient):

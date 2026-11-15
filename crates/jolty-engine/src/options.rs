@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use jolty_models::Quantity;
 use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 
 use crate::SimulationError;
@@ -15,7 +15,7 @@ pub(crate) const NUMBERS_PER_GIB: f64 = 134_217_728.0;
 ///
 /// In JSON, every instance is the string `"all"`, and some instances an object with one
 /// key, such as `{"instances": ["M1", "X1"]}`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Record {
     /// Every device, and the terminals of every component instance and logic device.
@@ -60,7 +60,7 @@ impl Record {
 /// for every thread of its pool. Spreading work costs the time of waking threads, which a
 /// small run's work does not repay, so each kind of work spreads only once its threshold
 /// is set: none is by default, and a run does all its work on its own thread.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Parallelism {
     /// The most threads a run spreads its own work over; none for every thread of the pool
@@ -232,7 +232,7 @@ pub(crate) struct Inside;
 /// results record.
 ///
 /// The defaults are SPICE's, so results compare with SPICE simulators run at their defaults.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Options {
     /// The tolerance on every unknown and residual, relative to its magnitude; default 1e-3.

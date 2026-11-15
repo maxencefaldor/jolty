@@ -939,6 +939,14 @@ fn analog<'a>(library: &'a Library, name: &str) -> PyResult<&'a Arc<dyn Model>> 
         .ok_or_else(|| PyValueError::new_err(format!("no model is named `{name}`")))
 }
 
+/// The engine's default options, SPICE's, as the JSON object its runs read their options
+/// from: every option jolty.plan.Options sets has its default here alone.
+#[pyfunction]
+fn default_options() -> PyResult<String> {
+    serde_json::to_string(&Options::default())
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
 /// The name of every model, analog and logic, in alphabetical order.
 #[pyfunction]
 fn models() -> Vec<&'static str> {
@@ -1117,6 +1125,7 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(constant, module)?)?;
     module.add_function(wrap_pyfunction!(expression_tree, module)?)?;
     module.add_function(wrap_pyfunction!(defaulted, module)?)?;
+    module.add_function(wrap_pyfunction!(default_options, module)?)?;
     module.add_function(wrap_pyfunction!(models, module)?)?;
     module.add_function(wrap_pyfunction!(schema, module)?)?;
     module.add_function(wrap_pyfunction!(mantissas, module)?)?;

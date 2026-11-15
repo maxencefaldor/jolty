@@ -61,10 +61,14 @@ MAX_SERIES: Final = len(COLORS)
 _LABELED: Final = 4
 """The most series a panel labels at their end, beside its legend."""
 
-_SURFACE: Final = "#fcfcfb"
-_INK: Final = "#0b0b0b"
-_MUTED: Final = "#52514e"
-_GRID: Final = "#e4e3df"
+SURFACE: Final = "#fcfcfb"
+"""The surface jolty's plots are drawn on."""
+INK: Final = "#0b0b0b"
+"""The ink of their titles and text."""
+MUTED: Final = "#52514e"
+"""The muted ink of their axes' labels and reference lines."""
+GRID: Final = "#e4e3df"
+"""Their grid's color."""
 _UNITS: Final = {"voltage": "V", "current": "A", "temperature": "K", "state": ""}
 
 type Plotted = (
@@ -214,7 +218,7 @@ def _loop(name: str, result: results.LoopGain) -> Figure:
     phases = np.degrees(np.unwrap(np.angle(gains)))
     _draw(phase, frequencies, [(label, color, phases)], "phase", "°")
     for axes, level in ((magnitude, 0.0), (phase, -180.0)):
-        axes.axhline(level, color=_MUTED, linewidth=0.8, linestyle="--")
+        axes.axhline(level, color=MUTED, linewidth=0.8, linestyle="--")
         axes.set_xscale("log")
     _label_abscissa(phase, result, "Hz")
     return figure
@@ -287,11 +291,11 @@ def _poles_zeros(name: str, result: results.PolesZeros) -> Figure:
             color=color,
             label=label,
         )
-    axes.axhline(0.0, color=_MUTED, linewidth=0.8, linestyle="--")
+    axes.axhline(0.0, color=MUTED, linewidth=0.8, linestyle="--")
     axes.set_xscale("log")
     legend = axes.legend(loc="best", frameon=False, fontsize=8)
     for text in legend.get_texts():
-        text.set_color(_INK)
+        text.set_color(INK)
     _label_abscissa(axes, result, "Hz")
     return figure
 
@@ -305,9 +309,9 @@ def _figure(name: str, result: Plotted, panels: int) -> tuple[Figure, list[Axes]
         figsize=(8, 0.8 + 2.4 * max(panels, 1)),
         dpi=150,
         layout="constrained",
-        facecolor=_SURFACE,
+        facecolor=SURFACE,
     )
-    figure.suptitle(f"{name}: {_describe(result)}", color=_INK, x=0.02, ha="left")
+    figure.suptitle(f"{name}: {_describe(result)}", color=INK, x=0.02, ha="left")
     figure.subplots(max(panels, 1), 1, sharex=True, squeeze=False)
     return figure, figure.axes
 
@@ -315,7 +319,7 @@ def _figure(name: str, result: Plotted, panels: int) -> tuple[Figure, list[Axes]
 def _label_abscissa(axes: Axes, result: Plotted, unit: str) -> None:
     """Labels the abscissa of `axes`, the bottom panel, for `result`, in `unit`."""
     axes.xaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
-    axes.set_xlabel(_abscissa_label(result), color=_MUTED)
+    axes.set_xlabel(_abscissa_label(result), color=MUTED)
 
 
 def _steps(
@@ -392,11 +396,11 @@ def histograms(name: str, batch: files.Batch) -> Figure:
         figsize=(8, 0.8 + 2.4 * max(len(found.measurements), 1)),
         dpi=150,
         layout="constrained",
-        facecolor=_SURFACE,
+        facecolor=SURFACE,
     )
     figure.suptitle(
         f"{name}: {found.runs} runs, each measurement's values",
-        color=_INK,
+        color=INK,
         x=0.02,
         ha="left",
     )
@@ -420,7 +424,7 @@ def histograms(name: str, batch: files.Batch) -> Figure:
             )
         for bound in batch.bounds[place]:
             if bound is not None:
-                axes.axvline(bound, color=_MUTED, linewidth=0.8, linestyle="--")
+                axes.axvline(bound, color=MUTED, linewidth=0.8, linestyle="--")
         _style(axes, "runs")
         unread = found.runs - measured.size
         missing = f", {unread} read none" if unread else ""
@@ -434,10 +438,10 @@ def histograms(name: str, batch: files.Batch) -> Figure:
             if count
         )
         axes.set_title(
-            f"{requirement}{missing}{infinite}", color=_INK, fontsize=9, loc="left"
+            f"{requirement}{missing}{infinite}", color=INK, fontsize=9, loc="left"
         )
         if symbol in {"dB", "°", "%"}:
-            axes.set_xlabel(symbol, color=_MUTED)
+            axes.set_xlabel(symbol, color=MUTED)
         elif symbol:
             axes.xaxis.set_major_formatter(EngFormatter(unit=symbol, sep=" "))
     return figure
@@ -458,12 +462,12 @@ def envelope(name: str, traced: results.Traced) -> Figure:
         figsize=(8, 0.8 + 2.4 * max(panels, 1)),
         dpi=150,
         layout="constrained",
-        facecolor=_SURFACE,
+        facecolor=SURFACE,
     )
     runs = int(traced.values.shape[0])
     figure.suptitle(
         f"{name}: {traced.analysis}, the least, median and greatest of {runs} runs",
-        color=_INK,
+        color=INK,
         x=0.02,
         ha="left",
     )
@@ -519,7 +523,7 @@ def envelope(name: str, traced: results.Traced) -> Figure:
         "level": f"{traced.source} {traced.parameter or traced.quantity}",
         "point": "",
     }[traced.along]
-    axes[-1].set_xlabel(along, color=_MUTED)
+    axes[-1].set_xlabel(along, color=MUTED)
     return figure
 
 
@@ -552,7 +556,7 @@ def _band(
     if len(series) > 1:
         legend = axes.legend(loc="best", frameon=False, fontsize=8)
         for text in legend.get_texts():
-            text.set_color(_INK)
+            text.set_color(INK)
 
 
 def save(figure: Figure, path: Path) -> None:
@@ -621,7 +625,7 @@ def _draw(
     if len(series) > 1:
         legend = axes.legend(loc="best", frameon=False, fontsize=8)
         for text in legend.get_texts():
-            text.set_color(_INK)
+            text.set_color(INK)
     if len(series) <= _LABELED:
         _label_ends(
             axes, [(name, color, float(values[-1])) for name, color, values in series]
@@ -630,16 +634,16 @@ def _draw(
 
 def _style(axes: Axes, label: str) -> None:
     """Gives `axes` its surface, its grid and its spines, and labels it `label`."""
-    axes.set_facecolor(_SURFACE)
-    axes.set_ylabel(label, color=_MUTED)
-    axes.grid(visible=True, color=_GRID, linewidth=0.6)
+    axes.set_facecolor(SURFACE)
+    axes.set_ylabel(label, color=MUTED)
+    axes.grid(visible=True, color=GRID, linewidth=0.6)
     axes.set_axisbelow(True)
     for side in ("top", "right"):
         axes.spines[side].set_visible(False)
     for side in ("left", "bottom"):
-        axes.spines[side].set_color(_MUTED)
+        axes.spines[side].set_color(MUTED)
         axes.spines[side].set_linewidth(0.6)
-    axes.tick_params(colors=_MUTED, labelsize=8)
+    axes.tick_params(colors=MUTED, labelsize=8)
 
 
 def _label_ends(axes: Axes, ends: list[tuple[str, str, float]]) -> None:
@@ -678,7 +682,7 @@ def _label_ends(axes: Axes, ends: list[tuple[str, str, float]]) -> None:
             height,
             name,
             transform=axes.transAxes,
-            color=_INK,
+            color=INK,
             fontsize=8,
             va="center",
         )
