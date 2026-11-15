@@ -330,6 +330,19 @@ def test_an_area_scales_the_defaults_a_card_leaves_out() -> None:
     assert read["J1"]["transconductance_parameter"] == pytest.approx(4e-4)
 
 
+@pytest.mark.parametrize("name", ["vaf", "var", "ikf", "ikr", "irb", "vtf"])
+def test_a_bipolar_parameter_infinite_at_zero_reads_as_infinite(name: str) -> None:
+    # ngspice takes each as infinite where it is 0 (bjttemp.c:51-54 and 83-99,
+    # bjtload.c:620), as jolty's default is: the card reads as one without it.
+    card = f".model q npn bf=100 rb=10 tf=1n xtf=1 {name}=0\n"
+    parts = library(card + ".subckt one c b\nQ1 c b 0 q\nV1 c 0 5\nV2 b 0 0.7\n.ends")
+    bare = library(card.replace(f"{name}=0", "") + ".subckt one c b\nQ1 c b 0 q\n.ends")
+    read = parts.component("one").definition.instances[0].parameters
+    assert read == bare.component("one").definition.instances[0].parameters
+    point = Simulation(parts.component("one")).run(OperatingPoint())
+    assert point.current("V1") < 0
+
+
 def test_a_table_source_holds_beyond_its_ends() -> None:
     parts = library(".subckt clamp in out\nE1 out 0 TABLE {V(in)} = (0,0) (1,2)\n.ends")
     part = parts.component("clamp")

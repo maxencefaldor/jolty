@@ -430,6 +430,13 @@ where a card gives it below that, and divides by the area."""
 VBIC_LEAST_RESISTANCE: Final = 0.01
 """The least resistance ngspice's VBIC takes from a card, in ohms, its ``R_MIN``."""
 
+BIPOLAR_INFINITE_AT_ZERO: Final = frozenset(
+    {"vaf", "va", "var", "vb", "ikf", "ik", "ikr", "irb", "vtf"}
+)
+"""A Gummel-Poon card's parameters that ngspice takes as infinite where they are 0:
+the Early voltages and knee currents (``bjttemp.c:83-99``), the base resistance's
+current (``bjtload.c:620``) and the transit time's voltage (``bjttemp.c:51-54``)."""
+
 VBIC_INFINITE_AT_ZERO: Final = frozenset(
     {"vo", "v0", "vef", "ver", "ikf", "ikr", "ikp", "vtf", "vbbe"}
 )
@@ -870,7 +877,8 @@ def _bipolar(
     """A bipolar transistor's parameters, from its model card and its instance's.
 
     The transistor has a substrate, as in SPICE: an NPN is vertical and a PNP lateral,
-    unless ``SUBS`` builds it otherwise.
+    unless ``SUBS`` builds it otherwise. A parameter ngspice takes as infinite where
+    it is 0 is left out there, to the engine's infinite default.
 
     Raises:
         SpiceError: When a parameter has no jolty counterpart.
@@ -879,6 +887,11 @@ def _bipolar(
     if construction not in CONSTRUCTIONS:
         message = f"`SUBS` is 1 or -1, not {construction!r}"
         raise statement.fail(message)
+    values = {
+        name: value
+        for name, value in values.items()
+        if name not in BIPOLAR_INFINITE_AT_ZERO or value != 0
+    }
     area = instance.get("area", 1.0) * instance.get("m", 1.0)
     multiplied = (
         *("is", "ikf", "ik", "ikr", "ise", "isc", "itf", "cje", "cjc", "irb"),
