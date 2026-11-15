@@ -185,10 +185,10 @@ class Library:
     ) -> ModelCard | None:
         """The bin of the model `name` an `instance` takes, as ngspice selects it.
 
-        A bin is a BSIM3 card named `name` then a dot and a whole number, which holds
-        the instance's length and width, both given on its element, as
-        [`holds`][jolty.spice.models.holds] says; the last defined is taken first, in a
-        subcircuit's body, then globally.
+        A bin is a BSIM3 card named `name` then a dot and a whole number whose
+        ``LMIN`` to ``LMAX`` holds the instance's length and ``WMIN`` to ``WMAX`` its
+        width, both given on its element, a bound counted in; the last defined is taken
+        first, in a subcircuit's body, then globally.
         """
         if "l" not in instance or "w" not in instance:
             return None
