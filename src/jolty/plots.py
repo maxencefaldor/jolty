@@ -22,7 +22,7 @@ Examples:
     >>> from jolty import results
     >>> unknowns = (results.Unknown("out", "voltage"),)
     >>> statistics = results.Statistics("direct", 1, 0, 0, 2)
-    >>> step = results.Waveforms(
+    >>> step = results.TransientResult(
     ...     unknowns, np.array([0.0, 1e-6]), np.array([[0.0], [1.0]]), statistics
     ... )
     >>> figure = plot("step", step, default_probes(unknowns))
@@ -72,12 +72,12 @@ GRID: Final = "#e4e3df"
 _UNITS: Final = {"voltage": "V", "current": "A", "temperature": "K", "state": ""}
 
 type Plotted = (
-    results.Sweep
-    | results.Response
-    | results.Waveforms
-    | results.LoopGain
-    | results.NoiseSpectrum
-    | results.PolesZeros
+    results.DcSweepResult
+    | results.AcResult
+    | results.TransientResult
+    | results.StabilityResult
+    | results.NoiseResult
+    | results.PoleZeroResult
 )
 """A result a plot draws; an operating point has no axis to draw along."""
 
@@ -120,11 +120,11 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
         JoltyError: When a probe names no unknown, or there are more than
             [`MAX_SERIES`][jolty.plots.MAX_SERIES] probes.
     """
-    if isinstance(result, results.LoopGain):
+    if isinstance(result, results.StabilityResult):
         return _loop(name, result)
-    if isinstance(result, results.NoiseSpectrum):
+    if isinstance(result, results.NoiseResult):
         return _noise(name, result)
-    if isinstance(result, results.PolesZeros):
+    if isinstance(result, results.PoleZeroResult):
         return _poles_zeros(name, result)
     if len(probes) > MAX_SERIES:
         message = f"a plot draws at most {MAX_SERIES} unknowns, not {len(probes)}"
@@ -132,12 +132,12 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
     groups, columns = _grouped(result, probes)
     quantities = list(groups)
     panels = (
-        2 * len(quantities) if isinstance(result, results.Response) else len(quantities)
+        2 * len(quantities) if isinstance(result, results.AcResult) else len(quantities)
     )
     figure, axes = _figure(name, result, panels)
     colors = {probe: COLORS[index] for index, probe in enumerate(probes)}
     x, x_unit = _abscissa(result)
-    if isinstance(result, results.Response):
+    if isinstance(result, results.AcResult):
         for index, quantity in enumerate(quantities):
             phasors = [
                 (probe, colors[probe], result.values[:, columns[probe]])
@@ -174,7 +174,7 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
 
 
 def _grouped(
-    result: results.Sweep | results.Response | results.Waveforms,
+    result: results.DcSweepResult | results.AcResult | results.TransientResult,
     probes: Sequence[str],
 ) -> tuple[dict[_Quantity, list[str]], dict[str, int]]:
     """The `probes` by quantity, each quantity that has one, and each unknown's column.
@@ -182,7 +182,7 @@ def _grouped(
     Raises:
         JoltyError: When a probe names neither an unknown nor a logic net.
     """
-    nets = () if isinstance(result, results.Response) else result.nets
+    nets = () if isinstance(result, results.AcResult) else result.nets
     columns = {}
     groups: dict[_Quantity, list[str]] = {
         "voltage": [],
@@ -203,7 +203,7 @@ def _grouped(
     return {quantity: found for quantity, found in groups.items() if found}, columns
 
 
-def _loop(name: str, result: results.LoopGain) -> Figure:
+def _loop(name: str, result: results.StabilityResult) -> Figure:
     """The Bode plot of a loop gain, against 0 dB and -180°, where its margins are read.
 
     Its frequencies are the positive ones, increasing, as a log axis needs.
@@ -224,7 +224,7 @@ def _loop(name: str, result: results.LoopGain) -> Figure:
     return figure
 
 
-def _noise(name: str, result: results.NoiseSpectrum) -> Figure:
+def _noise(name: str, result: results.NoiseResult) -> Figure:
     """The noise density of the output, with its noisiest sources', on log axes.
 
     The sources are the noisiest over the frequencies, as many as colors remain; the
@@ -268,7 +268,7 @@ def _noise(name: str, result: results.NoiseSpectrum) -> Figure:
     return figure
 
 
-def _poles_zeros(name: str, result: results.PolesZeros) -> Figure:
+def _poles_zeros(name: str, result: results.PoleZeroResult) -> Figure:
     """Each pole and zero at its natural frequency, on a log axis, and damping ratio.
 
     A damping ratio below zero is a root in the right half-plane, across the line at
@@ -323,14 +323,14 @@ def _label_abscissa(axes: Axes, result: Plotted, unit: str) -> None:
 
 
 def _steps(
-    result: results.Sweep | results.Waveforms, net: str
+    result: results.DcSweepResult | results.TransientResult, net: str
 ) -> tuple[results.Real, results.Real]:
     """Where the level of the logic net `net` changes, and the level from each on.
 
     A transient's last level holds until it stops; a sweep's levels change halfway
     between the source's levels.
     """
-    if isinstance(result, results.Waveforms):
+    if isinstance(result, results.TransientResult):
         trace = result.level(net)
         return (
             np.append(trace.times, result.times[-1]),
@@ -566,19 +566,19 @@ def save(figure: Figure, path: Path) -> None:
 
 def _describe(result: Plotted) -> str:
     match result:
-        case results.Waveforms():
+        case results.TransientResult():
             return "transient"
-        case results.Sweep():
+        case results.DcSweepResult():
             swept = "" if result.parameter is None else f"'s {result.parameter}"
             return f"DC sweep of {result.source}{swept}"
-        case results.Response():
+        case results.AcResult():
             return f"response to a unit excitation of {result.source}"
-        case results.LoopGain():
+        case results.StabilityResult():
             return f"loop gain through {result.probe}"
-        case results.NoiseSpectrum():
+        case results.NoiseResult():
             over = "" if result.reference is None else f" over {result.reference}"
             return f"noise at {result.output}{over}"
-        case results.PolesZeros():
+        case results.PoleZeroResult():
             over = "" if result.reference is None else f" over {result.reference}"
             zeros = f", and zeros of {result.output}{over} per {result.source}"
             return "poles" + ("" if result.zeros is None else zeros)
@@ -586,26 +586,26 @@ def _describe(result: Plotted) -> str:
 
 def _abscissa(result: Plotted) -> tuple[results.Real, str]:
     match result:
-        case results.Waveforms():
+        case results.TransientResult():
             return result.times, "s"
-        case results.Sweep():
+        case results.DcSweepResult():
             unit = "" if result.quantity is None else _UNITS[result.quantity]
             return result.levels, unit
-        case results.Response() | results.LoopGain() | results.NoiseSpectrum():
+        case results.AcResult() | results.StabilityResult() | results.NoiseResult():
             return result.frequencies, "Hz"
-        case results.PolesZeros():
+        case results.PoleZeroResult():
             return results.natural_frequencies(result.poles), "Hz"
 
 
 def _abscissa_label(result: Plotted) -> str:
     match result:
-        case results.Waveforms():
+        case results.TransientResult():
             return "time"
-        case results.Sweep():
+        case results.DcSweepResult():
             return f"{result.source} {result.parameter or result.quantity}"
-        case results.Response() | results.LoopGain() | results.NoiseSpectrum():
+        case results.AcResult() | results.StabilityResult() | results.NoiseResult():
             return "frequency"
-        case results.PolesZeros():
+        case results.PoleZeroResult():
             return "natural frequency"
 
 

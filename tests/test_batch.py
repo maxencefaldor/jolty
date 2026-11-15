@@ -94,7 +94,9 @@ MEASUREMENTS = (
 
 def _alone(
     built: ir.Circuit, variant: Variant
-) -> tuple[Simulation, results.OperatingPoint, results.Response, results.Waveforms]:
+) -> tuple[
+    Simulation, results.OperatingPointResult, results.AcResult, results.TransientResult
+]:
     """A simulation made for `variant` alone, and what its analyses find."""
     elaborated = Elaborated(built, variant.temperature)
     simulation = Simulation.of(elaborated, variant.overrides)
@@ -191,9 +193,9 @@ def _same(found: results.BatchResult, other: results.BatchResult) -> None:
         assert getattr(found, name) == getattr(other, name), name
 
 
-def _peak(result: results.Result) -> Reading:
+def _peak(result: results.AnalysisResult) -> Reading:
     """The output's highest voltage, unread above 0.656 V, why naming the voltage."""
-    if not isinstance(result, results.Waveforms):
+    if not isinstance(result, results.TransientResult):
         raise TypeError(result)
     volts = float(result.voltage("out").max())
     if volts > 0.656:  # About half the samples' peaks lie above.
@@ -380,14 +382,14 @@ def test_a_run_of_another_structure_measures_its_own_unknowns() -> None:
         )
         assert found.measured[index, 0] == alone.current("V1"), f"run {index}"
         point = seen[index].results["op"]
-        assert isinstance(point, results.OperatingPoint)
+        assert isinstance(point, results.OperatingPointResult)
         assert point.unknowns == alone.unknowns
         assert point.current("V1") == alone.current("V1")
 
 
 def test_a_measurement_only_python_reads_reads_each_run() -> None:
-    def doubled(result: results.Result) -> Reading:
-        if not isinstance(result, results.OperatingPoint):
+    def doubled(result: results.AnalysisResult) -> Reading:
+        if not isinstance(result, results.OperatingPointResult):
             raise TypeError(result)
         return Reading(2 * result.voltage("out"), VOLTAGE)
 

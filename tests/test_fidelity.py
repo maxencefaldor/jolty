@@ -17,7 +17,7 @@ from jolty import (
 )
 from jolty.errors import JoltyError
 from jolty.plan import Characterized, Explicit, OperatingPoint, Plan, Transient, Variant
-from jolty.results import Result, Run
+from jolty.results import AnalysisResult, Run
 from jolty.specs import Specs, crossing, evaluate
 from jolty.units import TIME, Quantity, V, fF, format_si, nm, ns, ps, um
 from jolty.waveforms import Pulse
@@ -130,7 +130,9 @@ PLAN: Final = Plan(
 
 def runs(
     top: Component,
-) -> tuple[fidelity.Fidelity, Simulation, dict[str, Result], dict[str, Result]]:
+) -> tuple[
+    fidelity.Fidelity, Simulation, dict[str, AnalysisResult], dict[str, AnalysisResult]
+]:
     """The fidelity of `top`, and its simulation and results with every model.
 
     Last come its results with X1 at its circuit's fidelity.

@@ -175,25 +175,31 @@ def _ground(circuit: ir.Circuit) -> str:
     )
 
 
-type _Observed = results.OperatingPoint | results.Sweep | results.Waveforms
+type _Observed = (
+    results.OperatingPointResult | results.DcSweepResult | results.TransientResult
+)
 
-_OBSERVED: Final = (results.OperatingPoint, results.Sweep, results.Waveforms)
+_OBSERVED: Final = (
+    results.OperatingPointResult,
+    results.DcSweepResult,
+    results.TransientResult,
+)
 """The results that hold what every device did at each point."""
 
 
-def _axis(result: results.Result) -> tuple[str, np.ndarray, str, str] | None:
+def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | None:
     """What an analysis plays along: its kind, its points, their label and unit."""
     match result:
-        case results.OperatingPoint():
+        case results.OperatingPointResult():
             return "operating_point", np.zeros(1), "", ""
-        case results.Sweep() if result.parameter is not None:
+        case results.DcSweepResult() if result.parameter is not None:
             return "dc_sweep", result.levels, f"{result.source} {result.parameter}", ""
-        case results.Sweep():
+        case results.DcSweepResult():
             unit = "A" if result.quantity == "current" else "V"
             return "dc_sweep", result.levels, f"{result.source} level", unit
-        case results.Waveforms():
+        case results.TransientResult():
             return "transient", result.times, "time", "s"
-        case results.Response():
+        case results.AcResult():
             return "ac", result.frequencies, "frequency", "Hz"
     return None
 
@@ -201,19 +207,21 @@ def _axis(result: results.Result) -> tuple[str, np.ndarray, str, str] | None:
 def _rows(result: _Observed, field: str) -> np.ndarray:
     """One of what every device did, a row per point even at an operating point."""
     values = np.asarray(getattr(result, field))
-    return values[None, :] if isinstance(result, results.OperatingPoint) else values
+    return (
+        values[None, :] if isinstance(result, results.OperatingPointResult) else values
+    )
 
 
-def _levels(result: results.Result, axis: np.ndarray) -> dict[str, np.ndarray]:
+def _levels(result: results.AnalysisResult, axis: np.ndarray) -> dict[str, np.ndarray]:
     """Each logic net's level at each point."""
     match result:
-        case results.OperatingPoint():
+        case results.OperatingPointResult():
             return {net: result.logic[[index]] for index, net in enumerate(result.nets)}
-        case results.Sweep():
+        case results.DcSweepResult():
             return {
                 net: result.logic[:, index] for index, net in enumerate(result.nets)
             }
-        case results.Waveforms():
+        case results.TransientResult():
             return {
                 net: trace.at(axis)
                 for net, trace in zip(result.nets, result.logic, strict=True)
@@ -278,7 +286,7 @@ def _state(result: _Observed, frames: np.ndarray) -> dict[str, JsonValue]:
     return {"charges": charges, "variables": found, "conductances": small_signal}
 
 
-def _analysis(name: str, result: results.Result) -> dict[str, JsonValue] | None:
+def _analysis(name: str, result: results.AnalysisResult) -> dict[str, JsonValue] | None:
     """One analysis as the viewer plays it, its points sampled.
 
     A frequency response plays the magnitudes of its phasors along its frequencies.
@@ -289,7 +297,7 @@ def _analysis(name: str, result: results.Result) -> dict[str, JsonValue] | None:
     kind, axis, label, unit = found
     frames = _frames(len(axis))
     devices: dict[str, JsonValue]
-    if isinstance(result, results.Response):
+    if isinstance(result, results.AcResult):
         values = np.abs(result.values)
         currents = np.abs(result.currents)
         devices = {"currents": _currents(result.recording, frames, currents)}
@@ -324,7 +332,7 @@ def _analysis(name: str, result: results.Result) -> dict[str, JsonValue] | None:
 
 
 def scene(
-    circuit: ir.Circuit, analyses: Mapping[str, results.Result], title: str = ""
+    circuit: ir.Circuit, analyses: Mapping[str, results.AnalysisResult], title: str = ""
 ) -> dict[str, JsonValue]:
     """Everything the viewer shows of `circuit` and the results of its `analyses`."""
     layouts: dict[str, JsonValue] = {
@@ -406,7 +414,7 @@ def page(scene_: Mapping[str, JsonValue], three: str = _THREE) -> str:
 def write_viewer(
     path: Path,
     circuit: ir.Circuit,
-    analyses: Mapping[str, results.Result],
+    analyses: Mapping[str, results.AnalysisResult],
     title: str = "",
     three: str = _THREE,
 ) -> None:

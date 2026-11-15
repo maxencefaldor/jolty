@@ -258,7 +258,10 @@ def read(found: object, name: str) -> object:
     """The unknown `name` of a result, ``v(net)`` or ``i(source)``, in jolty."""
     if not isinstance(
         found,
-        results.OperatingPoint | results.Sweep | results.Response | results.Waveforms,
+        results.OperatingPointResult
+        | results.DcSweepResult
+        | results.AcResult
+        | results.TransientResult,
     ):
         message = f"no unknowns to read in {type(found).__name__}"
         raise TypeError(message)
@@ -282,7 +285,7 @@ def solved(built: ir.Circuit, analysis: Analysis, names: Sequence[str]) -> Value
     return values
 
 
-def sampled(waveforms: results.Waveforms, names: Sequence[str]) -> Values:
+def sampled(waveforms: results.TransientResult, names: Sequence[str]) -> Values:
     """Each ``v(net)@time`` of `waveforms`, interpolated at its time."""
     values: Values = {}
     for name in names:
@@ -979,7 +982,7 @@ def sensitivities() -> list[Fixture]:
         analysis = Transient(6 * us, max_step=10 * ns, times=[t * s for t in times])
         found = simulation(built).run(Sensitivity(["out"], of=analysis), TIGHT)
         derivative = np.asarray(found.derivative("out", "R1", "resistance"))
-        if not isinstance(found.result, results.Waveforms):
+        if not isinstance(found.result, results.TransientResult):
             message = "a transient's sensitivities follow its waveforms"
             raise TypeError(message)
         trace = found.result.times

@@ -4,7 +4,7 @@
 
 use jolty_engine::{
     Bound, Conditions, DcSweep, ElaborationProblem, Endpoint, Options, Simulator, Transient,
-    Waveforms, Work,
+    TransientResult, Work,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library};
@@ -65,7 +65,7 @@ fn net(simulator: &Simulator, name: &str) -> usize {
 
 /// `waveforms` apart from the work that found them, which depends on what the simulator
 /// did before: an operating point it remembered, the pivots it kept.
-fn apart_from_work(mut waveforms: Waveforms) -> Waveforms {
+fn apart_from_work(mut waveforms: TransientResult) -> TransientResult {
     waveforms.statistics.work = Work::default();
     waveforms
 }

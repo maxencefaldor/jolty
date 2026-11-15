@@ -568,7 +568,7 @@ class _Devices[T](_Unknowns[T]):
 
 
 @dataclass(frozen=True, slots=True)
-class OperatingPoint(_Devices[float], _Watched):
+class OperatingPointResult(_Devices[float], _Watched):
     """A DC solution, and the strategy that found it."""
 
     unknowns: tuple[Unknown, ...]
@@ -618,16 +618,16 @@ class OperatingPoint(_Devices[float], _Watched):
 
 
 @dataclass(frozen=True, slots=True)
-class OperatingPoints(_Watched):
+class OperatingPointsResult(_Watched):
     """Every DC solution a search found, the operating point first.
 
     Examples:
         >>> unknowns = (Unknown("q", "voltage"),)
-        >>> found = OperatingPoints(
+        >>> found = OperatingPointsResult(
         ...     unknowns,
         ...     (
-        ...         OperatingPoint(unknowns, np.array([1.65]), "direct"),
-        ...         OperatingPoint(unknowns, np.array([3.3]), "direct"),
+        ...         OperatingPointResult(unknowns, np.array([1.65]), "direct"),
+        ...         OperatingPointResult(unknowns, np.array([3.3]), "direct"),
         ...     ),
         ... )
         >>> found.voltages("q").tolist()
@@ -635,7 +635,7 @@ class OperatingPoints(_Watched):
     """
 
     unknowns: tuple[Unknown, ...]
-    points: tuple[OperatingPoint, ...]
+    points: tuple[OperatingPointResult, ...]
 
     def voltages(self, net: str) -> Real:
         """The voltage of `net` at each solution, in the order found."""
@@ -644,7 +644,7 @@ class OperatingPoints(_Watched):
 
 
 @dataclass(frozen=True, slots=True)
-class Sweep(_Devices[Real], _Watched):
+class DcSweepResult(_Devices[Real], _Watched):
     """The operating points of a DC sweep, one row per level of its source.
 
     A sweep of a parameter of a device names it, and its levels are the parameter's
@@ -688,7 +688,7 @@ class Sweep(_Devices[Real], _Watched):
 
 
 @dataclass(frozen=True, slots=True)
-class Response(_Unknowns[Complex], _Watched):
+class AcResult(_Unknowns[Complex], _Watched):
     """A small-signal response: phasors per unit excitation, one row per frequency."""
 
     unknowns: tuple[Unknown, ...]
@@ -696,7 +696,7 @@ class Response(_Unknowns[Complex], _Watched):
     """The path of the excited source, such as ``V1``."""
     frequencies: Real
     values: Complex
-    operating_point: OperatingPoint
+    operating_point: OperatingPointResult
     recording: Recording = field(default_factory=Recording)
     """What the result recorded of the devices, and where its currents hold each."""
     currents: Complex = field(default_factory=_no_phasors)
@@ -797,7 +797,7 @@ class Statistics:
 
 
 @dataclass(frozen=True, slots=True)
-class Waveforms(_Devices[Real], _Watched):
+class TransientResult(_Devices[Real], _Watched):
     """The waveforms of a transient analysis, one row per accepted time point."""
 
     unknowns: tuple[Unknown, ...]
@@ -845,7 +845,7 @@ class Parameter:
 
 
 @dataclass(frozen=True, slots=True)
-class Sensitivities(_Watched):
+class SensitivityResult(_Watched):
     """Sensitivities: each output's derivative with respect to each parameter.
 
     `derivatives` has one row per output and one column per parameter, in SI base
@@ -854,8 +854,10 @@ class Sensitivities(_Watched):
     values have one row per point; a response's are the derivatives of its phasors.
 
     Examples:
-        >>> point = OperatingPoint((Unknown("out", "voltage"),), np.array([2.0]), "")
-        >>> sensitivities = Sensitivities(
+        >>> point = OperatingPointResult(
+        ...     (Unknown("out", "voltage"),), np.array([2.0]), ""
+        ... )
+        >>> sensitivities = SensitivityResult(
         ...     point.unknowns,
         ...     ("out",),
         ...     (Parameter("R1", "resistance", 1e3), Parameter("V1", "waveform.dc", 5)),
@@ -874,7 +876,7 @@ class Sensitivities(_Watched):
     parameters: tuple[Parameter, ...]
     """Every parameter, in the order of `derivatives`' columns."""
     derivatives: Real | Complex
-    result: OperatingPoint | Sweep | Response | Waveforms
+    result: OperatingPointResult | DcSweepResult | AcResult | TransientResult
     """The result of the analysis differentiated."""
 
     def derivative(
@@ -905,7 +907,7 @@ class Sensitivities(_Watched):
 
 
 @dataclass(frozen=True, slots=True)
-class LoopGain(_Watched):
+class StabilityResult(_Watched):
     """The loop gain through a probe, at each frequency.
 
     Negative feedback makes it positive at low frequencies; the specs' `phase_margin`,
@@ -918,11 +920,11 @@ class LoopGain(_Watched):
     frequencies: Real
     gains: Complex
     """The loop gain at each frequency."""
-    operating_point: OperatingPoint
+    operating_point: OperatingPointResult
 
 
 @dataclass(frozen=True, slots=True)
-class Transfer(_Watched):
+class TransferFunctionResult(_Watched):
     """The small-signal transfer function at DC from a source to an output.
 
     The `gain` is the output per unit of the source's level, in volts or amperes of
@@ -943,7 +945,7 @@ class Transfer(_Watched):
     gain: float
     input_resistance: float
     output_resistance: float
-    operating_point: OperatingPoint
+    operating_point: OperatingPointResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -969,7 +971,7 @@ class NoiseInput:
 
 
 @dataclass(frozen=True, slots=True)
-class NoiseSpectrum(_Watched):
+class NoiseResult(_Watched):
     """The noise at an output, at each frequency.
 
     `densities` are the output's one-sided noise power densities, in V²/Hz for a
@@ -979,8 +981,10 @@ class NoiseSpectrum(_Watched):
     band, as a power law between frequencies, as SPICE does.
 
     Examples:
-        >>> point = OperatingPoint((Unknown("out", "voltage"),), np.array([2.0]), "")
-        >>> spectrum = NoiseSpectrum(
+        >>> point = OperatingPointResult(
+        ...     (Unknown("out", "voltage"),), np.array([2.0]), ""
+        ... )
+        >>> spectrum = NoiseResult(
         ...     point.unknowns,
         ...     "out",
         ...     None,
@@ -1010,7 +1014,7 @@ class NoiseSpectrum(_Watched):
     sources: tuple[NoiseSource, ...]
     contributions: Real
     input: NoiseInput | None
-    operating_point: OperatingPoint
+    operating_point: OperatingPointResult
 
     def referred(self) -> Real:
         """The noise referred to the input at each frequency, in V²/Hz or A²/Hz.
@@ -1141,7 +1145,7 @@ def integrate(
 
 
 @dataclass(frozen=True, slots=True)
-class PolesZeros(_Watched):
+class PoleZeroResult(_Watched):
     """The poles of the linearized circuit, and the zeros of a transfer function.
 
     The circuit is linearized at its operating point, and the transfer function is from
@@ -1152,8 +1156,10 @@ class PolesZeros(_Watched):
     ratio, as a second-order section's are written.
 
     Examples:
-        >>> point = OperatingPoint((Unknown("out", "voltage"),), np.array([0.0]), "")
-        >>> found = PolesZeros(
+        >>> point = OperatingPointResult(
+        ...     (Unknown("out", "voltage"),), np.array([0.0]), ""
+        ... )
+        >>> found = PoleZeroResult(
         ...     point.unknowns,
         ...     np.array([-3 + 4j, -3 - 4j]),
         ...     np.array([0j]),
@@ -1178,7 +1184,7 @@ class PolesZeros(_Watched):
     """The output the transfer function is to."""
     reference: str | None
     """The node the output voltage is taken over; the ground if None."""
-    operating_point: OperatingPoint
+    operating_point: OperatingPointResult
 
 
 def natural_frequencies(roots: Complex) -> Real:
@@ -1195,17 +1201,17 @@ def dampings(roots: Complex) -> Real:
     return _core.dampings(np.asarray(roots, dtype=np.complex128))
 
 
-type Result = (
-    OperatingPoint
-    | OperatingPoints
-    | Sweep
-    | Response
-    | Waveforms
-    | Sensitivities
-    | LoopGain
-    | NoiseSpectrum
-    | PolesZeros
-    | Transfer
+type AnalysisResult = (
+    OperatingPointResult
+    | OperatingPointsResult
+    | DcSweepResult
+    | AcResult
+    | TransientResult
+    | SensitivityResult
+    | StabilityResult
+    | NoiseResult
+    | PoleZeroResult
+    | TransferFunctionResult
 )
 """The result of any analysis."""
 
@@ -1253,7 +1259,7 @@ class Run:
 
     index: int
     """The run's index among the variants' runs."""
-    results: dict[str, Result]
+    results: dict[str, AnalysisResult]
     """The result of each analysis that ended, by name."""
     errors: dict[str, str]
     """Why each analysis that did not end failed, by name."""

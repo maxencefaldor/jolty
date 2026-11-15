@@ -112,7 +112,7 @@ class Native:
     explain: Callable[[_core.MeasureError], str] = field(repr=False, compare=False)
     """Says in words why the engine could not read a result, from its error."""
 
-    def read(self, result: results.Result) -> Reading:
+    def read(self, result: results.AnalysisResult) -> Reading:
         """What the engine reads of `result`, a result of the kind it was resolved for.
 
         Raises:
@@ -127,35 +127,35 @@ class Native:
         return Reading(value, self.unit)
 
 
-def _engine(measure: _core.Measure, result: results.Result) -> float:
+def _engine(measure: _core.Measure, result: results.AnalysisResult) -> float:
     """What the engine's `measure` reads of the arrays of `result`.
 
     Raises:
         MeasureError: When it cannot read them.
     """
     match result:
-        case results.OperatingPoint():
-            value = measure.read_point(_real(result.values))
-        case results.OperatingPoints():
-            value = measure.read_solutions(len(result.points))
-        case results.Sweep():
-            value = measure.read_sweep(_real(result.levels), _real(result.values))
-        case results.Waveforms():
+        case results.OperatingPointResult():
+            value = measure.read_operating_point(_real(result.values))
+        case results.OperatingPointsResult():
+            value = measure.read_operating_points(len(result.points))
+        case results.DcSweepResult():
+            value = measure.read_dc_sweep(_real(result.levels), _real(result.values))
+        case results.TransientResult():
             value = measure.read_transient(_real(result.times), _real(result.values))
-        case results.Response():
-            value = measure.read_response(
-                _real(result.frequencies), _complex(result.values)
+        case results.AcResult():
+            value = measure.read_ac(_real(result.frequencies), _complex(result.values))
+        case results.StabilityResult():
+            value = measure.read_stability(
+                _real(result.frequencies), _complex(result.gains)
             )
-        case results.LoopGain():
-            value = measure.read_loop(_real(result.frequencies), _complex(result.gains))
-        case results.NoiseSpectrum():
+        case results.NoiseResult():
             gains = None if result.input is None else _complex(result.input.gains)
             value = measure.read_noise(
                 _real(result.frequencies), _real(result.densities), gains
             )
-        case results.PolesZeros():
-            value = measure.read_poles(_complex(result.poles))
-        case results.Sensitivities() | results.Transfer():
+        case results.PoleZeroResult():
+            value = measure.read_pole_zero(_complex(result.poles))
+        case results.SensitivityResult() | results.TransferFunctionResult():
             # No measure reads sensitivities or a transfer function, so none is resolved
             # against them.
             message = f"the engine measures no {type(result).__name__}"
@@ -180,10 +180,10 @@ class Measurement:
     """What the measurement reads, such as ``gain of out at 1 kHz``."""
     plain: Plain | None
     """The unit of a measurement that reads a plain number; None for a quantity."""
-    read: Callable[[results.Result], Reading] = field(repr=False, compare=False)
+    read: Callable[[results.AnalysisResult], Reading] = field(repr=False, compare=False)
     """Reads the measurement from the analysis's result; raises a `JoltyError`, or a
     `KeyError` for an unknown the result lacks, when it cannot."""
-    native: Callable[[results.Result], Native] | None = field(
+    native: Callable[[results.AnalysisResult], Native] | None = field(
         default=None, repr=False, compare=False
     )
     """Resolves the measurement for the engine to read against a result, from no more
@@ -732,8 +732,8 @@ def describe(verdicts: Sequence[Verdict]) -> str:
 def evaluate(
     specs: Specs,
     planned: Collection[str],
-    solved: Mapping[str, results.Result],
-    corners: Mapping[str, Mapping[str, results.Result]] | None = None,
+    solved: Mapping[str, results.AnalysisResult],
+    corners: Mapping[str, Mapping[str, results.AnalysisResult]] | None = None,
 ) -> tuple[Verdict, ...]:
     """The verdict on each requirement, the worst of the plan's own run and its corners.
 
@@ -750,7 +750,7 @@ def evaluate(
 def judge(
     requirement: Requirement,
     planned: Collection[str],
-    runs: Iterable[tuple[str | None, Mapping[str, results.Result]]],
+    runs: Iterable[tuple[str | None, Mapping[str, results.AnalysisResult]]],
 ) -> Verdict:
     """The worst verdict on `requirement` over `runs`.
 
@@ -768,7 +768,7 @@ def judge(
 
 
 def reading(
-    requirement: Requirement, found: Mapping[str, results.Result]
+    requirement: Requirement, found: Mapping[str, results.AnalysisResult]
 ) -> float | None:
     """The value `requirement` reads of the results `found`; None when it cannot."""
     verdict = _verdict(requirement, found.keys(), found, None)
@@ -784,7 +784,7 @@ def _badness(verdict: Verdict) -> tuple[int, float]:
 def _verdict(
     requirement: Requirement,
     planned: Collection[str],
-    solved: Mapping[str, results.Result],
+    solved: Mapping[str, results.AnalysisResult],
     corner: str | None,
 ) -> Verdict:
     stated = Verdict(

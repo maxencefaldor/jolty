@@ -31,7 +31,7 @@ use jolty_numerics::{Complex64, Eigenvalue, PencilError, generalized_eigenvalues
 use serde::Deserialize;
 
 use crate::ac::Linearization;
-use crate::{OperatingPoint, Options, SimulationError, Simulator};
+use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// The ratio of an eigenvalue's denominator to its numerator below which it is infinite: a
 /// root beyond `10¹²` times the circuit's characteristic frequency.
@@ -89,7 +89,7 @@ pub struct PoleZero {
 
 /// The poles and zeros of the circuit linearized at its operating point.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PolesZeros {
+pub struct PoleZeroResult {
     /// The path of the source the transfer function is from, if any.
     pub source: Option<String>,
     /// The output the transfer function is to, if any.
@@ -97,7 +97,7 @@ pub struct PolesZeros {
     /// The node the output voltage is taken over, if not the reference node.
     pub reference: Option<String>,
     /// The operating point the circuit was linearized at.
-    pub operating_point: OperatingPoint,
+    pub operating_point: OperatingPointResult,
     /// The poles, complex frequencies in radians per second: the finite roots of
     /// `det(G + sC)`, by increasing magnitude, a conjugate pair's positive member first.
     pub poles: Vec<Complex64>,
@@ -135,7 +135,7 @@ impl Simulator {
         &mut self,
         analysis: &PoleZero,
         options: &Options,
-    ) -> Result<PolesZeros, SimulationError> {
+    ) -> Result<PoleZeroResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             let transfer = match (&analysis.source, &analysis.output) {
@@ -197,7 +197,7 @@ impl Simulator {
                 }
                 None => None,
             };
-            Ok(PolesZeros {
+            Ok(PoleZeroResult {
                 source: analysis.source.clone(),
                 output: analysis.output.clone(),
                 reference: analysis.reference.clone(),

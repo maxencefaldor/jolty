@@ -18,7 +18,7 @@
 use jolty_models::Quantity;
 use serde::Deserialize;
 
-use crate::{OperatingPoint, Options, SimulationError, Simulator};
+use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// A transfer function analysis: from an independent source to an output, at DC.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -37,7 +37,7 @@ pub struct TransferFunction {
 
 /// The small-signal transfer function at DC.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Transfer {
+pub struct TransferFunctionResult {
     /// The path of the input source.
     pub source: String,
     /// What the input source's level is: a voltage, or a current.
@@ -47,7 +47,7 @@ pub struct Transfer {
     /// The node the output voltage is taken over, if any.
     pub reference: Option<String>,
     /// The operating point the circuit was linearized at.
-    pub operating_point: OperatingPoint,
+    pub operating_point: OperatingPointResult,
     /// The output per unit of the source's level: volts or amperes of output per volt or
     /// ampere of input.
     pub gain: f64,
@@ -73,7 +73,7 @@ impl Simulator {
         &mut self,
         analysis: &TransferFunction,
         options: &Options,
-    ) -> Result<Transfer, SimulationError> {
+    ) -> Result<TransferFunctionResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             options.check()?;
@@ -124,7 +124,7 @@ impl Simulator {
                     resistance(1.0, -series[branch])
                 }
             };
-            Ok(Transfer {
+            Ok(TransferFunctionResult {
                 source: analysis.source.clone(),
                 input: self.source_quantity(input),
                 output: analysis.output.clone(),

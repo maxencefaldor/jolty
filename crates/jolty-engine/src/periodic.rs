@@ -29,7 +29,7 @@ use jolty_numerics::solve_in_range;
 use crate::newton::{NAMED_UNKNOWNS, add_product, step_matrix};
 use crate::options::NUMBERS_PER_GIB;
 use crate::transient::{Carried, Tangent};
-use crate::{Options, SimulationError, Simulator, Transient, Waveforms};
+use crate::{Options, SimulationError, Simulator, Transient, TransientResult};
 
 /// The most periods shooting simulates before it gives up.
 const MOST_PERIODS: usize = 40;
@@ -69,7 +69,7 @@ impl Simulator {
         &mut self,
         transient: &Transient,
         options: &Options,
-    ) -> Result<Waveforms, SimulationError> {
+    ) -> Result<TransientResult, SimulationError> {
         if !self.elaborated.logic.nets.is_empty() {
             return Err(SimulationError::InvalidAnalysis(
                 "a periodic steady state is found for circuits without logic".to_owned(),

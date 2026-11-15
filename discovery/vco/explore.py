@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import candidates
 
 from jolty import Component, Simulation, Transient, circuit
-from jolty.results import Waveforms
+from jolty.results import TransientResult
 from jolty.specs import frequency
 from jolty.units import s
 
@@ -22,7 +22,7 @@ CONTROLS = [0.5, 1.0, 2.0, 3.0, 4.0, 5.0]
 FINE = [float(v) for v in np.round(np.arange(0.5, 5.01, 0.25), 2)]
 
 
-def run(oscillator: Component, volts: float, periods: int) -> Waveforms:
+def run(oscillator: Component, volts: float, periods: int) -> TransientResult:
     """`periods` periods of 1 kHz/V at a control of `volts`, 4000 steps a period."""
     period = 1e-3 / volts
     simulation = Simulation(circuit(candidates.bench(oscillator, volts)))

@@ -641,20 +641,20 @@ fn trace(outcome: &Outcome, traced: &Traced) -> Vec<Complex64> {
     };
     let real = |values: &[f64], column: usize| values.get(column).map(|&value| value.into());
     match (result, &traced.points) {
-        (jolty_engine::Outcome::OperatingPoint(point), Points::Point) => {
+        (jolty_engine::AnalysisResult::OperatingPoint(point), Points::Point) => {
             put(0, &|column| real(&point.values, column));
         }
-        (jolty_engine::Outcome::DcSweep(sweep), Points::Levels(_)) => {
+        (jolty_engine::AnalysisResult::DcSweep(sweep), Points::Levels(_)) => {
             for (level, values) in sweep.values.iter().enumerate() {
                 put(level, &|column| real(values, column));
             }
         }
-        (jolty_engine::Outcome::Ac(response), Points::Frequencies(_)) => {
+        (jolty_engine::AnalysisResult::Ac(response), Points::Frequencies(_)) => {
             for (frequency, values) in response.values.iter().enumerate() {
                 put(frequency, &|column| values.get(column).copied());
             }
         }
-        (jolty_engine::Outcome::Transient(waveforms), Points::Times(times)) => {
+        (jolty_engine::AnalysisResult::Transient(waveforms), Points::Times(times)) => {
             for (point, &time) in times.iter().enumerate() {
                 put(point, &|column| {
                     at(&waveforms.times, &waveforms.values, column, time).map(Complex64::from)

@@ -1,7 +1,7 @@
 //! Poles and zeros against closed forms.
 #![cfg(test)]
 
-use jolty_engine::{Conditions, Options, PoleZero, PolesZeros, SimulationError, Simulator};
+use jolty_engine::{Conditions, Options, PoleZero, PoleZeroResult, SimulationError, Simulator};
 use jolty_ir::Circuit;
 use jolty_models::Library;
 use jolty_numerics::Complex64;
@@ -44,7 +44,7 @@ fn pole_zero(
     circuit: &Circuit,
     source: Option<&str>,
     output: Option<&str>,
-) -> Result<PolesZeros, SimulationError> {
+) -> Result<PoleZeroResult, SimulationError> {
     let mut simulator = Simulator::new(circuit, &Library::standard(), &Conditions::default())
         .expect("the circuit elaborates");
     let analysis = PoleZero {

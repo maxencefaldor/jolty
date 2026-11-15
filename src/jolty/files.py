@@ -27,7 +27,7 @@ Examples:
     >>> import tempfile
     >>> from pathlib import Path
     >>> from jolty import results
-    >>> point = results.OperatingPoint(
+    >>> point = results.OperatingPointResult(
     ...     (results.Unknown("out", "voltage"),), np.array([2.5]), "direct"
     ... )
     >>> with tempfile.TemporaryDirectory() as directory:
@@ -84,19 +84,19 @@ class _Model(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
-class _Point(_Model):
+class _OperatingPointResult(_Model):
     kind: Literal["operating_point"] = "operating_point"
     strategy: str
     recording: int
 
 
-class _Points(_Model):
+class _OperatingPointsResult(_Model):
     kind: Literal["operating_points"] = "operating_points"
     strategies: tuple[str, ...]
     recording: int
 
 
-class _Sweep(_Model):
+class _DcSweepResult(_Model):
     kind: Literal["dc_sweep"] = "dc_sweep"
     source: str
     quantity: results.Quantity | None
@@ -104,27 +104,27 @@ class _Sweep(_Model):
     recording: int
 
 
-class _Response(_Model):
+class _AcResult(_Model):
     kind: Literal["ac"] = "ac"
     source: str
     strategy: str
     recording: int
 
 
-class _Waveforms(_Model):
+class _TransientResult(_Model):
     kind: Literal["transient"] = "transient"
     statistics: results.Statistics
     recording: int
 
 
-class _Sensitivities(_Model):
+class _SensitivityResult(_Model):
     kind: Literal["sensitivity"] = "sensitivity"
     outputs: tuple[str, ...]
     parameters: tuple[tuple[str, str], ...]
     result: _Entry
 
 
-class _LoopGain(_Model):
+class _StabilityResult(_Model):
     kind: Literal["stability"] = "stability"
     probe: str
     strategy: str
@@ -136,7 +136,7 @@ class _NoiseInput(_Model):
     quantity: results.Quantity
 
 
-class _NoiseSpectrum(_Model):
+class _NoiseResult(_Model):
     kind: Literal["noise"] = "noise"
     output: str
     reference: str | None
@@ -147,7 +147,7 @@ class _NoiseSpectrum(_Model):
     recording: int
 
 
-class _PolesZeros(_Model):
+class _PoleZeroResult(_Model):
     kind: Literal["pole_zero"] = "pole_zero"
     source: str | None
     output: str | None
@@ -156,7 +156,7 @@ class _PolesZeros(_Model):
     recording: int
 
 
-class _Transfer(_Model):
+class _TransferFunctionResult(_Model):
     kind: Literal["transfer_function"] = "transfer_function"
     source: str
     input: results.Quantity
@@ -167,16 +167,16 @@ class _Transfer(_Model):
 
 
 type _Entry = Annotated[
-    _Point
-    | _Points
-    | _Sweep
-    | _Response
-    | _Waveforms
-    | _Sensitivities
-    | _LoopGain
-    | _NoiseSpectrum
-    | _PolesZeros
-    | _Transfer,
+    _OperatingPointResult
+    | _OperatingPointsResult
+    | _DcSweepResult
+    | _AcResult
+    | _TransientResult
+    | _SensitivityResult
+    | _StabilityResult
+    | _NoiseResult
+    | _PoleZeroResult
+    | _TransferFunctionResult,
     Field(discriminator="kind"),
 ]
 
@@ -521,7 +521,7 @@ def load_circuit(path: Path) -> ir.Circuit:
 
 def save_results(
     path: Path,
-    analyses: Mapping[str, results.Result],
+    analyses: Mapping[str, results.AnalysisResult],
     *,
     circuit: ir.Circuit | None = None,
     plan: Plan | None = None,
@@ -578,7 +578,7 @@ def _write(path: Path, arrays: Mapping[str, np.ndarray]) -> None:
 
 def load_results(
     path: Path, *, circuit: ir.Circuit | None = None
-) -> dict[str, results.Result]:
+) -> dict[str, results.AnalysisResult]:
     """Reads the results file at `path`: the results of each analysis, by name.
 
     Given the `circuit` they are to be of, it refuses a file whose
@@ -651,7 +651,7 @@ def _unreadable(path: Path, data: Mapping[str, np.ndarray]) -> JoltyError:
 
 def _save(
     name: str,
-    result: results.Result,
+    result: results.AnalysisResult,
     arrays: dict[str, np.ndarray],
     recordings: dict[results.Recording, int],
 ) -> _Entry:
@@ -661,33 +661,33 @@ def _save(
     another result's is the same.
     """
     match result:
-        case results.OperatingPoint():
+        case results.OperatingPointResult():
             arrays.update(_point_arrays(name, result))
             recording = _indexed(recordings, result.recording)
-            return _Point(strategy=result.strategy, recording=recording)
-        case results.Sweep():
+            return _OperatingPointResult(strategy=result.strategy, recording=recording)
+        case results.DcSweepResult():
             arrays[f"{name}.levels"] = result.levels
             arrays[f"{name}.values"] = result.values
             arrays[f"{name}.logic"] = result.logic
             arrays.update(_observed_arrays(name, result))
-            return _Sweep(
+            return _DcSweepResult(
                 source=result.source,
                 quantity=result.quantity,
                 parameter=result.parameter,
                 recording=_indexed(recordings, result.recording),
             )
-        case results.Response():
+        case results.AcResult():
             arrays[f"{name}.frequencies"] = result.frequencies
             arrays[f"{name}.values"] = result.values
             arrays[f"{name}.currents"] = result.currents
             point = result.operating_point
             arrays.update(_point_arrays(f"{name}.operating_point", point))
-            return _Response(
+            return _AcResult(
                 source=result.source,
                 strategy=point.strategy,
                 recording=_indexed(recordings, result.recording),
             )
-        case results.Waveforms():
+        case results.TransientResult():
             arrays[f"{name}.times"] = result.times
             arrays[f"{name}.values"] = result.values
             arrays.update(_observed_arrays(name, result))
@@ -701,14 +701,14 @@ def _save(
             arrays[f"{name}.logic.levels"] = np.concatenate(
                 [np.empty(0), *(trace.levels for trace in traces)]
             )
-            return _Waveforms(
+            return _TransientResult(
                 statistics=result.statistics,
                 recording=_indexed(recordings, result.recording),
             )
-        case results.OperatingPoints():
+        case results.OperatingPointsResult():
             for index, point in enumerate(result.points):
                 arrays.update(_point_arrays(f"{name}.{index}", point))
-            return _Points(
+            return _OperatingPointsResult(
                 strategies=tuple(point.strategy for point in result.points),
                 recording=_indexed(recordings, result.points[0].recording),
             )
@@ -725,23 +725,23 @@ def _indexed(
 
 def _save_linear(
     name: str,
-    result: results.Sensitivities
-    | results.LoopGain
-    | results.NoiseSpectrum
-    | results.PolesZeros
-    | results.Transfer,
+    result: results.SensitivityResult
+    | results.StabilityResult
+    | results.NoiseResult
+    | results.PoleZeroResult
+    | results.TransferFunctionResult,
     arrays: dict[str, np.ndarray],
     recordings: dict[results.Recording, int],
 ) -> _Entry:
     """The header's entry of a small-signal result or of sensitivities."""
     match result:
-        case results.Transfer():
+        case results.TransferFunctionResult():
             arrays[f"{name}.transfer"] = np.array(
                 [result.gain, result.input_resistance, result.output_resistance]
             )
             point = result.operating_point
             arrays.update(_point_arrays(f"{name}.operating_point", point))
-            return _Transfer(
+            return _TransferFunctionResult(
                 source=result.source,
                 input=result.input,
                 output=result.output,
@@ -749,12 +749,12 @@ def _save_linear(
                 strategy=point.strategy,
                 recording=_indexed(recordings, point.recording),
             )
-        case results.Sensitivities():
+        case results.SensitivityResult():
             arrays[f"{name}.parameters"] = np.array(
                 [parameter.value for parameter in result.parameters], dtype=float
             )
             arrays[f"{name}.derivatives"] = result.derivatives
-            return _Sensitivities(
+            return _SensitivityResult(
                 outputs=result.outputs,
                 parameters=tuple(
                     (parameter.instance, parameter.name)
@@ -762,17 +762,17 @@ def _save_linear(
                 ),
                 result=_save(f"{name}.result", result.result, arrays, recordings),
             )
-        case results.LoopGain():
+        case results.StabilityResult():
             arrays[f"{name}.frequencies"] = result.frequencies
             arrays[f"{name}.gains"] = result.gains
             point = result.operating_point
             arrays.update(_point_arrays(f"{name}.operating_point", point))
-            return _LoopGain(
+            return _StabilityResult(
                 probe=result.probe,
                 strategy=point.strategy,
                 recording=_indexed(recordings, point.recording),
             )
-        case results.NoiseSpectrum():
+        case results.NoiseResult():
             arrays[f"{name}.frequencies"] = result.frequencies
             arrays[f"{name}.densities"] = result.densities
             arrays[f"{name}.contributions"] = result.contributions
@@ -784,7 +784,7 @@ def _save_linear(
                 found = _NoiseInput(
                     source=result.input.source, quantity=result.input.quantity
                 )
-            return _NoiseSpectrum(
+            return _NoiseResult(
                 output=result.output,
                 reference=result.reference,
                 quantity=result.quantity,
@@ -795,13 +795,13 @@ def _save_linear(
                 strategy=point.strategy,
                 recording=_indexed(recordings, point.recording),
             )
-        case results.PolesZeros():
+        case results.PoleZeroResult():
             arrays[f"{name}.poles"] = result.poles
             if result.zeros is not None:
                 arrays[f"{name}.zeros"] = result.zeros
             point = result.operating_point
             arrays.update(_point_arrays(f"{name}.operating_point", point))
-            return _PolesZeros(
+            return _PoleZeroResult(
                 source=result.source,
                 output=result.output,
                 reference=result.reference,
@@ -816,23 +816,23 @@ def _load(
     entry: _Entry,
     header: _Header,
     recordings: tuple[results.Recording, ...],
-) -> results.Result:
+) -> results.AnalysisResult:
     """The result stored under `name` in `data`, as `entry` says it is.
 
     It recorded the one of `recordings` the entry names.
     """
     unknowns, nets = header.unknowns, header.nets
     match entry:
-        case _Point(strategy=strategy, recording=recording):
+        case _OperatingPointResult(strategy=strategy, recording=recording):
             return _point(data, name, strategy, header, recordings[recording])
-        case _Points(strategies=strategies, recording=recording):
+        case _OperatingPointsResult(strategies=strategies, recording=recording):
             points = tuple(
                 _point(data, f"{name}.{index}", strategy, header, recordings[recording])
                 for index, strategy in enumerate(strategies)
             )
-            return results.OperatingPoints(unknowns, points)
-        case _Sweep(source=source, quantity=quantity, recording=recording):
-            return results.Sweep(
+            return results.OperatingPointsResult(unknowns, points)
+        case _DcSweepResult(source=source, quantity=quantity, recording=recording):
+            return results.DcSweepResult(
                 unknowns,
                 source,
                 quantity,
@@ -843,9 +843,9 @@ def _load(
                 **_observed(data, name, recordings[recording]),
                 parameter=entry.parameter,
             )
-        case _Response(source=source, strategy=strategy, recording=recording):
+        case _AcResult(source=source, strategy=strategy, recording=recording):
             point = f"{name}.operating_point"
-            return results.Response(
+            return results.AcResult(
                 unknowns,
                 source,
                 data[f"{name}.frequencies"],
@@ -854,8 +854,8 @@ def _load(
                 recording=recordings[recording],
                 currents=data[f"{name}.currents"],
             )
-        case _Waveforms(statistics=statistics, recording=recording):
-            return results.Waveforms(
+        case _TransientResult(statistics=statistics, recording=recording):
+            return results.TransientResult(
                 unknowns,
                 data[f"{name}.times"],
                 data[f"{name}.values"],
@@ -871,18 +871,22 @@ def _load(
 def _load_linear(
     data: Mapping[str, np.ndarray],
     name: str,
-    entry: _Sensitivities | _LoopGain | _NoiseSpectrum | _PolesZeros | _Transfer,
+    entry: _SensitivityResult
+    | _StabilityResult
+    | _NoiseResult
+    | _PoleZeroResult
+    | _TransferFunctionResult,
     header: _Header,
     recordings: tuple[results.Recording, ...],
-) -> results.Result:
+) -> results.AnalysisResult:
     """The small-signal result or the sensitivities stored under `name`."""
     unknowns = header.unknowns
     match entry:
-        case _Transfer():
+        case _TransferFunctionResult():
             gain, input_resistance, output_resistance = (
                 float(value) for value in data[f"{name}.transfer"]
             )
-            return results.Transfer(
+            return results.TransferFunctionResult(
                 unknowns,
                 entry.source,
                 entry.input,
@@ -899,7 +903,9 @@ def _load_linear(
                     recordings[entry.recording],
                 ),
             )
-        case _Sensitivities(outputs=outputs, parameters=named, result=differentiated):
+        case _SensitivityResult(
+            outputs=outputs, parameters=named, result=differentiated
+        ):
             parameters = tuple(
                 results.Parameter(instance, parameter, float(value))
                 for (instance, parameter), value in zip(
@@ -909,37 +915,37 @@ def _load_linear(
             found = _load(data, f"{name}.result", differentiated, header, recordings)
             if isinstance(
                 found,
-                results.Sensitivities
-                | results.LoopGain
-                | results.NoiseSpectrum
-                | results.PolesZeros
-                | results.Transfer
-                | results.OperatingPoints,
+                results.SensitivityResult
+                | results.StabilityResult
+                | results.NoiseResult
+                | results.PoleZeroResult
+                | results.TransferFunctionResult
+                | results.OperatingPointsResult,
             ):
                 message = (
                     f"the sensitivities {name} differentiate neither an operating "
                     "point, a sweep, a response nor a transient"
                 )
                 raise JoltyError(message)
-            return results.Sensitivities(
+            return results.SensitivityResult(
                 unknowns, outputs, parameters, data[f"{name}.derivatives"], found
             )
-        case _LoopGain(probe=probe, strategy=strategy, recording=recording):
+        case _StabilityResult(probe=probe, strategy=strategy, recording=recording):
             point = f"{name}.operating_point"
-            return results.LoopGain(
+            return results.StabilityResult(
                 unknowns,
                 probe,
                 data[f"{name}.frequencies"],
                 data[f"{name}.gains"],
                 _point(data, point, strategy, header, recordings[recording]),
             )
-        case _NoiseSpectrum():
+        case _NoiseResult():
             found_input = None
             if entry.input is not None:
                 found_input = results.NoiseInput(
                     entry.input.source, entry.input.quantity, data[f"{name}.gains"]
                 )
-            return results.NoiseSpectrum(
+            return results.NoiseResult(
                 unknowns,
                 entry.output,
                 entry.reference,
@@ -960,7 +966,7 @@ def _load_linear(
                     recordings[entry.recording],
                 ),
             )
-        case _PolesZeros(
+        case _PoleZeroResult(
             source=source,
             output=output,
             reference=reference,
@@ -968,7 +974,7 @@ def _load_linear(
             recording=recording,
         ):
             point = f"{name}.operating_point"
-            return results.PolesZeros(
+            return results.PoleZeroResult(
                 unknowns,
                 data[f"{name}.poles"],
                 data.get(f"{name}.zeros"),
@@ -979,19 +985,19 @@ def _load_linear(
             )
 
 
-def _names(result: results.Result) -> _Names:
+def _names(result: results.AnalysisResult) -> _Names:
     """The names of the columns of `result`'s circuit."""
-    if isinstance(result, results.Sensitivities):
+    if isinstance(result, results.SensitivityResult):
         return _names(result.result)
-    if isinstance(result, results.OperatingPoints):
+    if isinstance(result, results.OperatingPointsResult):
         return _names(result.points[0])
     if isinstance(
         result,
-        results.Response
-        | results.LoopGain
-        | results.NoiseSpectrum
-        | results.PolesZeros
-        | results.Transfer,
+        results.AcResult
+        | results.StabilityResult
+        | results.NoiseResult
+        | results.PoleZeroResult
+        | results.TransferFunctionResult,
     ):
         return _names(result.operating_point)
     return _Names(unknowns=result.unknowns, nets=result.nets)
@@ -1002,13 +1008,18 @@ _OBSERVED: Final = ("currents", "charges", "conductances", "capacitances", "read
 
 
 def _observed_arrays(
-    name: str, result: results.OperatingPoint | results.Sweep | results.Waveforms
+    name: str,
+    result: results.OperatingPointResult
+    | results.DcSweepResult
+    | results.TransientResult,
 ) -> dict[str, np.ndarray]:
     """The arrays of what the recorded devices did in the analysis `name`."""
     return {f"{name}.{field}": getattr(result, field) for field in _OBSERVED}
 
 
-def _point_arrays(name: str, point: results.OperatingPoint) -> dict[str, np.ndarray]:
+def _point_arrays(
+    name: str, point: results.OperatingPointResult
+) -> dict[str, np.ndarray]:
     """The arrays of the operating point stored under `name`."""
     return {
         f"{name}.values": point.values,
@@ -1037,9 +1048,9 @@ def _point(
     strategy: str,
     header: _Header,
     recording: results.Recording,
-) -> results.OperatingPoint:
+) -> results.OperatingPointResult:
     """The operating point stored under `name` in `data`, which recorded `recording`."""
-    return results.OperatingPoint(
+    return results.OperatingPointResult(
         header.unknowns,
         data[f"{name}.values"],
         strategy,
@@ -1321,7 +1332,7 @@ class _Requirement(_Model):
         )
 
 
-def _read_by_its_shard(result: results.Result) -> Reading:
+def _read_by_its_shard(result: results.AnalysisResult) -> Reading:
     """Reads nothing of `result`: a shard's measurement was read where the shard ran.
 
     Raises:

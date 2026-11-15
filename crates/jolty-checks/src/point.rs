@@ -2,7 +2,9 @@
 
 use std::f64::consts::TAU;
 
-use jolty_engine::{Mode, OperatingPoint, OperatingPoints, Options, SimulationError, Simulator};
+use jolty_engine::{
+    Mode, OperatingPointResult, OperatingPoints, Options, SimulationError, Simulator,
+};
 use jolty_models::Quantity;
 
 use crate::structure::{list, prose};
@@ -136,8 +138,8 @@ fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Opti
 /// The diagnostic of the DC solution `other` besides the operating point `point`.
 fn multiple_operating_points(
     simulator: &Simulator,
-    point: &OperatingPoint,
-    other: &OperatingPoint,
+    point: &OperatingPointResult,
+    other: &OperatingPointResult,
 ) -> Diagnostic {
     let mut nets: Vec<(&str, f64, f64)> = simulator
         .unknowns()

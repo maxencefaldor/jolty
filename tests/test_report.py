@@ -16,9 +16,11 @@ UNKNOWNS = (
 
 
 def test_an_operating_point_lists_each_value() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.array([5.0, 2.5, -2.5e-3]), "direct")
+    point = results.OperatingPointResult(
+        UNKNOWNS, np.array([5.0, 2.5, -2.5e-3]), "direct"
+    )
     summary = report.report("op", point, listed=10)
-    assert summary == report.PointReport(
+    assert summary == report.OperatingPointReport(
         name="op",
         strategy="direct",
         values=(
@@ -41,7 +43,7 @@ def test_a_transient_states_the_range_of_each_unknown() -> None:
     statistics = results.Statistics(
         initial="direct", accepted=2, rejected=1, landed=3, iterations=9
     )
-    waveforms = results.Waveforms(
+    waveforms = results.TransientResult(
         UNKNOWNS, np.array([0.0, 1e-6, 2e-6]), values, statistics
     )
     summary = report.report("step", waveforms, listed=2)
@@ -61,7 +63,7 @@ def test_a_transient_states_the_range_of_each_unknown() -> None:
 
 def test_a_periodic_steady_state_states_its_periods() -> None:
     statistics = results.Statistics("direct", 2, 0, 0, 4, periods=3)
-    waveforms = results.Waveforms(
+    waveforms = results.TransientResult(
         UNKNOWNS, np.array([0.0, 1e-6]), np.zeros((2, 3)), statistics
     )
     summary = report.report("steady", waveforms, listed=3)
@@ -72,11 +74,11 @@ def test_a_periodic_steady_state_states_its_periods() -> None:
 
 
 def test_a_response_states_magnitudes() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(3), "direct")
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(3), "direct")
     values = np.array([[1.0, 1.0, 0.0], [1.0, -1j, 1e-3j]])
-    response = results.Response(UNKNOWNS, "V1", np.array([1e3, 1e6]), values, point)
+    response = results.AcResult(UNKNOWNS, "V1", np.array([1e3, 1e6]), values, point)
     summary = report.report("bode", response, listed=10)
-    assert isinstance(summary, report.ResponseReport)
+    assert isinstance(summary, report.AcReport)
     assert (summary.lowest, summary.highest, summary.frequencies) == (1e3, 1e6, 2)
     assert [extent.maximum for extent in summary.magnitudes] == [1.0, 1.0, 1e-3]
     assert summary.describe().startswith(
@@ -85,10 +87,12 @@ def test_a_response_states_magnitudes() -> None:
 
 
 def test_a_loop_gain_states_its_margins() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct")
+    point = results.OperatingPointResult(
+        UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct"
+    )
     frequencies = np.logspace(-2, 2, 4001)
     gains = np.asarray(5 / (1 + 1j * frequencies) ** 3, dtype=np.complex128)
-    loop = results.LoopGain(UNKNOWNS, "VP", frequencies, gains, point)
+    loop = results.StabilityResult(UNKNOWNS, "VP", frequencies, gains, point)
     summary = report.report("loop", loop, listed=10)
     assert isinstance(summary, report.StabilityReport)
     assert summary.crossover == pytest.approx(math.sqrt(5 ** (2 / 3) - 1), rel=1e-4)
@@ -98,7 +102,9 @@ def test_a_loop_gain_states_its_margins() -> None:
         "  crossover at 1.387 Hz, phase margin 17.37°\n"
         "  gain margin 4.082 dB"
     )
-    stable = results.LoopGain(UNKNOWNS, "VP", frequencies[:2], gains[:2] / 100, point)
+    stable = results.StabilityResult(
+        UNKNOWNS, "VP", frequencies[:2], gains[:2] / 100, point
+    )
     assert (
         report.report("loop", stable, listed=10)
         .describe()
@@ -109,12 +115,14 @@ def test_a_loop_gain_states_its_margins() -> None:
 
 
 def test_sensitivities_list_each_derivative_in_the_circuit_s_order() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct")
+    point = results.OperatingPointResult(
+        UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct"
+    )
     parameters = tuple(
         results.Parameter(f"R{index}", "resistance", 1e3) for index in range(3)
     )
     derivatives = np.array([[1e-6, -2e-6, 0.0], [0.0, 0.0, 1e-9]])
-    sensitivities = results.Sensitivities(
+    sensitivities = results.SensitivityResult(
         UNKNOWNS, ("out", "V1:current"), parameters, derivatives, point
     )
     summary = report.report("sens", sensitivities, listed=2)
@@ -140,13 +148,15 @@ def test_sensitivities_list_each_derivative_in_the_circuit_s_order() -> None:
 
 
 def test_sensitivities_along_an_analysis_state_where_each_is_largest() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct")
+    point = results.OperatingPointResult(
+        UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct"
+    )
     frequencies = np.array([1e3, 1e6])
     values = np.ones((2, 3), dtype=np.complex128)
-    response = results.Response(UNKNOWNS, "V1", frequencies, values, point)
+    response = results.AcResult(UNKNOWNS, "V1", frequencies, values, point)
     parameter = results.Parameter("C1", "capacitance", 1e-9)
     derivatives = np.array([[[1j]], [[-3 + 4j]]])
-    sensitivities = results.Sensitivities(
+    sensitivities = results.SensitivityResult(
         UNKNOWNS, ("out",), (parameter,), derivatives, response
     )
     summary = report.report("sens", sensitivities, listed=5)
@@ -160,8 +170,8 @@ def test_sensitivities_along_an_analysis_state_where_each_is_largest() -> None:
     )
     times = np.array([0.0, 1e-6, 2e-6])
     statistics = results.Statistics("direct", 2, 0, 0, 4)
-    waveforms = results.Waveforms(UNKNOWNS, times, np.zeros((3, 3)), statistics)
-    falling = results.Sensitivities(
+    waveforms = results.TransientResult(UNKNOWNS, times, np.zeros((3, 3)), statistics)
+    falling = results.SensitivityResult(
         UNKNOWNS,
         ("out",),
         (parameter,),
@@ -182,11 +192,13 @@ def test_a_failure_says_why() -> None:
 
 
 def test_a_noise_spectrum_states_its_noisiest_sources() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct")
+    point = results.OperatingPointResult(
+        UNKNOWNS, np.array([5.0, 4.0, -1e-3]), "direct"
+    )
     frequencies = np.array([10.0, 1e3, 1e5])
     white = np.full(3, 16e-18)
     flicker = 1e-15 / frequencies
-    spectrum = results.NoiseSpectrum(
+    spectrum = results.NoiseResult(
         UNKNOWNS,
         "out",
         None,
@@ -231,8 +243,8 @@ def test_a_noise_spectrum_states_its_noisiest_sources() -> None:
 
 
 def test_poles_and_zeros_list_each_pair_once() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(3), "direct")
-    found = results.PolesZeros(
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(3), "direct")
+    found = results.PoleZeroResult(
         UNKNOWNS,
         np.array([-3e3 + 4e3j, -3e3 - 4e3j, -1e6 + 0j]),
         np.array([0j]),
@@ -258,13 +270,15 @@ def test_poles_and_zeros_list_each_pair_once() -> None:
 
 
 def test_dc_solutions_list_each_unknown_at_each() -> None:
-    first = results.OperatingPoint(UNKNOWNS, np.array([3.3, 0.0, -1e-3]), "direct")
-    second = results.OperatingPoint(
+    first = results.OperatingPointResult(
+        UNKNOWNS, np.array([3.3, 0.0, -1e-3]), "direct"
+    )
+    second = results.OperatingPointResult(
         UNKNOWNS, np.array([3.3, 3.3, -2e-3]), "gmin_stepping"
     )
-    found = results.OperatingPoints(UNKNOWNS, (first, second))
+    found = results.OperatingPointsResult(UNKNOWNS, (first, second))
     summary = report.report("states", found, listed=2)
-    assert isinstance(summary, report.PointsReport)
+    assert isinstance(summary, report.OperatingPointsReport)
     assert summary.strategies == ("direct", "gmin_stepping")
     assert summary.describe() == (
         "states: 2 DC solutions, the operating point first\n"

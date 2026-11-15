@@ -152,7 +152,7 @@ def test_sensitivities_are_the_derivatives_of_a_divider() -> None:
         assert found.derivative("V1:current", instance, name) == pytest.approx(
             current, rel=1e-6
         )
-    assert isinstance(found.result, results.OperatingPoint)
+    assert isinstance(found.result, results.OperatingPointResult)
     assert found.result.voltage("out") == pytest.approx(4.0)
     np.testing.assert_allclose(found.gradient("out"), [0.8, -8e-4, 2e-4], rtol=1e-6)
     with pytest.raises(KeyError, match="no output named 'in'"):
@@ -422,7 +422,7 @@ def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
     swept = Simulation(divider(5 * V, upper * ohm, lower * ohm)).run(
         Sensitivity(["out"], of=DcSweep("V1", levels))
     )
-    assert isinstance(swept.result, results.Sweep)
+    assert isinstance(swept.result, results.DcSweepResult)
     np.testing.assert_allclose(
         swept.derivative("out", "R1", "resistance"),
         -swept.result.levels * lower / (upper + lower) ** 2,
@@ -436,7 +436,7 @@ def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
     filtered = Simulation(low_pass()).run(
         Sensitivity(["out"], of=Ac("V1", frequencies))
     )
-    assert isinstance(filtered.result, results.Response)
+    assert isinstance(filtered.result, results.AcResult)
     omega = 2 * np.pi * filtered.result.frequencies
     corner = 1 + 1j * omega * resistance * capacitance
     np.testing.assert_allclose(
@@ -447,7 +447,7 @@ def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
     charging = Simulation(low_pass()).run(
         Sensitivity(["out"], of=Transient(5 * us, max_step=1e-3 * us))
     )
-    assert isinstance(charging.result, results.Waveforms)
+    assert isinstance(charging.result, results.TransientResult)
     # After the source's ramp of 1 ns to 1 V, out is 1 - k exp(-t / tau).
     ramp, tau = 1e-9, resistance * capacitance
     grown = math.exp(ramp / tau)

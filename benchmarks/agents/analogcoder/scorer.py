@@ -54,7 +54,7 @@ from verdict import Shortfall, Verdict
 from jolty import Builder, Component, Role, Simulation, circuit, component, devices, ir
 from jolty.errors import JoltyError
 from jolty.plan import Ac, DcSweep, OperatingPoint, Transient, linear
-from jolty.results import OperatingPoint as Solution
+from jolty.results import OperatingPointResult as Solution
 from jolty.results import Real
 from jolty.units import A, Hz, V, ns, ohm, s, um, us
 from jolty.waveforms import Piecewise, Pulse

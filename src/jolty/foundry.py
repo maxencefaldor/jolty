@@ -79,7 +79,7 @@ def run(
     options: Options,
     conditions: Conditions,
     unknowns: Sequence[results.Unknown],
-) -> results.Result:
+) -> results.AnalysisResult:
     """Runs `analysis` of `circuit` in ngspice, with `options`, at `conditions`.
 
     The result holds those of `unknowns` that ngspice names.
@@ -151,7 +151,7 @@ class _Deck:
     def unknowns(self) -> tuple[results.Unknown, ...]:
         return tuple(unknown for unknown, _ in self.read)
 
-    def run(self, analysis: Analysis) -> results.Result:
+    def run(self, analysis: Analysis) -> results.AnalysisResult:
         match analysis:
             case OperatingPoint():
                 (raw,) = self.runs(("op",))
@@ -161,7 +161,7 @@ class _Deck:
             case Ac():
                 frequencies = _frequencies(analysis.frequencies)
                 point, *responses = self.runs(("op", *_points("ac", frequencies)))
-                return results.Response(
+                return results.AcResult(
                     unknowns=self.unknowns(),
                     source=analysis.source,
                     frequencies=np.array(frequencies),
@@ -184,14 +184,14 @@ class _Deck:
         )
         raise SimulationError(message)
 
-    def operating_point(self, raw: ngspice.Raw) -> results.OperatingPoint:
-        return results.OperatingPoint(
+    def operating_point(self, raw: ngspice.Raw) -> results.OperatingPointResult:
+        return results.OperatingPointResult(
             unknowns=self.unknowns(),
             values=_table(raw, self.read)[0],
             strategy=STRATEGY,
         )
 
-    def sweep(self, sweep: DcSweep) -> results.Sweep:
+    def sweep(self, sweep: DcSweep) -> results.DcSweepResult:
         command, levels, quantity = _sweep(self.flat, sweep)
         (raw,) = self.runs((command,))
         values = _table(raw, self.read)
@@ -201,7 +201,7 @@ class _Deck:
                 f"{len(levels)}"
             )
             raise SimulationError(message)
-        return results.Sweep(
+        return results.DcSweepResult(
             unknowns=self.unknowns(),
             source=sweep.source,
             quantity=quantity,
@@ -209,7 +209,7 @@ class _Deck:
             values=values,
         )
 
-    def transient(self, transient: Transient) -> results.Waveforms:
+    def transient(self, transient: Transient) -> results.TransientResult:
         stop = transient.stop.to(TIME, "a transient's stop time")
         longest = (
             stop / 50
@@ -225,7 +225,7 @@ class _Deck:
         if any(len(found) != 1 for found in counted.values()):
             message = f"ngspice printed no statistics of its transient:\n{raw.printed}"
             raise SimulationError(message)
-        return results.Waveforms(
+        return results.TransientResult(
             unknowns=self.unknowns(),
             times=raw.real("time"),
             values=_table(raw, self.read),
@@ -239,7 +239,7 @@ class _Deck:
             ),
         )
 
-    def noise(self, noise: Noise) -> results.NoiseSpectrum:
+    def noise(self, noise: Noise) -> results.NoiseResult:
         """The noise at a voltage, each device's sources apart, referred to a source.
 
         Raises:
@@ -274,7 +274,7 @@ class _Deck:
                     ]
                 ),
             )
-        return results.NoiseSpectrum(
+        return results.NoiseResult(
             unknowns=self.unknowns(),
             output=noise.output,
             reference=noise.reference,

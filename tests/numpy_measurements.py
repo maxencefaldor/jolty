@@ -36,7 +36,10 @@ type Edge = Literal["rising", "falling", "either"]
 """Which way a signal crosses a level."""
 
 type _Solved = (
-    results.OperatingPoint | results.Sweep | results.Response | results.Waveforms
+    results.OperatingPointResult
+    | results.DcSweepResult
+    | results.AcResult
+    | results.TransientResult
 )
 """A result that holds values of the circuit's unknowns."""
 
@@ -61,7 +64,9 @@ LEAST_GAIN_MARGIN: Final = 6.0
 """The gain margin, in decibels, below which the rule gain-margin states a loop's."""
 
 
-def diagnose(solved: Mapping[str, results.Result]) -> tuple[checks.Diagnostic, ...]:
+def diagnose(
+    solved: Mapping[str, results.AnalysisResult],
+) -> tuple[checks.Diagnostic, ...]:
     """The diagnostics of the rules on the analyses' results `solved`, by analysis.
 
     Each stability analysis's loop gain raises phase-margin when it falls through 0 dB
@@ -71,7 +76,7 @@ def diagnose(solved: Mapping[str, results.Result]) -> tuple[checks.Diagnostic, .
     """
     found: list[checks.Diagnostic] = []
     for name, result in solved.items():
-        if not isinstance(result, results.LoopGain):
+        if not isinstance(result, results.StabilityResult):
             continue
         loop = f"the loop broken at `{result.probe}`"
         try:
@@ -117,21 +122,21 @@ def value(
     traced = _Signal(signal, reference)
     _check(at, "at")
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         match result:
-            case results.OperatingPoint() if at is None:
+            case results.OperatingPointResult() if at is None:
                 values, dimension = traced.trace(result)
                 return Reading(float(values), dimension)
-            case results.OperatingPoint():
+            case results.OperatingPointResult():
                 message = f"an operating point holds one value, not one at {at}"
                 raise MeasurementError(message)
             case (
-                results.Response()
-                | results.Sensitivities()
-                | results.LoopGain()
-                | results.NoiseSpectrum()
-                | results.PolesZeros()
-                | results.OperatingPoints()
+                results.AcResult()
+                | results.SensitivityResult()
+                | results.StabilityResult()
+                | results.NoiseResult()
+                | results.PoleZeroResult()
+                | results.OperatingPointsResult()
             ):
                 message = (
                     "a value reads an operating point, a transient or a DC sweep, "
@@ -166,7 +171,7 @@ def gain(
     traced, divisor = _signals(output, over, reference)
     _check(at, "at")
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         frequencies, transfer = _transfer(result, traced, divisor)
         point = math.log(_frequency_axis(frequencies).locate(at, "at"))
         gains = _decibels(transfer)
@@ -192,7 +197,7 @@ def phase(
     traced, divisor = _signals(output, over, reference)
     _check(at, "at")
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         frequencies, transfer = _transfer(result, traced, divisor)
         point = math.log(_frequency_axis(frequencies).locate(at, "at"))
         phases = np.degrees(np.unwrap(np.angle(transfer)))
@@ -223,7 +228,7 @@ def bandwidth(
         raise ValueError(message)
     traced, divisor = _signals(output, over, reference)
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         frequencies, transfer = _transfer(result, traced, divisor)
         gains = _decibels(transfer)
         below = _crossings(np.log(frequencies), gains, gains[0] - drop, "falling")
@@ -255,7 +260,7 @@ def crossover(
     """
     traced, divisor = _signals(output, over, reference)
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         frequencies, transfer = _transfer(result, traced, divisor)
         logarithms = np.log(frequencies)
         return Reading(math.exp(_unity(logarithms, transfer, traced, over)), FREQUENCY)
@@ -279,7 +284,7 @@ def phase_margin(
     """
     traced, divisor = _signals(output, over, reference)
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         frequencies, transfer = _transfer(result, traced, divisor)
         logarithms = np.log(frequencies)
         unity = _unity(logarithms, transfer, traced, over)
@@ -305,7 +310,7 @@ def gain_margin(
     """
     traced, divisor = _signals(output, over, reference)
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         frequencies, transfer = _transfer(result, traced, divisor)
         logarithms = np.log(frequencies)
         phases = np.degrees(np.unwrap(np.angle(transfer)))
@@ -425,7 +430,7 @@ def rise_time(  # noqa: PLR0913 - a window, its signal and the two levels
         raise ValueError(message)
     window = _Window(_Signal(signal, reference), start, stop)
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         times, values, step = _step(result, window, "a rise time")
         edge: Edge = "rising" if step > 0 else "falling"
         lower = _crossings(times, values, values[0] + low * step, edge)
@@ -453,7 +458,7 @@ def overshoot(
     """
     window = _Window(_Signal(signal, reference), start, stop)
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         _, values, step = _step(result, window, "an overshoot")
         peak = values.max() if step > 0 else values.min()
         return Reading(100.0 * max(0.0, float(peak - values[-1]) / step), "%")
@@ -484,7 +489,7 @@ def settling_time(  # noqa: PLR0913 - a window, its signal and the band
         raise ValueError(message)
     window = _Window(_Signal(signal, reference), start, stop)
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         times, values, step = _step(result, window, "a settling time")
         excess = np.abs(values - values[-1]) - band * abs(step)
         outside = np.flatnonzero(excess > 0)
@@ -514,7 +519,7 @@ def crossing(  # noqa: PLR0913 - a window, its signal, the level and the edge
     _check(level, "the level")
     window = _Window(_Signal(signal, reference), start, stop)
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         times, values, dimension = window.transient(result, "a crossing")
         found = _crossings(times, values, level.to(dimension, "the level"), edge)
         if not found.size:
@@ -545,7 +550,7 @@ def frequency(  # noqa: PLR0913 - a window, its signal and the level
     _check(level, "the level")
     window = _Window(_Signal(signal, reference), start, stop)
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         times, values, dimension = window.transient(result, "a frequency")
         middle = (
             (values.max() + values.min()) / 2
@@ -600,7 +605,7 @@ def distortion(  # noqa: PLR0913 - a window, its signal, the fundamental, the ha
         raise ValueError(message)
     window = _Window(_Signal(signal, reference), start, stop)
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         times, values, _ = window.transient(result, "a distortion")
         span = (times[-1] - times[0]) * frequency
         periods = 1 if start is None else math.floor(span * (1 + _ON_AXIS))
@@ -634,7 +639,7 @@ def noise_density(
     """
     _check(at, "at")
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         spectrum = _spectrum(result, "a noise density", referred=referred)
         point = _frequency_axis(spectrum.frequencies).locate(at, "at")
         density = _density(spectrum, point, referred=referred)
@@ -664,7 +669,7 @@ def integrated_noise(
     _check(start, "start")
     _check(stop, "stop")
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         spectrum = _spectrum(result, "an integrated noise", referred=referred)
         axis = _frequency_axis(np.sort(spectrum.frequencies))
         low = None if start is None else axis.locate(start, "start")
@@ -689,8 +694,8 @@ def solutions(analysis: str) -> Measurement:
     ``solutions("states") >= 3`` for its two states and the balance between them.
     """
 
-    def read(result: results.Result) -> Reading:
-        if not isinstance(result, results.OperatingPoints):
+    def read(result: results.AnalysisResult) -> Reading:
+        if not isinstance(result, results.OperatingPointsResult):
             message = (
                 f"solutions reads a search for operating points, not {_kind(result)}"
             )
@@ -710,7 +715,7 @@ def damping(analysis: str) -> Measurement:
     ringing.
     """
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         poles = _poles(result, "a damping")
         return Reading(float(np.min(_dampings(poles))), "")
 
@@ -724,7 +729,7 @@ def dominant_pole(analysis: str) -> Measurement:
     frequencies, which dominates how it settles.
     """
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         poles = _poles(result, "a dominant pole")
         return Reading(float(_natural_frequencies(poles).min()), FREQUENCY)
 
@@ -812,7 +817,7 @@ class _Window:
         _check(self.stop, "the stop")
 
     def values(
-        self, result: results.Result, what: str
+        self, result: results.AnalysisResult, what: str
     ) -> tuple[results.Real, results.Real, Dimension]:
         """The points of the window, the signal's values at each, and their dimension.
 
@@ -836,7 +841,7 @@ class _Window:
         return points, np.interp(points, axis.points, values), dimension
 
     def transient(
-        self, result: results.Result, what: str
+        self, result: results.AnalysisResult, what: str
     ) -> tuple[results.Real, results.Real, Dimension]:
         """The times of the window, the signal's values at each, and their dimension.
 
@@ -844,7 +849,7 @@ class _Window:
             MeasurementError: When the result is not a transient, or the window is
                 empty or past its times.
         """
-        if not isinstance(result, results.Waveforms):
+        if not isinstance(result, results.TransientResult):
             message = f"{what} reads a transient, not {_kind(result)}"
             raise MeasurementError(message)
         return self.values(result, what)
@@ -865,7 +870,7 @@ def _statistic(
 ) -> Measurement:
     """The measurement of `statistic` over `window`, from its points and values."""
 
-    def read(result: results.Result) -> Reading:
+    def read(result: results.AnalysisResult) -> Reading:
         points, values, dimension = window.values(result, f"a {name}")
         return Reading(statistic(points, values), dimension)
 
@@ -893,7 +898,7 @@ def _root_mean_square(points: results.Real, values: results.Real) -> float:
 
 
 def _step(
-    result: results.Result, window: _Window, what: str
+    result: results.AnalysisResult, window: _Window, what: str
 ) -> tuple[results.Real, results.Real, float]:
     """The times and values of a transient's window, and the signal's step across it.
 
@@ -910,7 +915,7 @@ def _step(
 
 
 def _traced(
-    result: results.Result, signal: _Signal, what: str
+    result: results.AnalysisResult, signal: _Signal, what: str
 ) -> tuple[_Axis, results.Real, Dimension]:
     """The increasing axis of a transient or a sweep, and the signal's values along it.
 
@@ -918,9 +923,9 @@ def _traced(
         MeasurementError: When the result is neither a transient nor a sweep.
     """
     match result:
-        case results.Waveforms():
+        case results.TransientResult():
             axis = _Axis(result.times, TIME, "time")
-        case results.Sweep():
+        case results.DcSweepResult():
             along = VOLTAGE if result.quantity == "voltage" else CURRENT
             axis = _Axis(result.levels, along, f"level of {result.source}")
         case _:
@@ -933,7 +938,7 @@ def _traced(
 
 
 def _transfer(
-    result: results.Result, output: _Signal | None, divisor: _Signal | None
+    result: results.AnalysisResult, output: _Signal | None, divisor: _Signal | None
 ) -> tuple[results.Real, results.Complex]:
     """The frequencies, increasing, and the output over the divisor, or the loop gain.
 
@@ -943,9 +948,9 @@ def _transfer(
             divisor vanishes.
     """
     match result:
-        case results.LoopGain() if output is None:
+        case results.StabilityResult() if output is None:
             transfer = result.gains
-        case results.Response() if output is not None:
+        case results.AcResult() if output is not None:
             phasors, _ = output.trace(result)
             if divisor is None:
                 transfer = phasors
@@ -955,10 +960,10 @@ def _transfer(
                     message = f"{divisor} vanishes in the response"
                     raise MeasurementError(message)
                 transfer = phasors / divisors
-        case results.LoopGain():
+        case results.StabilityResult():
             message = f"a loop gain is read without an output, not at {output}"
             raise MeasurementError(message)
-        case results.Response():
+        case results.AcResult():
             message = "a small-signal response is read at an output"
             raise MeasurementError(message)
         case _:
@@ -1045,14 +1050,14 @@ def _signals(
 
 
 def _spectrum(
-    result: results.Result, what: str, *, referred: bool
-) -> results.NoiseSpectrum:
+    result: results.AnalysisResult, what: str, *, referred: bool
+) -> results.NoiseResult:
     """`result`, a noise analysis's, with a source to refer its noise to if `referred`.
 
     Raises:
         MeasurementError: When it is not, or has none.
     """
-    if not isinstance(result, results.NoiseSpectrum):
+    if not isinstance(result, results.NoiseResult):
         message = f"{what} reads a noise analysis, not {_kind(result)}"
         raise MeasurementError(message)
     if referred and result.input is None:
@@ -1061,13 +1066,13 @@ def _spectrum(
     return result
 
 
-def _poles(result: results.Result, what: str) -> results.Complex:
+def _poles(result: results.AnalysisResult, what: str) -> results.Complex:
     """The poles of `result`, a pole-zero analysis's.
 
     Raises:
         MeasurementError: When it is not, or the circuit has no poles.
     """
-    if not isinstance(result, results.PolesZeros):
+    if not isinstance(result, results.PoleZeroResult):
         message = f"{what} reads a pole-zero analysis, not {_kind(result)}"
         raise MeasurementError(message)
     if not result.poles.size:
@@ -1076,7 +1081,7 @@ def _poles(result: results.Result, what: str) -> results.Complex:
     return result.poles
 
 
-def _noise_unit(spectrum: results.NoiseSpectrum, *, referred: bool) -> Dimension:
+def _noise_unit(spectrum: results.NoiseResult, *, referred: bool) -> Dimension:
     """The unit of the noise's amplitude: the output's, or the input's if `referred`."""
     quantity = spectrum.quantity
     if referred and spectrum.input is not None:
@@ -1091,20 +1096,20 @@ def _over(output: _Signal | None, over: str | None) -> str:
 
 
 _KINDS: Final[dict[type, str]] = {
-    results.OperatingPoint: "an operating point",
-    results.Sweep: "a DC sweep",
-    results.Response: "a small-signal response",
-    results.Waveforms: "a transient",
-    results.Sensitivities: "sensitivities",
-    results.LoopGain: "a loop gain",
-    results.NoiseSpectrum: "a noise spectrum",
-    results.PolesZeros: "poles and zeros",
-    results.OperatingPoints: "DC solutions",
+    results.OperatingPointResult: "an operating point",
+    results.DcSweepResult: "a DC sweep",
+    results.AcResult: "a small-signal response",
+    results.TransientResult: "a transient",
+    results.SensitivityResult: "sensitivities",
+    results.StabilityResult: "a loop gain",
+    results.NoiseResult: "a noise spectrum",
+    results.PoleZeroResult: "poles and zeros",
+    results.OperatingPointsResult: "DC solutions",
 }
 """What each kind of result is, as messages name it."""
 
 
-def _kind(result: results.Result) -> str:
+def _kind(result: results.AnalysisResult) -> str:
     return _KINDS[type(result)]
 
 
@@ -1118,7 +1123,7 @@ def _check(point: Quantity | None, name: str) -> None:
         finite(point.value, name)
 
 
-def _referred(spectrum: results.NoiseSpectrum) -> results.Real:
+def _referred(spectrum: results.NoiseResult) -> results.Real:
     """The noise referred to the input at each frequency, in V²/Hz or A²/Hz.
 
     It is the output's density over the gain's square, in the unit of the source's
@@ -1135,7 +1140,7 @@ def _referred(spectrum: results.NoiseSpectrum) -> results.Real:
 
 
 def _density(
-    spectrum: results.NoiseSpectrum, at: float, *, referred: bool = False
+    spectrum: results.NoiseResult, at: float, *, referred: bool = False
 ) -> float:
     """The density at the frequency `at`, in hertz.
 
@@ -1158,7 +1163,7 @@ def _density(
 
 
 def _rms(
-    spectrum: results.NoiseSpectrum,
+    spectrum: results.NoiseResult,
     start: float | None = None,
     stop: float | None = None,
     *,

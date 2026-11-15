@@ -83,7 +83,7 @@ def test_a_plan_runs_its_analyses_and_saves_their_results(tmp_path: Path) -> Non
     script = write(tmp_path, DIVIDER)
     outcome = built(run(Job(script=script, plan=script, listed=10), tmp_path))
     point, step = outcome.analyses
-    assert isinstance(point, report.PointReport)
+    assert isinstance(point, report.OperatingPointReport)
     assert [value.value for value in point.values][1] == 2.5
     assert isinstance(step, report.TransientReport)
     assert step.stop == 1e-6
@@ -123,7 +123,7 @@ def test_the_plan_s_own_operating_points_report_every_transistor_s_region(
     script = write(tmp_path, AMPLIFIER)
     outcome = built(run(Job(script=script, plan=script, listed=10), tmp_path))
     (point,) = outcome.analyses
-    assert isinstance(point, report.PointReport)
+    assert isinstance(point, report.OperatingPointReport)
     assert [(each.path, each.region) for each in point.transistors] == [
         ("Q1", "active")
     ]
@@ -161,7 +161,7 @@ def _recorded(directory: Path) -> list[tuple[str, ...]]:
     return [
         result.recording.terminals
         for result in found
-        if isinstance(result, results.OperatingPoint | results.Waveforms)
+        if isinstance(result, results.OperatingPointResult | results.TransientResult)
     ]
 
 
@@ -180,7 +180,7 @@ def test_a_job_s_thresholds_replace_the_plan_s(
 
     def run_seen(
         simulation: Simulation, analysis: Analysis, options: Options | None = None
-    ) -> results.Result:
+    ) -> results.AnalysisResult:
         ran.append(options)
         return simulated(simulation, analysis, options)
 
@@ -202,7 +202,7 @@ def test_a_plan_runs_at_its_temperature(tmp_path: Path) -> None:
     script = write(tmp_path, f"{drifting}\n\n{hot}\n")
     outcome = built(run(Job(script=script, plan=script, listed=10), tmp_path))
     (point,) = outcome.analyses
-    assert isinstance(point, report.PointReport)
+    assert isinstance(point, report.OperatingPointReport)
     factor = 1 + 1e-2 * (400 - 300.15)
     assert point.values[1].value == pytest.approx(5 * factor / (1 + factor))
 

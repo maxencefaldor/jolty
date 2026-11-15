@@ -15,8 +15,8 @@ mod measure;
 use std::sync::{Arc, Mutex};
 
 use jolty_engine::{
-    Analysis, Derivatives, Location, NoiseSpectrum, Observation, Observations, OperatingPoint,
-    Options, Outcome, PolesZeros, Record, Statistics,
+    Analysis, AnalysisResult, Derivatives, Location, NoiseResult, Observation, Observations,
+    OperatingPointResult, Options, PoleZeroResult, Record, Statistics,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library, Model, ParameterError, Quantity};
@@ -546,14 +546,17 @@ fn quantity_name(quantity: Quantity) -> &'static str {
 }
 
 /// The outcome of an analysis as a dictionary whose `kind` names the analysis.
-pub(crate) fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bound<'_, PyDict>> {
+pub(crate) fn outcome_to_python(
+    py: Python<'_>,
+    outcome: AnalysisResult,
+) -> PyResult<Bound<'_, PyDict>> {
     let result = PyDict::new(py);
     match outcome {
-        Outcome::OperatingPoint(operating_point) => {
+        AnalysisResult::OperatingPoint(operating_point) => {
             result.set_item("kind", "operating_point")?;
             add_operating_point(&result, operating_point)?;
         }
-        Outcome::DcSweep(sweep) => {
+        AnalysisResult::DcSweep(sweep) => {
             result.set_item("kind", "dc_sweep")?;
             result.set_item("source", sweep.source)?;
             result.set_item("parameter", sweep.parameter)?;
@@ -564,7 +567,7 @@ pub(crate) fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bo
             let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();
             result.set_item("logic", matrix(py, &logic)?)?;
         }
-        Outcome::Ac(response) => {
+        AnalysisResult::Ac(response) => {
             result.set_item("kind", "ac")?;
             result.set_item("source", response.source)?;
             result.set_item("frequencies", PyArray1::from_vec(py, response.frequencies))?;
@@ -574,7 +577,7 @@ pub(crate) fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bo
             add_operating_point(&operating_point, response.operating_point)?;
             result.set_item("operating_point", operating_point)?;
         }
-        Outcome::Transient(waveforms) => {
+        AnalysisResult::Transient(waveforms) => {
             result.set_item("kind", "transient")?;
             result.set_item("times", PyArray1::from_vec(py, waveforms.times))?;
             result.set_item("values", stacked(py, waveforms.values)?)?;
@@ -593,7 +596,7 @@ pub(crate) fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bo
                 statistics_to_python(py, waveforms.statistics)?,
             )?;
         }
-        Outcome::Sensitivity(sensitivities) => {
+        AnalysisResult::Sensitivity(sensitivities) => {
             result.set_item("kind", "sensitivity")?;
             result.set_item("outputs", sensitivities.outputs)?;
             let (parameters, values): (Vec<(String, String)>, Vec<f64>) = sensitivities
@@ -611,7 +614,7 @@ pub(crate) fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bo
             }
             result.set_item("result", outcome_to_python(py, *sensitivities.result)?)?;
         }
-        Outcome::Stability(loop_gain) => {
+        AnalysisResult::Stability(loop_gain) => {
             result.set_item("kind", "stability")?;
             result.set_item("probe", loop_gain.probe)?;
             result.set_item("frequencies", PyArray1::from_vec(py, loop_gain.frequencies))?;
@@ -620,19 +623,19 @@ pub(crate) fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bo
             add_operating_point(&operating_point, loop_gain.operating_point)?;
             result.set_item("operating_point", operating_point)?;
         }
-        Outcome::Noise(spectrum) => {
+        AnalysisResult::Noise(spectrum) => {
             result.set_item("kind", "noise")?;
             add_noise(&result, spectrum)?;
         }
-        Outcome::OperatingPoints(points) => {
+        AnalysisResult::OperatingPoints(points) => {
             result.set_item("kind", "operating_points")?;
             add_operating_points(&result, points)?;
         }
-        Outcome::PoleZero(found) => {
+        AnalysisResult::PoleZero(found) => {
             result.set_item("kind", "pole_zero")?;
             add_poles_zeros(&result, found)?;
         }
-        Outcome::TransferFunction(transfer) => {
+        AnalysisResult::TransferFunction(transfer) => {
             result.set_item("kind", "transfer_function")?;
             result.set_item("source", transfer.source)?;
             result.set_item("input", quantity_name(transfer.input))?;
@@ -652,7 +655,7 @@ pub(crate) fn outcome_to_python(py: Python<'_>, outcome: Outcome) -> PyResult<Bo
 /// The noise at an output, at each frequency, with each device noise source's share: the
 /// sources as `(device, name)` pairs, and their contributions one row per source; and the
 /// source it is referred to, if any, with the gains from it.
-fn add_noise(result: &Bound<'_, PyDict>, spectrum: NoiseSpectrum) -> PyResult<()> {
+fn add_noise(result: &Bound<'_, PyDict>, spectrum: NoiseResult) -> PyResult<()> {
     let py = result.py();
     result.set_item("output", spectrum.output)?;
     result.set_item("reference", spectrum.reference)?;
@@ -693,7 +696,10 @@ fn add_noise(result: &Bound<'_, PyDict>, spectrum: NoiseSpectrum) -> PyResult<()
 }
 
 /// The DC solutions, each a dictionary of an operating point's own, under `points`.
-fn add_operating_points(result: &Bound<'_, PyDict>, points: Vec<OperatingPoint>) -> PyResult<()> {
+fn add_operating_points(
+    result: &Bound<'_, PyDict>,
+    points: Vec<OperatingPointResult>,
+) -> PyResult<()> {
     let solutions = PyList::empty(result.py());
     for point in points {
         let solution = PyDict::new(result.py());
@@ -705,7 +711,7 @@ fn add_operating_points(result: &Bound<'_, PyDict>, points: Vec<OperatingPoint>)
 
 /// The poles, and the zeros of the transfer function between the source and the output
 /// echoed, if any, with the operating point the circuit was linearized at.
-fn add_poles_zeros(result: &Bound<'_, PyDict>, found: PolesZeros) -> PyResult<()> {
+fn add_poles_zeros(result: &Bound<'_, PyDict>, found: PoleZeroResult) -> PyResult<()> {
     let py = result.py();
     result.set_item("source", found.source)?;
     result.set_item("output", found.output)?;
@@ -722,7 +728,7 @@ fn add_poles_zeros(result: &Bound<'_, PyDict>, found: PolesZeros) -> PyResult<()
 
 fn add_operating_point(
     result: &Bound<'_, PyDict>,
-    operating_point: OperatingPoint,
+    operating_point: OperatingPointResult,
 ) -> PyResult<()> {
     result.set_item(
         "values",

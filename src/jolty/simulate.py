@@ -536,7 +536,7 @@ class Simulation:
         return checks.diagnostics(found)
 
     def check_results(
-        self, solved: Mapping[str, results.Result]
+        self, solved: Mapping[str, results.AnalysisResult]
     ) -> tuple[checks.Diagnostic, ...]:
         """Every diagnostic of the rules on the analyses' results `solved`.
 
@@ -558,11 +558,11 @@ class Simulation:
         ]
         for name, result in solved.items():
             match result:
-                case results.OperatingPoint():
+                case results.OperatingPointResult():
                     values = result.values[np.newaxis, :]
                     currents = result.currents.reshape(1, -1)
                     times = None
-                case results.Waveforms():
+                case results.TransientResult():
                     values, currents, times = (
                         result.values,
                         result.currents,
@@ -592,42 +592,44 @@ class Simulation:
     @overload
     def run(
         self, analysis: OperatingPoint, options: Options | None = None
-    ) -> results.OperatingPoint: ...
+    ) -> results.OperatingPointResult: ...
     @overload
     def run(
         self, analysis: OperatingPoints, options: Options | None = None
-    ) -> results.OperatingPoints: ...
+    ) -> results.OperatingPointsResult: ...
     @overload
     def run(
         self, analysis: DcSweep, options: Options | None = None
-    ) -> results.Sweep: ...
+    ) -> results.DcSweepResult: ...
     @overload
-    def run(self, analysis: Ac, options: Options | None = None) -> results.Response: ...
+    def run(self, analysis: Ac, options: Options | None = None) -> results.AcResult: ...
     @overload
     def run(
         self, analysis: Transient, options: Options | None = None
-    ) -> results.Waveforms: ...
+    ) -> results.TransientResult: ...
     @overload
     def run(
         self, analysis: Sensitivity, options: Options | None = None
-    ) -> results.Sensitivities: ...
+    ) -> results.SensitivityResult: ...
     @overload
     def run(
         self, analysis: Stability, options: Options | None = None
-    ) -> results.LoopGain: ...
+    ) -> results.StabilityResult: ...
     @overload
     def run(
         self, analysis: Noise, options: Options | None = None
-    ) -> results.NoiseSpectrum: ...
+    ) -> results.NoiseResult: ...
     @overload
     def run(
         self, analysis: TransferFunction, options: Options | None = None
-    ) -> results.Transfer: ...
+    ) -> results.TransferFunctionResult: ...
     @overload
     def run(
         self, analysis: PoleZero, options: Options | None = None
-    ) -> results.PolesZeros: ...
-    def run(self, analysis: Analysis, options: Options | None = None) -> results.Result:
+    ) -> results.PoleZeroResult: ...
+    def run(
+        self, analysis: Analysis, options: Options | None = None
+    ) -> results.AnalysisResult:
         """Runs `analysis` with `options`, or with the engine's defaults.
 
         The result records the instances the analysis's ``record`` names, and at an
@@ -727,7 +729,7 @@ class Simulation:
         """
         return _labels(self._variants(variants).parameters)
 
-    def run_plan(self, plan: Plan) -> dict[str, results.Result]:
+    def run_plan(self, plan: Plan) -> dict[str, results.AnalysisResult]:
         """Runs every analysis of `plan`, by name, with its options.
 
         Raises:
@@ -897,8 +899,8 @@ class Simulation:
         return sweep.levels[0].dimension
 
     def _result(
-        self, outcome: _core.Outcome, recording: results.Recording
-    ) -> results.Result:
+        self, outcome: _core.AnalysisResult, recording: results.Recording
+    ) -> results.AnalysisResult:
         """The result of `outcome`, which recorded what `recording` says."""
         unknowns, nets = self.unknowns, self.nets
         match outcome["kind"]:
@@ -908,9 +910,9 @@ class Simulation:
                 points = tuple(
                     self._point(point, recording) for point in outcome["points"]
                 )
-                return results.OperatingPoints(unknowns, points)
+                return results.OperatingPointsResult(unknowns, points)
             case "dc_sweep":
-                return results.Sweep(
+                return results.DcSweepResult(
                     unknowns,
                     outcome["source"],
                     outcome["quantity"],
@@ -922,7 +924,7 @@ class Simulation:
                     parameter=outcome["parameter"],
                 )
             case "ac":
-                return results.Response(
+                return results.AcResult(
                     unknowns,
                     outcome["source"],
                     outcome["frequencies"],
@@ -936,7 +938,7 @@ class Simulation:
                 traces = tuple(
                     results.Trace(times, levels) for times, levels in outcome["logic"]
                 )
-                return results.Waveforms(
+                return results.TransientResult(
                     unknowns,
                     outcome["times"],
                     outcome["values"],
@@ -950,13 +952,13 @@ class Simulation:
 
     def _linear(
         self,
-        outcome: _core.SensitivityOutcome
-        | _core.StabilityOutcome
-        | _core.NoiseOutcome
-        | _core.PoleZeroOutcome
-        | _core.TransferFunctionOutcome,
+        outcome: _core.SensitivityResult
+        | _core.StabilityResult
+        | _core.NoiseResult
+        | _core.PoleZeroResult
+        | _core.TransferFunctionResult,
         recording: results.Recording,
-    ) -> results.Result:
+    ) -> results.AnalysisResult:
         """The result of an analysis of the linearized circuit."""
         unknowns = self.unknowns
         match outcome["kind"]:
@@ -970,17 +972,17 @@ class Simulation:
                 differentiated = self._result(outcome["result"], recording)
                 if not isinstance(
                     differentiated,
-                    results.OperatingPoint
-                    | results.Sweep
-                    | results.Response
-                    | results.Waveforms,
+                    results.OperatingPointResult
+                    | results.DcSweepResult
+                    | results.AcResult
+                    | results.TransientResult,
                 ):
                     message = f"the engine differentiated {outcome['result']['kind']}"
                     raise SimulationError(message)
                 derivatives = outcome["derivatives"]
-                if isinstance(differentiated, results.OperatingPoint):
+                if isinstance(differentiated, results.OperatingPointResult):
                     derivatives = derivatives[0]
-                return results.Sensitivities(
+                return results.SensitivityResult(
                     unknowns,
                     tuple(outcome["outputs"]),
                     parameters,
@@ -988,7 +990,7 @@ class Simulation:
                     differentiated,
                 )
             case "transfer_function":
-                return results.Transfer(
+                return results.TransferFunctionResult(
                     unknowns,
                     outcome["source"],
                     outcome["input"],
@@ -1000,7 +1002,7 @@ class Simulation:
                     self._point(outcome["operating_point"], recording),
                 )
             case "stability":
-                return results.LoopGain(
+                return results.StabilityResult(
                     unknowns,
                     outcome["probe"],
                     outcome["frequencies"],
@@ -1014,7 +1016,7 @@ class Simulation:
                     noise_input = results.NoiseInput(
                         found["source"], found["quantity"], found["gains"]
                     )
-                return results.NoiseSpectrum(
+                return results.NoiseResult(
                     unknowns,
                     outcome["output"],
                     outcome["reference"],
@@ -1030,7 +1032,7 @@ class Simulation:
                     self._point(outcome["operating_point"], recording),
                 )
             case "pole_zero":
-                return results.PolesZeros(
+                return results.PoleZeroResult(
                     unknowns,
                     outcome["poles"],
                     outcome["zeros"],
@@ -1101,7 +1103,7 @@ class Simulation:
         ]
         return json.dumps(kept, allow_nan=False)
 
-    def _shape(self, analysis: Analysis) -> results.Result:
+    def _shape(self, analysis: Analysis) -> results.AnalysisResult:
         """A result of `analysis` that holds no point, for measurements to resolve.
 
         It holds the analysis's kind and the circuit's unknowns, and a sweep's source
@@ -1109,16 +1111,16 @@ class Simulation:
         """
         unknowns = self.unknowns
         width = len(unknowns)
-        point = results.OperatingPoint(unknowns, np.zeros(width), "")
+        point = results.OperatingPointResult(unknowns, np.zeros(width), "")
         no, rows = np.empty(0), np.empty((0, width))
         match analysis:
             case OperatingPoint():
                 return point
             case OperatingPoints():
-                return results.OperatingPoints(unknowns, ())
+                return results.OperatingPointsResult(unknowns, ())
             case DcSweep():
                 quantity = self._quantity(analysis)
-                return results.Sweep(
+                return results.DcSweepResult(
                     unknowns,
                     analysis.source,
                     quantity,
@@ -1128,17 +1130,17 @@ class Simulation:
                 )
             case Ac():
                 phasors = np.empty((0, width), dtype=np.complex128)
-                return results.Response(unknowns, analysis.source, no, phasors, point)
+                return results.AcResult(unknowns, analysis.source, no, phasors, point)
             case Transient():
                 statistics = results.Statistics("", 0, 0, 0, 0)
-                return results.Waveforms(unknowns, no, rows, statistics)
+                return results.TransientResult(unknowns, no, rows, statistics)
         return self._linear_shape(analysis, point)
 
     def _linear_shape(
         self,
         analysis: Sensitivity | Stability | Noise | PoleZero | TransferFunction,
-        point: results.OperatingPoint,
-    ) -> results.Result:
+        point: results.OperatingPointResult,
+    ) -> results.AnalysisResult:
         """A small-signal result or sensitivities, as `_shape` makes it.
 
         It is of `analysis`, about the operating point `point`.
@@ -1149,10 +1151,10 @@ class Simulation:
             case Sensitivity():
                 rows = np.empty((0, len(unknowns)))
                 outputs = tuple(analysis.outputs)
-                return results.Sensitivities(unknowns, outputs, (), rows, point)
+                return results.SensitivityResult(unknowns, outputs, (), rows, point)
             case Stability():
                 frequencies = np.empty(0)
-                return results.LoopGain(
+                return results.StabilityResult(
                     unknowns, analysis.probe, frequencies, roots, point
                 )
             case Noise():
@@ -1161,7 +1163,7 @@ class Simulation:
                 # A voltage source's current is an unknown of its own, named after it.
                 branch = f"{analysis.source}:current"
                 held = any(unknown.name == branch for unknown in unknowns)
-                return results.Transfer(
+                return results.TransferFunctionResult(
                     unknowns,
                     analysis.source,
                     "voltage" if held else "current",
@@ -1174,7 +1176,7 @@ class Simulation:
                 )
             case PoleZero():
                 transfer = analysis.source is not None and analysis.output is not None
-                return results.PolesZeros(
+                return results.PoleZeroResult(
                     unknowns,
                     roots,
                     roots if transfer else None,
@@ -1185,8 +1187,8 @@ class Simulation:
                 )
 
     def _noise_shape(
-        self, noise: Noise, point: results.OperatingPoint
-    ) -> results.NoiseSpectrum:
+        self, noise: Noise, point: results.OperatingPointResult
+    ) -> results.NoiseResult:
         """A noise analysis's result that holds no frequency, as `_shape` makes it."""
         names = {unknown.name: unknown.quantity for unknown in self.unknowns}
         given = None
@@ -1195,7 +1197,7 @@ class Simulation:
             gains = np.empty(0, dtype=np.complex128)
             given = results.NoiseInput(noise.source, quantity, gains)
         no = np.empty(0)
-        return results.NoiseSpectrum(
+        return results.NoiseResult(
             self.unknowns,
             noise.output,
             noise.reference,
@@ -1238,8 +1240,8 @@ class Simulation:
 
     def _point(
         self, solved: _core.SolvedPoint, recording: results.Recording
-    ) -> results.OperatingPoint:
-        return results.OperatingPoint(
+    ) -> results.OperatingPointResult:
+        return results.OperatingPointResult(
             self.unknowns,
             solved["values"],
             solved["strategy"],
@@ -1410,7 +1412,7 @@ class _Planned:
         ran: _core.Variants,
         runs: range,
         each: Callable[[results.Run], object] | None,
-    ) -> _core.BatchOutcome:
+    ) -> _core.BatchResult:
         """What the engine finds on the runs `runs` of `ran`, each handed to `each`."""
         simulation = self.simulation
         measures = [
@@ -1424,8 +1426,8 @@ class _Planned:
         def hand(
             index: int,
             structure: _core.Simulator | None,
-            problems: list[_core.ProblemOutcome] | None,
-            outcomes: list[_core.Outcome | str],
+            problems: list[_core.Problem] | None,
+            outcomes: list[_core.AnalysisResult | str],
         ) -> None:
             view = simulation
             if structure is not None:
@@ -1455,15 +1457,15 @@ class _Planned:
         self,
         view: Simulation,
         index: int,
-        problems: list[_core.ProblemOutcome] | None,
-        outcomes: list[_core.Outcome | str],
+        problems: list[_core.Problem] | None,
+        outcomes: list[_core.AnalysisResult | str],
     ) -> results.Run:
         """What the run `index` found, its outcomes read by `view`."""
         if problems is not None:
             return results.Run(
                 index, {}, {}, tuple(checks.problem(each) for each in problems)
             )
-        found: dict[str, results.Result] = {}
+        found: dict[str, results.AnalysisResult] = {}
         errors = dict(self.refused)
         for name, place in self.engine.items():
             outcome = outcomes[place]
@@ -1480,7 +1482,7 @@ class _Planned:
         ran: _core.Variants,
         runs: range,
         each: Callable[[results.Run], object] | None,
-    ) -> _core.BatchOutcome:
+    ) -> _core.BatchResult:
         """What ngspice finds on the runs `runs` of `ran`, each handed to `each`.
 
         The runs go as many at once as the engine has threads, each waiting on its own
@@ -1491,7 +1493,7 @@ class _Planned:
             found = list(executor.map(functools.partial(self._ngspice, ran), runs))
         count = len(found)
         ended = np.zeros((count, len(self.names)), dtype=np.bool_)
-        problems: dict[int, list[_core.ProblemOutcome]] = {}
+        problems: dict[int, list[_core.Problem]] = {}
         errors: dict[int, list[tuple[int, str]]] = {}
         traced: list[results.Real | results.Complex] = []
         for name, columns in self.traced:
@@ -1536,7 +1538,7 @@ class _Planned:
 
     def _ngspice(
         self, ran: _core.Variants, index: int
-    ) -> tuple[results.Run, list[_core.ProblemOutcome] | None, list[float]]:
+    ) -> tuple[results.Run, list[_core.Problem] | None, list[float]]:
         """What ngspice finds on the run `index` of `ran`, and the values it took.
 
         It returns the problems the run's values make too, if any.
@@ -1572,7 +1574,7 @@ class _Planned:
             overrides,
             None if sample is None else mismatch(*sample),
         )
-        solved: dict[str, results.Result] = {}
+        solved: dict[str, results.AnalysisResult] = {}
         failed: dict[str, str] = {}
         for name, analysis in self.analyses.items():
             try:
@@ -1587,7 +1589,7 @@ class _Planned:
                 failed[name] = str(error)
         return results.Run(index, solved, failed), None, numbers
 
-    def result(self, found: _core.BatchOutcome) -> results.BatchResult:
+    def result(self, found: _core.BatchResult) -> results.BatchResult:
         """The result of the batch, from what the engine or ngspice `found`.
 
         Raises:
@@ -1661,9 +1663,7 @@ class _Planned:
             columns.measured[index, place] = read.value
         return unit
 
-    def _errors(
-        self, found: _core.BatchOutcome, runs: int
-    ) -> dict[int, dict[str, str]]:
+    def _errors(self, found: _core.BatchResult, runs: int) -> dict[int, dict[str, str]]:
         """Why each analysis that failed on a run failed, by the run, then by name."""
         problems = found["problems"]
         failed: dict[int, dict[str, str]] = {}
@@ -1682,7 +1682,7 @@ class _Planned:
             for index, errors in sorted(failed.items())
         }
 
-    def _traces(self, found: _core.BatchOutcome) -> tuple[results.Traced, ...]:
+    def _traces(self, found: _core.BatchResult) -> tuple[results.Traced, ...]:
         """Each analysis traced, from the arrays `found` holds."""
         simulation = self.simulation
         traces = []
@@ -1736,7 +1736,7 @@ class _Columns:
         """The place of `reason` among the reasons, added if it is new."""
         return np.int32(self.texts.setdefault(reason, len(self.texts)))
 
-    def engine(self, place: int, reading: _Reading, found: _core.BatchOutcome) -> None:
+    def engine(self, place: int, reading: _Reading, found: _core.BatchResult) -> None:
         """Writes what the engine read of the measurement at `place`, or why not."""
         if reading.native is None:
             return
@@ -1813,7 +1813,7 @@ def _axis(analysis: Analysis, simulation: Simulation) -> results.Real:
 
 
 def _at(
-    result: results.Result | None,
+    result: results.AnalysisResult | None,
     analysis: Analysis,
     unknowns: Sequence[results.Unknown],
 ) -> results.Real | results.Complex:
@@ -1825,16 +1825,16 @@ def _at(
     points = _points(analysis)
     if isinstance(analysis, Ac):
         phasors = np.full((points, len(unknowns)), np.nan, dtype=np.complex128)
-        if isinstance(result, results.Response):
+        if isinstance(result, results.AcResult):
             _picked(result.values, result.unknowns, unknowns, phasors)
         return phasors
     found = np.full((points, len(unknowns)), np.nan)
     match result:
-        case results.OperatingPoint():
+        case results.OperatingPointResult():
             _picked(result.values[np.newaxis, :], result.unknowns, unknowns, found)
-        case results.Sweep():
+        case results.DcSweepResult():
             _picked(result.values, result.unknowns, unknowns, found)
-        case results.Waveforms() if isinstance(analysis, Transient):
+        case results.TransientResult() if isinstance(analysis, Transient):
             times = [time.to(TIME, "a time to step onto") for time in analysis.times]
             rows = np.array(
                 [
@@ -1896,7 +1896,7 @@ def _observed(
     }
 
 
-def _statistics(outcome: _core.StatisticsOutcome) -> results.Statistics:
+def _statistics(outcome: _core.Statistics) -> results.Statistics:
     """How the transient of `outcome` went, its work and its profile included."""
     profile = outcome["profile"]
     return results.Statistics(

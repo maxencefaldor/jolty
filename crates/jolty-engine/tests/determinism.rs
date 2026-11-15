@@ -62,8 +62,8 @@ fn complexes(values: &[Complex64], into: &mut Vec<u64>) {
 
 /// Every number of an analysis's result, as its bits, and the result as text, which holds
 /// its counts of work and its messages.
-fn bits(outcome: &Result<jolty_engine::Outcome, SimulationError>) -> Bits {
-    use jolty_engine::Outcome as Found;
+fn bits(outcome: &Result<jolty_engine::AnalysisResult, SimulationError>) -> Bits {
+    use jolty_engine::AnalysisResult as Found;
     let mut numbers = Vec::new();
     match outcome {
         Ok(Found::OperatingPoint(point)) => reals(&point.values, &mut numbers),
@@ -919,7 +919,7 @@ fn a_run_of_another_structure_measures_the_unknowns_of_its_names() {
     for (index, outcome) in kept.0.into_inner().expect("no test thread panicked") {
         let mut alone = Simulator::from_elaborated(Arc::clone(&elaborated), variants.values(index))
             .expect("a run");
-        let Ok(jolty_engine::Outcome::OperatingPoint(point)) =
+        let Ok(jolty_engine::AnalysisResult::OperatingPoint(point)) =
             alone.run(&Analysis::OperatingPoint, &Options::default())
         else {
             panic!("an operating point");
@@ -1003,7 +1003,8 @@ fn a_chain_of_levels_is_the_dc_sweep_of_them() {
             .expect("a sweep");
     let mut simulator =
         Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
-    let Ok(jolty_engine::Outcome::DcSweep(swept)) = simulator.run(&sweep, &Options::default())
+    let Ok(jolty_engine::AnalysisResult::DcSweep(swept)) =
+        simulator.run(&sweep, &Options::default())
     else {
         panic!("a sweep");
     };
@@ -1055,7 +1056,7 @@ const SATURATION_CURRENTS: [f64; 4] = [1e-15, 1e-14, 1e-13, 1e-12];
 /// simulator made afresh for them.
 fn fresh_anode(elaborated: &Arc<Elaborated>, values: Values) -> f64 {
     let mut simulator = Simulator::from_elaborated(Arc::clone(elaborated), values).expect("a run");
-    let Ok(jolty_engine::Outcome::OperatingPoint(point)) =
+    let Ok(jolty_engine::AnalysisResult::OperatingPoint(point)) =
         simulator.run(&Analysis::OperatingPoint, &Options::default())
     else {
         panic!("an operating point");
@@ -1081,7 +1082,8 @@ fn a_sweep_of_a_kernels_number_evaluates_each_value() {
     .expect("a sweep");
     let mut simulator =
         Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
-    let Ok(jolty_engine::Outcome::DcSweep(swept)) = simulator.run(&sweep, &Options::default())
+    let Ok(jolty_engine::AnalysisResult::DcSweep(swept)) =
+        simulator.run(&sweep, &Options::default())
     else {
         panic!("a sweep");
     };

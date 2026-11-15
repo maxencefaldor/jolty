@@ -66,7 +66,7 @@ pub struct Transient {
 
 /// The waveforms of a transient analysis, at every accepted time point.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Waveforms {
+pub struct TransientResult {
     /// The accepted times, in seconds, from zero to the stop time.
     pub times: Vec<f64>,
     /// The value of every unknown at each time.
@@ -532,7 +532,7 @@ impl Simulator {
         &mut self,
         transient: &Transient,
         options: &Options,
-    ) -> Result<Waveforms, SimulationError> {
+    ) -> Result<TransientResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             if transient.periodic {
@@ -619,7 +619,7 @@ impl Simulator {
         options: &Options,
         start: Option<(Vec<f64>, Strategy)>,
         mut carried: Carried<'_>,
-    ) -> Result<Waveforms, SimulationError> {
+    ) -> Result<TransientResult, SimulationError> {
         let reading = self.read_meter(options.profile);
         self.prepare(options)?;
         let longest = self.longest_step(transient)?;
@@ -712,7 +712,7 @@ impl Simulator {
         }
         let mut statistics = stepper.statistics;
         (statistics.work, statistics.profile) = self.metered_since(&reading);
-        Ok(Waveforms {
+        Ok(TransientResult {
             times,
             values,
             observations: observed,

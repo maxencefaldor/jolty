@@ -98,7 +98,7 @@ type Outcome = tuple[str, str]
 """What a measurement read: its value's bits and its unit, or its error and message."""
 
 
-def outcome(measurement: Measurement, result: results.Result) -> Outcome:
+def outcome(measurement: Measurement, result: results.AnalysisResult) -> Outcome:
     """What `measurement` reads of `result`.
 
     numpy's floating-point warnings, of an overflow or of minus infinity less itself,
@@ -112,7 +112,12 @@ def outcome(measurement: Measurement, result: results.Result) -> Outcome:
     return float(reading.value).hex(), str(reading.unit)
 
 
-def alike(name: str, result: results.Result, *args: Any, **kwargs: Any) -> Outcome:  # noqa: ANN401 - the measurement's own arguments
+def alike(
+    name: str,
+    result: results.AnalysisResult,
+    *args: Any,  # noqa: ANN401 - the measurement's own arguments
+    **kwargs: Any,  # noqa: ANN401 - the measurement's own arguments
+) -> Outcome:
     """What the measurement `name` reads of `result`, the engine's and numpy's alike."""
     native = getattr(specs, name)(*args, **kwargs)
     numpy = getattr(reference, name)(*args, **kwargs)
@@ -131,31 +136,33 @@ def alike(name: str, result: results.Result, *args: Any, **kwargs: Any) -> Outco
     return read
 
 
-def waveforms(times: Iterable[float], *columns: Iterable[float]) -> results.Waveforms:
+def waveforms(
+    times: Iterable[float], *columns: Iterable[float]
+) -> results.TransientResult:
     """A transient of `out`, `ref` and `V1:current` at `times`, 0 where not given."""
     points = np.asarray(list(times), dtype=np.float64)
     values = np.zeros((points.size, len(UNKNOWNS)))
     for index, column in enumerate(columns):
         values[:, index] = list(column)
     statistics = results.Statistics("operating point", points.size, 0, 0, 0)
-    return results.Waveforms(UNKNOWNS, points, values, statistics)
+    return results.TransientResult(UNKNOWNS, points, values, statistics)
 
 
 def response(
     frequencies: Iterable[float], out: Iterable[complex], ref: Iterable[complex]
-) -> results.Response:
+) -> results.AcResult:
     points = np.asarray(list(frequencies), dtype=np.float64)
     values = np.zeros((points.size, len(UNKNOWNS)), dtype=np.complex128)
     values[:, 0], values[:, 1] = list(out), list(ref)
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(len(UNKNOWNS)), "newton")
-    return results.Response(UNKNOWNS, "V1", points, values, point)
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(len(UNKNOWNS)), "newton")
+    return results.AcResult(UNKNOWNS, "V1", points, values, point)
 
 
 def loop_gain(
     frequencies: Iterable[float], gains: Iterable[complex]
-) -> results.LoopGain:
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(len(UNKNOWNS)), "newton")
-    return results.LoopGain(
+) -> results.StabilityResult:
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(len(UNKNOWNS)), "newton")
+    return results.StabilityResult(
         UNKNOWNS,
         "VP",
         np.asarray(list(frequencies), dtype=np.float64),
@@ -168,15 +175,15 @@ def spectrum(
     frequencies: Iterable[float],
     densities: Iterable[float],
     gains: Iterable[complex] | None,
-) -> results.NoiseSpectrum:
+) -> results.NoiseResult:
     points = np.asarray(list(frequencies), dtype=np.float64)
     noise_input = (
         None
         if gains is None
         else results.NoiseInput("V1", "current", np.asarray(list(gains), dtype=complex))
     )
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(len(UNKNOWNS)), "newton")
-    return results.NoiseSpectrum(
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(len(UNKNOWNS)), "newton")
+    return results.NoiseResult(
         UNKNOWNS,
         "out",
         None,
@@ -191,7 +198,7 @@ def spectrum(
 
 
 def windowed(
-    result: results.Result, start: Quantity | None, stop: Quantity | None
+    result: results.AnalysisResult, start: Quantity | None, stop: Quantity | None
 ) -> None:
     """Checks every measurement of a window of `result` alike."""
     for name in ("maximum", "minimum", "peak_to_peak", "average", "rms"):
@@ -209,7 +216,7 @@ def windowed(
                 stop=stop,
                 reference=signal_reference,
             )
-    if isinstance(result, results.Waveforms):
+    if isinstance(result, results.TransientResult):
         for low, high in ((0.1, 0.9), (0.2, 0.8)):
             alike(
                 "rise_time",
@@ -239,7 +246,9 @@ def windowed(
 
 
 def small_signal(
-    result: results.Response | results.LoopGain, output: str | None, over: str | None
+    result: results.AcResult | results.StabilityResult,
+    output: str | None,
+    over: str | None,
 ) -> None:
     """Checks every small-signal measurement of `result` alike."""
     lowest = float(np.min(result.frequencies)) if result.frequencies.size else 1.0
@@ -252,7 +261,7 @@ def small_signal(
     alike("bandwidth", result, "ac", output, drop=20.0, over=over)
 
 
-def noise(result: results.NoiseSpectrum, start: float, stop: float) -> None:
+def noise(result: results.NoiseResult, start: float, stop: float) -> None:
     """Checks every noise measurement of `result` alike."""
     for referred in (False, True):
         for at in (start, stop, (start + stop) / 2, math.sqrt(abs(start * stop))):
@@ -303,14 +312,14 @@ def test_closed_forms_read_alike() -> None:
         np.full(41, 2 + 0j),
     )
     noise(hiss, 10.0, 1e5)
-    poles = results.PolesZeros(
+    poles = results.PoleZeroResult(
         UNKNOWNS,
         np.array([-3e3 + 4e3j, -3e3 - 4e3j, -1e6 + 0j]),
         None,
         None,
         None,
         None,
-        results.OperatingPoint(UNKNOWNS, np.zeros(3), "newton"),
+        results.OperatingPointResult(UNKNOWNS, np.zeros(3), "newton"),
     )
     for name in ("damping", "dominant_pole", "solutions"):
         alike(name, poles, "pz")
@@ -383,7 +392,7 @@ an overflow, which the tests' warnings would make an error."""
 
 
 @st.composite
-def transients(draw: st.DrawFn) -> results.Waveforms:
+def transients(draw: st.DrawFn) -> results.TransientResult:
     """A transient at increasing times, its signals random, flat or swinging."""
     times = sorted(
         draw(st.lists(st.floats(0, 100), min_size=1, max_size=24, unique=True))
@@ -437,7 +446,7 @@ def test_sweeps_read_alike(data: st.DataObject) -> None:
     values = np.column_stack(
         [data.draw(st.lists(FINITE, min_size=count, max_size=count)) for _ in UNKNOWNS]
     )
-    result = results.Sweep(UNKNOWNS, "V1", quantity, np.array(levels), values)
+    result = results.DcSweepResult(UNKNOWNS, "V1", quantity, np.array(levels), values)
     unit = V if quantity == "voltage" else A
     windowed(result, data.draw(ends(levels, unit)), data.draw(ends(levels, unit)))
     alike("value", result, "dc", "out", at=data.draw(ends(levels, unit)))
@@ -503,17 +512,19 @@ def test_noise_reads_alike(data: st.DataObject) -> None:
 @SETTINGS
 @given(st.lists(PHASORS, max_size=8), st.integers(0, 4))
 def test_poles_and_solutions_read_alike(poles: list[complex], count: int) -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(3), "newton")
-    found = results.PolesZeros(
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(3), "newton")
+    found = results.PoleZeroResult(
         UNKNOWNS, np.array(poles, dtype=complex), None, None, None, None, point
     )
     for name in ("damping", "dominant_pole"):
         alike(name, found, "pz")
-    alike("solutions", results.OperatingPoints(UNKNOWNS, (point,) * count), "states")
+    alike(
+        "solutions", results.OperatingPointsResult(UNKNOWNS, (point,) * count), "states"
+    )
 
 
 def amplitudes(
-    result: results.Waveforms,
+    result: results.TransientResult,
     fundamental: float,
     harmonics: int,
     start: Quantity | None,

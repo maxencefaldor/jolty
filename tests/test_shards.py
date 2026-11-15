@@ -48,7 +48,7 @@ from jolty import (
     devices,
 )
 from jolty.plan import decade
-from jolty.results import Waveforms
+from jolty.results import TransientResult
 from jolty.specs import Measurement, MeasurementError, Reading, gain, value
 from jolty.units import VOLTAGE, Hz, MHz, V, celsius, kohm, nF, us
 
@@ -73,7 +73,7 @@ def build(supply=5 * V):
 
 def late(result):
     # Read in Python: unread above 2.5 V, why naming the voltage, so runs differ.
-    if not isinstance(result, Waveforms):
+    if not isinstance(result, TransientResult):
         raise TypeError(result)
     volts = float(result.voltage("out")[-1])
     if volts > 2.5:

@@ -81,8 +81,8 @@ EXCURSION = results.Excursion(
 """A logic cell's load outside the domain of its timing."""
 
 
-def every_kind() -> dict[str, results.Result]:
-    point = results.OperatingPoint(
+def every_kind() -> dict[str, results.AnalysisResult]:
+    point = results.OperatingPointResult(
         UNKNOWNS,
         np.array([1.0, -1e-3]),
         "gmin_stepping",
@@ -95,7 +95,7 @@ def every_kind() -> dict[str, results.Result]:
     )
     return {
         "op": point,
-        "sweep": results.Sweep(
+        "sweep": results.DcSweepResult(
             UNKNOWNS,
             "V1",
             "voltage",
@@ -108,7 +108,7 @@ def every_kind() -> dict[str, results.Result]:
             capacitances=np.zeros((2, 8)),
             readings=np.zeros((2, 3)),
         ),
-        "bode": results.Response(
+        "bode": results.AcResult(
             UNKNOWNS,
             "V1",
             np.array([1e3]),
@@ -117,7 +117,7 @@ def every_kind() -> dict[str, results.Result]:
             RECORDING,
             np.array([[1j, -1j, 0, 0]]),
         ),
-        "step": results.Waveforms(
+        "step": results.TransientResult(
             UNKNOWNS,
             np.array([0.0, 1e-6]),
             np.ones((2, 2)),
@@ -130,26 +130,26 @@ def every_kind() -> dict[str, results.Result]:
             readings=np.ones((2, 3)),
             excursions=(EXCURSION,),
         ),
-        "sensitivity": results.Sensitivities(
+        "sensitivity": results.SensitivityResult(
             UNKNOWNS,
             ("out",),
             (PARAMETER, results.Parameter("V1", "waveform.dc", 5.0)),
             np.array([[-2e-4, 0.4]]),
             point,
         ),
-        "over": results.Sensitivities(
+        "over": results.SensitivityResult(
             UNKNOWNS,
             ("out",),
             (PARAMETER,),
             np.array([[[0.0]], [[1.0]]]),
-            results.Waveforms(
+            results.TransientResult(
                 UNKNOWNS, np.array([0.0, 1e-6]), np.ones((2, 2)), STATISTICS
             ),
         ),
-        "loop": results.LoopGain(
+        "loop": results.StabilityResult(
             UNKNOWNS, "VP", np.array([1e3, 1e6]), np.array([100 - 1j, -0.5j]), point
         ),
-        "hiss": results.NoiseSpectrum(
+        "hiss": results.NoiseResult(
             UNKNOWNS,
             "out",
             None,
@@ -161,8 +161,8 @@ def every_kind() -> dict[str, results.Result]:
             results.NoiseInput("V1", "voltage", np.array([0.5, 0.25j])),
             point,
         ),
-        "states": results.OperatingPoints(UNKNOWNS, (point, point)),
-        "pz": results.PolesZeros(
+        "states": results.OperatingPointsResult(UNKNOWNS, (point, point)),
+        "pz": results.PoleZeroResult(
             UNKNOWNS,
             np.array([-1e3 + 2e3j, -1e3 - 2e3j]),
             np.array([0j]),
@@ -171,10 +171,10 @@ def every_kind() -> dict[str, results.Result]:
             None,
             point,
         ),
-        "poles": results.PolesZeros(
+        "poles": results.PoleZeroResult(
             UNKNOWNS, np.array([-1e6 + 0j]), None, None, None, None, point
         ),
-        "quiet": results.NoiseSpectrum(
+        "quiet": results.NoiseResult(
             UNKNOWNS,
             "out",
             "in",
@@ -222,10 +222,10 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     for name, result in written.items():
         assert_same(read[name], result, name)
     sweep = read["sweep"]
-    assert isinstance(sweep, results.Sweep)
+    assert isinstance(sweep, results.DcSweepResult)
     assert (sweep.source, sweep.quantity) == ("V1", "voltage")
     op = read["op"]
-    assert isinstance(op, results.OperatingPoint)
+    assert isinstance(op, results.OperatingPointResult)
     assert op.current("C1", "a") == 1e-3
     assert op.charge("C1", "b") == -1e-12
     assert op.current("X1", "p") == 0
@@ -235,13 +235,13 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     assert op.region("M1") == "saturated"
     assert op.recording.thermal == {"M1.drain"}
     bode = read["bode"]
-    assert isinstance(bode, results.Response)
+    assert isinstance(bode, results.AcResult)
     np.testing.assert_array_equal(bode.current("C1", "b"), [-1j])
     assert bode.operating_point.current("C1", "a") == 1e-3
     assert bode.source == "V1"
     assert bode.operating_point.strategy == "gmin_stepping"
     step = read["step"]
-    assert isinstance(step, results.Waveforms)
+    assert isinstance(step, results.TransientResult)
     assert step.statistics == STATISTICS
     # Each result keeps the excursions its run watched, or that no run watched them.
     assert step.excursions == (EXCURSION,)
@@ -257,25 +257,25 @@ def test_results_files_hold_sensitivities_and_what_they_differentiate(
     save_results(path, every_kind())
     read = load_results(path)
     sensitivity = read["sensitivity"]
-    assert isinstance(sensitivity, results.Sensitivities)
+    assert isinstance(sensitivity, results.SensitivityResult)
     assert sensitivity.outputs == ("out",)
     assert sensitivity.parameters[0] == PARAMETER
     assert sensitivity.derivative("out", "V1", "waveform.dc") == 0.4
-    assert isinstance(sensitivity.result, results.OperatingPoint)
+    assert isinstance(sensitivity.result, results.OperatingPointResult)
     assert sensitivity.result.strategy == "gmin_stepping"
     over = read["over"]
-    assert isinstance(over, results.Sensitivities)
-    assert isinstance(over.result, results.Waveforms)
+    assert isinstance(over, results.SensitivityResult)
+    assert isinstance(over.result, results.TransientResult)
     np.testing.assert_array_equal(over.derivative("out", "X1/R1", "resistance"), [0, 1])
     loop = read["loop"]
-    assert isinstance(loop, results.LoopGain)
+    assert isinstance(loop, results.StabilityResult)
     assert loop.probe == "VP"
     np.testing.assert_array_equal(loop.frequencies, [1e3, 1e6])
     assert loop.operating_point.current("C1", "a") == 1e-3
 
 
 def test_a_results_file_describes_one_circuit(tmp_path: Path) -> None:
-    other = results.OperatingPoint(UNKNOWNS[:1], np.array([1.0]), "direct")
+    other = results.OperatingPointResult(UNKNOWNS[:1], np.array([1.0]), "direct")
     with pytest.raises(ValueError, match="analyses of one circuit"):
         save_results(tmp_path / "mixed.npz", {"a": every_kind()["op"], "b": other})
     with pytest.raises(ValueError, match="analyses of one circuit"):
@@ -324,8 +324,8 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     }
     read = load_results(path)
     first, second = read["op"], read["step"]
-    assert isinstance(first, results.OperatingPoint)
-    assert isinstance(second, results.Waveforms)
+    assert isinstance(first, results.OperatingPointResult)
+    assert isinstance(second, results.TransientResult)
     assert first.recording is second.recording
 
 
@@ -439,5 +439,5 @@ def test_results_files_hold_a_sweep_of_a_parameter(tmp_path: Path) -> None:
     save_results(path, {"sweep": sweep})
     read = load_results(path)["sweep"]
     assert_same(read, sweep, "sweep")
-    assert isinstance(read, results.Sweep)
+    assert isinstance(read, results.DcSweepResult)
     assert (read.parameter, read.quantity) == ("resistance", None)

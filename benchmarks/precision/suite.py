@@ -178,7 +178,7 @@ def run_jolty(prepared: Prepared, setting: Setting, repeats: int) -> Measured:
     seconds: list[float] = []
     # One run to warm up first, as the speed suite's timing does, its time left out.
     Simulation.of(prepared.elaborated).run(prepared.fixture.analysis, options)
-    result: results.Result | None = None
+    result: results.AnalysisResult | None = None
     for _ in range(repeats):
         simulation = Simulation.of(prepared.elaborated)
         started = time.perf_counter()
@@ -190,33 +190,33 @@ def run_jolty(prepared: Prepared, setting: Setting, repeats: int) -> Measured:
     return Measured(_found(result, prepared.fixture.reads), seconds, _counted(result))
 
 
-def _found(result: results.Result, reads: Sequence[str]) -> Found:
+def _found(result: results.AnalysisResult, reads: Sequence[str]) -> Found:
     """What a jolty result holds of the unknowns `reads`, at its points."""
     match result:
         case (
-            results.Waveforms(times=points)
-            | results.Sweep(levels=points)
-            | results.Response(frequencies=points)
+            results.TransientResult(times=points)
+            | results.DcSweepResult(levels=points)
+            | results.AcResult(frequencies=points)
         ):
             values = {
                 read: result.values[:, results.column(result.unknowns, read)]
                 for read in reads
             }
             return Found(np.asarray(points), values)
-        case results.NoiseSpectrum():
+        case results.NoiseResult():
             return Found(result.frequencies, {"noise": result.densities})
-        case results.PolesZeros():
+        case results.PoleZeroResult():
             return Found(np.empty(0), {"poles": result.poles})
     message = f"no fixture reads a {type(result).__name__}"
     raise TypeError(message)
 
 
-def _counted(result: results.Result) -> dict[str, int]:
+def _counted(result: results.AnalysisResult) -> dict[str, int]:
     """A transient's steps, rejections and Newton iterations.
 
     The other analyses count none yet.
     """
-    if not isinstance(result, results.Waveforms):
+    if not isinstance(result, results.TransientResult):
         return {}
     statistics = result.statistics
     counted = {

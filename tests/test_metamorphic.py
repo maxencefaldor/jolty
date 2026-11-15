@@ -312,7 +312,7 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
     )
 
 
-def _currents(point: results.OperatingPoint) -> Iterable[float]:
+def _currents(point: results.OperatingPointResult) -> Iterable[float]:
     """Every current the operating point holds: through branches and into terminals.
 
     The terminals are those of every device it recorded, whose currents come before

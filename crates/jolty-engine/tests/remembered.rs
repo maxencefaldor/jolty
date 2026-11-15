@@ -6,10 +6,10 @@ use std::fs;
 use std::path::Path;
 
 use jolty_engine::{
-    Ac, Analysis, Conditions, DcSweep, Differentiated, LoopGain, Method, Noise, NoiseSpectrum,
-    Observation, Observations, OperatingPoint, OperatingPoints, Options, Outcome, PoleZero,
-    PolesZeros, Record, Response, Sensitivities, Sensitivity, Simulator, Sweep, Transfer,
-    TransferFunction, Transient, Waveforms, Work,
+    Ac, AcResult, Analysis, AnalysisResult, Conditions, DcSweep, DcSweepResult, Differentiated,
+    Method, Noise, NoiseResult, Observation, Observations, OperatingPointResult, OperatingPoints,
+    Options, PoleZero, PoleZeroResult, Record, Sensitivity, SensitivityResult, Simulator,
+    StabilityResult, TransferFunction, TransferFunctionResult, Transient, TransientResult, Work,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -58,7 +58,7 @@ fn simulator(circuit: &Circuit) -> Simulator {
 }
 
 /// `analysis` run with `options` on a simulator of its own.
-fn afresh(circuit: &Circuit, analysis: &Analysis, options: &Options) -> Outcome {
+fn afresh(circuit: &Circuit, analysis: &Analysis, options: &Options) -> AnalysisResult {
     simulator(circuit)
         .run(analysis, options)
         .expect("the analysis runs")
@@ -66,71 +66,75 @@ fn afresh(circuit: &Circuit, analysis: &Analysis, options: &Options) -> Outcome 
 
 /// `outcome` apart from the work of its transients, which is less on a simulator that
 /// remembers the operating point they start from.
-fn apart_from_work(outcome: Outcome) -> Outcome {
+fn apart_from_work(outcome: AnalysisResult) -> AnalysisResult {
     match outcome {
-        Outcome::Transient(mut waveforms) => {
+        AnalysisResult::Transient(mut waveforms) => {
             waveforms.statistics.work = Work::default();
-            Outcome::Transient(waveforms)
+            AnalysisResult::Transient(waveforms)
         }
-        Outcome::Sensitivity(sensitivities) => Outcome::Sensitivity(Sensitivities {
-            result: Box::new(apart_from_work(*sensitivities.result)),
-            ..sensitivities
-        }),
+        AnalysisResult::Sensitivity(sensitivities) => {
+            AnalysisResult::Sensitivity(SensitivityResult {
+                result: Box::new(apart_from_work(*sensitivities.result)),
+                ..sensitivities
+            })
+        }
         other => other,
     }
 }
 
 /// `outcome` without what it records of the devices.
-fn unrecorded(outcome: Outcome) -> Outcome {
-    let point = |point: OperatingPoint| OperatingPoint {
+fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
+    let point = |point: OperatingPointResult| OperatingPointResult {
         observation: Observation::default(),
         ..point
     };
     match outcome {
-        Outcome::OperatingPoint(found) => Outcome::OperatingPoint(point(found)),
-        Outcome::OperatingPoints(found) => {
-            Outcome::OperatingPoints(found.into_iter().map(point).collect())
+        AnalysisResult::OperatingPoint(found) => AnalysisResult::OperatingPoint(point(found)),
+        AnalysisResult::OperatingPoints(found) => {
+            AnalysisResult::OperatingPoints(found.into_iter().map(point).collect())
         }
-        Outcome::DcSweep(sweep) => Outcome::DcSweep(Sweep {
+        AnalysisResult::DcSweep(sweep) => AnalysisResult::DcSweep(DcSweepResult {
             observations: Observations::default(),
             ..sweep
         }),
-        Outcome::Ac(response) => Outcome::Ac(Response {
+        AnalysisResult::Ac(response) => AnalysisResult::Ac(AcResult {
             operating_point: point(response.operating_point),
             currents: Vec::new(),
             ..response
         }),
-        Outcome::Transient(waveforms) => Outcome::Transient(Waveforms {
+        AnalysisResult::Transient(waveforms) => AnalysisResult::Transient(TransientResult {
             observations: Observations::default(),
             ..waveforms
         }),
-        Outcome::Sensitivity(found) => Outcome::Sensitivity(Sensitivities {
+        AnalysisResult::Sensitivity(found) => AnalysisResult::Sensitivity(SensitivityResult {
             result: Box::new(unrecorded(*found.result)),
             ..found
         }),
-        Outcome::Stability(gain) => Outcome::Stability(LoopGain {
+        AnalysisResult::Stability(gain) => AnalysisResult::Stability(StabilityResult {
             operating_point: point(gain.operating_point),
             ..gain
         }),
-        Outcome::Noise(spectrum) => Outcome::Noise(NoiseSpectrum {
+        AnalysisResult::Noise(spectrum) => AnalysisResult::Noise(NoiseResult {
             operating_point: point(spectrum.operating_point),
             ..spectrum
         }),
-        Outcome::PoleZero(found) => Outcome::PoleZero(PolesZeros {
+        AnalysisResult::PoleZero(found) => AnalysisResult::PoleZero(PoleZeroResult {
             operating_point: point(found.operating_point),
             ..found
         }),
-        Outcome::TransferFunction(found) => Outcome::TransferFunction(Transfer {
-            operating_point: point(found.operating_point),
-            ..found
-        }),
+        AnalysisResult::TransferFunction(found) => {
+            AnalysisResult::TransferFunction(TransferFunctionResult {
+                operating_point: point(found.operating_point),
+                ..found
+            })
+        }
     }
 }
 
 /// The Newton iterations of the transient `outcome`, if it is one.
-fn iterations(outcome: &Outcome) -> Option<usize> {
+fn iterations(outcome: &AnalysisResult) -> Option<usize> {
     match outcome {
-        Outcome::Transient(waveforms) => Some(waveforms.statistics.work.iterations),
+        AnalysisResult::Transient(waveforms) => Some(waveforms.statistics.work.iterations),
         _ => None,
     }
 }
@@ -214,7 +218,7 @@ fn every_analysis_about_the_operating_point_solves_it_once_as_afresh() {
         .expect("the poles are found");
     assert_eq!(simulator.operating_point_solves(), 1);
     assert_eq!(
-        Outcome::OperatingPoint(point),
+        AnalysisResult::OperatingPoint(point),
         afresh(&circuit, &Analysis::OperatingPoint, &options)
     );
 }
@@ -224,7 +228,7 @@ fn options_that_change_the_dc_solution_solve_it_again() {
     let circuit = rectifier();
     let mut simulator = simulator(&circuit);
     let point = |simulator: &mut Simulator, options: &Options| {
-        Outcome::OperatingPoint(simulator.operating_point(options).expect("a solution"))
+        AnalysisResult::OperatingPoint(simulator.operating_point(options).expect("a solution"))
     };
     point(&mut simulator, &Options::default());
     // A transient's options and the memory leave the DC solution as it is.
@@ -283,14 +287,15 @@ fn tighter_tolerances_go_on_from_the_last_solution_to_the_one_from_zero() {
     let continued = simulator.operating_point(&tight).expect("a solution");
     assert_eq!(simulator.operating_point_solves(), 2);
     assert_eq!(
-        Outcome::OperatingPoint(continued.clone()),
+        AnalysisResult::OperatingPoint(continued.clone()),
         afresh(&circuit, &Analysis::OperatingPoint, &tight)
     );
     let loose = Options {
         relative_tolerance: 1e-2,
         ..Options::default()
     };
-    let Outcome::OperatingPoint(from_zero) = afresh(&circuit, &Analysis::OperatingPoint, &loose)
+    let AnalysisResult::OperatingPoint(from_zero) =
+        afresh(&circuit, &Analysis::OperatingPoint, &loose)
     else {
         panic!("an operating point");
     };

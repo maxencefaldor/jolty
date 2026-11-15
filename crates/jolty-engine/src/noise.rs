@@ -14,7 +14,7 @@ use jolty_numerics::Complex64;
 use serde::Deserialize;
 
 use crate::ac::{Linearization, over_frequencies};
-use crate::{OperatingPoint, Options, SimulationError, Simulator};
+use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// A noise analysis: the noise density at an output, at each frequency, and how much each
 /// device's noise sources add to it.
@@ -37,7 +37,7 @@ pub struct Noise {
 
 /// The noise at an output, at each frequency.
 #[derive(Debug, Clone, PartialEq)]
-pub struct NoiseSpectrum {
+pub struct NoiseResult {
     /// The output's unknown, by name.
     pub output: String,
     /// The node the output voltage is taken over, if not the reference node.
@@ -45,7 +45,7 @@ pub struct NoiseSpectrum {
     /// What the output is: a voltage, or a current.
     pub quantity: Quantity,
     /// The operating point the circuit was linearized at.
-    pub operating_point: OperatingPoint,
+    pub operating_point: OperatingPointResult,
     /// The frequencies, in hertz.
     pub frequencies: Vec<f64>,
     /// The output's one-sided noise density at each frequency: in V²/Hz for a voltage, or
@@ -69,7 +69,7 @@ pub struct NoiseInput {
     pub gains: Vec<Complex64>,
 }
 
-impl NoiseSpectrum {
+impl NoiseResult {
     /// The noise referred to the input at each frequency, the output's density over the
     /// gain's square: in V²/Hz for a voltage source, or A²/Hz for a current source, given
     /// an input; infinite where the gain is zero.
@@ -130,7 +130,7 @@ impl Simulator {
         &mut self,
         noise: &Noise,
         options: &Options,
-    ) -> Result<NoiseSpectrum, SimulationError> {
+    ) -> Result<NoiseResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             let (output, reference, quantity) =
@@ -206,7 +206,7 @@ impl Simulator {
                     input.gains.push(gain);
                 }
             }
-            Ok(NoiseSpectrum {
+            Ok(NoiseResult {
                 output: noise.output.clone(),
                 reference: noise.reference.clone(),
                 quantity,

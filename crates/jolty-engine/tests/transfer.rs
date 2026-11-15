@@ -2,7 +2,9 @@
 //! known in closed form.
 #![cfg(test)]
 
-use jolty_engine::{Conditions, Options, SimulationError, Simulator, Transfer, TransferFunction};
+use jolty_engine::{
+    Conditions, Options, SimulationError, Simulator, TransferFunction, TransferFunctionResult,
+};
 use jolty_ir::Circuit;
 use jolty_models::Library;
 use serde_json::{Value, json};
@@ -43,7 +45,7 @@ fn transfer(
     source: &str,
     output: &str,
     reference: Option<&str>,
-) -> Result<Transfer, SimulationError> {
+) -> Result<TransferFunctionResult, SimulationError> {
     let mut simulator = Simulator::new(
         &circuit(devices),
         &Library::standard(),

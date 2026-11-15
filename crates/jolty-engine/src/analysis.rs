@@ -3,9 +3,10 @@
 use serde::Deserialize;
 
 use crate::{
-    Ac, DcSweep, LoopGain, Noise, NoiseSpectrum, OperatingPoint, OperatingPoints, Options,
-    PoleZero, PolesZeros, Response, Sensitivities, Sensitivity, SimulationError, Simulator,
-    Stability, Sweep, Transfer, TransferFunction, Transient, Waveforms,
+    Ac, AcResult, DcSweep, DcSweepResult, Noise, NoiseResult, OperatingPointResult,
+    OperatingPoints, Options, PoleZero, PoleZeroResult, Sensitivity, SensitivityResult,
+    SimulationError, Simulator, Stability, StabilityResult, TransferFunction,
+    TransferFunctionResult, Transient, TransientResult,
 };
 
 /// An analysis to run.
@@ -39,27 +40,27 @@ pub enum Analysis {
 
 /// The result of an [`Analysis`].
 #[derive(Debug, Clone, PartialEq)]
-pub enum Outcome {
+pub enum AnalysisResult {
     /// The DC operating point.
-    OperatingPoint(OperatingPoint),
+    OperatingPoint(OperatingPointResult),
     /// The operating points of a DC sweep.
-    DcSweep(Sweep),
+    DcSweep(DcSweepResult),
     /// A small-signal frequency response.
-    Ac(Response),
+    Ac(AcResult),
     /// The waveforms of a transient analysis.
-    Transient(Waveforms),
+    Transient(TransientResult),
     /// The DC sensitivities.
-    Sensitivity(Sensitivities),
+    Sensitivity(SensitivityResult),
     /// The loop gain.
-    Stability(LoopGain),
+    Stability(StabilityResult),
     /// The noise at an output.
-    Noise(NoiseSpectrum),
+    Noise(NoiseResult),
     /// The poles and zeros.
-    PoleZero(PolesZeros),
+    PoleZero(PoleZeroResult),
     /// The DC solutions, the operating point first.
-    OperatingPoints(Vec<OperatingPoint>),
+    OperatingPoints(Vec<OperatingPointResult>),
     /// The transfer function at DC.
-    TransferFunction(Transfer),
+    TransferFunction(TransferFunctionResult),
 }
 
 impl Simulator {
@@ -72,27 +73,31 @@ impl Simulator {
         &mut self,
         analysis: &Analysis,
         options: &Options,
-    ) -> Result<Outcome, SimulationError> {
+    ) -> Result<AnalysisResult, SimulationError> {
         Ok(match analysis {
-            Analysis::OperatingPoint => Outcome::OperatingPoint(self.operating_point(options)?),
-            Analysis::DcSweep(sweep) => Outcome::DcSweep(self.dc_sweep(sweep, options)?),
-            Analysis::Ac(ac) => Outcome::Ac(self.ac(ac, options)?),
+            Analysis::OperatingPoint => {
+                AnalysisResult::OperatingPoint(self.operating_point(options)?)
+            }
+            Analysis::DcSweep(sweep) => AnalysisResult::DcSweep(self.dc_sweep(sweep, options)?),
+            Analysis::Ac(ac) => AnalysisResult::Ac(self.ac(ac, options)?),
             Analysis::Transient(transient) => {
-                Outcome::Transient(self.transient(transient, options)?)
+                AnalysisResult::Transient(self.transient(transient, options)?)
             }
             Analysis::Sensitivity(sensitivity) => {
-                Outcome::Sensitivity(self.sensitivity(sensitivity, options)?)
+                AnalysisResult::Sensitivity(self.sensitivity(sensitivity, options)?)
             }
             Analysis::Stability(stability) => {
-                Outcome::Stability(self.stability(stability, options)?)
+                AnalysisResult::Stability(self.stability(stability, options)?)
             }
-            Analysis::Noise(noise) => Outcome::Noise(self.noise(noise, options)?),
-            Analysis::PoleZero(analysis) => Outcome::PoleZero(self.pole_zero(analysis, options)?),
+            Analysis::Noise(noise) => AnalysisResult::Noise(self.noise(noise, options)?),
+            Analysis::PoleZero(analysis) => {
+                AnalysisResult::PoleZero(self.pole_zero(analysis, options)?)
+            }
             Analysis::OperatingPoints(search) => {
-                Outcome::OperatingPoints(self.operating_points(search, options)?)
+                AnalysisResult::OperatingPoints(self.operating_points(search, options)?)
             }
             Analysis::TransferFunction(analysis) => {
-                Outcome::TransferFunction(self.transfer_function(analysis, options)?)
+                AnalysisResult::TransferFunction(self.transfer_function(analysis, options)?)
             }
         })
     }

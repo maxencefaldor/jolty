@@ -111,7 +111,7 @@ class Transistor(_Model):
     margins: tuple[Margin, ...]
 
 
-class PointReport(_Model):
+class OperatingPointReport(_Model):
     """An operating point."""
 
     kind: Literal["operating_point"] = "operating_point"
@@ -170,7 +170,7 @@ class Solutions(_Model):
     values: tuple[float, ...] = Field(description="Its value at each solution.")
 
 
-class PointsReport(_Model):
+class OperatingPointsReport(_Model):
     """Every DC solution a search found, the operating point first."""
 
     kind: Literal["operating_points"] = "operating_points"
@@ -198,7 +198,7 @@ class PointsReport(_Model):
         return _join(head, _table(rows), self.unlisted)
 
 
-class SweepReport(_Model):
+class DcSweepReport(_Model):
     """A DC sweep."""
 
     kind: Literal["dc_sweep"] = "dc_sweep"
@@ -237,7 +237,7 @@ class SweepReport(_Model):
         return _join(head, lines, self.unlisted)
 
 
-class ResponseReport(_Model):
+class AcReport(_Model):
     """A small-signal frequency response, as magnitudes per unit excitation."""
 
     kind: Literal["ac"] = "ac"
@@ -351,7 +351,7 @@ class StabilityReport(_Model):
         return "\n".join(lines)
 
 
-class TransferReport(_Model):
+class TransferFunctionReport(_Model):
     """The small-signal transfer function at DC: a gain and two resistances."""
 
     kind: Literal["transfer_function"] = "transfer_function"
@@ -871,23 +871,23 @@ class WorstCaseReport(_Model):
 
 
 type AnalysisReport = Annotated[
-    PointReport
-    | PointsReport
-    | SweepReport
-    | ResponseReport
+    OperatingPointReport
+    | OperatingPointsReport
+    | DcSweepReport
+    | AcReport
     | TransientReport
     | SensitivityReport
     | StabilityReport
     | NoiseReport
     | PoleZeroReport
-    | TransferReport
+    | TransferFunctionReport
     | FailureReport,
     Field(discriminator="kind"),
 ]
 """The report of any analysis."""
 
 
-def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
+def report(name: str, result: results.AnalysisResult, listed: int) -> AnalysisReport:
     """The report of the analysis `name`.
 
     It lists its first `listed` unknowns, then its first logic nets, up to `listed` in
@@ -897,7 +897,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
     nets = _nets(result)[: listed - len(unknowns)]
     unlisted = len(result.unknowns) + len(_nets(result)) - len(unknowns) - len(nets)
     match result:
-        case results.OperatingPoint():
+        case results.OperatingPointResult():
             values = tuple(
                 Value(
                     unknown=unknown.name, quantity=unknown.quantity, value=float(value)
@@ -909,7 +909,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 for net, level in zip(nets, result.logic, strict=False)
             )
             transistors = _transistors(result)
-            return PointReport(
+            return OperatingPointReport(
                 name=name,
                 strategy=result.strategy,
                 values=values,
@@ -918,8 +918,8 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 transistors=transistors[:listed],
                 unlisted_transistors=max(len(transistors) - listed, 0),
             )
-        case results.Sweep():
-            return SweepReport(
+        case results.DcSweepResult():
+            return DcSweepReport(
                 name=name,
                 source=result.source,
                 quantity=result.quantity,
@@ -931,8 +931,8 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 activities=tuple(_activity(net, result.level(net)) for net in nets),
                 unlisted=unlisted,
             )
-        case results.Response():
-            return ResponseReport(
+        case results.AcResult():
+            return AcReport(
                 name=name,
                 source=result.source,
                 lowest=float(result.frequencies[0]),
@@ -941,7 +941,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 magnitudes=_extents_of(unknowns, np.abs(result.values[:, :listed])),
                 unlisted=unlisted,
             )
-        case results.Waveforms():
+        case results.TransientResult():
             return TransientReport(
                 name=name,
                 stop=float(result.times[-1]),
@@ -955,8 +955,8 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
                 ),
                 unlisted=unlisted,
             )
-        case results.OperatingPoints():
-            return PointsReport(
+        case results.OperatingPointsResult():
+            return OperatingPointsReport(
                 name=name,
                 strategies=tuple(point.strategy for point in result.points),
                 values=tuple(
@@ -975,7 +975,7 @@ def report(name: str, result: results.Result, listed: int) -> AnalysisReport:
             return _linear(name, result, listed)
 
 
-def _transistors(point: results.OperatingPoint) -> tuple[Transistor, ...]:
+def _transistors(point: results.OperatingPointResult) -> tuple[Transistor, ...]:
     """The region and margins of each transistor `point` recorded.
 
     Those nearest a boundary come first, by the least magnitude of their margins.
@@ -1004,28 +1004,30 @@ def _transistors(point: results.OperatingPoint) -> tuple[Transistor, ...]:
 
 def _linear(
     name: str,
-    result: results.Sensitivities
-    | results.LoopGain
-    | results.NoiseSpectrum
-    | results.PolesZeros
-    | results.Transfer,
+    result: results.SensitivityResult
+    | results.StabilityResult
+    | results.NoiseResult
+    | results.PoleZeroResult
+    | results.TransferFunctionResult,
     listed: int,
 ) -> AnalysisReport:
     """The report of a small-signal analysis or of sensitivities."""
     match result:
-        case results.Transfer():
+        case results.TransferFunctionResult():
             return _transfer(name, result)
-        case results.Sensitivities():
+        case results.SensitivityResult():
             return _sensitivities(name, result, listed)
-        case results.LoopGain():
+        case results.StabilityResult():
             return _stability(name, result)
-        case results.NoiseSpectrum():
+        case results.NoiseResult():
             return _noise(name, result, listed)
-        case results.PolesZeros():
+        case results.PoleZeroResult():
             return _poles_zeros(name, result, listed)
 
 
-def _poles_zeros(name: str, result: results.PolesZeros, listed: int) -> PoleZeroReport:
+def _poles_zeros(
+    name: str, result: results.PoleZeroResult, listed: int
+) -> PoleZeroReport:
     """The report of the pole-zero analysis `name`, its first `listed` roots."""
     poles = _roots(result.poles)
     zeros = None if result.zeros is None else _roots(result.zeros)
@@ -1059,7 +1061,7 @@ def _roots(roots: results.Complex) -> tuple[Root, ...]:
     )
 
 
-def _noise(name: str, result: results.NoiseSpectrum, listed: int) -> NoiseReport:
+def _noise(name: str, result: results.NoiseResult, listed: int) -> NoiseReport:
     """The report of the noise analysis `name`, its `listed` noisiest sources."""
     order = np.argsort(result.frequencies)
     frequencies = result.frequencies[order]
@@ -1102,12 +1104,14 @@ def _noise(name: str, result: results.NoiseSpectrum, listed: int) -> NoiseReport
     )
 
 
-def _transfer(name: str, result: results.Transfer) -> TransferReport:
+def _transfer(
+    name: str, result: results.TransferFunctionResult
+) -> TransferFunctionReport:
     """The report of the transfer function analysis `name`."""
     output = next(
         unknown.quantity for unknown in result.unknowns if unknown.name == result.output
     )
-    return TransferReport(
+    return TransferFunctionReport(
         name=name,
         source=result.source,
         output=result.output,
@@ -1119,7 +1123,7 @@ def _transfer(name: str, result: results.Transfer) -> TransferReport:
     )
 
 
-def _stability(name: str, result: results.LoopGain) -> StabilityReport:
+def _stability(name: str, result: results.StabilityResult) -> StabilityReport:
     """The report of the stability analysis `name`.
 
     Its margins are read over the positive frequencies, as log frequency needs.
@@ -1146,7 +1150,9 @@ def _stability(name: str, result: results.LoopGain) -> StabilityReport:
     )
 
 
-def _reading(measurement: specs.Measurement, result: results.Result) -> float | None:
+def _reading(
+    measurement: specs.Measurement, result: results.AnalysisResult
+) -> float | None:
     """What `measurement` reads of `result`, or None when it cannot read it."""
     try:
         return measurement.read(result).value
@@ -1155,20 +1161,20 @@ def _reading(measurement: specs.Measurement, result: results.Result) -> float | 
 
 
 def _sensitivities(
-    name: str, result: results.Sensitivities, listed: int
+    name: str, result: results.SensitivityResult, listed: int
 ) -> SensitivityReport:
     """The report of the sensitivity analysis `name`, its first `listed` parameters."""
     listed_parameters = min(listed, len(result.parameters))
     match result.result:
-        case results.OperatingPoint() as point:
+        case results.OperatingPointResult() as point:
             of, points, strategy, unit = "operating_point", 1, point.strategy, ""
-        case results.Sweep() as sweep:
+        case results.DcSweepResult() as sweep:
             of, points, strategy = "dc_sweep", len(sweep.levels), None
             unit = "" if sweep.quantity is None else _SYMBOLS[sweep.quantity]
-        case results.Response() as response:
+        case results.AcResult() as response:
             of, points, unit = "ac", len(response.frequencies), "Hz"
             strategy = response.operating_point.strategy
-        case results.Waveforms() as waveforms:
+        case results.TransientResult() as waveforms:
             of, points, strategy, unit = "transient", len(waveforms.times), None, "s"
     return SensitivityReport(
         name=name,
@@ -1185,7 +1191,7 @@ def _sensitivities(
 
 
 def _output(
-    result: results.Sensitivities, output: str, listed: int
+    result: results.SensitivityResult, output: str, listed: int
 ) -> OutputSensitivity:
     """The value of `output`, and its derivatives by the first `listed` parameters.
 
@@ -1195,10 +1201,14 @@ def _output(
     column = results.column(result.unknowns, output)
     quantity = result.unknowns[column].quantity
     match result.result:
-        case results.OperatingPoint() as point:
+        case results.OperatingPointResult() as point:
             value = float(point.values[column])
             found = [(float(derivative.real), None) for derivative in gradient[:listed]]
-        case results.Sweep() | results.Response() | results.Waveforms() as along:
+        case (
+            results.DcSweepResult()
+            | results.AcResult()
+            | results.TransientResult() as along
+        ):
             value = None
             axis = _axis(along)
             found = []
@@ -1224,28 +1234,30 @@ def _output(
     )
 
 
-def _axis(result: results.Sweep | results.Response | results.Waveforms) -> results.Real:
+def _axis(
+    result: results.DcSweepResult | results.AcResult | results.TransientResult,
+) -> results.Real:
     """The levels, frequencies or times of `result`."""
     match result:
-        case results.Sweep():
+        case results.DcSweepResult():
             return result.levels
-        case results.Response():
+        case results.AcResult():
             return result.frequencies
-        case results.Waveforms():
+        case results.TransientResult():
             return result.times
 
 
-def _nets(result: results.Result) -> tuple[str, ...]:
+def _nets(result: results.AnalysisResult) -> tuple[str, ...]:
     """The logic nets of `result`; small-signal results and sensitivities have none."""
     if isinstance(
         result,
-        results.Response
-        | results.Sensitivities
-        | results.LoopGain
-        | results.NoiseSpectrum
-        | results.PolesZeros
-        | results.Transfer
-        | results.OperatingPoints,
+        results.AcResult
+        | results.SensitivityResult
+        | results.StabilityResult
+        | results.NoiseResult
+        | results.PoleZeroResult
+        | results.TransferFunctionResult
+        | results.OperatingPointsResult,
     ):
         return ()
     return result.nets

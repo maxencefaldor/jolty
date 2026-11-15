@@ -150,7 +150,7 @@ class Report(_Model):
         )
 
 
-def problem(found: _core.ProblemOutcome) -> str:
+def problem(found: _core.Problem) -> str:
     """A problem the engine `found`, in a compiler's form.
 
     The form is what is wrong, then the instance and the script line that placed it, if
@@ -172,7 +172,7 @@ def problem(found: _core.ProblemOutcome) -> str:
     return text
 
 
-def diagnostics(found: Iterable[_core.DiagnosticOutcome]) -> tuple[Diagnostic, ...]:
+def diagnostics(found: Iterable[_core.Diagnostic]) -> tuple[Diagnostic, ...]:
     """The diagnostics the engine `found`, each at its rule's default level."""
     known = rules()
     return tuple(

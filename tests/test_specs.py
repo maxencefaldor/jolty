@@ -77,41 +77,43 @@ TAU = 1e-6
 """The time constant of the first-order step response, in seconds."""
 
 
-def point(out: float) -> results.OperatingPoint:
-    return results.OperatingPoint(UNKNOWNS, np.array([out, 0.5, -out / 1e3]), "newton")
+def point(out: float) -> results.OperatingPointResult:
+    return results.OperatingPointResult(
+        UNKNOWNS, np.array([out, 0.5, -out / 1e3]), "newton"
+    )
 
 
-def waveforms(times: results.Real, out: results.Real) -> results.Waveforms:
+def waveforms(times: results.Real, out: results.Real) -> results.TransientResult:
     values = np.column_stack([out, np.full_like(out, 0.5), -out / 1e3])
     statistics = results.Statistics("operating point", times.size, 0, 0, 0)
-    return results.Waveforms(UNKNOWNS, times, values, statistics)
+    return results.TransientResult(UNKNOWNS, times, values, statistics)
 
 
-def response(frequencies: results.Real, out: results.Complex) -> results.Response:
+def response(frequencies: results.Real, out: results.Complex) -> results.AcResult:
     values = np.column_stack([out, np.full_like(out, 2), out / 1e3])
-    return results.Response(UNKNOWNS, "V1", frequencies, values, point(0.0))
+    return results.AcResult(UNKNOWNS, "V1", frequencies, values, point(0.0))
 
 
-def first_order() -> results.Waveforms:
+def first_order() -> results.TransientResult:
     """A unit step through a time constant of 1 µs, held for 20 time constants."""
     times = np.linspace(0, 20 * TAU, 200_001)
     return waveforms(times, 1 - np.exp(-times / TAU))
 
 
-def low_pass() -> results.Response:
+def low_pass() -> results.AcResult:
     """A first-order low pass with its corner at 1 kHz, densely sampled."""
     frequencies = np.logspace(0, 6, 6001)
     transfer = np.asarray(1 / (1 + 1j * frequencies / 1e3), dtype=np.complex128)
     return response(frequencies, transfer)
 
 
-def verdict_of(requirement: Requirement, result: results.Result) -> Verdict:
+def verdict_of(requirement: Requirement, result: results.AnalysisResult) -> Verdict:
     analysis = requirement.measurement.analysis
     (verdict,) = evaluate(Specs([requirement]), [analysis], {analysis: result})
     return verdict
 
 
-def unread(requirement: Requirement, result: results.Result) -> str:
+def unread(requirement: Requirement, result: results.AnalysisResult) -> str:
     verdict = verdict_of(requirement, result)
     assert verdict.status == "unmeasured"
     assert verdict.reason is not None
@@ -131,7 +133,7 @@ def test_a_value_reads_an_operating_point_or_interpolates_an_axis() -> None:
 def test_a_value_reads_a_sweep_whose_levels_fall() -> None:
     levels = np.linspace(5, 0, 11)
     values = np.column_stack([levels / 2, levels, levels])
-    sweep = results.Sweep(UNKNOWNS, "V1", "voltage", levels, values)
+    sweep = results.DcSweepResult(UNKNOWNS, "V1", "voltage", levels, values)
     assert value("dc", "out", at=1.25 * V).read(sweep).value == pytest.approx(0.625)
     assert maximum("dc", "out", stop=4 * V).read(sweep).value == pytest.approx(2)
 
@@ -235,8 +237,10 @@ def test_the_phase_margin_of_an_integrator_with_a_pole_at_unity() -> None:
     assert (measured.value, measured.unit) == (pytest.approx(expected, abs=1e-6), "°")
 
 
-def loop_gain(frequencies: results.Real, gains: results.Complex) -> results.LoopGain:
-    return results.LoopGain(UNKNOWNS, "VP", frequencies, gains, point(0.0))
+def loop_gain(
+    frequencies: results.Real, gains: results.Complex
+) -> results.StabilityResult:
+    return results.StabilityResult(UNKNOWNS, "VP", frequencies, gains, point(0.0))
 
 
 def test_a_loop_gains_margins_are_read_without_an_output() -> None:
@@ -404,7 +408,7 @@ def test_a_requirement_is_unmeasured_when_it_cannot_be_read() -> None:
         "a rise time reads a transient, not an operating point"
     )
     parameter = results.Parameter("R1", "resistance", 1e3)
-    sensitivities = results.Sensitivities(
+    sensitivities = results.SensitivityResult(
         UNKNOWNS, ("out",), (parameter,), np.ones((1, 1)), point(1.0)
     )
     assert unread(value("sens", "out") >= 0 * V, sensitivities) == (
@@ -584,7 +588,7 @@ def test_a_verdict_is_the_worst_of_every_run() -> None:
     assert (unmeasured.status, unmeasured.corner) == ("unmeasured", "lost")
 
 
-def hiss(*, referred: bool = True) -> results.NoiseSpectrum:
+def hiss(*, referred: bool = True) -> results.NoiseResult:
     """White noise of 16e-18 V²/Hz from 10 Hz to 100 kHz, plus flicker noise.
 
     The flicker noise is 1e-15 V²/Hz at 1 Hz, falling as 1/f, and the input's gain 2.
@@ -593,7 +597,7 @@ def hiss(*, referred: bool = True) -> results.NoiseSpectrum:
     white = np.full(frequencies.size, 16e-18)
     flicker = 1e-15 / frequencies
     noise_input = results.NoiseInput("V1", "voltage", np.full(frequencies.size, 2 + 0j))
-    return results.NoiseSpectrum(
+    return results.NoiseResult(
         UNKNOWNS,
         "out",
         None,
@@ -714,7 +718,7 @@ def test_the_wilson_interval_is_the_yield_s_and_refuses_what_is_no_proportion() 
 
 def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
     poles = np.array([-3e3 + 4e3j, -3e3 - 4e3j, -1e6 + 0j])
-    found = results.PolesZeros(UNKNOWNS, poles, None, None, None, None, point(0.0))
+    found = results.PoleZeroResult(UNKNOWNS, poles, None, None, None, None, point(0.0))
     least = damping("pz").read(found)
     assert (least.value, least.unit) == (pytest.approx(0.6), "")
     slowest = dominant_pole("pz").read(found)
@@ -726,11 +730,11 @@ def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
         .describe()
         .startswith("failed: least damping ratio of the poles in pz ≥ 0.7: read 0.6")
     )
-    growing = results.PolesZeros(
+    growing = results.PoleZeroResult(
         UNKNOWNS, np.array([1e3 + 0j]), None, None, None, None, point(0.0)
     )
     assert damping("pz").read(growing).value == -1.0
-    empty = results.PolesZeros(
+    empty = results.PoleZeroResult(
         UNKNOWNS, np.empty(0, dtype=complex), None, None, None, None, point(0.0)
     )
     assert unread(damping("pz") >= 0, empty) == "the circuit has no poles"
@@ -740,7 +744,9 @@ def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
 
 
 def test_solutions_count_a_searchs_dc_solutions() -> None:
-    found = results.OperatingPoints(UNKNOWNS, (point(0.0), point(3.3), point(1.65)))
+    found = results.OperatingPointsResult(
+        UNKNOWNS, (point(0.0), point(3.3), point(1.65))
+    )
     reading = solutions("states").read(found)
     assert (reading.value, reading.unit) == (3.0, "")
     assert str(solutions("states") <= 1) == "DC solutions in states ≤ 1"

@@ -35,9 +35,9 @@ TIMES = np.linspace(0, 1e-6, 5)
 STATISTICS = results.Statistics("direct", 4, 0, 0, 8)
 
 
-def waveforms() -> results.Waveforms:
+def waveforms() -> results.TransientResult:
     values = np.outer(TIMES / TIMES[-1], [1.0, 0.5, 0.25, 0.1, -1e-3])
-    return results.Waveforms(UNKNOWNS, TIMES, values, STATISTICS)
+    return results.TransientResult(UNKNOWNS, TIMES, values, STATISTICS)
 
 
 def test_plots_draw_the_nets_the_top_names_by_default() -> None:
@@ -53,10 +53,10 @@ def test_voltages_and_currents_never_share_an_axis() -> None:
 
 
 def test_a_response_plots_magnitude_and_phase() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(5), "direct")
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(5), "direct")
     frequencies = np.array([1e3, 1e4, 1e5])
     values = np.ones((3, 5)) / (1 + 1j * frequencies[:, None] / 1e4)
-    response = results.Response(UNKNOWNS, "V1", frequencies, values, point)
+    response = results.AcResult(UNKNOWNS, "V1", frequencies, values, point)
     figure = plot("bode", response, ["out"])
     assert [axes.get_ylabel() for axes in figure.axes] == [
         "voltage magnitude",
@@ -68,10 +68,10 @@ def test_a_response_plots_magnitude_and_phase() -> None:
 
 
 def test_a_loop_gain_plots_alone_against_its_margins_levels() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(5), "direct")
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(5), "direct")
     frequencies = np.array([0.0, 1e3, 1e4, 1e5])
     gains = 100 / (1 + 1j * frequencies / 1e3) ** 2
-    loop = results.LoopGain(UNKNOWNS, "VP", frequencies, gains, point)
+    loop = results.StabilityResult(UNKNOWNS, "VP", frequencies, gains, point)
     figure = plot("loop", loop, ["out"])
     magnitude, phase = figure.axes
     assert (magnitude.get_ylabel(), phase.get_ylabel()) == ("magnitude", "phase")
@@ -84,10 +84,10 @@ def test_a_loop_gain_plots_alone_against_its_margins_levels() -> None:
 
 
 def test_a_noise_spectrum_plots_its_density_and_its_noisiest_sources() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(5), "direct")
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(5), "direct")
     frequencies = np.array([10.0, 1e3, 1e5])
     contributions = np.stack([np.full(3, 4e-18), 1e-15 / frequencies])
-    spectrum = results.NoiseSpectrum(
+    spectrum = results.NoiseResult(
         UNKNOWNS,
         "out",
         None,
@@ -118,8 +118,8 @@ def test_a_noise_spectrum_plots_its_density_and_its_noisiest_sources() -> None:
 
 
 def test_poles_and_zeros_plot_at_their_frequency_and_damping() -> None:
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(5), "direct")
-    found = results.PolesZeros(
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(5), "direct")
+    found = results.PoleZeroResult(
         UNKNOWNS,
         np.array([-3e3 + 4e3j, -3e3 - 4e3j, 1e6 + 0j]),
         np.array([0j, -2e3 + 0j]),
@@ -150,7 +150,7 @@ def test_poles_and_zeros_plot_at_their_frequency_and_damping() -> None:
 
 def test_a_sweep_plots_along_its_source() -> None:
     levels = np.array([0.0, 1.0])
-    sweep = results.Sweep(UNKNOWNS, "I1", "current", levels, np.zeros((2, 5)))
+    sweep = results.DcSweepResult(UNKNOWNS, "I1", "current", levels, np.zeros((2, 5)))
     figure = plot("transfer", sweep, ["in"])
     assert figure.axes[0].get_xlabel() == "I1 current"
 
@@ -175,9 +175,9 @@ def test_the_plot_command_draws_saved_results(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "rc.results.npz"
-    point = results.OperatingPoint(UNKNOWNS, np.zeros(5), "direct")
+    point = results.OperatingPointResult(UNKNOWNS, np.zeros(5), "direct")
     parameter = results.Parameter("R1", "resistance", 1e3)
-    sensitivity = results.Sensitivities(
+    sensitivity = results.SensitivityResult(
         UNKNOWNS, ("out",), (parameter,), np.ones((1, 1)), point
     )
     save_results(path, {"op": point, "step": waveforms(), "sens": sensitivity})

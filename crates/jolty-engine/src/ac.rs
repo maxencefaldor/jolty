@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use serde::Deserialize;
 
 use crate::solver::{Factors, Solver};
-use crate::{OperatingPoint, Options, Parallelism, SimulationError, Simulator};
+use crate::{OperatingPointResult, Options, Parallelism, SimulationError, Simulator};
 
 /// A small-signal analysis: the response to a unit excitation of one independent source.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -22,11 +22,11 @@ pub struct Ac {
 
 /// The small-signal response of every unknown to a unit excitation, at each frequency.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Response {
+pub struct AcResult {
     /// The path of the excited source.
     pub source: String,
     /// The operating point the circuit was linearized at.
-    pub operating_point: OperatingPoint,
+    pub operating_point: OperatingPointResult,
     /// The frequencies, in hertz.
     pub frequencies: Vec<f64>,
     /// The phasor of every unknown at each frequency, per volt or ampere of excitation.
@@ -47,7 +47,7 @@ impl Simulator {
     /// excited instance is not an independent source, [`SimulationError::InvalidAnalysis`]
     /// for no frequency or a negative one, [`SimulationError::Singular`] when the linearized
     /// circuit is singular at a frequency, and the errors of [`Simulator::operating_point`].
-    pub fn ac(&mut self, ac: &Ac, options: &Options) -> Result<Response, SimulationError> {
+    pub fn ac(&mut self, ac: &Ac, options: &Options) -> Result<AcResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             let index = self.source_index(&ac.source)?;
@@ -76,7 +76,7 @@ impl Simulator {
                 },
             )?;
             let (values, currents) = found.into_iter().unzip();
-            Ok(Response {
+            Ok(AcResult {
                 source: ac.source.clone(),
                 operating_point,
                 frequencies: ac.frequencies.clone(),
@@ -92,7 +92,7 @@ impl Simulator {
         &mut self,
         frequencies: &[f64],
         options: &Options,
-    ) -> Result<OperatingPoint, SimulationError> {
+    ) -> Result<OperatingPointResult, SimulationError> {
         options.check()?;
         if frequencies.is_empty() {
             return Err(SimulationError::InvalidAnalysis(
@@ -112,7 +112,7 @@ impl Simulator {
     pub(crate) fn linearized(
         &mut self,
         options: &Options,
-    ) -> Result<OperatingPoint, SimulationError> {
+    ) -> Result<OperatingPointResult, SimulationError> {
         let operating_point = self.operating_point(options)?;
         self.evaluate(&operating_point.values, None, (1.0, options.gmin), true);
         Ok(operating_point)

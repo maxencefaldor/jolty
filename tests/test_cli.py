@@ -8,7 +8,7 @@ import pytest
 from jolty import __version__
 from jolty.cli import main
 from jolty.files import load_results
-from jolty.results import Waveforms
+from jolty.results import TransientResult
 
 FILTER = """
 from jolty import Builder, Plan, Role, Transient, component, devices
@@ -92,7 +92,7 @@ def test_simulate_saves_the_results_and_reports_each_analysis(
     out = next(extent for extent in step["extents"] if extent["unknown"] == "out")
     assert out["last"] == pytest.approx(1.0, abs=1e-3)
     waveforms = load_results(Path(result["results"]))["step"]
-    assert isinstance(waveforms, Waveforms)
+    assert isinstance(waveforms, TransientResult)
     assert waveforms.voltage("out")[-1] == pytest.approx(out["last"])
 
 

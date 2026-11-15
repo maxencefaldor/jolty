@@ -773,7 +773,7 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
     return PlotResult(plots=drawn)
 
 
-def _load(path: Path) -> dict[str, results.Result]:
+def _load(path: Path) -> dict[str, results.AnalysisResult]:
     """The results saved at `path`, by analysis.
 
     Raises:
@@ -788,7 +788,7 @@ def _load(path: Path) -> dict[str, results.Result]:
 
 def _plot(
     path: Path,
-    loaded: Mapping[str, results.Result],
+    loaded: Mapping[str, results.AnalysisResult],
     analyses: list[str],
     probes: list[str],
 ) -> tuple[Plot, ...]:
@@ -808,22 +808,25 @@ def _plot(
             continue
         if isinstance(
             result,
-            results.OperatingPoint
-            | results.OperatingPoints
-            | results.Sensitivities
-            | results.Transfer,
+            results.OperatingPointResult
+            | results.OperatingPointsResult
+            | results.SensitivityResult
+            | results.TransferFunctionResult,
         ):
             if analyses:
                 message = f"{name} is taken at DC solutions: nothing to plot"
                 raise JoltyError(message)
             continue
         nets = (
-            result.nets if isinstance(result, results.Sweep | results.Waveforms) else ()
+            result.nets
+            if isinstance(result, results.DcSweepResult | results.TransientResult)
+            else ()
         )
         chosen = (
             ()
             if isinstance(
-                result, results.LoopGain | results.NoiseSpectrum | results.PolesZeros
+                result,
+                results.StabilityResult | results.NoiseResult | results.PoleZeroResult,
             )
             else tuple(probes) or plots.default_probes(result.unknowns, nets)
         )
@@ -1126,7 +1129,7 @@ def _draw(
     path: Path,
     instance: str = "",
     *,
-    point: results.OperatingPoint | None = None,
+    point: results.OperatingPointResult | None = None,
     marked: Collection[str] = (),
 ) -> Path:
     """Draws the component at `instance` to `path`, and returns `path`.
@@ -1141,14 +1144,14 @@ def _draw(
 
 
 def _first_point(
-    loaded: Mapping[str, results.Result],
-) -> results.OperatingPoint | None:
+    loaded: Mapping[str, results.AnalysisResult],
+) -> results.OperatingPointResult | None:
     """The first operating point among the results, if any."""
     return next(
         (
             result
             for result in loaded.values()
-            if isinstance(result, results.OperatingPoint)
+            if isinstance(result, results.OperatingPointResult)
         ),
         None,
     )

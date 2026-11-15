@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::newton::Mode;
 use crate::operating_point::Solved;
 use crate::state::Held;
-use crate::{Observations, OperatingPoint, Options, SimulationError, Simulator, Strategy};
+use crate::{Observations, OperatingPointResult, Options, SimulationError, Simulator, Strategy};
 
 /// The fraction of the way from one level of a sweep to the next below which continuation
 /// gives up, as a divisor.
@@ -37,7 +37,7 @@ pub struct DcSweep {
 
 /// The operating points of a DC sweep.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Sweep {
+pub struct DcSweepResult {
     /// The path of the swept instance.
     pub source: String,
     /// The number swept, by its path among the instance's parameters; none for a source's
@@ -81,7 +81,7 @@ impl Simulator {
         &mut self,
         sweep: &DcSweep,
         options: &Options,
-    ) -> Result<Sweep, SimulationError> {
+    ) -> Result<DcSweepResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             self.prepare(options)?;
@@ -107,7 +107,7 @@ impl Simulator {
                 observations.push(&point.observation);
                 logic.push(point.logic);
             }
-            Ok(Sweep {
+            Ok(DcSweepResult {
                 source: sweep.source.clone(),
                 parameter: sweep.parameter.clone(),
                 quantity: sweep
@@ -168,7 +168,7 @@ impl Simulator {
         swept: Swept,
         levels: &[f64],
         options: &Options,
-    ) -> Result<Vec<OperatingPoint>, SimulationError> {
+    ) -> Result<Vec<OperatingPointResult>, SimulationError> {
         self.reset_logic();
         let mut values = vec![0.0; self.elaborated.unknowns.len()];
         let mut points = Vec::with_capacity(levels.len());

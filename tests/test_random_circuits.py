@@ -44,7 +44,7 @@ type Real = npt.NDArray[np.float64]
 
 
 def _spice_point(
-    simulation: Simulation, start: results.OperatingPoint | None = None
+    simulation: Simulation, start: results.OperatingPointResult | None = None
 ) -> dict[str, float] | None:
     """The operating point ngspice finds, by the name of each unknown both report.
 
@@ -71,7 +71,7 @@ def _spice_point(
     }
 
 
-def _agrees(point: results.OperatingPoint, spice: dict[str, float]) -> bool:
+def _agrees(point: results.OperatingPointResult, spice: dict[str, float]) -> bool:
     """Whether jolty's operating point is ngspice's."""
     quantities = {unknown.name: unknown.quantity for unknown in point.unknowns}
     values = dict(zip(quantities, point.values, strict=True))
@@ -101,7 +101,7 @@ def test_operating_points_agree(circuit: ir.Circuit) -> None:
     assert _agrees(point, again), "jolty's operating point is not one of ngspice's"
 
 
-def _resting(simulation: Simulation) -> results.OperatingPoint | None:
+def _resting(simulation: Simulation) -> results.OperatingPointResult | None:
     """The operating point both engines find, around which both linearize the circuit.
 
     There is none when ngspice finds none, or rests in another state than jolty.

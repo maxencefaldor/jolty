@@ -155,7 +155,7 @@ def follower(c: Builder, *, heated: bool, sink: float, emitter: float) -> None:
         c.connect(mount.b, ground)
 
 
-def _power(point: results.OperatingPoint) -> float:
+def _power(point: results.OperatingPointResult) -> float:
     """The power the follower's transistor dissipates at `point`."""
     return sum(
         point.voltage(net) * point.current("Q1", terminal)

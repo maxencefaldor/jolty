@@ -214,8 +214,8 @@ def test_every_rule_has_a_case_that_raises_it() -> None:
     frequencies = np.logspace(-3, 3, 601)
     poor = np.asarray(10 / (1 + 1j * frequencies) ** 3, dtype=np.complex128)
     unknowns = (results.Unknown("out", "voltage"),)
-    rest = results.OperatingPoint(unknowns, np.zeros(1), "direct")
-    loop = results.LoopGain(unknowns, "VP", frequencies, poor, rest)
+    rest = results.OperatingPointResult(unknowns, np.zeros(1), "direct")
+    loop = results.StabilityResult(unknowns, "VP", frequencies, poor, rest)
     found |= {diagnostic.rule for diagnostic in diagnose({"loop": loop})}
     loaded = Simulation(burning())
     point = loaded.run(OperatingPoint())

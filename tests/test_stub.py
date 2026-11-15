@@ -212,7 +212,7 @@ def test_each_outcome_holds_the_keys_its_stub_names(
     outcome = returned[0]
     assert isinstance(outcome, Mapping)
     assert outcome["kind"] == name
-    assert _mismatches(outcome, STUB["Outcome"], name) == []
+    assert _mismatches(outcome, STUB["AnalysisResult"], name) == []
 
 
 def test_every_analysis_is_run() -> None:
@@ -221,5 +221,7 @@ def test_every_analysis_is_run() -> None:
 
 
 def test_every_kind_of_outcome_is_run() -> None:
-    kinds = {_kind(member) for member in typing.get_args(STUB["Outcome"].__value__)}
+    kinds = {
+        _kind(member) for member in typing.get_args(STUB["AnalysisResult"].__value__)
+    }
     assert kinds == set(ANALYSES)

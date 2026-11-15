@@ -3,7 +3,7 @@
 
 use std::f64::consts::TAU;
 
-use jolty_engine::{Conditions, Noise, NoiseSpectrum, Options, SimulationError, Simulator};
+use jolty_engine::{Conditions, Noise, NoiseResult, Options, SimulationError, Simulator};
 use jolty_ir::Circuit;
 use jolty_models::{
     BOLTZMANN, ELEMENTARY_CHARGE, Library, Quantity, REFERENCE_TEMPERATURE, thermal_voltage,
@@ -47,7 +47,7 @@ fn noise(
     output: &str,
     reference: Option<&str>,
     source: Option<&str>,
-) -> Result<NoiseSpectrum, SimulationError> {
+) -> Result<NoiseResult, SimulationError> {
     let mut simulator = Simulator::new(circuit, &Library::standard(), &Conditions::default())
         .expect("the circuit elaborates");
     let analysis = Noise {
@@ -67,7 +67,7 @@ fn assert_close(actual: f64, expected: f64) {
 }
 
 /// The contribution of `device` to the spectrum's density at each frequency.
-fn share<'a>(spectrum: &'a NoiseSpectrum, device: &str) -> &'a [f64] {
+fn share<'a>(spectrum: &'a NoiseResult, device: &str) -> &'a [f64] {
     let mut shares = spectrum
         .contributions
         .iter()
