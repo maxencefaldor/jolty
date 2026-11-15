@@ -3,7 +3,9 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use jolty_models::{Input, Level};
-use jolty_numerics::integration::{Bound, Formula, Method, divided_difference, longest_at};
+use jolty_numerics::integration::{
+    Bound, CONSTANT_STEP, Formula, Method, divided_difference, longest_at,
+};
 use serde::Deserialize;
 
 use crate::logic::{Checkpoint, Command, Crossing, crossing};
@@ -1262,14 +1264,15 @@ impl Simulator {
         // then over the pieces in their order.
         // A multistep formula's longest step is found at its own error constant, from each
         // charge's unit steps, which the pass keeps for it.
-        let constant_step = method.scales(1.0);
         let keep = method.is_multistep();
+        let per_difference = method.error_per_difference(span.length, span.previous);
         let found = pieces(differences.len(), inside, |range| {
             let (mut worst, mut found) = none;
             let mut units = Vec::with_capacity(if keep { range.len() } else { 0 });
             for index in range {
                 let difference = differences[index];
-                let error = method.truncation_error(span.length, span.previous, difference);
+                // The step's truncation error, as `Method::truncation_error` gives it.
+                let error = per_difference * difference.abs();
                 let (charge, current) = tolerances(index);
                 let ratio = error / charge.max(current);
                 if ratio > worst.ratio {
@@ -1277,7 +1280,7 @@ impl Simulator {
                     worst.worst = index;
                 }
                 let unit = method.unit_steps(difference, charge, current / span.length);
-                found = least(found, longest_at(unit, constant_step));
+                found = least(found, longest_at(unit, CONSTANT_STEP));
                 if keep {
                     units.push(unit);
                 }

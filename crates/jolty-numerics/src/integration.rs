@@ -59,8 +59,17 @@ impl Method {
     /// cut to a tenth.
     #[must_use]
     pub fn truncation_error(self, step: f64, previous_step: f64, divided_difference: f64) -> f64 {
+        self.error_per_difference(step, previous_step) * divided_difference.abs()
+    }
+
+    /// The [truncation error](Method::truncation_error) of a step of length `step` that
+    /// follows one of length `previous_step`, per unit of its divided difference:
+    /// `C (p+1)! h^{p+1}`, the same for every charge of the step, so that a step's judgement
+    /// computes it once.
+    #[must_use]
+    pub fn error_per_difference(self, step: f64, previous_step: f64) -> f64 {
         let power = step.powi(self.exponent());
-        self.constant(step / previous_step) * self.factorial() * power * divided_difference.abs()
+        self.constant(step / previous_step) * self.factorial() * power
     }
 
     /// The longest step after one of length `previous_step` whose truncation error, by
@@ -77,7 +86,7 @@ impl Method {
         rate: f64,
     ) -> f64 {
         let unit = self.unit_steps(divided_difference, charge, rate);
-        let constant_step = longest_at(unit, self.scales(1.0));
+        let constant_step = longest_at(unit, CONSTANT_STEP);
         self.longest_common_step(previous_step, constant_step, |scales| {
             longest_at(unit, scales)
         })
@@ -226,6 +235,11 @@ pub enum Bound {
     /// The tolerance on the current it carries, which grows with the step.
     Current,
 }
+
+/// The [scales](Method::scales) of a constant step, a ratio of 1, for every method: both 1, as
+/// its error constant is `C₁` itself; written out, so that a step's judgement multiplies by
+/// nothing.
+pub const CONSTANT_STEP: (f64, f64) = (1.0, 1.0);
 
 /// A charge's longest step at the error constant whose [scales](Method::scales) are `scales`,
 /// from its [unit steps](Method::unit_steps) `unit`: the longer of the two, and the tolerance
@@ -484,6 +498,19 @@ mod tests {
                     .fold(f64::INFINITY, f64::min);
                 prop_assert!((common / each - 1.0).abs() < 1e-12, "{method:?}: {common} vs {each}");
             }
+        }
+    }
+
+    #[test]
+    fn a_constant_steps_scales_are_one_for_every_method() {
+        for method in [Method::BackwardEuler, Method::Trapezoidal, Method::Gear2] {
+            let (by_charge, by_current) = method.scales(1.0);
+            assert_eq!(by_charge.to_bits(), CONSTANT_STEP.0.to_bits(), "{method:?}");
+            assert_eq!(
+                by_current.to_bits(),
+                CONSTANT_STEP.1.to_bits(),
+                "{method:?}"
+            );
         }
     }
 
