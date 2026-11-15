@@ -2608,3 +2608,340 @@ def test_binned_bsim3_cards_sweep_as_in_ngspice(
             scale=size(spice_values),
             tolerance=1e-6,
         )
+
+
+def _vbic(
+    polarity: Literal["npn", "pnp"], *, excess_phase: bool = True
+) -> devices.Device:
+    """A VBIC transistor of a small-signal process with every effect of the model on.
+
+    Its quasi-saturation, its base, emitter, substrate and parasitic resistances, its
+    three junctions' depletion, the base-emitter one smoothed and the others extended
+    linearly past their forward bound, the weak avalanche, the parasitic substrate
+    transistor, the Early and knee effects, the transit times with their bias
+    dependence, the excess phase if `excess_phase`, and flicker noise are set off their
+    defaults.
+    """
+    return devices.vbic(
+        polarity=polarity,
+        extrinsic_collector_resistance=10 * ohm,
+        intrinsic_collector_resistance=20 * ohm,
+        epi_saturation_voltage=2 * V,
+        epi_doping_parameter=2e-11,
+        high_current_collector_factor=2.0,
+        extrinsic_base_resistance=10 * ohm,
+        intrinsic_base_resistance=40 * ohm,
+        emitter_resistance=2 * ohm,
+        substrate_resistance=20 * ohm,
+        parasitic_base_resistance=30 * ohm,
+        saturation_current=1e-16 * A,
+        reverse_emission_coefficient=1.01,
+        base_emitter_overlap_capacitance=50 * fF,
+        base_emitter_capacitance=0.5 * pF,
+        base_emitter_potential=0.75 * V,
+        base_emitter_grading=0.35,
+        base_emitter_smoothing=0.2 * V,
+        base_collector_overlap_capacitance=20 * fF,
+        base_collector_capacitance=0.3 * pF,
+        epi_charge=1e-8 * uC,
+        extrinsic_base_collector_capacitance=0.1 * pF,
+        base_collector_potential=0.7 * V,
+        base_collector_grading=0.33,
+        collector_substrate_capacitance=0.4 * pF,
+        collector_substrate_potential=0.6 * V,
+        collector_substrate_grading=0.4,
+        ideal_base_emitter_current=1e-18 * A,
+        intrinsic_base_emitter_fraction=0.8,
+        nonideal_base_emitter_current=1e-15 * A,
+        nonideal_base_emitter_emission_coefficient=2.0,
+        ideal_base_collector_current=1e-17 * A,
+        nonideal_base_collector_current=1e-14 * A,
+        nonideal_base_collector_emission_coefficient=2.0,
+        avalanche_coefficient=2 / V,
+        avalanche_exponent_coefficient=15.0,
+        parasitic_saturation_current=1e-18 * A,
+        parasitic_ideal_base_emitter_current=1e-19 * A,
+        parasitic_ideal_base_collector_current=1e-19 * A,
+        forward_early_voltage=50 * V,
+        reverse_early_voltage=5 * V,
+        forward_knee_current=20 * mA,
+        reverse_knee_current=2 * mA,
+        parasitic_knee_current=1 * mA,
+        forward_transit_time=0.01 * ns,
+        transit_time_base_width_coefficient=0.1,
+        transit_time_bias_coefficient=3.0,
+        transit_time_voltage=2 * V,
+        transit_time_current=50 * mA,
+        reverse_transit_time=1 * ns,
+        excess_phase_delay=0.002 * ns if excess_phase else None,
+        flicker_coefficient=1e-14,
+        flicker_exponent=1.0,
+        flicker_frequency_exponent=1.0,
+    )
+
+
+VBIC_TRANSISTORS: Final = {"npn": _vbic("npn"), "pnp": _vbic("pnp", excess_phase=False)}
+"""The VBIC transistor of each polarity, the pnp without excess phase.
+
+ngspice 47 reads its excess-phase network's nodes without the polarity (`vbicload.c`,
+lines 449 and 485 to 486, where every other branch voltage takes it, lines 419 to 443),
+and multiplies the delayed transport current by it (line 1139), so its pnp with a delay
+is not its npn's mirror: with `TD` alone set, its collector current at DC is 3.01 mA
+where the npn's mirror is 56.7 µA. jolty's pnp is its npn's mirror, bit for bit.
+"""
+
+
+@component
+def vbic_curves(c: Builder, transistor: devices.Device) -> None:
+    """A VBIC transistor's curves: its base at `V1`, its collector at `V2`.
+
+    Its substrate, at `V3`, lies 1 V behind its emitter in reverse.
+    """
+    ground = c.port("ground", Role.GROUND)
+    sign = 1 if transistor.parameters.get("polarity", "npn") == "npn" else -1
+    base = c.place(devices.voltage_source(sign * 0.8 * V), id="V1")
+    collector = c.place(devices.voltage_source(sign * 2 * V), id="V2")
+    substrate = c.place(devices.voltage_source(sign * -1 * V), id="V3")
+    placed = c.place(transistor, id="Q1")
+    c.connect(base.positive, placed.base, name="base")
+    c.connect(collector.positive, placed.collector, name="collector")
+    c.connect(substrate.positive, placed.substrate, name="substrate")
+    c.connect(
+        base.negative, collector.negative, substrate.negative, placed.emitter, ground
+    )
+
+
+@component
+def vbic_stage(c: Builder, transistor: devices.Device) -> None:
+    """A common-emitter stage of a VBIC npn, which steps up at 1 µs.
+
+    Its base is fed through 10 kΩ from `V1` at 0.8 V, its collector loaded by 1 kΩ from
+    5 V and by 1 pF, and its substrate grounded.
+    """
+    ground = c.port("ground", Role.GROUND)
+    step = Piecewise([(1 * us, 0.8 * V), (1 * us + 5 * ns, 0.85 * V)])
+    source = c.place(devices.voltage_source(step), id="V1")
+    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    base = c.place(devices.resistor(10 * kohm), id="RB")
+    load = c.place(devices.resistor(1 * kohm), id="RC")
+    capacitance = c.place(devices.capacitor(1 * pF), id="CL")
+    placed = c.place(transistor, id="Q1")
+    c.connect(source.positive, base.a, name="in")
+    c.connect(base.b, placed.base, name="base")
+    c.connect(supply.positive, load.a, name="supply")
+    c.connect(load.b, placed.collector, capacitance.a, name="out")
+    c.connect(
+        source.negative,
+        supply.negative,
+        capacitance.b,
+        placed.emitter,
+        placed.substrate,
+        ground,
+    )
+
+
+def vbic_kelvins(temperature: Quantity) -> float:
+    """The temperature to run ngspice at so its VBIC runs at jolty's `temperature`.
+
+    VBIC computes its thermal voltage with constants of its own in both engines, so
+    they agree at the same kelvins.
+    """
+    return ngspice.same_kelvins(temperature.value)
+
+
+@pytest.mark.parametrize(
+    "temperature",
+    [celsius(27), *TEMPERATURES.values()],
+    ids=["nominal", *TEMPERATURES.keys()],
+)
+@pytest.mark.parametrize("polarity", ["npn", "pnp"])
+@pytest.mark.parametrize("source", ["V1", "V2"])
+def test_vbic_curves_agree(polarity: str, source: str, temperature: Quantity) -> None:
+    """A VBIC transistor's Gummel and output curves, in both modes, as ngspice's.
+
+    The base sweeps from 0.2 V to 1 V; the collector from 0.5 V behind the emitter,
+    the transistor reversed, to 3 V.
+    """
+    transistor = VBIC_TRANSISTORS[polarity]
+    sign = 1 if polarity == "npn" else -1
+    simulation = Simulation(vbic_curves(transistor), temperature)
+    bounds = (0.2, 1.0) if source == "V1" else (-0.5, 3.0)
+    levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 81)
+    sweep = simulation.run(DcSweep(source, levels), TIGHT)
+    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    step = (last - first) / (len(levels) - 1)
+    command = f"dc V{source} {first!r} {last!r} {step!r}"
+    raw = ngspice.run(
+        netlist(simulation.circuit), command, temperature=vbic_kelvins(temperature)
+    )
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown))
+        compare(
+            sweep.values[:, column],
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=1e-6,
+        )
+
+
+def test_vbic_ac_response_agrees() -> None:
+    """A VBIC stage's operating point and AC response, as ngspice's."""
+    simulation = Simulation(vbic_stage(VBIC_TRANSISTORS["npn"]))
+    kelvins = vbic_kelvins(celsius(27))
+    point = simulation.run(OperatingPoint(), TIGHT)
+    raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
+    for column, unknown in compared(simulation):
+        spice_value = raw.real(vector(simulation.circuit, unknown))[0]
+        compare(
+            point.values[column],
+            spice_value,
+            unknown,
+            scale=abs(spice_value),
+            tolerance=1e-6,
+        )
+    response = simulation.run(Ac("V1", decade(10 * Hz, 10 * GHz, 10)), TIGHT)
+    lines = netlist(simulation.circuit, excited="V1")
+    raw = ngspice.run(lines, "ac dec 10 10 10g", temperature=kelvins)
+    for column, unknown in compared(simulation):
+        spice_values = raw.vectors[vector(simulation.circuit, unknown)]
+        compare(
+            response.values[:, column],
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=1e-6,
+        )
+
+
+def test_vbic_noise_agrees() -> None:
+    """A VBIC stage's noise at its output and its input, but one source's, as ngspice's.
+
+    Its transistor's resistances make thermal noise, its currents shot noise, and its
+    base currents flicker noise. ngspice 47 places the parasitic base resistance's
+    thermal noise across the emitter resistance (`vbicnoise.c`, between `emitEINode` and
+    `emitNode`), where jolty places it across the parasitic base resistance itself, so
+    each engine's spectra are compared without that source's contribution, which
+    ngspice gives apart when asked for every source's.
+    """
+    simulation = Simulation(vbic_stage(VBIC_TRANSISTORS["npn"]))
+    spectrum = simulation.run(
+        Noise("out", decade(1 * Hz, 100 * MHz, 5), source="V1"), TIGHT
+    )
+    lines = netlist(simulation.circuit, excited="V1")
+    command = "noise v(out) VV1 dec 5 1 100meg 1\nsetplot noise1"
+    raw = ngspice.run(lines, command, temperature=vbic_kelvins(celsius(27)))
+    misplaced = next(
+        index
+        for index, source in enumerate(spectrum.sources)
+        if (source.instance, source.name) == ("Q1", "parasitic base thermal")
+    )
+    densities = spectrum.densities - spectrum.contributions[misplaced]
+    spice = raw.real("onoise_spectrum") ** 2
+    left = 1 - raw.real("onoise_qq1_rbp") ** 2 / spice
+    np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
+    np.testing.assert_allclose(np.sqrt(densities), np.sqrt(spice * left), rtol=1e-5)
+    gains = np.abs(spectrum.input.gains) ** 2 if spectrum.input else 1.0
+    np.testing.assert_allclose(
+        np.sqrt(densities / gains),
+        np.sqrt(raw.real("inoise_spectrum") ** 2 * left),
+        rtol=1e-5,
+    )
+
+
+def test_vbic_transient_agrees() -> None:
+    """A VBIC stage's step response, as ngspice's."""
+    simulation = Simulation(vbic_stage(VBIC_TRANSISTORS["npn"]))
+    stop, step = 2 * us, 1 * ns
+    waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
+    command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}"
+    raw = ngspice.run(
+        netlist(simulation.circuit, transient=True),
+        command,
+        temperature=vbic_kelvins(celsius(27)),
+    )
+    times = raw.real("time")
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown))
+        jolty = closest(
+            waveforms.times,
+            waveforms.values[:, column],
+            times,
+            spice_values,
+            step.value,
+        )
+        compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
+
+
+HEATED_VBIC: Final = """\
+* A VBIC npn heated through its fifth node, 500 K/W from the ambient, with its
+* currents', resistances' and forward emission's temperature dependences set.
+.model QHEAT NPN(level=4 is=1e-16 ibei=1e-18 iben=1e-15 nen=2 ikf=20m vef=50 ver=5
++ rcx=10 rci=20 rbx=10 rbi=40 re=2 cje=0.5p cjc=0.3p tf=10p rth=500 cth=10n
++ xis=3 ea=1.12 xii=3 xin=3 eaie=1.12 xre=1 xrb=1 xrbi=1 xrc=1 xrci=1 tnf=1e-4)
+.subckt heated c b e
+Q1 c b e 0 dt QHEAT
+.ends
+"""
+
+
+@pytest.fixture(scope="module")
+def heated_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The library of `HEATED_VBIC`, as a file both engines read."""
+    path = tmp_path_factory.mktemp("vbic") / "heated.lib"
+    path.write_text(HEATED_VBIC, encoding="utf-8")
+    return path
+
+
+@component
+def heated_stage(c: Builder, part: Component) -> None:
+    """A library's transistor in a common-emitter stage, its substrate grounded.
+
+    Its base is fed through 10 kΩ from `V1`, its collector loaded by 100 Ω from 5 V.
+    """
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(0 * V), id="V1")
+    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    base = c.place(devices.resistor(10 * kohm), id="RB")
+    load = c.place(devices.resistor(100 * ohm), id="RC")
+    placed = c.place(part, id="X1")
+    c.connect(source.positive, base.a, name="in")
+    c.connect(base.b, placed["b"], name="base")
+    c.connect(supply.positive, load.a, name="supply")
+    c.connect(load.b, placed["c"], name="out")
+    c.connect(source.negative, supply.negative, placed["e"], placed["ground"], ground)
+
+
+def test_a_heated_vbic_agrees(heated_cards: Path) -> None:
+    """A VBIC heated by its card's `RTH`, read by the reader, as ngspice heats it.
+
+    Its base drive sweeps from off to saturation, so it warms from the ambient by up to
+    about 29 K. Its rise, ngspice's thermal node's voltage, is compared beside its nets;
+    unheated, its output at 1.5 V lies 4.7 mV, a thousand tolerances, from its heated
+    one.
+    """
+    read = spice.load(heated_cards).component("heated")
+    simulation = Simulation(heated_stage(read))
+    sweep = simulation.run(DcSweep("V1", linear(0 * V, 5 * V, 51)), TIGHT)
+    raw = ngspice.run(
+        netlist(simulation.circuit),
+        "dc VV1 0 5 0.1",
+        libraries=(heated_cards,),
+        temperature=vbic_kelvins(celsius(27)),
+    )
+    for column, unknown in compared(simulation):
+        # The netlist places the library's subcircuit as `XX1`, its thermal node in it.
+        name = "v(xx1.dt)" if unknown.quantity == "temperature" else None
+        spice_values = raw.real(name or vector(simulation.circuit, unknown))
+        compare(
+            sweep.values[:, column],
+            spice_values,
+            unknown,
+            scale=size(spice_values),
+            tolerance=1e-6,
+        )
+    # The bench heats: both engines warming it alike is no vacuous agreement.
+    rise = sweep.values[
+        :, simulation.unknowns.index(results.Unknown("X1/dt", "temperature"))
+    ]
+    assert rise.max() > 25.0  # Most of its 29 K.

@@ -42,6 +42,7 @@ PREFIXES: Final[Mapping[str, str]] = {
     "mosfet": "Q",
     "vdmos": "Q",
     "bsim3": "Q",
+    "vbic": "Q",
 }
 """The prefix of the reference designator of each device's part, the letter IEEE 315
 gives it; any other part's is U."""

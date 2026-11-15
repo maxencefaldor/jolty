@@ -449,6 +449,130 @@ def test_a_vdmos_is_written_for_ngspice_as_its_card_reads_back() -> None:
     }
 
 
+def test_a_vbic_card_reads_as_ngspice_reads_it() -> None:
+    """Its levels 4 and 9, within its parentheses or before, and three to five nodes.
+
+    ngspice raises an intrinsic collector resistance below 10 mΩ to 10 mΩ, and reads
+    past `VERS` and `VREF`; an element's fifth node, its thermal one, is left unjoined
+    where its card does not heat.
+    """
+    parts = library(
+        ".model QN NPN(level=4 rcx=10 rbx=5 is=1e-16 vef=50 tf=10p rci=0\n"
+        "+ vers=1.2 vref=0)\n"
+        ".model QP PNP Level=9(is=2e-17 nf=1.02)\n"
+        ".subckt a c b e s\nQ1 c b e s QN\nQ2 c b e QP\nQ3 c b e s s QN\n.ends"
+    )
+    first, second, third = parts.component("a").definition.instances
+    assert [instance.of for instance in (first, second, third)] == [
+        ir.DeviceOf(device="vbic")
+    ] * 3
+    assert first.parameters == {
+        "extrinsic_collector_resistance": 10.0,
+        "extrinsic_base_resistance": 5.0,
+        "saturation_current": 1e-16,
+        "forward_early_voltage": 50.0,
+        "forward_transit_time": 1e-11,
+        "intrinsic_collector_resistance": 0.01,
+        "polarity": "npn",
+    }
+    assert second.parameters == {
+        "saturation_current": 2e-17,
+        "forward_emission_coefficient": 1.02,
+        "polarity": "pnp",
+    }
+    assert third.parameters == first.parameters
+
+
+def test_a_vbic_whose_card_heats_reads_with_its_thermal_network() -> None:
+    """A positive `RTH` heats it on its fifth node, unless `SELFT` is 0.
+
+    Its thermal resistance and capacitance hold that node to the ground, the area times
+    the copies dividing the resistance and multiplying the capacitance, as they multiply
+    its currents; ngspice raises a capacitance below 1 pJ/K to 1 pJ/K.
+    """
+    parts = library(
+        ".model QH NPN(level=4 is=1e-16 rth=200 cth=1n)\n"
+        ".model QL NPN(level=4 is=1e-16 rth=200)\n"
+        ".model QC NPN(level=4 is=1e-16 rth=200 cth=1n selft=0)\n"
+        ".subckt a c b e s\nQ1 c b e s t QH 2 m=2\nQ2 c b e s u QL\nQ3 c b e s w QC\n"
+        ".ends"
+    )
+    placed = {
+        instance.id: (instance.of, instance.parameters, instance.terminals)
+        for instance in parts.component("a").definition.instances
+    }
+    joined = {"collector": "c", "base": "b", "emitter": "e", "substrate": "s"}
+    vbic, resistance = ir.DeviceOf(device="vbic"), "thermal_resistance"
+    capacitance = "thermal_capacitance"
+    assert placed == {
+        "Q1": (
+            vbic,
+            {"saturation_current": 4e-16, "polarity": "npn", "thermal": True},
+            {**joined, "thermal": "t"},
+        ),
+        "Q1.rth": (
+            ir.DeviceOf(device=resistance),
+            {"resistance": 50.0},
+            {"a": "t", "b": "ground"},
+        ),
+        "Q1.cth": (
+            ir.DeviceOf(device=capacitance),
+            {"capacitance": 4e-9},
+            {"a": "t", "b": "ground"},
+        ),
+        "Q2": (
+            vbic,
+            {"saturation_current": 1e-16, "polarity": "npn", "thermal": True},
+            {**joined, "thermal": "u"},
+        ),
+        "Q2.rth": (
+            ir.DeviceOf(device=resistance),
+            {"resistance": 200.0},
+            {"a": "u", "b": "ground"},
+        ),
+        "Q2.cth": (
+            ir.DeviceOf(device=capacitance),
+            {"capacitance": 1e-12},
+            {"a": "u", "b": "ground"},
+        ),
+        "Q3": (vbic, {"saturation_current": 1e-16, "polarity": "npn"}, joined),
+    }
+
+
+def test_a_bipolar_card_of_another_level_is_refused() -> None:
+    """A bipolar card of a level but 1, Gummel-Poon's, and VBIC's 4 and 9 is refused."""
+    parts = library(
+        ".model QX NPN(level=2 is=1e-16)\n.subckt a c b e\nQ1 c b e QX\n.ends"
+    )
+    with pytest.raises(SpiceError, match="of level 2; jolty models levels 1, 4 and 9"):
+        parts.component("a")
+
+
+def test_a_vbic_is_written_for_ngspice_as_its_card_reads_back() -> None:
+    transistor = devices.vbic(
+        polarity="pnp",
+        saturation_current=2e-17 * A,
+        extrinsic_collector_resistance=10 * ohm,
+        forward_transit_time=0.01 * ns,
+    )
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        supply = c.place(devices.voltage_source(-5 * V), id="V1")
+        placed = c.place(transistor, id="Q1")
+        c.connect(supply.positive, placed.collector, placed.base, name="c")
+        c.connect(supply.negative, placed.emitter, placed.substrate, ground)
+
+    lines = netlist(circuit(bench()))
+    card = next(line for line in lines if line.startswith(".model"))
+    assert card.startswith(".model MQ1 PNP(level=4 "), card
+    element = next(line for line in lines if line.startswith("QQ1"))
+    read = library(f"{card}\n.subckt a c\n{element.replace('QQ1', 'Q1', 1)}\n.ends")
+    (instance,) = read.component("a").definition.instances
+    assert instance.parameters == transistor.parameters
+
+
 def test_a_bsim3_card_reads_in_si_units_as_ngspice_reads_it() -> None:
     """A level 8 or 49 card makes a BSIM3, each parameter by its name in SI units.
 
@@ -804,6 +928,7 @@ def _every_model() -> list[devices.Device]:
         devices.logic_source(0, [(1 * ns, 1)], transition=1 * ns),
         devices.mosfet(level=3, oxide_thickness=10 * nm),
         devices.vdmos(channel="p", breakdown_voltage=60 * V),
+        devices.vbic(polarity="pnp", saturation_current=2e-17 * A),
         devices.bsim3(
             channel="p", capmod=0, card={"vth0": -0.6 * V, "lvth0": 1e-8 * m * V}
         ),

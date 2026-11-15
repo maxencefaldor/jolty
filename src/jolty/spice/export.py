@@ -126,6 +126,7 @@ ELEMENTS = {
     "diode": Element("D", ("anode", "cathode")),
     "jfet": Element("J", ("drain", "gate", "source")),
     "bipolar_transistor": Element("Q", ("collector", "base", "emitter", "substrate")),
+    "vbic": Element("Q", ("collector", "base", "emitter", "substrate")),
     "mosfet": Element("M", ("drain", "gate", "source", "bulk")),
     "vdmos": Element("M", ("drain", "gate", "source")),
     "bsim3": Element("M", ("drain", "gate", "source", "bulk")),
@@ -168,16 +169,41 @@ def _spice(table: models.Table) -> dict[str, tuple[str, float]]:
 _NUMBERED = {
     "gate_material": {material: tpg for tpg, material in models.GATE_TYPES.items()},
     "substrate": {kind: subs for subs, kind in models.CONSTRUCTIONS.items()},
+    "base_charge": {"vbic": 0, "gummel_poon": 1},
 }
-"""SPICE's number for each value of a parameter it numbers: ``TPG`` and ``SUBS``."""
+"""SPICE's number for each value of a parameter it numbers: ``TPG``, ``SUBS`` and a
+VBIC's ``QBM``."""
+
+_VBIC_SERIES: Final = frozenset(
+    {
+        "extrinsic_collector_resistance",
+        "extrinsic_base_resistance",
+        "emitter_resistance",
+        "substrate_resistance",
+    }
+)
+"""A VBIC's resistances in series with its terminals, which are none at zero."""
 
 
-def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str]:
-    """The SPICE type and parameters of a device's model card, and its instance's."""
+def _card_names(
+    model: str, values: dict[str, JsonValue]
+) -> tuple[
+    str,
+    dict[str, tuple[str, float]],
+    dict[str, tuple[str, float]],
+    dict[str, JsonValue],
+]:
+    """A device's SPICE type and the names of its parameters.
+
+    Returns the type, the SPICE names of its card's parameters and of its instance's,
+    and the values its card writes.
+
+    Raises:
+        JoltyError: When the device has no model card, or a VBIC's resistance is too
+            small.
+    """
     instance: dict[str, tuple[str, float]] = {}
     match model:
-        case "bsim3":
-            return _bsim3_card(values)
         case "diode":
             kind, names = "D", _spice(models.DIODE)
         case "jfet":
@@ -196,9 +222,21 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
         case "vdmos":
             kind, names = "VDMOS", _spice(models.VDMOS)
             instance = _spice(models.VDMOS_INSTANCE)
+        case "vbic":
+            kind = str(_defaulted(model, values)["polarity"]).upper()
+            names = _spice(models.VBIC) | {"base_charge": ("qbm", 1.0)}
+            values = _vbic_resistances(values)
         case _:
             message = f"a {model} has no model card"
             raise _unwritable(message)
+    return kind, names, instance, values
+
+
+def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str]:
+    """The SPICE type and parameters of a device's model card, and its instance's."""
+    if model == "bsim3":
+        return _bsim3_card(values)
+    kind, names, instance, values = _card_names(model, values)
     names["nominal_temperature"] = ("tnom", 1.0)
     given = {
         key: value
@@ -216,16 +254,21 @@ def _model_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str
         given["flicker_coefficient"] = flicker / oxide
         names["noise_level"] = ("nlev", 1.0)
         given["noise_level"] = 1.0
+    # VBIC computes its thermal voltage with its own constants in both engines, so its
+    # temperatures are written as they are.
+    plain = model == "vbic"
     card = " ".join(
-        f"{names[key][0]}={_spice_value(key, value, names[key][1])}"
+        f"{names[key][0]}={_spice_value(key, value, names[key][1], plain=plain)}"
         for key, value in given.items()
         if key not in instance
     )
     # ngspice reads a VDMOS card's polarity from the word `pchan` within it.
     if model == "vdmos" and _defaulted(model, values)["channel"] == "p":
         card = f"pchan {card}".rstrip()
+    if model == "vbic":
+        card = f"level=4 {card}".rstrip()
     element = " ".join(
-        f"{instance[key][0]}={_spice_value(key, value, instance[key][1])}"
+        f"{instance[key][0]}={_spice_value(key, value, instance[key][1], plain=plain)}"
         for key, value in given.items()
         if key in instance
     )
@@ -282,6 +325,27 @@ def _bsim3_value(key: str, value: float) -> float:
     return value
 
 
+def _vbic_resistances(values: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """A VBIC's parameters, without the series resistances it has none of.
+
+    Raises:
+        JoltyError: When a resistance lies below the 10 mΩ that ngspice raises every
+            resistance its card gives to.
+    """
+    kept: dict[str, JsonValue] = {}
+    for key, value in values.items():
+        if key in _VBIC_SERIES and value == 0:
+            continue
+        resistance = key.endswith("_resistance") and isinstance(value, float)
+        if resistance and value < models.VBIC_LEAST_RESISTANCE:
+            message = (
+                f"a VBIC's {key} is {value!r} Ω, below the 0.01 Ω ngspice raises it to"
+            )
+            raise _unwritable(message)
+        kept[key] = value
+    return kept
+
+
 OXIDE_PERMITTIVITY: Final = 3.9 * 8.854214871e-12
 """Silicon dioxide's permittivity, in farads per meter, as jolty and ngspice take it."""
 
@@ -290,15 +354,19 @@ SPICE_OXIDE_THICKNESS: Final = 1e-7
 as jolty does."""
 
 
-def _spice_value(key: str, value: JsonValue, factor: float) -> str:
-    """The value of parameter `key` in SPICE's units."""
+def _spice_value(key: str, value: JsonValue, factor: float, *, plain: bool) -> str:
+    """The value of parameter `key` in SPICE's units.
+
+    A nominal temperature is written where ngspice's thermal voltage is jolty's, or as
+    it is where the model is `plain`, its thermal voltage its own in both engines.
+    """
     match value:
         case str(name):
             return repr(_NUMBERED[key][name])
         case int(number):
             return repr(number)
         case float() if key == "nominal_temperature":
-            return repr(spice_celsius(value))
+            return repr(value - ZERO_CELSIUS if plain else spice_celsius(value))
         case float():
             return repr(float(value) * factor)
     message = f"no SPICE value for {value}"
@@ -343,6 +411,7 @@ _WARMED: Final = frozenset(
         "bipolar_transistor",
         "mosfet",
         "vdmos",
+        "vbic",
     }
 )
 """The devices whose SPICE elements take a temperature of their own."""
@@ -366,17 +435,22 @@ def _own_temperature(instance: ir.Instance, model: str) -> str:
     """The SPICE instance parameter that sets the device's own temperature, if any.
 
     A temperature it is held at is ngspice's ``TEMP``, and an offset from the
-    simulation's its ``DTEMP``, each where ngspice's thermal voltage is jolty's.
+    simulation's its ``DTEMP``, each where ngspice's thermal voltage is jolty's, or as
+    it is for a VBIC, whose thermal voltage is its own in both engines.
 
     Raises:
         JoltyError: When the device's own temperature moves it, and its SPICE element
             has none.
     """
+
+    def celsius(kelvins: float) -> float:
+        return kelvins - ZERO_CELSIUS if model == "vbic" else spice_celsius(kelvins)
+
     match instance.parameters:
         case {"temperature": int() | float() as held}:
-            written = f" temp={spice_celsius(held)!r}"
+            written = f" temp={celsius(held)!r}"
         case {"temperature_offset": int() | float() as offset}:
-            written = f" dtemp={spice_celsius(offset) - spice_celsius(0.0)!r}"
+            written = f" dtemp={celsius(offset) - celsius(0.0)!r}"
         case _:
             return ""
     if model in _WARMED:
@@ -475,7 +549,15 @@ def _device(
             nodes = " ".join(output)
             (number,) = values.values()
             value = f"{sense} {number!r}"
-        case "diode" | "jfet" | "bipolar_transistor" | "mosfet" | "vdmos" | "bsim3":
+        case (
+            "diode"
+            | "jfet"
+            | "bipolar_transistor"
+            | "mosfet"
+            | "vdmos"
+            | "bsim3"
+            | "vbic"
+        ):
             kind, card, parameters = _model_card(model, values)
             lines.append(f".model M{instance.id} {kind}({card})")
             value = f"M{instance.id} {parameters}".rstrip()

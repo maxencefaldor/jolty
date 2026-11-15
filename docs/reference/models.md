@@ -803,6 +803,117 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
 
+## `vbic`
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `activation_energy` | `1.12` | The activation energy of the transport saturation current and of the epi doping, `EA`, in volts; default 1.12. |
+| `avalanche_coefficient` | `0` | The weak avalanche's coefficient, `AVC1`, per volt; default 0, no avalanche. |
+| `avalanche_exponent_coefficient` | `0` | The weak avalanche's exponent coefficient, `AVC2`, in volts to the power `1 − MC`; default 0. |
+| `avalanche_temperature_coefficient` | `0` | The linear temperature coefficient of the avalanche's exponent coefficient, `TAVC`, per kelvin; default 0. |
+| `base_charge` | `vbic` | How the base charge is formed, as `QBM` selects it; default `vbic`. One of `vbic`, `gummel_poon`. |
+| `base_collector_capacitance` | `0` | The zero-bias intrinsic base-collector depletion capacitance, `CJC`, in farads; default 0. |
+| `base_collector_grading` | `0.33` | The base-collector grading coefficient, `MC`, below 1; default 0.33. |
+| `base_collector_overlap_capacitance` | `0` | The base-collector overlap capacitance, `CBCO`, in farads, between the terminals; default 0. |
+| `base_collector_potential` | `0.75` | The base-collector built-in potential, `PC`, in volts; default 0.75. |
+| `base_collector_smoothing` | `-0.5` | The base-collector capacitances' smoothing, `AJC`, in volts; default −0.5. |
+| `base_emitter_breakdown_current` | `1e-06` | The base-emitter breakdown current, `IBBE`, in amperes; default 1e-6. |
+| `base_emitter_breakdown_emission_coefficient` | `1` | The base-emitter breakdown's emission coefficient, `NBBE`; default 1. |
+| `base_emitter_breakdown_voltage` |  | The base-emitter breakdown voltage, `VBBE`, in volts; without it, the junction never breaks down. |
+| `base_emitter_capacitance` | `0` | The zero-bias base-emitter depletion capacitance, `CJE`, in farads; default 0. |
+| `base_emitter_grading` | `0.33` | The base-emitter grading coefficient, `ME`, below 1; default 0.33. |
+| `base_emitter_overlap_capacitance` | `0` | The base-emitter overlap capacitance, `CBEO`, in farads, between the terminals; default 0. |
+| `base_emitter_potential` | `0.75` | The base-emitter built-in potential, `PE`, in volts; default 0.75. |
+| `base_emitter_smoothing` | `-0.5` | The base-emitter capacitance's smoothing, `AJE`, in volts: SPICE's linear extension above `FC · PE` at zero or below; default −0.5. |
+| `breakdown_emission_temperature_coefficient` | `0` | The linear temperature coefficient of the breakdown's emission coefficient, `TNBBE`, per kelvin; default 0. |
+| `breakdown_voltage_quadratic_temperature_coefficient` | `0` | The quadratic temperature coefficient of the base-emitter breakdown voltage, `TVBBE2`, per square kelvin; default 0. |
+| `breakdown_voltage_temperature_coefficient` | `0` | The linear temperature coefficient of the base-emitter breakdown voltage, `TVBBE1`, per kelvin; default 0. |
+| `collector_substrate_capacitance` | `0` | The zero-bias collector-substrate depletion capacitance, `CJCP`, in farads; default 0. |
+| `collector_substrate_fixed_capacitance` | `0` | The fixed collector-substrate capacitance, `CCSO`, in farads; default 0. |
+| `collector_substrate_grading` | `0.33` | The collector-substrate grading coefficient, `MS`, below 1; default 0.33. |
+| `collector_substrate_potential` | `0.75` | The collector-substrate built-in potential, `PS`, in volts; default 0.75. |
+| `collector_substrate_smoothing` | `-0.5` | The collector-substrate capacitance's smoothing, `AJS`, in volts; default −0.5. |
+| `depletion_coefficient` | `0.9` | The fraction of each junction's potential where its depletion capacitance's smoothing sets in, `FC`, below 1; default 0.9. |
+| `emission_coefficient_temperature_coefficient` | `0` | The linear temperature coefficient of the forward and reverse emission coefficients, `TNF`, per kelvin; default 0. |
+| `emitter_resistance` | `0` | The emitter resistance, `RE`, in ohms; default 0. |
+| `emitter_resistance_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the emitter resistance, `XRE`; default 0. |
+| `epi_charge` | `0` | The epi layer's charge, `QCO`, in coulombs; default 0. |
+| `epi_doping_parameter` | `0` | The epi layer's doping parameter, `GAMM`; default 0. |
+| `epi_saturation_voltage` |  | The epi layer's drift saturation voltage, `VO`, in volts; infinite by default, for no velocity saturation. |
+| `epi_saturation_voltage_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the epi saturation voltage, `XVO`; default 0. |
+| `excess_phase_delay` | `0` | The forward excess-phase delay, `TD`, in seconds; default 0, no excess phase. |
+| `extrinsic_base_collector_capacitance` | `0` | The zero-bias extrinsic base-collector depletion capacitance, `CJEP`, in farads, the parasitic transistor's base-emitter junction's; default 0. |
+| `extrinsic_base_resistance` | `0` | The extrinsic base resistance, `RBX`, in ohms; default 0. |
+| `extrinsic_base_resistance_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the extrinsic base resistance, `XRBX`; default 0. |
+| `extrinsic_collector_resistance` | `0` | The extrinsic collector resistance, `RCX`, in ohms; default 0. |
+| `extrinsic_collector_resistance_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the extrinsic collector resistance, `XRCX`; default 0. |
+| `flicker_coefficient` | `0` | The flicker noise coefficient of the base-emitter currents, `KFN`; default 0, no flicker noise. |
+| `flicker_exponent` | `1` | The power of the current in the flicker noise, `AFN`; default 1. |
+| `flicker_frequency_exponent` | `1` | The power of the frequency the flicker noise falls with, `BFN`; default 1. |
+| `forward_early_voltage` |  | The forward Early voltage, `VEF`, in volts; infinite by default. |
+| `forward_emission_coefficient` | `1` | The forward emission coefficient, `NF`; default 1. |
+| `forward_knee_current` |  | The forward knee current, `IKF`, in amperes; infinite by default. |
+| `forward_knee_current_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the forward knee current, `XIKF`; default 0. |
+| `forward_transit_time` | `0` | The ideal forward transit time, `TF`, in seconds; default 0. |
+| `high_current_collector_factor` | `1` | The high-current factor of the intrinsic collector resistance, `HRCF`, positive; default 1. |
+| `ideal_base_collector_activation_energy` | `1.12` | The activation energy of the ideal base-collector currents and of their potential, `EAIC`, in volts; default 1.12. |
+| `ideal_base_collector_current` | `1e-16` | The ideal base-collector saturation current, `IBCI`, in amperes; default 1e-16. |
+| `ideal_base_collector_emission_coefficient` | `1` | The ideal base-collector emission coefficient, `NCI`; default 1. |
+| `ideal_base_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the ideal base currents' scaling, `XII`; default 3. |
+| `ideal_base_emitter_activation_energy` | `1.12` | The activation energy of the ideal base-emitter current and of its potential, `EAIE`, in volts; default 1.12. |
+| `ideal_base_emitter_current` | `1e-18` | The ideal base-emitter saturation current, `IBEI`, in amperes; default 1e-18. |
+| `ideal_base_emitter_emission_coefficient` | `1` | The ideal base-emitter emission coefficient, `NEI`; default 1. |
+| `ideal_collector_substrate_activation_energy` | `1.12` | The activation energy of the parasitic ideal base-collector current and of the collector-substrate potential, `EAIS`, in volts; default 1.12. |
+| `intrinsic_base_emitter_fraction` | `1` | The fraction of the base-emitter currents and depletion charge at the intrinsic base, `WBE`, the rest at the extrinsic base, from 0 to 1; default 1. |
+| `intrinsic_base_resistance` | `0.1` | The intrinsic base resistance, `RBI`, in ohms, positive; default 0.1. |
+| `intrinsic_base_resistance_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the intrinsic base resistance, `XRBI`; default 0. |
+| `intrinsic_collector_resistance` | `0.1` | The intrinsic collector resistance, `RCI`, in ohms, positive; default 0.1. |
+| `intrinsic_collector_resistance_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the intrinsic collector resistance, `XRCI`; default 0. |
+| `knee_rolloff` | `0.5` | The power of the high-injection roll-off, `NKF`, positive; default 0.5. |
+| `nominal_temperature` | `300.15` | The temperature the parameters were measured at, `TNOM`, in kelvins; default 27 °C. |
+| `nonideal_base_collector_activation_energy` | `1.12` | The activation energy of the non-ideal base-collector currents, `EANC`, in volts; default 1.12. |
+| `nonideal_base_collector_current` | `0` | The non-ideal base-collector saturation current, `IBCN`, in amperes; default 0. |
+| `nonideal_base_collector_emission_coefficient` | `2` | The non-ideal base-collector emission coefficient, `NCN`; default 2. |
+| `nonideal_base_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the non-ideal base currents' scaling, `XIN`; default 3. |
+| `nonideal_base_emitter_activation_energy` | `1.12` | The activation energy of the non-ideal base-emitter current, `EANE`, in volts; default 1.12. |
+| `nonideal_base_emitter_current` | `0` | The non-ideal base-emitter saturation current, `IBEN`, in amperes; default 0. |
+| `nonideal_base_emitter_emission_coefficient` | `2` | The non-ideal base-emitter emission coefficient, `NEN`; default 2. |
+| `nonideal_collector_substrate_activation_energy` | `1.12` | The activation energy of the parasitic non-ideal base-collector current, `EANS`, in volts; default 1.12. |
+| `parasitic_activation_energy` | `1.12` | The activation energy of the parasitic transport saturation current, `EAP`, in volts; default 1.12. |
+| `parasitic_base_resistance` | `0.1` | The parasitic base resistance, `RBP`, in ohms, positive; default 0.1. |
+| `parasitic_base_resistance_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the parasitic base resistance, `XRBP`; default 0. |
+| `parasitic_extrinsic_fraction` | `1` | The fraction of the parasitic transport current the extrinsic base-collector junction drives, `WSP`, the rest the intrinsic one, from 0 to 1; default 1. |
+| `parasitic_forward_emission_coefficient` | `1` | The parasitic transistor's forward emission coefficient, `NFP`; default 1. |
+| `parasitic_ideal_base_collector_current` | `0` | The parasitic transistor's ideal base-collector saturation current, `IBCIP`, in amperes, across the collector-substrate junction; default 0. |
+| `parasitic_ideal_base_collector_emission_coefficient` | `1` | The parasitic transistor's ideal base-collector emission coefficient, `NCIP`; default 1. |
+| `parasitic_ideal_base_emitter_current` | `0` | The parasitic transistor's ideal base-emitter saturation current, `IBEIP`, in amperes, across the extrinsic base-collector junction; default 0. |
+| `parasitic_knee_current` |  | The parasitic transistor's knee current, `IKP`, in amperes; infinite by default. |
+| `parasitic_nonideal_base_collector_current` | `0` | The parasitic transistor's non-ideal base-collector saturation current, `IBCNP`, in amperes; default 0. |
+| `parasitic_nonideal_base_collector_emission_coefficient` | `2` | The parasitic transistor's non-ideal base-collector emission coefficient, `NCNP`; default 2. |
+| `parasitic_nonideal_base_emitter_current` | `0` | The parasitic transistor's non-ideal base-emitter saturation current, `IBENP`, in amperes; default 0. |
+| `parasitic_saturation_current` | `0` | The parasitic transistor's transport saturation current, `ISP`, in amperes; default 0, no parasitic transport. |
+| `polarity` | `npn` | The doping order, `NPN` or `PNP`; default `npn`. One of `npn`, `pnp`. |
+| `reach_through_smoothing` | `0.1` | The smoothing of the reach-through, `ART`; default 0.1. |
+| `reach_through_voltage` | `0` | The punch-through voltage of the base-collector junctions, `VRT`, in volts; default 0, no reach-through. |
+| `reverse_activation_energy_shift` | `0` | The shift of the activation energy of the reverse transport current, `DEAR`, in volts; default 0. |
+| `reverse_early_voltage` |  | The reverse Early voltage, `VER`, in volts; infinite by default. |
+| `reverse_emission_coefficient` | `1` | The reverse emission coefficient, `NR`; default 1. |
+| `reverse_knee_current` |  | The reverse knee current, `IKR`, in amperes; infinite by default. |
+| `reverse_saturation_current_ratio` | `1` | The ratio of the reverse to the forward transport saturation current, `ISRR`; default 1. |
+| `reverse_saturation_current_temperature_exponent` | `0` | The exponent of the temperature ratio in the reverse saturation current ratio's scaling, `XISR`; default 0. |
+| `reverse_transit_time` | `0` | The ideal reverse transit time, `TR`, in seconds; default 0. |
+| `saturation_current` | `1e-16` | The transport saturation current, `IS`, in amperes; default 1e-16. |
+| `saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the transport saturation currents' scaling, `XIS`; default 3. |
+| `substrate_resistance` | `0` | The substrate resistance, `RS`, in ohms; default 0. |
+| `substrate_resistance_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the substrate resistance, `XRS`; default 0. |
+| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
+| `transit_time_base_width_coefficient` | `0` | How the forward transit time grows with the base charge's Early part, `QTF`; default 0. |
+| `transit_time_bias_coefficient` | `0` | How much the forward transit time grows with bias, `XTF`; default 0. |
+| `transit_time_current` | `0` | The current, `ITF`, above which the forward transit time grows, in amperes; default 0, for growth at any current. |
+| `transit_time_voltage` |  | The base-collector voltage, `VTF`, that sets how the forward transit time grows with it, in volts; infinite by default. |
+
 ## `vdmos`
 
 | Parameter | Default | Description |

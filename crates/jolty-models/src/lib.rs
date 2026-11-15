@@ -50,6 +50,7 @@ mod switch;
 mod testing;
 mod thermal;
 mod topology;
+mod vbic;
 mod vdmos;
 pub mod waveform;
 
@@ -111,6 +112,7 @@ pub use thermal::{
     ThermalResistance, ThermalResistanceParameters,
 };
 pub use topology::{Branch, BranchKind, Interface};
+pub use vbic::{BaseCharge, Vbic, VbicParameters};
 pub use vdmos::{Vdmos, VdmosParameters};
 
 /// The models a circuit can use, by name: analog models and logic models, no two of the
@@ -150,6 +152,7 @@ impl Library {
         library.add(Thermal::<Jfet>::new());
         library.add(Thermal::<Mosfet>::new());
         library.add(Thermal::<Vdmos>::new());
+        library.add(Thermal::<Vbic>::new());
         library.add(Native::<Photocell>::new());
         library.add(Native::<VoltageControlledMemristor>::new());
         library.add(Native::<CurrentControlledMemristor>::new());
@@ -309,6 +312,7 @@ mod tests {
             ),
             ("thermal_capacitance", json!({"capacitance": 2})),
             ("thermal_resistance", json!({"resistance": 10})),
+            ("vbic", json!({"base_charge": "gummel_poon"})),
             ("vdmos", vdmos),
             (
                 "voltage_controlled_current_source",
@@ -444,6 +448,7 @@ mod tests {
                 "resistor",
                 "thermal_capacitance",
                 "thermal_resistance",
+                "vbic",
                 "vdmos",
                 "voltage_controlled_current_source",
                 "voltage_controlled_memristor",

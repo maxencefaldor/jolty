@@ -490,6 +490,27 @@ The SPICE reader reads a `.model` card of type `NMOS` or `PMOS` and `LEVEL` 8 or
 An element whose model names no card takes, as ngspice's bins do, the last defined card named after it with a dot and a number, such as `nch.2`, whose `LMIN`, `LMAX`, `WMIN` and `WMAX` hold the length and width the element gives, a bound within 1 nm counted in.
 The reader reads past what changes nothing ngspice computes: the bins' ranges, the safe operating area's `VGS_MAX` and the rest, and the parameters of the non-quasi-static models and HSPICE's area calculation, `ELM`, `ACM`'s and `GEO`, which it refuses on, as jolty models neither: a card or instance with `NQSMOD`, `ACNQSMOD` or `ACM` other than 0 is refused.
 
+## VBIC
+
+`vbic(...)` is a bipolar transistor of integrated circuits between `collector`, `base`, `emitter` and `substrate`, in VBIC 1.2, the vertical bipolar inter-company model, as ngspice 47 implements it (McAndrew et al., "VBIC95, the vertical bipolar inter-company model", IEEE Journal of Solid-State Circuits, 1996, as the VBIC 1.2 definition extends it).
+Beside the Gummel-Poon transistor's transport current, Early effect, high injection and junction charges, it models the parasitic substrate transistor from the extrinsic base to the substrate, the weak avalanche of the base-collector junction, the quasi-saturation of the intrinsic collector by Kull's model, the base-emitter breakdown, the reach-through of the base-collector junction, and junction capacitances smoothed at their potentials.
+Its parameters take the names of a VBIC card's meaning, such as `extrinsic_collector_resistance` for `RCX`, in SI units, and those left out take ngspice's defaults.
+
+The extrinsic collector, extrinsic base, emitter and substrate resistances add internal unknowns, as `Q1:collector`, `Q1:base`, `Q1:emitter` and `Q1:substrate`; the intrinsic collector, the intrinsic base and the parasitic base are internal unknowns always, and an excess-phase delay adds `Q1:transport_filter` and `Q1:delayed_transport`, the network that delays the forward transport current.
+A pnp's excess phase is its npn's mirror, where ngspice 47 reads the network's nodes without the polarity (`vbicload.c`, lines 449 and 485 to 486) and multiplies the delayed current by it (line 1139): with `TD` alone set, its pnp's collector current at DC is 3.01 mA where the npn's mirror is 56.7 µA.
+The intrinsic collector, intrinsic base and parasitic base resistances must be positive, as ngspice's are once it raises any to 10 mΩ; the SPICE reader raises them as ngspice does, and the exporter refuses one below 10 mΩ.
+
+VBIC computes its thermal voltage with constants of its own, Boltzmann's 1.380662e-23 J/K and the electron's charge 1.602189e-19 C, in jolty as in ngspice, so the two agree at the same kelvins.
+Away from the nominal temperature, its saturation currents scale by their activation energies and temperature exponents, its resistances, forward knee current and epi saturation voltage by their exponents, its potentials and capacitances with the intrinsic carrier concentration, and its emission coefficients, avalanche and breakdown by their coefficients, as ngspice's VBIC scales them.
+A heated transistor runs at its thermal net's temperature, as the other semiconductors do, its power the sum of its terminals' voltages times their currents; ngspice's own self-heating network becomes a thermal resistance and capacitance on that net.
+
+In a [noise analysis](simulation.md#noise), each resistance makes thermal noise, the transport, base and parasitic currents shot noise, and the base currents flicker noise of `KFN·I^AFN/f^BFN`.
+The parasitic base resistance's thermal noise lies across that resistance, where ngspice 47 places it across the emitter resistance (`vbicnoise.c`), so the two engines' noise differs by that source alone.
+
+The SPICE reader reads level 4 and level 9 cards of NPN and PNP models, and Q elements of three to five nodes: a five-node Q whose card heats becomes a heated transistor and thermal elements, and one whose card does not leaves its fifth node unjoined.
+It reads past `VERS`, `VREF`, `EBBE` and the safe operating area's limits, which change nothing ngspice computes, and a card's `DTEMP` becomes the transistor's temperature offset.
+A Gummel-Poon card is of level 1, and a card of another level is refused, naming it.
+
 ## Power MOSFET
 
 `vdmos(...)` is a vertical double-diffused power MOSFET between `drain`, `gate` and `source`, in ngspice's VDMOS model, as ngspice 47 implements it and its manual's section "Power MOSFET model (VDMOS)" describes it, which reads the cards of LTspice's power MOSFETs.

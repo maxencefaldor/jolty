@@ -384,17 +384,20 @@ class _Translation:
         model: str,
         parameters: dict[str, JsonValue],
         terminals: Mapping[str, str],
+        *,
+        identifier: str | None = None,
     ) -> None:
-        """Places a device of `model`, the element of `statement`.
+        """Places a device of `model`, the element of `statement`, or a part of it.
 
-        Its terminals join `terminals`' nets.
+        Its terminals join `terminals`' nets; it takes the element's name, or
+        `identifier` for a part of it.
         """
         made = device(model, parameters)
         self.instances.append(
             (
                 statement.line,
                 ir.Instance(
-                    id=statement.text.split()[0],
+                    id=identifier or statement.text.split()[0],
                     of=ir.DeviceOf(device=model),
                     parameters=made.parameters,
                     terminals={
@@ -875,13 +878,7 @@ def _semiconductor(
         positional, assigned = _keywords(tokens(statement.text))
         nodes = positional[1 : 1 + len(terminals)]
         rest = positional[1 + len(terminals) :]
-        # A bipolar transistor's substrate is the ground, as in SPICE, unless a fourth
-        # node before its model names it.
-        substrate = "0" if "npn" in kinds else None
         library, cards = translation.library, translation.models
-        named = len(rest) > 1 and library.model(rest[0], cards) is None
-        if substrate is not None and named:
-            substrate, rest = rest[0], rest[1:]
         if len(nodes) != len(terminals) or not rest:
             message = f"the element joins {len(terminals)} nodes, then names its model"
             raise statement.fail(message)
@@ -908,8 +905,6 @@ def _semiconductor(
             terminal: translation.net(node)
             for terminal, node in zip(terminals, nodes, strict=True)
         }
-        if substrate is not None:
-            joined["substrate"] = translation.net(substrate)
         translation.add(statement, made.model, made.parameters, joined)
 
     return translated
@@ -980,6 +975,88 @@ def _transistor(translation: _Translation, statement: Statement) -> None:
         for terminal, node in zip(_VDMOS_TERMINALS, nodes, strict=False)
     }
     translation.add(statement, made.model, made.parameters, joined)
+
+
+_BIPOLAR_TERMINALS: Final = ("collector", "base", "emitter")
+"""A bipolar transistor's terminals, in its element's order, before its substrate."""
+
+
+def _bipolar(translation: _Translation, statement: Statement) -> None:
+    """The translation of a `Q` element: a Gummel-Poon transistor or a VBIC, by card.
+
+    As in ngspice, the element names its model after its nodes, the first word from the
+    fourth node on that names a model: three nodes, then a substrate, the ground unless
+    a fourth node gives it, and for a VBIC a fifth, its thermal node. A VBIC whose card
+    heats, by a positive ``RTH`` and a ``SELFT`` of 1 or none, heats through a thermal
+    terminal on that node's net, held to the ambient by its thermal resistance and
+    capacitance, devices named after the element with ``.rth`` and ``.cth``; without a
+    thermal node, its thermal node is the ground, as ngspice joins it, and it does not
+    heat.
+
+    Raises:
+        SpiceError: When no bipolar transistor's model follows three to five nodes.
+    """
+    positional, assigned = _keywords(tokens(statement.text))
+    library, cards = translation.library, translation.models
+    first = len(_BIPOLAR_TERMINALS) + 1
+    named = next(
+        (
+            position
+            for position in range(first, len(positional))
+            if library.model(positional[position], cards) is not None
+        ),
+        None,
+    )
+    card = None if named is None else library.model(positional[named], cards)
+    if named is None or card is None:
+        message = "the element joins three to five nodes, then names its model"
+        raise statement.fail(message)
+    if card.kind not in {"npn", "pnp"}:
+        message = f"`{card.name}` is a model of type `{card.kind}`"
+        raise statement.fail(message)
+    nodes, rest = positional[1:named], positional[named + 1 :]
+    instance = {
+        key: translation.value(values[0]) for key, values in assigned.items() if values
+    }
+    # An initial state, `OFF`, only guides the search for the operating point.
+    areas = [word for word in rest if word.casefold() not in {"off", "on"}]
+    if areas:
+        instance["area"] = translation.value(areas[0])
+    made = models.device(card, translation.scope, instance, statement)
+    most = 5 if made.model == "vbic" else 4
+    if len(nodes) > most:
+        message = f"the transistor joins at most {most} nodes, then names its model"
+        raise statement.fail(message)
+    collector, base, emitter, *more = nodes
+    substrate = more[0] if more else "0"
+    joined = {
+        "collector": translation.net(collector),
+        "base": translation.net(base),
+        "emitter": translation.net(emitter),
+        "substrate": translation.net(substrate),
+    }
+    heating = (
+        models.vbic_heating(card, translation.scope, instance)
+        if len(nodes) == most == 5  # noqa: PLR2004 - a VBIC's thermal node, its fifth
+        else None
+    )
+    if heating is None:
+        translation.add(statement, made.model, made.parameters, joined)
+        return
+    thermal = translation.net(nodes[4])
+    joined["thermal"] = thermal
+    translation.add(statement, made.model, {**made.parameters, "thermal": True}, joined)
+    resistance, capacitance = heating
+    name = statement.text.split()[0]
+    parts: tuple[tuple[str, str, dict[str, JsonValue]], ...] = (
+        ("rth", "thermal_resistance", {"resistance": resistance}),
+        ("cth", "thermal_capacitance", {"capacitance": capacitance}),
+    )
+    between = {"a": thermal, "b": translation.net("0")}
+    for suffix, model, parameters in parts:
+        translation.add(
+            statement, model, parameters, between, identifier=f"{name}.{suffix}"
+        )
 
 
 def _controlled(output: str) -> Callable[[_Translation, Statement], None]:
@@ -1330,7 +1407,7 @@ _ELEMENTS: Final[dict[str, Callable[[_Translation, Statement], None]]] = {
     "v": _independent("voltage_source"),
     "i": _independent("current_source"),
     "d": _semiconductor(("anode", "cathode"), frozenset({"d"})),
-    "q": _semiconductor(("collector", "base", "emitter"), frozenset({"npn", "pnp"})),
+    "q": _bipolar,
     "j": _semiconductor(("drain", "gate", "source"), frozenset({"njf", "pjf"})),
     "m": _transistor,
     "e": _controlled("voltage"),

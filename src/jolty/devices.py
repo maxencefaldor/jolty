@@ -1128,6 +1128,384 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
     return device("bipolar_transistor", parameters)
 
 
+def vbic(  # noqa: PLR0913 - VBIC 1.2 has 103 parameters
+    *,
+    polarity: Literal["npn", "pnp"] | None = None,
+    extrinsic_collector_resistance: Quantity | None = None,
+    intrinsic_collector_resistance: Quantity | None = None,
+    epi_saturation_voltage: Quantity | None = None,
+    epi_doping_parameter: float | None = None,
+    high_current_collector_factor: float | None = None,
+    extrinsic_base_resistance: Quantity | None = None,
+    intrinsic_base_resistance: Quantity | None = None,
+    emitter_resistance: Quantity | None = None,
+    substrate_resistance: Quantity | None = None,
+    parasitic_base_resistance: Quantity | None = None,
+    saturation_current: Quantity | None = None,
+    forward_emission_coefficient: float | None = None,
+    reverse_emission_coefficient: float | None = None,
+    depletion_coefficient: float | None = None,
+    base_emitter_overlap_capacitance: Quantity | None = None,
+    base_emitter_capacitance: Quantity | None = None,
+    base_emitter_potential: Quantity | None = None,
+    base_emitter_grading: float | None = None,
+    base_emitter_smoothing: Quantity | None = None,
+    base_collector_overlap_capacitance: Quantity | None = None,
+    base_collector_capacitance: Quantity | None = None,
+    epi_charge: Quantity | None = None,
+    extrinsic_base_collector_capacitance: Quantity | None = None,
+    base_collector_potential: Quantity | None = None,
+    base_collector_grading: float | None = None,
+    base_collector_smoothing: Quantity | None = None,
+    collector_substrate_capacitance: Quantity | None = None,
+    collector_substrate_potential: Quantity | None = None,
+    collector_substrate_grading: float | None = None,
+    collector_substrate_smoothing: Quantity | None = None,
+    collector_substrate_fixed_capacitance: Quantity | None = None,
+    ideal_base_emitter_current: Quantity | None = None,
+    intrinsic_base_emitter_fraction: float | None = None,
+    ideal_base_emitter_emission_coefficient: float | None = None,
+    nonideal_base_emitter_current: Quantity | None = None,
+    nonideal_base_emitter_emission_coefficient: float | None = None,
+    ideal_base_collector_current: Quantity | None = None,
+    ideal_base_collector_emission_coefficient: float | None = None,
+    nonideal_base_collector_current: Quantity | None = None,
+    nonideal_base_collector_emission_coefficient: float | None = None,
+    avalanche_coefficient: Quantity | None = None,
+    avalanche_exponent_coefficient: float | None = None,
+    parasitic_saturation_current: Quantity | None = None,
+    parasitic_extrinsic_fraction: float | None = None,
+    parasitic_forward_emission_coefficient: float | None = None,
+    parasitic_ideal_base_emitter_current: Quantity | None = None,
+    parasitic_nonideal_base_emitter_current: Quantity | None = None,
+    parasitic_ideal_base_collector_current: Quantity | None = None,
+    parasitic_ideal_base_collector_emission_coefficient: float | None = None,
+    parasitic_nonideal_base_collector_current: Quantity | None = None,
+    parasitic_nonideal_base_collector_emission_coefficient: float | None = None,
+    forward_early_voltage: Quantity | None = None,
+    reverse_early_voltage: Quantity | None = None,
+    forward_knee_current: Quantity | None = None,
+    reverse_knee_current: Quantity | None = None,
+    parasitic_knee_current: Quantity | None = None,
+    knee_rolloff: float | None = None,
+    base_charge: Literal["vbic", "gummel_poon"] | None = None,
+    forward_transit_time: Quantity | None = None,
+    transit_time_base_width_coefficient: float | None = None,
+    transit_time_bias_coefficient: float | None = None,
+    transit_time_voltage: Quantity | None = None,
+    transit_time_current: Quantity | None = None,
+    reverse_transit_time: Quantity | None = None,
+    excess_phase_delay: Quantity | None = None,
+    flicker_coefficient: float | None = None,
+    flicker_exponent: float | None = None,
+    flicker_frequency_exponent: float | None = None,
+    reach_through_voltage: Quantity | None = None,
+    reach_through_smoothing: float | None = None,
+    base_emitter_breakdown_voltage: Quantity | None = None,
+    base_emitter_breakdown_emission_coefficient: float | None = None,
+    base_emitter_breakdown_current: Quantity | None = None,
+    reverse_saturation_current_ratio: float | None = None,
+    nominal_temperature: Quantity | None = None,
+    activation_energy: Quantity | None = None,
+    ideal_base_emitter_activation_energy: Quantity | None = None,
+    ideal_base_collector_activation_energy: Quantity | None = None,
+    ideal_collector_substrate_activation_energy: Quantity | None = None,
+    nonideal_base_emitter_activation_energy: Quantity | None = None,
+    nonideal_base_collector_activation_energy: Quantity | None = None,
+    nonideal_collector_substrate_activation_energy: Quantity | None = None,
+    parasitic_activation_energy: Quantity | None = None,
+    reverse_activation_energy_shift: Quantity | None = None,
+    saturation_current_temperature_exponent: float | None = None,
+    ideal_base_current_temperature_exponent: float | None = None,
+    nonideal_base_current_temperature_exponent: float | None = None,
+    reverse_saturation_current_temperature_exponent: float | None = None,
+    emission_coefficient_temperature_coefficient: Quantity | None = None,
+    avalanche_temperature_coefficient: Quantity | None = None,
+    forward_knee_current_temperature_exponent: float | None = None,
+    extrinsic_collector_resistance_temperature_exponent: float | None = None,
+    intrinsic_collector_resistance_temperature_exponent: float | None = None,
+    extrinsic_base_resistance_temperature_exponent: float | None = None,
+    intrinsic_base_resistance_temperature_exponent: float | None = None,
+    emitter_resistance_temperature_exponent: float | None = None,
+    substrate_resistance_temperature_exponent: float | None = None,
+    parasitic_base_resistance_temperature_exponent: float | None = None,
+    epi_saturation_voltage_temperature_exponent: float | None = None,
+    breakdown_voltage_temperature_coefficient: Quantity | None = None,
+    breakdown_voltage_quadratic_temperature_coefficient: Quantity | None = None,
+    breakdown_emission_temperature_coefficient: Quantity | None = None,
+) -> Device:
+    """A bipolar transistor of integrated circuits, VBIC 1.2, between four terminals.
+
+    It follows the vertical bipolar inter-company model as ngspice 47 implements it,
+    between ``collector``, ``base``, ``emitter`` and ``substrate`` (McAndrew et al.,
+    "VBIC95, the vertical bipolar inter-company model", IEEE Journal of Solid-State
+    Circuits, 1996, as the VBIC 1.2 definition extends it). Beside the Gummel-Poon
+    transistor's transport current, Early effect, high injection and junction charges,
+    it models the parasitic substrate transistor from the extrinsic base to the
+    substrate, the weak avalanche of the base-collector junction, the quasi-saturation
+    of the intrinsic collector by Kull's model, the base-emitter breakdown, the
+    reach-through of the base-collector junction, and capacitances smoothed at the
+    junctions' potentials. Parameters left out take ngspice's defaults, an Early
+    voltage, a knee current, the epi saturation voltage and the transit time's voltage
+    infinite.
+
+    The extrinsic collector, extrinsic base, emitter and substrate resistances add the
+    internal unknowns ``collector``, ``base``, ``emitter`` and ``substrate``; the
+    intrinsic collector, the intrinsic base and the parasitic base are internal unknowns
+    always, and an excess-phase delay adds ``transport_filter`` and
+    ``delayed_transport``, the network that delays the forward transport current.
+
+    Away from the nominal temperature, its saturation currents scale by their activation
+    energies and temperature exponents, its resistances, forward knee current and epi
+    saturation voltage by their exponents, its potentials and capacitances with the
+    intrinsic carrier concentration, and its emission coefficients, avalanche and
+    breakdown by their coefficients, as ngspice's VBIC scales them; its thermal voltage
+    takes VBIC's own constants. A heated transistor runs at its thermal net's
+    temperature, as VBIC's self-heating does, its thermal resistance and capacitance
+    thermal elements on that net.
+
+    Its resistances make thermal noise, the intrinsic ones at their slopes; its
+    transport current, its intrinsic base-emitter current and the parasitic transistor's
+    base-emitter and transport currents make shot noise; and with a flicker coefficient
+    ``KFN``, both base-emitter currents ``Ib`` make flicker noise of ``KFN · |Ib|^AFN /
+    f^BFN`` A²/Hz, as ngspice models them.
+
+    Examples:
+        >>> from jolty.units import V, fA, ohm
+        >>> transistor = vbic(
+        ...     saturation_current=10 * fA,
+        ...     ideal_base_emitter_current=0.1 * fA,
+        ...     forward_early_voltage=50 * V,
+        ...     extrinsic_collector_resistance=10 * ohm,
+        ... )
+        >>> transistor.terminals
+        ('collector', 'base', 'emitter', 'substrate')
+    """
+    parameters = _parameters(
+        {
+            "extrinsic_collector_resistance": (
+                extrinsic_collector_resistance,
+                RESISTANCE,
+            ),
+            "intrinsic_collector_resistance": (
+                intrinsic_collector_resistance,
+                RESISTANCE,
+            ),
+            "epi_saturation_voltage": (epi_saturation_voltage, VOLTAGE),
+            "extrinsic_base_resistance": (extrinsic_base_resistance, RESISTANCE),
+            "intrinsic_base_resistance": (intrinsic_base_resistance, RESISTANCE),
+            "emitter_resistance": (emitter_resistance, RESISTANCE),
+            "substrate_resistance": (substrate_resistance, RESISTANCE),
+            "parasitic_base_resistance": (parasitic_base_resistance, RESISTANCE),
+            "saturation_current": (saturation_current, CURRENT),
+            "base_emitter_overlap_capacitance": (
+                base_emitter_overlap_capacitance,
+                CAPACITANCE,
+            ),
+            "base_emitter_capacitance": (base_emitter_capacitance, CAPACITANCE),
+            "base_emitter_potential": (base_emitter_potential, VOLTAGE),
+            "base_emitter_smoothing": (base_emitter_smoothing, VOLTAGE),
+            "base_collector_overlap_capacitance": (
+                base_collector_overlap_capacitance,
+                CAPACITANCE,
+            ),
+            "base_collector_capacitance": (base_collector_capacitance, CAPACITANCE),
+            "epi_charge": (epi_charge, CHARGE),
+            "extrinsic_base_collector_capacitance": (
+                extrinsic_base_collector_capacitance,
+                CAPACITANCE,
+            ),
+            "base_collector_potential": (base_collector_potential, VOLTAGE),
+            "base_collector_smoothing": (base_collector_smoothing, VOLTAGE),
+            "collector_substrate_capacitance": (
+                collector_substrate_capacitance,
+                CAPACITANCE,
+            ),
+            "collector_substrate_potential": (collector_substrate_potential, VOLTAGE),
+            "collector_substrate_smoothing": (collector_substrate_smoothing, VOLTAGE),
+            "collector_substrate_fixed_capacitance": (
+                collector_substrate_fixed_capacitance,
+                CAPACITANCE,
+            ),
+            "ideal_base_emitter_current": (ideal_base_emitter_current, CURRENT),
+            "nonideal_base_emitter_current": (nonideal_base_emitter_current, CURRENT),
+            "ideal_base_collector_current": (ideal_base_collector_current, CURRENT),
+            "nonideal_base_collector_current": (
+                nonideal_base_collector_current,
+                CURRENT,
+            ),
+            "avalanche_coefficient": (avalanche_coefficient, PER_VOLT),
+            "parasitic_saturation_current": (parasitic_saturation_current, CURRENT),
+            "parasitic_ideal_base_emitter_current": (
+                parasitic_ideal_base_emitter_current,
+                CURRENT,
+            ),
+            "parasitic_nonideal_base_emitter_current": (
+                parasitic_nonideal_base_emitter_current,
+                CURRENT,
+            ),
+            "parasitic_ideal_base_collector_current": (
+                parasitic_ideal_base_collector_current,
+                CURRENT,
+            ),
+            "parasitic_nonideal_base_collector_current": (
+                parasitic_nonideal_base_collector_current,
+                CURRENT,
+            ),
+            "forward_early_voltage": (forward_early_voltage, VOLTAGE),
+            "reverse_early_voltage": (reverse_early_voltage, VOLTAGE),
+            "forward_knee_current": (forward_knee_current, CURRENT),
+            "reverse_knee_current": (reverse_knee_current, CURRENT),
+            "parasitic_knee_current": (parasitic_knee_current, CURRENT),
+            "forward_transit_time": (forward_transit_time, TIME),
+            "transit_time_voltage": (transit_time_voltage, VOLTAGE),
+            "transit_time_current": (transit_time_current, CURRENT),
+            "reverse_transit_time": (reverse_transit_time, TIME),
+            "excess_phase_delay": (excess_phase_delay, TIME),
+            "reach_through_voltage": (reach_through_voltage, VOLTAGE),
+            "base_emitter_breakdown_voltage": (base_emitter_breakdown_voltage, VOLTAGE),
+            "base_emitter_breakdown_current": (base_emitter_breakdown_current, CURRENT),
+            "nominal_temperature": (nominal_temperature, TEMPERATURE),
+            "activation_energy": (activation_energy, VOLTAGE),
+            "ideal_base_emitter_activation_energy": (
+                ideal_base_emitter_activation_energy,
+                VOLTAGE,
+            ),
+            "ideal_base_collector_activation_energy": (
+                ideal_base_collector_activation_energy,
+                VOLTAGE,
+            ),
+            "ideal_collector_substrate_activation_energy": (
+                ideal_collector_substrate_activation_energy,
+                VOLTAGE,
+            ),
+            "nonideal_base_emitter_activation_energy": (
+                nonideal_base_emitter_activation_energy,
+                VOLTAGE,
+            ),
+            "nonideal_base_collector_activation_energy": (
+                nonideal_base_collector_activation_energy,
+                VOLTAGE,
+            ),
+            "nonideal_collector_substrate_activation_energy": (
+                nonideal_collector_substrate_activation_energy,
+                VOLTAGE,
+            ),
+            "parasitic_activation_energy": (parasitic_activation_energy, VOLTAGE),
+            "reverse_activation_energy_shift": (
+                reverse_activation_energy_shift,
+                VOLTAGE,
+            ),
+            "emission_coefficient_temperature_coefficient": (
+                emission_coefficient_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "avalanche_temperature_coefficient": (
+                avalanche_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "breakdown_voltage_temperature_coefficient": (
+                breakdown_voltage_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "breakdown_voltage_quadratic_temperature_coefficient": (
+                breakdown_voltage_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "breakdown_emission_temperature_coefficient": (
+                breakdown_emission_temperature_coefficient,
+                PER_KELVIN,
+            ),
+        },
+        {
+            "epi_doping_parameter": epi_doping_parameter,
+            "high_current_collector_factor": high_current_collector_factor,
+            "forward_emission_coefficient": forward_emission_coefficient,
+            "reverse_emission_coefficient": reverse_emission_coefficient,
+            "depletion_coefficient": depletion_coefficient,
+            "base_emitter_grading": base_emitter_grading,
+            "base_collector_grading": base_collector_grading,
+            "collector_substrate_grading": collector_substrate_grading,
+            "intrinsic_base_emitter_fraction": intrinsic_base_emitter_fraction,
+            "ideal_base_emitter_emission_coefficient": (
+                ideal_base_emitter_emission_coefficient
+            ),
+            "nonideal_base_emitter_emission_coefficient": (
+                nonideal_base_emitter_emission_coefficient
+            ),
+            "ideal_base_collector_emission_coefficient": (
+                ideal_base_collector_emission_coefficient
+            ),
+            "nonideal_base_collector_emission_coefficient": (
+                nonideal_base_collector_emission_coefficient
+            ),
+            "avalanche_exponent_coefficient": avalanche_exponent_coefficient,
+            "parasitic_extrinsic_fraction": parasitic_extrinsic_fraction,
+            "parasitic_forward_emission_coefficient": (
+                parasitic_forward_emission_coefficient
+            ),
+            "parasitic_ideal_base_collector_emission_coefficient": (
+                parasitic_ideal_base_collector_emission_coefficient
+            ),
+            "parasitic_nonideal_base_collector_emission_coefficient": (
+                parasitic_nonideal_base_collector_emission_coefficient
+            ),
+            "knee_rolloff": knee_rolloff,
+            "transit_time_base_width_coefficient": transit_time_base_width_coefficient,
+            "transit_time_bias_coefficient": transit_time_bias_coefficient,
+            "flicker_coefficient": flicker_coefficient,
+            "flicker_exponent": flicker_exponent,
+            "flicker_frequency_exponent": flicker_frequency_exponent,
+            "reach_through_smoothing": reach_through_smoothing,
+            "base_emitter_breakdown_emission_coefficient": (
+                base_emitter_breakdown_emission_coefficient
+            ),
+            "reverse_saturation_current_ratio": reverse_saturation_current_ratio,
+            "saturation_current_temperature_exponent": (
+                saturation_current_temperature_exponent
+            ),
+            "ideal_base_current_temperature_exponent": (
+                ideal_base_current_temperature_exponent
+            ),
+            "nonideal_base_current_temperature_exponent": (
+                nonideal_base_current_temperature_exponent
+            ),
+            "reverse_saturation_current_temperature_exponent": (
+                reverse_saturation_current_temperature_exponent
+            ),
+            "forward_knee_current_temperature_exponent": (
+                forward_knee_current_temperature_exponent
+            ),
+            "extrinsic_collector_resistance_temperature_exponent": (
+                extrinsic_collector_resistance_temperature_exponent
+            ),
+            "intrinsic_collector_resistance_temperature_exponent": (
+                intrinsic_collector_resistance_temperature_exponent
+            ),
+            "extrinsic_base_resistance_temperature_exponent": (
+                extrinsic_base_resistance_temperature_exponent
+            ),
+            "intrinsic_base_resistance_temperature_exponent": (
+                intrinsic_base_resistance_temperature_exponent
+            ),
+            "emitter_resistance_temperature_exponent": (
+                emitter_resistance_temperature_exponent
+            ),
+            "substrate_resistance_temperature_exponent": (
+                substrate_resistance_temperature_exponent
+            ),
+            "parasitic_base_resistance_temperature_exponent": (
+                parasitic_base_resistance_temperature_exponent
+            ),
+            "epi_saturation_voltage_temperature_exponent": (
+                epi_saturation_voltage_temperature_exponent
+            ),
+        },
+        {"polarity": polarity, "base_charge": base_charge},
+    )
+    return device("vbic", parameters)
+
+
 def mosfet(  # noqa: PLR0913 - SPICE's level 1 and 3 MOSFETs have 50 parameters
     *,
     level: Literal[1, 3] | None = None,

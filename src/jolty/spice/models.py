@@ -252,6 +252,10 @@ VDMOS_SELF_HEATING: Final = frozenset({"rthjc", "rthca", "cthj"})
 instance says ``thermal``: elsewhere it changes nothing, and jolty reads no such
 instance."""
 
+_WRAPPED: Final = re.compile(r"([\w\s=.+-]*)\((.*)\)", re.DOTALL)
+"""A card's parameters in parentheses that open after some of them, as in ``NPN
+Level=4(...)``, which ngspice reads as it reads them all in parentheses."""
+
 _CHANNEL: Final = re.compile(r"\b([np])chan\b", re.IGNORECASE)
 """A VDMOS card's polarity, ``nchan`` or ``pchan``, a word anywhere in its card."""
 
@@ -291,6 +295,169 @@ parameters, and the safe operating area, which only ngspice's checks read."""
 BSIM3_DENSITIES: Final = {"nch": 1e20, "ngate": 1.000001e24}
 """The concentrations of a BSIM3 card that ngspice reads per cubic meter above a bound,
 and per cubic centimeter below it, as its ``b3mpar.c`` reads each."""
+
+VBIC: Final[Table] = {
+    "rcx": ("extrinsic_collector_resistance", 1.0),
+    "rci": ("intrinsic_collector_resistance", 1.0),
+    "vo": ("epi_saturation_voltage", 1.0),
+    "v0": ("epi_saturation_voltage", 1.0),
+    "gamm": ("epi_doping_parameter", 1.0),
+    "hrcf": ("high_current_collector_factor", 1.0),
+    "rbx": ("extrinsic_base_resistance", 1.0),
+    "rbi": ("intrinsic_base_resistance", 1.0),
+    "re": ("emitter_resistance", 1.0),
+    "rs": ("substrate_resistance", 1.0),
+    "rbp": ("parasitic_base_resistance", 1.0),
+    "is": ("saturation_current", 1.0),
+    "nf": ("forward_emission_coefficient", 1.0),
+    "nr": ("reverse_emission_coefficient", 1.0),
+    "fc": ("depletion_coefficient", 1.0),
+    "cbeo": ("base_emitter_overlap_capacitance", 1.0),
+    "cbe0": ("base_emitter_overlap_capacitance", 1.0),
+    "cje": ("base_emitter_capacitance", 1.0),
+    "pe": ("base_emitter_potential", 1.0),
+    "me": ("base_emitter_grading", 1.0),
+    "aje": ("base_emitter_smoothing", 1.0),
+    "cbco": ("base_collector_overlap_capacitance", 1.0),
+    "cbc0": ("base_collector_overlap_capacitance", 1.0),
+    "cjc": ("base_collector_capacitance", 1.0),
+    "qco": ("epi_charge", 1.0),
+    "qc0": ("epi_charge", 1.0),
+    "cjep": ("extrinsic_base_collector_capacitance", 1.0),
+    "pc": ("base_collector_potential", 1.0),
+    "mc": ("base_collector_grading", 1.0),
+    "ajc": ("base_collector_smoothing", 1.0),
+    "cjcp": ("collector_substrate_capacitance", 1.0),
+    "ps": ("collector_substrate_potential", 1.0),
+    "ms": ("collector_substrate_grading", 1.0),
+    "ajs": ("collector_substrate_smoothing", 1.0),
+    "ccso": ("collector_substrate_fixed_capacitance", 1.0),
+    "ibei": ("ideal_base_emitter_current", 1.0),
+    "wbe": ("intrinsic_base_emitter_fraction", 1.0),
+    "nei": ("ideal_base_emitter_emission_coefficient", 1.0),
+    "iben": ("nonideal_base_emitter_current", 1.0),
+    "nen": ("nonideal_base_emitter_emission_coefficient", 1.0),
+    "ibci": ("ideal_base_collector_current", 1.0),
+    "nci": ("ideal_base_collector_emission_coefficient", 1.0),
+    "ibcn": ("nonideal_base_collector_current", 1.0),
+    "ncn": ("nonideal_base_collector_emission_coefficient", 1.0),
+    "avc1": ("avalanche_coefficient", 1.0),
+    "avc2": ("avalanche_exponent_coefficient", 1.0),
+    "isp": ("parasitic_saturation_current", 1.0),
+    "wsp": ("parasitic_extrinsic_fraction", 1.0),
+    "nfp": ("parasitic_forward_emission_coefficient", 1.0),
+    "ibeip": ("parasitic_ideal_base_emitter_current", 1.0),
+    "ibenp": ("parasitic_nonideal_base_emitter_current", 1.0),
+    "ibcip": ("parasitic_ideal_base_collector_current", 1.0),
+    "ncip": ("parasitic_ideal_base_collector_emission_coefficient", 1.0),
+    "ibcnp": ("parasitic_nonideal_base_collector_current", 1.0),
+    "ncnp": ("parasitic_nonideal_base_collector_emission_coefficient", 1.0),
+    "vef": ("forward_early_voltage", 1.0),
+    "ver": ("reverse_early_voltage", 1.0),
+    "ikf": ("forward_knee_current", 1.0),
+    "ikr": ("reverse_knee_current", 1.0),
+    "ikp": ("parasitic_knee_current", 1.0),
+    "nkf": ("knee_rolloff", 1.0),
+    "tf": ("forward_transit_time", 1.0),
+    "qtf": ("transit_time_base_width_coefficient", 1.0),
+    "xtf": ("transit_time_bias_coefficient", 1.0),
+    "vtf": ("transit_time_voltage", 1.0),
+    "itf": ("transit_time_current", 1.0),
+    "tr": ("reverse_transit_time", 1.0),
+    "td": ("excess_phase_delay", 1.0),
+    "kfn": ("flicker_coefficient", 1.0),
+    "afn": ("flicker_exponent", 1.0),
+    "bfn": ("flicker_frequency_exponent", 1.0),
+    "vrt": ("reach_through_voltage", 1.0),
+    "art": ("reach_through_smoothing", 1.0),
+    "vbbe": ("base_emitter_breakdown_voltage", 1.0),
+    "nbbe": ("base_emitter_breakdown_emission_coefficient", 1.0),
+    "ibbe": ("base_emitter_breakdown_current", 1.0),
+    "isrr": ("reverse_saturation_current_ratio", 1.0),
+    "ea": ("activation_energy", 1.0),
+    "eaie": ("ideal_base_emitter_activation_energy", 1.0),
+    "eaic": ("ideal_base_collector_activation_energy", 1.0),
+    "eais": ("ideal_collector_substrate_activation_energy", 1.0),
+    "eane": ("nonideal_base_emitter_activation_energy", 1.0),
+    "eanc": ("nonideal_base_collector_activation_energy", 1.0),
+    "eans": ("nonideal_collector_substrate_activation_energy", 1.0),
+    "eap": ("parasitic_activation_energy", 1.0),
+    "dear": ("reverse_activation_energy_shift", 1.0),
+    "xis": ("saturation_current_temperature_exponent", 1.0),
+    "xii": ("ideal_base_current_temperature_exponent", 1.0),
+    "xin": ("nonideal_base_current_temperature_exponent", 1.0),
+    "xisr": ("reverse_saturation_current_temperature_exponent", 1.0),
+    "tnf": ("emission_coefficient_temperature_coefficient", 1.0),
+    "tavc": ("avalanche_temperature_coefficient", 1.0),
+    "xikf": ("forward_knee_current_temperature_exponent", 1.0),
+    "xrcx": ("extrinsic_collector_resistance_temperature_exponent", 1.0),
+    "xrc": ("extrinsic_collector_resistance_temperature_exponent", 1.0),
+    "xrci": ("intrinsic_collector_resistance_temperature_exponent", 1.0),
+    "xrbx": ("extrinsic_base_resistance_temperature_exponent", 1.0),
+    "xrb": ("extrinsic_base_resistance_temperature_exponent", 1.0),
+    "xrbi": ("intrinsic_base_resistance_temperature_exponent", 1.0),
+    "xre": ("emitter_resistance_temperature_exponent", 1.0),
+    "xrs": ("substrate_resistance_temperature_exponent", 1.0),
+    "xrbp": ("parasitic_base_resistance_temperature_exponent", 1.0),
+    "xvo": ("epi_saturation_voltage_temperature_exponent", 1.0),
+    "xv0": ("epi_saturation_voltage_temperature_exponent", 1.0),
+    "tvbbe1": ("breakdown_voltage_temperature_coefficient", 1.0),
+    "tvbbe2": ("breakdown_voltage_quadratic_temperature_coefficient", 1.0),
+    "tnbbe": ("breakdown_emission_temperature_coefficient", 1.0),
+    **FLICKER,
+}
+"""ngspice's VBIC, its bipolar transistor of level 4 or 9, by every name ngspice reads,
+its aliases among them: SPICE's ``KF`` and ``AF``, which no VBIC card gives, read as
+``KFN`` and ``AFN``."""
+
+VBIC_LEVELS: Final = frozenset({4.0, 9.0})
+"""The levels of a bipolar transistor's card at which ngspice selects VBIC."""
+
+VBIC_RESISTANCES: Final = ("rcx", "rci", "rbx", "rbi", "re", "rs", "rbp")
+"""A VBIC card's resistances, each of which ngspice raises to `VBIC_LEAST_RESISTANCE`
+where a card gives it below that, and divides by the area."""
+
+VBIC_LEAST_RESISTANCE: Final = 0.01
+"""The least resistance ngspice's VBIC takes from a card, in ohms, its ``R_MIN``."""
+
+VBIC_INFINITE_AT_ZERO: Final = frozenset(
+    {"vo", "v0", "vef", "ver", "ikf", "ikr", "ikp", "vtf", "vbbe"}
+)
+"""A VBIC card's parameters that ngspice takes as infinite, or as absent for ``VBBE``,
+where they are not positive."""
+
+VBIC_MULTIPLIED: Final = (
+    *("is", "ibei", "iben", "ibci", "ibcn", "isp", "ibeip", "ibenp", "ibcip", "ibcnp"),
+    *("ikf", "ikr", "ikp", "itf", "ibbe", "cje", "cjc", "cjep", "cjcp", "ccso"),
+    *("cbeo", "cbe0", "cbco", "cbc0", "qco", "qc0"),
+)
+"""A VBIC card's currents, capacitances and charges, which ngspice multiplies by the
+area and the number of copies."""
+
+VBIC_IGNORED: Final = frozenset(
+    {
+        *("vers", "vref", "ebbe"),
+        *("vbe_max", "bvbe", "vbc_max", "bvbc", "vce_max", "bvce", "vsub_max", "bvsub"),
+        *("vbefwd", "vbcfwd", "vsubfwd"),
+    }
+)
+"""What a VBIC card gives that changes nothing ngspice computes: its version, ``EBBE``,
+which ngspice computes from ``VBBE`` and ``NBBE`` whatever the card says, and the limits
+its safe-operating-area check warns beyond."""
+
+VBIC_SELF_HEATING: Final = frozenset({"rth", "cth", "selft"})
+"""A VBIC card's self-heating: its thermal resistance and capacitance, which heat only a
+transistor whose element joins a fifth node, its thermal node, and ``SELFT``, which may
+switch it off."""
+
+VBIC_INSTANCE: Final = frozenset({"area", "m", "ic", "icvbe", "icvce"})
+"""A VBIC element's own parameters: its area and number of copies, which scale its
+card, and its initial conditions, which only act where a transient skips its operating
+point."""
+
+VBIC_LEAST_THERMAL_CAPACITANCE: Final = 1e-12
+"""The least thermal capacitance ngspice's VBIC takes from a card that gives a thermal
+resistance, in joules per kelvin."""
 
 CONSTRUCTIONS: Final = {1.0: "vertical", -1.0: "lateral"}
 """The construction of a bipolar transistor of each value of SPICE's ``SUBS``."""
@@ -408,6 +575,8 @@ def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
         resolved, body = _vdmos_card(resolved, body)
     if body.startswith("(") and body.endswith(")"):
         body = body[1:-1]
+    elif (wrapped := _WRAPPED.fullmatch(body)) is not None:
+        body = f"{wrapped[1]} {wrapped[2]}"
     words = tokens(body)
     if resolved in VDMOS_KINDS:
         words = _annotations_removed(words)
@@ -516,6 +685,33 @@ def device(
     return Made(made.model, {**made.parameters, **own})
 
 
+def _bipolar_device(
+    card: ModelCard,
+    values: dict[str, float],
+    instance: Mapping[str, float],
+    statement: Statement,
+) -> Made:
+    """The bipolar transistor a card of `values` makes.
+
+    A card of level 4 or 9 makes a VBIC, and one of level 1, the default, a
+    Gummel-Poon transistor.
+
+    Raises:
+        SpiceError: When the card is of another level, or a parameter has no jolty
+            counterpart.
+    """
+    if values.get("level", 1.0) in VBIC_LEVELS:
+        return Made("vbic", _vbic(card, values, instance, statement))
+    level = values.pop("level", 1.0)
+    if level != 1:
+        message = (
+            f"`{card.name}` is a bipolar transistor of level {level:g}; jolty "
+            "models levels 1, 4 and 9"
+        )
+        raise statement.fail(message)
+    return Made("bipolar_transistor", _bipolar(card, values, instance, statement))
+
+
 def _device(
     card: ModelCard,
     values: dict[str, float],
@@ -535,9 +731,7 @@ def _device(
             values = _scaled(values, instance.get("m", 1.0), ("ibv",), ())
             made = Made("diode", _mapped(card, values, DIODE, statement))
         case "npn" | "pnp":
-            made = Made(
-                "bipolar_transistor", _bipolar(card, values, instance, statement)
-            )
+            made = _bipolar_device(card, values, instance, statement)
         case "njf" | "pjf":
             area = instance.get("area", 1.0) * instance.get("m", 1.0)
             values = _scaled(values, area, ("beta", "is", "cgs", "cgd"), ("rd", "rs"))
@@ -865,3 +1059,90 @@ def _whole(card: ModelCard, name: str, value: float, statement: Statement) -> in
         message = f"`{name.upper()}` of `{card.name}` is a whole number, not {value!r}"
         raise statement.fail(message)
     return int(value)
+
+
+def _vbic(
+    card: ModelCard,
+    values: dict[str, float],
+    instance: Mapping[str, float],
+    statement: Statement,
+) -> dict[str, JsonValue]:
+    """A VBIC's parameters, from its model card and its instance's, as ngspice reads it.
+
+    A resistance the card gives below 10 mΩ is raised to it, and a parameter ngspice
+    takes as infinite where it is not positive is left out; the area times the number of
+    copies multiplies the currents, capacitances and charges and divides the
+    resistances, and the flicker coefficient takes the copies' noise as ngspice adds it,
+    ``m · KFN · (|I| / m)^AFN``. ``QBM`` chooses the base charge's form, and ``TREF`` is
+    ``TNOM``.
+
+    Raises:
+        SpiceError: When a parameter has no jolty counterpart, or the instance gives one
+            that is not the area, the copies or an initial condition.
+    """
+    for name in instance:
+        if name not in VBIC_INSTANCE:
+            message = f"a VBIC takes no `{name.upper()}`"
+            raise statement.fail(message)
+    values = _vbic_read(values)
+    charge = values.pop("qbm", None)
+    copies = instance.get("m", 1.0)
+    area = instance.get("area", 1.0) * copies
+    values = _scaled(values, area, VBIC_MULTIPLIED, VBIC_RESISTANCES)
+    for coefficient, exponent in (("kfn", "afn"), ("kf", "af")):
+        if coefficient in values:
+            values[coefficient] *= copies ** (1 - values.get(exponent, 1.0))
+    parameters = _mapped(card, values, VBIC, statement)
+    parameters["polarity"] = card.kind
+    if charge is not None:
+        threshold = 0.5  # ngspice's, below which QBM chooses VBIC's own form
+        parameters["base_charge"] = "vbic" if charge < threshold else "gummel_poon"
+    return parameters
+
+
+def _vbic_read(values: Mapping[str, float]) -> dict[str, float]:
+    """A VBIC card's `values` as ngspice reads them.
+
+    That is without what changes nothing it computes, ``TREF`` as ``TNOM``, each
+    resistance at least 10 mΩ, and without the parameters infinite where they are not
+    positive.
+    """
+    read = {
+        name: value
+        for name, value in values.items()
+        if name not in VBIC_IGNORED | VBIC_SELF_HEATING | {"level"}
+    }
+    if "tref" in read:
+        read["tnom"] = read.pop("tref")
+    for name in VBIC_RESISTANCES:
+        if name in read:
+            read[name] = max(read[name], VBIC_LEAST_RESISTANCE)
+    return {
+        name: value
+        for name, value in read.items()
+        if name not in VBIC_INFINITE_AT_ZERO or value > 0
+    }
+
+
+def vbic_heating(
+    card: ModelCard, scope: Mapping[str, float], instance: Mapping[str, float]
+) -> tuple[float, float] | None:
+    """The thermal resistance and capacitance a VBIC's card heats it through, if any.
+
+    ngspice heats a VBIC whose card gives a positive ``RTH`` and leaves ``SELFT`` out
+    or sets it to 1, through ``RTH`` and ``CTH``, at least 1e-12 J/K, from its thermal
+    node to the ground; the area times the number of copies divides the resistance and
+    multiplies the capacitance. The resistance is in kelvins per watt, the capacitance
+    in joules per kelvin.
+    """
+    given = {
+        name: evaluate(card.parameters[name], scope)
+        for name in VBIC_SELF_HEATING
+        if name in card.parameters
+    }
+    resistance = given.get("rth", 0.0)
+    if resistance <= 0 or given.get("selft", 1.0) != 1:
+        return None
+    area = instance.get("area", 1.0) * instance.get("m", 1.0)
+    capacitance = max(given.get("cth", 0.0), VBIC_LEAST_THERMAL_CAPACITANCE)
+    return resistance / area, capacitance * area
