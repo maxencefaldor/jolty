@@ -22,11 +22,11 @@ Scripts write circuits with the builder, from devices whose values carry units a
 
 ::: jolty.spice.ngspice
     options:
-      members: [run, runs, execute, version, read, Executed, NgspiceTimeoutError, Running, Compatibility, Raw, spice_celsius, RELATIVE_TOLERANCE, VOLTAGE_TOLERANCE, CURRENT_TOLERANCE, OPTIONS]
+      members: [run, runs, execute, version, read, Executed, NgspiceTimeoutError, Running, Compatibility, Raw, spice_celsius, RELATIVE_TOLERANCE, VOLTAGE_TOLERANCE, CURRENT_TOLERANCE, OPTIONS, VALUES]
 
 ::: jolty.spice.xyce
     options:
-      members: [run, execute, version, Result, Executed, xyce_celsius, OPTIONS]
+      members: [run, execute, version, Result, Executed, XyceTimeoutError, xyce_celsius, OPTIONS, VALUES]
 
 ::: jolty.waveforms
 

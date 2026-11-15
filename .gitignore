@@ -26,7 +26,7 @@ examples/*.view.html
 
 # The robustness corpus's results: their messages quote lines of third-party decks,
 # GPL among them, which the repository never holds
-perf/results/*-robustness.json
-# The precision suite's results, diagrams and table, which `scripts/precision` writes
-# again: comparisons with other simulators stay out of the repository
-perf/results/precision/
+benchmarks/robustness/results/
+# The precision suite's results, diagrams and table, which `scripts/bench --precision`
+# writes again: comparisons with other simulators stay out of the repository
+benchmarks/precision/results/

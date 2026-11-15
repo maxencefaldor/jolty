@@ -95,11 +95,17 @@ convention = "google"
 # Discoveries run as scripts, outside any package: their numbers are the circuit, and
 # their explorations print what they found.
 "discovery/**" = ["INP001", "PLR2004", "T201"]
-# Benchmarks run as scripts, outside any package, and print what they found.
-"benchmarks/**/*.py" = ["INP001", "T201"]
-# The fixtures' scripts and their timing run as scripts, outside any package: the
-# fixtures' numbers are their circuits, and the timing prints what it measured.
-"perf/**/*.py" = ["INP001", "PLR2004", "T201"]
+# The agents' benchmark runs as scripts, outside any package, and prints what it found.
+"benchmarks/agents/**/*.py" = ["INP001", "T201"]
+# The other suites, their fixtures' scripts and their runners run as scripts, outside
+# any package: the fixtures' numbers are their circuits, and the suites print what they
+# measured.
+"benchmarks/measuring.py" = ["INP001", "T201"]
+"benchmarks/simulators.py" = ["INP001"]
+"benchmarks/speed/**/*.py" = ["INP001", "PLR2004", "T201"]
+"benchmarks/precision/**/*.py" = ["INP001", "PLR2004", "T201"]
+"benchmarks/robustness/**/*.py" = ["INP001", "PLR2004", "T201"]
+"benchmarks/coverage/**/*.py" = ["INP001", "PLR2004", "T201"]
 "src/jolty/cli.py" = ["T201"]  # a command line prints
 # A download's digest checks what any scheme returns.
 "src/jolty/spice/download.py" = ["S310"]
@@ -113,33 +119,39 @@ docstring-code-format = true
 all = "error"
 
 [tool.ty.src]
-include = ["src", "tests", "examples", "docs", "benchmarks", "discovery", "perf"]
+include = ["src", "tests", "examples", "docs", "benchmarks", "discovery"]
 
 [tool.ty.environment]
 # The tests import their shared harness, `tests/differential.py`, as pytest does, the
-# benchmarks' scripts, which import each other, as their runs do, the discoveries the
-# parts the examples share, `examples/common.py`, as their scripts do, the fixtures'
-# scripts what they share, `perf/circuits/fixture.py`, as their runs do, the corpus of
-# hard circuits its modules, `perf/robustness/corpus.py` and those beside it, and the
-# precision suite its modules and the speed suite's timing, as its run does, and the
-# coverage matrix its modules, `perf/coverage/matrix.py` and those beside it.
+# agents' benchmark's scripts, which import each other, as their runs do, the
+# discoveries the parts the examples share, `examples/common.py`, as their scripts do,
+# and every other suite the measuring helpers and runners of `benchmarks/`, and its own
+# modules beside it: the speed suite's fixtures' scripts what they share,
+# `benchmarks/speed/circuits/fixture.py`, the corpus of hard circuits
+# `benchmarks/robustness/corpus.py` and those beside it, the precision suite its
+# modules, and the coverage matrix `benchmarks/coverage/matrix.py` and those beside it.
 extra-paths = [
     "tests",
-    "benchmarks",
+    "benchmarks/agents",
     "examples",
-    "perf/circuits",
-    "perf/robustness",
-    "perf",
-    "perf/precision",
-    "perf/coverage",
+    "benchmarks",
+    "benchmarks/speed/circuits",
+    "benchmarks/robustness",
+    "benchmarks/precision",
+    "benchmarks/coverage",
 ]
 
 [tool.pytest]
 testpaths = ["src", "tests"]
 # The tests share harness modules, `differential` and `strategies`, which they import
-# from there, and import the corpus of hard circuits' modules and the coverage
-# matrix's from beside them.
-pythonpath = ["tests", "perf/robustness", "perf/coverage"]
+# from there, and import the suites' measuring helpers and runners from `benchmarks`,
+# and the corpus of hard circuits' modules and the coverage matrix's from beside them.
+pythonpath = [
+    "tests",
+    "benchmarks",
+    "benchmarks/robustness",
+    "benchmarks/coverage",
+]
 # The tests run in a process per processor, pytest-xdist's. Each test of random circuits
 # is one item that runs for minutes, so a process that finishes its share takes tests
 # still waiting behind another's, rather than wait idle: worksteal.

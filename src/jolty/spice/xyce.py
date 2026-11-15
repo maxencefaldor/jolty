@@ -91,7 +91,9 @@ not on the charges. These make each as tight as jolty's tightest makes its own.
 TIMEOUT: Final = 300
 """The seconds Xyce may run an analysis."""
 
-_SOLVERS: Final = re.compile(r"Total Simulation Solvers Run Time:\s*(\S+) seconds")
+_ANALYSIS_SECONDS: Final = re.compile(
+    r"Total Simulation Solvers Run Time:\s*(\S+) seconds"
+)
 """Where Xyce reports the time of its analyses alone."""
 
 _ELAPSED: Final = re.compile(r"Total Elapsed Run Time:\s*(\S+) seconds")
@@ -160,7 +162,7 @@ class Result:
     vectors: dict[str, Values]
     printed: str
     """What Xyce printed while it ran."""
-    solvers: float
+    analysis_seconds: float
     """Xyce's time for its analyses alone, in seconds, as it reports it."""
     elapsed: float
     """Xyce's time from its start to its end, parsing included, in seconds, as it
@@ -203,68 +205,87 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
         message = f"Xyce has no analysis {command}"
         raise JoltyError(message)
     kind, every = _PRINTED[command]
-    if launch is None:
-        if EXECUTABLE is None:
-            message = "Xyce is not installed"
-            raise JoltyError(message)
-        launch = (EXECUTABLE,)
     nominal = xyce_celsius(_core.REFERENCE_TEMPERATURE)
     deck = [
         *lines,
         *options,
         f".options device temp={xyce_celsius(temperature)!r} tnom={nominal!r}",
         analysis,
-        f".print {kind} format=csv precision={_PRECISION} file=result.csv "
+        f".print {kind} format=csv precision={_PRECISION} file={VALUES} "
         + " ".join(every if printed is None else printed),
         ".end",
     ]
-    executed = execute(deck, [*launch], timeout=timeout)
-    if executed.returncode != 0 or executed.values is None:
-        message = (
-            f"Xyce failed, exiting with {executed.returncode}:\n{executed.printed}"
-        )
+    executed = execute(deck, launch=launch, timeout=timeout)
+    if executed.code != 0 or executed.values is None:
+        message = f"Xyce failed, exiting with {executed.code}:\n{executed.printed}"
         raise JoltyError(message)
     vectors = _read(executed.values)
-    solvers = _SOLVERS.search(executed.printed)
+    analysis_seconds = _ANALYSIS_SECONDS.search(executed.printed)
     elapsed = _ELAPSED.search(executed.printed)
-    if not vectors or solvers is None or elapsed is None:
+    if not vectors or analysis_seconds is None or elapsed is None:
         message = f"Xyce printed no values:\n{executed.printed}"
         raise JoltyError(message)
     return Result(
         vectors,
         executed.printed,
-        float(solvers.group(1)),
+        float(analysis_seconds.group(1)),
         float(elapsed.group(1)),
         executed.seconds,
     )
 
 
-@dataclass(frozen=True)
-class Executed:
-    """What one run of Xyce on a deck left.
+class XyceTimeoutError(JoltyError):
+    """Xyce ran for longer than it was given."""
 
-    What it printed, the values file it wrote, if any, its exit status, and its time
-    from its start to its exit.
-    """
+
+@dataclass(frozen=True, slots=True)
+class Executed:
+    """What one run of Xyce on a deck left, and how long it took."""
 
     printed: str
-    values: str | None
-    returncode: int
+    """Its standard output, then its standard error."""
+    code: int
+    """Its exit status."""
     seconds: float
+    """Its time from its start to its exit, by the wall clock, writing the deck left
+    out."""
+    values: str | None
+    """The file of values the deck's ``.print`` writes, `VALUES`, as text, or None if
+    it wrote none."""
+
+
+VALUES: Final = "result.csv"
+"""The file a deck run by [`execute`][jolty.spice.xyce.execute] prints its values to,
+which it reads back."""
 
 
 def execute(
-    deck: Sequence[str], launch: Sequence[str], *, timeout: float | None
+    deck: Sequence[str],
+    *,
+    launch: Sequence[str] | None = None,
+    timeout: float | None = TIMEOUT,
 ) -> Executed:
     """Runs Xyce by the command `launch` on the lines `deck`, in a directory of its own.
 
     The deck is written to ``circuit.cir`` in a temporary directory, which the run
-    takes as its own, so the file its ``.print`` names, ``result.csv``, is read back
-    from there; the run is stopped after `timeout` seconds, or never if None.
+    takes as its own, so the file its ``.print`` names, `VALUES`, is read back from
+    there; the run is stopped after `timeout` seconds, or never if None. `launch` is
+    the serial Xyce on the path unless given, such as ``mpirun -np 4 Xyce`` for its
+    parallel build.
+
+    It is the one way jolty runs Xyce, as
+    [`ngspice.execute`][jolty.spice.ngspice.execute] is ngspice's:
+    [`run`][jolty.spice.xyce.run] writes its deck and reads its values around it.
 
     Raises:
-        JoltyError: When it runs out of time.
+        JoltyError: When Xyce is not installed and no `launch` is given.
+        XyceTimeoutError: When it runs for more than `timeout` seconds.
     """
+    if launch is None:
+        if EXECUTABLE is None:
+            message = "Xyce is not installed"
+            raise JoltyError(message)
+        launch = (EXECUTABLE,)
     with tempfile.TemporaryDirectory() as name:
         directory = Path(name)
         (directory / "circuit.cir").write_text("\n".join(deck) + "\n", encoding="utf-8")
@@ -280,11 +301,11 @@ def execute(
             )
         except subprocess.TimeoutExpired:
             message = f"Xyce ran for more than {timeout:g} s"
-            raise JoltyError(message) from None
+            raise XyceTimeoutError(message) from None
         seconds = time.perf_counter() - started
-        values = directory / "result.csv"
+        values = directory / VALUES
         written = values.read_text(encoding="utf-8") if values.is_file() else None
-    return Executed(done.stdout + done.stderr, written, done.returncode, seconds)
+    return Executed(done.stdout + done.stderr, done.returncode, seconds, written)
 
 
 _SCALES: Final = {"time": "time", "freq": "frequency"}

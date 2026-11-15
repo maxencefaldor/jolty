@@ -12,7 +12,7 @@ from mpmath import mp, mpf
 from differential import SKIP
 from jolty import _core
 
-PRECISION = Path(__file__).parent.parent / "perf" / "precision"
+PRECISION = Path(__file__).parent.parent / "benchmarks" / "precision"
 
 
 @pytest.fixture(autouse=True)
@@ -153,20 +153,20 @@ def test_the_diode_s_voltage_balances_its_currents() -> None:
 
 
 def test_a_score_counts_the_digits_of_the_worst_point_up_to_its_limit() -> None:
-    from fixtures import Compared, Quantity  # noqa: PLC0415 - importable only once the path holds it
+    from fixtures import Compared, ScoredOutput  # noqa: PLC0415 - importable only once the path holds it
     from suite import score  # noqa: PLC0415 - importable only once the path holds it
 
     exact = np.array([1.0, 0.5, 0.0])
     simulated = exact + np.array([1e-6, 1e-4, 1e-3])
     compared = Compared(simulated, exact, np.full(3, 1e-12), np.arange(3.0))
-    mixed = score(compared, Quantity("v(out)", "mixed", 1.0, "V"))["mixed"]
+    mixed = score(compared, ScoredOutput("v(out)", "mixed", 1.0, "V"))["mixed"]
     assert mixed.digits == pytest.approx(3.0)
     assert mixed.at == 2.0
     assert mixed.limit == pytest.approx(12.0)
     # A zero exact value has no relative error.
-    assert "relative" not in score(compared, Quantity("v(out)", "mixed", 1.0, "V"))
+    assert "relative" not in score(compared, ScoredOutput("v(out)", "mixed", 1.0, "V"))
     capped = Compared(exact[:2] + 1e-15, exact[:2], np.full(2, 1e-10), np.arange(2.0))
-    relative = score(capped, Quantity("v", "relative", 0.0, "V"))["relative"]
+    relative = score(capped, ScoredOutput("v", "relative", 0.0, "V"))["relative"]
     assert relative.digits == relative.limit == pytest.approx(-math.log10(2e-10))
 
 
@@ -176,7 +176,7 @@ def test_every_fixture_names_what_it_scores_and_how_its_answer_is_found() -> Non
     every = fixtures()
     assert len(every) >= 10
     for fixture in every.values():
-        assert fixture.quantities
+        assert fixture.outputs
         assert fixture.reference
         assert mp.dps >= 50
 
@@ -186,26 +186,26 @@ def test_both_simulators_run_a_fixture_and_score_it() -> None:
     from fixtures import fixtures  # noqa: PLC0415 - importable only once the path holds it
     from suite import (  # noqa: PLC0415 - importable only once the path holds it
         DEFAULTS,
+        Ngspice,
         Prepared,
         Setting,
-        Simulator,
-        jolty,
+        run_jolty,
+        run_ngspice,
         score,
-        spice,
     )
 
     prepared = Prepared.of(fixtures()["rc_step"])
     setting = Setting("scaled", DEFAULTS["relative_tolerance"] / 100)
-    quantity = prepared.fixture.quantities[0]
+    output = prepared.fixture.outputs[0]
     for ran in (
-        jolty(prepared, setting, 2),
-        spice(prepared, setting, 2, Simulator.NGSPICE_SPARSE),
+        run_jolty(prepared, setting, 2),
+        run_ngspice(prepared, setting, 2, Ngspice()),
     ):
         assert len(ran.seconds) == 2
         assert all(seconds > 0 for seconds in ran.seconds)
         assert ran.counts["accepted"] > 0
-        compared = prepared.fixture.compare(ran.found)[quantity.name]
-        mixed = score(compared, quantity)["mixed"]
+        compared = prepared.fixture.compare(ran.found)[output.name]
+        mixed = score(compared, output)["mixed"]
         # Both take trapezoidal steps of at most a fiftieth of the run, a tenth of the
         # time constant, whose error is at most about (h/τ)²/12 = 8e-4 of the 1 V
         # swing, and far above the exact answer's rounding.

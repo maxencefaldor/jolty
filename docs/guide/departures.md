@@ -3,7 +3,7 @@
 jolty agrees with ngspice where ngspice is right, and computes otherwise where another way is more accurate or more robust, or where the choice is open, as the Newton iterations a time step allows are.
 This page lists every place where the two engines are known to compute differently, each with its evidence, a line of ngspice's source or a measurement, and a link to where the guide describes what jolty does.
 The lines are those of ngspice 47's release, built as it is by default, with XSPICE.
-The measurements on the benchmarks' synchronous buck converter (`perf/circuits/buck.py`) are of its plan's 2 ms at the default truncation tolerance, made on an Apple M2 Max on 14 and 15 November 2026.
+The measurements on the benchmarks' synchronous buck converter (`benchmarks/speed/circuits/buck.py`) are of its plan's 2 ms at the default truncation tolerance, made on an Apple M2 Max on 14 and 15 November 2026.
 
 The differential tests compare everything but these departures, and run both engines where they can keep them apart: at the same tightened tolerances, and with jolty stepping onto every time ngspice took ([Simulation](simulation.md#how-the-engine-solves-a-circuit)).
 
