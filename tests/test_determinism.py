@@ -57,7 +57,7 @@ DISSECTED = Options(
 )
 """The options of `SPREAD`, the factorization dissected as far as each block splits."""
 
-FIXTURES = Path(__file__).parent.parent / "perf" / "circuits"
+FIXTURES = Path(__file__).parent.parent / "benchmarks" / "speed" / "circuits"
 """The circuits of the benchmarks."""
 
 
@@ -122,7 +122,7 @@ def test_the_same_circuits_simulate_the_same_on_any_threads(built: ir.Circuit) -
 
 def test_ac_wide_finds_the_same_bits_spread_over_threads() -> None:
     built = load_circuit(FIXTURES / "bjt_amp.json")
-    # ac_wide's frequencies, as perf/circuits/bjt_amp.py writes them.
+    # ac_wide's frequencies, as benchmarks/speed/circuits/bjt_amp.py writes them.
     response = Ac("V1", decade(1 * Hz, 1 * GHz, 1111))
     spread = Options(parallelism=Parallelism(min_solves_per_task=1))
     found = []

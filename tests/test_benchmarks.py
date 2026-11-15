@@ -25,7 +25,7 @@ from jolty import (
 from jolty.plan import linear
 from jolty.units import V, kohm, mA, nF, um
 
-BENCHMARKS = Path(__file__).parent.parent / "benchmarks"
+BENCHMARKS = Path(__file__).parent.parent / "benchmarks" / "agents"
 COST_DOWN = BENCHMARKS / "cost_down"
 CUBIC = BENCHMARKS / "cubic"
 

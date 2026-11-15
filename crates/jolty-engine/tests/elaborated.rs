@@ -137,7 +137,7 @@ fn run(simulator: &mut Simulator, analyses: &[Analysis], options: &Options) -> V
         .collect()
 }
 
-/// A plan of the engine's benchmarks, `perf/plans/<name>.json`.
+/// A plan of the engine's benchmarks, `benchmarks/speed/plans/<name>.json`.
 #[derive(Deserialize)]
 struct Plan {
     circuit: String,
@@ -151,12 +151,12 @@ struct Plan {
 /// the operating point it starts from, and counts the factorizations of a solver that has
 /// kept no pivots.
 fn bjt_amp() -> (Circuit, Vec<Analysis>, Options) {
-    let perf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf");
+    let speed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed");
     let plan: Plan = serde_json::from_str(
-        &fs::read_to_string(perf.join("plans/bjt_amp.json")).expect("the plan reads"),
+        &fs::read_to_string(speed.join("plans/bjt_amp.json")).expect("the plan reads"),
     )
     .expect("a plan");
-    let text = fs::read_to_string(perf.join(format!("circuits/{}.json", plan.circuit)))
+    let text = fs::read_to_string(speed.join(format!("circuits/{}.json", plan.circuit)))
         .expect("the circuit reads");
     let circuit = Circuit::from_json(&text).expect("a circuit");
     let mut analyses: Vec<Analysis> = plan

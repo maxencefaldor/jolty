@@ -260,12 +260,12 @@ fn fixture(name: &str) -> (Circuit, Vec<Analysis>, Options) {
         analyses: Vec<(String, Analysis)>,
         options: Options,
     }
-    let perf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf");
+    let speed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed");
     let plan: Plan = serde_json::from_str(
-        &std::fs::read_to_string(perf.join(format!("plans/{name}.json"))).expect("a plan"),
+        &std::fs::read_to_string(speed.join(format!("plans/{name}.json"))).expect("a plan"),
     )
     .expect("a plan reads");
-    let text = std::fs::read_to_string(perf.join(format!("circuits/{}.json", plan.circuit)))
+    let text = std::fs::read_to_string(speed.join(format!("circuits/{}.json", plan.circuit)))
         .expect("a circuit");
     let circuit = Circuit::from_json(&text).expect("a circuit reads");
     let analyses = plan

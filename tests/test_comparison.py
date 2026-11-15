@@ -12,7 +12,7 @@ from differential import SKIP
 from jolty.settings import Settings
 from jolty.specs import wilson
 
-BENCHMARKS = Path(__file__).parent.parent / "benchmarks"
+BENCHMARKS = Path(__file__).parent.parent / "benchmarks" / "agents"
 COST_DOWN = BENCHMARKS / "cost_down"
 
 

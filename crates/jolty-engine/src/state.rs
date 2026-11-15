@@ -407,8 +407,8 @@ mod tests {
     /// The circuit of the benchmark `bjt_amp`, whose transistors' junctions remember their
     /// last voltages, and a ring of a logic inverter, a resistor and a capacitor.
     fn circuits() -> [Circuit; 2] {
-        let perf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf");
-        let text = std::fs::read_to_string(perf.join("circuits/bjt_amp.json")).unwrap();
+        let speed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed");
+        let text = std::fs::read_to_string(speed.join("circuits/bjt_amp.json")).unwrap();
         let amplifier = Circuit::from_json(&text).unwrap();
         let device = |id: &str, model: &str, parameters, terminals| {
             json!({"id": id, "of": {"device": model}, "parameters": parameters,

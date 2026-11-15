@@ -1,4 +1,4 @@
-//! The engine's benchmarks: each fixture of `perf/`, its circuit read from its JSON text
+//! The engine's benchmarks: each fixture of `benchmarks/speed/`, its circuit read from its JSON text
 //! and elaborated, then its analyses run in order, end to end.
 //!
 //! For each fixture whose plan runs no Monte Carlo analysis, `<fixture>/setup` measures
@@ -30,10 +30,10 @@ use jolty_ir::Circuit;
 use jolty_models::Library;
 use serde::Deserialize;
 
-/// A fixture's plan, as `perf/plans/<fixture>.json` holds it in the engine's format.
+/// A fixture's plan, as `benchmarks/speed/plans/<fixture>.json` holds it in the engine's format.
 #[derive(Deserialize)]
 struct Plan {
-    /// The circuit's file in `perf/circuits`, without its extension.
+    /// The circuit's file in `benchmarks/speed/circuits`, without its extension.
     circuit: String,
     /// The analyses, in order, each by name.
     analyses: Vec<(String, Analysis)>,
@@ -94,14 +94,14 @@ impl Fixture {
     }
 }
 
-/// The `perf` directory.
-fn perf() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf")
+/// The speed suite's directory, `benchmarks/speed`.
+fn speed() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed")
 }
 
 /// Every fixture, in the order of their names.
 fn fixtures() -> Result<Vec<Fixture>, Box<dyn Error>> {
-    let mut plans: Vec<PathBuf> = fs::read_dir(perf().join("plans"))?
+    let mut plans: Vec<PathBuf> = fs::read_dir(speed().join("plans"))?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<_, _>>()?;
     plans.sort();
@@ -113,7 +113,7 @@ fn fixtures() -> Result<Vec<Fixture>, Box<dyn Error>> {
             .ok_or_else(|| format!("{} has no name", path.display()))?
             .to_owned();
         let plan: Plan = serde_json::from_str(&fs::read_to_string(&path)?)?;
-        let circuit = perf()
+        let circuit = speed()
             .join("circuits")
             .join(format!("{}.json", plan.circuit));
         let text = fs::read_to_string(&circuit)?;
@@ -128,7 +128,7 @@ fn fixtures() -> Result<Vec<Fixture>, Box<dyn Error>> {
 )]
 fn benchmark(c: &mut Criterion) {
     let library = Library::standard();
-    let fixtures = fixtures().expect("the fixtures of perf/ read");
+    let fixtures = fixtures().expect("the fixtures of benchmarks/speed/ read");
     for fixture in &fixtures {
         if let Some(samples) = &fixture.plan.monte_carlo {
             batches(c, fixture, samples, &library);

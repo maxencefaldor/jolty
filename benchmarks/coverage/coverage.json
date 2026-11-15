@@ -1,0 +1,3941 @@
+{
+  "simulators": {
+    "jolty": {
+      "commit": "51641f3c7168e2eefc28fb5fb59e89aa301630ea-dirty",
+      "machine": {
+        "cpu": "Apple M2 Max",
+        "cores": 12,
+        "kinds of core": {
+          "Performance": 8,
+          "Efficiency": 4
+        },
+        "sockets": 1,
+        "memory": 34359738368,
+        "system": "macOS-27.2.1-arm64-arm-64bit-Mach-O",
+        "python": "3.15.2",
+        "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
+      },
+      "version": "jolty 0.1.0",
+      "load": 14.31591796875,
+      "date": "2026-11-15"
+    },
+    "ngspice-sparse": {
+      "commit": "51641f3c7168e2eefc28fb5fb59e89aa301630ea-dirty",
+      "machine": {
+        "cpu": "Apple M2 Max",
+        "cores": 12,
+        "kinds of core": {
+          "Performance": 8,
+          "Efficiency": 4
+        },
+        "sockets": 1,
+        "memory": 34359738368,
+        "system": "macOS-27.2.1-arm64-arm-64bit-Mach-O",
+        "python": "3.15.2",
+        "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
+      },
+      "version": "ngspice-47 : Circuit level simulation program; Compiled with KLU Direct Linear Solver",
+      "load": 14.31591796875,
+      "date": "2026-11-15"
+    },
+    "ngspice-klu": {
+      "commit": "51641f3c7168e2eefc28fb5fb59e89aa301630ea-dirty",
+      "machine": {
+        "cpu": "Apple M2 Max",
+        "cores": 12,
+        "kinds of core": {
+          "Performance": 8,
+          "Efficiency": 4
+        },
+        "sockets": 1,
+        "memory": 34359738368,
+        "system": "macOS-27.2.1-arm64-arm-64bit-Mach-O",
+        "python": "3.15.2",
+        "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
+      },
+      "version": "ngspice-47 : Circuit level simulation program; Compiled with KLU Direct Linear Solver",
+      "load": 14.31591796875,
+      "date": "2026-11-15"
+    },
+    "xyce-serial": {
+      "commit": "092e86f461070c479575c90ee88f587c93d238ea",
+      "machine": {
+        "cpu": "AMD Ryzen 9 7950X 16-Core Processor",
+        "cores": 32,
+        "kinds of core": {},
+        "sockets": 1,
+        "memory": 133964038144,
+        "system": "Linux-5.15.0-198-generic-x86_64-with-glibc2.35",
+        "python": "3.15.2",
+        "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
+      },
+      "version": "Xyce Release 7.10.0-opensource",
+      "load": 1.62158203125,
+      "date": "2026-11-15"
+    }
+  },
+  "fixtures": {
+    "op": {
+      "category": "analysis",
+      "name": "Operating point",
+      "source": "closed form: a divider's ratio",
+      "known": {
+        "v(out)": [
+          3.75,
+          0.0
+        ],
+        "i(v1)": [
+          -0.00125,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.7e-16 of the scale",
+          "found": {
+            "v(out)": [
+              3.75,
+              0.0
+            ],
+            "i(v1)": [
+              -0.0012500000000000002,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              3.75,
+              0.0
+            ],
+            "i(v1)": [
+              -0.00125,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              3.75,
+              0.0
+            ],
+            "i(v1)": [
+              -0.00125,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              3.75,
+              0.0
+            ],
+            "i(v1)": [
+              -0.00125,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "op-every": {
+      "category": "analysis",
+      "name": "Every DC solution",
+      "source": "closed form: the roots of a cubic current",
+      "known": {
+        "v(x)#0": [
+          -0.999999499999875,
+          0.0
+        ],
+        "v(x)#1": [
+          0.0,
+          0.0
+        ],
+        "v(x)#2": [
+          0.999999499999875,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-16 of the scale",
+          "found": {
+            "v(x)#0": [
+              -0.9999994999998749,
+              0.0
+            ],
+            "v(x)#1": [
+              0.0,
+              0.0
+            ],
+            "v(x)#2": [
+              0.9999994999998749,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a711.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, .SENS, .SP, .TF, .TRAN, transient noise and .PSS; each finds one solution",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a711.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, .SENS, .SP, .TF, .TRAN, transient noise and .PSS; each finds one solution",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, Netlist Commands: .AC, .DC, .HB, .LIN, .MPDE, .NOISE, .OP, .PCE, .SAMPLING, .EMBEDDEDSAMPLING, .SENS, .STEP, .TRAN and others; no .PZ, .TF, .DISTO, loop gain or worst case; .OP finds one solution",
+          "found": null
+        }
+      }
+    },
+    "dc-source": {
+      "category": "analysis",
+      "name": "DC sweep of a source",
+      "source": "closed form: a divider's ratio",
+      "known": {
+        "v(out)@0": [
+          0.0,
+          0.0
+        ],
+        "v(out)@1": [
+          0.75,
+          0.0
+        ],
+        "v(out)@2": [
+          1.5,
+          0.0
+        ],
+        "v(out)@3": [
+          2.25,
+          0.0
+        ],
+        "v(out)@4": [
+          3.0,
+          0.0
+        ],
+        "v(out)@5": [
+          3.75,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.0,
+              0.0
+            ],
+            "v(out)@1": [
+              0.75,
+              0.0
+            ],
+            "v(out)@2": [
+              1.5,
+              0.0
+            ],
+            "v(out)@3": [
+              2.25,
+              0.0
+            ],
+            "v(out)@4": [
+              3.0,
+              0.0
+            ],
+            "v(out)@5": [
+              3.75,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.0,
+              0.0
+            ],
+            "v(out)@1": [
+              0.75,
+              0.0
+            ],
+            "v(out)@2": [
+              1.5,
+              0.0
+            ],
+            "v(out)@3": [
+              2.25,
+              0.0
+            ],
+            "v(out)@4": [
+              3.0,
+              0.0
+            ],
+            "v(out)@5": [
+              3.75,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.0,
+              0.0
+            ],
+            "v(out)@1": [
+              0.75,
+              0.0
+            ],
+            "v(out)@2": [
+              1.5,
+              0.0
+            ],
+            "v(out)@3": [
+              2.25,
+              0.0
+            ],
+            "v(out)@4": [
+              3.0,
+              0.0
+            ],
+            "v(out)@5": [
+              3.75,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.0,
+              0.0
+            ],
+            "v(out)@1": [
+              0.75,
+              0.0
+            ],
+            "v(out)@2": [
+              1.5,
+              0.0
+            ],
+            "v(out)@3": [
+              2.25,
+              0.0
+            ],
+            "v(out)@4": [
+              3.0,
+              0.0
+            ],
+            "v(out)@5": [
+              3.75,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "dc-resistance": {
+      "category": "analysis",
+      "name": "DC sweep of a resistance",
+      "source": "closed form: a divider's ratio",
+      "known": {
+        "v(out)@0": [
+          2.5,
+          0.0
+        ],
+        "v(out)@1": [
+          3.3333333333333335,
+          0.0
+        ],
+        "v(out)@2": [
+          3.75,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@0": [
+              2.5,
+              0.0
+            ],
+            "v(out)@1": [
+              3.3333333333333335,
+              0.0
+            ],
+            "v(out)@2": [
+              3.75,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 1.2e-16 of the scale",
+          "found": {
+            "v(out)@0": [
+              2.5,
+              0.0
+            ],
+            "v(out)@1": [
+              3.333333333333333,
+              0.0
+            ],
+            "v(out)@2": [
+              3.75,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 1.2e-16 of the scale",
+          "found": {
+            "v(out)@0": [
+              2.5,
+              0.0
+            ],
+            "v(out)@1": [
+              3.333333333333333,
+              0.0
+            ],
+            "v(out)@2": [
+              3.75,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 8.9e-10 of the scale",
+          "found": {
+            "v(out)@0": [
+              2.5,
+              0.0
+            ],
+            "v(out)@1": [
+              3.33333333,
+              0.0
+            ],
+            "v(out)@2": [
+              3.75,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "dc-temperature": {
+      "category": "analysis",
+      "name": "DC sweep of the temperature",
+      "source": "closed form: a divider whose upper resistor drifts linearly",
+      "known": {
+        "v(out)@0": [
+          4.504504504504505,
+          0.0
+        ],
+        "v(out)@1": [
+          3.7688442211055277,
+          0.0
+        ],
+        "v(out)@2": [
+          3.239740820734341,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@0": [
+              4.504504504504505,
+              0.0
+            ],
+            "v(out)@1": [
+              3.7688442211055277,
+              0.0
+            ],
+            "v(out)@2": [
+              3.239740820734341,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 6.8e-08 of the scale",
+          "found": {
+            "v(out)@0": [
+              4.504504812128394,
+              0.0
+            ],
+            "v(out)@1": [
+              3.768844227533849,
+              0.0
+            ],
+            "v(out)@2": [
+              3.239740671106559,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 6.8e-08 of the scale",
+          "found": {
+            "v(out)@0": [
+              4.504504812128393,
+              0.0
+            ],
+            "v(out)@1": [
+              3.768844227533849,
+              0.0
+            ],
+            "v(out)@2": [
+              3.239740671106559,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 1e-09 of the scale",
+          "found": {
+            "v(out)@0": [
+              4.5045045,
+              0.0
+            ],
+            "v(out)@1": [
+              3.76884422,
+              0.0
+            ],
+            "v(out)@2": [
+              3.23974082,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "dc-two-sources": {
+      "category": "analysis",
+      "name": "DC sweep of two sources, nested",
+      "source": "closed form: the mean of two sources",
+      "known": {
+        "v(out)@0": [
+          0.0,
+          0.0
+        ],
+        "v(out)@1": [
+          0.5,
+          0.0
+        ],
+        "v(out)@2": [
+          0.5,
+          0.0
+        ],
+        "v(out)@3": [
+          1.0,
+          0.0
+        ],
+        "v(out)@4": [
+          1.0,
+          0.0
+        ],
+        "v(out)@5": [
+          1.5,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.0,
+              0.0
+            ],
+            "v(out)@1": [
+              0.5,
+              0.0
+            ],
+            "v(out)@2": [
+              0.5,
+              0.0
+            ],
+            "v(out)@3": [
+              1.0,
+              0.0
+            ],
+            "v(out)@4": [
+              1.0,
+              0.0
+            ],
+            "v(out)@5": [
+              1.5,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.0,
+              0.0
+            ],
+            "v(out)@1": [
+              0.5,
+              0.0
+            ],
+            "v(out)@2": [
+              0.5,
+              0.0
+            ],
+            "v(out)@3": [
+              1.0,
+              0.0
+            ],
+            "v(out)@4": [
+              1.0,
+              0.0
+            ],
+            "v(out)@5": [
+              1.5,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.0,
+              0.0
+            ],
+            "v(out)@1": [
+              0.5,
+              0.0
+            ],
+            "v(out)@2": [
+              0.5,
+              0.0
+            ],
+            "v(out)@3": [
+              1.0,
+              0.0
+            ],
+            "v(out)@4": [
+              1.0,
+              0.0
+            ],
+            "v(out)@5": [
+              1.5,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.0,
+              0.0
+            ],
+            "v(out)@1": [
+              0.5,
+              0.0
+            ],
+            "v(out)@2": [
+              0.5,
+              0.0
+            ],
+            "v(out)@3": [
+              1.0,
+              0.0
+            ],
+            "v(out)@4": [
+              1.0,
+              0.0
+            ],
+            "v(out)@5": [
+              1.5,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "ac": {
+      "category": "analysis",
+      "name": "AC",
+      "source": "closed form: a low pass's 1/(1 + j\u03c9RC)",
+      "known": {
+        "v(out)@0": [
+          0.9960676824071726,
+          -0.0625847782705717
+        ],
+        "v(out)@1": [
+          0.7169568003248977,
+          -0.4504772433683887
+        ],
+        "v(out)@2": [
+          0.024704523031857634,
+          -0.1552230961346476
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-16 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.9960676824071725,
+              -0.0625847782705717
+            ],
+            "v(out)@1": [
+              0.7169568003248977,
+              -0.4504772433683886
+            ],
+            "v(out)@2": [
+              0.02470452303185764,
+              -0.15522309613464763
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 1.4e-17 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.9960676824071726,
+              -0.0625847782705717
+            ],
+            "v(out)@1": [
+              0.7169568003248977,
+              -0.4504772433683887
+            ],
+            "v(out)@2": [
+              0.02470452303185762,
+              -0.1552230961346476
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-16 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.9960676824071726,
+              -0.0625847782705717
+            ],
+            "v(out)@1": [
+              0.7169568003248977,
+              -0.4504772433683886
+            ],
+            "v(out)@2": [
+              0.02470452303185762,
+              -0.1552230961346475
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 4.9e-10 of the scale",
+          "found": {
+            "v(out)@0": [
+              0.996067682,
+              -0.0625847783
+            ],
+            "v(out)@1": [
+              0.7169568,
+              -0.450477243
+            ],
+            "v(out)@2": [
+              0.024704523,
+              -0.155223096
+            ]
+          }
+        }
+      }
+    },
+    "noise": {
+      "category": "analysis",
+      "name": "Noise",
+      "source": "closed form: a resistor's 4kTR through a low pass",
+      "known": {
+        "onoise@0": [
+          1.6510889514871256e-17,
+          0.0
+        ],
+        "onoise@1": [
+          1.1884327467077709e-17,
+          0.0
+        ],
+        "onoise@2": [
+          4.0950394988305115e-19,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.9e-16 of the scale",
+          "found": {
+            "onoise@0": [
+              1.6510889514871253e-17,
+              0.0
+            ],
+            "onoise@1": [
+              1.188432746707771e-17,
+              0.0
+            ],
+            "onoise@2": [
+              4.0950394988305115e-19,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 8.2e-09 of the scale",
+          "found": {
+            "onoise@0": [
+              1.651088937884147e-17,
+              0.0
+            ],
+            "onoise@1": [
+              1.188432736916521e-17,
+              0.0
+            ],
+            "onoise@2": [
+              4.09503946509233e-19,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "Error: Noise simulation is not (yet) supported with 'option KLU'. / doAnalyses: operation not supported / Error: incomplete or empty netlist",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "disagreed",
+          "evidence": "onoise@1: 1.188444e-17 for 1.188433e-17, an error of 9.47e-06 of the scale",
+          "found": {
+            "onoise@0": [
+              1.65110458e-17,
+              0.0
+            ],
+            "onoise@1": [
+              1.188444e-17,
+              0.0
+            ],
+            "onoise@2": [
+              4.09507826e-19,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "tf": {
+      "category": "analysis",
+      "name": "Transfer function",
+      "source": "closed form: a divider's ratio and resistances",
+      "known": {
+        "gain": [
+          0.75,
+          0.0
+        ],
+        "r(in)": [
+          4000.0,
+          0.0
+        ],
+        "r(out)": [
+          750.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "gain": [
+              0.75,
+              0.0
+            ],
+            "r(in)": [
+              4000.0,
+              0.0
+            ],
+            "r(out)": [
+              750.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "gain": [
+              0.75,
+              0.0
+            ],
+            "r(in)": [
+              4000.0,
+              0.0
+            ],
+            "r(out)": [
+              750.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "gain": [
+              0.75,
+              0.0
+            ],
+            "r(in)": [
+              4000.0,
+              0.0
+            ],
+            "r(out)": [
+              750.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, Netlist Commands: .AC, .DC, .HB, .LIN, .MPDE, .NOISE, .OP, .PCE, .SAMPLING, .EMBEDDEDSAMPLING, .SENS, .STEP, .TRAN and others; no .PZ, .TF, .DISTO, loop gain or worst case",
+          "found": null
+        }
+      }
+    },
+    "pz": {
+      "category": "analysis",
+      "name": "Poles and zeros",
+      "source": "closed form: a series RLC's poles, and no finite zero",
+      "known": {
+        "pole": [
+          -5000000.0,
+          31224989.99199199
+        ],
+        "zeros": [
+          0.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 2.4e-16 of the scale",
+          "found": {
+            "pole": [
+              -5000000.000000001,
+              31224989.991991997
+            ],
+            "zeros": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 1.2e-16 of the scale",
+          "found": {
+            "pole": [
+              -4999999.999999996,
+              31224989.99199199
+            ],
+            "zeros": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "Error: Pole/zero analysis is not (yet) supported with 'option KLU'. / doAnalyses: operation not supported / Error: incomplete or empty netlist",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, Netlist Commands: .AC, .DC, .HB, .LIN, .MPDE, .NOISE, .OP, .PCE, .SAMPLING, .EMBEDDEDSAMPLING, .SENS, .STEP, .TRAN and others; no .PZ, .TF, .DISTO, loop gain or worst case",
+          "found": null
+        }
+      }
+    },
+    "stability": {
+      "category": "analysis",
+      "name": "Loop gain (stability)",
+      "source": "closed form: a single-pole loop's 5/(1 + j\u03c9\u03c4)",
+      "known": {
+        "t@0": [
+          4.980338412035863,
+          -0.3129238913528585
+        ],
+        "t@1": [
+          3.5847840016244885,
+          -2.2523862168419435
+        ],
+        "t@2": [
+          0.12352261515928817,
+          -0.776115480673238
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 3.6e-16 of the scale",
+          "found": {
+            "t@0": [
+              4.980338412035861,
+              -0.3129238913528584
+            ],
+            "t@1": [
+              3.5847840016244894,
+              -2.2523862168419426
+            ],
+            "t@2": [
+              0.12352261515928836,
+              -0.7761154806732381
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a711.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, .SENS, .SP, .TF, .TRAN, transient noise and .PSS; none finds a loop gain",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a711.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, .SENS, .SP, .TF, .TRAN, transient noise and .PSS; none finds a loop gain",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, Netlist Commands: .AC, .DC, .HB, .LIN, .MPDE, .NOISE, .OP, .PCE, .SAMPLING, .EMBEDDEDSAMPLING, .SENS, .STEP, .TRAN and others; no .PZ, .TF, .DISTO, loop gain or worst case",
+          "found": null
+        }
+      }
+    },
+    "sens-dc": {
+      "category": "analysis",
+      "name": "Sensitivities at DC",
+      "source": "closed form: a divider's derivatives",
+      "known": {
+        "d(out)/d(r1)": [
+          -0.0009375,
+          0.0
+        ],
+        "d(out)/d(r2)": [
+          0.0003125,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "d(out)/d(r1)": [
+              -0.0009375,
+              0.0
+            ],
+            "d(out)/d(r2)": [
+              0.0003125,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 1e-06 of the scale",
+          "found": {
+            "d(out)/d(r1)": [
+              -0.0009374990625525765,
+              0.0
+            ],
+            "d(out)/d(r2)": [
+              0.0003124996874836442,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 1e-06 of the scale",
+          "found": {
+            "d(out)/d(r1)": [
+              -0.0009374990625525765,
+              0.0
+            ],
+            "d(out)/d(r2)": [
+              0.0003124996874836442,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "d(out)/d(r1)": [
+              -0.0009375,
+              0.0
+            ],
+            "d(out)/d(r2)": [
+              0.0003125,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "sens-ac": {
+      "category": "analysis",
+      "name": "Sensitivities over frequency",
+      "source": "closed form: a low pass's derivative in its resistance",
+      "known": {
+        "d(out)/d(r1)@0": [
+          -7.833708942353247e-06,
+          -6.209257182129855e-05
+        ],
+        "d(out)/d(r1)@1": [
+          -0.00040585949358556484,
+          -0.00019546820268077165
+        ],
+        "d(out)/d(r1)@2": [
+          -4.8188419147252103e-05,
+          0.00014755367102757829
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.2e-16 of the scale",
+          "found": {
+            "d(out)/d(r1)@0": [
+              -7.833708942353232e-06,
+              -6.209257182129852e-05
+            ],
+            "d(out)/d(r1)@1": [
+              -0.00040585949358556484,
+              -0.0001954682026807717
+            ],
+            "d(out)/d(r1)@2": [
+              -4.818841914725211e-05,
+              0.0001475536710275783
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "disagreed",
+          "evidence": "d(out)/d(r1)@1: -0 for -0.0004058595-0.0001954682j, an error of 1 of the scale",
+          "found": {
+            "d(out)/d(r1)@0": [
+              -7.833701109083566e-06,
+              -6.2092509732209e-05
+            ],
+            "d(out)/d(r1)@1": [
+              -0.0,
+              -0.0
+            ],
+            "d(out)/d(r1)@2": [
+              -0.0,
+              -0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "failed",
+          "evidence": "ngspice wrote no results:",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, .SENS: AC sensitivities with acobjfunc; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
+    "sens-tran": {
+      "category": "analysis",
+      "name": "Sensitivities over time",
+      "source": "closed form: the ramp response's derivative in its time constant, by a central difference of 1e-6 of it",
+      "known": {
+        "d(out)/d(r1)@1.5e-06": [
+          -0.00030173377746356417,
+          0.0
+        ],
+        "d(out)/d(r1)@2e-06": [
+          -0.0003678732796164041,
+          0.0
+        ],
+        "d(out)/d(r1)@3e-06": [
+          -0.00027134723740163125,
+          0.0
+        ],
+        "d(out)/d(r1)@5e-06": [
+          -7.35379014349391e-05,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.6e-05 of the scale",
+          "found": {
+            "d(out)/d(r1)@1.5e-06": [
+              -0.00030173965340043335,
+              0.0
+            ],
+            "d(out)/d(r1)@2e-06": [
+              -0.0003678792392623576,
+              0.0
+            ],
+            "d(out)/d(r1)@3e-06": [
+              -0.00027134949228077137,
+              0.0
+            ],
+            "d(out)/d(r1)@5e-06": [
+              -7.353730312271227e-05,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a711.3.7 .SENS: DC or Small-Signal AC Sensitivity Analysis",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a711.3.7 .SENS: DC or Small-Signal AC Sensitivity Analysis",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, .SENS: transient sensitivities, direct and adjoint; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
+    "tran-trapezoidal": {
+      "category": "analysis",
+      "name": "Transient, trapezoidal",
+      "source": "closed form: an RC's response to a 10 ns ramp",
+      "known": {
+        "v(out)@1.5e-06": [
+          0.390426552821742,
+          0.0
+        ],
+        "v(out)@2e-06": [
+          0.630275014939667,
+          0.0
+        ],
+        "v(out)@3e-06": [
+          0.8639857791088849,
+          0.0
+        ],
+        "v(out)@5e-06": [
+          0.9815924768914938,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 3e-06 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.39042883831349934,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.630277941695386,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.8639879892572925,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9815930827916669,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 2.8e-06 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.3904237731248128,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.6302748695159499,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.8639868590750548,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9815929298406775,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 2.8e-06 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.39042377312481175,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.6302748695159489,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.8639868590750537,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9815929298406786,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 2.7e-07 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.39042660837776255,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.6302748623782577,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.8639860424968435,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.98159264881678,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "tran-gear2": {
+      "category": "analysis",
+      "name": "Transient, Gear of order 2",
+      "source": "closed form: an RC's response to a 10 ns ramp",
+      "known": {
+        "v(out)@1.5e-06": [
+          0.390426552821742,
+          0.0
+        ],
+        "v(out)@2e-06": [
+          0.630275014939667,
+          0.0
+        ],
+        "v(out)@3e-06": [
+          0.8639857791088849,
+          0.0
+        ],
+        "v(out)@5e-06": [
+          0.9815924768914938,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.2e-05 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.390435924876079,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.6302869054576672,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.8639947215939852,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9815949235423963,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 7.6e-06 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.39042863205018613,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.6302824851244836,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.863993095498898,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9815947034891331,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 7.6e-06 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.39042863205018696,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.630282485124485,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.8639930954989,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9815947034891318,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 7.4e-06 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.39042834900000006,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.6302823134,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.863993032,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9815946945999999,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "tran-backward-euler": {
+      "category": "analysis",
+      "name": "Transient, backward Euler",
+      "source": "closed form: an RC's response to a 10 ns ramp",
+      "known": {
+        "v(out)@1.5e-06": [
+          0.390426552821742,
+          0.0
+        ],
+        "v(out)@2e-06": [
+          0.630275014939667,
+          0.0
+        ],
+        "v(out)@3e-06": [
+          0.8639857791088849,
+          0.0
+        ],
+        "v(out)@5e-06": [
+          0.9815924768914938,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0.00085 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.39007097183997297,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.6296009097775844,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.8631528720771482,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9812956381065754,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0.00072 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.3901807269971397,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.6298089046253511,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.8632742850586795,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9813114569004123,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0.00072 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.3901807269968827,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.629808904625639,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.8632742850585327,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9813114569003879,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0.00029 of the scale",
+          "found": {
+            "v(out)@1.5e-06": [
+              0.3902589180734597,
+              0.0
+            ],
+            "v(out)@2e-06": [
+              0.6299977750583773,
+              0.0
+            ],
+            "v(out)@3e-06": [
+              0.863706008256664,
+              0.0
+            ],
+            "v(out)@5e-06": [
+              0.9814518849291031,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "pss": {
+      "category": "analysis",
+      "name": "Periodic steady state",
+      "source": "closed form: a sine through a low pass, settled",
+      "known": {
+        "v(out)@2.5e-07": [
+          0.024704523031857602,
+          0.0
+        ],
+        "v(out)@5e-07": [
+          0.15522309613464763,
+          0.0
+        ],
+        "v(out)@7.5e-07": [
+          -0.02470452303185762,
+          0.0
+        ],
+        "v(out)@1e-06": [
+          -0.15522309613464763,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 3.5e-06 of the scale",
+          "found": {
+            "v(out)@2.5e-07": [
+              0.02470448620841986,
+              0.0
+            ],
+            "v(out)@5e-07": [
+              0.1552227054899071,
+              0.0
+            ],
+            "v(out)@7.5e-07": [
+              -0.024704290677621542,
+              0.0
+            ],
+            "v(out)@1e-06": [
+              -0.15522255321037787,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a711.3.12 .PSS: periodic steady state of autonomous circuits, oscillators, only",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a711.3.12 .PSS: periodic steady state of autonomous circuits, oscillators, only",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, .HB: harmonic balance; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
+    "monte-carlo": {
+      "category": "analysis",
+      "name": "Monte Carlo",
+      "source": "closed form: each sample's divider at the resistances it drew, each within its 10 % and every sample's apart",
+      "known": {
+        "v(out)-closed": [
+          0.0,
+          0.0
+        ],
+        "outside": [
+          0.0,
+          0.0
+        ],
+        "repeated": [
+          0.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 8.9e-16 of the scale",
+          "found": {
+            "v(out)-closed": [
+              8.881784197001252e-16,
+              0.0
+            ],
+            "outside": [
+              0.0,
+              0.0
+            ],
+            "repeated": [
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "documented",
+          "evidence": "ngspice 47 manual, \u00a718.5 Monte-Carlo Simulation: through its control language; no fixture runs it here yet",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "documented",
+          "evidence": "ngspice 47 manual, \u00a718.5 Monte-Carlo Simulation: through its control language; no fixture runs it here yet",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, .SAMPLING; no fixture runs it here yet",
+          "found": null
+        }
+      }
+    },
+    "capacitor": {
+      "category": "device",
+      "name": "Capacitor",
+      "source": "closed form: j\u03c9C",
+      "known": {
+        "i(v1)": [
+          -0.0,
+          -0.006283185307179587
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "i(v1)": [
+              -0.0,
+              -0.006283185307179587
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "i(v1)": [
+              0.0,
+              -0.006283185307179587
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "i(v1)": [
+              0.0,
+              -0.006283185307179587
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 4.5e-10 of the scale",
+          "found": {
+            "i(v1)": [
+              0.0,
+              -0.00628318531
+            ]
+          }
+        }
+      }
+    },
+    "inductor": {
+      "category": "device",
+      "name": "Inductor",
+      "source": "closed form: 1/(R + j\u03c9L)",
+      "known": {
+        "i(v1)": [
+          -0.02470452303185765,
+          0.15522309613464763
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 7.7e-16 of the scale",
+          "found": {
+            "i(v1)": [
+              -0.024704523031857772,
+              0.15522309613464763
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 1.9e-16 of the scale",
+          "found": {
+            "i(v1)": [
+              -0.02470452303185766,
+              0.1552230961346476
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 1.9e-16 of the scale",
+          "found": {
+            "i(v1)": [
+              -0.02470452303185766,
+              0.1552230961346476
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 8.8e-10 of the scale",
+          "found": {
+            "i(v1)": [
+              -0.024704523,
+              0.155223096
+            ]
+          }
+        }
+      }
+    },
+    "coupled-inductors": {
+      "category": "device",
+      "name": "Coupled inductors",
+      "source": "closed form: a transformer's two meshes",
+      "known": {
+        "v(c)": [
+          0.9752954789669214,
+          0.15522307744798425
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(c)": [
+              0.9752954789669214,
+              0.15522307744798425
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 5.6e-17 of the scale",
+          "found": {
+            "v(c)": [
+              0.9752954789669214,
+              0.1552230774479842
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 1.3e-16 of the scale",
+          "found": {
+            "v(c)": [
+              0.9752954789669215,
+              0.1552230774479843
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 4.5e-10 of the scale",
+          "found": {
+            "v(c)": [
+              0.975295479,
+              0.155223077
+            ]
+          }
+        }
+      }
+    },
+    "isource": {
+      "category": "device",
+      "name": "Current source",
+      "source": "closed form",
+      "known": {
+        "v(o)": [
+          1.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              1.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              1.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              1.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              1.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "vcvs": {
+      "category": "device",
+      "name": "Voltage-controlled voltage source",
+      "source": "closed form",
+      "known": {
+        "v(o)": [
+          6.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              6.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              6.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              6.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              6.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "vccs": {
+      "category": "device",
+      "name": "Voltage-controlled current source",
+      "source": "closed form",
+      "known": {
+        "v(o)": [
+          2.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              2.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "cccs": {
+      "category": "device",
+      "name": "Current-controlled current source",
+      "source": "closed form",
+      "known": {
+        "v(o)": [
+          6.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              6.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              6.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              6.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              6.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "ccvs": {
+      "category": "device",
+      "name": "Current-controlled voltage source",
+      "source": "closed form",
+      "known": {
+        "v(o)": [
+          1.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              1.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              1.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              1.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              1.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "behavioral": {
+      "category": "device",
+      "name": "Behavioral source",
+      "source": "closed form",
+      "known": {
+        "v(o)": [
+          0.729425538604203,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              0.729425538604203,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              0.729425538604203,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 1.5e-16 of the scale",
+          "found": {
+            "v(o)": [
+              0.7294255386042029,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 5.4e-10 of the scale",
+          "found": {
+            "v(o)": [
+              0.729425539,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "diode": {
+      "category": "device",
+      "name": "Diode",
+      "source": "closed form: Shockley's law",
+      "known": {
+        "i(v1)": [
+          -6.232630174916389e-05,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-08 of the scale",
+          "found": {
+            "i(v1)": [
+              -6.232630244916388e-05,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-08 of the scale",
+          "found": {
+            "i(v1)": [
+              -6.23263024491639e-05,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-08 of the scale",
+          "found": {
+            "i(v1)": [
+              -6.23263024491639e-05,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 1e-08 of the scale",
+          "found": {
+            "i(v1)": [
+              -6.23263024e-05,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "bjt": {
+      "category": "device",
+      "name": "Bipolar transistor, Gummel-Poon",
+      "source": "closed form: Ebers and Moll's transport currents, no Early effect or high injection",
+      "known": {
+        "i(vc)": [
+          -0.0005670294683535749,
+          0.0
+        ],
+        "i(vb)": [
+          -5.670294683020749e-06,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 5.8e-09 of the scale",
+          "found": {
+            "i(vc)": [
+              -0.0005670294716535747,
+              0.0
+            ],
+            "i(vb)": [
+              -5.67029408302075e-06,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 5.8e-09 of the scale",
+          "found": {
+            "i(vc)": [
+              -0.00056702947165358,
+              0.0
+            ],
+            "i(vb)": [
+              -5.670294083020732e-06,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 5.8e-09 of the scale",
+          "found": {
+            "i(vc)": [
+              -0.0005670294716535799,
+              0.0
+            ],
+            "i(vb)": [
+              -5.670294083020737e-06,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 4.7e-09 of the scale",
+          "found": {
+            "i(vc)": [
+              -0.000567029471,
+              0.0
+            ],
+            "i(vb)": [
+              -5.67029404e-06,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "vbic": {
+      "category": "device",
+      "name": "Bipolar transistor, VBIC 1.2",
+      "source": "none yet: Ebers and Moll's transport form with VBIC's constants misses the run of both by 2e-6, to be explained",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vc)": [
+              -5.670022194265074e-05,
+              0.0
+            ],
+            "i(vb)": [
+              -5.670009749710835e-07,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vc)": [
+              -5.67005921929933e-05,
+              0.0
+            ],
+            "i(vb)": [
+              -5.670046767180082e-07,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vc)": [
+              -5.670059218809698e-05,
+              0.0
+            ],
+            "i(vb)": [
+              -5.670046756967719e-07,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, BJT levels 11 and 12: VBIC 1.3, not 1.2, its card's level not ngspice's 4; the dialect of branch xyce writes it",
+          "found": null
+        }
+      }
+    },
+    "jfet": {
+      "category": "device",
+      "name": "JFET",
+      "source": "closed form: Shichman and Hodges's saturation current",
+      "known": {
+        "i(vd)": [
+          -0.0010500000000000002,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 5.7e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.0010500000060100004,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 5.7e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.00105000000601,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 5.7e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.00105000000601,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 9.5e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.00105000001,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "mos1": {
+      "category": "device",
+      "name": "MOSFET, level 1",
+      "source": "closed form: the square law in saturation",
+      "known": {
+        "i(vd)": [
+          -0.00044785000000000007,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 6.7e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.00044785000301000014,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 6.7e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.0004478500030099999,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 6.7e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.00044785000301,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 8.9e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.000447850004,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "mos3": {
+      "category": "device",
+      "name": "MOSFET, level 3",
+      "source": "closed form: level 3 with no body effect, mobility degradation or velocity saturation, and no substrate doping for its channel-length modulation, is the square law",
+      "known": {
+        "i(vd)": [
+          -0.0004225,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 7.1e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.00042250000301000004,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 7.1e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.0004225000030099999,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 7.1e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.0004225000030099998,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 9.5e-09 of the scale",
+          "found": {
+            "i(vd)": [
+              -0.000422500004,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "vdmos": {
+      "category": "device",
+      "name": "VDMOS",
+      "source": "ngspice 47's VDMOS, the model's defining implementation",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 6.7e-16 of the scale",
+          "found": {
+            "i(vdrain)": [
+              -1.0000000002111307,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "reference",
+          "evidence": "",
+          "found": {
+            "i(vdrain)": [
+              -1.00000000021113,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 8.9e-16 of the scale",
+          "found": {
+            "i(vdrain)": [
+              -1.000000000211131,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, MOSFET level 18 (VDMOS), whose card is not ngspice's; the dialect of branch xyce writes it",
+          "found": null
+        }
+      }
+    },
+    "bsim3": {
+      "category": "device",
+      "name": "BSIM3v3.3",
+      "source": "ngspice 47's BSIM3v3.3, Berkeley's code, the model's defining implementation",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 2.1e-16 of the scale",
+          "found": {
+            "i(vdrain)": [
+              -1.9514355200069628e-12,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "reference",
+          "evidence": "",
+          "found": {
+            "i(vdrain)": [
+              -1.951435520006963e-12,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "i(vdrain)": [
+              -1.951435520006963e-12,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, MOSFET level 9 (BSIM3v3.2.2); no fixture runs it: another version than jolty's 3.3",
+          "found": null
+        }
+      }
+    },
+    "memristor-vteam": {
+      "category": "device",
+      "name": "Memristor, VTEAM",
+      "source": "closed form: its resistance at its state, held at an operating point",
+      "known": {
+        "i(vpositive)": [
+          -0.0001226993865030675,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 2.7e-15 of the scale",
+          "found": {
+            "i(vpositive)": [
+              -0.00012269938650306782,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a78.2.29 Memristor: XSPICE's memristor code model, another law; jolty's export writes it as a behavioral current",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a78.2.29 Memristor: XSPICE's memristor code model, another law; jolty's export writes it as a behavioral current",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, Memristor: levels 2 (TEAM), 3 (Yakopcic) and 4 (PEM), not this law",
+          "found": null
+        }
+      }
+    },
+    "memristor-hp": {
+      "category": "device",
+      "name": "Memristor, HP's linear ion drift",
+      "source": "closed form: its resistance at its state, held at an operating point",
+      "known": {
+        "i(vpositive)": [
+          -0.0001226993865030675,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 2.7e-15 of the scale",
+          "found": {
+            "i(vpositive)": [
+              -0.00012269938650306782,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a78.2.29 Memristor: XSPICE's memristor code model, another law; jolty's export writes it as a behavioral current",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, \u00a78.2.29 Memristor: XSPICE's memristor code model, another law; jolty's export writes it as a behavioral current",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, Memristor: levels 2 (TEAM), 3 (Yakopcic) and 4 (PEM), not this law",
+          "found": null
+        }
+      }
+    },
+    "photocell": {
+      "category": "device",
+      "name": "Photocell",
+      "source": "closed form: 1/r_dark + (E/E0)^gamma/r",
+      "known": {
+        "i(va)": [
+          -6.697539553864471e-05,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 5.9e-15 of the scale",
+          "found": {
+            "i(va)": [
+              -6.69753955386451e-05,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, chapter 7 Device Models: no photocell; jolty's export writes it as a behavioral current",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, chapter 7 Device Models: no photocell; jolty's export writes it as a behavioral current",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, its devices: no photocell",
+          "found": null
+        }
+      }
+    },
+    "thermal": {
+      "category": "device",
+      "name": "Thermal network",
+      "source": "closed form: P\u00b7R_th",
+      "known": {
+        "rise(hot)": [
+          50.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "rise(hot)": [
+              50.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, chapter 7 Device Models: no thermal elements; self-heating inside its VBIC and BSIM models alone",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "ngspice 47 manual, chapter 7 Device Models: no thermal elements; self-heating inside its VBIC and BSIM models alone",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, its devices: no thermal elements",
+          "found": null
+        }
+      }
+    },
+    "mos2": {
+      "category": "device",
+      "name": "MOSFET, level 2",
+      "source": "none yet: the model's QA reference results are to come",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: `mm` is a MOSFET of level 2; jolty models 1 and 3: `M1 d g 0 0 mm W=10u L=2u`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.0004225000030099999,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.0004225000030099999,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.000422500004,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "mos6": {
+      "category": "device",
+      "name": "MOSFET, level 6",
+      "source": "none yet: the model's QA reference results are to come",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: `mm` is a MOSFET of level 6; jolty models 1 and 3: `M1 d g 0 0 mm W=10u L=2u`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.00032500000301,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.00032500000301,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.000325000004,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "mos9": {
+      "category": "device",
+      "name": "MOSFET, level 9",
+      "source": "none yet: the model's QA reference results are to come",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: `mm` is a MOSFET of level 9; jolty models 1 and 3: `M1 d g 0 0 mm W=10u L=2u`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.0004225000030099999,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.0004225000030099998,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10: level 9 is BSIM3 in Xyce",
+          "found": null
+        }
+      }
+    },
+    "bsim4": {
+      "category": "device",
+      "name": "BSIM4 4.5",
+      "source": "none yet: the model's QA reference results are to come",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: `mm` is a MOSFET of level 14; jolty models 1 and 3: `M1 d g 0 0 mm W=10u L=1u`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.004692756090415488,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.004692756090415489,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, MOSFET level 14: BSIM4 4.6.1, 4.7.0 and 4.8.2, not 4.5",
+          "found": null
+        }
+      }
+    },
+    "bsimsoi": {
+      "category": "device",
+      "name": "BSIM-SOI 4",
+      "source": "none yet: the model's QA reference results are to come",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: `mm` is a MOSFET of level 10; jolty models 1 and 3: `M1 d g 0 0 mm W=10u L=1u`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.0003439646875488199,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.0003439646875488199,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, MOSFET levels 10 and 70: BSIM-SOI",
+          "found": null
+        }
+      }
+    },
+    "hisim2": {
+      "category": "device",
+      "name": "HiSIM2",
+      "source": "none yet: the model's QA reference results are to come",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: `mm` is a MOSFET of level 68; jolty models 1 and 3: `M1 d g 0 0 mm W=10u L=1u`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.003049610655773697,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.003049610655773697,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, its MOSFET levels: no HiSIM",
+          "found": null
+        }
+      }
+    },
+    "hicum": {
+      "category": "device",
+      "name": "HICUM/L2",
+      "source": "none yet: the model's QA reference results are to come",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: `qq` is a bipolar transistor of level 8; jolty models levels 1, 4 and 9: `Q1 d g 0 qq`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -3.812252123392499e+17,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -3.812252123392485e+17,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, BJT level 234: HICUM/L2 through ADMS",
+          "found": null
+        }
+      }
+    },
+    "mesfet": {
+      "category": "device",
+      "name": "MESFET, Statz",
+      "source": "none yet: the model's QA reference results are to come",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: jolty has no element of letter `Z`: `Z1 d g 0 zz`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.007272727273737272,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.007272727273737272,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, MESFET (Z) level 1",
+          "found": null
+        }
+      }
+    },
+    "jfet2": {
+      "category": "device",
+      "name": "JFET, level 2 (Parker and Skellern)",
+      "source": "none yet: the model's QA reference results are to come",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: jolty's devices have no counterpart to `LEVEL` of `jj`: `J1 d g 0 jj`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.001397287835503053,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "solved",
+          "evidence": "",
+          "found": {
+            "i(vd)": [
+              -0.001397287835503053,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, JFET level 2 (Shockley), another model",
+          "found": null
+        }
+      }
+    },
+    "tline": {
+      "category": "device",
+      "name": "Lossless transmission line",
+      "source": "closed form: a matched line delays half its source's pulse",
+      "known": {
+        "v(out)@5.5e-09": [
+          0.24999999999999975,
+          0.0
+        ],
+        "v(out)@8e-09": [
+          0.5,
+          0.0
+        ],
+        "v(out)@1.4e-08": [
+          0.5,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: jolty has no element of letter `T`: `T1 in 0 out 0 Z0=50 TD=5n`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-16 of the scale",
+          "found": {
+            "v(out)@5.5e-09": [
+              0.2499999999999998,
+              0.0
+            ],
+            "v(out)@8e-09": [
+              0.5,
+              0.0
+            ],
+            "v(out)@1.4e-08": [
+              0.5,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)@5.5e-09": [
+              0.24999999999999975,
+              0.0
+            ],
+            "v(out)@8e-09": [
+              0.5,
+              0.0
+            ],
+            "v(out)@1.4e-08": [
+              0.5,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 5.6e-17 of the scale",
+          "found": {
+            "v(out)@5.5e-09": [
+              0.24999999999999978,
+              0.0
+            ],
+            "v(out)@8e-09": [
+              0.5,
+              0.0
+            ],
+            "v(out)@1.4e-08": [
+              0.5,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "ltra": {
+      "category": "device",
+      "name": "Lossy transmission line (LTRA), lossless",
+      "source": "closed form: a matched line delays half its source's pulse",
+      "known": {
+        "v(out)@5.5e-09": [
+          0.24999999999999975,
+          0.0
+        ],
+        "v(out)@8e-09": [
+          0.5,
+          0.0
+        ],
+        "v(out)@1.4e-08": [
+          0.5,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: jolty has no element of letter `O`: `O1 in 0 out 0 lmod`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 7.8e-16 of the scale",
+          "found": {
+            "v(out)@5.5e-09": [
+              0.24999999999999936,
+              0.0
+            ],
+            "v(out)@8e-09": [
+              0.49999999999999994,
+              0.0
+            ],
+            "v(out)@1.4e-08": [
+              0.5,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 8.9e-16 of the scale",
+          "found": {
+            "v(out)@5.5e-09": [
+              0.2499999999999993,
+              0.0
+            ],
+            "v(out)@8e-09": [
+              0.49999999999999994,
+              0.0
+            ],
+            "v(out)@1.4e-08": [
+              0.5,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-16 of the scale",
+          "found": {
+            "v(out)@5.5e-09": [
+              0.2499999999999997,
+              0.0
+            ],
+            "v(out)@8e-09": [
+              0.5,
+              0.0
+            ],
+            "v(out)@1.4e-08": [
+              0.5,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "urc": {
+      "category": "device",
+      "name": "Distributed RC line (URC)",
+      "source": "closed form: the line's DC resistance, RPERL\u00b7L, over a load of the same",
+      "known": {
+        "v(out)": [
+          0.5,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: jolty has no element of letter `U`: `U1 a out 0 umod L=1m`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 1.8e-15 of the scale",
+          "found": {
+            "v(out)": [
+              0.4999999999999991,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 5.6e-16 of the scale",
+          "found": {
+            "v(out)": [
+              0.4999999999999997,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10, its devices: no URC",
+          "found": null
+        }
+      }
+    },
+    "xspice": {
+      "category": "device",
+      "name": "XSPICE code models",
+      "source": "closed form: a gain block's output",
+      "known": {
+        "v(o)": [
+          3.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: jolty has no element of letter `A`: `A1 a o g1`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              3.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(o)": [
+              3.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10: no XSPICE code models",
+          "found": null
+        }
+      }
+    },
+    "osdi": {
+      "category": "device",
+      "name": "Verilog-A models through OSDI",
+      "source": "",
+      "known": null,
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: jolty has no element of letter `N`: `N1 a 0 resistor_va`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "documented",
+          "evidence": "ngspice 47 manual, \u00a79.2 OSDI/OpenVAF: a model compiled by OpenVAF, which is not installed here",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "documented",
+          "evidence": "ngspice 47 manual, \u00a79.2 OSDI/OpenVAF: a model compiled by OpenVAF, which is not installed here",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Xyce Reference Guide 7.10: no OSDI; Verilog-A only as ADMS-compiled C++ models built into it",
+          "found": null
+        }
+      }
+    },
+    "subckt": {
+      "category": "syntax",
+      "name": "Subcircuits with parameters",
+      "source": "closed form: a halving divider",
+      "known": {
+        "v(out)": [
+          2.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "param": {
+      "category": "syntax",
+      "name": ".param reading other parameters",
+      "source": "closed form: a divider",
+      "known": {
+        "v(out)": [
+          2.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "expressions": {
+      "category": "syntax",
+      "name": "Expressions with functions",
+      "source": "closed form: a divider",
+      "known": {
+        "v(out)": [
+          2.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "func": {
+      "category": "syntax",
+      "name": ".func",
+      "source": "closed form: a divider",
+      "known": {
+        "v(out)": [
+          2.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: a subcircuit holds elements, models and parameters only: `.func twice(x) {2*x}`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "lib": {
+      "category": "syntax",
+      "name": ".lib sections",
+      "source": "closed form: a divider",
+      "known": {
+        "v(out)": [
+          2.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: a subcircuit holds elements, models and parameters only: `.lib 'benchmarks/coverage/decks/sections.lib' low`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "include": {
+      "category": "syntax",
+      "name": ".include",
+      "source": "closed form: a divider",
+      "known": {
+        "v(out)": [
+          2.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "fixture.cir:2: a subcircuit holds elements, models and parameters only: `.include 'benchmarks/coverage/decks/included.cir'`",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "poly": {
+      "category": "syntax",
+      "name": "POLY sources",
+      "source": "closed form: 1 + 2v + 3v\u00b2",
+      "known": {
+        "v(out)": [
+          2.75,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.75,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.75,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.75,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.75,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "table": {
+      "category": "syntax",
+      "name": "TABLE sources",
+      "source": "closed form: a straight line between two points",
+      "known": {
+        "v(out)": [
+          2.0,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              2.0,
+              0.0
+            ]
+          }
+        }
+      }
+    },
+    "ako": {
+      "category": "syntax",
+      "name": "Model cards inheriting by AKO",
+      "source": "closed form: Shockley's law with the inherited saturation current",
+      "known": {
+        "i(v1)": [
+          -6.232630174916389e-05,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 1.1e-08 of the scale",
+          "found": {
+            "i(v1)": [
+              -6.232630244916388e-05,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "unsupported",
+          "evidence": "Error on line 3 or its substitute: / could not find a valid modelname / Simulation interrupted due to error! / Error: incomplete or empty netlist",
+          "found": null
+        },
+        "ngspice-klu": {
+          "status": "unsupported",
+          "evidence": "Error on line 3 or its substitute: / could not find a valid modelname / Simulation interrupted due to error! / Error: incomplete or empty netlist",
+          "found": null
+        },
+        "xyce-serial": {
+          "status": "unsupported",
+          "evidence": "Netlist error in file circuit.cir at or near line 5 / Simulation aborted due to error. There are 0 MSG_FATAL errors and 1 MSG_ERROR / errors",
+          "found": null
+        }
+      }
+    },
+    "raw": {
+      "category": "output",
+      "name": "SPICE raw files",
+      "source": "closed form: a divider's ratio, read back from the raw file",
+      "known": {
+        "v(out)": [
+          3.75,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "unsupported",
+          "evidence": "jolty.files writes results files as NumPy .npz archives, its module says; no SPICE raw file",
+          "found": null
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              3.75,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 0 of the scale",
+          "found": {
+            "v(out)": [
+              3.75,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "documented",
+          "evidence": "Xyce Reference Guide 7.10, the command line's -r: a SPICE raw file; no fixture reads it here, the fixtures read its CSV",
+          "found": null
+        }
+      }
+    },
+    "measure": {
+      "category": "output",
+      "name": "Measurements of a waveform",
+      "source": "closed form: when an RC's ramp response crosses half its step",
+      "known": {
+        "t(cross)": [
+          1.6981513472231291e-06,
+          0.0
+        ]
+      },
+      "cells": {
+        "jolty": {
+          "status": "agreed",
+          "evidence": "largest error 2.4e-06 of the scale",
+          "found": {
+            "t(cross)": [
+              1.6981554314180367e-06,
+              0.0
+            ]
+          }
+        },
+        "ngspice-sparse": {
+          "status": "agreed",
+          "evidence": "largest error 5.1e-06 of the scale",
+          "found": {
+            "t(cross)": [
+              1.69816e-06,
+              0.0
+            ]
+          }
+        },
+        "ngspice-klu": {
+          "status": "agreed",
+          "evidence": "largest error 5.1e-06 of the scale",
+          "found": {
+            "t(cross)": [
+              1.69816e-06,
+              0.0
+            ]
+          }
+        },
+        "xyce-serial": {
+          "status": "agreed",
+          "evidence": "largest error 7.9e-07 of the scale",
+          "found": {
+            "t(cross)": [
+              1.69815e-06,
+              0.0
+            ]
+          }
+        }
+      }
+    }
+  }
+}

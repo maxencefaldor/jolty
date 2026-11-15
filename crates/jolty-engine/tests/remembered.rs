@@ -43,10 +43,11 @@ fn rectifier() -> Circuit {
     ]))
 }
 
-/// The benchmarks' synchronous buck converter, `perf/circuits/buck.json`: two transistors
+/// The benchmarks' synchronous buck converter, `benchmarks/speed/circuits/buck.json`: two transistors
 /// switching an inductor, whose sparse solver searches for new pivots as they switch.
 fn buck() -> Circuit {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf/circuits/buck.json");
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed/circuits/buck.json");
     let text = fs::read_to_string(path).expect("the circuit reads");
     Circuit::from_json(&text).expect("a circuit")
 }

@@ -2,12 +2,12 @@
 """Ten million Monte Carlo samples of a two-stage bipolar amplifier, to run in shards.
 
 This is the circuit and the analyses of the benchmarks' ``monte_carlo`` fixture,
-``perf/circuits/bjt_amp.py``: a differential pair of 2N3904s on a 1 mA tail, loaded by
-a mirror of 2N3906s, drives a 2N3904 follower, and 9.1 kΩ over 1 kΩ feed the output
-back for a gain of about 10 from ±12 V. Each sample draws its resistors within 5 %,
-and runs the operating point, the response at 71 frequencies and 200 µs of a 10 kHz
-sine. Its specs hold the gain and the output's offset. ``launch.py`` beside it runs
-the samples in shards over a pool of processes and merges them.
+``benchmarks/speed/circuits/bjt_amp.py``: a differential pair of 2N3904s on a 1 mA tail,
+loaded by a mirror of 2N3906s, drives a 2N3904 follower, and 9.1 kΩ over 1 kΩ feed the
+output back for a gain of about 10 from ±12 V. Each sample draws its resistors within
+5 %, and runs the operating point, the response at 71 frequencies and 200 µs of a 10 kHz
+sine. Its specs hold the gain and the output's offset. ``launch.py`` beside it runs the
+samples in shards over a pool of processes and merges them.
 """
 
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
