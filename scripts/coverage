@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Copyright 2026 Maxence Faldor
+#
+# How much of the code the tests run, reported and never checked: Rust's by
+# cargo-llvm-cov over the Rust tests, Python's by coverage.py over the Python tests and
+# doctests, in every process they start. Each language's report is written to
+# target/coverage, as an LCOV file, rust.lcov and python.lcov, and as HTML pages, rust/
+# and python/, and its summary printed.
+#
+#   scripts/coverage            both languages
+#   scripts/coverage rust       Rust's alone
+#   scripts/coverage python     Python's alone
+#
+# The instrumented Rust builds in a target directory of its own, so that no other build
+# is rebuilt after it. The Python tests run the extension uv sync built, which is not
+# instrumented: Rust's report counts what the Rust tests run alone.
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+reports="$PWD/target/coverage"
+
+coverage_rust() (
+    PYO3_PYTHON="${PYO3_PYTHON:-$(uv python find)}"
+    export PYO3_PYTHON CARGO_TARGET_DIR="$reports/build"
+    cargo llvm-cov --workspace --locked --no-report
+    cargo llvm-cov report --lcov --output-path "$reports/rust.lcov"
+    cargo llvm-cov report --html --output-dir "$reports/rust"
+    cargo llvm-cov report
+)
+
+coverage_python() (
+    export COVERAGE_FILE="$reports/data/.coverage"
+    mkdir -p "$reports/data"
+    uv sync --locked
+    uv run --locked coverage erase
+    uv run --locked coverage run -m pytest
+    uv run --locked coverage combine --quiet
+    uv run --locked coverage lcov --quiet -o "$reports/python.lcov"
+    uv run --locked coverage html --quiet -d "$reports/python"
+    uv run --locked coverage report
+)
+
+case "${1:-all}" in
+    rust | python) "coverage_$1" ;;
+    all)
+        # One after another, never joined by `&&`, as in scripts/check.
+        coverage_rust
+        coverage_python
+        ;;
+    *)
+        echo "usage: scripts/coverage [rust | python]" >&2
+        exit 2
+        ;;
+esac

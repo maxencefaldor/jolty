@@ -92,3 +92,41 @@ jobs:
           brew install ngspice
       - name: Check
         run: scripts/check free-threaded
+
+  coverage:
+    name: Coverage of the Rust and Python tests, reported, never checked
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      JOLTY_REQUIRE_NGSPICE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - name: Install Python, which PyO3 builds against
+        run: uv python install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install llvm-tools, with which cargo-llvm-cov reads the profiles
+        run: |
+          rustup toolchain install
+          rustup component add llvm-tools
+      - name: Install cargo-llvm-cov, which measures Rust's coverage
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Install ngspice, the reference simulator of the differential tests
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          dirname "$(command -v brew)" >> "$GITHUB_PATH"
+          brew install ngspice
+      - name: Measure
+        run: scripts/coverage
+      - name: Keep the reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: |
+            target/coverage/*.lcov
+            target/coverage/rust
+            target/coverage/python

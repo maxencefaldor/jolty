@@ -16,6 +16,7 @@ A schematic's layout only draws a circuit as feedback; it lays out no board.
 ```sh
 scripts/check               # every check below, exactly as CI runs them
 scripts/bench               # the benchmarks of benchmarks/: the speed suite against a baseline's times, or another suite
+scripts/coverage            # the tests' coverage of the Rust and the Python code, in target/coverage, never checked
 uv sync                     # build the engine, install Python 3.15 and every tool from uv.lock
 uv run pytest               # Python tests and doctests over every processor, or one with -n 0; warnings are errors
 uv run ruff format          # format Python
@@ -68,7 +69,7 @@ Each module imports only from the modules listed before it, and from those liste
 Where the code does not meet a convention yet, a change that touches that code brings it closer, never further.
 
 - **Tools:** use the standard, official, established tool in each category.
-  That means uv, ruff, ty, rumdl, pytest with Hypothesis and pytest-xdist, pydantic and pydantic-settings, numpy for arrays, the official MCP SDK, matplotlib for plots, maturin with PyO3, cargo with clippy and proptest, cargo-audit for RustSec's advisories against the crates, as uv's own audit checks the Python packages against OSV's, criterion for Rust's benchmarks, faer for dense linear algebra, rayon for data parallelism, mimalloc as the Python extension's allocator, and `rand` with `rand_chacha` and `rand_distr` for random sampling.
+  That means uv, ruff, ty, rumdl, pytest with Hypothesis and pytest-xdist, pydantic and pydantic-settings, numpy for arrays, the official MCP SDK, matplotlib for plots, maturin with PyO3, cargo with clippy and proptest, cargo-audit for RustSec's advisories against the crates, as uv's own audit checks the Python packages against OSV's, cargo-llvm-cov and coverage.py for the tests' coverage, criterion for Rust's benchmarks, faer for dense linear algebra, rayon for data parallelism, mimalloc as the Python extension's allocator, and `rand` with `rand_chacha` and `rand_distr` for random sampling.
 - **Dependencies:** a new one is the established choice in its category, is maintained, and has a license compatible with Apache-2.0, as `tests/test_licenses.py` lists them for the Rust crates and the Python distributions alike.
   Nothing under the GPL is linked into jolty; a GPL tool runs only as a separate program.
   A process kit or a third-party fixture is pinned and fetched with its digest, never copied into the repository.
