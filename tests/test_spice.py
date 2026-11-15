@@ -308,6 +308,28 @@ def test_sources_refuse_what_their_waveforms_leave_out(
         library(f".subckt drive a\n{element}\nR1 a 0 1k\n.ends").component("drive")
 
 
+def test_an_area_scales_the_defaults_a_card_leaves_out() -> None:
+    parts = library(
+        ".model q npn bf=100\n.model d d\n.model j njf\n"
+        ".subckt parts c b e\n"
+        "Q1 c b e q area=10\nQ2 c b e q 2\nQ3 c b e q\nD1 c e d 3\nJ1 c b e j area=4\n"
+        ".ends"
+    )
+    read = {
+        instance.id: instance.parameters
+        for instance in parts.component("parts").definition.instances
+    }
+    # ngspice multiplies the saturation current, 1e-16 A unless the card gives one,
+    # by the area (bjttemp.c:168), and a diode's 1e-14 A, a JFET's 1e-14 A and its
+    # transconductance parameter, 1e-4 A/V², alike.
+    assert read["Q1"]["saturation_current"] == pytest.approx(1e-15)
+    assert read["Q2"]["saturation_current"] == pytest.approx(2e-16)
+    assert "saturation_current" not in read["Q3"]
+    assert read["D1"]["saturation_current"] == pytest.approx(3e-14)
+    assert read["J1"]["saturation_current"] == pytest.approx(4e-14)
+    assert read["J1"]["transconductance_parameter"] == pytest.approx(4e-4)
+
+
 def test_a_table_source_holds_beyond_its_ends() -> None:
     parts = library(".subckt clamp in out\nE1 out 0 TABLE {V(in)} = (0,0) (1,2)\n.ends")
     part = parts.component("clamp")
@@ -605,10 +627,22 @@ def test_a_vbic_whose_card_heats_reads_with_its_thermal_network() -> None:
     joined = {"collector": "c", "base": "b", "emitter": "e", "substrate": "s"}
     vbic, resistance = ir.DeviceOf(device="vbic"), "thermal_resistance"
     capacitance = "thermal_capacitance"
+    # The area times the copies multiplies the currents the card leaves out at their
+    # defaults too, and divides the resistances, as ngspice multiplies every current of
+    # a VBIC by it (vbicload.c:4017-4052).
+    scaled = {
+        "saturation_current": 4e-16,
+        "ideal_base_emitter_current": 4e-18,
+        "ideal_base_collector_current": 4e-16,
+        "base_emitter_breakdown_current": 4e-6,
+        "intrinsic_collector_resistance": 0.025,
+        "intrinsic_base_resistance": 0.025,
+        "parasitic_base_resistance": 0.025,
+    }
     assert placed == {
         "Q1": (
             vbic,
-            {"saturation_current": 4e-16, "polarity": "npn", "thermal": True},
+            {**scaled, "polarity": "npn", "thermal": True},
             {**joined, "thermal": "t"},
         ),
         "Q1.rth": (

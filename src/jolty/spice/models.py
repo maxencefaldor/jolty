@@ -11,6 +11,7 @@ where they are off, as the reader's tables say. Any other parameter jolty does n
 model is an error, never silently dropped.
 """
 
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ from typing import Final
 
 from pydantic import JsonValue
 
+from jolty import _core
 from jolty.devices import BSIM3_BINNED, BSIM3_CARD
 from jolty.errors import SpiceError
 from jolty.spice.expressions import Expression, Number, evaluate, number, parse
@@ -410,6 +412,14 @@ VBIC: Final[Table] = {
 its aliases among them: SPICE's ``KF`` and ``AF``, which no VBIC card gives, read as
 ``KFN`` and ``AFN``."""
 
+_TABLES: Final[Mapping[str, Table]] = {
+    "diode": DIODE,
+    "jfet": JFET,
+    "bipolar_transistor": BIPOLAR,
+    "vbic": VBIC,
+}
+"""The table of each device whose parameters an area scales."""
+
 VBIC_LEVELS: Final = frozenset({4.0, 9.0})
 """The levels of a bipolar transistor's card at which ngspice selects VBIC."""
 
@@ -726,15 +736,19 @@ def _device(
     match card.kind:
         case "d":
             area = instance.get("area", 1.0) * instance.get("m", 1.0)
-            values = _scaled(values, area, ("is", "cjo", "cj0", "cj"), ("rs",))
+            values = _area_scaled(
+                "diode", values, area, ("is", "cjo", "cj0", "cj"), ("rs",)
+            )
             # ngspice multiplies the breakdown current by the multiplier, not the area.
-            values = _scaled(values, instance.get("m", 1.0), ("ibv",), ())
+            values = _area_scaled("diode", values, instance.get("m", 1.0), ("ibv",), ())
             made = Made("diode", _mapped(card, values, DIODE, statement))
         case "npn" | "pnp":
             made = _bipolar_device(card, values, instance, statement)
         case "njf" | "pjf":
             area = instance.get("area", 1.0) * instance.get("m", 1.0)
-            values = _scaled(values, area, ("beta", "is", "cgs", "cgd"), ("rd", "rs"))
+            values = _area_scaled(
+                "jfet", values, area, ("beta", "is", "cgs", "cgd"), ("rd", "rs")
+            )
             parameters = _mapped(card, values, JFET, statement)
             made = Made("jfet", {"channel": card.kind[0], **parameters})
         case "nmos" | "pmos" if values.get("level") in BSIM3_LEVELS:
@@ -788,6 +802,39 @@ def _scaled(
     }
 
 
+def _area_scaled(
+    model: str,
+    values: Mapping[str, float],
+    area: float,
+    multiplied: tuple[str, ...],
+    divided: tuple[str, ...],
+) -> dict[str, float]:
+    """`values` scaled by `area` as SPICE scales a device of `model`, its defaults too.
+
+    Each `multiplied` parameter is multiplied by the area, each `divided` one divided,
+    as `_scaled` does; one the card leaves out takes the engine's default first, where
+    that is a number other than zero, as ngspice scales the default it gives, such as a
+    bipolar transistor's saturation current of 1e-16 A (``bjttemp.c:168``, from
+    ``bjtsetup.c:48``).
+    """
+    if area == 1:
+        return dict(values)
+    table = _TABLES[model]
+    defaults = json.loads(_core.defaulted(model, "{}"))
+    filled = dict(values)
+    given = {table[name][0] for name in values if name in table}
+    for name in (*multiplied, *divided):
+        if name not in table:
+            continue
+        parameter, factor = table[name]
+        default = defaults.get(parameter)
+        if parameter in given or not isinstance(default, float) or default == 0:
+            continue
+        filled[name] = default / factor
+        given.add(parameter)
+    return _scaled(filled, area, multiplied, divided)
+
+
 def _mapped(
     card: ModelCard,
     values: Mapping[str, float],
@@ -837,7 +884,8 @@ def _bipolar(
         *("is", "ikf", "ik", "ikr", "ise", "isc", "itf", "cje", "cjc", "irb"),
         *("iss", "cjs", "csub", "ccs"),
     )
-    values = _scaled(values, area, multiplied, ("rb", "rbm", "re", "rc"))
+    divided = ("rb", "rbm", "re", "rc")
+    values = _area_scaled("bipolar_transistor", values, area, multiplied, divided)
     parameters = _mapped(card, values, BIPOLAR, statement)
     return {
         "polarity": card.kind,
@@ -1088,7 +1136,7 @@ def _vbic(
     charge = values.pop("qbm", None)
     copies = instance.get("m", 1.0)
     area = instance.get("area", 1.0) * copies
-    values = _scaled(values, area, VBIC_MULTIPLIED, VBIC_RESISTANCES)
+    values = _area_scaled("vbic", values, area, VBIC_MULTIPLIED, VBIC_RESISTANCES)
     for coefficient, exponent in (("kfn", "afn"), ("kf", "af")):
         if coefficient in values:
             values[coefficient] *= copies ** (1 - values.get(exponent, 1.0))
