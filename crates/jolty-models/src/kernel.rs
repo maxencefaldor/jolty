@@ -119,6 +119,24 @@ pub trait Kernel: Send + Sync + 'static {
         stamp: &mut Stamp<'_, R>,
     );
 
+    /// Whether an instance of `shape` with the numbers `prepared` is linear: whether its
+    /// equations are its entries, conductances and capacitances that its parameters and its
+    /// temperature set, times its local unknowns. Its evaluation then writes the same
+    /// entries at every state, and each local unknown's residual and charge as the sum of
+    /// the entries of its row, in the order of their local indices, times the local
+    /// unknowns of their columns, to within their rounding, the residual as one term; it
+    /// reads nothing of the state but its local unknowns, nothing of its memory, and limits
+    /// nothing. Its groups evaluate it once a run, for its entries, and never again: each
+    /// residual, its scale and each charge come from the entries.
+    ///
+    /// False unless its kernel's equations say so; a test over the library checks it of
+    /// every instance that says so.
+    #[must_use]
+    fn linear(shape: &Self::Shape, prepared: &Self::Prepared<f64>) -> bool {
+        let _ = (shape, prepared);
+        false
+    }
+
     /// Forgets what of `memory` depends on the temperature, when an instance is prepared
     /// again at another, as a device that heats is between two evaluations: nothing,
     /// unless its memory starts from its prepared numbers.
