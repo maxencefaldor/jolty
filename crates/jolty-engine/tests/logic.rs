@@ -4,7 +4,7 @@
 
 use jolty_engine::{
     Bound, Conditions, DcSweep, ElaborationProblem, Endpoint, Options, Simulator, Transient,
-    Waveforms, Work,
+    TransientResult, Work,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Level, Library};
@@ -27,7 +27,7 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
         })
         .collect();
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit file")
@@ -65,7 +65,7 @@ fn net(simulator: &Simulator, name: &str) -> usize {
 
 /// `waveforms` apart from the work that found them, which depends on what the simulator
 /// did before: an operating point it remembered, the pivots it kept.
-fn apart_from_work(mut waveforms: Waveforms) -> Waveforms {
+fn apart_from_work(mut waveforms: TransientResult) -> TransientResult {
     waveforms.statistics.work = Work::default();
     waveforms
 }
@@ -436,7 +436,7 @@ fn logic_nets_name_what_drives_and_reads_them() {
 /// its output, standing for a circuit with ports `a`, `y`, `vdd` and `gnd`.
 fn hierarchy() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {
             "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                 {"id": "VDD", "of": {"device": "voltage_source"},

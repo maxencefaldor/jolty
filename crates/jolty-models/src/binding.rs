@@ -24,7 +24,7 @@ pub type Node = Option<Unknown>;
 
 /// What an unknown measures, and so what its equation balances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Quantity {
+pub enum Nature {
     /// A node voltage, whose equation sums the currents leaving the node.
     Voltage,
     /// A branch current, whose equation constrains the branch's voltage.
@@ -41,7 +41,7 @@ pub enum Quantity {
     State,
 }
 
-impl Quantity {
+impl Nature {
     /// Whether the unknown is a current rather than a voltage.
     #[must_use]
     pub const fn is_current(self) -> bool {
@@ -62,7 +62,7 @@ pub struct UnknownInfo {
     /// The unknown's name: a net's path, or an instance's path and a label, such as `V1:current`.
     pub name: String,
     /// What the unknown measures.
-    pub quantity: Quantity,
+    pub nature: Nature,
 }
 
 /// What an instance being bound reaches: the nodes of its terminals, new internal
@@ -122,10 +122,10 @@ impl<'a> Binding<'a> {
     }
 
     /// Adds an internal unknown, named after the instance and `label`.
-    pub fn internal(&mut self, label: &str, quantity: Quantity) -> Unknown {
+    pub fn internal(&mut self, label: &str, nature: Nature) -> Unknown {
         self.unknowns.push(UnknownInfo {
             name: format!("{}:{label}", self.path),
-            quantity,
+            nature,
         });
         Unknown(self.first + self.unknowns.len() - 1)
     }

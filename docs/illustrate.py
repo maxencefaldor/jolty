@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 from typing import Final, NamedTuple
 
 from jolty import service
-from jolty.report import PointReport
+from jolty.report import OperatingPointReport
 from jolty.settings import Settings
 
 ROOT: Final = Path(__file__).resolve().parent.parent
@@ -50,7 +50,9 @@ async def illustrate(name: str, example: Example, scratch: Path) -> None:
         probes=example.probes,
     )
     simulated = await service.simulate(request, Settings())
-    pointed = any(isinstance(report, PointReport) for report in simulated.analyses)
+    pointed = any(
+        isinstance(report, OperatingPointReport) for report in simulated.analyses
+    )
     images = list(simulated.images())
     for instance in example.inside:
         inside = service.DrawRequest(

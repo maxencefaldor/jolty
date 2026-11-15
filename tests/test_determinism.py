@@ -87,7 +87,7 @@ def _simulated(built: ir.Circuit, options: Options) -> list[object]:
         if instance.of == ir.DeviceOf(device="voltage_source")
     )
     output = next(
-        unknown.name for unknown in simulation.unknowns if unknown.quantity == "voltage"
+        unknown.name for unknown in simulation.unknowns if unknown.nature == "voltage"
     )
     frequencies = decade(1 * Hz, 1 * GHz, 10)
     analyses = (

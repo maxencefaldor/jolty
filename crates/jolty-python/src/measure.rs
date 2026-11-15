@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 
 use jolty_engine::measure::{
-    self, Edge, MeasureError as Failure, Results, Signal, SumError, Table, Transfer, Window,
+    self, AnalysisResult, Edge, MeasureError as Failure, Signal, SumError, Table, Transfer, Window,
 };
 use numpy::ndarray::ArrayView2;
 use numpy::{Complex64, Element, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1};
@@ -274,20 +274,20 @@ impl Measure {
     }
 
     /// What the measure reads of an operating point's `values`.
-    fn read_point(&self, values: &Bound<'_, PyArray1<f64>>) -> PyResult<f64> {
+    fn read_operating_point(&self, values: &Bound<'_, PyArray1<f64>>) -> PyResult<f64> {
         let values = values.readonly();
-        self.read(&Results::Point(&slice(&values)))
+        self.read(&AnalysisResult::OperatingPoint(&slice(&values)))
     }
 
     /// What the measure reads of a DC sweep's `levels` and `values`, one row per level.
-    fn read_sweep(
+    fn read_dc_sweep(
         &self,
         levels: &Bound<'_, PyArray1<f64>>,
         values: &Bound<'_, PyArray2<f64>>,
     ) -> PyResult<f64> {
         let levels = levels.readonly();
         let values = values.readonly();
-        self.read(&Results::Sweep {
+        self.read(&AnalysisResult::DcSweep {
             levels: &slice(&levels),
             values: &Rows(values.as_array()),
         })
@@ -301,7 +301,7 @@ impl Measure {
     ) -> PyResult<f64> {
         let times = times.readonly();
         let values = values.readonly();
-        self.read(&Results::Transient {
+        self.read(&AnalysisResult::Transient {
             times: &slice(&times),
             values: &Rows(values.as_array()),
         })
@@ -309,28 +309,28 @@ impl Measure {
 
     /// What the measure reads of a small-signal response's `frequencies` and phasors,
     /// `values`, one row per frequency.
-    fn read_response(
+    fn read_ac(
         &self,
         frequencies: &Bound<'_, PyArray1<f64>>,
         values: &Bound<'_, PyArray2<Complex64>>,
     ) -> PyResult<f64> {
         let frequencies = frequencies.readonly();
         let values = values.readonly();
-        self.read(&Results::Response {
+        self.read(&AnalysisResult::Ac {
             frequencies: &slice(&frequencies),
             values: &Rows(values.as_array()),
         })
     }
 
     /// What the measure reads of a loop gain's `frequencies` and `gains`.
-    fn read_loop(
+    fn read_stability(
         &self,
         frequencies: &Bound<'_, PyArray1<f64>>,
         gains: &Bound<'_, PyArray1<Complex64>>,
     ) -> PyResult<f64> {
         let frequencies = frequencies.readonly();
         let gains = gains.readonly();
-        self.read(&Results::Loop {
+        self.read(&AnalysisResult::Stability {
             frequencies: &slice(&frequencies),
             gains: &slice(&gains),
         })
@@ -348,7 +348,7 @@ impl Measure {
         let densities = densities.readonly();
         let gains = gains.map(PyArrayMethods::readonly);
         let gains = gains.as_ref().map(slice);
-        self.read(&Results::Noise {
+        self.read(&AnalysisResult::Noise {
             frequencies: &slice(&frequencies),
             densities: &slice(&densities),
             gains: gains.as_deref(),
@@ -356,14 +356,14 @@ impl Measure {
     }
 
     /// What the measure reads of a pole-zero analysis's `poles`.
-    fn read_poles(&self, poles: &Bound<'_, PyArray1<Complex64>>) -> PyResult<f64> {
+    fn read_pole_zero(&self, poles: &Bound<'_, PyArray1<Complex64>>) -> PyResult<f64> {
         let poles = poles.readonly();
-        self.read(&Results::Poles(&slice(&poles)))
+        self.read(&AnalysisResult::PoleZero(&slice(&poles)))
     }
 
     /// What the measure reads of a search that found `count` DC solutions.
-    fn read_solutions(&self, count: usize) -> PyResult<f64> {
-        self.read(&Results::Points(count))
+    fn read_operating_points(&self, count: usize) -> PyResult<f64> {
+        self.read(&AnalysisResult::OperatingPoints(count))
     }
 
     fn __repr__(&self) -> String {
@@ -372,7 +372,7 @@ impl Measure {
 }
 
 impl Measure {
-    fn read(&self, results: &Results<'_>) -> PyResult<f64> {
+    fn read(&self, results: &AnalysisResult<'_>) -> PyResult<f64> {
         self.0.measure(results).map_err(failure)
     }
 }

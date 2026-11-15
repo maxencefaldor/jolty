@@ -3,10 +3,10 @@
 
 use std::f64::consts::TAU;
 
-use jolty_engine::{Conditions, Noise, NoiseSpectrum, Options, SimulationError, Simulator};
+use jolty_engine::{Conditions, Noise, NoiseResult, Options, SimulationError, Simulator};
 use jolty_ir::Circuit;
 use jolty_models::{
-    BOLTZMANN, ELEMENTARY_CHARGE, Library, Quantity, REFERENCE_TEMPERATURE, thermal_voltage,
+    BOLTZMANN, ELEMENTARY_CHARGE, Library, Nature, REFERENCE_TEMPERATURE, thermal_voltage,
 };
 use serde_json::{Value, json};
 
@@ -18,7 +18,7 @@ const FREQUENCIES: [f64; 4] = [1.0, 1e3, 1e5, 1e7];
 /// A circuit of `instances` whose ground is `0`.
 fn circuit(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
@@ -47,7 +47,7 @@ fn noise(
     output: &str,
     reference: Option<&str>,
     source: Option<&str>,
-) -> Result<NoiseSpectrum, SimulationError> {
+) -> Result<NoiseResult, SimulationError> {
     let mut simulator = Simulator::new(circuit, &Library::standard(), &Conditions::default())
         .expect("the circuit elaborates");
     let analysis = Noise {
@@ -67,7 +67,7 @@ fn assert_close(actual: f64, expected: f64) {
 }
 
 /// The contribution of `device` to the spectrum's density at each frequency.
-fn share<'a>(spectrum: &'a NoiseSpectrum, device: &str) -> &'a [f64] {
+fn share<'a>(spectrum: &'a NoiseResult, device: &str) -> &'a [f64] {
     let mut shares = spectrum
         .contributions
         .iter()
@@ -90,10 +90,10 @@ fn a_dividers_noise_is_its_parallel_resistances_and_refers_to_its_input() {
     let referred = spectrum.referred().expect("a source");
     let input = spectrum.input.as_ref().expect("an input");
     assert_eq!(
-        (input.source.as_str(), input.quantity),
-        ("V1", Quantity::Voltage)
+        (input.source.as_str(), input.nature),
+        ("V1", Nature::Voltage)
     );
-    assert_eq!(spectrum.quantity, Quantity::Voltage);
+    assert_eq!(spectrum.nature, Nature::Voltage);
     for (index, (&density, gain)) in spectrum.densities.iter().zip(&input.gains).enumerate() {
         assert_close(density, FOUR_KT * parallel);
         assert_close(
@@ -143,7 +143,7 @@ fn a_small_resistors_noise_is_a_voltage_in_series() {
         assert_close(spectrum.densities[index], FOUR_KT * 1000.5);
         let input = spectrum.input.as_ref().expect("an input");
         assert_close(input.gains[index].re, 1000.5);
-        assert_eq!(input.quantity, Quantity::Current);
+        assert_eq!(input.nature, Nature::Current);
     }
 }
 
@@ -162,7 +162,7 @@ fn outputs_can_be_differential_or_currents() {
     // The source's current: the resistors' noise currents, in series.
     let current = noise(&divider, "V1:current", None, None).unwrap();
     assert_close(current.densities[0], FOUR_KT / 4e3);
-    assert_eq!(current.quantity, Quantity::Current);
+    assert_eq!(current.nature, Nature::Current);
 }
 
 #[test]

@@ -114,12 +114,12 @@ class CostCommand(service.CostRequest, _Output):
         self.emit(await service.cost(self, Settings.load()))
 
 
-class KicadCommand(service.KicadRequest, _Output):
+class ExportKicadCommand(service.ExportKicadRequest, _Output):
     """Write a component of a saved circuit file as a KiCad netlist."""
 
     async def cli_cmd(self) -> None:
         """Runs the command."""
-        self.emit(await service.write_kicad(self, Settings.load()))
+        self.emit(await service.export_kicad(self, Settings.load()))
 
 
 class CommandLine(BaseSettings):
@@ -202,7 +202,7 @@ class Jolty(CommandLine):
     cost: CliSubCommand[CostCommand] = Field(
         description="Price a component of a saved circuit file with a catalog."
     )
-    kicad: CliSubCommand[KicadCommand] = Field(
+    export_kicad: CliSubCommand[ExportKicadCommand] = Field(
         description="Write a component of a saved circuit file as a KiCad netlist."
     )
 

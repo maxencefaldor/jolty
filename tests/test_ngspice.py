@@ -2930,7 +2930,7 @@ def test_a_heated_vbic_agrees(heated_cards: Path) -> None:
     )
     for column, unknown in compared(simulation):
         # The netlist places the library's subcircuit as `XX1`, its thermal node in it.
-        name = "v(xx1.dt)" if unknown.quantity == "temperature" else None
+        name = "v(xx1.dt)" if unknown.nature == "temperature" else None
         spice_values = raw.real(name or vector(simulation.circuit, unknown))
         compare(
             sweep.values[:, column],

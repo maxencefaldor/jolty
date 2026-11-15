@@ -24,7 +24,7 @@ use super::{Heating, LOWEST_TEMPERATURE, MOST_TEMPERATURE_STEP};
 use crate::device::lift;
 use crate::group::Kind;
 use crate::{
-    Choice, Gradient, Hyper, Kernel, Layout, Level, Local, NoiseSource, ParameterError, Quantity,
+    Choice, Gradient, Hyper, Kernel, Layout, Level, Local, Nature, NoiseSource, ParameterError,
     Regions, Stamp,
 };
 
@@ -218,9 +218,9 @@ fn heated_shape<S>(inner: S, own: &Layout, layout: &mut Layout) -> HeatedShape<S
     let terminals = own.terminals();
     let thermal = terminals;
     let mut voltages = vec![true; terminals];
-    for (label, quantity) in own.internals() {
-        layout.internal(label.clone(), *quantity);
-        voltages.push(*quantity == Quantity::Voltage);
+    for (label, nature) in own.internals() {
+        layout.internal(label.clone(), *nature);
+        voltages.push(*nature == Nature::Voltage);
     }
     let outer = |local: usize| if local < terminals { local } else { local + 1 };
     let mut pairs: Vec<(usize, usize, usize)> = own

@@ -254,7 +254,7 @@ def saved(
             (),
             np.empty((count, 0)),
             np.zeros((count, len(planned)), dtype=np.bool_),
-            tuple(str(each.measurement) for each in requirements),
+            tuple(str(each.measure) for each in requirements),
             (None,) * width,
             np.full((count, width), np.nan),
             np.zeros((count, width), dtype=np.int32),

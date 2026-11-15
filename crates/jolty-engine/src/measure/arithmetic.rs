@@ -1,4 +1,4 @@
-//! numpy's arithmetic, operation for operation, as jolty's measurements were first written in
+//! numpy's arithmetic, operation for operation, as jolty's measures were first written in
 //! numpy.
 //!
 //! Each function names the numpy or Python function it follows, as numpy 2.5 and Python 3.15
@@ -491,7 +491,7 @@ fn sorted(frequencies: &[f64], densities: &[f64]) -> Result<(Vec<f64>, Vec<f64>)
 }
 
 /// The noise density at the frequency `at`, a power law between the frequencies around it, as
-/// jolty's `NoiseSpectrum.density` computed it.
+/// jolty's `NoiseResult.density` computed it.
 ///
 /// # Errors
 ///
@@ -603,7 +603,7 @@ fn segment(first: f64, last: f64, low: f64, high: f64) -> f64 {
 }
 
 /// The noise densities `densities` referred to an input through `gains`, each over the
-/// square of the gain's magnitude, as numpy computed jolty's `NoiseSpectrum.referred`:
+/// square of the gain's magnitude, as numpy computed jolty's `NoiseResult.referred`:
 /// infinite where a gain vanishes. As long as the shorter of the two.
 #[must_use]
 pub fn referred(densities: &[f64], gains: &[Complex64]) -> Vec<f64> {

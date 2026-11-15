@@ -22,7 +22,7 @@ timing was measured over, its ``excursions``, as the engine watched it.
 
 A [`BatchResult`][jolty.results.BatchResult] holds what many runs of one circuit found
 as columns, one row per run: the values each run took, whether each analysis ended,
-what each measurement read, and the values of some unknowns at every point of an
+what each measure read, and the values of some unknowns at every point of an
 analysis.
 """
 
@@ -39,13 +39,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from jolty import _core
 from jolty.units import Dimension
-from jolty.unknowns import Quantity, Unknown
+from jolty.unknowns import Nature, Unknown
 
 type Real = npt.NDArray[np.float64]
 type Complex = npt.NDArray[np.complex128]
 
 type Plain = Literal["dB", "°", "%", ""]
-"""The unit of a measurement that reads a plain number: none for a ratio."""
+"""The unit of a measure that reads a plain number: none for a ratio."""
 
 
 def _none() -> Real:
@@ -61,7 +61,7 @@ def _no_phasors() -> Complex:
 
 
 def column(
-    unknowns: tuple[Unknown, ...], name: str, quantity: Quantity | None = None
+    unknowns: tuple[Unknown, ...], name: str, nature: Nature | None = None
 ) -> int:
     """The column of the unknown `name` in the values of a result over `unknowns`.
 
@@ -71,16 +71,16 @@ def column(
 
     Raises:
         KeyError: When no unknown has that name, the message suggesting the closest
-            names, or when `quantity` is given and the unknown is not of it.
+            names, or when `nature` is given and the unknown is not of it.
     """
     index = _columns(_Same(unknowns)).get(name)
     if index is None:
         names = [unknown.name for unknown in unknowns]
         message = f"the circuit has no unknown named {name!r}{close_names(names, name)}"
         raise KeyError(message)
-    found = unknowns[index].quantity
-    if quantity is not None and found != quantity:
-        message = f"{name!r} holds a {found}, not a {quantity}"
+    found = unknowns[index].nature
+    if nature is not None and found != nature:
+        message = f"{name!r} holds a {found}, not a {nature}"
         raise KeyError(message)
     return index
 
@@ -471,8 +471,8 @@ class _Unknowns[T]:
         """`values`, a number or a column, as a reading."""
         raise NotImplementedError
 
-    def _unknown(self, name: str, quantity: Quantity | None = None) -> T:
-        return self._read(self.values[..., column(self.unknowns, name, quantity)])
+    def _unknown(self, name: str, nature: Nature | None = None) -> T:
+        return self._read(self.values[..., column(self.unknowns, name, nature)])
 
     def voltage(self, net: str, reference: str | None = None) -> T:
         """The voltage of `net`, relative to `reference` or to ground."""
@@ -568,7 +568,7 @@ class _Devices[T](_Unknowns[T]):
 
 
 @dataclass(frozen=True, slots=True)
-class OperatingPoint(_Devices[float], _Watched):
+class OperatingPointResult(_Devices[float], _Watched):
     """A DC solution, and the strategy that found it."""
 
     unknowns: tuple[Unknown, ...]
@@ -618,16 +618,16 @@ class OperatingPoint(_Devices[float], _Watched):
 
 
 @dataclass(frozen=True, slots=True)
-class OperatingPoints(_Watched):
+class OperatingPointsResult(_Watched):
     """Every DC solution a search found, the operating point first.
 
     Examples:
         >>> unknowns = (Unknown("q", "voltage"),)
-        >>> found = OperatingPoints(
+        >>> found = OperatingPointsResult(
         ...     unknowns,
         ...     (
-        ...         OperatingPoint(unknowns, np.array([1.65]), "direct"),
-        ...         OperatingPoint(unknowns, np.array([3.3]), "direct"),
+        ...         OperatingPointResult(unknowns, np.array([1.65]), "direct"),
+        ...         OperatingPointResult(unknowns, np.array([3.3]), "direct"),
         ...     ),
         ... )
         >>> found.voltages("q").tolist()
@@ -635,7 +635,7 @@ class OperatingPoints(_Watched):
     """
 
     unknowns: tuple[Unknown, ...]
-    points: tuple[OperatingPoint, ...]
+    points: tuple[OperatingPointResult, ...]
 
     def voltages(self, net: str) -> Real:
         """The voltage of `net` at each solution, in the order found."""
@@ -644,7 +644,7 @@ class OperatingPoints(_Watched):
 
 
 @dataclass(frozen=True, slots=True)
-class Sweep(_Devices[Real], _Watched):
+class DcSweepResult(_Devices[Real], _Watched):
     """The operating points of a DC sweep, one row per level of its source.
 
     A sweep of a parameter of a device names it, and its levels are the parameter's
@@ -654,7 +654,7 @@ class Sweep(_Devices[Real], _Watched):
     unknowns: tuple[Unknown, ...]
     source: str
     """The path of the swept instance, such as ``V1``."""
-    quantity: Quantity | None
+    nature: Nature | None
     """Whether the levels are voltages or currents; None for a parameter's."""
     levels: Real
     values: Real
@@ -688,7 +688,7 @@ class Sweep(_Devices[Real], _Watched):
 
 
 @dataclass(frozen=True, slots=True)
-class Response(_Unknowns[Complex], _Watched):
+class AcResult(_Unknowns[Complex], _Watched):
     """A small-signal response: phasors per unit excitation, one row per frequency."""
 
     unknowns: tuple[Unknown, ...]
@@ -696,7 +696,7 @@ class Response(_Unknowns[Complex], _Watched):
     """The path of the excited source, such as ``V1``."""
     frequencies: Real
     values: Complex
-    operating_point: OperatingPoint
+    operating_point: OperatingPointResult
     recording: Recording = field(default_factory=Recording)
     """What the result recorded of the devices, and where its currents hold each."""
     currents: Complex = field(default_factory=_no_phasors)
@@ -797,7 +797,7 @@ class Statistics:
 
 
 @dataclass(frozen=True, slots=True)
-class Waveforms(_Devices[Real], _Watched):
+class TransientResult(_Devices[Real], _Watched):
     """The waveforms of a transient analysis, one row per accepted time point."""
 
     unknowns: tuple[Unknown, ...]
@@ -845,7 +845,7 @@ class Parameter:
 
 
 @dataclass(frozen=True, slots=True)
-class Sensitivities(_Watched):
+class SensitivityResult(_Watched):
     """Sensitivities: each output's derivative with respect to each parameter.
 
     `derivatives` has one row per output and one column per parameter, in SI base
@@ -854,8 +854,10 @@ class Sensitivities(_Watched):
     values have one row per point; a response's are the derivatives of its phasors.
 
     Examples:
-        >>> point = OperatingPoint((Unknown("out", "voltage"),), np.array([2.0]), "")
-        >>> sensitivities = Sensitivities(
+        >>> point = OperatingPointResult(
+        ...     (Unknown("out", "voltage"),), np.array([2.0]), ""
+        ... )
+        >>> sensitivities = SensitivityResult(
         ...     point.unknowns,
         ...     ("out",),
         ...     (Parameter("R1", "resistance", 1e3), Parameter("V1", "waveform.dc", 5)),
@@ -874,7 +876,7 @@ class Sensitivities(_Watched):
     parameters: tuple[Parameter, ...]
     """Every parameter, in the order of `derivatives`' columns."""
     derivatives: Real | Complex
-    result: OperatingPoint | Sweep | Response | Waveforms
+    result: OperatingPointResult | DcSweepResult | AcResult | TransientResult
     """The result of the analysis differentiated."""
 
     def derivative(
@@ -905,7 +907,7 @@ class Sensitivities(_Watched):
 
 
 @dataclass(frozen=True, slots=True)
-class LoopGain(_Watched):
+class StabilityResult(_Watched):
     """The loop gain through a probe, at each frequency.
 
     Negative feedback makes it positive at low frequencies; the specs' `phase_margin`,
@@ -918,11 +920,11 @@ class LoopGain(_Watched):
     frequencies: Real
     gains: Complex
     """The loop gain at each frequency."""
-    operating_point: OperatingPoint
+    operating_point: OperatingPointResult
 
 
 @dataclass(frozen=True, slots=True)
-class Transfer(_Watched):
+class TransferFunctionResult(_Watched):
     """The small-signal transfer function at DC from a source to an output.
 
     The `gain` is the output per unit of the source's level, in volts or amperes of
@@ -934,7 +936,7 @@ class Transfer(_Watched):
     unknowns: tuple[Unknown, ...]
     source: str
     """The path of the input source, such as ``V1``."""
-    input: Quantity
+    input: Nature
     """What the source's level is: ``voltage`` or ``current``."""
     output: str
     """The output: a net, such as ``out``, or a voltage source's current."""
@@ -943,7 +945,7 @@ class Transfer(_Watched):
     gain: float
     input_resistance: float
     output_resistance: float
-    operating_point: OperatingPoint
+    operating_point: OperatingPointResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -962,14 +964,14 @@ class NoiseInput:
 
     source: str
     """The source's path, such as ``V1``."""
-    quantity: Quantity
+    nature: Nature
     """What the source's level is."""
     gains: Complex
     """The gain from the source's level to the output at each frequency."""
 
 
 @dataclass(frozen=True, slots=True)
-class NoiseSpectrum(_Watched):
+class NoiseResult(_Watched):
     """The noise at an output, at each frequency.
 
     `densities` are the output's one-sided noise power densities, in V²/Hz for a
@@ -979,8 +981,10 @@ class NoiseSpectrum(_Watched):
     band, as a power law between frequencies, as SPICE does.
 
     Examples:
-        >>> point = OperatingPoint((Unknown("out", "voltage"),), np.array([2.0]), "")
-        >>> spectrum = NoiseSpectrum(
+        >>> point = OperatingPointResult(
+        ...     (Unknown("out", "voltage"),), np.array([2.0]), ""
+        ... )
+        >>> spectrum = NoiseResult(
         ...     point.unknowns,
         ...     "out",
         ...     None,
@@ -1003,14 +1007,14 @@ class NoiseSpectrum(_Watched):
     """The output's unknown, by name."""
     reference: str | None
     """The node the output voltage is taken over; the ground if None."""
-    quantity: Quantity
+    nature: Nature
     """What the output is."""
     frequencies: Real
     densities: Real
     sources: tuple[NoiseSource, ...]
     contributions: Real
     input: NoiseInput | None
-    operating_point: OperatingPoint
+    operating_point: OperatingPointResult
 
     def referred(self) -> Real:
         """The noise referred to the input at each frequency, in V²/Hz or A²/Hz.
@@ -1141,7 +1145,7 @@ def integrate(
 
 
 @dataclass(frozen=True, slots=True)
-class PolesZeros(_Watched):
+class PoleZeroResult(_Watched):
     """The poles of the linearized circuit, and the zeros of a transfer function.
 
     The circuit is linearized at its operating point, and the transfer function is from
@@ -1152,8 +1156,10 @@ class PolesZeros(_Watched):
     ratio, as a second-order section's are written.
 
     Examples:
-        >>> point = OperatingPoint((Unknown("out", "voltage"),), np.array([0.0]), "")
-        >>> found = PolesZeros(
+        >>> point = OperatingPointResult(
+        ...     (Unknown("out", "voltage"),), np.array([0.0]), ""
+        ... )
+        >>> found = PoleZeroResult(
         ...     point.unknowns,
         ...     np.array([-3 + 4j, -3 - 4j]),
         ...     np.array([0j]),
@@ -1178,7 +1184,7 @@ class PolesZeros(_Watched):
     """The output the transfer function is to."""
     reference: str | None
     """The node the output voltage is taken over; the ground if None."""
-    operating_point: OperatingPoint
+    operating_point: OperatingPointResult
 
 
 def natural_frequencies(roots: Complex) -> Real:
@@ -1195,17 +1201,17 @@ def dampings(roots: Complex) -> Real:
     return _core.dampings(np.asarray(roots, dtype=np.complex128))
 
 
-type Result = (
-    OperatingPoint
-    | OperatingPoints
-    | Sweep
-    | Response
-    | Waveforms
-    | Sensitivities
-    | LoopGain
-    | NoiseSpectrum
-    | PolesZeros
-    | Transfer
+type AnalysisResult = (
+    OperatingPointResult
+    | OperatingPointsResult
+    | DcSweepResult
+    | AcResult
+    | TransientResult
+    | SensitivityResult
+    | StabilityResult
+    | NoiseResult
+    | PoleZeroResult
+    | TransferFunctionResult
 )
 """The result of any analysis."""
 
@@ -1232,7 +1238,7 @@ class Traced:
     values: Real | Complex
     source: str | None = None
     """The swept or excited source, or the swept instance, of a sweep or a response."""
-    quantity: Quantity | None = None
+    nature: Nature | None = None
     """Whether a sweep's levels are voltages or currents; None for a parameter's."""
     parameter: str | None = None
     """The parameter a sweep steps, if any."""
@@ -1253,7 +1259,7 @@ class Run:
 
     index: int
     """The run's index among the variants' runs."""
-    results: dict[str, Result]
+    results: dict[str, AnalysisResult]
     """The result of each analysis that ended, by name."""
     errors: dict[str, str]
     """Why each analysis that did not end failed, by name."""
@@ -1268,7 +1274,7 @@ class BatchResult:
     Each run took the `values` of the `parameters` its variants vary, each named as
     ``X1/R1 resistance``, or ``temperature``, in kelvins, and ran the `analyses` in
     order; `ended` says whether each analysis of each run ended. `measured` holds what
-    each of the `measurements` read on each run, in its unit among `units`, and not a
+    each of the `measures` read on each run, in its unit among `units`, and not a
     number where it read none, `causes` then indexing `reasons`, the words that say why,
     each once, in the order the cells first name them, row by row, and -1 where it read
     a number. `traced` holds the unknowns a batch traced along its analyses. Every row
@@ -1281,10 +1287,10 @@ class BatchResult:
     parameters: tuple[str, ...]
     values: Real
     ended: npt.NDArray[np.bool_]
-    measurements: tuple[str, ...]
-    """Each measurement, as its requirement names it, such as ``out in op``."""
+    measures: tuple[str, ...]
+    """Each measure, as its requirement names it, such as ``out in op``."""
     units: tuple[Dimension | Plain | None, ...]
-    """The unit of each measurement's values, ``dB``, ``°``, ``%`` or ``""`` for a
+    """The unit of each measure's values, ``dB``, ``°``, ``%`` or ``""`` for a
     plain number, or None where it read none."""
     measured: Real
     causes: npt.NDArray[np.int32]
@@ -1325,9 +1331,9 @@ class BatchResult:
             )
         return None
 
-    def reason(self, run: int, measurement: int) -> str | None:
-        """Why the measurement at `measurement` read nothing on `run`, if it did not."""
-        cause = int(self.causes[run, measurement])
+    def reason(self, run: int, measure: int) -> str | None:
+        """Why the measure at `measure` read nothing on `run`, if it did not."""
+        cause = int(self.causes[run, measure])
         return None if cause < 0 else self.reasons[cause]
 
     def parameter(self, name: str) -> Real:
@@ -1343,33 +1349,33 @@ class BatchResult:
     def joined(parts: Sequence[BatchResult]) -> BatchResult:
         """The runs of `parts`, one after another, as one result: the inverse of `rows`.
 
-        Each part's runs follow the part's before it, each measurement in the unit its
+        Each part's runs follow the part's before it, each measure in the unit its
         parts read it in, and its reasons are those of every part.
 
         Raises:
             ValueError: When there is no part; or the parts ran other analyses, varied
-                other numbers, read other measurements or traced other unknowns or
+                other numbers, read other measures or traced other unknowns or
                 points, naming the first part that differs from the first, by its place;
-                or read a measurement in other units, naming them.
+                or read a measure in other units, naming them.
         """
         if not parts:
             message = "a batch joins one part or more"
             raise ValueError(message)
         first, *rest = parts
         for place, part in enumerate(rest, start=1):
-            if (part.analyses, part.parameters, part.measurements) != (
+            if (part.analyses, part.parameters, part.measures) != (
                 first.analyses,
                 first.parameters,
-                first.measurements,
+                first.measures,
             ) or not _alike(first.traced, part.traced):
                 message = (
                     f"part {place} ran other analyses, varied other numbers, read "
-                    "other measurements or traced otherwise than part 0"
+                    "other measures or traced otherwise than part 0"
                 )
                 raise ValueError(message)
         units = tuple(
-            _unit_of(measurement, [part.units[column] for part in parts])
-            for column, measurement in enumerate(first.measurements)
+            _unit_of(measure, [part.units[column] for part in parts])
+            for column, measure in enumerate(first.measures)
         )
         texts: dict[str, int] = {}
         causes = []
@@ -1398,7 +1404,7 @@ class BatchResult:
                 each.unknowns,
                 np.concatenate([part.traced[index].values for part in parts]),
                 each.source,
-                each.quantity,
+                each.nature,
                 each.parameter,
             )
             for index, each in enumerate(first.traced)
@@ -1408,7 +1414,7 @@ class BatchResult:
             first.parameters,
             np.concatenate([part.values for part in parts]),
             np.concatenate([part.ended for part in parts]),
-            first.measurements,
+            first.measures,
             units,
             np.concatenate([part.measured for part in parts]),
             np.concatenate(causes),
@@ -1433,7 +1439,7 @@ class BatchResult:
             self.parameters,
             self.values[start:stop],
             self.ended[start:stop],
-            self.measurements,
+            self.measures,
             self.units,
             self.measured[start:stop],
             self.causes[start:stop],
@@ -1448,7 +1454,7 @@ class BatchResult:
                     traced.unknowns,
                     traced.values[start:stop],
                     traced.source,
-                    traced.quantity,
+                    traced.nature,
                     traced.parameter,
                 )
                 for traced in self.traced
@@ -1485,13 +1491,13 @@ def _canonical(
 def _alike(traced: tuple[Traced, ...], other: tuple[Traced, ...]) -> bool:
     """Whether `other` traces the unknowns `traced` does, along the same points."""
     return len(traced) == len(other) and all(
-        (one.analysis, one.along, one.unknowns, one.source, one.quantity, one.parameter)
+        (one.analysis, one.along, one.unknowns, one.source, one.nature, one.parameter)
         == (
             two.analysis,
             two.along,
             two.unknowns,
             two.source,
-            two.quantity,
+            two.nature,
             two.parameter,
         )
         and np.array_equal(one.axis, two.axis)
@@ -1500,9 +1506,9 @@ def _alike(traced: tuple[Traced, ...], other: tuple[Traced, ...]) -> bool:
 
 
 def _unit_of(
-    measurement: str, units: Sequence[Dimension | Plain | None]
+    measure: str, units: Sequence[Dimension | Plain | None]
 ) -> Dimension | Plain | None:
-    """The one unit among `units` of the parts that read `measurement`, if any read it.
+    """The one unit among `units` of the parts that read `measure`, if any read it.
 
     Raises:
         ValueError: When parts read it in different units.
@@ -1510,6 +1516,6 @@ def _unit_of(
     read = list(dict.fromkeys(unit for unit in units if unit is not None))
     if len(read) > 1:
         listed = ", ".join(repr(str(unit)) for unit in read)
-        message = f"the parts read {measurement} in different units: {listed}"
+        message = f"the parts read {measure} in different units: {listed}"
         raise ValueError(message)
     return read[0] if read else None

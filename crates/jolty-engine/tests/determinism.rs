@@ -62,8 +62,8 @@ fn complexes(values: &[Complex64], into: &mut Vec<u64>) {
 
 /// Every number of an analysis's result, as its bits, and the result as text, which holds
 /// its counts of work and its messages.
-fn bits(outcome: &Result<jolty_engine::Outcome, SimulationError>) -> Bits {
-    use jolty_engine::Outcome as Found;
+fn bits(outcome: &Result<jolty_engine::AnalysisResult, SimulationError>) -> Bits {
+    use jolty_engine::AnalysisResult as Found;
     let mut numbers = Vec::new();
     match outcome {
         Ok(Found::OperatingPoint(point)) => reals(&point.values, &mut numbers),
@@ -342,7 +342,7 @@ impl Network {
             ));
         }
         let document = json!({
-            "format": "jolty-circuit", "version": 1, "top": "network",
+            "format": "jolty-circuit", "version": 2, "top": "network",
             "components": {"network": {
                 "ports": [{"name": "0", "role": "ground"}], "instances": instances,
             }}
@@ -503,7 +503,7 @@ proptest! {
 #[test]
 fn frequencies_whose_pivots_change_find_the_same_in_any_spread() {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "ladder",
+        "format": "jolty-circuit", "version": 2, "top": "ladder",
         "components": {"ladder": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 0.0}},
              "terminals": {"positive": "in", "negative": "0"}},
@@ -691,7 +691,7 @@ fn a_part_added_leaves_every_other_draw_alone() {
 /// A divider whose upper resistance each run of `upper` replaces.
 fn divider() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "divider",
+        "format": "jolty-circuit", "version": 2, "top": "divider",
         "components": {"divider": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
              "terminals": {"positive": "top", "negative": "0"}},
@@ -845,7 +845,7 @@ fn runs_that_alternate_between_structures_share_each_structure() {
 /// comes before the source's among the unknowns.
 fn shunted() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "shunted",
+        "format": "jolty-circuit", "version": 2, "top": "shunted",
         "components": {"shunted": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 2.0},
              "terminals": {"a": "out", "b": "0"}},
@@ -919,7 +919,7 @@ fn a_run_of_another_structure_measures_the_unknowns_of_its_names() {
     for (index, outcome) in kept.0.into_inner().expect("no test thread panicked") {
         let mut alone = Simulator::from_elaborated(Arc::clone(&elaborated), variants.values(index))
             .expect("a run");
-        let Ok(jolty_engine::Outcome::OperatingPoint(point)) =
+        let Ok(jolty_engine::AnalysisResult::OperatingPoint(point)) =
             alone.run(&Analysis::OperatingPoint, &Options::default())
         else {
             panic!("an operating point");
@@ -1003,7 +1003,8 @@ fn a_chain_of_levels_is_the_dc_sweep_of_them() {
             .expect("a sweep");
     let mut simulator =
         Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
-    let Ok(jolty_engine::Outcome::DcSweep(swept)) = simulator.run(&sweep, &Options::default())
+    let Ok(jolty_engine::AnalysisResult::DcSweep(swept)) =
+        simulator.run(&sweep, &Options::default())
     else {
         panic!("a sweep");
     };
@@ -1034,7 +1035,7 @@ fn a_product_runs_every_sample_at_every_corner() {
 /// A diode forward from a 1 V source through 1 kΩ, its saturation current 10 fA.
 fn forward_diode() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "forward",
+        "format": "jolty-circuit", "version": 2, "top": "forward",
         "components": {"forward": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
              "terminals": {"positive": "top", "negative": "0"}},
@@ -1055,7 +1056,7 @@ const SATURATION_CURRENTS: [f64; 4] = [1e-15, 1e-14, 1e-13, 1e-12];
 /// simulator made afresh for them.
 fn fresh_anode(elaborated: &Arc<Elaborated>, values: Values) -> f64 {
     let mut simulator = Simulator::from_elaborated(Arc::clone(elaborated), values).expect("a run");
-    let Ok(jolty_engine::Outcome::OperatingPoint(point)) =
+    let Ok(jolty_engine::AnalysisResult::OperatingPoint(point)) =
         simulator.run(&Analysis::OperatingPoint, &Options::default())
     else {
         panic!("an operating point");
@@ -1081,7 +1082,8 @@ fn a_sweep_of_a_kernels_number_evaluates_each_value() {
     .expect("a sweep");
     let mut simulator =
         Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
-    let Ok(jolty_engine::Outcome::DcSweep(swept)) = simulator.run(&sweep, &Options::default())
+    let Ok(jolty_engine::AnalysisResult::DcSweep(swept)) =
+        simulator.run(&sweep, &Options::default())
     else {
         panic!("a sweep");
     };
@@ -1246,7 +1248,7 @@ fn latch() -> Circuit {
                "terminals": {"drain": drain, "gate": gate, "source": source, "bulk": source}})
     };
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "latch",
+        "format": "jolty-circuit", "version": 2, "top": "latch",
         "components": {"latch": {"ports": [{"name": "0", "role": "ground"}], "instances": [
             {"id": "VDD", "of": {"device": "voltage_source"},
              "parameters": {"waveform": {"dc": 3.3}},
@@ -1366,7 +1368,7 @@ fn a_dissected_factorization_finds_the_operating_point_within_tolerance() {
             .zip(&serial.values)
             .zip(&dissected.values)
         {
-            let absolute = if unknown.quantity.is_current() {
+            let absolute = if unknown.nature.is_current() {
                 options.current_tolerance
             } else {
                 options.voltage_tolerance

@@ -137,7 +137,7 @@ def drawn(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
         drawn: ir.Circuit,
         path: str = "",
         *,
-        point: results.OperatingPoint | None = None,
+        point: results.OperatingPointResult | None = None,
         marked: Collection[str] = (),
     ) -> Figure:
         calls.append({"path": path, "point": point, "marked": marked})
@@ -178,7 +178,7 @@ def test_a_simulation_writes_its_operating_point_on_the_schematic(
     assert f"drew {tmp_path / 'shorted.schematic.png'}" in capsys.readouterr().out
     (options,) = drawn
     point = options["point"]
-    assert isinstance(point, results.OperatingPoint)
+    assert isinstance(point, results.OperatingPointResult)
     assert point.voltage("in") == pytest.approx(1.0)
 
 

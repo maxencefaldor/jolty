@@ -2,13 +2,13 @@
 
 use std::f64::consts::TAU;
 
-use jolty_models::{Contributions, Quantity, Unknown};
+use jolty_models::{Contributions, Nature, Unknown};
 use jolty_numerics::Complex64;
 use rayon::prelude::*;
 use serde::Deserialize;
 
 use crate::solver::{Factors, Solver};
-use crate::{OperatingPoint, Options, Parallelism, SimulationError, Simulator};
+use crate::{OperatingPointResult, Options, Parallelism, SimulationError, Simulator};
 
 /// A small-signal analysis: the response to a unit excitation of one independent source.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -22,11 +22,11 @@ pub struct Ac {
 
 /// The small-signal response of every unknown to a unit excitation, at each frequency.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Response {
+pub struct AcResult {
     /// The path of the excited source.
     pub source: String,
     /// The operating point the circuit was linearized at.
-    pub operating_point: OperatingPoint,
+    pub operating_point: OperatingPointResult,
     /// The frequencies, in hertz.
     pub frequencies: Vec<f64>,
     /// The phasor of every unknown at each frequency, per volt or ampere of excitation.
@@ -47,7 +47,7 @@ impl Simulator {
     /// excited instance is not an independent source, [`SimulationError::InvalidAnalysis`]
     /// for no frequency or a negative one, [`SimulationError::Singular`] when the linearized
     /// circuit is singular at a frequency, and the errors of [`Simulator::operating_point`].
-    pub fn ac(&mut self, ac: &Ac, options: &Options) -> Result<Response, SimulationError> {
+    pub fn ac(&mut self, ac: &Ac, options: &Options) -> Result<AcResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             let index = self.source_index(&ac.source)?;
@@ -76,7 +76,7 @@ impl Simulator {
                 },
             )?;
             let (values, currents) = found.into_iter().unzip();
-            Ok(Response {
+            Ok(AcResult {
                 source: ac.source.clone(),
                 operating_point,
                 frequencies: ac.frequencies.clone(),
@@ -92,7 +92,7 @@ impl Simulator {
         &mut self,
         frequencies: &[f64],
         options: &Options,
-    ) -> Result<OperatingPoint, SimulationError> {
+    ) -> Result<OperatingPointResult, SimulationError> {
         options.check()?;
         if frequencies.is_empty() {
             return Err(SimulationError::InvalidAnalysis(
@@ -112,7 +112,7 @@ impl Simulator {
     pub(crate) fn linearized(
         &mut self,
         options: &Options,
-    ) -> Result<OperatingPoint, SimulationError> {
+    ) -> Result<OperatingPointResult, SimulationError> {
         let operating_point = self.operating_point(options)?;
         self.evaluate(&operating_point.values, None, (1.0, options.gmin), true);
         Ok(operating_point)
@@ -125,7 +125,7 @@ impl Simulator {
         &self,
         output: &str,
         reference: Option<&str>,
-    ) -> Result<(Option<Unknown>, Option<Unknown>, Quantity), SimulationError> {
+    ) -> Result<(Option<Unknown>, Option<Unknown>, Nature), SimulationError> {
         let found = self.node(output)?;
         let base = reference.map(|name| self.node(name)).transpose()?.flatten();
         if found == base {
@@ -133,21 +133,21 @@ impl Simulator {
                 "the output `{output}` is taken over itself"
             )));
         }
-        let quantity = |node: Option<Unknown>| {
-            node.map_or(Quantity::Voltage, |unknown| {
-                self.elaborated.unknowns[unknown.index()].quantity
+        let nature = |node: Option<Unknown>| {
+            node.map_or(Nature::Voltage, |unknown| {
+                self.elaborated.unknowns[unknown.index()].nature
             })
         };
-        let quantity = match (quantity(found), quantity(base), reference) {
-            (quantity, _, None) => quantity,
-            (Quantity::Voltage, Quantity::Voltage, Some(_)) => Quantity::Voltage,
+        let nature = match (nature(found), nature(base), reference) {
+            (nature, _, None) => nature,
+            (Nature::Voltage, Nature::Voltage, Some(_)) => Nature::Voltage,
             (_, _, Some(name)) => {
                 return Err(SimulationError::InvalidAnalysis(format!(
                     "an output over a node is a voltage, but `{output}` over `{name}` is not"
                 )));
             }
         };
-        Ok((found, base, quantity))
+        Ok((found, base, nature))
     }
 
     /// The node or unknown named `name`: none for the reference node.

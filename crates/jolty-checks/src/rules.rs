@@ -594,7 +594,7 @@ mod tests {
             })
             .collect();
         let document = json!({
-            "format": "jolty-circuit", "version": 1, "top": "test",
+            "format": "jolty-circuit", "version": 2, "top": "test",
             "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                     "instances": instances}}
         });

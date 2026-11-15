@@ -404,7 +404,9 @@ class _Translation:
                     terminals={
                         terminal: terminals[terminal] for terminal in made.terminals
                     },
-                    source=ir.Source(file=statement.file, line=statement.line),
+                    source_location=ir.SourceLocation(
+                        file=statement.file, line=statement.line
+                    ),
                 ),
             )
         )
@@ -604,7 +606,7 @@ def _coupled(
             for number, winding in enumerate(windings, start=1)
             for end in ("a", "b")
         },
-        source=ir.Source(file=first.file, line=first.line),
+        source_location=ir.SourceLocation(file=first.file, line=first.line),
     )
     return first.line, instance
 
@@ -1536,7 +1538,9 @@ def _instance(translation: _Translation, statement: Statement) -> None:
                 id=name,
                 of=ir.ComponentOf(component=child.name),
                 terminals=terminals,
-                source=ir.Source(file=statement.file, line=statement.line),
+                source_location=ir.SourceLocation(
+                    file=statement.file, line=statement.line
+                ),
             ),
         )
     )

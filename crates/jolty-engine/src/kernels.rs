@@ -495,7 +495,7 @@ fn star(arms: usize) -> Circuit {
         );
     }
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "star",
+        "format": "jolty-circuit", "version": 2, "top": "star",
         "components": {"star": {
             "ports": [{"name": "ground", "role": "ground"}],
             "instances": instances

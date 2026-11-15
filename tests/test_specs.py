@@ -12,7 +12,7 @@ from hypothesis import strategies as st
 from jolty import results
 from jolty.runner import Built, Failure, Job, run
 from jolty.specs import (
-    MeasurementError,
+    MeasureError,
     Requirement,
     Specs,
     Verdict,
@@ -77,41 +77,43 @@ TAU = 1e-6
 """The time constant of the first-order step response, in seconds."""
 
 
-def point(out: float) -> results.OperatingPoint:
-    return results.OperatingPoint(UNKNOWNS, np.array([out, 0.5, -out / 1e3]), "newton")
+def point(out: float) -> results.OperatingPointResult:
+    return results.OperatingPointResult(
+        UNKNOWNS, np.array([out, 0.5, -out / 1e3]), "newton"
+    )
 
 
-def waveforms(times: results.Real, out: results.Real) -> results.Waveforms:
+def waveforms(times: results.Real, out: results.Real) -> results.TransientResult:
     values = np.column_stack([out, np.full_like(out, 0.5), -out / 1e3])
     statistics = results.Statistics("operating point", times.size, 0, 0, 0)
-    return results.Waveforms(UNKNOWNS, times, values, statistics)
+    return results.TransientResult(UNKNOWNS, times, values, statistics)
 
 
-def response(frequencies: results.Real, out: results.Complex) -> results.Response:
+def response(frequencies: results.Real, out: results.Complex) -> results.AcResult:
     values = np.column_stack([out, np.full_like(out, 2), out / 1e3])
-    return results.Response(UNKNOWNS, "V1", frequencies, values, point(0.0))
+    return results.AcResult(UNKNOWNS, "V1", frequencies, values, point(0.0))
 
 
-def first_order() -> results.Waveforms:
+def first_order() -> results.TransientResult:
     """A unit step through a time constant of 1 µs, held for 20 time constants."""
     times = np.linspace(0, 20 * TAU, 200_001)
     return waveforms(times, 1 - np.exp(-times / TAU))
 
 
-def low_pass() -> results.Response:
+def low_pass() -> results.AcResult:
     """A first-order low pass with its corner at 1 kHz, densely sampled."""
     frequencies = np.logspace(0, 6, 6001)
     transfer = np.asarray(1 / (1 + 1j * frequencies / 1e3), dtype=np.complex128)
     return response(frequencies, transfer)
 
 
-def verdict_of(requirement: Requirement, result: results.Result) -> Verdict:
-    analysis = requirement.measurement.analysis
+def verdict_of(requirement: Requirement, result: results.AnalysisResult) -> Verdict:
+    analysis = requirement.measure.analysis
     (verdict,) = evaluate(Specs([requirement]), [analysis], {analysis: result})
     return verdict
 
 
-def unread(requirement: Requirement, result: results.Result) -> str:
+def unread(requirement: Requirement, result: results.AnalysisResult) -> str:
     verdict = verdict_of(requirement, result)
     assert verdict.status == "unmeasured"
     assert verdict.reason is not None
@@ -131,7 +133,7 @@ def test_a_value_reads_an_operating_point_or_interpolates_an_axis() -> None:
 def test_a_value_reads_a_sweep_whose_levels_fall() -> None:
     levels = np.linspace(5, 0, 11)
     values = np.column_stack([levels / 2, levels, levels])
-    sweep = results.Sweep(UNKNOWNS, "V1", "voltage", levels, values)
+    sweep = results.DcSweepResult(UNKNOWNS, "V1", "voltage", levels, values)
     assert value("dc", "out", at=1.25 * V).read(sweep).value == pytest.approx(0.625)
     assert maximum("dc", "out", stop=4 * V).read(sweep).value == pytest.approx(2)
 
@@ -166,7 +168,7 @@ def test_a_fall_time_reads_like_a_rise_time() -> None:
     falling = waveforms(step.times, 1 - step.values[:, 0])
     assert rise_time("t", "out").read(falling).value == pytest.approx(TAU * math.log(9))
     assert not crossing("t", "out", 0.5 * V, edge="rising").read(step).value < 0
-    with pytest.raises(MeasurementError, match="does not cross 500 mV"):
+    with pytest.raises(MeasureError, match="does not cross 500 mV"):
         crossing("t", "out", 0.5 * V, edge="rising").read(falling)
 
 
@@ -235,8 +237,10 @@ def test_the_phase_margin_of_an_integrator_with_a_pole_at_unity() -> None:
     assert (measured.value, measured.unit) == (pytest.approx(expected, abs=1e-6), "°")
 
 
-def loop_gain(frequencies: results.Real, gains: results.Complex) -> results.LoopGain:
-    return results.LoopGain(UNKNOWNS, "VP", frequencies, gains, point(0.0))
+def loop_gain(
+    frequencies: results.Real, gains: results.Complex
+) -> results.StabilityResult:
+    return results.StabilityResult(UNKNOWNS, "VP", frequencies, gains, point(0.0))
 
 
 def test_a_loop_gains_margins_are_read_without_an_output() -> None:
@@ -252,10 +256,10 @@ def test_a_loop_gains_margins_are_read_without_an_output() -> None:
         gain("loop", at=1e-3 * Hz): (20.0, "dB"),
         phase("loop", at=1 * Hz): (-135.0, "°"),
     }
-    for measurement, (value_read, unit) in expected.items():
-        measured = measurement.read(loop)
-        assert measured.unit == unit, measurement
-        assert measured.value == pytest.approx(value_read, rel=1e-6), measurement
+    for measure, (value_read, unit) in expected.items():
+        measured = measure.read(loop)
+        assert measured.unit == unit, measure
+        assert measured.value == pytest.approx(value_read, rel=1e-6), measure
     assert str(phase_margin("loop") >= 45) == "phase margin of the loop in loop ≥ 45 °"
     assert str(gain_margin("loop") >= 6) == "gain margin of the loop in loop ≥ 6 dB"
 
@@ -356,9 +360,9 @@ def test_requirements_state_their_bounds_in_the_unit_read() -> None:
 
 def test_requirements_record_the_line_that_states_them() -> None:
     requirement = value("op", "out") >= 1 * V
-    assert requirement.source is not None
-    assert requirement.source.file.endswith("test_specs.py")
-    assert requirement.source.function == (
+    assert requirement.source_location is not None
+    assert requirement.source_location.file.endswith("test_specs.py")
+    assert requirement.source_location.function == (
         "test_requirements_record_the_line_that_states_them"
     )
 
@@ -404,7 +408,7 @@ def test_a_requirement_is_unmeasured_when_it_cannot_be_read() -> None:
         "a rise time reads a transient, not an operating point"
     )
     parameter = results.Parameter("R1", "resistance", 1e3)
-    sensitivities = results.Sensitivities(
+    sensitivities = results.SensitivityResult(
         UNKNOWNS, ("out",), (parameter,), np.ones((1, 1)), point(1.0)
     )
     assert unread(value("sens", "out") >= 0 * V, sensitivities) == (
@@ -485,7 +489,7 @@ def run_specs(
     monkeypatch.chdir(tmp_path)
     script = tmp_path / "divider.py"
     script.write_text(SCRIPT.replace("SPECS", specs), encoding="utf-8")
-    return run(Job(script=script, plan=script, listed=10), tmp_path)
+    return run(Job(script=script, plan=script, max_unknowns=10), tmp_path)
 
 
 def test_the_runner_evaluates_the_plans_specs(
@@ -497,8 +501,11 @@ def test_the_runner_evaluates_the_plans_specs(
     assert isinstance(outcome, Built)
     (verdict,) = outcome.specs
     assert (verdict.status, verdict.value) == ("passed", pytest.approx(2.5))
-    assert verdict.source is not None
-    assert (verdict.source.file, verdict.source.function) == ("divider.py", "specs")
+    assert verdict.source_location is not None
+    assert (verdict.source_location.file, verdict.source_location.function) == (
+        "divider.py",
+        "specs",
+    )
 
 
 def test_specs_must_be_specs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -554,7 +561,7 @@ def test_requirements_hold_at_their_worst_corner(
     monkeypatch.chdir(tmp_path)
     script = tmp_path / "filter.py"
     script.write_text(CORNERED, encoding="utf-8")
-    outcome = run(Job(script=script, plan=script, listed=10), tmp_path)
+    outcome = run(Job(script=script, plan=script, max_unknowns=10), tmp_path)
     assert isinstance(outcome, Built), str(outcome)
     hot, slow, broken = outcome.corners
     assert (hot.name, hot.temperature) == ("hot", pytest.approx(398.15))
@@ -584,7 +591,7 @@ def test_a_verdict_is_the_worst_of_every_run() -> None:
     assert (unmeasured.status, unmeasured.corner) == ("unmeasured", "lost")
 
 
-def hiss(*, referred: bool = True) -> results.NoiseSpectrum:
+def hiss(*, referred: bool = True) -> results.NoiseResult:
     """White noise of 16e-18 V²/Hz from 10 Hz to 100 kHz, plus flicker noise.
 
     The flicker noise is 1e-15 V²/Hz at 1 Hz, falling as 1/f, and the input's gain 2.
@@ -593,7 +600,7 @@ def hiss(*, referred: bool = True) -> results.NoiseSpectrum:
     white = np.full(frequencies.size, 16e-18)
     flicker = 1e-15 / frequencies
     noise_input = results.NoiseInput("V1", "voltage", np.full(frequencies.size, 2 + 0j))
-    return results.NoiseSpectrum(
+    return results.NoiseResult(
         UNKNOWNS,
         "out",
         None,
@@ -714,7 +721,7 @@ def test_the_wilson_interval_is_the_yield_s_and_refuses_what_is_no_proportion() 
 
 def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
     poles = np.array([-3e3 + 4e3j, -3e3 - 4e3j, -1e6 + 0j])
-    found = results.PolesZeros(UNKNOWNS, poles, None, None, None, None, point(0.0))
+    found = results.PoleZeroResult(UNKNOWNS, poles, None, None, None, None, point(0.0))
     least = damping("pz").read(found)
     assert (least.value, least.unit) == (pytest.approx(0.6), "")
     slowest = dominant_pole("pz").read(found)
@@ -726,11 +733,11 @@ def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
         .describe()
         .startswith("failed: least damping ratio of the poles in pz ≥ 0.7: read 0.6")
     )
-    growing = results.PolesZeros(
+    growing = results.PoleZeroResult(
         UNKNOWNS, np.array([1e3 + 0j]), None, None, None, None, point(0.0)
     )
     assert damping("pz").read(growing).value == -1.0
-    empty = results.PolesZeros(
+    empty = results.PoleZeroResult(
         UNKNOWNS, np.empty(0, dtype=complex), None, None, None, None, point(0.0)
     )
     assert unread(damping("pz") >= 0, empty) == "the circuit has no poles"
@@ -740,7 +747,9 @@ def test_poles_read_their_least_damping_and_the_dominant_one() -> None:
 
 
 def test_solutions_count_a_searchs_dc_solutions() -> None:
-    found = results.OperatingPoints(UNKNOWNS, (point(0.0), point(3.3), point(1.65)))
+    found = results.OperatingPointsResult(
+        UNKNOWNS, (point(0.0), point(3.3), point(1.65))
+    )
     reading = solutions("states").read(found)
     assert (reading.value, reading.unit) == (3.0, "")
     assert str(solutions("states") <= 1) == "DC solutions in states ≤ 1"
@@ -798,7 +807,7 @@ def judged_runs(draw: st.DrawFn) -> tuple[Specs, list[bool], Readings]:
 
 
 def _batch(readings: Sequence[Sequence[float | None]]) -> results.BatchResult:
-    """A batch of a measurement per requirement that read `readings`, by requirement."""
+    """A batch of a measure per requirement that read `readings`, by requirement."""
     measured = np.array(
         [[math.nan if read is None else read for read in each] for each in readings]
     ).T

@@ -1,6 +1,6 @@
 # Specs
 
-Specs state what a circuit must do, as requirements on measurements of its plan's results.
+Specs state what a circuit must do, as requirements on measures of its plan's results.
 `jolty simulate` checks them after the analyses and states, for each, the value it read and how far it lies inside its bounds.
 
 ## Requirements
@@ -24,14 +24,14 @@ def specs() -> Specs:
     )
 ```
 
-A measurement names the analysis whose result it reads, such as `bode`, and the signal it reads, such as `out`.
+A measure names the analysis whose result it reads, such as `bode`, and the signal it reads, such as `out`.
 A signal is an unknown, such as the voltage `out` or `X1/mid` or the current `V1:current`, and `reference=` makes a voltage relative to another net's.
-Comparing a measurement makes a requirement: `>=` a minimum, `<=` a maximum, `.between(minimum, maximum)`, or `.within(target, tolerance)`.
+Comparing a measure makes a requirement: `>=` a minimum, `<=` a maximum, `.between(minimum, maximum)`, or `.within(target, tolerance)`.
 Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in degrees, an overshoot in percent and a damping ratio a plain number, so their bounds are numbers.
 
-## Measurements
+## Measures
 
-| Measurement | Reads | From |
+| Measure | Reads | From |
 | --- | --- | --- |
 | `value(analysis, signal, at=None)` | the signal's value, interpolated `at` a time or a level | an operating point, a transient or a DC sweep |
 | `solutions(analysis)` | how many DC solutions were found, a plain number | a search for operating points |
@@ -53,10 +53,10 @@ Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in deg
 | `damping(analysis)` | the least damping ratio of the poles, a plain number: negative for a pole in the right half-plane | a pole-zero analysis |
 | `dominant_pole(analysis)` | the natural frequency of the pole nearest the origin, in hertz | a pole-zero analysis |
 
-Every transient measurement takes a window, `start` and `stop`.
+Every transient measure takes a window, `start` and `stop`.
 A step runs from the signal's value at the window's start to its value at the window's end, so a window ends once the signal settles.
 Values between the points of a result are interpolated linearly, and a small-signal response's over log frequency.
-A small-signal measurement reads `output` in a response, and the loop gain itself in a stability analysis, without an output: `phase_margin("loop") >= 45` asks a loop for 45° of phase margin.
+A small-signal measure reads `output` in a response, and the loop gain itself in a stability analysis, without an output: `phase_margin("loop") >= 45` asks a loop for 45° of phase margin.
 A noise density is interpolated as a power law between frequencies, and its bound is in V/√Hz, such as `noise_density("hiss", at=1 * kHz) <= 10 * nV / rtHz`.
 
 ## Verdicts
@@ -66,7 +66,7 @@ Each requirement's verdict is one of four:
 - **passed:** the value lies within its bounds;
 - **marginal:** the value lies within its bounds, by less than the requirement's margin, set with `.with_margin(margin)`;
 - **failed:** the value lies outside its bounds;
-- **unmeasured:** its analysis failed or is not in the plan, or the measurement cannot be read, such as a crossing that never happens.
+- **unmeasured:** its analysis failed or is not in the plan, or the measure cannot be read, such as a crossing that never happens.
   An infinity is read, not unmeasured: the gain of a response of exactly nothing, such as a twin T's at its notch, is −∞ dB, which passes an upper bound and fails a lower one; JSON writes it as `"-Infinity"`.
 
 A requirement holds at the plan's own conditions and at each of its [corners](simulation.md#corners), and its verdict is the worst of them: failed, then unmeasured, then marginal, then passed, and the least slack among equals.

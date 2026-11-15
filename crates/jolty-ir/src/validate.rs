@@ -487,7 +487,7 @@ mod tests {
             tolerances: BTreeMap::new(),
             ratings: Vec::new(),
             part: None,
-            source: None,
+            source_location: None,
         }
     }
 
@@ -666,7 +666,7 @@ mod tests {
             .into(),
             ratings: Vec::new(),
             part: None,
-            source: None,
+            source_location: None,
         };
         let mut component = instance_of("X1", "cell", &[("a", "n"), ("b", "n")]);
         component.tolerances = [("resistance".to_owned(), tolerance(0.01))].into();
@@ -714,7 +714,7 @@ mod tests {
                 tolerances: [("resistance".to_owned(), tolerance)].into(),
                 ratings: Vec::new(),
                 part: None,
-                source: None,
+                source_location: None,
             }
         };
         let top = Component {

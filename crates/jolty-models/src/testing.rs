@@ -5,8 +5,8 @@ use jolty_numerics::{Pattern, PatternBuilder};
 mod cases;
 
 use crate::{
-    BOLTZMANN, Binding, Contributions, Gradient, Groups, Input, Kernel, Model, Native, Node,
-    NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, REGION, Regions, Runs, Unknown,
+    BOLTZMANN, Binding, Contributions, Gradient, Groups, Input, Kernel, Model, Native, Nature,
+    Node, NoiseSource, ParameterError, REFERENCE_TEMPERATURE, REGION, Regions, Runs, Unknown,
     UnknownInfo,
 };
 
@@ -50,7 +50,7 @@ fn grouped(
     let mut unknowns: Vec<UnknownInfo> = (0..terminals)
         .map(|index| UnknownInfo {
             name: format!("n{index}"),
-            quantity: Quantity::Voltage,
+            nature: Nature::Voltage,
         })
         .collect();
     let mut builder = PatternBuilder::new();

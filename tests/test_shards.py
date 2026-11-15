@@ -48,8 +48,8 @@ from jolty import (
     devices,
 )
 from jolty.plan import decade
-from jolty.results import Waveforms
-from jolty.specs import Measurement, MeasurementError, Reading, gain, value
+from jolty.results import TransientResult
+from jolty.specs import Measure, MeasureError, Reading, gain, value
 from jolty.units import VOLTAGE, Hz, MHz, V, celsius, kohm, nF, us
 
 SEED = 3
@@ -73,11 +73,11 @@ def build(supply=5 * V):
 
 def late(result):
     # Read in Python: unread above 2.5 V, why naming the voltage, so runs differ.
-    if not isinstance(result, Waveforms):
+    if not isinstance(result, TransientResult):
         raise TypeError(result)
     volts = float(result.voltage("out")[-1])
     if volts > 2.5:
-        raise MeasurementError(f"out ends at {volts:.4f} V")
+        raise MeasureError(f"out ends at {volts:.4f} V")
     return Reading(volts, VOLTAGE)
 
 
@@ -98,7 +98,7 @@ def specs():
         [
             value("op", "out").between(2.1 * V, 2.6 * V),
             gain("ac", "out", at=1e5 * Hz) >= -6.5,
-            Measurement("step", "out at its end", None, late) >= 2.2 * V,
+            Measure("step", "out at its end", None, late) >= 2.2 * V,
         ],
         yield_target=0.5,
     )
@@ -139,7 +139,7 @@ def _shard(
     job = runner.Job(
         script=script,
         plan=script,
-        listed=10,
+        max_unknowns=10,
         samples=(start, stop),
         parallelism=parallelism or runner.Thresholds(),
     )
@@ -173,7 +173,7 @@ def test_merging_1_3_and_7_shards_finds_one_run_s_bits(tmp_path: Path) -> None:
     alone = tmp_path / "alone"
     alone.mkdir()
     with simulate.threads(1):
-        job = runner.Job(script=script, plan=script, listed=10)
+        job = runner.Job(script=script, plan=script, max_unknowns=10)
         whole = _built(runner.run(job, alone)).monte_carlo
     assert whole is not None
     assert whole.passing is not None
@@ -198,7 +198,7 @@ def test_merging_1_3_and_7_shards_finds_one_run_s_bits(tmp_path: Path) -> None:
         assert saved.read_bytes() == (alone / runner.BATCHES).read_bytes()
         merged.append(shard)
     first, *others = merged
-    # Some runs read nothing of the measurement Python reads, each for its own reason.
+    # Some runs read nothing of the measure Python reads, each for its own reason.
     plan_s = first.conditions[0]
     assert plan_s is not None
     assert len(plan_s.reasons) > 3
@@ -232,7 +232,9 @@ def test_shards_of_one_circuit_built_in_two_places_merge(tmp_path: Path) -> None
     # Each instance's source names the script that placed it, in its own directory.
     built = [circuit(runpy.run_path(str(place))["build"]()) for place in places]
     resistors = [each.find("R1") for each in built]
-    assert [each.source.file for each in resistors if each and each.source] == [
+    assert [
+        each.source_location.file for each in resistors if each and each.source_location
+    ] == [
         "one/divider.py",
         "two/divider.py",
     ]
@@ -391,7 +393,7 @@ def test_a_shard_names_samples_of_the_plan_s_monte_carlo_analysis(
         SimulateRequest(script=script, samples="5-9")
     with pytest.raises(ValidationError, match="a directory of shards holds samples"):
         SimulateRequest(script=script, shards=tmp_path)
-    job = runner.Job(script=script, plan=script, listed=10, samples=(60, 71))
+    job = runner.Job(script=script, plan=script, max_unknowns=10, samples=(60, 71))
     failure = runner.run(job, tmp_path)
     assert isinstance(failure, runner.Failure)
     assert "draws 70 samples, not samples (60, 71)" in failure.message
@@ -402,7 +404,7 @@ def test_a_shard_names_samples_of_the_plan_s_monte_carlo_analysis(
         ),
         encoding="utf-8",
     )
-    job = runner.Job(script=plain, plan=plain, listed=10, samples=(0, 1))
+    job = runner.Job(script=plain, plan=plain, max_unknowns=10, samples=(0, 1))
     failure = runner.run(job, tmp_path)
     assert isinstance(failure, runner.Failure)
     assert failure.message == (

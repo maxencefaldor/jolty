@@ -5,10 +5,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 
-use jolty_ir::{Circuit, Component, Name, Of, Parameters, Problem, Role, Source, set_parameter};
+use jolty_ir::{
+    Circuit, Component, Name, Of, Parameters, Problem, Role, SourceLocation, set_parameter,
+};
 use jolty_models::{
-    Interface, Kernel, Library, Logic, LogicDriver, LogicDriverParameters, LogicModel, Model, Node,
-    Pins, Quantity, Specification, ThresholdDetector, ThresholdDetectorParameters, Unknown,
+    Interface, Kernel, Library, Logic, LogicDriver, LogicDriverParameters, LogicModel, Model,
+    Nature, Node, Pins, Specification, ThresholdDetector, ThresholdDetectorParameters, Unknown,
     UnknownInfo,
 };
 
@@ -77,13 +79,13 @@ pub struct Location {
     /// The instance's path through the hierarchy, such as `amplifier/R1`.
     pub path: String,
     /// The line of the build script that placed it.
-    pub source: Option<Source>,
+    pub source_location: Option<SourceLocation>,
 }
 
 impl fmt::Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "`{}`", self.path)?;
-        if let Some(source) = &self.source {
+        if let Some(source) = &self.source_location {
             write!(f, " ({}:{})", source.file, source.line)?;
         }
         Ok(())
@@ -570,10 +572,10 @@ fn classify(nets: &[NetRecord], ground: String) -> (Vec<UnknownInfo>, Classes<'_
             nodes[index] = Some(Unknown::new(unknowns.len()));
             unknowns.push(UnknownInfo {
                 name: net.name.clone(),
-                quantity: if net.electrical {
-                    Quantity::Voltage
+                nature: if net.electrical {
+                    Nature::Voltage
                 } else {
-                    Quantity::Temperature
+                    Nature::Temperature
                 },
             });
         } else {
@@ -722,7 +724,7 @@ impl Elements<'_> {
                 };
                 let at = Location {
                     path: format!("{}:{name}", pending.at.path),
-                    source: pending.at.source.clone(),
+                    source_location: pending.at.source_location.clone(),
                 };
                 let terminals = [classes.node(net), supply, ground];
                 let (element, own) =
@@ -967,7 +969,7 @@ impl<'a> Walk<'a> {
         for instance in &component.instances {
             let at = Location {
                 path: format!("{}{}", scope.prefix, instance.id),
-                source: instance.source.clone(),
+                source_location: instance.source_location.clone(),
             };
             match &instance.of {
                 Of::Device(model) => {
@@ -1263,7 +1265,7 @@ mod tests {
     use crate::elaborated::Placed;
 
     fn elaborate_json(components: &str) -> Result<Elaborated, ElaborationError> {
-        let header = r#""format": "jolty-circuit", "version": 1, "top": "top""#;
+        let header = r#""format": "jolty-circuit", "version": 2, "top": "top""#;
         let text = format!(r#"{{{header}, "components": {components}}}"#);
         let none = (&BTreeMap::new(), &BTreeMap::new());
         let circuit = Circuit::from_json(&text).unwrap();
@@ -1343,7 +1345,7 @@ mod tests {
 
     #[test]
     fn overrides_replace_parameters_by_path() {
-        let text = r#"{"format": "jolty-circuit", "version": 1, "top": "top", "components": {
+        let text = r#"{"format": "jolty-circuit", "version": 2, "top": "top", "components": {
             "top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
                 {"id": "X1", "of": {"component": "cell"}, "terminals": {"a": "gnd"}},
                 {"id": "X2", "of": {"component": "cell"}, "terminals": {"a": "gnd"}}
@@ -1391,7 +1393,7 @@ mod tests {
         let error = elaborate_json(
             r#"{"top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
                 {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": -1},
-                 "terminals": {"a": "x", "b": "gnd"}, "source": {"file": "amp.py", "line": 9}},
+                 "terminals": {"a": "x", "b": "gnd"}, "source_location": {"file": "amp.py", "line": 9}},
                 {"id": "Q1", "of": {"device": "transistor"}, "terminals": {}},
                 {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1},
                  "terminals": {"a": "x", "c": "gnd"}}

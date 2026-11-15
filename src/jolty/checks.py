@@ -95,18 +95,22 @@ class _Model(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
-class Instance(_Model):
+class Location(_Model):
     """An instance a diagnostic names, and the script line that placed it."""
 
     path: str = Field(description="The instance's path, such as 'X1/C1'.")
-    source: ir.Source | None = Field(
+    source_location: ir.SourceLocation | None = Field(
         default=None, description="The script line that placed it."
     )
 
     @override
     def __str__(self) -> str:
         """The path, then the script line, such as ``X1/C1, filter.py:12 in rc()``."""
-        return self.path if self.source is None else f"{self.path}, {self.source}"
+        return (
+            self.path
+            if self.source_location is None
+            else f"{self.path}, {self.source_location}"
+        )
 
 
 class Diagnostic(_Model):
@@ -115,7 +119,7 @@ class Diagnostic(_Model):
     rule: str = Field(description="The rule's name, such as 'no-dc-path'.")
     level: Level = Field(description="'error' or 'warn'.")
     message: str = Field(description="What is true, naming instances and nets.")
-    instances: tuple[Instance, ...] = Field(description="The instances involved.")
+    instances: tuple[Location, ...] = Field(description="The instances involved.")
     nets: tuple[str, ...] = Field(description="The nets involved, by path.")
 
     def describe(self) -> str:
@@ -150,7 +154,7 @@ class Report(_Model):
         )
 
 
-def problem(found: _core.ProblemOutcome) -> str:
+def problem(found: _core.Problem) -> str:
     """A problem the engine `found`, in a compiler's form.
 
     The form is what is wrong, then the instance and the script line that placed it, if
@@ -160,7 +164,7 @@ def problem(found: _core.ProblemOutcome) -> str:
         >>> source = {"file": "amp.py", "line": 9, "function": "amp"}
         >>> found = {
         ...     "message": "resistance must be positive, not -1.0",
-        ...     "instance": {"path": "R1", "source": source},
+        ...     "instance": {"path": "R1", "source_location": source},
         ... }
         >>> print(problem(found))
         error: resistance must be positive, not -1.0
@@ -172,7 +176,7 @@ def problem(found: _core.ProblemOutcome) -> str:
     return text
 
 
-def diagnostics(found: Iterable[_core.DiagnosticOutcome]) -> tuple[Diagnostic, ...]:
+def diagnostics(found: Iterable[_core.Diagnostic]) -> tuple[Diagnostic, ...]:
     """The diagnostics the engine `found`, each at its rule's default level."""
     known = rules()
     return tuple(
@@ -189,11 +193,13 @@ def diagnostics(found: Iterable[_core.DiagnosticOutcome]) -> tuple[Diagnostic, .
     )
 
 
-def _instance(found: _core.InstanceOutcome) -> Instance:
-    source = found["source"]
-    return Instance(
+def _instance(found: _core.Location) -> Location:
+    source = found["source_location"]
+    return Location(
         path=found["path"],
-        source=None if source is None else ir.Source.model_validate(source),
+        source_location=None
+        if source is None
+        else ir.SourceLocation.model_validate(source),
     )
 
 

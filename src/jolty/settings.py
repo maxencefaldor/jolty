@@ -59,13 +59,13 @@ class Settings(BaseSettings):
         description="Seconds a script may run, its analyses included, "
         "before jolty stops it.",
     )
-    output_limit: int = Field(
+    max_output: int = Field(
         default=20_000,
         ge=0,
         description="Characters kept from each of a script's standard output "
         "and standard error.",
     )
-    listed_unknowns: int = Field(
+    max_unknowns: int = Field(
         default=40,
         ge=1,
         description="Unknowns a report lists for each analysis; "

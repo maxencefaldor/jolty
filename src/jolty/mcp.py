@@ -40,7 +40,7 @@ Workflow: write a script whose build() returns the top component of a circuit, a
 build_circuit on it. It saves the circuit and says how many devices and unknowns it has,
 or every reason the engine cannot elaborate it, checks its structure, and draws its
 schematic: each diagnostic, such as error[no-dc-path], names the instances and the
-script lines that placed them, and the schematic marks them in red. explain_rule gives
+script lines that placed them, and the schematic marks them in red. explain_rules gives
 the exact condition behind a rule. Then add plan(), returning a jolty.Plan of named
 analyses, and call simulate_circuit: it reports each analysis, writes the first
 operating point's voltages on the schematic, plots each analysis but operating points
@@ -51,7 +51,7 @@ until the report has no errors and the analyses show the intended behavior.
 simulate_circuit with samples, such as "0:1000000", runs only those of the plan's
 Monte Carlo analysis, as a shard, on any machine, and merge_shards merges a directory
 of shards into the report of one run of every sample.
-price_circuit prices the device instances of a component of a saved circuit with a
+cost_circuit prices the device instances of a component of a saved circuit with a
 catalog file of parts: each resistor, capacitor and inductor takes the cheapest part of
 its value whose tolerance is within its own.
 
@@ -233,7 +233,7 @@ def create_server(settings: Settings) -> MCPServer:
         WRITES_FILES,
     )
     register(
-        "write_viewer",
+        "view_circuit",
         service.ViewRequest,
         service.view,
         service.ViewResult,
@@ -247,24 +247,24 @@ def create_server(settings: Settings) -> MCPServer:
         READS_FILES,
     )
     register(
-        "explain_rule",
+        "explain_rules",
         service.ExplainRequest,
         service.explain,
         service.ExplainResult,
         READS_FILES,
     )
     register(
-        "price_circuit",
+        "cost_circuit",
         service.CostRequest,
         service.cost,
         service.CostResult,
         READS_FILES,
     )
     register(
-        "write_kicad_netlist",
-        service.KicadRequest,
-        service.write_kicad,
-        service.KicadResult,
+        "export_kicad_netlist",
+        service.ExportKicadRequest,
+        service.export_kicad,
+        service.ExportKicadResult,
         WRITES_FILES,
     )
     return server

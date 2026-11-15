@@ -104,7 +104,7 @@ def _built(made: Component | ir.Circuit) -> Built:
     nets = tuple(
         unknown.name
         for unknown in unknowns
-        if unknown.quantity == "voltage"
+        if unknown.nature == "voltage"
         and ":" not in unknown.name
         and "." not in unknown.name.rsplit("/", 1)[-1]
     )

@@ -1,25 +1,25 @@
-//! Measurements of results: the numbers specs read from an analysis's result.
+//! Measures of results: the numbers specs read from an analysis's result.
 //!
-//! A [`Measure`] reads one number from the [`Results`] of one analysis: a signal's value, a
+//! A [`Measure`] reads one number from the [`AnalysisResult`] of one analysis: a signal's value, a
 //! statistic of it over a window, the time of an edge, a gain, a margin, a noise density, a
 //! damping ratio. It holds its signals already resolved, each the index of an unknown and of
 //! the unknown it is taken relative to, and its times, levels and frequencies in SI base
 //! units, so it reads a run's results with no names or units; the Python package resolves
 //! them, and says why a measure could not read a result from its [`MeasureError`].
 //!
-//! Every measure reads the same bits jolty's measurements read when numpy computed them, on a
+//! Every measure reads the same bits jolty's measures read when numpy computed them, on a
 //! platform whose numpy rounds a product and a sum once, as arm64's does: its arithmetic
 //! follows numpy's operation for operation, from interpolation to the order of its sums. Only
 //! a distortion reads amplitudes numpy took from a fast Fourier transform, which it takes from
 //! the discrete Fourier transform's sum at each harmonic instead.
 //!
 //! ```
-//! use jolty_engine::measure::{Measure, Results, Signal, Window};
+//! use jolty_engine::measure::{Measure, AnalysisResult, Signal, Window};
 //!
 //! // A ramp from 0 to 1 over a second, the first and only unknown.
 //! let times = [0.0, 0.5, 1.0];
 //! let values = vec![vec![0.0], vec![0.5], vec![1.0]];
-//! let results = Results::Transient { times: &times, values: &values };
+//! let results = AnalysisResult::Transient { times: &times, values: &values };
 //! let signal = Signal { unknown: 0, reference: None };
 //! let window = Window { start: Some(0.25), stop: None };
 //! assert_eq!(Measure::Average { signal, window }.measure(&results), Ok(0.625));
@@ -32,7 +32,8 @@ use std::borrow::Cow;
 use jolty_numerics::Complex64;
 
 use crate::{
-    LoopGain, NoiseSpectrum, OperatingPoint, Outcome, PolesZeros, Response, Sweep, Waveforms,
+    AcResult, DcSweepResult, NoiseResult, OperatingPointResult, PoleZeroResult, StabilityResult,
+    TransientResult,
 };
 
 pub use arithmetic::{dampings, density, integrate, natural_frequencies, referred};
@@ -296,13 +297,13 @@ impl<T: Copy> Table<T> for Vec<Vec<T>> {
 
 /// The numbers of an analysis's result that a measure reads.
 #[derive(Clone, Copy)]
-pub enum Results<'a> {
+pub enum AnalysisResult<'a> {
     /// An operating point: each unknown's value.
-    Point(&'a [f64]),
+    OperatingPoint(&'a [f64]),
     /// A search for operating points: how many it found.
-    Points(usize),
+    OperatingPoints(usize),
     /// A DC sweep: its source's levels, and the unknowns' values at each.
-    Sweep {
+    DcSweep {
         /// The levels.
         levels: &'a [f64],
         /// The values, one row per level.
@@ -316,14 +317,14 @@ pub enum Results<'a> {
         values: &'a dyn Table<f64>,
     },
     /// A small-signal response: its frequencies, and the unknowns' phasors at each.
-    Response {
+    Ac {
         /// The frequencies.
         frequencies: &'a [f64],
         /// The phasors, one row per frequency.
         values: &'a dyn Table<Complex64>,
     },
     /// A loop gain: its frequencies, and the gain at each.
-    Loop {
+    Stability {
         /// The frequencies.
         frequencies: &'a [f64],
         /// The gains.
@@ -340,45 +341,47 @@ pub enum Results<'a> {
         gains: Option<&'a [Complex64]>,
     },
     /// A pole-zero analysis: its poles.
-    Poles(&'a [Complex64]),
+    PoleZero(&'a [Complex64]),
 }
 
-impl<'a> Results<'a> {
+impl<'a> AnalysisResult<'a> {
     /// The numbers of `outcome`; none for sensitivities and transfer functions, which no
     /// measure reads.
     #[must_use]
-    pub fn of(outcome: &'a Outcome) -> Option<Self> {
+    pub fn of(outcome: &'a crate::AnalysisResult) -> Option<Self> {
         Some(match outcome {
-            Outcome::OperatingPoint(point) => point.into(),
-            Outcome::DcSweep(sweep) => sweep.into(),
-            Outcome::Ac(response) => response.into(),
-            Outcome::Transient(waveforms) => waveforms.into(),
-            Outcome::Sensitivity(_) | Outcome::TransferFunction(_) => return None,
-            Outcome::Stability(gain) => gain.into(),
-            Outcome::Noise(spectrum) => spectrum.into(),
-            Outcome::PoleZero(found) => found.into(),
-            Outcome::OperatingPoints(points) => Self::Points(points.len()),
+            crate::AnalysisResult::OperatingPoint(point) => point.into(),
+            crate::AnalysisResult::DcSweep(sweep) => sweep.into(),
+            crate::AnalysisResult::Ac(response) => response.into(),
+            crate::AnalysisResult::Transient(waveforms) => waveforms.into(),
+            crate::AnalysisResult::Sensitivity(_) | crate::AnalysisResult::TransferFunction(_) => {
+                return None;
+            }
+            crate::AnalysisResult::Stability(gain) => gain.into(),
+            crate::AnalysisResult::Noise(spectrum) => spectrum.into(),
+            crate::AnalysisResult::PoleZero(found) => found.into(),
+            crate::AnalysisResult::OperatingPoints(points) => Self::OperatingPoints(points.len()),
         })
     }
 }
 
-impl<'a> From<&'a OperatingPoint> for Results<'a> {
-    fn from(point: &'a OperatingPoint) -> Self {
-        Self::Point(&point.values)
+impl<'a> From<&'a OperatingPointResult> for AnalysisResult<'a> {
+    fn from(point: &'a OperatingPointResult) -> Self {
+        Self::OperatingPoint(&point.values)
     }
 }
 
-impl<'a> From<&'a Sweep> for Results<'a> {
-    fn from(sweep: &'a Sweep) -> Self {
-        Self::Sweep {
+impl<'a> From<&'a DcSweepResult> for AnalysisResult<'a> {
+    fn from(sweep: &'a DcSweepResult) -> Self {
+        Self::DcSweep {
             levels: &sweep.levels,
             values: &sweep.values,
         }
     }
 }
 
-impl<'a> From<&'a Waveforms> for Results<'a> {
-    fn from(waveforms: &'a Waveforms) -> Self {
+impl<'a> From<&'a TransientResult> for AnalysisResult<'a> {
+    fn from(waveforms: &'a TransientResult) -> Self {
         Self::Transient {
             times: &waveforms.times,
             values: &waveforms.values,
@@ -386,26 +389,26 @@ impl<'a> From<&'a Waveforms> for Results<'a> {
     }
 }
 
-impl<'a> From<&'a Response> for Results<'a> {
-    fn from(response: &'a Response) -> Self {
-        Self::Response {
+impl<'a> From<&'a AcResult> for AnalysisResult<'a> {
+    fn from(response: &'a AcResult) -> Self {
+        Self::Ac {
             frequencies: &response.frequencies,
             values: &response.values,
         }
     }
 }
 
-impl<'a> From<&'a LoopGain> for Results<'a> {
-    fn from(gain: &'a LoopGain) -> Self {
-        Self::Loop {
+impl<'a> From<&'a StabilityResult> for AnalysisResult<'a> {
+    fn from(gain: &'a StabilityResult) -> Self {
+        Self::Stability {
             frequencies: &gain.frequencies,
             gains: &gain.gains,
         }
     }
 }
 
-impl<'a> From<&'a NoiseSpectrum> for Results<'a> {
-    fn from(spectrum: &'a NoiseSpectrum) -> Self {
+impl<'a> From<&'a NoiseResult> for AnalysisResult<'a> {
+    fn from(spectrum: &'a NoiseResult) -> Self {
         Self::Noise {
             frequencies: &spectrum.frequencies,
             densities: &spectrum.densities,
@@ -414,9 +417,9 @@ impl<'a> From<&'a NoiseSpectrum> for Results<'a> {
     }
 }
 
-impl<'a> From<&'a PolesZeros> for Results<'a> {
-    fn from(found: &'a PolesZeros) -> Self {
-        Self::Poles(&found.poles)
+impl<'a> From<&'a PoleZeroResult> for AnalysisResult<'a> {
+    fn from(found: &'a PoleZeroResult) -> Self {
+        Self::PoleZero(&found.poles)
     }
 }
 
@@ -597,7 +600,7 @@ impl Measure {
     /// # Errors
     ///
     /// Returns the [`MeasureError`] that says why the measure cannot read `results`.
-    pub fn measure(&self, results: &Results<'_>) -> Result<f64, MeasureError> {
+    pub fn measure(&self, results: &AnalysisResult<'_>) -> Result<f64, MeasureError> {
         match *self {
             Self::Value { signal, at } => value(signal, at, results),
             Self::Gain { transfer, at } => gain(transfer, at, results),
@@ -684,7 +687,7 @@ impl Measure {
                 referred,
             } => integrated_noise(start, stop, referred, results),
             Self::Solutions => match results {
-                Results::Points(found) => Ok(count(*found)),
+                AnalysisResult::OperatingPoints(found) => Ok(count(*found)),
                 _ => Err(MeasureError::Kind),
             },
             Self::Damping => Ok(arithmetic::minimum(&dampings(poles(results)?))),
@@ -694,7 +697,7 @@ impl Measure {
 }
 
 /// The gain of `transfer` at the frequency `at`, in decibels.
-fn gain(transfer: Transfer, at: f64, results: &Results<'_>) -> Result<f64, MeasureError> {
+fn gain(transfer: Transfer, at: f64, results: &AnalysisResult<'_>) -> Result<f64, MeasureError> {
     let (frequencies, transfer) = read_transfer(transfer, results)?;
     let point = Axis(&frequencies).locate(at, Point::At)?.ln();
     Ok(interpolated(
@@ -705,7 +708,7 @@ fn gain(transfer: Transfer, at: f64, results: &Results<'_>) -> Result<f64, Measu
 }
 
 /// The phase of `transfer` at the frequency `at`, in degrees.
-fn phase(transfer: Transfer, at: f64, results: &Results<'_>) -> Result<f64, MeasureError> {
+fn phase(transfer: Transfer, at: f64, results: &AnalysisResult<'_>) -> Result<f64, MeasureError> {
     let (frequencies, transfer) = read_transfer(transfer, results)?;
     let point = Axis(&frequencies).locate(at, Point::At)?.ln();
     let phases = arithmetic::phases(&transfer);
@@ -714,7 +717,11 @@ fn phase(transfer: Transfer, at: f64, results: &Results<'_>) -> Result<f64, Meas
 
 /// The frequency where the gain of `transfer` first falls `drop` decibels below its gain at
 /// the lowest frequency.
-fn bandwidth(transfer: Transfer, drop: f64, results: &Results<'_>) -> Result<f64, MeasureError> {
+fn bandwidth(
+    transfer: Transfer,
+    drop: f64,
+    results: &AnalysisResult<'_>,
+) -> Result<f64, MeasureError> {
     let (frequencies, transfer) = read_transfer(transfer, results)?;
     let gains = decibels(&transfer);
     let logarithms = logarithms(&frequencies);
@@ -725,7 +732,7 @@ fn bandwidth(transfer: Transfer, drop: f64, results: &Results<'_>) -> Result<f64
 }
 
 /// 180° plus the phase of `transfer` where its gain first falls through 0 dB.
-fn phase_margin(transfer: Transfer, results: &Results<'_>) -> Result<f64, MeasureError> {
+fn phase_margin(transfer: Transfer, results: &AnalysisResult<'_>) -> Result<f64, MeasureError> {
     let (frequencies, transfer) = read_transfer(transfer, results)?;
     let logarithms = logarithms(&frequencies);
     let unity = unity(&logarithms, &transfer)?;
@@ -734,7 +741,7 @@ fn phase_margin(transfer: Transfer, results: &Results<'_>) -> Result<f64, Measur
 }
 
 /// Minus the gain of `transfer` where its phase first falls through -180°.
-fn gain_margin(transfer: Transfer, results: &Results<'_>) -> Result<f64, MeasureError> {
+fn gain_margin(transfer: Transfer, results: &AnalysisResult<'_>) -> Result<f64, MeasureError> {
     let (frequencies, transfer) = read_transfer(transfer, results)?;
     let logarithms = logarithms(&frequencies);
     let phases = arithmetic::phases(&transfer);
@@ -749,7 +756,7 @@ fn rise_time(
     signal: Signal,
     window: Window,
     (low, high): (f64, f64),
-    results: &Results<'_>,
+    results: &AnalysisResult<'_>,
 ) -> Result<f64, MeasureError> {
     let (times, values, step) = stepped(signal, window, results)?;
     let edge = if step > 0.0 {
@@ -767,7 +774,11 @@ fn rise_time(
 }
 
 /// How far `signal` passes its final value, in percent of its step.
-fn overshoot(signal: Signal, window: Window, results: &Results<'_>) -> Result<f64, MeasureError> {
+fn overshoot(
+    signal: Signal,
+    window: Window,
+    results: &AnalysisResult<'_>,
+) -> Result<f64, MeasureError> {
     let (_, values, step) = stepped(signal, window, results)?;
     let peak = if step > 0.0 {
         arithmetic::maximum(&values)
@@ -785,7 +796,7 @@ fn settling_time(
     signal: Signal,
     window: Window,
     band: f64,
-    results: &Results<'_>,
+    results: &AnalysisResult<'_>,
 ) -> Result<f64, MeasureError> {
     let (times, values, step) = stepped(signal, window, results)?;
     let last = values[values.len() - 1];
@@ -811,7 +822,7 @@ fn frequency(
     signal: Signal,
     window: Window,
     level: Option<f64>,
-    results: &Results<'_>,
+    results: &AnalysisResult<'_>,
 ) -> Result<f64, MeasureError> {
     let (times, values) = windowed(signal, window, results, true)?;
     #[expect(
@@ -834,7 +845,7 @@ fn integrated_noise(
     start: Option<f64>,
     stop: Option<f64>,
     referred: bool,
-    results: &Results<'_>,
+    results: &AnalysisResult<'_>,
 ) -> Result<f64, MeasureError> {
     let (frequencies, densities) = noise(results, referred)?;
     let order = arithmetic::order(frequencies);
@@ -935,9 +946,13 @@ fn mean(points: &[f64], values: &[f64]) -> f64 {
 
 /// The value of `signal` at an operating point, or `at` a time or a level of the axis of a
 /// transient or a DC sweep.
-fn value(signal: Signal, at: Option<f64>, results: &Results<'_>) -> Result<f64, MeasureError> {
+fn value(
+    signal: Signal,
+    at: Option<f64>,
+    results: &AnalysisResult<'_>,
+) -> Result<f64, MeasureError> {
     match (results, at) {
-        (Results::Point(values), None) => {
+        (AnalysisResult::OperatingPoint(values), None) => {
             let read = |index: usize| {
                 values
                     .get(index)
@@ -950,7 +965,7 @@ fn value(signal: Signal, at: Option<f64>, results: &Results<'_>) -> Result<f64, 
                 Some(reference) => Ok(value - read(reference)?),
             }
         }
-        (Results::Sweep { .. } | Results::Transient { .. }, Some(at)) => {
+        (AnalysisResult::DcSweep { .. } | AnalysisResult::Transient { .. }, Some(at)) => {
             let (points, values) = traced(signal, results, false)?;
             let point = Axis(&points).locate(at, Point::At)?;
             Ok(interpolated(point, &points, &values))
@@ -963,12 +978,12 @@ fn value(signal: Signal, at: Option<f64>, results: &Results<'_>) -> Result<f64, 
 /// they fall, and the signal's values at each; a transient's alone if `transient`.
 fn traced<'a>(
     signal: Signal,
-    results: &Results<'a>,
+    results: &AnalysisResult<'a>,
     transient: bool,
 ) -> Result<(Cow<'a, [f64]>, Vec<f64>), MeasureError> {
     let (points, table) = match *results {
-        Results::Transient { times, values } => (times, values),
-        Results::Sweep { levels, values } if !transient => (levels, values),
+        AnalysisResult::Transient { times, values } => (times, values),
+        AnalysisResult::DcSweep { levels, values } if !transient => (levels, values),
         _ => return Err(MeasureError::Kind),
     };
     let mut values = signal.trace(table)?;
@@ -991,7 +1006,7 @@ fn traced<'a>(
 fn windowed(
     signal: Signal,
     window: Window,
-    results: &Results<'_>,
+    results: &AnalysisResult<'_>,
     transient: bool,
 ) -> Result<(Vec<f64>, Vec<f64>), MeasureError> {
     let (points, values) = traced(signal, results, transient)?;
@@ -1022,7 +1037,7 @@ fn windowed(
 fn stepped(
     signal: Signal,
     window: Window,
-    results: &Results<'_>,
+    results: &AnalysisResult<'_>,
 ) -> Result<(Vec<f64>, Vec<f64>, f64), MeasureError> {
     let (times, values) = windowed(signal, window, results, true)?;
     let step = values[values.len() - 1] - values[0];
@@ -1036,13 +1051,15 @@ fn stepped(
 /// loop gain, or the output over the signal it is divided by, if any.
 fn read_transfer(
     transfer: Transfer,
-    results: &Results<'_>,
+    results: &AnalysisResult<'_>,
 ) -> Result<(Vec<f64>, Vec<Complex64>), MeasureError> {
     let (frequencies, values) = match (transfer, *results) {
-        (Transfer::Loop, Results::Loop { frequencies, gains }) => (frequencies, gains.to_vec()),
+        (Transfer::Loop, AnalysisResult::Stability { frequencies, gains }) => {
+            (frequencies, gains.to_vec())
+        }
         (
             Transfer::Output { output, over },
-            Results::Response {
+            AnalysisResult::Ac {
                 frequencies,
                 values,
             },
@@ -1092,8 +1109,11 @@ fn unity(logarithms: &[f64], transfer: &[Complex64]) -> Result<f64, MeasureError
 
 /// A noise analysis's frequencies, and its output's densities, or its densities referred to
 /// its source if `referred`.
-fn noise<'a>(results: &Results<'a>, referred: bool) -> Result<(&'a [f64], Vec<f64>), MeasureError> {
-    let Results::Noise {
+fn noise<'a>(
+    results: &AnalysisResult<'a>,
+    referred: bool,
+) -> Result<(&'a [f64], Vec<f64>), MeasureError> {
+    let AnalysisResult::Noise {
         frequencies,
         densities,
         gains,
@@ -1113,10 +1133,10 @@ fn noise<'a>(results: &Results<'a>, referred: bool) -> Result<(&'a [f64], Vec<f6
 }
 
 /// A pole-zero analysis's poles, at least one.
-fn poles<'a>(results: &Results<'a>) -> Result<&'a [Complex64], MeasureError> {
+fn poles<'a>(results: &AnalysisResult<'a>) -> Result<&'a [Complex64], MeasureError> {
     match *results {
-        Results::Poles([]) => Err(MeasureError::NoPoles),
-        Results::Poles(poles) => Ok(poles),
+        AnalysisResult::PoleZero([]) => Err(MeasureError::NoPoles),
+        AnalysisResult::PoleZero(poles) => Ok(poles),
         _ => Err(MeasureError::Kind),
     }
 }

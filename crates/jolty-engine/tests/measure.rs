@@ -2,10 +2,10 @@
 #![cfg(test)]
 
 use jolty_engine::measure::{
-    Edge, Measure, MeasureError, Results, Signal, Table, Transfer, Window, dampings,
+    AnalysisResult, Edge, Measure, MeasureError, Signal, Table, Transfer, Window, dampings,
     natural_frequencies,
 };
-use jolty_engine::{Analysis, Conditions, Options, Outcome, Simulator};
+use jolty_engine::{Analysis, Conditions, Options, Simulator};
 use jolty_ir::Circuit;
 use jolty_models::Library;
 use jolty_numerics::Complex64;
@@ -27,7 +27,7 @@ fn low_pass() -> Simulator {
          "terminals": {"a": "out", "b": "0"}}
     ]);
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "test",
+        "format": "jolty-circuit", "version": 2, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
@@ -36,7 +36,7 @@ fn low_pass() -> Simulator {
         .expect("the circuit elaborates")
 }
 
-fn run(simulator: &mut Simulator, analysis: &Value) -> Outcome {
+fn run(simulator: &mut Simulator, analysis: &Value) -> jolty_engine::AnalysisResult {
     let analysis: Analysis = serde_json::from_value(analysis.clone()).expect("an analysis");
     simulator
         .run(&analysis, &Options::default())
@@ -51,8 +51,8 @@ fn signal(simulator: &Simulator, name: &str) -> Signal {
     }
 }
 
-fn measure(measure: Measure, outcome: &Outcome) -> Result<f64, MeasureError> {
-    measure.measure(&Results::of(outcome).expect("a measurable result"))
+fn measure(measure: Measure, outcome: &jolty_engine::AnalysisResult) -> Result<f64, MeasureError> {
+    measure.measure(&AnalysisResult::of(outcome).expect("a measurable result"))
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn measures_read_a_point_a_sweep_and_a_transient() {
     };
 
     let point = run(&mut simulator, &json!("operating_point"));
-    let Outcome::OperatingPoint(solution) = &point else {
+    let jolty_engine::AnalysisResult::OperatingPoint(solution) = &point else {
         panic!("an operating point")
     };
     let read = measure(
@@ -84,7 +84,7 @@ fn measures_read_a_point_a_sweep_and_a_transient() {
         &mut simulator,
         &json!({"dc_sweep": {"source": "V1", "levels": [3.0, 1.0, 2.0]}}),
     );
-    let Outcome::DcSweep(swept) = &sweep else {
+    let jolty_engine::AnalysisResult::DcSweep(swept) = &sweep else {
         panic!("a sweep")
     };
     let column: Vec<f64> = swept.values.iter().map(|row| row[out.unknown]).collect();
@@ -102,7 +102,7 @@ fn measures_read_a_point_a_sweep_and_a_transient() {
     );
 
     let transient = run(&mut simulator, &json!({"transient": {"stop": 5e-3}}));
-    let Outcome::Transient(waveforms) = &transient else {
+    let jolty_engine::AnalysisResult::Transient(waveforms) = &transient else {
         panic!("a transient")
     };
     let last = waveforms.values.last().unwrap()[out.unknown];
@@ -162,7 +162,7 @@ fn measures_read_a_response_and_a_loop_gain() {
         &ac,
     )
     .unwrap();
-    let Outcome::Ac(response) = &ac else {
+    let jolty_engine::AnalysisResult::Ac(response) = &ac else {
         panic!("a response")
     };
     let unit = 20.0 * response.values[0][out.unknown].norm().log10();
@@ -209,7 +209,7 @@ fn measures_read_noise_poles_and_solutions() {
         &mut simulator,
         &json!({"noise": {"output": "out", "source": "V1", "frequencies": frequencies}}),
     );
-    let Outcome::Noise(spectrum) = &noise else {
+    let jolty_engine::AnalysisResult::Noise(spectrum) = &noise else {
         panic!("a noise spectrum")
     };
     let density = measure(
@@ -231,7 +231,7 @@ fn measures_read_noise_poles_and_solutions() {
     assert_eq!(density, Ok(referred[10].sqrt()));
 
     let poles = run(&mut simulator, &json!({"pole_zero": {}}));
-    let Outcome::PoleZero(found) = &poles else {
+    let jolty_engine::AnalysisResult::PoleZero(found) = &poles else {
         panic!("poles")
     };
     let smallest = |values: Vec<f64>| values.into_iter().fold(f64::INFINITY, f64::min);
@@ -256,7 +256,7 @@ fn measures_read_exact_signals_exactly() {
         .iter()
         .map(|time| vec![2.0 * time - 1.0, 0.5])
         .collect();
-    let results = Results::Transient {
+    let results = AnalysisResult::Transient {
         times: &times,
         values: &values,
     };
@@ -495,33 +495,33 @@ fn numbers() -> impl Strategy<Value = Numbers> {
 }
 
 impl Numbers {
-    fn results(&self) -> Results<'_> {
+    fn results(&self) -> AnalysisResult<'_> {
         let real: &dyn Table<f64> = &self.real;
         match self.kind {
-            0 => Results::Point(self.real.first().map_or(&[], Vec::as_slice)),
-            1 => Results::Points(self.count),
-            2 => Results::Sweep {
+            0 => AnalysisResult::OperatingPoint(self.real.first().map_or(&[], Vec::as_slice)),
+            1 => AnalysisResult::OperatingPoints(self.count),
+            2 => AnalysisResult::DcSweep {
                 levels: &self.points,
                 values: real,
             },
-            3 => Results::Transient {
+            3 => AnalysisResult::Transient {
                 times: &self.points,
                 values: real,
             },
-            4 => Results::Response {
+            4 => AnalysisResult::Ac {
                 frequencies: &self.points,
                 values: &self.complex,
             },
-            5 => Results::Loop {
+            5 => AnalysisResult::Stability {
                 frequencies: &self.points,
                 gains: &self.loop_gains,
             },
-            6 => Results::Noise {
+            6 => AnalysisResult::Noise {
                 frequencies: &self.points,
                 densities: &self.densities,
                 gains: self.gains.as_deref(),
             },
-            _ => Results::Poles(self.complex.first().map_or(&[], Vec::as_slice)),
+            _ => AnalysisResult::PoleZero(self.complex.first().map_or(&[], Vec::as_slice)),
         }
     }
 }

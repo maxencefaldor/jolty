@@ -79,7 +79,7 @@ def run(
     options: Options,
     conditions: Conditions,
     unknowns: Sequence[results.Unknown],
-) -> results.Result:
+) -> results.AnalysisResult:
     """Runs `analysis` of `circuit` in ngspice, with `options`, at `conditions`.
 
     The result holds those of `unknowns` that ngspice names.
@@ -151,7 +151,7 @@ class _Deck:
     def unknowns(self) -> tuple[results.Unknown, ...]:
         return tuple(unknown for unknown, _ in self.read)
 
-    def run(self, analysis: Analysis) -> results.Result:
+    def run(self, analysis: Analysis) -> results.AnalysisResult:
         match analysis:
             case OperatingPoint():
                 (raw,) = self.runs(("op",))
@@ -161,7 +161,7 @@ class _Deck:
             case Ac():
                 frequencies = _frequencies(analysis.frequencies)
                 point, *responses = self.runs(("op", *_points("ac", frequencies)))
-                return results.Response(
+                return results.AcResult(
                     unknowns=self.unknowns(),
                     source=analysis.source,
                     frequencies=np.array(frequencies),
@@ -184,15 +184,15 @@ class _Deck:
         )
         raise SimulationError(message)
 
-    def operating_point(self, raw: ngspice.Raw) -> results.OperatingPoint:
-        return results.OperatingPoint(
+    def operating_point(self, raw: ngspice.Raw) -> results.OperatingPointResult:
+        return results.OperatingPointResult(
             unknowns=self.unknowns(),
             values=_table(raw, self.read)[0],
             strategy=STRATEGY,
         )
 
-    def sweep(self, sweep: DcSweep) -> results.Sweep:
-        command, levels, quantity = _sweep(self.flat, sweep)
+    def sweep(self, sweep: DcSweep) -> results.DcSweepResult:
+        command, levels, nature = _sweep(self.flat, sweep)
         (raw,) = self.runs((command,))
         values = _table(raw, self.read)
         if values.shape[0] != len(levels):
@@ -201,15 +201,15 @@ class _Deck:
                 f"{len(levels)}"
             )
             raise SimulationError(message)
-        return results.Sweep(
+        return results.DcSweepResult(
             unknowns=self.unknowns(),
             source=sweep.source,
-            quantity=quantity,
+            nature=nature,
             levels=levels,
             values=values,
         )
 
-    def transient(self, transient: Transient) -> results.Waveforms:
+    def transient(self, transient: Transient) -> results.TransientResult:
         stop = transient.stop.to(TIME, "a transient's stop time")
         longest = (
             stop / 50
@@ -225,7 +225,7 @@ class _Deck:
         if any(len(found) != 1 for found in counted.values()):
             message = f"ngspice printed no statistics of its transient:\n{raw.printed}"
             raise SimulationError(message)
-        return results.Waveforms(
+        return results.TransientResult(
             unknowns=self.unknowns(),
             times=raw.real("time"),
             values=_table(raw, self.read),
@@ -239,7 +239,7 @@ class _Deck:
             ),
         )
 
-    def noise(self, noise: Noise) -> results.NoiseSpectrum:
+    def noise(self, noise: Noise) -> results.NoiseResult:
         """The noise at a voltage, each device's sources apart, referred to a source.
 
         Raises:
@@ -261,11 +261,11 @@ class _Deck:
         sources, contributions = self.contributions(spectra)
         given = None
         if noise.source is not None:
-            _, quantity = _source(self.flat, noise.source)
+            _, nature = _source(self.flat, noise.source)
             transfer = _difference(output)
             given = results.NoiseInput(
                 source=noise.source,
-                quantity=quantity,
+                nature=nature,
                 gains=np.array(
                     [
                         raw.vectors[transfer[0]][0]
@@ -274,11 +274,11 @@ class _Deck:
                     ]
                 ),
             )
-        return results.NoiseSpectrum(
+        return results.NoiseResult(
             unknowns=self.unknowns(),
             output=noise.output,
             reference=noise.reference,
-            quantity="voltage",
+            nature="voltage",
             frequencies=np.array(frequencies),
             densities=densities,
             sources=sources,
@@ -454,7 +454,7 @@ def _table(
     )
 
 
-def _source(flat: ir.Circuit, path: str) -> tuple[ir.Instance, results.Quantity]:
+def _source(flat: ir.Circuit, path: str) -> tuple[ir.Instance, results.Nature]:
     """The independent source at `path` in the flattened circuit `flat`, and its level.
 
     Its level is a voltage or a current.
@@ -474,15 +474,15 @@ def _source(flat: ir.Circuit, path: str) -> tuple[ir.Instance, results.Quantity]
 
 def _sweep(
     flat: ir.Circuit, sweep: DcSweep
-) -> tuple[str, results.Real, results.Quantity]:
+) -> tuple[str, results.Real, results.Nature]:
     """The command ngspice runs `sweep` by, its levels, and whether they are voltages.
 
     Raises:
         SimulationError: When the swept instance is no independent source, or the
             levels do not rise or fall in even steps, as ngspice sweeps a source.
     """
-    found, quantity = _source(flat, sweep.source)
-    dimension = VOLTAGE if quantity == "voltage" else CURRENT
+    found, nature = _source(flat, sweep.source)
+    dimension = VOLTAGE if nature == "voltage" else CURRENT
     given = [level.to(dimension, "a sweep level") for level in sweep.levels]
     levels = np.array(given)
     if len(levels) < 2:  # noqa: PLR2004 - a sweep's first and last levels
@@ -495,7 +495,7 @@ def _sweep(
         message = f"ngspice sweeps {sweep.source} in even steps, and its levels are not"
         raise SimulationError(message)
     command = f"dc {export.element(found)} {first!r} {last!r} {step!r}"
-    return command, levels, quantity
+    return command, levels, nature
 
 
 _STATISTICS: Final = {

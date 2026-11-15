@@ -140,7 +140,7 @@ def _determined(circuit: ir.Circuit, simulated: Simulated) -> bool:
 
 
 def _quantities(circuit: ir.Circuit) -> dict[str, str]:
-    return {unknown.name: unknown.quantity for unknown in Simulation(circuit).unknowns}
+    return {unknown.name: unknown.nature for unknown in Simulation(circuit).unknowns}
 
 
 TOLERANCES = {"operating point": 1e-6, "frequency response": 1e-6, "transient": 1e-3}
@@ -176,11 +176,11 @@ def _assert_same(
     if "transient" in expected and not _settled(loaded, expected):
         event("a waveform that shorter steps move")
         del expected["transient"]
-    quantities = _quantities(original)
+    natures = _quantities(original)
     for analysis, values in expected.items():
         assert analysis in found, f"no {analysis} of the circuit as written"
         renamed = {unknown: found[analysis][name(unknown)] for unknown in values}
-        differs = differing(renamed, values, quantities, TOLERANCES[analysis])
+        differs = differing(renamed, values, natures, TOLERANCES[analysis])
         if differs and analysis == "transient" and not _determined(loaded, expected):
             event("a waveform that a rounding moves")
             continue
@@ -312,7 +312,7 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
     )
 
 
-def _currents(point: results.OperatingPoint) -> Iterable[float]:
+def _currents(point: results.OperatingPointResult) -> Iterable[float]:
     """Every current the operating point holds: through branches and into terminals.
 
     The terminals are those of every device it recorded, whose currents come before
@@ -321,7 +321,7 @@ def _currents(point: results.OperatingPoint) -> Iterable[float]:
     yield from (
         float(value)
         for unknown, value in zip(point.unknowns, point.values, strict=True)
-        if unknown.quantity == "current"
+        if unknown.nature == "current"
     )
     terminals = sum(len(device.terminals) for device in point.recording.devices)
     yield from (float(current) for current in point.currents[:terminals])

@@ -6,7 +6,7 @@
 
 use super::{Layout, Local, Stamp};
 use crate::dual::Dual;
-use crate::{NoiseSource, Quantity, Real, Unknown};
+use crate::{Nature, NoiseSource, Real, Unknown};
 
 /// The resistance below which a resistance carries its current as an unknown, in ohms.
 ///
@@ -191,7 +191,7 @@ impl CurrentBranch {
         label: impl Into<std::borrow::Cow<'static, str>>,
         [positive, negative]: [usize; 2],
     ) -> Self {
-        let current = layout.internal(label, Quantity::Current);
+        let current = layout.internal(label, Nature::Current);
         Self {
             current,
             nodes: [positive, negative],
@@ -283,7 +283,7 @@ impl Series {
         if value <= 0.0 {
             return (Self::None, terminal);
         }
-        let inner = layout.internal(label, Quantity::Voltage);
+        let inner = layout.internal(label, Nature::Voltage);
         let series = if value < SMALL_RESISTANCE {
             let branch = CurrentBranch::new(layout, current, [terminal, inner]);
             let row = branch.unknown();

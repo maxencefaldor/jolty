@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{
-    Binding, Groups, Instance, Interface, Library, LogicDriver, LogicDriverParameters, Model, Node,
-    ParameterError, Quantity, REFERENCE_TEMPERATURE, Regions, Runs, Specification,
+    Binding, Groups, Instance, Interface, Library, LogicDriver, LogicDriverParameters, Model,
+    Nature, Node, ParameterError, REFERENCE_TEMPERATURE, Regions, Runs, Specification,
     ThresholdDetector, ThresholdDetectorParameters, Unknown, UnknownInfo,
 };
 use jolty_numerics::{Condensation, Entry, Ordering, Pattern, PatternBuilder};
@@ -68,7 +68,7 @@ pub struct Elaborated {
     pub(crate) names: Arc<[String]>,
     /// The quantity of every unknown, by index, apart from its name: the tolerances of
     /// Newton iteration and step control read one for every unknown at every iteration.
-    pub(crate) quantities: Vec<Quantity>,
+    pub(crate) natures: Vec<Nature>,
     /// The diagonal entry of every node voltage's equation, where gmin stepping adds a
     /// conductance to the reference.
     pub(crate) node_diagonals: Vec<(Unknown, Entry)>,
@@ -352,7 +352,7 @@ pub(crate) struct Bound {
     condensation: Arc<Condensation>,
     ordering: Arc<Ordering>,
     names: Arc<[String]>,
-    quantities: Vec<Quantity>,
+    natures: Vec<Nature>,
 }
 
 impl Binder {
@@ -434,11 +434,7 @@ impl Binder {
             .iter()
             .map(|unknown| unknown.name.clone())
             .collect();
-        let quantities = self
-            .unknowns
-            .iter()
-            .map(|unknown| unknown.quantity)
-            .collect();
+        let natures = self.unknowns.iter().map(|unknown| unknown.nature).collect();
         Ok(Bound {
             unknowns: self.unknowns,
             placed: self.placed,
@@ -449,7 +445,7 @@ impl Binder {
             condensation,
             ordering: Arc::new(ordering),
             names,
-            quantities,
+            natures,
         })
     }
 }
@@ -517,7 +513,7 @@ impl Elaborated {
             condensation: bound.condensation,
             ordering: bound.ordering,
             names: bound.names,
-            quantities: bound.quantities,
+            natures: bound.natures,
             node_diagonals: bound.node_diagonals,
             groups: bound.groups,
             temperature,
@@ -737,7 +733,7 @@ impl Elaborated {
             condensation: bound.condensation,
             ordering: bound.ordering,
             names: bound.names,
-            quantities: bound.quantities,
+            natures: bound.natures,
             node_diagonals: bound.node_diagonals,
             groups: bound.groups,
             temperature: self.temperature,

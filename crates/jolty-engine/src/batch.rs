@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use rayon::prelude::*;
 
 use crate::elaborate::ElaborationError;
-use crate::measure::{Measure, MeasureError, Results};
+use crate::measure::{AnalysisResult, Measure, MeasureError};
 use crate::{Analysis, Elaborated, Options, SimulationError, Simulator, StructureKey, Values};
 
 /// The values of the runs of a batch.
@@ -89,7 +89,7 @@ pub struct Outcome {
     pub problems: Option<ElaborationError>,
     /// What each analysis found, in the batch's order, or why it failed; none when the
     /// values make problems.
-    pub results: Vec<Result<crate::Outcome, SimulationError>>,
+    pub results: Vec<Result<crate::AnalysisResult, SimulationError>>,
     /// What each measure read, in the batch's order, or why it read nothing.
     pub measured: Vec<Result<f64, Unmeasured>>,
 }
@@ -443,7 +443,7 @@ impl Batch {
                 };
             }
         };
-        let results: Vec<Result<crate::Outcome, SimulationError>> = self
+        let results: Vec<Result<crate::AnalysisResult, SimulationError>> = self
             .analyses
             .iter()
             .zip(options)
@@ -451,7 +451,7 @@ impl Batch {
             .collect();
         let read = |measured: &Measured| match &results[measured.analysis] {
             Ok(found) => {
-                let read = Results::of(found).ok_or(MeasureError::Kind)?;
+                let read = AnalysisResult::of(found).ok_or(MeasureError::Kind)?;
                 Ok(measured.measure.measure(&read)?)
             }
             Err(_) => Err(Unmeasured::Failed),

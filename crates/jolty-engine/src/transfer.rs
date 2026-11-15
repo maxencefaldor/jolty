@@ -15,10 +15,10 @@
 //! solves find infinite, such as a current source's own, is infinite, where ngspice writes
 //! 10²⁰ Ω.
 
-use jolty_models::Quantity;
+use jolty_models::Nature;
 use serde::Deserialize;
 
-use crate::{OperatingPoint, Options, SimulationError, Simulator};
+use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// A transfer function analysis: from an independent source to an output, at DC.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -37,17 +37,17 @@ pub struct TransferFunction {
 
 /// The small-signal transfer function at DC.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Transfer {
+pub struct TransferFunctionResult {
     /// The path of the input source.
     pub source: String,
     /// What the input source's level is: a voltage, or a current.
-    pub input: Quantity,
+    pub input: Nature,
     /// The output.
     pub output: String,
     /// The node the output voltage is taken over, if any.
     pub reference: Option<String>,
     /// The operating point the circuit was linearized at.
-    pub operating_point: OperatingPoint,
+    pub operating_point: OperatingPointResult,
     /// The output per unit of the source's level: volts or amperes of output per volt or
     /// ampere of input.
     pub gain: f64,
@@ -73,7 +73,7 @@ impl Simulator {
         &mut self,
         analysis: &TransferFunction,
         options: &Options,
-    ) -> Result<Transfer, SimulationError> {
+    ) -> Result<TransferFunctionResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             options.check()?;
@@ -85,7 +85,7 @@ impl Simulator {
             // solver.
             let mut driven = self.excitation(input, size);
             // An independent source holds a voltage or drives a current.
-            let seen = if self.source_quantity(input) == Quantity::Current {
+            let seen = if self.source_nature(input) == Nature::Current {
                 Input::Current {
                     terminals: self.terminal_unknowns(input),
                 }
@@ -124,9 +124,9 @@ impl Simulator {
                     resistance(1.0, -series[branch])
                 }
             };
-            Ok(Transfer {
+            Ok(TransferFunctionResult {
                 source: analysis.source.clone(),
-                input: self.source_quantity(input),
+                input: self.source_nature(input),
                 output: analysis.output.clone(),
                 reference: analysis.reference.clone(),
                 operating_point,
@@ -145,15 +145,15 @@ impl Simulator {
                 .ok_or_else(|| SimulationError::UnknownOutput(name.to_owned()))
         };
         let index = found(&analysis.output)?;
-        match self.elaborated.unknowns[index].quantity {
-            Quantity::Voltage => {
+        match self.elaborated.unknowns[index].nature {
+            Nature::Voltage => {
                 let reference = analysis.reference.as_deref().map(found).transpose()?;
                 Ok(Output::Voltage {
                     node: index,
                     reference,
                 })
             }
-            Quantity::Current => {
+            Nature::Current => {
                 if analysis.reference.is_some() {
                     return Err(SimulationError::InvalidAnalysis(format!(
                         "a transfer function's current output, {}, has no reference",
@@ -170,7 +170,7 @@ impl Simulator {
                                 .runs
                                 .level(&self.elaborated.groups, device)
                                 .is_some()
-                            && self.source_quantity(device) == Quantity::Voltage
+                            && self.source_nature(device) == Nature::Voltage
                     })
                     .ok_or_else(|| {
                         SimulationError::InvalidAnalysis(format!(
@@ -184,7 +184,7 @@ impl Simulator {
                     branch: index,
                 })
             }
-            Quantity::Displacement | Quantity::Temperature | Quantity::State => {
+            Nature::Displacement | Nature::Temperature | Nature::State => {
                 Err(SimulationError::InvalidAnalysis(format!(
                     "a transfer function's output is a node voltage or a voltage source's \
                      current, not {}",

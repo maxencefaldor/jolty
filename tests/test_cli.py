@@ -8,7 +8,7 @@ import pytest
 from jolty import __version__
 from jolty.cli import main
 from jolty.files import load_results
-from jolty.results import Waveforms
+from jolty.results import TransientResult
 
 FILTER = """
 from jolty import Builder, Plan, Role, Transient, component, devices
@@ -92,7 +92,7 @@ def test_simulate_saves_the_results_and_reports_each_analysis(
     out = next(extent for extent in step["extents"] if extent["unknown"] == "out")
     assert out["last"] == pytest.approx(1.0, abs=1e-3)
     waveforms = load_results(Path(result["results"]))["step"]
-    assert isinstance(waveforms, Waveforms)
+    assert isinstance(waveforms, TransientResult)
     assert waveforms.voltage("out")[-1] == pytest.approx(out["last"])
 
 
@@ -204,10 +204,10 @@ def test_invalid_arguments_and_settings_exit_with_2(
     assert "CLI subcommand is required" in capsys.readouterr().err
     assert run("build", "low_pass.py", "--output-format", "yaml") == 2
     capsys.readouterr()
-    monkeypatch.setenv("JOLTY_LISTED_UNKNOWNS", "0")
+    monkeypatch.setenv("JOLTY_MAX_UNKNOWNS", "0")
     assert run("build", "low_pass.py") == 2
     assert capsys.readouterr().err == (
-        "error: invalid settings: listed_unknowns: "
+        "error: invalid settings: max_unknowns: "
         "Input should be greater than or equal to 1\n"
     )
 
@@ -215,6 +215,6 @@ def test_invalid_arguments_and_settings_exit_with_2(
 def test_settings_come_from_pyproject(
     tmp_path: Path, script: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text("[tool.jolty]\nlisted_unknowns = 1\n")
+    (tmp_path / "pyproject.toml").write_text("[tool.jolty]\nmax_unknowns = 1\n")
     assert run("simulate", script.name) == 0
     assert "  ... and 2 more in the results file" in capsys.readouterr().out

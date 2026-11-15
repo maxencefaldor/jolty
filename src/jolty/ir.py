@@ -57,7 +57,7 @@ class ComponentOf(_Model):
     component: str
 
 
-class Source(_Model):
+class SourceLocation(_Model):
     """The line of a build script that placed an instance."""
 
     file: str
@@ -229,7 +229,7 @@ class Instance(_Model):
             "component instance so numbered is that one part, whatever it places."
         ),
     )
-    source: Source | None = None
+    source_location: SourceLocation | None = None
 
 
 class Component(_Model):
@@ -249,7 +249,7 @@ class Circuit(_Model):
     """A circuit: every component, and the one at the top of the hierarchy."""
 
     format: Literal["jolty-circuit"] = "jolty-circuit"
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     top: str
     components: dict[str, Component]
 

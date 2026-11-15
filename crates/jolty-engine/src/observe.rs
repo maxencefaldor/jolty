@@ -612,7 +612,7 @@ mod tests {
                             "terminals": {"drain": "d", "gate": "vdd", "source": "gnd",
                                           "bulk": "gnd"}});
         let document = json!({
-            "format": "jolty-circuit", "version": 1, "top": "test",
+            "format": "jolty-circuit", "version": 2, "top": "test",
             "components": {
                 "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                     {"id": "V1", "of": {"device": "voltage_source"},

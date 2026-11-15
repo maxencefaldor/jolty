@@ -15,7 +15,7 @@
 //! use jolty_models::Library;
 //!
 //! let circuit = Circuit::from_json(r#"{
-//!     "format": "jolty-circuit", "version": 1, "top": "top",
+//!     "format": "jolty-circuit", "version": 2, "top": "top",
 //!     "components": {"top": {
 //!         "ports": [{"name": "ground", "role": "ground"}],
 //!         "instances": [

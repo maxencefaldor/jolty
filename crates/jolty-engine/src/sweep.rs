@@ -6,13 +6,13 @@
 //! device as the level before left it: each operating point starts from the one before,
 //! as a chain of runs does from one run to the next.
 
-use jolty_models::{BranchKind, Level, Quantity};
+use jolty_models::{BranchKind, Level, Nature};
 use serde::Deserialize;
 
 use crate::newton::Mode;
 use crate::operating_point::Solved;
 use crate::state::Held;
-use crate::{Observations, OperatingPoint, Options, SimulationError, Simulator, Strategy};
+use crate::{Observations, OperatingPointResult, Options, SimulationError, Simulator, Strategy};
 
 /// The fraction of the way from one level of a sweep to the next below which continuation
 /// gives up, as a divisor.
@@ -37,14 +37,14 @@ pub struct DcSweep {
 
 /// The operating points of a DC sweep.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Sweep {
+pub struct DcSweepResult {
     /// The path of the swept instance.
     pub source: String,
     /// The number swept, by its path among the instance's parameters; none for a source's
     /// level.
     pub parameter: Option<String>,
     /// Whether the levels of a source are voltages or currents; none for a parameter.
-    pub quantity: Option<Quantity>,
+    pub nature: Option<Nature>,
     /// The levels, or the values of the parameter.
     pub levels: Vec<f64>,
     /// The value of every unknown at each level.
@@ -81,7 +81,7 @@ impl Simulator {
         &mut self,
         sweep: &DcSweep,
         options: &Options,
-    ) -> Result<Sweep, SimulationError> {
+    ) -> Result<DcSweepResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             self.prepare(options)?;
@@ -107,13 +107,13 @@ impl Simulator {
                 observations.push(&point.observation);
                 logic.push(point.logic);
             }
-            Ok(Sweep {
+            Ok(DcSweepResult {
                 source: sweep.source.clone(),
                 parameter: sweep.parameter.clone(),
-                quantity: sweep
+                nature: sweep
                     .parameter
                     .is_none()
-                    .then(|| self.source_quantity(swept.device)),
+                    .then(|| self.source_nature(swept.device)),
                 levels: sweep.levels.clone(),
                 values,
                 observations,
@@ -168,7 +168,7 @@ impl Simulator {
         swept: Swept,
         levels: &[f64],
         options: &Options,
-    ) -> Result<Vec<OperatingPoint>, SimulationError> {
+    ) -> Result<Vec<OperatingPointResult>, SimulationError> {
         self.reset_logic();
         let mut values = vec![0.0; self.elaborated.unknowns.len()];
         let mut points = Vec::with_capacity(levels.len());
@@ -306,15 +306,15 @@ impl Simulator {
     }
 
     /// Whether the source of the device at `index` holds a voltage or drives a current.
-    pub(crate) fn source_quantity(&self, index: usize) -> Quantity {
+    pub(crate) fn source_nature(&self, index: usize) -> Nature {
         let drives_current = self.elaborated.devices[index]
             .branches()
             .iter()
             .any(|branch| branch.kind == BranchKind::CurrentSource);
         if drives_current {
-            Quantity::Current
+            Nature::Current
         } else {
-            Quantity::Voltage
+            Nature::Voltage
         }
     }
 

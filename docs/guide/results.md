@@ -16,7 +16,7 @@ A report states facts, one section per analysis in the plan's order:
 - a failed analysis says why it failed.
 
 A frequency response lists magnitudes per unit excitation: volts per volt, for a voltage source.
-A report lists the first unknowns, then the first logic nets, up to the setting `listed_unknowns`, and an operating point as many transistors and a sensitivity analysis as many parameters; the results file holds them all.
+A report lists the first unknowns, then the first logic nets, up to the setting `max_unknowns`, and an operating point as many transistors and a sensitivity analysis as many parameters; the results file holds them all.
 With `--output-format json`, the command prints the same report as data.
 
 ## Plots
@@ -184,15 +184,15 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 
 | Result | Arrays | Each value is |
 | --- | --- | --- |
-| `OperatingPoint` | `values`, `currents`, `charges`, `conductances`, `capacitances`, `readings` | a float |
-| `Sweep` | `levels`, and the operating point's arrays | one per level |
-| `Response` | `frequencies`, `values`, `currents`, and the `operating_point` | a complex phasor, one per frequency |
-| `Waveforms` | `times`, the operating point's arrays, and the step `statistics` | one per accepted time point |
-| `OperatingPoints` | `points`, an `OperatingPoint` per DC solution | read with `voltages(net)`, one per solution |
-| `Sensitivities` | `parameters`, `derivatives`, and the `result` differentiated | one per output and parameter, at each point |
-| `LoopGain` | `frequencies`, `gains`, and the `operating_point` | a complex loop gain, one per frequency |
-| `NoiseSpectrum` | `frequencies`, `densities`, `contributions` per noise source, and an `input` with its `gains` | a density, one per frequency |
-| `PolesZeros` | `poles`, `zeros`, and the `operating_point` | a complex frequency, one per root |
+| `OperatingPointResult` | `values`, `currents`, `charges`, `conductances`, `capacitances`, `readings` | a float |
+| `DcSweepResult` | `levels`, and the operating point's arrays | one per level |
+| `AcResult` | `frequencies`, `values`, `currents`, and the `operating_point` | a complex phasor, one per frequency |
+| `TransientResult` | `times`, the operating point's arrays, and the step `statistics` | one per accepted time point |
+| `OperatingPointsResult` | `points`, an `OperatingPointResult` per DC solution | read with `voltages(net)`, one per solution |
+| `SensitivityResult` | `parameters`, `derivatives`, and the `result` differentiated | one per output and parameter, at each point |
+| `StabilityResult` | `frequencies`, `gains`, and the `operating_point` | a complex loop gain, one per frequency |
+| `NoiseResult` | `frequencies`, `densities`, `contributions` per noise source, and an `input` with its `gains` | a density, one per frequency |
+| `PoleZeroResult` | `poles`, `zeros`, and the `operating_point` | a complex frequency, one per root |
 
 A transient's `statistics` count its steps, accepted, rejected or tried again to land on an event, and the Newton iterations of those accepted.
 Its `work` counts every Newton iteration it ran, its operating point's included unless the simulation remembered it, and its sparse solver's factorizations: those that searched for every pivot, those that kept the last's, those that fell back to a search from a pivot become too small, and those given the very matrix factored last.
@@ -204,4 +204,4 @@ A name that is not an unknown, a recorded terminal, derivative or variable, or a
 
 The file is a NumPy archive: a JSON header names the unknowns and the logic nets, lists each recording the analyses made once, however many share it, as each recorded device's path, terminals, internal unknowns, variables, regions and margins, and the composites, and says what each analysis is and which recording it made, then each analysis's arrays follow under keys such as `step.times`.
 Any program that reads NumPy files reads it.
-The header is in version 10 of the format; a file of an earlier version is not read, and simulating again writes it anew.
+The header is in version 11 of the format; a file of an earlier version is not read, and simulating again writes it anew.

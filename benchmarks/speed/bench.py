@@ -297,7 +297,9 @@ def load_fixture(fixture: Fixture) -> Loaded:
     return Loaded(ir.Circuit.model_validate_json(text), fixture.plan)
 
 
-def run(loaded: Loaded, options: Options | None = None) -> dict[str, results.Result]:
+def run(
+    loaded: Loaded, options: Options | None = None
+) -> dict[str, results.AnalysisResult]:
     """Runs the fixture in jolty: its circuit elaborated, its analyses with `options`.
 
     The options are the plan's unless given. Returns each analysis's result, by name.
@@ -452,7 +454,7 @@ def scaling(
     return timings, {"serial": alone, "spread": next(iter(spread_prints), alone)}
 
 
-def once(work: Callable[[], dict[str, results.Result]]) -> tuple[Timing, str]:
+def once(work: Callable[[], dict[str, results.AnalysisResult]]) -> tuple[Timing, str]:
     """The time of one run of `work`, and the fingerprint of what it found."""
     load = load_average()
     started = time.perf_counter()
@@ -486,7 +488,7 @@ def profiles(
         options = dataclasses.replace(loaded.plan.options, profile=True)
         for analysis, planned in loaded.plan.analyses.items():
             result = simulation.run(planned, options)
-            if not isinstance(result, results.Waveforms):
+            if not isinstance(result, results.TransientResult):
                 continue
             work, profile = result.statistics.work, result.statistics.profile
             if work is not None and profile is not None:
@@ -658,7 +660,10 @@ def printed(loaded: Loaded) -> list[str]:
 
 
 def deviation(
-    circuit: ir.Circuit, found: results.Result, spice: xyce.Result, nets: Sequence[str]
+    circuit: ir.Circuit,
+    found: results.AnalysisResult,
+    spice: xyce.Result,
+    nets: Sequence[str],
 ) -> float:
     """How far Xyce's voltages of `nets` lie from jolty's, as a fraction of their size.
 
@@ -675,16 +680,16 @@ def deviation(
         name = export.vector(circuit, Unknown(net, "voltage"), dialect=export.XYCE)
         theirs = spice.vectors[name]
         match found:
-            case results.Waveforms():
+            case results.TransientResult():
                 waveform = found.voltage(net)
                 ours = np.interp(spice.real("time"), found.times, waveform)
                 scale = float(np.ptp(waveform))
                 difference = np.abs(ours - theirs.real)
-            case results.Response():
+            case results.AcResult():
                 ours = found.voltage(net)
                 scale = float(np.abs(ours).max())
                 difference = np.abs(ours - theirs)
-            case results.OperatingPoint():
+            case results.OperatingPointResult():
                 level = found.voltage(net)
                 scale = abs(level)
                 difference = np.abs(level - theirs[:1].real)
@@ -697,7 +702,7 @@ def deviation(
 
 def run_xyce(
     loaded: Loaded,
-    jolty: Mapping[str, results.Result],
+    jolty: Mapping[str, results.AnalysisResult],
     runner: Xyce,
     *,
     once: bool,
@@ -850,7 +855,7 @@ def compare(now: Mapping[str, Timing], before: Mapping[str, Timing], name: str) 
     print(f"{flagged} of {len(shared)} changed by more than {FLAGGED:.0%}")
 
 
-def fingerprint(found: Mapping[str, results.Result]) -> str:
+def fingerprint(found: Mapping[str, results.AnalysisResult]) -> str:
     """The first 16 hexadecimal digits of the SHA-256 of `found`'s arrays.
 
     The arrays of each analysis's result, by name, in order: the same digits for the
@@ -957,11 +962,11 @@ def break_even(threshold: Threshold, at: Sized, count: int) -> int:
 
 
 def on(
-    count: int, work: Callable[[], dict[str, results.Result]]
-) -> Callable[[], dict[str, results.Result]]:
+    count: int, work: Callable[[], dict[str, results.AnalysisResult]]
+) -> Callable[[], dict[str, results.AnalysisResult]]:
     """`work`, run on the engine's pool of `count` threads."""
 
-    def within() -> dict[str, results.Result]:
+    def within() -> dict[str, results.AnalysisResult]:
         with simulate.threads(count):
             return work()
 
@@ -969,7 +974,7 @@ def on(
 
 
 def interleaved(
-    works: Sequence[Callable[[], dict[str, results.Result]]],
+    works: Sequence[Callable[[], dict[str, results.AnalysisResult]]],
 ) -> tuple[list[Timing], list[str]]:
     """The median time of each of `works`, run in turn, and what each first found.
 

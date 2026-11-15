@@ -129,7 +129,7 @@ def _allowance(simulation: Simulation, values: np.ndarray, temperature: float) -
     voltages = [
         column
         for column, unknown in enumerate(simulation.unknowns)
-        if unknown.quantity == "voltage"
+        if unknown.nature == "voltage"
     ]
     largest = float(np.abs(values[..., voltages]).max(initial=0.0))
     thermal = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
@@ -157,7 +157,7 @@ def _agree(
 
     A current agrees within the `allowance` of Xyce's junctions' departures too.
     """
-    current = unknown.quantity == "current"
+    current = unknown.nature == "current"
     noise = CURRENT_TOLERANCE if current else VOLTAGE_TOLERANCE
     np.testing.assert_allclose(
         jolty,

@@ -171,7 +171,9 @@ def _part(instance: ir.Instance) -> ir.Instance:
     It is `instance` without its id, the nets of its terminals and the script line that
     placed it: its model, parameters, tolerances, ratings and part number.
     """
-    return instance.model_copy(update={"id": "", "terminals": {}, "source": None})
+    return instance.model_copy(
+        update={"id": "", "terminals": {}, "source_location": None}
+    )
 
 
 def _bench_changes(reference: ir.Circuit, built: ir.Circuit) -> list[str]:
@@ -179,7 +181,7 @@ def _bench_changes(reference: ir.Circuit, built: ir.Circuit) -> list[str]:
 
     def bench(circuit: ir.Circuit) -> dict[str, ir.Instance]:
         return {
-            instance.id: instance.model_copy(update={"source": None})
+            instance.id: instance.model_copy(update={"source_location": None})
             for instance in circuit.components[circuit.top].instances
         }
 

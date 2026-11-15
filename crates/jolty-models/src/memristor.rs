@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::parts;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
     Real, Stamp, Unknown,
 };
 
@@ -259,7 +259,7 @@ impl<R: Real> PreparedMemristor<R> {
 impl MemristorShape {
     /// Claims a memristor's state and entries in `layout`.
     fn new(layout: &mut Layout) -> Self {
-        let state = layout.internal("state", Quantity::State);
+        let state = layout.internal("state", Nature::State);
         let [positive, negative] = POSITIVE_NEGATIVE;
         let columns = [positive, negative, state];
         Self {

@@ -19,8 +19,8 @@ use crate::junction::{Temperatures, below_one, critical_voltage, limit_junction}
 use crate::kernel::parts::{self, Nodes, Oriented, Pair, Series};
 use crate::region::Bipolar;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Polarity,
-    Quantity, REFERENCE_TEMPERATURE, Real, Regions, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
+    Polarity, REFERENCE_TEMPERATURE, Real, Regions, Stamp,
 };
 
 /// VBIC's Boltzmann constant, in joules per kelvin: the one its definition's reference code
@@ -1701,8 +1701,8 @@ impl ExcessPhase {
     /// The network, driven by the transport current among the `stamp`ed nodes.
     fn new(layout: &mut Layout, stamp: &Nodes<STAMPED>) -> Self {
         let unknowns = [
-            layout.internal("transport_filter", Quantity::Current),
-            layout.internal("delayed_transport", Quantity::Current),
+            layout.internal("transport_filter", Nature::Current),
+            layout.internal("delayed_transport", Nature::Current),
         ];
         let [first, second] = unknowns;
         Self {
@@ -1838,9 +1838,9 @@ impl Kernel for Vbic {
             substrate,
             ("substrate", "substrate_current"),
         );
-        let ci = layout.internal("intrinsic_collector", Quantity::Voltage);
-        let bp = layout.internal("parasitic_base", Quantity::Voltage);
-        let bi = layout.internal("intrinsic_base", Quantity::Voltage);
+        let ci = layout.internal("intrinsic_collector", Nature::Voltage);
+        let bp = layout.internal("parasitic_base", Nature::Voltage);
+        let bi = layout.internal("intrinsic_base", Nature::Voltage);
         let stamp = Nodes::new(layout, [cx, ci, bx, bi, ei, bp, si]);
         let [emitter_overlap, collector_overlap] = prepared.overlap;
         let overlap = [

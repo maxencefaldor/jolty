@@ -82,7 +82,7 @@ fn circuit(network: &Network, reversed: bool) -> Circuit {
         instances.reverse();
     }
     let document = json!({
-        "format": "jolty-circuit", "version": 1, "top": "network",
+        "format": "jolty-circuit", "version": 2, "top": "network",
         "components": {"network": {
             "ports": [{"name": "0", "role": "ground"}],
             "instances": instances,

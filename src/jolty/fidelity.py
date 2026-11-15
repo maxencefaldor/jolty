@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from jolty import devices, ir, results
 from jolty.errors import CharacterizationError, JoltyError
 from jolty.plan import Ac, Characterized, OperatingPoint, Plan, Transient
-from jolty.results import Excursion, Result
+from jolty.results import AnalysisResult, Excursion
 from jolty.simulate import Elaborated, Simulation, kelvins
 from jolty.specs import Verdict
 from jolty.units import FREQUENCY, TIME, VOLTAGE, Quantity, format_si
@@ -427,7 +427,7 @@ class _Timer:
 
 
 def _edge(
-    waveforms: results.Waveforms, index: int, *, rising: bool, supply: float
+    waveforms: results.TransientResult, index: int, *, rising: bool, supply: float
 ) -> _Edge | None:
     """Output `index`'s last crossing of half the supply toward its new level.
 
@@ -935,8 +935,8 @@ def contract(
     fidelity: Fidelity,
     plan: Plan,
     path: str,
-    modeled: Mapping[str, Result],
-    opened: Mapping[str, Result],
+    modeled: Mapping[str, AnalysisResult],
+    opened: Mapping[str, AnalysisResult],
 ) -> Contract:
     """The spot check of the instance at `path`.
 
@@ -959,14 +959,17 @@ def contract(
                 divergences.append(f"{name} fails with the circuit of {path}")
                 continue
             match result, opened[name]:
-                case results.Waveforms(), results.Waveforms() as other:
+                case results.TransientResult(), results.TransientResult() as other:
                     found = _diverges(
                         what,
                         _changes(result, net, model.supply),
                         _changes(other, net, model.supply),
                         allowed,
                     )
-                case ((results.OperatingPoint() | results.Sweep()), other):
+                case (
+                    (results.OperatingPointResult() | results.DcSweepResult()),
+                    other,
+                ):
                     found = _differs(
                         what,
                         _levels(result, net, model.supply),
@@ -1032,7 +1035,7 @@ def _placed(built: ir.Circuit, component: str, id: str) -> ir.Instance:
 
 
 def _changes(
-    result: results.Waveforms, net: str, supply: float
+    result: results.TransientResult, net: str, supply: float
 ) -> list[tuple[float, float]]:
     """`net`'s level at time zero, then each change: its time and the new level.
 
@@ -1052,12 +1055,14 @@ def _changes(
     return changes
 
 
-def _levels(result: Result, net: str, supply: float) -> list[float]:
+def _levels(result: AnalysisResult, net: str, supply: float) -> list[float]:
     """`net`'s level at an operating point, or at each level of a sweep."""
     match result:
-        case results.OperatingPoint() | results.Sweep() if net in result.nets:
+        case results.OperatingPointResult() | results.DcSweepResult() if (
+            net in result.nets
+        ):
             return [float(level) for level in np.atleast_1d(result.level(net))]
-        case results.OperatingPoint() | results.Sweep():
+        case results.OperatingPointResult() | results.DcSweepResult():
             above = np.atleast_1d(result.voltage(net)) > supply / 2
             return [float(level) for level in above]
     return []
