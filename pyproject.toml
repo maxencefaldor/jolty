@@ -121,7 +121,8 @@ include = ["src", "tests", "examples", "docs", "benchmarks", "discovery", "perf"
 # parts the examples share, `examples/common.py`, as their scripts do, the fixtures'
 # scripts what they share, `perf/circuits/fixture.py`, as their runs do, the corpus of
 # hard circuits its modules, `perf/robustness/corpus.py` and those beside it, and the
-# precision suite its modules and the speed suite's timing, as its run does.
+# precision suite its modules and the speed suite's timing, as its run does, and the
+# coverage matrix its modules, `perf/coverage/matrix.py` and those beside it.
 extra-paths = [
     "tests",
     "benchmarks",
@@ -130,13 +131,15 @@ extra-paths = [
     "perf/robustness",
     "perf",
     "perf/precision",
+    "perf/coverage",
 ]
 
 [tool.pytest]
 testpaths = ["src", "tests"]
 # The tests share harness modules, `differential` and `strategies`, which they import
-# from there, and import the corpus of hard circuits' modules from beside it.
-pythonpath = ["tests", "perf/robustness"]
+# from there, and import the corpus of hard circuits' modules and the coverage
+# matrix's from beside them.
+pythonpath = ["tests", "perf/robustness", "perf/coverage"]
 # The tests run in a process per processor, pytest-xdist's. Each test of random circuits
 # is one item that runs for minutes, so a process that finishes its share takes tests
 # still waiting behind another's, rather than wait idle: worksteal.

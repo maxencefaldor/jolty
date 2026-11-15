@@ -20,6 +20,8 @@ Usage::
     scripts/bench --baseline COMMIT   against COMMIT's results, or a results file's
     scripts/bench --break-even NAME   where the threshold NAME of Parallelism pays
     scripts/bench --robustness        the hard circuits' corpus, in every simulator
+    scripts/bench --coverage          the coverage matrix, each row's probe in each
+                                      simulator
 
 Without ``--baseline``, the baseline is the newest ancestor of the checked-out commit
 whose results ``perf/results`` holds. A working tree with changes to tracked files
@@ -40,6 +42,10 @@ break-even. ``perf/README.md`` says how it sets each threshold, and what it foun
 case in every simulator installed, or those ``--simulator`` names, and prints each
 outcome, classified, and each simulator's failure rates; ``perf/robustness/README.md``
 says what it holds and how it judges.
+
+``--coverage`` runs instead the probes of ``perf/coverage``, each row's in jolty and
+ngspice, or the simulators ``--simulator`` names, judges each cell against the row's
+known answer, and renders the matrix; ``perf/coverage/README.md`` says how.
 """
 
 import dataclasses
@@ -88,9 +94,11 @@ ROOT: Final = PERF.parent
 
 sys.path.insert(0, str(PERF / "circuits"))
 sys.path.insert(0, str(PERF / "robustness"))
+sys.path.insert(0, str(PERF / "coverage"))
 import bjt_amp  # noqa: E402 - beside the scripts
 import corpus  # noqa: E402 - the hard circuits' corpus, beside its cases
 import inverter_chain  # noqa: E402 - beside the scripts
+import matrix  # noqa: E402 - the coverage matrix, beside its probes
 import rc_mesh  # noqa: E402 - beside the scripts
 from fixture import CIRCUITS, PLANS, Fixture, engine_plan  # noqa: E402 - beside the scripts
 
@@ -1013,7 +1021,8 @@ class Bench(cli.CommandLine):
         description=(
             "The fixtures to time, the suite's by default; with --break-even, the "
             "scripts whose circuits it sweeps, every one it applies to by default; "
-            "with --robustness, the cases it runs, every one by default."
+            "with --robustness, the cases it runs, every one by default; with "
+            "--coverage, the rows it runs, every one by default."
         ),
     )
     scale: bool = Field(
@@ -1055,17 +1064,29 @@ class Bench(cli.CommandLine):
             "its outcome classified, and each simulator's failure rates."
         ),
     )
+    coverage: bool = Field(
+        default=False,
+        description=(
+            "Run the coverage matrix's probes instead: each row in each simulator, "
+            "each cell judged against the row's known answer, the matrix rendered."
+        ),
+    )
     simulator: list[str] = Field(
         default_factory=list,
         description=(
-            "The simulators --robustness runs, by configuration, such as jolty and "
-            "ngspice-sparse; every one installed by default."
+            "The simulators --robustness or --coverage runs, by configuration, such "
+            "as jolty, ngspice-sparse or xyce; by default every one installed for "
+            "--robustness, and jolty's and ngspice's for --coverage."
         ),
     )
     timeout: float = Field(
         default=ROBUSTNESS_TIMEOUT,
         gt=0,
         description="The seconds --robustness lets a run take before it stops it.",
+    )
+    xyce: str | None = Field(
+        default=None,
+        description="The Xyce program --coverage runs, the one on the path by default.",
     )
     baseline: str | None = Field(
         default=None, description="The commit or results file to compare with."
@@ -1154,10 +1175,24 @@ def robustness(arguments: Bench) -> None:
     )
 
 
+def coverage(arguments: Bench) -> None:
+    """Runs the coverage matrix's probes, and renders it, beside the machine."""
+    context = matrix.Context(
+        commit=results_path().stem,
+        machine=json.loads(json.dumps(machine())),
+        load=load_average(),
+        root=ROOT,
+    )
+    matrix.measure(arguments.fixtures, arguments.simulator, arguments.xyce, context)
+
+
 def measure(arguments: Bench) -> None:
     """Times the fixtures, writes the times, and compares them with a baseline's."""
     if arguments.robustness:
         robustness(arguments)
+        return
+    if arguments.coverage:
+        coverage(arguments)
         return
     if arguments.break_even is not None:
         break_evens(arguments, arguments.break_even)

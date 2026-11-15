@@ -1,0 +1,4 @@
+* A library of one section, its lower resistance
+.lib low
+.param lower=3k
+.endl low

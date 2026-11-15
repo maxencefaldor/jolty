@@ -15,9 +15,11 @@ scripts/bench --ngspice            # ngspice on the fixtures' netlists, for cont
 scripts/bench --baseline COMMIT    # against COMMIT's times, rather than an ancestor's
 scripts/bench --break-even min_unknowns_inside  # from which size a threshold pays
 scripts/bench --robustness         # the corpus of hard circuits, in every simulator
+scripts/bench --coverage           # the coverage matrix, each row's probe in each simulator
 ```
 
 `--robustness` runs instead the corpus of hard circuits that [`robustness/`](robustness/README.md) holds, jolty's own and third-party decks fetched at a pinned commit by the manifest `external.json`, each in every simulator, and prints each simulator's outcomes and failure rates.
+`--coverage` runs instead the probes of [`coverage/`](coverage/README.md), each row of analyses, device models, SPICE's syntax and outputs in jolty and ngspice, or the simulators `--simulator` names, and renders the matrix, [`coverage/matrix.md`](coverage/matrix.md).
 
 `scripts/bench` first checks that each fixture's files are what its script writes, then times the fixtures, writes the times to `results/<commit>.json`, and prints them against a baseline's, flagging every change over 5%.
 The baseline is the newest ancestor of the checked-out commit whose times `results/` holds, unless `--baseline` names a commit or a results file.
