@@ -58,7 +58,7 @@
       "date": "2026-11-15"
     },
     "xyce-serial": {
-      "commit": "7bd943676a34ac02fe7f015ec0e2a436fbf01b77-dirty",
+      "commit": "092e86f461070c479575c90ee88f587c93d238ea",
       "machine": {
         "cpu": "AMD Ryzen 9 7950X 16-Core Processor",
         "cores": 32,
@@ -70,7 +70,7 @@
         "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)"
       },
       "version": "Xyce Release 7.10.0-opensource",
-      "load": 5.134765625,
+      "load": 1.62158203125,
       "date": "2026-11-15"
     }
   },
@@ -1191,7 +1191,7 @@
         },
         "xyce-serial": {
           "status": "documented",
-          "evidence": "Xyce Reference Guide 7.10, .SENS: AC sensitivities with acobjfunc; not probed here yet",
+          "evidence": "Xyce Reference Guide 7.10, .SENS: AC sensitivities with acobjfunc; no fixture runs it here yet",
           "found": null
         }
       }
@@ -1253,7 +1253,7 @@
         },
         "xyce-serial": {
           "status": "documented",
-          "evidence": "Xyce Reference Guide 7.10, .SENS: transient sensitivities, direct and adjoint; not probed here yet",
+          "evidence": "Xyce Reference Guide 7.10, .SENS: transient sensitivities, direct and adjoint; no fixture runs it here yet",
           "found": null
         }
       }
@@ -1654,7 +1654,7 @@
         },
         "xyce-serial": {
           "status": "documented",
-          "evidence": "Xyce Reference Guide 7.10, .HB: harmonic balance; not probed here yet",
+          "evidence": "Xyce Reference Guide 7.10, .HB: harmonic balance; no fixture runs it here yet",
           "found": null
         }
       }
@@ -1708,7 +1708,7 @@
         },
         "xyce-serial": {
           "status": "documented",
-          "evidence": "Xyce Reference Guide 7.10, .SAMPLING; not probed here yet",
+          "evidence": "Xyce Reference Guide 7.10, .SAMPLING; no fixture runs it here yet",
           "found": null
         }
       }
@@ -2611,7 +2611,7 @@
         },
         "xyce-serial": {
           "status": "documented",
-          "evidence": "Xyce Reference Guide 7.10, MOSFET level 9 (BSIM3v3.2.2); not probed: another version than jolty's 3.3",
+          "evidence": "Xyce Reference Guide 7.10, MOSFET level 9 (BSIM3v3.2.2); no fixture runs it: another version than jolty's 3.3",
           "found": null
         }
       }
@@ -3836,7 +3836,7 @@
         },
         "xyce-serial": {
           "status": "unsupported",
-          "evidence": "Netlist error in file probe.cir at or near line 5 / Simulation aborted due to error. There are 0 MSG_FATAL errors and 1 MSG_ERROR / errors",
+          "evidence": "Netlist error in file circuit.cir at or near line 5 / Simulation aborted due to error. There are 0 MSG_FATAL errors and 1 MSG_ERROR / errors",
           "found": null
         }
       }
@@ -3879,7 +3879,7 @@
         },
         "xyce-serial": {
           "status": "documented",
-          "evidence": "Xyce Reference Guide 7.10, the command line's -r: a SPICE raw file; not probed here, the probes read its CSV",
+          "evidence": "Xyce Reference Guide 7.10, the command line's -r: a SPICE raw file; no fixture reads it here, the fixtures read its CSV",
           "found": null
         }
       }
