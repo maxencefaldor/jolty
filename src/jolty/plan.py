@@ -18,11 +18,13 @@ Examples:
     >>> plan = Plan({"step": Transient(stop=10 * us)})
 """
 
+import decimal
 import itertools
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from typing import Literal
+from decimal import Decimal
+from typing import Final, Literal
 
 from pydantic import JsonValue
 
@@ -35,6 +37,11 @@ from jolty.units import (
     Quantity,
     finite,
 )
+
+DECADE_DIGITS: Final = 40
+"""The decimal digits a decade sweep's frequencies are computed to before they are
+rounded to floats: so many more than a float's 17 that a million steps' rounding stays
+far below a float's, and each frequency rounds to the float nearest its exact value."""
 
 type Method = Literal["trapezoidal", "gear2", "backward_euler"]
 """An integration method: trapezoidal by default, Gear2 for stiff circuits that ring,
@@ -914,6 +921,11 @@ class Plan:
 def decade(start: Quantity, stop: Quantity, per_decade: int) -> list[Quantity]:
     """Frequencies from `start` to `stop`, `per_decade` of them spaced evenly a decade.
 
+    The `k`th of `n` is `start · r^k`, with `r = (stop / start)^(1/n)`, computed in
+    decimal arithmetic to `DECADE_DIGITS` digits, step after step, and only then rounded
+    to the nearest float, so that every platform finds the same frequencies, where its
+    own `log10` and `pow` round differently.
+
     Examples:
         >>> from jolty.units import Hz
         >>> [str(f) for f in decade(1 * Hz, 100 * Hz, 2)]
@@ -926,12 +938,16 @@ def decade(start: Quantity, stop: Quantity, per_decade: int) -> list[Quantity]:
     if not 0 < low < high or per_decade < 1:
         message = "a decade sweep rises from a positive start, a point or more a decade"
         raise ValueError(message)
-    first, last = math.log10(low), math.log10(high)
-    count = max(1, round((last - first) * per_decade))
-    return [
-        Quantity(10 ** (first + (last - first) * step / count), FREQUENCY)
-        for step in range(count + 1)
-    ]
+    with decimal.localcontext(prec=DECADE_DIGITS):
+        span = Decimal(high) / Decimal(low)
+        count = max(1, round(span.log10() * per_decade))
+        ratio = span ** (Decimal(1) / count)
+        frequencies: list[Quantity] = []
+        frequency = Decimal(low)
+        for _ in range(count + 1):
+            frequencies.append(Quantity(float(frequency), FREQUENCY))
+            frequency *= ratio
+        return frequencies
 
 
 def linear(start: Quantity, stop: Quantity, points: int) -> list[Quantity]:

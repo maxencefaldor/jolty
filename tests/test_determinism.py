@@ -13,6 +13,8 @@ drawn alone or among others, and a part added leaves every other part's draws al
 """
 
 import dataclasses
+import decimal
+from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
@@ -183,3 +185,17 @@ def test_a_seed_is_64_bits() -> None:
     for seed in (-1, 2**64):
         with pytest.raises(ValueError, match="seed lies from 0"):
             MonteCarlo(1, seed=seed)
+
+
+def test_a_decade_sweeps_frequencies_are_the_floats_nearest_their_exact_values() -> (
+    None
+):
+    """Each is the float nearest `start · (stop / start)^(k / n)`, on every platform.
+
+    Computed again here to 80 digits, a power for each, where a platform's own `pow` of
+    a rounded exponent misses most of the 10,000 by a few units in their last place.
+    """
+    swept = decade(1 * Hz, 1 * GHz, 1111)
+    with decimal.localcontext(prec=80):
+        exact = [float(Decimal(10) ** (Decimal(9 * k) / 9999)) for k in range(10_000)]
+    assert [frequency.value for frequency in swept] == exact
