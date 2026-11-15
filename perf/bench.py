@@ -17,6 +17,7 @@ Usage::
     scripts/bench --scale             the large fixtures, each run once in Python
     scripts/bench --scale --largest   and the 50,000 inverters' chain spread too
     scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
+    scripts/bench --xyce              Xyce on them, and how far it lies from jolty
     scripts/bench --baseline COMMIT   against COMMIT's results, or a results file's
     scripts/bench --break-even NAME   where the threshold NAME of Parallelism pays
     scripts/bench --robustness        the hard circuits' corpus, in every simulator
@@ -31,6 +32,12 @@ writes ``<commit>-dirty.json``, which is never taken as a baseline.
 every core, every threshold of ``Parallelism`` at its break-even, and prints the
 speed-ups and its results' fingerprint, which must be the same on every number of
 threads; it spreads the 50,000 inverters' chain only with ``--largest``.
+
+``--xyce`` runs Xyce instead, serially at its own defaults, on each fixture's netlist in
+Xyce's dialect, each analysis in an Xyce of its own, and records its time end to end,
+its analyses' own time as it reports it, and how far the voltages it prints lie from
+jolty's; with ``--scale``, Xyce's parallel build, ``--xyce-mpi``, runs each large
+fixture on 1, 2, 4, 8 and 16 MPI ranks too.
 
 ``--break-even`` measures instead from which size of circuit setting one threshold of
 ``Parallelism`` makes one run faster than leaving it unset, on 2, 4, 8 threads and
@@ -83,8 +90,9 @@ from jolty.plan import (
     Transient,
 )
 from jolty.simulate import Elaborated, Simulation
-from jolty.spice import export, ngspice
+from jolty.spice import export, ngspice, xyce
 from jolty.units import FREQUENCY, TIME
+from jolty.unknowns import Unknown
 
 PERF: Final = Path(__file__).resolve().parent
 """The ``perf`` directory."""
@@ -623,6 +631,228 @@ def spice(
     return timings
 
 
+RANKS: Final = (1, 2, 4, 8, 16)
+"""The MPI ranks ``--xyce --scale`` runs Xyce's parallel build on: as far as the 16
+cores of `dogwood`, the machine Xyce is built on, which the lab shares."""
+
+PROBES: Final = 2
+"""The nets at each end of a fixture's top that Xyce prints, so that what it writes
+costs little beside what it solves, as other simulators' comparisons turn output off:
+the first two and the last two."""
+
+
+def xyce_commands(loaded: Loaded) -> list[tuple[str, str]]:
+    """Each analysis of the fixture's plan as Xyce's command, by name.
+
+    A transient's longest step is its plan's, or a fiftieth of it, as ngspice's deck
+    takes it.
+
+    Raises:
+        TypeError: When the plan runs an analysis other than an operating point, a
+            small-signal response or a transient.
+    """
+    commands: list[tuple[str, str]] = []
+    for name, analysis in loaded.plan.analyses.items():
+        match analysis:
+            case OperatingPoint():
+                commands.append((name, ".op"))
+            case Ac(frequencies=frequencies):
+                first = frequencies[0].to(FREQUENCY, "a frequency")
+                last = frequencies[-1].to(FREQUENCY, "a frequency")
+                per_decade = round((len(frequencies) - 1) / math.log10(last / first))
+                commands.append((name, f".ac dec {per_decade} {first!r} {last!r}"))
+            case Transient(stop=stop, max_step=max_step):
+                end = stop.to(TIME, "a stop")
+                longest = end / 50 if max_step is None else max_step.to(TIME, "a step")
+                commands.append((name, f".tran {longest!r} {end!r} 0 {longest!r}"))
+            case _:
+                message = f"no fixture runs {type(analysis).__name__} in Xyce"
+                raise TypeError(message)
+    return commands
+
+
+def probes(loaded: Loaded) -> list[str]:
+    """The nets of the fixture's top Xyce prints: `PROBES` at each end, in order."""
+    top = loaded.circuit.components[loaded.circuit.top]
+    ground = {port.name for port in top.ports if port.role is ir.Role.GROUND}
+    nets = list(
+        dict.fromkeys(
+            net
+            for instance in top.instances
+            for net in instance.terminals.values()
+            if net not in ground
+        )
+    )
+    return list(dict.fromkeys(nets[:PROBES] + nets[-PROBES:]))
+
+
+def deviation(
+    circuit: ir.Circuit, found: results.Result, spice: xyce.Result, nets: Sequence[str]
+) -> float:
+    """How far Xyce's voltages of `nets` lie from jolty's, as a fraction of their size.
+
+    The largest difference over the nets, each over the largest magnitude of jolty's
+    voltage, or in a transient its swing, jolty's waveform interpolated at Xyce's
+    times.
+
+    Raises:
+        TypeError: When the result is of an analysis other than an operating point, a
+            small-signal response or a transient.
+    """
+    worst = 0.0
+    for net in nets:
+        name = export.vector(circuit, Unknown(net, "voltage"), dialect=export.XYCE)
+        theirs = spice.vectors[name]
+        match found:
+            case results.Waveforms():
+                waveform = found.voltage(net)
+                ours = np.interp(spice.real("time"), found.times, waveform)
+                scale = float(np.ptp(waveform))
+                difference = np.abs(ours - theirs.real)
+            case results.Response():
+                ours = found.voltage(net)
+                scale = float(np.abs(ours).max())
+                difference = np.abs(ours - theirs)
+            case results.OperatingPoint():
+                level = found.voltage(net)
+                scale = abs(level)
+                difference = np.abs(level - theirs[:1].real)
+            case _:
+                message = f"no fixture's {type(found).__name__} is compared with Xyce"
+                raise TypeError(message)
+        worst = max(worst, float(difference.max()) / (scale or 1.0))
+    return worst
+
+
+@dataclass(frozen=True, slots=True)
+class Ran:
+    """What Xyce's runs of a fixture took: the medians of their runs, and their number.
+
+    The median end to end, and of its analyses' time as Xyce's own report gives it,
+    beside the load average as they began.
+    """
+
+    seconds: float
+    analysis: float
+    runs: int
+    load: float
+
+
+def xyce_fixture(
+    loaded: Loaded,
+    jolty: Mapping[str, results.Result],
+    launch: Sequence[str],
+    *,
+    once: bool,
+) -> tuple[Ran, dict[str, float]]:
+    """Xyce's runs of the fixture by `launch`, and its deviation from jolty's results.
+
+    Each analysis runs in an Xyce of its own, at Xyce's defaults, printing `probes`;
+    a run of the fixture is its analyses' in turn, timed from writing the deck to
+    reading the values, repeated as the Python timing repeats a fixture, or `once`.
+    """
+    lines = export.netlist(
+        loaded.circuit,
+        excited=next(
+            (
+                each.source
+                for each in loaded.plan.analyses.values()
+                if isinstance(each, Ac)
+            ),
+            None,
+        ),
+        transient=any(
+            isinstance(each, Transient) for each in loaded.plan.analyses.values()
+        ),
+        dialect=export.XYCE,
+    )
+    nets = probes(loaded)
+    printed = [
+        export.vector(loaded.circuit, Unknown(net, "voltage"), dialect=export.XYCE)
+        for net in nets
+    ]
+    commands = xyce_commands(loaded)
+    load = load_average()
+    walls: list[float] = []
+    analyses: list[float] = []
+    deviations: dict[str, float] = {}
+    begun = time.perf_counter()
+    while not walls or (
+        not once
+        and (len(walls) < FEWEST_RUNS or time.perf_counter() - begun < FEWEST_SECONDS)
+    ):
+        wall = analysis = 0.0
+        for name, command in commands:
+            started = time.perf_counter()
+            found = xyce.run(
+                lines,
+                command,
+                printed=printed,
+                options=(),
+                launch=launch,
+                timeout=None,
+            )
+            wall += time.perf_counter() - started
+            analysis += found.solvers
+            deviations[name] = deviation(loaded.circuit, jolty[name], found, nets)
+        walls.append(wall)
+        analyses.append(analysis)
+    ran = Ran(statistics.median(walls), statistics.median(analyses), len(walls), load)
+    return ran, deviations
+
+
+def xyce_runs(
+    names: Iterable[str],
+    found: Mapping[str, Fixture],
+    *,
+    parallel: Path | None,
+    ranks: Sequence[int],
+    scale: bool,
+) -> tuple[dict[str, Timing], dict[str, dict[str, object]]]:
+    """Xyce's times on the fixtures `names`, and how far each run lay from jolty's.
+
+    Each runs once if at `scale`, serially and, given Xyce's `parallel` build, on each
+    of `ranks` MPI ranks; a Monte Carlo fixture is not timed.
+
+    Raises:
+        SystemExit: When Xyce is not installed.
+    """
+    if xyce.EXECUTABLE is None:
+        message = "Xyce is not installed"
+        raise SystemExit(message)
+    timings: dict[str, Timing] = {}
+    agreements: dict[str, dict[str, object]] = {}
+    for name in names:
+        loaded = load(found[name])
+        if loaded.plan.monte_carlo is not None:
+            continue
+        print(f"running {name} in jolty, to compare", flush=True)
+        jolty = run(loaded)
+        launches = {"xyce": [xyce.EXECUTABLE]}
+        if parallel is not None and scale:
+            launches |= {
+                f"xyce-mpi/{count} ranks": ["mpirun", "-np", str(count), str(parallel)]
+                for count in ranks
+            }
+        for configuration, launch in launches.items():
+            print(f"timing {name} in {configuration}", flush=True)
+            ran, deviations = xyce_fixture(loaded, jolty, launch, once=scale)
+            key = f"{configuration}/{name}"
+            timings[key] = Timing(ran.seconds, ran.runs, ran.load)
+            timings[f"{key}/analysis"] = Timing(ran.analysis, ran.runs, ran.load)
+            agreements[key] = {"deviations": deviations, "load after": load_average()}
+            print(
+                f"  {duration(ran.seconds)} end to end, {duration(ran.analysis)} in "
+                f"Xyce's analyses, over {ran.runs} runs at load {ran.load:.2f}; "
+                "deviation from jolty "
+                + ", ".join(
+                    f"{each} {value:.1e}" for each, value in deviations.items()
+                ),
+                flush=True,
+            )
+    return timings, agreements
+
+
 def git(*arguments: str) -> str:
     """What git prints for `arguments`, in the repository."""
     done = subprocess.run(  # noqa: S603 - git reads the repository
@@ -1084,9 +1314,18 @@ class Bench(cli.CommandLine):
         gt=0,
         description="The seconds --robustness lets a run take before it stops it.",
     )
-    xyce: str | None = Field(
+    xyce: bool = Field(
+        default=False,
+        description=(
+            "Time Xyce instead, at its defaults, with how far it lies from jolty."
+        ),
+    )
+    xyce_mpi: Path | None = Field(
         default=None,
-        description="The Xyce program --coverage runs, the one on the path by default.",
+        description=(
+            "Xyce's parallel build, which --xyce --scale runs on 1, 2, 4, 8 and 16 "
+            "MPI ranks, or the --threads given."
+        ),
     )
     baseline: str | None = Field(
         default=None, description="The commit or results file to compare with."
@@ -1114,10 +1353,12 @@ def save(
     timings: Mapping[str, Timing],
     profiles: Mapping[str, object] | None = None,
     fingerprints: Mapping[str, object] | None = None,
+    agreements: Mapping[str, object] | None = None,
 ) -> None:
-    """Writes `timings`, `profiles` and `fingerprints` to the results `output`.
+    """Writes `timings`, `profiles`, `fingerprints` and `agreements` to `output`.
 
-    Each adds to what the file holds of its kind, if anything.
+    Each adds to what the results file holds of its kind, if anything: `agreements`,
+    how far another simulator's runs lay from jolty's.
     """
     earlier = json.loads(output.read_text("utf-8")) if output.is_file() else {}
     written = {**earlier.get("timings", {})}
@@ -1132,6 +1373,7 @@ def save(
         "timings": written,
         "profiles": earlier.get("profiles", {}) | dict(profiles or {}),
         "fingerprints": earlier.get("fingerprints", {}) | dict(fingerprints or {}),
+        "agreements": earlier.get("agreements", {}) | dict(agreements or {}),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
@@ -1183,7 +1425,7 @@ def coverage(arguments: Bench) -> None:
         load=load_average(),
         root=ROOT,
     )
-    matrix.measure(arguments.fixtures, arguments.simulator, arguments.xyce, context)
+    matrix.measure(arguments.fixtures, arguments.simulator, None, context)
 
 
 def measure(arguments: Bench) -> None:
@@ -1213,8 +1455,17 @@ def measure(arguments: Bench) -> None:
     started = time.perf_counter()
     found_profiles: dict[str, dict[str, Profiled]] = {}
     fingerprints: dict[str, dict[str, str]] = {}
+    agreements: dict[str, dict[str, object]] = {}
     if arguments.ngspice:
         timings = spice(names, found, scale=arguments.scale)
+    elif arguments.xyce:
+        timings, agreements = xyce_runs(
+            names,
+            found,
+            parallel=arguments.xyce_mpi,
+            ranks=arguments.threads or RANKS,
+            scale=arguments.scale,
+        )
     else:
         timings = {} if arguments.scale else rust(names, found)
         spread = {
@@ -1238,6 +1489,7 @@ def measure(arguments: Bench) -> None:
         output,
         timings,
         fingerprints=fingerprints,
+        agreements=agreements,
         profiles={
             name: {
                 analysis: dataclasses.asdict(profiled)

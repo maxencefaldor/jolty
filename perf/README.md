@@ -12,6 +12,8 @@ scripts/bench bjt_amp buck         # only these fixtures
 scripts/bench --scale              # the large fixtures, each run once, and spread over threads
 scripts/bench --scale --largest    # and the 50,000 inverters' chain spread over threads too
 scripts/bench --ngspice            # ngspice on the fixtures' netlists, for context
+scripts/bench --xyce               # Xyce on them, and how far it lies from jolty
+scripts/bench --xyce --scale --xyce-mpi PATH  # and Xyce's parallel build on 1 to 16 ranks
 scripts/bench --baseline COMMIT    # against COMMIT's times, rather than an ancestor's
 scripts/bench --break-even min_unknowns_inside  # from which size a threshold pays
 scripts/bench --robustness         # the corpus of hard circuits, in every simulator
@@ -57,9 +59,12 @@ The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.
 | `python/<fixture>` | The median of at least ten runs over at least five seconds, after one to warm up: the circuit, read once from its file, elaborated by `Simulation`, and every analysis run by `Simulation.run`, whose results are made as a script's are. An operating point and a transient also record the instances rated for a current or a power, which the checks read. |
 | `python/monte_carlo/<n> samples, one core`, `..., every core` | The time per sample of the fixture's first `n` samples, run as the runner runs them, as one batch of `Simulation.batch` on the circuit elaborated once, each sample drawn by the engine from its index, the one elaboration counted: on a pool of one thread, and of a thread per core. The suite runs the first 1,000, and `--scale` all of them, on every core. |
 | `ngspice/<fixture>` | ngspice 47 in batch mode on the fixture's netlist as jolty writes it, its analyses run from a control section: from its start to its exit, so its start-up and the parsing of its netlist count, for context. |
+| `xyce/<fixture>`, `xyce-mpi/<n> ranks/<fixture>` | Xyce at its defaults on the fixture's netlist in Xyce's dialect, each analysis in an Xyce of its own, printing two nets at each end of the circuit's top: from writing the deck to reading its values, summed over the analyses; serially, or by its parallel build on `n` MPI ranks. |
+| `.../analysis` | The same runs' time in Xyce's analyses alone, its own "Total Simulation Solvers Run Time", summed over the analyses. |
 
 Criterion takes ten samples of each benchmark over five seconds, each sample one run or more, after a second of warming up.
 The Python timings follow the same protocol.
+Beside Xyce's times, the results file's `agreements` hold how far each run's printed voltages lay from jolty's at the plan's options, each analysis's largest difference over the nets printed, as a fraction of jolty's largest magnitude or, in a transient, of its swing, jolty's waveform interpolated at Xyce's times: both simulators' errors at their defaults, so a fixture is timed as the same work only where it is small.
 Beside the times, the suite runs each fixture with a transient once more with the option `profile` on, and writes the transient's statistics' `work` and `profile`: its Newton iterations and factorizations, and where its time went.
 
 ## Baseline
