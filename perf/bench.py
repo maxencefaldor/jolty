@@ -15,6 +15,7 @@ Usage::
 
     scripts/bench [FIXTURE ...]       the suite's fixtures, or those named
     scripts/bench --scale             the large fixtures, each run once in Python
+    scripts/bench --scale --largest   and the 50,000 inverters' chain spread too
     scripts/bench --ngspice           ngspice on the fixtures' netlists, for context
     scripts/bench --baseline COMMIT   against COMMIT's results, or a results file's
     scripts/bench --break-even NAME   where the threshold NAME of Parallelism pays
@@ -22,6 +23,11 @@ Usage::
 Without ``--baseline``, the baseline is the newest ancestor of the checked-out commit
 whose results ``perf/results`` holds. A working tree with changes to tracked files
 writes ``<commit>-dirty.json``, which is never taken as a baseline.
+
+``--scale`` runs each large fixture serially, then spread over 1, 2, 4, 8 threads and
+every core, every threshold of ``Parallelism`` at its break-even, and prints the
+speed-ups and its results' fingerprint, which must be the same on every number of
+threads; it spreads the 50,000 inverters' chain only with ``--largest``.
 
 ``--break-even`` measures instead from which size of circuit setting one threshold of
 ``Parallelism`` makes one run faster than leaving it unset, on 2, 4, 8 threads and
@@ -99,6 +105,39 @@ SCALE: Final = (
 )
 """The fixtures ``--scale`` times, each once: the large circuits, which take minutes,
 and every sample of the Monte Carlo fixture."""
+
+THREADS: Final = (1, 2, 4, 8)
+"""The threads ``--scale`` spreads a run of a large fixture on, as far as there are
+cores, and then every core, as the Monte Carlo fixture's batches run."""
+
+CHAINS: Final = Parallelism(
+    min_solves_per_task=180, min_instances_per_task=167, min_unknowns_inside=35_004
+)
+"""Each threshold at its break-even on the chains of inverters, ``min_solves_per_task``
+at the amplifier's: the largest of its break-evens on 2, 4, 8 and 12 threads that
+``perf/README.md`` reports, so that it pays wherever it spreads on any of them. A
+dissection paid on no chain measured, up to 35,004 unknowns, so it is left unset."""
+
+MESHES: Final = Parallelism(
+    min_solves_per_task=180,
+    min_instances_per_task=14_951,
+    max_unknowns_per_interior=2_451,
+)
+"""Each threshold at its break-even on the meshes, ``min_solves_per_task`` at the
+amplifier's, the largest on any number of threads, as for `CHAINS`. The work on each
+unknown paid spread on no mesh measured, up to 90,001 unknowns, so it is left unset."""
+
+SPREAD: Final = {
+    "inverter_chain_5000": CHAINS,
+    "inverter_chain_50000": CHAINS,
+    "rc_mesh_300": MESHES,
+}
+"""The thresholds ``--scale`` spreads a run of each large fixture with: their
+break-evens on the circuits of its script."""
+
+LONGEST: Final = "inverter_chain_50000"
+"""The fixture whose runs ``--scale`` spreads only with ``--largest``: each takes
+minutes."""
 
 SAMPLES: Final = 1000
 """The samples of a Monte Carlo fixture the suite times: a few seconds on one thread."""
@@ -301,9 +340,75 @@ def python(
         for count, label in threads:
             whole = timed(sampled(loaded, samples, count), once=scale)
             timings[f"python/{name}/{samples} samples, {label}"] = Timing(
-                whole.seconds / samples, whole.runs
+                whole.seconds / samples, whole.runs, whole.load
             )
     return timings
+
+
+def scaling(
+    name: str, loaded: Loaded, parallelism: Parallelism, counts: Sequence[int]
+) -> tuple[dict[str, Timing], dict[str, str]]:
+    """One run of the fixture `name` serially, then one spread on each of `counts`.
+
+    The serial run leaves every threshold unset, as the fixture's plan does, and its
+    time is the fixture's own, as when it is not spread; each spread run sets the
+    thresholds of `parallelism`, on a pool of so many threads. Prints each run's time,
+    its speed-up against the serial run and against the spread run on one thread, and
+    the fingerprint of its results; returns the times and the serial and spread
+    runs' fingerprints.
+
+    Raises:
+        SystemExit: When the spread runs find other bits on another number of
+            threads, or, but with a dissection, which orders the factorization
+            otherwise, other bits than the serial run.
+    """
+    print(f"timing {name} in Python, serially and spread", flush=True)
+    options = dataclasses.replace(loaded.plan.options, parallelism=parallelism)
+    serial, alone = once(on(1, functools.partial(run, loaded)))
+    timings = {f"python/{name}": serial}
+    rows = [("serially", serial, alone)]
+    print(f"{name}, serially: {duration(serial.seconds)}, load {serial.load:.2f}")
+    for count in counts:
+        label = f"{count} thread{'s' if count > 1 else ''}"
+        spread, found = once(on(count, functools.partial(run, loaded, options)))
+        timings[f"python/{name}/spread on {label}"] = spread
+        rows.append((label, spread, found))
+        print(f"{name}, spread on {label}: {duration(spread.seconds)}", flush=True)
+    settings = ", ".join(
+        f"{key} {value:,}" for key, value in parallelism.to_json().items()
+    )
+    print(f"\n{name}, serially and spread by {settings}:")
+    widths = (10, 10, 14, 16, 16, 0)
+    heads = ("threads", "time", "against serial", "against 1 thread", "results", "load")
+    print(table(heads, widths))
+    one = next((each.seconds for label, each, _ in rows if label == "1 thread"), None)
+    for label, each, found in rows:
+        against = (
+            "" if one is None or label == "serially" else f"{one / each.seconds:.2f}x"
+        )
+        cells = (
+            label,
+            duration(each.seconds),
+            f"{serial.seconds / each.seconds:.2f}x",
+            against,
+            found,
+            f"{each.load:.2f}",
+        )
+        print(table(cells, widths))
+    spread_prints = {found for label, _, found in rows if label != "serially"}
+    dissected = parallelism.max_unknowns_per_interior is not None
+    if len(spread_prints) > 1 or not (dissected or spread_prints <= {alone}):
+        message = f"{name} found other bits spread: {', '.join(f for *_, f in rows)}"
+        raise SystemExit(message)
+    return timings, {"serial": alone, "spread": next(iter(spread_prints), alone)}
+
+
+def once(work: Callable[[], dict[str, results.Result]]) -> tuple[Timing, str]:
+    """The time of one run of `work`, and the fingerprint of what it found."""
+    load = load_average()
+    started = time.perf_counter()
+    found = work()
+    return Timing(time.perf_counter() - started, 1, load), fingerprint(found)
 
 
 @dataclass(frozen=True, slots=True)
@@ -914,8 +1019,8 @@ class Bench(cli.CommandLine):
     largest: bool = Field(
         default=False,
         description=(
-            "With --scale, spread the 50,000 inverters' chain over threads too: some "
-            "20 minutes more."
+            "With --scale, spread the 50,000 inverters' chain over threads too: 17 "
+            "minutes more on 12 cores."
         ),
     )
     sizes: list[int] = Field(
@@ -957,8 +1062,12 @@ def save(
     output: Path,
     timings: Mapping[str, Timing],
     profiles: Mapping[str, object] | None = None,
+    fingerprints: Mapping[str, object] | None = None,
 ) -> None:
-    """Writes `timings` and `profiles` to the results `output`, adding to its own."""
+    """Writes `timings`, `profiles` and `fingerprints` to the results `output`.
+
+    Each adds to what the file holds of its kind, if anything.
+    """
     earlier = json.loads(output.read_text("utf-8")) if output.is_file() else {}
     written = {**earlier.get("timings", {})}
     written |= {
@@ -971,6 +1080,7 @@ def save(
         "machine": machine(),
         "timings": written,
         "profiles": earlier.get("profiles", {}) | dict(profiles or {}),
+        "fingerprints": earlier.get("fingerprints", {}) | dict(fingerprints or {}),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
@@ -1008,6 +1118,9 @@ def measure(arguments: Bench) -> None:
     if arguments.break_even is not None:
         break_evens(arguments, arguments.break_even)
         return
+    if arguments.largest and not arguments.scale:
+        message = "--largest spreads a fixture of --scale; give --scale too"
+        raise SystemExit(message)
     found = fixtures()
     names = arguments.fixtures or (SCALE if arguments.scale else SUITE)
     unknown = [name for name in names if name not in found]
@@ -1020,17 +1133,32 @@ def measure(arguments: Bench) -> None:
     against = baseline(arguments.baseline)
     started = time.perf_counter()
     found_profiles: dict[str, dict[str, Profiled]] = {}
+    fingerprints: dict[str, dict[str, str]] = {}
     if arguments.ngspice:
         timings = spice(names, found, scale=arguments.scale)
     else:
         timings = {} if arguments.scale else rust(names, found)
-        timings |= python(names, found, scale=arguments.scale)
+        spread = {
+            name: parallelism
+            for name, parallelism in SPREAD.items()
+            if arguments.scale and (name != LONGEST or arguments.largest)
+        }
+        counts = arguments.threads or every(THREADS)
+        for name in names:
+            if name in spread:
+                measured, fingerprints[name] = scaling(
+                    name, load(found[name]), spread[name], counts
+                )
+                timings |= measured
+            else:
+                timings |= python([name], found, scale=arguments.scale)
         found_profiles = profiles(names, found)
     print(f"\nmeasured in {duration(time.perf_counter() - started)}")
     shares(found_profiles)
     save(
         output,
         timings,
+        fingerprints=fingerprints,
         profiles={
             name: {
                 analysis: dataclasses.asdict(profiled)

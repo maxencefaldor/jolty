@@ -9,7 +9,8 @@ The benchmarks stay out of `scripts/check`, which must stay fast and determinist
 ```sh
 scripts/bench                      # the suite: a few minutes, before and after a change
 scripts/bench bjt_amp buck         # only these fixtures
-scripts/bench --scale              # the large fixtures, each run once
+scripts/bench --scale              # the large fixtures, each run once, and spread over threads
+scripts/bench --scale --largest    # and the 50,000 inverters' chain spread over threads too
 scripts/bench --ngspice            # ngspice on the fixtures' netlists, for context
 scripts/bench --baseline COMMIT    # against COMMIT's times, rather than an ancestor's
 scripts/bench --break-even min_unknowns_inside  # from which size a threshold pays
@@ -177,3 +178,47 @@ Each change is a spread run's time against the unset run's, at the smallest size
 Interleaving puts both sides of a comparison under the same load, but the load changed from round to round, by a few percent of a run, so a break-even whose gain is a few percent, such as the meshes' tasks of instances, is uncertain by a size of the sweep: the meshes of 50 a side gained on 2 and 4 threads, where those of 70 lost on all four.
 A chain spends 12% of its run factoring, by the profile above, and a dissection, which factors more slowly on one thread, spread that too little to pay; a mesh spends most of its run factoring, in few Newton iterations, so that spreading its work on each unknown cost more than it saved.
 Each threshold was measured alone, the others unset, so a dissection of a chain whose devices spread too, which leaves the factorization a larger share of the run, may pay sooner.
+
+### Scaling
+
+`scripts/bench --scale` runs each large fixture once serially, its plan setting no threshold, and then once with every threshold set at its break-even, on 1, 2, 4 and 8 threads and every core.
+The spread runs of `inverter_chain_50000` took 17 minutes here, so it runs them only with `--largest`; `--threads` names other numbers of threads.
+It prints each run's time, its speed-up against the serial run and against the spread run on one thread, and its results' fingerprint, the first 16 hexadecimal digits of the SHA-256 of their arrays.
+The spread runs must find the same bits on every number of threads, and those of the serial run unless they dissect the factorization, which orders it otherwise, or it stops.
+The results file holds the serial time as the fixture's own, `python/<fixture>`, each spread time as `python/<fixture>/spread on <n> threads`, and the fingerprints.
+
+The thresholds are the break-evens above and no others: each at the largest of its break-evens on 2, 4, 8 and 12 threads on the circuits of the fixture's script, so that it pays wherever it spreads on any of them, and left unset where none paid.
+`min_solves_per_task` takes the amplifier's, though no large fixture solves at frequencies.
+
+| Fixtures | `min_instances_per_task` | `min_unknowns_inside` | `max_unknowns_per_interior` | `min_solves_per_task` |
+| --- | --- | --- | --- | --- |
+| `inverter_chain_5000`, `_50000` | 167 | 35,004 | unset | 180 |
+| `rc_mesh_300` | 14,951 | unset | 2,451 | 180 |
+
+Measured by `scripts/bench --scale inverter_chain_5000 rc_mesh_300` on 15 November 2026 at 13:11, on the same machine and engine as the break-evens and under the same load, and `inverter_chain_50000` from 13:16 to 13:39 by the same runs in four processes, the serial run, the spread one on one thread, those on 2 and 4 and those on 8 and 12, so that none took more than ten minutes:
+
+| Fixture | Threads | Time | Against serial | Against 1 thread | Load |
+| --- | --- | --- | --- | --- | --- |
+| `inverter_chain_5000` | serially | 29.22 s |  |  | 14.8 |
+| `inverter_chain_5000` | 1 | 28.72 s | 1.02 | 1.00 | 13.4 |
+| `inverter_chain_5000` | 2 | 23.2 s | 1.26 | 1.24 | 11.4 |
+| `inverter_chain_5000` | 4 | 16.5 s | 1.77 | 1.74 | 12.1 |
+| `inverter_chain_5000` | 8 | 15.9 s | 1.84 | 1.81 | 10.9 |
+| `inverter_chain_5000` | 12 | 21.77 s | 1.34 | 1.32 | 10.1 |
+| `rc_mesh_300` | serially | 19.66 s |  |  | 9.8 |
+| `rc_mesh_300` | 1 | 9.716 s | 2.02 | 1.00 | 9.2 |
+| `rc_mesh_300` | 2 | 5.622 s | 3.50 | 1.73 | 11.6 |
+| `rc_mesh_300` | 4 | 4.27 s | 4.60 | 2.28 | 11.3 |
+| `rc_mesh_300` | 8 | 4.535 s | 4.33 | 2.14 | 11.6 |
+| `rc_mesh_300` | 12 | 6.293 s | 3.12 | 1.54 | 12.4 |
+| `inverter_chain_50000` | serially | 300.85 s | | | 9.4 |
+| `inverter_chain_50000` | 1 | 300.75 s | 1.00 | 1.00 | 4.3 |
+| `inverter_chain_50000` | 2 | 236.64 s | 1.27 | 1.27 | 6.3 |
+| `inverter_chain_50000` | 4 | 178.77 s | 1.68 | 1.68 | 9.1 |
+| `inverter_chain_50000` | 8 | 152.51 s | 1.97 | 1.97 | 11.9 |
+| `inverter_chain_50000` | 12 | 169.58 s | 1.77 | 1.77 | 11.3 |
+
+The chains' results were `6bd38191db1d7442` and `ebcc554ba5c4164b` serially and spread on every number of threads, and the mesh's `eb34cf8cbfa7c065` serially and `2a41b88522b56dbe` dissected on every number.
+On one thread a chain spreads nothing, every threshold needing two threads, while the mesh's dissection alone halves its run: its dissected factorization is faster than the minimum degree's on one thread too.
+A chain's factorization and solves stay on one thread, no dissection having paid on a chain alone, and the chain of 50,000 inverters ran at most 1.97 times as fast, on 8 threads.
+On 12 threads both ran slower than on 8, their threads sharing the cores with the other programs, which kept the load average at 10 to 15, so a quiet machine's times are the ones to judge the scaling by.
