@@ -90,6 +90,48 @@ def test_a_plan_runs_its_analyses_and_saves_their_results(tmp_path: Path) -> Non
     assert set(load_results(tmp_path / RESULTS)) == {"op", "step"}
 
 
+AMPLIFIER = """
+from jolty import Builder, OperatingPoint, Plan, Role, component, devices
+from jolty.units import V, kohm
+
+
+@component
+def amplifier(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(5 * V), id="V1")
+    load = c.place(devices.resistor(1 * kohm), id="R1")
+    bias = c.place(devices.resistor(470 * kohm), id="R2")
+    transistor = c.place(devices.bipolar_transistor(), id="Q1")
+    c.connect(supply.positive, load.a, bias.a, name="vcc")
+    c.connect(load.b, transistor.collector, name="out")
+    c.connect(bias.b, transistor.base, name="base")
+    c.connect(transistor.emitter, supply.negative, ground)
+
+
+def build():
+    return amplifier()
+
+
+def plan():
+    return Plan({"op": OperatingPoint(record=["R1"])}, record=["**", "!Q1"])
+"""
+
+
+def test_the_plan_s_own_operating_points_report_every_transistor_s_region(
+    tmp_path: Path,
+) -> None:
+    script = write(tmp_path, AMPLIFIER)
+    outcome = built(run(Job(script=script, plan=script, listed=10), tmp_path))
+    (point,) = outcome.analyses
+    assert isinstance(point, report.PointReport)
+    assert [(each.path, each.region) for each in point.transistors] == [
+        ("Q1", "active")
+    ]
+    # The analysis's record, then every transistor.
+    terminals = ("R1.a", "R1.b", "Q1.collector", "Q1.base", "Q1.emitter")
+    assert _recorded(tmp_path) == [terminals]
+
+
 def test_an_analysis_records_its_own_record_or_else_the_plan_s(
     tmp_path: Path,
 ) -> None:

@@ -17,9 +17,10 @@ use serde::{Deserialize, Serialize};
 use crate::dual::Dual;
 use crate::junction::{Temperatures, below_one, critical_voltage, limit_junction};
 use crate::kernel::parts::{self, Nodes, Oriented, Pair, Series};
+use crate::region::Bipolar;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Polarity,
-    Quantity, REFERENCE_TEMPERATURE, Real, Stamp,
+    Quantity, REFERENCE_TEMPERATURE, Real, Regions, Stamp,
 };
 
 /// VBIC's Boltzmann constant, in joules per kelvin: the one its definition's reference code
@@ -554,6 +555,8 @@ pub struct VbicMemory {
     /// The junction voltages of the last evaluation, oriented as an NPN's, from which the
     /// next steps are limited: `Vbei`, `Vbex`, `Vbci`, `Vbcx`, `Vbep` and `Vbcp`.
     last: [f64; JUNCTIONS],
+    /// The values of [`Bipolar::VARIABLE_NAMES`] at the last evaluation.
+    variables: [f64; 3],
 }
 
 /// The flicker noise of the base-emitter currents, `KFN · |I|^AFN / f^BFN`.
@@ -1879,6 +1882,8 @@ impl Kernel for Vbic {
             .core
             .evaluate(Dual::variables(bias.voltages), at.gmin);
         let sign = prepared.sign;
+        let [base_emitter, _, base_collector, ..] = bias.voltages;
+        memory.variables = Bipolar::variables(base_emitter, base_collector, sign);
         let added = Oriented {
             nodes: &shape.stamp,
             sign,
@@ -1931,6 +1936,18 @@ impl Kernel for Vbic {
         added.charge(stamp, (BI, CX), qbcx);
         added.charge(stamp, (BX, BP), qbep);
         added.charge(stamp, (SI, BP), qbcp);
+    }
+
+    fn variable_names() -> &'static [&'static str] {
+        &Bipolar::VARIABLE_NAMES
+    }
+
+    fn variables(memory: &VbicMemory, values: &mut [f64]) {
+        parts::write_variables(&memory.variables, values);
+    }
+
+    fn regions() -> Regions {
+        Bipolar::REGIONS
     }
 
     /// The thermal noise of the resistances, the intrinsic ones at their slopes, the shot
@@ -2039,9 +2056,10 @@ mod tests {
 
     use super::*;
     use crate::ELEMENTARY_CHARGE;
+    use crate::region::{BASE_COLLECTOR, BASE_EMITTER};
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
-        thermal,
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
+        assert_switches_where_margin_vanishes, source, thermal,
     };
 
     /// VBIC's thermal voltage at the reference temperature.
@@ -2675,5 +2693,45 @@ mod tests {
             assert!(source(&saturated, name).density(1.0) > 0.0, "{name}");
         }
         assert_eq!(sources.len(), 13, "{sources:?}");
+    }
+
+    /// A transistor is cut off with neither intrinsic junction forward, active with its
+    /// base-emitter junction alone forward, saturated with both, and reversed with its
+    /// base-collector junction alone; its margins are the intrinsic junctions' voltages,
+    /// `Vbei` and `Vbci`, which a PNP's mirror, and each region switches where its margin
+    /// vanishes.
+    #[test]
+    fn reports_its_region_and_margins() {
+        let mut npn = Bench::new::<Vbic>("{}");
+        let mut pnp = Bench::new::<Vbic>(r#"{"polarity": "pnp"}"#);
+        // The collector, base, emitter and substrate, then the intrinsic collector, the
+        // parasitic base and the intrinsic base, each where no current would drop.
+        let at = |collector: f64, base: f64, emitter: f64| {
+            [collector, base, emitter, 0.0, collector, collector, base]
+        };
+        for ([collector, base, emitter], region) in [
+            ([5.0, -0.5, 0.0], "cut_off"),
+            ([5.0, 0.7, 0.0], "active"),
+            ([0.2, 0.7, 0.0], "saturated"),
+            ([0.0, 0.7, 5.0], "reversed"),
+        ] {
+            let x = at(collector, base, emitter);
+            let margins = [base - emitter, base - collector];
+            npn.settle(&x);
+            assert_eq!(npn.region(), (region, margins.to_vec()), "{x:?}");
+            pnp.settle(&x.map(|value| -value));
+            assert_eq!(
+                pnp.region(),
+                (region, margins.map(|m| -m).to_vec()),
+                "{x:?}"
+            );
+        }
+        let switches = [
+            (at(5.0, -0.1, 0.0), at(5.0, 0.1, 0.0), BASE_EMITTER),
+            (at(5.0, 0.7, 0.0), at(0.2, 0.7, 0.0), BASE_COLLECTOR),
+        ];
+        for (from, to, margin) in switches {
+            assert_switches_where_margin_vanishes(&mut npn, (&from, &to), margin);
+        }
     }
 }

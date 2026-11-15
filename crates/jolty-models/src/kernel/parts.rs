@@ -411,6 +411,14 @@ pub(crate) struct Varying {
     entries: [[usize; 2]; 2],
 }
 
+/// Writes `kept`, the variables an instance's memory keeps from its last evaluation, to
+/// `values`, as [`Kernel::variables`](crate::Kernel::variables) does.
+pub(crate) fn write_variables(kept: &[f64], values: &mut [f64]) {
+    for (value, &variable) in values.iter_mut().zip(kept) {
+        *value = variable;
+    }
+}
+
 /// The number a series `resistance` stamps with: its conductance where it is a conductance,
 /// its resistance where its current is an unknown, and nothing without one.
 pub(crate) fn series_value<R: Real>(resistance: R) -> R {

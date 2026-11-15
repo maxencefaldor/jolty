@@ -36,8 +36,10 @@ use crate::dual::Dual;
 use crate::jfet::Channel;
 use crate::junction::{limit_channel, limit_junction};
 use crate::kernel::parts::{self, Nodes, Oriented, Series};
+use crate::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Real, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, REGION,
+    Real, Regions, Stamp,
 };
 
 /// Boltzmann's constant over the elementary charge, in volts per kelvin, as `b3temp.c`
@@ -272,12 +274,42 @@ pub struct Bsim3Memory {
     /// one.
     threshold: Option<f64>,
     /// The values of [`VARIABLE_NAMES`] at the last evaluation.
-    variables: [f64; 2],
+    variables: [f64; 5],
 }
 
 /// The variables a BSIM3 transistor reports: its threshold and saturation voltages, in
-/// its own polarity.
-const VARIABLE_NAMES: [&str; 2] = ["threshold_voltage", "saturation_voltage"];
+/// its own polarity, and its region among [`REGIONS`] and its margins.
+const VARIABLE_NAMES: [&str; 5] = [
+    "threshold_voltage",
+    "saturation_voltage",
+    REGION,
+    OVERDRIVE,
+    SATURATION_MARGIN,
+];
+
+/// The regions of a transistor's channel, on either side of its threshold and saturation
+/// voltages, `Vth` and `Vdsat`, which bound the subthreshold, linear and saturation
+/// regions the BSIM3v3.3 manual derives its drain current in, in the order of
+/// [`REGIONS`]' names. The equations blend one region into the next through `Vgsteff` and
+/// `Vdseff`, smooth functions that turn from one region's asymptote to the next's around
+/// those voltages, and switch at neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Region {
+    /// Below its threshold, its current falling exponentially.
+    WeakInversion,
+    /// At or above its threshold, with the drain below saturation.
+    Linear,
+    /// At or above its threshold, with the drain at or past saturation.
+    Saturated,
+}
+
+/// The regions a transistor's equations distinguish, and its margins to their boundaries:
+/// `Vgst = Vgs_eff − Vth` and `Vds − Vdsat`, in its own polarity, with the drain and the
+/// source swapped where the drain lies below the source, as the equations swap them.
+const REGIONS: Regions = Regions {
+    names: &["weak_inversion", "linear", "saturated"],
+    margins: &[OVERDRIVE, SATURATION_MARGIN],
+};
 
 /// Local node indices: the gate and the bulk, then the drain and source behind their
 /// resistances, which are the terminals themselves without one.
@@ -317,6 +349,9 @@ struct Terminals<R: Real> {
     /// The threshold and saturation voltages.
     threshold: f64,
     saturation: f64,
+    region: Region,
+    /// `Vgst` and `Vds − Vdsat`.
+    margins: [f64; 2],
 }
 
 /// `f`, a function of the gate-source, drain-source and bulk-source voltages of the frame
@@ -387,6 +422,15 @@ impl<R: Real> PreparedBsim3<R> {
             -(gate_charge + bulk_charge + source)
         };
         let junctions = &self.junctions;
+        let margins = [
+            (operating.vgs_eff - operating.vth).value.value(),
+            (mode_ds - operating.vdsat).value.value(),
+        ];
+        let region = match margins {
+            [overdrive, _] if overdrive < 0.0 => Region::WeakInversion,
+            [_, margin] if margin < 0.0 => Region::Linear,
+            _ => Region::Saturated,
+        };
         Terminals {
             channel: if forward { ids } else { -ids },
             substrate: (if forward { INNER_DRAIN } else { INNER_SOURCE }, isub),
@@ -401,6 +445,8 @@ impl<R: Real> PreparedBsim3<R> {
             ],
             threshold: operating.vth.value.value(),
             saturation: operating.vdsat.value.value(),
+            region,
+            margins,
         }
     }
 
@@ -519,7 +565,14 @@ impl Kernel for Bsim3 {
         let terminals = prepared.terminals(bias.voltages, at.gmin);
         memory.threshold = Some(terminals.threshold);
         let sign = prepared.core.sign;
-        memory.variables = [sign * terminals.threshold, sign * terminals.saturation];
+        let [overdrive, margin] = terminals.margins;
+        memory.variables = [
+            sign * terminals.threshold,
+            sign * terminals.saturation,
+            f64::from(terminals.region as u8),
+            sign * overdrive,
+            sign * margin,
+        ];
         let added = Oriented {
             nodes: &shape.stamp,
             sign,
@@ -562,9 +615,11 @@ impl Kernel for Bsim3 {
     }
 
     fn variables(memory: &Bsim3Memory, values: &mut [f64]) {
-        for (value, &variable) in values.iter_mut().zip(&memory.variables) {
-            *value = variable;
-        }
+        parts::write_variables(&memory.variables, values);
+    }
+
+    fn regions() -> Regions {
+        REGIONS
     }
 
     /// The thermal noise of the series resistances, and the channel's thermal and flicker
@@ -713,8 +768,8 @@ mod tests {
     use super::*;
     use crate::REFERENCE_TEMPERATURE;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
-        thermal,
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
+        assert_switches_where_margin_vanishes, source, thermal,
     };
 
     /// A short n-channel with every effect of the drain current switched on: the poly
@@ -965,7 +1020,13 @@ mod tests {
         p.settle(&[-2.0, -1.5, 0.0, 0.5]);
         let (n, p) = (n.variables(), p.variables());
         assert!(n[0] > 0.3 && n[0] < 1.0 && n[1] > 0.0, "{n:?}");
-        let mirrored: Vec<f64> = p.iter().map(|value| -value).collect();
+        // Every variable but the region is a voltage, which mirrors.
+        let polar = [true, true, false, true, true];
+        let mirrored: Vec<f64> = p
+            .iter()
+            .zip(polar)
+            .map(|(&value, polar)| if polar { -value } else { value })
+            .collect();
         assert_close(&n, &mirrored);
     }
 
@@ -1033,6 +1094,47 @@ mod tests {
                 crate::testing::assert_model_jacobians_match(&model, &heated, &x);
                 crate::testing::assert_model_parameter_gradients_match(&model, &heated, &x, None);
             }
+        }
+    }
+
+    /// A transistor is in weak inversion below its threshold, linear above it with its
+    /// drain below its saturation voltage, and saturated past it, each region switching
+    /// where its margin vanishes, the drain and the source swapping where the drain lies
+    /// below.
+    #[test]
+    fn reports_its_region_and_margins() {
+        let mut n = Bench::new::<Bsim3>("{}");
+        // The drain, the gate, the source and the bulk, about a threshold of 1.76 V.
+        for (x, region) in [
+            ([1.0, 0.2, 0.0, 0.0], "weak_inversion"),
+            ([0.05, 2.0, 0.0, 0.0], "linear"),
+            ([3.0, 3.0, 0.0, 0.0], "saturated"),
+            ([0.0, 2.0, 0.05, 0.0], "linear"),
+        ] {
+            n.settle(&x);
+            let (found, margins) = n.region();
+            assert_eq!(found, region, "{x:?}");
+            // Without a doped poly gate, `Vgs_eff` is the gate's voltage over the lower of
+            // the drain and the source, which acts as the source.
+            let [drain, gate, source, _] = x;
+            let threshold = n.variable("threshold_voltage");
+            let saturation = n.variable("saturation_voltage");
+            let expected = [
+                gate - source.min(drain) - threshold,
+                (drain - source).abs() - saturation,
+            ];
+            assert_close(&margins, &expected);
+        }
+        let switches = [
+            ([3.0, 0.2, 0.0, 0.0], [3.0, 3.0, 0.0, 0.0], OVERDRIVE),
+            (
+                [0.05, 3.0, 0.0, 0.0],
+                [3.0, 3.0, 0.0, 0.0],
+                SATURATION_MARGIN,
+            ),
+        ];
+        for (from, to, margin) in switches {
+            assert_switches_where_margin_vanishes(&mut n, (&from, &to), margin);
         }
     }
 }

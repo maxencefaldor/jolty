@@ -18,6 +18,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kernel::parts;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
     Real, Stamp, Unknown,
@@ -461,9 +462,7 @@ impl Kernel for VoltageControlledMemristor {
     }
 
     fn variables(memory: &MemristorMemory, values: &mut [f64]) {
-        for (value, &found) in values.iter_mut().zip(&memory.0) {
-            *value = found;
-        }
+        parts::write_variables(&memory.0, values);
     }
 
     fn noise<R: Real>(
@@ -572,9 +571,7 @@ impl Kernel for CurrentControlledMemristor {
     }
 
     fn variables(memory: &MemristorMemory, values: &mut [f64]) {
-        for (value, &found) in values.iter_mut().zip(&memory.0) {
-            *value = found;
-        }
+        parts::write_variables(&memory.0, values);
     }
 
     fn noise<R: Real>(

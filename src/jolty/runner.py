@@ -60,6 +60,7 @@ from jolty.plan import (
     Analysis,
     Explicit,
     MonteCarlo,
+    OperatingPoint,
     Plan,
     Product,
     Recorded,
@@ -1132,7 +1133,10 @@ def _analyses(
     reports: list[report.AnalysisReport] = []
     for name, analysis in plan.analyses.items():
         try:
-            chosen = _recording(analysis, plan, recorded=recorded)
+            transistors = simulation.transistors if recorded else ()
+            chosen = _recording(
+                analysis, plan, recorded=recorded, transistors=transistors
+            )
             result = simulation.run(chosen, plan.options)
         except JoltyError as error:
             reports.append(report.FailureReport(name=name, error=str(error)))
@@ -1147,18 +1151,26 @@ def _analyses(
     return solved, tuple(reports)
 
 
-def _recording(analysis: Analysis, plan: Plan, *, recorded: bool) -> Analysis:
+def _recording(
+    analysis: Analysis,
+    plan: Plan,
+    *,
+    recorded: bool,
+    transistors: tuple[str, ...] = (),
+) -> Analysis:
     """`analysis` recording what it names, or else the `plan`'s record, when `recorded`.
 
-    Otherwise it records nothing, beyond what the checks read.
+    An operating point records the `transistors` besides, whose regions its report
+    lists. Otherwise it records nothing, beyond what the checks read.
     """
     if not isinstance(analysis, Recorded):
         return analysis
     if not recorded:
         return replace(analysis, record=())
-    if analysis.record is None:
-        return replace(analysis, record=plan.record)
-    return analysis
+    record = plan.record if analysis.record is None else analysis.record
+    if isinstance(analysis, OperatingPoint):
+        record = (*(record or ()), *transistors)
+    return replace(analysis, record=record)
 
 
 def _call(

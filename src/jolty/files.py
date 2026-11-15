@@ -19,8 +19,9 @@ the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 devices outside their domains. Its header also states the results'
 [`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
 simulated them, and the hashes of the circuit and the plan they are of. The header is
-in version 9 of the format, which holds that provenance; a file of another version is
-not read.
+in version 10 of the format, which holds that provenance and the regions of operation
+each recorded transistor's model distinguishes; a file of another version is not
+read.
 
 Examples:
     >>> import tempfile
@@ -194,6 +195,8 @@ class _Device(_Model):
     terminals: tuple[str, ...]
     internals: tuple[str, ...] = ()
     variables: tuple[str, ...] = ()
+    regions: tuple[str, ...] = ()
+    margins: tuple[str, ...] = ()
 
 
 class _Recording(_Model):
@@ -213,6 +216,8 @@ class _Recording(_Model):
                     terminals=device.terminals,
                     internals=device.internals,
                     variables=device.variables,
+                    regions=device.regions,
+                    margins=device.margins,
                 )
                 for device in recording.devices
             ),
@@ -225,7 +230,12 @@ class _Recording(_Model):
         return results.Recording(
             tuple(
                 results.RecordedDevice(
-                    device.path, device.terminals, device.internals, device.variables
+                    device.path,
+                    device.terminals,
+                    device.internals,
+                    device.variables,
+                    device.regions,
+                    device.margins,
                 )
                 for device in self.devices
             ),
@@ -366,7 +376,7 @@ class Provenance(BaseModel):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[9] = 9
+    version: Literal[10] = 10
     provenance: Provenance
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]

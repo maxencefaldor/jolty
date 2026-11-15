@@ -32,7 +32,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::{Choice, Interface, Level, NoiseSource, ParameterError, Quantity, Real};
+use crate::{Choice, Interface, Level, NoiseSource, ParameterError, Quantity, Real, Regions};
 
 /// A device model computed one instance at a time, as a pure function of the instance's
 /// prepared parameters, its memory and its local unknowns.
@@ -138,6 +138,14 @@ pub trait Kernel: Send + Sync + 'static {
     /// `memory` keeps, in SI base units, to `values`.
     fn variables(memory: &Self::Memory, values: &mut [f64]) {
         let _ = (memory, values);
+    }
+
+    /// The regions of operation its equations distinguish, which the variable
+    /// [`REGION`](crate::REGION) among [`Kernel::variable_names`] numbers, and the
+    /// variables that are its margins to their boundaries: none, unless it is a transistor.
+    #[must_use]
+    fn regions() -> Regions {
+        Regions::NONE
     }
 
     /// Appends an instance's noise at `at`, the operating point a noise analysis linearizes

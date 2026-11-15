@@ -43,6 +43,7 @@ mod noise;
 mod passive;
 mod photocell;
 mod real;
+mod region;
 mod sources;
 mod surroundings;
 mod switch;
@@ -100,6 +101,7 @@ pub use passive::{
 };
 pub use photocell::{Photocell, PhotocellParameters};
 pub use real::{Gradient, Hyper, Real};
+pub use region::{REGION, Regions};
 pub use schemars::Schema;
 pub use sources::{CurrentSource, SourceParameters, VoltageSource, held_source};
 pub use surroundings::Surrounded;

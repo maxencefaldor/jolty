@@ -18,11 +18,12 @@ use crate::junction::{
     Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
     limit_junction,
 };
-use crate::kernel::parts::{Bias, Nodes, Series, series_value};
+use crate::kernel::parts::{self, Bias, Nodes, Series, series_value};
 use crate::noise::Flicker;
+use crate::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError,
-    REFERENCE_TEMPERATURE, Real, Stamp,
+    REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
 /// The channel of a field-effect transistor.
@@ -100,7 +101,33 @@ pub struct JfetMemory {
     /// The gate-source and gate-drain voltages of the last evaluation, from which the next
     /// steps are limited.
     last: [f64; 2],
+    /// The values of [`VARIABLE_NAMES`] at the last evaluation.
+    variables: [f64; 3],
 }
+
+/// The variables a JFET reports: its region among [`REGIONS`] and its margins.
+const VARIABLE_NAMES: [&str; 3] = [REGION, OVERDRIVE, SATURATION_MARGIN];
+
+/// The regions of a JFET's channel, as `jfetload.c` switches between them, in the order of
+/// [`REGIONS`]' names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Region {
+    /// At or below its threshold, conducting nothing.
+    Off,
+    /// Above its threshold, with the drain below saturation.
+    Linear,
+    /// Above its threshold, with the drain past saturation.
+    Saturated,
+}
+
+/// The regions a JFET's equations distinguish, and its margins to their boundaries:
+/// `vgs − vto` and `vds − vdsat`, `vdsat` being `max(vgs − vto, 0)`, in its own polarity,
+/// with the drain and the source swapped where the drain lies below the source, as the
+/// equations swap them.
+const REGIONS: Regions = Regions {
+    names: &["off", "linear", "saturated"],
+    margins: &[OVERDRIVE, SATURATION_MARGIN],
+};
 
 /// Local node indices: the gate, then the drain and source behind their resistances, which
 /// are the terminals themselves without one.
@@ -197,8 +224,27 @@ struct DrainCurrent<R: Real> {
 }
 
 impl<R: Real> DrainCurrent<R> {
+    /// The channel's region at `vgs` and `vds`, and its margins `vgs − vto` and
+    /// `vds − vdsat`, with the drain at or above the source, the two swapped otherwise.
+    fn region(&self, vgs: f64, vds: f64) -> (Region, [f64; 2]) {
+        let (control, across) = if vds >= 0.0 {
+            (vgs, vds)
+        } else {
+            (vgs - vds, -vds)
+        };
+        let vgst = control - self.threshold.value();
+        let region = if vgst <= 0.0 {
+            Region::Off
+        } else if vgst >= across {
+            Region::Linear
+        } else {
+            Region::Saturated
+        };
+        (region, [vgst, across - vgst.max(0.0)])
+    }
+
     /// The current from drain to source, and its derivatives with respect to `vgs` at
-    /// constant `vds`, and to `vds` at constant `vgs`.
+    /// constant `vds`, and to `vds` at constant `vgs`, in the channel's region there.
     fn evaluate(&self, vgs: f64, vds: f64) -> (R, R, R) {
         let Self {
             beta,
@@ -208,13 +254,14 @@ impl<R: Real> DrainCurrent<R> {
             tail_factor,
         } = *self;
         let zero = R::constant(0.0);
+        let (region, _) = self.region(vgs, vds);
+        if region == Region::Off {
+            return (zero, zero, zero);
+        }
         if vds >= 0.0 {
             let vgst = -(threshold - vgs);
-            if vgst.value() <= 0.0 {
-                return (zero, zero, zero);
-            }
             let betap = beta * (lambda * vds + 1.0);
-            if vgst.value() >= vds {
+            if region == Region::Linear {
                 let a = tail * 2.0 + tail_factor * 3.0 * (vgst - vds);
                 let c = ((tail_factor * vds - tail) * vds + vgst * a) * vds;
                 let gm = betap * vds * (a + tail_factor * 3.0 * vgst);
@@ -229,11 +276,8 @@ impl<R: Real> DrainCurrent<R> {
         } else {
             // The drain and the source swap: the gate-drain voltage controls the channel.
             let vgdt = -(threshold - (vgs - vds));
-            if vgdt.value() <= 0.0 {
-                return (zero, zero, zero);
-            }
             let betap = beta * -(lambda * vds - 1.0);
-            if (vgdt + vds).value() >= 0.0 {
+            if region == Region::Linear {
                 let a = tail * 2.0 + tail_factor * 3.0 * (vgdt + vds);
                 let c = ((-tail_factor * vds - tail) * -vds + vgdt * a) * vds;
                 let gm = betap * vds * (a + tail_factor * 3.0 * vgdt);
@@ -397,12 +441,26 @@ impl Kernel for Jfet {
             nodes.capacitance(stamp, (GATE, inner), (GATE, inner), capacitance);
         }
 
+        let (region, [overdrive, margin]) = prepared.channel.region(vgs, vgs - vgd);
+        memory.variables = [f64::from(region as u8), sign * overdrive, sign * margin];
         let (current, gm, gds) = prepared.channel.evaluate(vgs, vgs - vgd);
         let current = current + gm * beyond_source + gds * (beyond_source - beyond_drain);
         let channel = (INNER_DRAIN, INNER_SOURCE);
         nodes.current(stamp, INNER_DRAIN, INNER_SOURCE, current * sign);
         nodes.conductance(stamp, channel, (GATE, INNER_SOURCE), gm);
         nodes.conductance(stamp, channel, channel, gds);
+    }
+
+    fn variable_names() -> &'static [&'static str] {
+        &VARIABLE_NAMES
+    }
+
+    fn variables(memory: &JfetMemory, values: &mut [f64]) {
+        parts::write_variables(&memory.variables, values);
+    }
+
+    fn regions() -> Regions {
+        REGIONS
     }
 
     /// The thermal noise of the series resistances and of the channel, `8kT·gm / 3`, and
@@ -544,8 +602,8 @@ mod tests {
 
     use super::*;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
-        thermal,
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
+        assert_switches_where_margin_vanishes, source, thermal,
     };
 
     const CHARGED: &str = r#"{"gate_source_capacitance": 2e-12, "gate_drain_capacitance": 1e-12,
@@ -576,6 +634,36 @@ mod tests {
         // vgs = 0, vto = −2: β · vgst² = 1e-3 · 4.
         let drain_current = evaluation.residual[0];
         assert!((drain_current - 4e-3).abs() < 1e-12, "{drain_current}");
+    }
+
+    /// A JFET is off at or below its threshold, linear with its drain within `vgs − vto`,
+    /// and saturated past it, the drain and the source swapping where the drain lies below;
+    /// its margins are `vgs − vto` and `vds − max(vgs − vto, 0)`, which vanish where
+    /// `jfetload.c` switches, and a p-channel's mirror an n-channel's.
+    #[test]
+    fn reports_its_region_and_margins() {
+        let mut n = Bench::new::<Jfet>("{}");
+        let mut p = Bench::new::<Jfet>(r#"{"channel": "p"}"#);
+        // The drain, the gate and the source, about the threshold of -2 V.
+        for (x, region, margins) in [
+            ([5.0, -3.0, 0.0], "off", [-1.0, 5.0]),
+            ([0.5, 0.0, 0.0], "linear", [2.0, -1.5]),
+            ([5.0, 0.0, 0.0], "saturated", [2.0, 3.0]),
+            ([0.0, 0.0, 1.0], "linear", [2.0, -1.0]),
+        ] {
+            n.settle(&x);
+            assert_eq!(n.region(), (region, margins.to_vec()), "{x:?}");
+            p.settle(&x.map(|value| -value));
+            assert_eq!(p.region(), (region, margins.map(|m| -m).to_vec()), "{x:?}");
+        }
+        let switches = [
+            ([5.0, -3.0, 0.0], [5.0, -1.0, 0.0], OVERDRIVE),
+            ([0.5, 0.0, 0.0], [5.0, 0.0, 0.0], SATURATION_MARGIN),
+            ([0.0, 0.0, 0.5], [0.0, 0.0, 5.0], SATURATION_MARGIN),
+        ];
+        for (from, to, margin) in switches {
+            assert_switches_where_margin_vanishes(&mut n, (&from, &to), margin);
+        }
     }
 
     #[test]

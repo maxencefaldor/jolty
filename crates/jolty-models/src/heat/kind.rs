@@ -25,7 +25,7 @@ use crate::device::lift;
 use crate::group::Kind;
 use crate::{
     Choice, Gradient, Hyper, Kernel, Layout, Level, Local, NoiseSource, ParameterError, Quantity,
-    Stamp,
+    Regions, Stamp,
 };
 
 /// The instances of the kernel `K` that heat.
@@ -451,6 +451,10 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
 
     fn variable_names() -> &'static [&'static str] {
         K::variable_names()
+    }
+
+    fn regions() -> Regions {
+        K::regions()
     }
 
     fn variables(memory: &Self::Memory, values: &mut [f64]) {

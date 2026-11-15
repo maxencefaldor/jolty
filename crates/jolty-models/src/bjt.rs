@@ -21,9 +21,10 @@ use crate::junction::{
 use crate::kernel::parts::SMALL_RESISTANCE;
 use crate::kernel::parts::{self, CurrentBranch, Nodes, Series, series_value};
 use crate::noise::Flicker;
+use crate::region::Bipolar;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Quantity,
-    REFERENCE_TEMPERATURE, Real, Stamp, Unknown,
+    REFERENCE_TEMPERATURE, Real, Regions, Stamp, Unknown,
 };
 
 /// The doping order of a bipolar transistor.
@@ -134,6 +135,8 @@ pub struct BipolarTransistorMemory {
     last: [f64; 2],
     /// The substrate junction's voltage of the last evaluation.
     substrate: f64,
+    /// The values of [`Bipolar::VARIABLE_NAMES`] at the last evaluation.
+    variables: [f64; 3],
 }
 
 /// The indices of the terminals a substrate junction may join: the collector and the base.
@@ -1132,6 +1135,7 @@ impl Kernel for BipolarTransistor {
         shape.emitter_series.add(emitter_series, at, stamp);
         let bias = prepared.bias(shape, memory, at, stamp);
         let [vbe, vbc] = bias.voltages;
+        memory.variables = Bipolar::variables(vbe, vbc, prepared.sign);
         let state = prepared.junctions.evaluate(vbe, vbc, at.gmin);
         let added = Added {
             shape,
@@ -1152,6 +1156,18 @@ impl Kernel for BipolarTransistor {
         if let (Some(junction), Some(nodes)) = (&prepared.substrate, &shape.substrate) {
             junction.evaluate(nodes, &mut memory.substrate, at, stamp);
         }
+    }
+
+    fn variable_names() -> &'static [&'static str] {
+        &Bipolar::VARIABLE_NAMES
+    }
+
+    fn variables(memory: &BipolarTransistorMemory, values: &mut [f64]) {
+        parts::write_variables(&memory.variables, values);
+    }
+
+    fn regions() -> Regions {
+        Bipolar::REGIONS
     }
 
     /// The thermal noise of the series resistances, and the shot noise of the collector
@@ -1408,9 +1424,10 @@ mod tests {
 
     use super::*;
     use crate::Input;
+    use crate::region::{BASE_COLLECTOR, BASE_EMITTER};
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
-        thermal,
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
+        assert_switches_where_margin_vanishes, source, thermal,
     };
     use crate::{ELEMENTARY_CHARGE, Unknown, thermal_voltage};
 
@@ -1887,5 +1904,41 @@ mod tests {
             source(&sources, "base thermal").equations,
             [Some(Unknown::new(base_current)), None]
         );
+    }
+
+    /// A transistor is cut off with neither junction forward, active with its base-emitter
+    /// junction alone forward, saturated with both, and reversed with its base-collector
+    /// junction alone; its margins are the junctions' voltages, which a PNP's mirror, and
+    /// each region switches where its margin vanishes.
+    #[test]
+    fn reports_its_region_and_margins() {
+        let mut npn = Bench::new::<BipolarTransistor>("{}");
+        let mut pnp = Bench::new::<BipolarTransistor>(r#"{"polarity": "pnp"}"#);
+        // The collector, the base and the emitter.
+        for (x, region) in [
+            ([5.0, -0.5, 0.0], "cut_off"),
+            ([5.0, 0.7, 0.0], "active"),
+            ([0.2, 0.7, 0.0], "saturated"),
+            ([0.0, 0.7, 5.0], "reversed"),
+        ] {
+            let [collector, base, emitter] = x;
+            let margins = [base - emitter, base - collector];
+            npn.settle(&x);
+            assert_eq!(npn.region(), (region, margins.to_vec()), "{x:?}");
+            pnp.settle(&x.map(|value| -value));
+            assert_eq!(
+                pnp.region(),
+                (region, margins.map(|m| -m).to_vec()),
+                "{x:?}"
+            );
+        }
+        let switches = [
+            ([5.0, -0.1, 0.0], [5.0, 0.1, 0.0], BASE_EMITTER),
+            ([5.0, 0.7, 0.0], [0.2, 0.7, 0.0], BASE_COLLECTOR),
+            ([0.0, -0.1, 5.0], [0.0, 0.7, 5.0], BASE_COLLECTOR),
+        ];
+        for (from, to, margin) in switches {
+            assert_switches_where_margin_vanishes(&mut npn, (&from, &to), margin);
+        }
     }
 }

@@ -6,7 +6,8 @@ mod cases;
 
 use crate::{
     BOLTZMANN, Binding, Contributions, Gradient, Groups, Input, Kernel, Model, Native, Node,
-    NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, Runs, Unknown, UnknownInfo,
+    NoiseSource, ParameterError, Quantity, REFERENCE_TEMPERATURE, REGION, Regions, Runs, Unknown,
+    UnknownInfo,
 };
 
 /// One device whose terminals each connect to an unknown of their own, its instance in a
@@ -19,6 +20,8 @@ pub(crate) struct Bench {
     unknowns: Vec<UnknownInfo>,
     /// The names of the variables the device computes.
     variables: &'static [&'static str],
+    /// The regions of operation the device's equations distinguish.
+    regions: Regions,
     /// Whether the device is evaluated as a transient analysis steps through time.
     transient: bool,
 }
@@ -98,13 +101,16 @@ impl Bench {
     ) -> Result<Self, ParameterError> {
         let parameters = serde_json::from_str(parameters).expect("a JSON object");
         let (groups, runs, pattern, unknowns) = grouped(model, &parameters, temperature)?;
-        let variables = model.read(&parameters)?.kernel().variable_names();
+        let specification = model.read(&parameters)?;
+        let instance = specification.kernel();
+        let (variables, regions) = (instance.variable_names(), instance.regions());
         Ok(Self {
             groups,
             runs,
             pattern,
             unknowns,
             variables,
+            regions,
             transient: false,
         })
     }
@@ -187,6 +193,33 @@ impl Bench {
         let mut values = vec![0.0; self.variables.len()];
         self.runs.variables(&self.groups, 0, &mut values);
         values
+    }
+
+    /// The value of the device's variable `name` at its last evaluation.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the device has that variable.
+    pub(crate) fn variable(&self, name: &str) -> f64 {
+        let index = self.variables.iter().position(|&variable| variable == name);
+        self.variables()[index.unwrap_or_else(|| panic!("no variable {name}"))]
+    }
+
+    /// The device's region of operation at its last evaluation, by name, and the value of
+    /// each of its margins, in its model's order.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a region's number is an index, which its kernel wrote from a `u8`"
+    )]
+    pub(crate) fn region(&self) -> (&'static str, Vec<f64>) {
+        let number = self.variable(REGION) as usize;
+        let margins = self
+            .regions
+            .margins
+            .iter()
+            .map(|margin| self.variable(margin));
+        (self.regions.names[number], margins.collect())
     }
 
     /// The device's excitation, as an independent source's: the derivative of each
@@ -520,6 +553,60 @@ pub(crate) fn assert_model_parameter_gradients_match(
     }
 }
 
+/// Checks that the region of `bench`'s device differs at `from` and `to`, values of its
+/// local unknowns, and that on the segment between them it switches where its margin
+/// `margin` changes sign.
+///
+/// The segment is bisected until its ends are adjacent numbers apart: there the margin's
+/// sign at each end is its sign at that end of the segment, and the margin is within
+/// 1e-12 V of zero, a bound far above the rounding of a difference of voltages of a few
+/// volts, a few times 1e-16 V.
+///
+/// # Panics
+///
+/// Panics if any of those fails.
+pub(crate) fn assert_switches_where_margin_vanishes(
+    bench: &mut Bench,
+    (from, to): (&[f64], &[f64]),
+    margin: &str,
+) {
+    let mut at = |t: f64| {
+        let x: Vec<f64> = from.iter().zip(to).map(|(a, b)| a + t * (b - a)).collect();
+        bench.settle(&x);
+        (bench.region().0, bench.variable(margin))
+    };
+    let (mut low, mut high) = (0.0_f64, 1.0_f64);
+    let ((first, before), (last, after)) = (at(low), at(high));
+    assert_ne!(first, last, "the same region at both ends");
+    assert!(before * after < 0.0, "{margin}: {before} and {after}");
+    let mut ends = [(first, before), (last, after)];
+    loop {
+        let middle = f64::midpoint(low, high);
+        if middle <= low || middle >= high {
+            break;
+        }
+        let found = at(middle);
+        if found.0 == first {
+            (low, ends[0]) = (middle, found);
+        } else {
+            (high, ends[1]) = (middle, found);
+        }
+    }
+    let [(_, below), (_, above)] = ends;
+    assert!(
+        below.signum() != above.signum() || below == 0.0 || above == 0.0,
+        "{margin} keeps its sign across the switch: {below}, {above}"
+    );
+    assert!(
+        before.signum() * below >= 0.0 && after.signum() * above >= 0.0,
+        "{margin} changes sign away from the switch: {below}, {above}"
+    );
+    assert!(
+        below.abs() < 1e-12 && above.abs() < 1e-12,
+        "{margin} at the switch: {below}, {above}"
+    );
+}
+
 /// Checks that `actual` and `expected` agree to within a relative 1e-12.
 pub(crate) fn assert_close(actual: &[f64], expected: &[f64]) {
     let close = actual.len() == expected.len()
@@ -532,7 +619,34 @@ pub(crate) fn assert_close(actual: &[f64], expected: &[f64]) {
 
 mod tests {
     use super::{Bench, REFERENCE_TEMPERATURE, assert_bench_jacobians_match, cases};
-    use crate::Library;
+    use crate::{Library, REGION};
+
+    /// Every model that distinguishes regions of operation numbers them with its variable
+    /// `region` and reports each of its margins among its variables, at each case of it.
+    #[test]
+    fn every_models_regions_are_among_its_variables() {
+        let library = Library::standard();
+        for &(name, parameters, given) in cases::CASES {
+            let model = library.get(name).expect("a model of the library");
+            let mut bench = Bench::of(&**model, parameters, REFERENCE_TEMPERATURE)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let regions = bench.regions;
+            assert_eq!(
+                regions.names.is_empty(),
+                regions.margins.is_empty(),
+                "{name}"
+            );
+            if regions.names.is_empty() {
+                assert!(!bench.variables.contains(&REGION), "{name}");
+                continue;
+            }
+            let x = cases::values(given, bench.unknowns.len());
+            bench.settle(&x);
+            let (region, margins) = bench.region();
+            assert!(regions.names.contains(&region), "{name}");
+            assert!(margins.iter().all(|margin| margin.is_finite()), "{name}");
+        }
+    }
 
     /// Every analog model's conductances and capacitances are the derivatives of its
     /// residuals and charges, at each case of it, as a central difference finds them.

@@ -6,7 +6,7 @@
 
 A report states facts, one section per analysis in the plan's order:
 
-- an operating point lists every unknown's value and every logic net's level, and the strategy that found it;
+- an operating point lists every unknown's value and every logic net's level, the strategy that found it, and each transistor's [region of operation](#regions-of-operation) with its margins to the regions' boundaries, those nearest a boundary first;
 - a search for operating points lists every unknown's value at each DC solution it found, the operating point first;
 - a sweep, a frequency response or a transient lists each unknown's first, lowest, highest and last value, and each logic net's first and last level and how often it changed;
 - a sensitivity analysis lists, for each output, its value and its derivative with respect to each parameter, in the circuit's order, or, along another analysis, each derivative's largest and where;
@@ -16,7 +16,7 @@ A report states facts, one section per analysis in the plan's order:
 - a failed analysis says why it failed.
 
 A frequency response lists magnitudes per unit excitation: volts per volt, for a voltage source.
-A report lists the first unknowns, then the first logic nets, up to the setting `listed_unknowns`, and a sensitivity analysis as many parameters; the results file holds them all.
+A report lists the first unknowns, then the first logic nets, up to the setting `listed_unknowns`, and an operating point as many transistors and a sensitivity analysis as many parameters; the results file holds them all.
 With `--output-format json`, the command prints the same report as data.
 
 ## Plots
@@ -75,10 +75,10 @@ A device recorded keeps its terminals' currents and charges, its own small-signa
 A component instance or a logic device recorded keeps its terminals' currents and charges, each summed by the engine from the device terminals behind it, which it keeps no further.
 An analysis fails when its record names a path the circuit does not have, saying the closest paths it has, or holds a pattern that matches no instance.
 
-Whatever the record names, an operating point and a transient also record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read; specs, plots, schematics and the operating point's rules read the unknowns alone.
+Whatever the record names, an operating point and a transient also record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read, and the plan's own operating points, as `jolty simulate` runs them, every transistor, whose regions their report lists; specs, plots, schematics and the operating point's rules read the unknowns alone.
 A plan's corners, Monte Carlo samples, worst-case runs and spot checks record no more than that, since only specs read their results.
 
-Recording costs memory at every point: a transistor recorded keeps 45 numbers, or 111 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and the `memory` option bounds them all (see [Options](simulation.md#options)).
+Recording costs memory at every point: a MOSFET recorded keeps 48 numbers, or 114 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and the `memory` option bounds them all (see [Options](simulation.md#options)).
 Reading what a result did not record raises a `KeyError` that suggests the closest names it holds and how to record the instance:
 
 ```text
@@ -114,7 +114,10 @@ A device's variables are the quantities it computes on its way to its currents t
 
 | Model | Variables |
 | --- | --- |
-| `mosfet` | `threshold_voltage` and `saturation_voltage`, in the transistor's own polarity; Meyer's `gate_source_capacitance`, `gate_drain_capacitance` and `gate_bulk_capacitance` |
+| `mosfet` | `threshold_voltage` and `saturation_voltage`, in the transistor's own polarity; Meyer's `gate_source_capacitance`, `gate_drain_capacitance` and `gate_bulk_capacitance`; its region and margins |
+| `bsim3` | `threshold_voltage` and `saturation_voltage`, in the transistor's own polarity; its region and margins |
+| `vdmos` | `threshold_voltage` and `saturation_voltage`, in the transistor's own polarity; `gate_source_capacitance`, `gate_drain_capacitance` and its body diode's `drain_source_capacitance`; its region and margin |
+| `jfet`, `bipolar_transistor`, `vbic` | its region and margins |
 | `voltage_controlled_memristor`, `current_controlled_memristor` | `resistance`, the one its state sets, and `rate`, how fast its state moves, toward off when positive, in full ranges per second |
 
 ```python
@@ -122,6 +125,42 @@ point = simulation.run(OperatingPoint(record=["M1"]))
 point.conductance("M1.drain", "M1.gate")  # gm, in siemens
 point.variable("M1", "threshold_voltage")  # von, with the body effect, in volts
 results["step"].variable("M1", "saturation_voltage")  # one per time point
+```
+
+## Regions of operation
+
+Each transistor states its region of operation, as its model's equations distinguish it, and its margins to the regions' boundaries, in volts: each margin is zero on a boundary, where the equations switch from one region to the next, and changes sign across it.
+Its variable `region` numbers its region among those its recorded device's `regions` names, and its device's `margins` names the variables that are its margins; `region(instance)` reads the region by name, and a simulation's `transistors` are the paths of its transistors:
+
+```python
+point = simulation.run(OperatingPoint(record=simulation.transistors))
+point.region("M1")  # such as "saturated"
+point.variable("M1", "saturation_margin")  # vds - vdsat, in volts
+regions = point.recording.devices[0].regions  # ("off", ..., "saturated")
+```
+
+| Model | Regions | Margins |
+| --- | --- | --- |
+| `mosfet` | `off` at or below its threshold, or `weak_inversion` below it at level 3 with fast surface states; then `linear` with the drain below saturation, `saturated` at or past it, as `mos1load.c` and `mos3load.c` switch | `overdrive_voltage`, `vgs − von`, and `saturation_margin`, `vds − vdsat` |
+| `jfet` | `off` at or below its threshold, then `linear` with the drain within `vgs − vto`, `saturated` past it, as `jfetload.c` switches | `overdrive_voltage`, `vgs − vto`, and `saturation_margin`, `vds − max(vgs − vto, 0)` |
+| `bsim3` | `weak_inversion` below its threshold, then `linear` below its saturation voltage, `saturated` at or past it | `overdrive_voltage`, `Vgs_eff − Vth`, and `saturation_margin`, `Vds − Vdsat` |
+| `vdmos` | `linear` with the drain below its softened overdrive, `saturated` at or past it, as `VDMOSload` switches | `saturation_margin`, `vds` less the softened overdrive over the triode's multiplier |
+| `bipolar_transistor`, `vbic` | `cut_off`, neither junction injecting, `active`, the base-emitter junction alone, `saturated`, both, and `reversed`, the base-collector junction alone | `base_emitter_voltage` and `base_collector_voltage`, its intrinsic junctions' |
+
+A margin is in the transistor's own polarity, as its threshold is: a p-channel's overdrive is negative above its threshold, and a PNP's base-emitter voltage negative where its junction injects.
+Where a field-effect transistor's drain lies below its source, its equations swap the two, and so do its margins: `vds` is then the source's voltage over the drain's.
+A junction injects where its ideal current, `Is · (e^{v / (N · Vt)} − 1)`, is positive, at a positive voltage, so a bipolar transistor saturates as its base-collector voltage turns positive, where `vce` falls below `vbe`: Gummel-Poon's and VBIC's equations define no saturation voltage of their own.
+BSIM3's equations blend one region into the next, through `Vgsteff` and `Vdseff`, and switch at neither boundary; its regions are those its manual derives its current in, bounded by its own threshold and saturation voltages.
+VDMOS's softened overdrive keeps it conducting below its threshold, so its equations distinguish no region there.
+No region is guessed: a device whose model distinguishes none, such as a resistor, raises a `KeyError` that says so, and a circuit of a foundry's devices, which ngspice simulates, records no device and states no region.
+
+The report lists each transistor's region and margins, the transistor with the margin nearest zero first, such as the [common-emitter amplifier](../gallery/common-emitter.md)'s:
+
+```text
+op: operating point, found by Newton iteration
+  ...
+  regions, nearest a boundary first:
+    X1/Q1  active  base_emitter_voltage 663.5 mV  base_collector_voltage -5.594 V
 ```
 
 ## The results file
@@ -159,10 +198,10 @@ A transient's `statistics` count its steps, accepted, rejected or tried again to
 Its `work` counts every Newton iteration it ran, its operating point's included unless the simulation remembered it, and its sparse solver's factorizations: those that searched for every pivot, those that kept the last's, those that fell back to a search from a pivot become too small, and those given the very matrix factored last.
 With the `profile` option, its `profile` says where its time went, in seconds: preparing, evaluating the devices, assembling each Newton iteration's matrix, factoring, solving, step control, recording, and the rest.
 
-`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `rise(net)` a thermal net's temperature above the ambient, `state(name)` a device's dimensionless state, such as a memristor's `M1:state`, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a recorded terminal's, the current into a thermal terminal being the heat that flows in, in watts, `conductance`, `capacitance` and `variable` read a recorded device's own model, and `level(net)` reads a logic net's level.
+`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `rise(net)` a thermal net's temperature above the ambient, `state(name)` a device's dimensionless state, such as a memristor's `M1:state`, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a recorded terminal's, the current into a thermal terminal being the heat that flows in, in watts, `conductance`, `capacitance` and `variable` read a recorded device's own model, `region(instance)` a recorded transistor's region of operation at an operating point, and `level(net)` reads a logic net's level.
 Each finds its column by name in a dictionary, so a read costs the same however large the circuit.
 A name that is not an unknown, a recorded terminal, derivative or variable, or a logic net raises a `KeyError` that suggests the closest names.
 
-The file is a NumPy archive: a JSON header names the unknowns and the logic nets, lists each recording the analyses made once, however many share it, as each recorded device's path, terminals, internal unknowns and variables, and the composites, and says what each analysis is and which recording it made, then each analysis's arrays follow under keys such as `step.times`.
+The file is a NumPy archive: a JSON header names the unknowns and the logic nets, lists each recording the analyses made once, however many share it, as each recorded device's path, terminals, internal unknowns, variables, regions and margins, and the composites, and says what each analysis is and which recording it made, then each analysis's arrays follow under keys such as `step.times`.
 Any program that reads NumPy files reads it.
-The header is in version 5 of the format; a file of an earlier version is not read, and simulating again writes it anew.
+The header is in version 10 of the format; a file of an earlier version is not read, and simulating again writes it anew.

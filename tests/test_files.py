@@ -59,14 +59,20 @@ RECORDING = results.Recording(
     (
         results.RecordedDevice("C1", ("a", "b")),
         results.RecordedDevice(
-            "M1", ("drain",), ("M1:drain",), variables=("threshold_voltage",)
+            "M1",
+            ("drain",),
+            ("M1:drain",),
+            variables=("threshold_voltage", "region", "saturation_margin"),
+            regions=("linear", "saturated"),
+            margins=("saturation_margin",),
         ),
     ),
     ("X1.p",),
     frozenset({"M1.drain"}),
 )
 """Two devices recorded, their terminals then a port in four columns of currents,
-their derivatives in eight, and a variable."""
+their derivatives in eight, and three variables, a transistor's region and its margin
+among them."""
 
 
 EXCURSION = results.Excursion(
@@ -85,7 +91,7 @@ def every_kind() -> dict[str, results.Result]:
         charges=np.array([1e-12, -1e-12, 0.0, 0.0]),
         conductances=np.zeros(8),
         capacitances=np.array([1e-12, -1e-12, -1e-12, 1e-12, 0.0, 0.0, 0.0, 0.0]),
-        readings=np.array([0.7]),
+        readings=np.array([0.7, 1.0, 0.2]),
     )
     return {
         "op": point,
@@ -100,7 +106,7 @@ def every_kind() -> dict[str, results.Result]:
             charges=np.zeros((2, 4)),
             conductances=np.zeros((2, 8)),
             capacitances=np.zeros((2, 8)),
-            readings=np.zeros((2, 1)),
+            readings=np.zeros((2, 3)),
         ),
         "bode": results.Response(
             UNKNOWNS,
@@ -121,7 +127,7 @@ def every_kind() -> dict[str, results.Result]:
             charges=np.ones((2, 4)),
             conductances=np.zeros((2, 8)),
             capacitances=np.ones((2, 8)),
-            readings=np.ones((2, 1)),
+            readings=np.ones((2, 3)),
             excursions=(EXCURSION,),
         ),
         "sensitivity": results.Sensitivities(
@@ -226,6 +232,7 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     assert op.capacitance("C1.a", "C1.b") == -1e-12
     assert op.conductance("M1:drain", "M1.drain") == 0
     assert op.variable("M1", "threshold_voltage") == 0.7
+    assert op.region("M1") == "saturated"
     assert op.recording.thermal == {"M1.drain"}
     bode = read["bode"]
     assert isinstance(bode, results.Response)
@@ -304,14 +311,16 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 9
+    assert header["version"] == 10
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {
         "path": "M1",
         "terminals": ["drain"],
         "internals": ["M1:drain"],
-        "variables": ["threshold_voltage"],
+        "variables": ["threshold_voltage", "region", "saturation_margin"],
+        "regions": ["linear", "saturated"],
+        "margins": ["saturation_margin"],
     }
     read = load_results(path)
     first, second = read["op"], read["step"]

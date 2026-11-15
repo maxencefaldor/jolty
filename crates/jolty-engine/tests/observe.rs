@@ -422,10 +422,16 @@ fn each_device_reports_its_own_small_signal_model_and_variables() {
             ("M1", "gate_source_capacitance"),
             ("M1", "gate_drain_capacitance"),
             ("M1", "gate_bulk_capacitance"),
+            ("M1", "region"),
+            ("M1", "overdrive_voltage"),
+            ("M1", "saturation_margin"),
         ]
     );
     assert!((variables[0] - 0.3).abs() < 1e-15);
     assert!((variables[1] - 0.7).abs() < 1e-15);
+    // Its overdrive is its saturation voltage, which it lies past in saturation.
+    assert!((variables[6] - 0.7).abs() < 1e-15);
+    assert!(variables[7] > 0.0, "{}", variables[7]);
 }
 
 /// The circuit of a cell, `R1` from `a` to `mid` and `R2` from `mid` to `b`, nested in a
@@ -674,7 +680,7 @@ fn a_device_recorded_alone_reads_as_it_does_among_every_device() {
             assert_exact(found.conductances[index], expected.conductances[at]);
             assert_exact(found.capacitances[index], expected.capacitances[at]);
         }
-        let variables = &expected.variables[expected.variables.len() - 5..];
+        let variables = &expected.variables[expected.variables.len() - 8..];
         assert_eq!(found.variables, variables);
     }
     let ac = Ac {

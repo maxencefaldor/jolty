@@ -23,9 +23,10 @@ use crate::junction::{Depletion, Temperatures, below_one, limit_channel};
 use crate::kernel::parts::{self, Nodes, Oriented, Pair, Series, Varying};
 use crate::mosfet::{DEFAULT_OXIDE_THICKNESS, OXIDE_PERMITTIVITY};
 use crate::noise::Flicker;
+use crate::region::SATURATION_MARGIN;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError,
-    REFERENCE_TEMPERATURE, Real, Stamp,
+    REFERENCE_TEMPERATURE, REGION, Real, Regions, Stamp,
 };
 
 /// The conductance ngspice joins the drain to the source with where no drain-source
@@ -114,19 +115,41 @@ pub struct VdmosMemory {
     /// The body diode's voltage at the last evaluation, from its anode to its cathode.
     body: f64,
     /// The values of [`VARIABLE_NAMES`] at the last evaluation.
-    variables: [f64; 5],
+    variables: [f64; 7],
 }
 
 /// The variables a transistor reports: its threshold and saturation voltages, in its own
-/// polarity, and its capacitances from the gate to the source and to the drain and from the
-/// drain to the source, its body diode's.
-const VARIABLE_NAMES: [&str; 5] = [
+/// polarity, its capacitances from the gate to the source and to the drain and from the
+/// drain to the source, its body diode's, and its region among [`REGIONS`] and its margin.
+const VARIABLE_NAMES: [&str; 7] = [
     "threshold_voltage",
     "saturation_voltage",
     "gate_source_capacitance",
     "gate_drain_capacitance",
     "drain_source_capacitance",
+    REGION,
+    SATURATION_MARGIN,
 ];
+
+/// The regions of a transistor's channel, as `VDMOSload` switches between them, in the
+/// order of [`REGIONS`]' names: none below the threshold, where the softened overdrive
+/// keeps the channel conducting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Region {
+    /// The drain below saturation.
+    Linear,
+    /// The drain at or past saturation.
+    Saturated,
+}
+
+/// The regions a transistor's equations distinguish, and its margin to their boundary,
+/// `vds − vdsat`, in its own polarity, with the drain and the source swapped where the
+/// drain lies below the source: the drain-source voltage over the softened overdrive
+/// divided by the triode's multiplier, where the law turns from linear to saturated.
+const REGIONS: Regions = Regions {
+    names: &["linear", "saturated"],
+    margins: &[SATURATION_MARGIN],
+};
 
 /// The terminals' local indices.
 const DRAIN: usize = 0;
@@ -357,6 +380,9 @@ struct Conduction<R: Real> {
     saturation: Dual<R, 2>,
     /// Whether the drain is at or above the source; otherwise the two swap.
     forward: bool,
+    region: Region,
+    /// `vds − vdsat`, with the drain at or above the source.
+    margin: f64,
 }
 
 impl<R: Real> Law<R> {
@@ -378,15 +404,22 @@ impl<R: Real> Law<R> {
         let betap = betap.scale(self.beta);
         let overdrive =
             softplus((vgst - Dual::constant(self.shift)).divide(self.slope)).scale(self.slope);
-        let current = if overdrive.value.value() <= vdss.value.value() {
-            betap * overdrive * overdrive * 0.5
+        let beyond = (vdss - overdrive).value.value();
+        let region = if beyond >= 0.0 {
+            Region::Saturated
         } else {
-            betap * vdss * (overdrive - vdss * 0.5)
+            Region::Linear
+        };
+        let current = match region {
+            Region::Saturated => betap * overdrive * overdrive * 0.5,
+            Region::Linear => betap * vdss * (overdrive - vdss * 0.5),
         };
         Conduction {
             current: if forward { current } else { -current },
             saturation,
             forward,
+            region,
+            margin: beyond / self.triode.value(),
         }
     }
 }
@@ -629,6 +662,8 @@ impl Kernel for Vdmos {
             gate.source.value(),
             by_gate.value(),
             body.value(),
+            f64::from(conduction.region as u8),
+            sign * conduction.margin,
         ];
     }
 
@@ -637,9 +672,11 @@ impl Kernel for Vdmos {
     }
 
     fn variables(memory: &VdmosMemory, values: &mut [f64]) {
-        for (value, &variable) in values.iter_mut().zip(&memory.variables) {
-            *value = variable;
-        }
+        parts::write_variables(&memory.variables, values);
+    }
+
+    fn regions() -> Regions {
+        REGIONS
     }
 
     /// The thermal noise of the drain and source resistances and of the channel,
@@ -942,8 +979,8 @@ mod tests {
 
     use super::*;
     use crate::testing::{
-        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
-        thermal,
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
+        assert_switches_where_margin_vanishes, source, thermal,
     };
     use crate::thermal_voltage;
 
@@ -1064,8 +1101,11 @@ mod tests {
                 );
             }
             let (n_values, p_values) = (n.variables(), p.variables());
-            for (index, (n_value, p_value)) in n_values.iter().zip(&p_values).enumerate() {
-                let mirrored = if index < 2 { -p_value } else { *p_value };
+            let polar = [true, true, false, false, false, false, true];
+            for (index, ((n_value, p_value), polar)) in
+                n_values.iter().zip(&p_values).zip(polar).enumerate()
+            {
+                let mirrored = if polar { -p_value } else { *p_value };
                 assert!(
                     (n_value - mirrored).abs() <= 1e-15 * n_value.abs(),
                     "{index}"
@@ -1364,5 +1404,34 @@ mod tests {
             ],
         );
         assert_eq!(sources.len(), 4, "{sources:?}");
+    }
+
+    /// A transistor is linear with its drain below its softened overdrive and saturated
+    /// past it, there being no region below its threshold, where the softened overdrive
+    /// keeps it conducting, saturated; its margin vanishes where `VDMOSload` switches, the
+    /// drain and the source swapping where the drain lies below, and a p-channel's mirrors
+    /// an n-channel's.
+    #[test]
+    fn reports_its_region_and_margin() {
+        let parameters = r#"{"triode_conductance_multiplier": 0.5}"#;
+        let mut n = Bench::new::<Vdmos>(parameters);
+        let mut p = Bench::new::<Vdmos>(&parameters.replace('}', r#", "channel": "p"}"#));
+        // The drain, the gate and the source, about the threshold of 3 V.
+        for (x, region) in [
+            ([0.5, 6.0, 0.0], "linear"),
+            ([10.0, 4.0, 0.0], "saturated"),
+            ([10.0, 0.0, 0.0], "saturated"),
+            ([0.0, 6.0, 0.5], "linear"),
+        ] {
+            n.settle(&x);
+            p.settle(&x.map(|value| -value));
+            let ((n_region, n_margin), (p_region, p_margin)) = (n.region(), p.region());
+            assert_eq!((n_region, p_region), (region, region), "{x:?}");
+            assert_close(&n_margin, &p_margin.iter().map(|m| -m).collect::<Vec<_>>());
+        }
+        let (from, to) = ([0.5, 6.0, 0.0], [12.0, 6.0, 0.0]);
+        assert_switches_where_margin_vanishes(&mut n, (&from, &to), SATURATION_MARGIN);
+        let (from, to) = ([0.0, 6.0, 0.5], [0.0, 6.0, 12.0]);
+        assert_switches_where_margin_vanishes(&mut n, (&from, &to), SATURATION_MARGIN);
     }
 }
