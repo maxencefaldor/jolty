@@ -1282,13 +1282,20 @@ fn dissecting(options: &Options, interiors: usize) -> Options {
 
 /// A run whose options dissect its factorization finds the same bits on 1, 2, 3 and 8
 /// threads: the amplifier's operating point, response and transient, and the latch's
-/// every DC solution, dissected into interiors of two unknowns; and the operating point of
-/// the mesh of 10,000 nodes, into interiors of 500, its separators' fronts dense.
+/// every DC solution, dissected into interiors of two unknowns; the operating point of
+/// the mesh of 10,000 nodes, into interiors of 500, its separators' fronts dense; and the
+/// first tenth of a nanosecond of the chain of 500 inverters, into interiors of 500, whose
+/// supply's row, above the chain's block, takes in more than a chunk of its columns.
 #[test]
 fn a_dissected_factorization_finds_the_same_on_any_number_of_threads() {
     let (amplifier, analyses, options) = benchmark("bjt_amp");
     let (mesh, _, mesh_options) = benchmark("rc_mesh_100");
+    let (chain, _, chain_options) = benchmark("inverter_chain_500");
+    let start: Analysis =
+        serde_json::from_value(json!({"transient": {"stop": 1e-10, "method": "trapezoidal"}}))
+            .expect("a transient");
     let cases = [
+        (chain, vec![start], dissecting(&chain_options, 500)),
         (amplifier, analyses, dissecting(&options, 2)),
         (
             mesh,
