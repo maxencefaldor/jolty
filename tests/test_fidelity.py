@@ -16,8 +16,8 @@ from jolty import (
     fidelity,
 )
 from jolty.errors import JoltyError
-from jolty.plan import Characterized, Plan, Transient
-from jolty.results import Result
+from jolty.plan import Characterized, Explicit, OperatingPoint, Plan, Transient, Variant
+from jolty.results import Result, Run
 from jolty.specs import Specs, crossing, evaluate
 from jolty.units import TIME, Quantity, V, fF, format_si, nm, ns, ps, um
 from jolty.waveforms import Pulse
@@ -159,14 +159,35 @@ def test_contract_violated() -> None:
 
 
 def test_outside_validity() -> None:
-    _, simulation, _, _ = runs(chain())
-    assert simulation.excursions == ()
-    _, simulation, _, _ = runs(chain(load=500.0))
-    (excursion,) = simulation.excursions
+    _, _, modeled, _ = runs(chain())
+    assert modeled["step"].excursions == ()
+    _, _, modeled, _ = runs(chain(load=500.0))
+    watched = modeled["step"].excursions
+    assert watched is not None
+    (excursion,) = watched
     assert (excursion.path, excursion.bound) == ("X1", "load")
     assert excursion.value > excursion.high
     outside = fidelity.Outside(analysis="step", excursion=excursion)
     assert outside.describe().startswith("warn[outside-validity]: X1's load reads")
+
+
+def test_a_result_states_its_own_excursions_whatever_runs_after_it() -> None:
+    chosen = fidelity.resolve(circuit(chain(load=500.0)), PLAN, None, {})
+    simulation = chosen.simulation()
+    stepped = simulation.run(Transient(stop=6 * ns))
+    # At the operating point no cell switches an output, so none reads its load.
+    point = simulation.run(OperatingPoint())
+    assert point.excursions == ()
+    assert stepped.excursions is not None
+    (excursion,) = stepped.excursions
+    assert (excursion.path, excursion.bound) == ("X1", "load")
+    assert not hasattr(simulation, "excursions")
+    # A batch's runs are not watched.
+    ran: list[Run] = []
+    step = {"step": Transient(stop=6 * ns)}
+    simulation.batch(step, Explicit([Variant()]), each=ran.append)
+    (run,) = ran
+    assert run.results["step"].excursions is None
 
 
 def test_fidelity_dependence() -> None:

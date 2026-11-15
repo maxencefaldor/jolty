@@ -17,6 +17,9 @@ threshold voltage, which ``variable`` reads. For a component instance or a logic
 its terminals' currents and charges, such as ``X1`` and ``vdd``, each the sum of the
 device terminals behind it.
 
+Each result states where its analysis used logic devices outside the domains their
+timing was measured over, its ``excursions``, as the engine watched it.
+
 A [`BatchResult`][jolty.results.BatchResult] holds what many runs of one circuit found
 as columns, one row per run: the values each run took, whether each analysis ended,
 what each measurement read, and the values of some unknowns at every point of an
@@ -32,6 +35,7 @@ from typing import Any, Final, Literal, Never, TypedDict, override
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import BaseModel, ConfigDict, Field
 
 from jolty import _core
 from jolty.units import Dimension
@@ -394,6 +398,36 @@ def _current(instance: str) -> str:
     return f"{instance}:current"
 
 
+class Excursion(BaseModel):
+    """A logic device used outside its domain, where its timing was never measured."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(description="The device's path.")
+    bound: Literal["input transition", "load", "supply"] = Field(
+        description="What left the domain."
+    )
+    low: float = Field(description="The domain's least value, in SI base units.")
+    high: float = Field(description="The domain's most value.")
+    value: float = Field(description="The value furthest outside it.")
+    time: float = Field(
+        description="When it first left, in seconds; zero at an operating point."
+    )
+    count: int = Field(description="How many times it was read outside.")
+
+
+@dataclass(frozen=True, slots=True)
+class _Watched:
+    """A result of an analysis that the engine watches for logic devices' domains."""
+
+    excursions: tuple[Excursion, ...] | None = field(default=None, kw_only=True)
+    """Where the analysis used logic devices outside their domains, each device and
+    bound once, as [`Simulation.run`][jolty.simulate.Simulation.run] watched it, and as
+    a results file keeps it. None where no run watched it: a run of a batch, a run in
+    ngspice, and a result within another's, such as a response's operating point, whose
+    analysis's result states them."""
+
+
 class _Unknowns[T]:
     """A result's unknowns and its recorded terminals' currents, read by name.
 
@@ -509,7 +543,7 @@ class _Devices[T](_Unknowns[T]):
 
 
 @dataclass(frozen=True, slots=True)
-class OperatingPoint(_Devices[float]):
+class OperatingPoint(_Devices[float], _Watched):
     """A DC solution, and the strategy that found it."""
 
     unknowns: tuple[Unknown, ...]
@@ -544,7 +578,7 @@ class OperatingPoint(_Devices[float]):
 
 
 @dataclass(frozen=True, slots=True)
-class OperatingPoints:
+class OperatingPoints(_Watched):
     """Every DC solution a search found, the operating point first.
 
     Examples:
@@ -570,7 +604,7 @@ class OperatingPoints:
 
 
 @dataclass(frozen=True, slots=True)
-class Sweep(_Devices[Real]):
+class Sweep(_Devices[Real], _Watched):
     """The operating points of a DC sweep, one row per level of its source.
 
     A sweep of a parameter of a device names it, and its levels are the parameter's
@@ -614,7 +648,7 @@ class Sweep(_Devices[Real]):
 
 
 @dataclass(frozen=True, slots=True)
-class Response(_Unknowns[Complex]):
+class Response(_Unknowns[Complex], _Watched):
     """A small-signal response: phasors per unit excitation, one row per frequency."""
 
     unknowns: tuple[Unknown, ...]
@@ -723,7 +757,7 @@ class Statistics:
 
 
 @dataclass(frozen=True, slots=True)
-class Waveforms(_Devices[Real]):
+class Waveforms(_Devices[Real], _Watched):
     """The waveforms of a transient analysis, one row per accepted time point."""
 
     unknowns: tuple[Unknown, ...]
@@ -771,7 +805,7 @@ class Parameter:
 
 
 @dataclass(frozen=True, slots=True)
-class Sensitivities:
+class Sensitivities(_Watched):
     """Sensitivities: each output's derivative with respect to each parameter.
 
     `derivatives` has one row per output and one column per parameter, in SI base
@@ -831,7 +865,7 @@ class Sensitivities:
 
 
 @dataclass(frozen=True, slots=True)
-class LoopGain:
+class LoopGain(_Watched):
     """The loop gain through a probe, at each frequency.
 
     Negative feedback makes it positive at low frequencies; the specs' `phase_margin`,
@@ -848,7 +882,7 @@ class LoopGain:
 
 
 @dataclass(frozen=True, slots=True)
-class Transfer:
+class Transfer(_Watched):
     """The small-signal transfer function at DC from a source to an output.
 
     The `gain` is the output per unit of the source's level, in volts or amperes of
@@ -895,7 +929,7 @@ class NoiseInput:
 
 
 @dataclass(frozen=True, slots=True)
-class NoiseSpectrum:
+class NoiseSpectrum(_Watched):
     """The noise at an output, at each frequency.
 
     `densities` are the output's one-sided noise power densities, in V²/Hz for a
@@ -1067,7 +1101,7 @@ def integrate(
 
 
 @dataclass(frozen=True, slots=True)
-class PolesZeros:
+class PolesZeros(_Watched):
     """The poles of the linearized circuit, and the zeros of a transfer function.
 
     The circuit is linearized at its operating point, and the transfer function is from

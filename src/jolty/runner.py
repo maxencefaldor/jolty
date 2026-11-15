@@ -1121,8 +1121,9 @@ def _analyses(
 ) -> tuple[dict[str, Result], tuple[report.AnalysisReport, ...]]:
     """The results of the analyses of `plan` that end, by name, and a report on each.
 
-    Each analysis's excursions outside its logic devices' domains join `outside`. The
-    results keep what the plan and each analysis record when they are `recorded`, as
+    The excursions outside its logic devices' domains of each analysis that ends join
+    `outside`. The results keep what the plan and each analysis record when they are
+    `recorded`, as
     the plan's own run's are, which are saved and checked, and nothing more than the
     checks read otherwise, as a corner's, a sample's and a spot check's are, which only
     specs and contracts read.
@@ -1138,11 +1139,11 @@ def _analyses(
         else:
             solved[name] = result
             reports.append(report.report(name, result, listed))
-        if outside is not None:
-            outside.extend(
-                fidelity.Outside(analysis=name, excursion=excursion)
-                for excursion in simulation.excursions
-            )
+            if outside is not None:
+                outside.extend(
+                    fidelity.Outside(analysis=name, excursion=excursion)
+                    for excursion in result.excursions or ()
+                )
     return solved, tuple(reports)
 
 

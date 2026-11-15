@@ -62,6 +62,12 @@ RECORDING = results.Recording(
 their derivatives in eight, and a variable."""
 
 
+EXCURSION = results.Excursion(
+    path="X2", bound="load", low=0.0, high=2e-14, value=5e-13, time=1e-9, count=3
+)
+"""A logic cell's load outside the domain of its timing."""
+
+
 def every_kind() -> dict[str, results.Result]:
     point = results.OperatingPoint(
         UNKNOWNS,
@@ -109,6 +115,7 @@ def every_kind() -> dict[str, results.Result]:
             conductances=np.zeros((2, 8)),
             capacitances=np.ones((2, 8)),
             readings=np.ones((2, 1)),
+            excursions=(EXCURSION,),
         ),
         "sensitivity": results.Sensitivities(
             UNKNOWNS,
@@ -222,6 +229,9 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     step = read["step"]
     assert isinstance(step, results.Waveforms)
     assert step.statistics == STATISTICS
+    # Each result keeps the excursions its run watched, or that no run watched them.
+    assert step.excursions == (EXCURSION,)
+    assert op.excursions is None
     np.testing.assert_array_equal(step.current("X1", "p"), [2, 2])
     np.testing.assert_array_equal(step.variable("M1", "threshold_voltage"), [1, 1])
 
@@ -287,7 +297,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 6
+    assert header["version"] == 8
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {

@@ -90,6 +90,9 @@ The first release, 0.1.0.
 
 ### Changed
 
+- Each result states where its analysis used logic devices outside their domains, its `excursions`, as `Simulation.run` watched it, and results files keep them, in version 8 of their format; `Simulation` has no `excursions` attribute, which held the last analysis's, so that what a result said depended on the order of the calls.
+  A result that no run watched, a run of a batch, a run in ngspice or a result within another's, states `None`, and an analysis that fails states none, where the simulation held what it found before failing.
+  A results file's header states its format's version, which it gave as 6 since version 7.
 - A decade sweep's frequencies, `jolty.plan.decade`, are computed in decimal arithmetic and rounded once, each the float nearest its exact value, so that every platform finds the same: each platform's `log10` and `pow` rounded them differently, so one plan swept other frequencies on Linux than on macOS, and most of them move by a few units in their last place.
 - A Gear2 step's truncation error is estimated with Gear2's error constant at the step's ratio `ω` to the one before it, `(1 + ω)²/(6ω(1 + 2ω))`, and the longest step after it, or in its place where its error rejects it, is solved for at that step's own ratio, where SPICE takes the constant step's 2/9 at every step, which after a step cut to a tenth estimates the error 7.6 times too small.
   Gear2 runs take other steps, each held to its tolerance after the step's length changes; the trapezoidal formula, the default, and backward Euler, whose constants do not depend on the step before, are unchanged.

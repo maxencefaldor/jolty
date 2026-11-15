@@ -42,7 +42,7 @@ from collections.abc import (
     Sequence,
 )
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Final, Literal, overload
 
@@ -218,24 +218,6 @@ class Joined:
     current the heat flowing into it."""
 
 
-class Excursion(BaseModel):
-    """A logic device used outside its domain, where its timing was never measured."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    path: str = Field(description="The device's path.")
-    bound: Literal["input transition", "load", "supply"] = Field(
-        description="What left the domain."
-    )
-    low: float = Field(description="The domain's least value, in SI base units.")
-    high: float = Field(description="The domain's most value.")
-    value: float = Field(description="The value furthest outside it.")
-    time: float = Field(
-        description="When it first left, in seconds; zero at an operating point."
-    )
-    count: int = Field(description="How many times it was read outside.")
-
-
 def _stand_ins(substitutes: Mapping[str, Device] | None) -> str:
     """The models of `substitutes` as the engine reads them, by path, in JSON."""
     stand_ins = {
@@ -383,9 +365,6 @@ class Simulation:
     conditions: Conditions
     """What the circuit is simulated at."""
 
-    excursions: tuple[Excursion, ...]
-    """Where the last analysis used logic devices outside their domains."""
-
     foundry: tuple[str, ...]
     """The paths of the foundry's devices, which ngspice simulates in the engine's
     place."""
@@ -499,7 +478,6 @@ class Simulation:
         )
         self.nets = tuple(self._core.nets)
         self.devices = self._core.devices
-        self.excursions = ()
         self.foundry = tuple(self._core.foundry_devices)
         if process is not None and not self.foundry:
             message = (
@@ -654,7 +632,8 @@ class Simulation:
 
         The result records the instances the analysis's ``record`` names, and at an
         operating point and in a transient those its ratings read besides (see
-        [`Plan`][jolty.plan.Plan]).
+        [`Plan`][jolty.plan.Plan]), and states where the analysis used logic devices
+        outside their domains, its ``excursions``, none in ngspice.
 
         Raises:
             SimulationError: When the analysis fails, saying why, or the record names
@@ -664,7 +643,6 @@ class Simulation:
         """
         chosen = Options() if options is None else options
         if self.foundry:
-            self.excursions = ()
             _log([analysis], 1)
             return foundry.run(
                 self.circuit, analysis, chosen, self.conditions, self.unknowns
@@ -678,11 +656,10 @@ class Simulation:
             outcome = self._core.run(encoded, settings, _engine())
         except _core.SimulationError as error:
             raise SimulationError(str(error)) from None
-        finally:
-            self.excursions = tuple(
-                Excursion.model_validate(found) for found in self._core.excursions()
-            )
-        return self._result(outcome, recording)
+        watched = tuple(
+            results.Excursion.model_validate(found) for found in self._core.excursions()
+        )
+        return replace(self._result(outcome, recording), excursions=watched)
 
     def batch(  # noqa: PLR0913 - the runs, their analyses, and what each reads
         self,

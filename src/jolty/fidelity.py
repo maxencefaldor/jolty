@@ -34,8 +34,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from jolty import devices, ir, results
 from jolty.errors import CharacterizationError, JoltyError
 from jolty.plan import Ac, Characterized, OperatingPoint, Plan, Transient
-from jolty.results import Result
-from jolty.simulate import Elaborated, Excursion, Simulation, kelvins
+from jolty.results import Excursion, Result
+from jolty.simulate import Elaborated, Simulation, kelvins
 from jolty.specs import Verdict
 from jolty.units import FREQUENCY, TIME, VOLTAGE, Quantity, format_si
 

@@ -15,8 +15,9 @@ circuit's unknowns and logic nets, says what the analyses recorded of its device
 recording once however many analyses share it, and says what each analysis is, then
 the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 ``step.currents`` and ``step.conductances``, ``loop.frequencies`` and ``loop.gains``, or
-``hiss.densities`` and ``hiss.contributions``. The header is in version 6 of the format,
-which names the parameter a DC sweep steps; a file of an earlier version is not read.
+``hiss.densities`` and ``hiss.contributions``, and where each analysis used logic
+devices outside their domains. The header is in version 8 of the format, which holds
+those excursions; a file of another version is not read.
 
 Examples:
     >>> import tempfile
@@ -34,7 +35,7 @@ Examples:
 
 import zipfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Annotated, Final, Literal
@@ -66,9 +67,6 @@ _EPOCH: Final = (1980, 1, 1, 0, 0, 0)
 """The date a ZIP archive's entries carry: the earliest it can, the same every time."""
 
 _HEADER: Final = "header"
-
-_VERSION: Final = 7
-"""The version of the results file's format that jolty writes and reads."""
 
 
 class _Model(BaseModel):
@@ -228,9 +226,18 @@ class _Recording(_Model):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[6] = 6
+    version: Literal[8] = 8
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
+    excursions: dict[str, tuple[results.Excursion, ...]] = Field(
+        default_factory=dict,
+        description="Where each analysis the engine watched used logic devices outside "
+        "their domains, by its name.",
+    )
+
+
+_VERSION: Final = _Header.model_construct().version
+"""The version of the results file's format that jolty writes and reads."""
 
 
 class _Format(BaseModel):
@@ -382,6 +389,11 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
         **names.model_dump(),
         recordings=tuple(_Recording.of(recording) for recording in recordings),
         analyses=entries,
+        excursions={
+            name: result.excursions
+            for name, result in analyses.items()
+            if result.excursions is not None
+        },
     )
     arrays[_HEADER] = np.array(header.model_dump_json())
     _write(path, arrays)
@@ -416,10 +428,16 @@ def load_results(path: Path) -> dict[str, results.Result]:
         except KeyError, ValidationError:
             raise _unreadable(path, data) from None
         recordings = tuple(recording.recording() for recording in header.recordings)
-        return {
+        found = {
             name: _load(data, name, entry, header, recordings)
             for name, entry in header.analyses.items()
         }
+    return {
+        name: result
+        if name not in header.excursions
+        else replace(result, excursions=header.excursions[name])
+        for name, result in found.items()
+    }
 
 
 def _unreadable(path: Path, data: Mapping[str, np.ndarray]) -> JoltyError:
