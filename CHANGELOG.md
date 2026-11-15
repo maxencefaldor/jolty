@@ -22,6 +22,7 @@ The first release, 0.1.0.
 - Memristors: VTEAM's, voltage-controlled with thresholds, and HP's linear ion drift, current-controlled, each with a linear or exponential law and a window at either bound; their state holds at an operating point and moves in a transient, and they are written for ngspice as behavioral currents.
 - Devices' dimensionless states, a memristor's and a photocell's response, as unknowns of their own quantity, which results read with `state(name)` and plots draw on a panel of their own.
 - Vendors' SPICE macromodels read as components, and any circuit written as a SPICE netlist for ngspice, behavioral expressions written from their trees so ngspice computes what jolty does.
+- Independent sources read from SPICE with their `PULSE`, `SIN` and `PWL` waveforms over time, as jolty's exporter writes them, where the reader read their DC level alone.
 - SKY130's transistors, foundry devices the engine checks but does not solve: their circuits' operating points, DC sweeps, small-signal responses, transients and noise run in ngspice with the pinned process design kit's models, fetched and checked once, at the plan's and its corners' process corners, and Monte Carlo samples draw the kit's mismatch.
 - Ratings a part's maker states on its voltages, currents, power and temperature, on a device or a component's ports, each bounded above, below or both, held to every operating point and transient.
 - Thermal networks of thermal resistances, heat capacities and heat sources, whose nets are temperatures above the ambient, solved with the circuit.

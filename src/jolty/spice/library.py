@@ -8,6 +8,7 @@ records the file and the line of the statement that placed it.
 """
 
 import itertools
+import math
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -833,16 +834,30 @@ def _check_model(
             raise models.unmatched(card, name, statement)
 
 
+_TRANSIENT_FUNCTIONS: Final = frozenset({"pulse", "sin", "pwl", "exp", "sffm", "am"})
+"""The names of SPICE's waveforms of an independent source over time."""
+
+_SINE_OPTIONS: Final = ("delay", "damping", "phase")
+"""What a `SIN` may give after its offset, amplitude and frequency, in order."""
+
+
 def _independent(model: str) -> Callable[[_Translation, Statement], None]:
-    """The translation of an independent source of `model`, at its DC level."""
+    """The translation of an independent source of `model`.
+
+    Its level is its DC level, or its waveform over time, SPICE's `PULSE`, `SIN` or
+    `PWL`, whose level at time zero every other analysis reads, as ngspice reads it for
+    a source with no DC level.
+    """
 
     def translated(translation: _Translation, statement: Statement) -> None:
         words = tokens(statement.text)
         _, positive, negative, *rest = words
-        if rest[:1] and rest[0].casefold() == "dc":
+        rest, waveform = _transient_function(translation, statement, rest)
+        given = rest[:1] and rest[0].casefold() == "dc"
+        if given:
             rest = rest[1:]
         level = (
-            translation.value(rest[0]) if rest and rest[0].casefold() != "ac" else 0.0
+            translation.value(rest[0]) if rest and rest[0].casefold() != "ac" else None
         )
         after = rest[1:] if rest and rest[0].casefold() != "ac" else rest
         # A small-signal magnitude belongs to the plan, which excites a source by name.
@@ -851,12 +866,24 @@ def _independent(model: str) -> Callable[[_Translation, Statement], None]:
                 1 + sum(1 for word in after[1:3] if number(word) is not None) :
             ]
         if after:
-            message = f"jolty reads a source's DC level only, not `{' '.join(after)}`"
+            message = (
+                "jolty reads a source's DC level and its PULSE, SIN or PWL waveform "
+                f"only, not `{' '.join(after)}`"
+            )
             raise statement.fail(message)
+        if waveform is None:
+            waveform = {"dc": 0.0 if level is None else level}
+        elif level is not None and level != _at_zero(waveform):
+            message = (
+                f"a DC level of {level!r} beside a waveform at {_at_zero(waveform)!r} "
+                "at time zero: jolty's source has one level at zero for every analysis"
+            )
+            raise statement.fail(message)
+        parameters: dict[str, JsonValue] = {"waveform": waveform}
         translation.add(
             statement,
             model,
-            {"waveform": {"dc": level}},
+            parameters,
             {
                 "positive": translation.net(positive),
                 "negative": translation.net(negative),
@@ -864,6 +891,121 @@ def _independent(model: str) -> Callable[[_Translation, Statement], None]:
         )
 
     return translated
+
+
+def _transient_function(
+    translation: _Translation, statement: Statement, words: list[str]
+) -> tuple[list[str], dict[str, JsonValue] | None]:
+    """`words` without a waveform over time, and that waveform, if they hold one.
+
+    The waveform is written ``PULSE(...)`` or ``PULSE (...)``, or as SPICE2 wrote it,
+    ``PULSE`` followed by its arguments to the statement's end, and likewise ``SIN``
+    and ``PWL``.
+
+    Raises:
+        SpiceError: When the waveform is one jolty has not, such as `EXP`, or leaves
+            out what SPICE takes from the transient analysis.
+    """
+    for index, word in enumerate(words):
+        name, _, inside = word.partition("(")
+        if name.casefold() not in _TRANSIENT_FUNCTIONS:
+            continue
+        if inside:
+            arguments, rest = tokens(word[len(name) + 1 : -1]), words[index + 1 :]
+        elif index + 1 < len(words) and words[index + 1].startswith("("):
+            arguments, rest = tokens(words[index + 1][1:-1]), words[index + 2 :]
+        else:
+            arguments, rest = words[index + 1 :], []
+        values = [translation.value(each) for each in arguments]
+        waveform = _waveform(name.casefold(), values, statement)
+        return [*words[:index], *rest], waveform
+    return words, None
+
+
+def _waveform(
+    name: str, arguments: list[float], statement: Statement
+) -> dict[str, JsonValue]:
+    """The waveform SPICE's function `name` of `arguments` writes, in jolty's format.
+
+    Raises:
+        SpiceError: When jolty has no such waveform, or the function leaves out what
+            SPICE takes from the transient analysis: a pulse's rise, fall or width, or
+            a sine's frequency.
+    """
+    match name, arguments:
+        case "pulse", [initial, pulsed, delay, rise, fall, width, *period] if (
+            rise > 0 and fall > 0 and width > 0 and len(period) <= 1
+        ):
+            pulse: dict[str, JsonValue] = {
+                "initial": initial,
+                "pulsed": pulsed,
+                "delay": delay,
+                "rise": rise,
+                "fall": fall,
+                "width": width,
+            }
+            if period:
+                pulse["period"] = period[0]
+            return {"pulse": pulse}
+        case "pulse", _:
+            message = (
+                "a PULSE without a positive rise, fall and width, which SPICE takes "
+                "from the transient analysis's step and stop, and jolty's circuit "
+                "from no analysis"
+            )
+            raise statement.fail(message)
+        case "sin", [offset, amplitude, frequency, *more] if frequency > 0 and len(
+            more
+        ) <= len(_SINE_OPTIONS):
+            delay, damping, degrees = [*more, 0.0, 0.0, 0.0][: len(_SINE_OPTIONS)]
+            return {
+                "sine": {
+                    "offset": offset,
+                    "amplitude": amplitude,
+                    "frequency": frequency,
+                    "delay": delay,
+                    "damping": damping,
+                    "phase": math.radians(degrees),
+                }
+            }
+        case "sin", _:
+            message = (
+                "a SIN without a positive frequency, which SPICE takes from the "
+                "transient analysis's stop, and jolty's circuit from no analysis"
+            )
+            raise statement.fail(message)
+        case "pwl", [*pairs] if pairs and len(pairs) % 2 == 0:
+            points: list[JsonValue] = [
+                [pairs[index], pairs[index + 1]] for index in range(0, len(pairs), 2)
+            ]
+            return {"piecewise": {"points": points}}
+    message = f"jolty has no `{name.upper()}` waveform of these arguments"
+    raise statement.fail(message)
+
+
+def _at_zero(waveform: Mapping[str, JsonValue]) -> float:
+    """The level of a waveform at time zero, as every analysis but a transient reads it.
+
+    Raises:
+        ValueError: When the waveform is not one `_waveform` writes.
+    """
+    match waveform:
+        case {"pulse": {"initial": float(initial)}}:
+            return initial
+        case {
+            "sine": {
+                "offset": float(offset),
+                "amplitude": float(amplitude),
+                "phase": float(phase),
+            }
+        }:
+            return offset + amplitude * math.sin(phase)
+        case {"piecewise": {"points": [[_, float(first)], *_]}}:
+            return first
+        case {"dc": float(level)}:
+            return level
+    message = f"no level at zero of {waveform}"
+    raise ValueError(message)
 
 
 def _semiconductor(

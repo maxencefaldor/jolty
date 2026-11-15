@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -32,6 +33,7 @@ from jolty.spice.export import netlist
 from jolty.spice.expressions import evaluate, number, parse, translate
 from jolty.spice.netlist import statements, tokens
 from jolty.units import (
+    VOLTAGE,
     A,
     C,
     H,
@@ -50,6 +52,7 @@ from jolty.units import (
     uF,
     um,
 )
+from jolty.waveforms import Piecewise, Pulse, Sine
 
 
 def library(text: str) -> spice.Library:
@@ -205,6 +208,104 @@ def test_controlled_sources_read_polynomials_values_and_currents() -> None:
     assert point.voltage("U1/b") == pytest.approx(2.0)
     assert point.voltage("U1/c") == pytest.approx(10.0)
     assert point.voltage("out") == pytest.approx(2.0)
+
+
+def waveforms(text: str) -> dict[str, JsonValue]:
+    """The waveform of each source of the one subcircuit `text` defines, by its id."""
+    read = library(text)
+    (name,) = read.subcircuits
+    return {
+        instance.id: instance.parameters["waveform"]
+        for instance in read.component(name).definition.instances
+        if instance.id[0] in "VI"
+    }
+
+
+def test_sources_read_their_waveforms_over_time() -> None:
+    read = waveforms(
+        ".subckt drive a b\n"
+        "V1 a 0 PULSE(0 5 1n 2n 3n 4n 20n)\n"
+        "V2 b 0 dc 1 pwl(0, 1, 1u, 2.5)\n"
+        "I1 a b sin (1m 2m 1meg 5n 1e6 90)\n"
+        "I2 a b DC 1m AC 1 SIN(1m 1m 1k)\n"
+        "V3 c 0 pulse -1 1 0 1n 1n 1n\n"
+        "R1 c 0 1k\n"
+        ".ends"
+    )
+    pulse: dict[str, float | None] = {"initial": 0.0, "pulsed": 5.0, "delay": 1e-9}
+    # SPICE2 wrote a waveform's arguments without parentheses, to the end: V3's.
+    pulse |= {"rise": 2e-9, "fall": number("3n"), "width": 4e-9, "period": 2e-8}
+    once = {"initial": -1.0, "pulsed": 1.0, "delay": 0.0, "rise": 1e-9}
+    once |= {"fall": 1e-9, "width": 1e-9}
+    sine = {"offset": 1e-3, "amplitude": 2e-3, "frequency": 1e6, "delay": 5e-9}
+    sine |= {"damping": 1e6, "phase": math.pi / 2}
+    # Its DC level is its level at zero, the sine's offset at no phase.
+    level = {"offset": 1e-3, "amplitude": 1e-3, "frequency": 1e3, "delay": 0.0}
+    level |= {"damping": 0.0, "phase": 0.0}
+    assert read == {
+        "V1": {"pulse": pulse},
+        "V2": {"piecewise": {"points": [[0.0, 1.0], [1e-6, 2.5]]}},
+        "I1": {"sine": sine},
+        "I2": {"sine": level},
+        "V3": {"pulse": once},
+    }
+
+
+def test_waveforms_read_back_as_the_exporter_writes_them() -> None:
+    written = {
+        "P": Pulse(
+            initial=-1 * V,
+            pulsed=2 * V,
+            delay=1 * ns,
+            rise=2 * ns,
+            fall=3 * ns,
+            width=4 * ns,
+            period=20 * ns,
+        ),
+        "S": Sine(
+            offset=0.5 * V,
+            amplitude=1 * V,
+            frequency=1e6 / s,
+            delay=1 * ns,
+            damping=1e3 / s,
+            phase=math.pi / 2,
+        ),
+        "W": Piecewise([(0 * s, 0 * V), (1 * ns, 3.3 * V), (2 * ns, 1 * V)]),
+    }
+
+    @component
+    def sources(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        for name, waveform in written.items():
+            placed = c.place(devices.voltage_source(waveform), id=name)
+            load = c.place(devices.resistor(1 * kohm), id=f"R{name}")
+            c.connect(placed.positive, load.a, name=f"n{name}")
+            c.connect(placed.negative, load.b, ground)
+
+    lines = netlist(circuit(sources()), transient=True)[1:]
+    read = waveforms(".subckt sources\n" + "\n".join(lines) + "\n.ends")
+    assert read == {
+        f"V{name}": waveform.to_json(VOLTAGE) for name, waveform in written.items()
+    }
+
+
+@pytest.mark.parametrize(
+    ("element", "message"),
+    [
+        ("V1 a 0 PULSE(0 5)", "a PULSE without a positive rise, fall and width"),
+        ("V1 a 0 PULSE(0 5 0 0 1n 1n)", "a PULSE without a positive rise"),
+        ("V1 a 0 SIN(0 1)", "a SIN without a positive frequency"),
+        ("V1 a 0 EXP(0 1 0 1n 1u 1n)", "jolty has no `EXP` waveform"),
+        ("V1 a 0 PWL(0 1 1n)", "jolty has no `PWL` waveform"),
+        ("V1 a 0 DC 1 PULSE(0 5 0 1n 1n 1n)", "a DC level of 1.0 beside a waveform"),
+        ("V1 a 0 PULSE(0 5 0 1n 1n 1n) 0 1", "and its PULSE, SIN or PWL waveform only"),
+    ],
+)
+def test_sources_refuse_what_their_waveforms_leave_out(
+    element: str, message: str
+) -> None:
+    with pytest.raises(SpiceError, match=re.escape(message)):
+        library(f".subckt drive a\n{element}\nR1 a 0 1k\n.ends").component("drive")
 
 
 def test_a_table_source_holds_beyond_its_ends() -> None:
