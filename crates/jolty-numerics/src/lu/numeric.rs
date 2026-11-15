@@ -558,6 +558,14 @@ impl<T: Scalar> Numeric<T> {
 /// [`take_in`] does, the order in which a pass over the columns would take them in; the
 /// rows are independent, so for two `threads` or more they spread over the current rayon
 /// pool's threads in runs of [`CHUNK`] rows, the same bits either way.
+///
+/// The rows taken in on the calling thread are inlined where it is called, so that a small
+/// circuit's solve, a few rows above each of its blocks, pays nothing for spreading.
+#[expect(
+    clippy::inline_always,
+    reason = "called once a block; on the buck's solves, a call cost 28 million instructions where the loop inlined costs 21"
+)]
+#[inline(always)]
 fn take_in_above<T: Scalar>(
     rows: RowsAbove<'_>,
     (values, by_position): (&[T], &[T]),
@@ -571,6 +579,19 @@ fn take_in_above<T: Scalar>(
         }
         return;
     }
+    spread_above(rows, (values, by_position), (by_row, first), threads);
+}
+
+/// [`take_in_above`] of more than [`CHUNK`] rows on two `threads` or more: each half of
+/// them as a task of its own. Never inlined, so that the rows taken in on the calling
+/// thread stay a loop small enough to inline where they are called.
+#[inline(never)]
+fn spread_above<T: Scalar>(
+    rows: RowsAbove<'_>,
+    (values, by_position): (&[T], &[T]),
+    (by_row, first): (&mut [T], usize),
+    threads: usize,
+) {
     // Halved at a whole number of runs, the later rows at and after the first of theirs.
     let half = rows.len().div_ceil(CHUNK) / 2 * CHUNK;
     let (before, after) = rows.split_at(half);
@@ -587,6 +608,7 @@ fn take_in_above<T: Scalar>(
 /// [`reduce::fold`]'s chunks of them, which spread over the current rayon pool's threads
 /// for two `threads` or more, so that a long row, such as a supply's joined to every
 /// device, is no single sum on one thread.
+#[inline]
 fn take_in<T: Scalar>(
     entries: &[(usize, usize)],
     value: T,

@@ -45,6 +45,10 @@ fn chunk_sum(chunk: usize, count: usize, term: &impl Fn(usize) -> f64) -> f64 {
 /// on the calling thread alone or, `spread`, with the chunks spread over the threads of the
 /// current rayon pool; and for a fold of no more than [`CHUNK`] items it is their fold one
 /// after another, so that a long sum spreads where a short one stays as it was.
+///
+/// A short fold is inlined where it is called, as the loop it is, so that the many short
+/// sums of a small circuit's solve pay nothing for the long ones'.
+#[inline]
 pub fn fold<T: Sync, A: Copy + Send + Sync>(
     items: &[T],
     (start, zero): (A, A),
@@ -53,8 +57,21 @@ pub fn fold<T: Sync, A: Copy + Send + Sync>(
     spread: bool,
 ) -> A {
     if items.len() <= CHUNK {
-        return items.iter().fold(start, &fold);
+        return items.iter().fold(start, fold);
     }
+    fold_by_chunks(items, (start, zero), fold, join, spread)
+}
+
+/// [`fold`] of more than [`CHUNK`] items, by its chunks. Never inlined, so that a short fold
+/// stays the loop it is where it is called.
+#[inline(never)]
+fn fold_by_chunks<T: Sync, A: Copy + Send + Sync>(
+    items: &[T],
+    (start, zero): (A, A),
+    fold: impl Fn(A, &T) -> A + Sync,
+    join: impl Fn(A, A) -> A,
+    spread: bool,
+) -> A {
     let chunk = |index: usize, chunk: &[T]| {
         let from = if index == 0 { start } else { zero };
         chunk.iter().fold(from, &fold)
