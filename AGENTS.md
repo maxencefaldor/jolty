@@ -97,13 +97,12 @@ Where the code does not meet a convention yet, a change that touches that code b
 - **Knobs over opinions:** a choice that users could reasonably make otherwise, such as ngspice's own behaviour where it differs, is an option with a documented default, when it can be expressed cleanly.
   The default is the most accurate choice.
   An option named after SPICE's means SPICE's quantity, or the guide states where it differs.
-- **Parallelism is a policy:** how a run spreads its work is an option, `Parallelism`, whose every field has a default; serial and fully parallel are two configurations of it, and it changes no bits: a setting that reorders the arithmetic, such as the dissected factorization's interiors, is a numerical option.
+- **Parallelism is a policy:** how a run spreads its work is an option, `Parallelism`, whose every field has a default; serial and fully parallel are two configurations of it.
   Each default is a measured break-even, stated in the guide with the machine it was measured on.
-  A default may depend on the circuit, never on the number of threads, where it changes the bits.
-- **Determinism:** results are a pure function of the circuit, the plan, the sample index and the options: the same bits for any thread count, shard split or completion order, on the same build and platform.
+- **Determinism:** results are a pure function of the circuit, the plan, the sample index, the options and the hardware: the same run on the same build, machine and number of threads gives the same bits, whatever order its work finishes in.
+  Across numbers of threads, shards, machines and devices, results agree to rounding, not always to the bit.
   Floating-point sums run in a fixed order, random draws depend only on the seed and the sample index, and nothing depends on the order work finishes in.
   Whatever a command reuses from an earlier one, a warm process, a cache or a session's state, gives a fresh run's bits and report.
-  The same bits on every platform is the aim: a kernel may choose its vector width at run time only if every lane computes alike, with no implicit fused multiply-add, and the elementary functions are to be jolty's own, correctly rounded.
 - **Kernels:** a device model is a pure function of one instance's prepared parameters, its memory and its local unknowns.
   It allocates nothing, never panics, and knows nothing of threads, batches or the global matrix.
   Clippy's `panic` and `indexing_slicing` lints are denied in the kernels' modules, and a test counts a kernel's allocations with `allocation-counter`.
@@ -148,7 +147,7 @@ Where the code does not meet a convention yet, a change that touches that code b
   It is checked against ngspice on a corpus of circuits (`tests/test_ngspice.py`), on vendors' macromodels (`tests/test_vendor.py`), and on random circuits of every device and size, which Hypothesis shrinks to the smallest that disagrees (`tests/test_random_circuits.py`).
   These differential tests skip when ngspice is not installed, except in CI, which installs it and sets `JOLTY_REQUIRE_NGSPICE=1` so a skip fails.
   The same random circuits must simulate the same however they are written (`tests/test_metamorphic.py`).
-  The same circuits must simulate the same however many threads or shards run them (`tests/test_determinism.py`, `tests/test_shards.py`, `crates/jolty-engine/tests/determinism.rs`).
+  The same circuits must simulate the same run after run, and to rounding however many threads or shards run them (`tests/test_determinism.py`, `tests/test_shards.py`, `crates/jolty-engine/tests/determinism.rs`).
   The layout is checked by property tests over random circuits: nets never touch, and wires never cross a symbol.
   A property every model or analysis must have is tested over the whole library, so a new one cannot be left out: a law suite of charge, polarity mirrors, symmetry, continuity and finite values among them.
   Every error estimate is tested in each condition it is used in, such as each order and step ratio.
