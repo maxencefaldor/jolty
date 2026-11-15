@@ -313,7 +313,7 @@ def _run(job: Job, directory: Path) -> Built:
         else ()
     )
     if solved:
-        files.save_results(directory / RESULTS, solved)
+        files.save_results(directory / RESULTS, solved, circuit=built, plan=plan)
     conditions, corners = _corners(
         job, namespaces, built, plan, cache, chosen=chosen, solved=solved
     )
@@ -813,7 +813,7 @@ def _described(
     It is the analyses and the options, but for the parallelism, which changes no
     result save for the interiors its factorization is dissected into; the fidelity's
     models, by scope; the samples and their seed; each condition's corner,
-    temperature, process corner, and the [`circuit_hash`][jolty.shards.circuit_hash] of
+    temperature, process corner, and the [`circuit_hash`][jolty.files.circuit_hash] of
     its circuit, which leaves out the script lines that placed its instances, none where
     it does not elaborate; the requirements of `specs`, in words, and their yield
     target; and the unknowns `traced` names.
@@ -825,7 +825,7 @@ def _described(
         if chosen is None:
             return None
         if id(chosen.built) not in hashed:
-            hashed[id(chosen.built)] = shards.circuit_hash(chosen.built)
+            hashed[id(chosen.built)] = files.circuit_hash(chosen.built)
         return hashed[id(chosen.built)]
 
     options = plan.options.to_json()

@@ -586,7 +586,7 @@ def build(entry: Entry) -> Built:
             message = f"{entry.name}: no analysis ran to its end"
             raise RuntimeError(message)
         circuit = load_circuit(simulated.circuit.path)
-        solved = load_results(simulated.results)
+        solved = load_results(simulated.results, circuit=circuit)
         images = []
         for image in simulated.images():
             target = IMAGES / image.name.replace(script.stem, entry.name, 1)

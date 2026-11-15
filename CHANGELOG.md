@@ -90,6 +90,8 @@ The first release, 0.1.0.
 
 ### Changed
 
+- Every results file states its results' provenance, in version 9 of the format: the jolty, the build and the platform that simulated them, and the hashes of the circuit and the plan they are of, which `jolty simulate` gives; `jolty.files.load_provenance` reads it, and `load_results` given a circuit refuses a file whose results are of another.
+  `build`, `platform` and `circuit_hash` move from `jolty.shards` to `jolty.files`, beside the new `plan_hash`, and a shard's fingerprint reads them there.
 - Each result states where its analysis used logic devices outside their domains, its `excursions`, as `Simulation.run` watched it, and results files keep them, in version 8 of their format; `Simulation` has no `excursions` attribute, which held the last analysis's, so that what a result said depended on the order of the calls.
   A result that no run watched, a run of a batch, a run in ngspice or a result within another's, states `None`, and an analysis that fails states none, where the simulation held what it found before failing.
   A results file's header states its format's version, which it gave as 6 since version 7.

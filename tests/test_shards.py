@@ -236,7 +236,7 @@ def test_shards_of_one_circuit_built_in_two_places_merge(tmp_path: Path) -> None
         "one/divider.py",
         "two/divider.py",
     ]
-    assert shards.circuit_hash(built[0]) == shards.circuit_hash(built[1])
+    assert files.circuit_hash(built[0]) == files.circuit_hash(built[1])
     first = _shard(places[0], directory, 0, 35)
     second = _shard(places[1], directory, 35, SAMPLES)
     shard, ordered = shards.merge([first, second])

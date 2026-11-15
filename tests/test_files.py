@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import jolty
 from jolty import (
     Ac,
     Builder,
@@ -18,22 +19,28 @@ from jolty import (
     circuit,
     component,
     devices,
+    ir,
     results,
 )
 from jolty.files import (
     Batch,
+    Provenance,
+    build,
+    circuit_hash,
     circuit_path,
     load_batches,
     load_circuit,
+    load_provenance,
     load_results,
+    plan_hash,
     results_path,
     save_batches,
     save_circuit,
     save_results,
 )
-from jolty.plan import Explicit, MonteCarlo, Product, Variant, decade
+from jolty.plan import Explicit, MonteCarlo, Plan, Product, Variant, decade
 from jolty.specs import gain, value
-from jolty.units import VOLTAGE, MHz, V, kHz, kohm, nF
+from jolty.units import VOLTAGE, MHz, V, kHz, kohm, nF, ohm
 
 UNKNOWNS = (results.Unknown("out", "voltage"), results.Unknown("V1:current", "current"))
 STATISTICS = results.Statistics(
@@ -297,7 +304,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 8
+    assert header["version"] == 9
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {
@@ -311,6 +318,49 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     assert isinstance(first, results.OperatingPoint)
     assert isinstance(second, results.Waveforms)
     assert first.recording is second.recording
+
+
+def _loaded(resistance: float) -> ir.Circuit:
+    """A source driving a resistor of `resistance` ohms."""
+
+    @component
+    def load(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V), id="V1")
+        resistor = c.place(devices.resistor(resistance * ohm), id="R1")
+        c.connect(source.positive, resistor.a)
+        c.connect(source.negative, resistor.b, ground)
+
+    return circuit(load())
+
+
+def test_a_results_file_states_its_provenance(tmp_path: Path) -> None:
+    written, plan = _loaded(1e3), Plan({"op": OperatingPoint()})
+    path = tmp_path / "load.results.npz"
+    save_results(path, every_kind(), circuit=written, plan=plan)
+    found = load_provenance(path)
+    assert found == Provenance.of(written, plan)
+    assert found.jolty == jolty.__version__
+    assert found.circuit == circuit_hash(written)
+    assert found.plan == plan_hash(plan)
+    save_results(path, every_kind())
+    assert load_provenance(path).circuit is None
+    assert load_provenance(path).build == build()
+
+
+def test_the_results_of_another_circuit_are_refused(tmp_path: Path) -> None:
+    written = _loaded(1e3)
+    path = tmp_path / "load.results.npz"
+    save_results(path, every_kind(), circuit=written)
+    assert set(load_results(path, circuit=written)) == set(every_kind())
+    with pytest.raises(
+        JoltyError, match="results of another circuit than the one given"
+    ):
+        load_results(path, circuit=_loaded(2e3))
+    # Results saved of no circuit, or read for none, are not compared.
+    assert set(load_results(path)) == set(every_kind())
+    save_results(path, every_kind())
+    assert set(load_results(path, circuit=_loaded(2e3))) == set(every_kind())
 
 
 def test_a_results_file_of_an_earlier_format_says_so(tmp_path: Path) -> None:

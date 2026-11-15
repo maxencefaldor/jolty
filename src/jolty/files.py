@@ -16,8 +16,11 @@ recording once however many analyses share it, and says what each analysis is, t
 the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 ``step.currents`` and ``step.conductances``, ``loop.frequencies`` and ``loop.gains``, or
 ``hiss.densities`` and ``hiss.contributions``, and where each analysis used logic
-devices outside their domains. The header is in version 8 of the format, which holds
-those excursions; a file of another version is not read.
+devices outside their domains. Its header also states the results'
+[`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
+simulated them, and the hashes of the circuit and the plan they are of. The header is
+in version 9 of the format, which holds that provenance; a file of another version is
+not read.
 
 Examples:
     >>> import tempfile
@@ -33,18 +36,25 @@ Examples:
     2.5
 """
 
+import functools
+import hashlib
+import platform as platforms
+import sys
+import sysconfig
 import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
+from importlib.metadata import version
 from pathlib import Path
-from typing import Annotated, Final, Literal
+from typing import Annotated, Final, Literal, Self
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from jolty import ir, results
+from jolty import _core, ir, results
 from jolty.errors import JoltyError
+from jolty.plan import Plan
 from jolty.specs import Measurement, MeasurementError, Reading, Requirement, Specs
 from jolty.units import Dimension, Quantity
 
@@ -224,9 +234,140 @@ class _Recording(_Model):
         )
 
 
+_PACKAGE: Final = Path(__file__).resolve().parent
+"""jolty's own directory, whose modules and engine a build is."""
+
+
+def circuit_hash(circuit: ir.Circuit) -> str:
+    """A SHA-256 hash, in hexadecimal, of what a simulation reads of `circuit`.
+
+    It hashes the circuit in the circuit format without each instance's
+    [`Source`][jolty.ir.Source], the script line that placed it, which names where a
+    problem lies and which no simulation reads: the same circuit built by scripts in two
+    places, or on two machines, hashes alike.
+
+    Examples:
+        >>> from jolty.ir import Circuit, Component, DeviceOf, Instance, Source
+        >>> def placed(file: str, resistance: float) -> Circuit:
+        ...     resistor = Instance(
+        ...         id="R1",
+        ...         of=DeviceOf(device="resistor"),
+        ...         parameters={"resistance": resistance},
+        ...         terminals={"a": "in", "b": "out"},
+        ...         source=Source(file=file, line=3),
+        ...     )
+        ...     return Circuit(
+        ...         top="top", components={"top": Component(instances=(resistor,))}
+        ...     )
+        >>> circuit_hash(placed("a.py", 1e3)) == circuit_hash(placed("b/a.py", 1e3))
+        True
+        >>> circuit_hash(placed("a.py", 1e3)) == circuit_hash(placed("a.py", 2e3))
+        False
+    """
+    sourceless = {"components": {"__all__": {"instances": {"__all__": {"source"}}}}}
+    text = circuit.model_dump_json(exclude=sourceless)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+@functools.cache
+def build() -> str:
+    """A SHA-256 hash of jolty's build: its engine, its Python modules and the Python.
+
+    It hashes the bytes of the engine's library and of every module of the package, by
+    their paths within it, and the interpreter's version, since a measurement a script
+    writes computes in Python.
+    """
+    hashed = hashlib.sha256(Path(_core.__file__).read_bytes())
+    for module in sorted(_PACKAGE.rglob("*.py")):
+        hashed.update(module.relative_to(_PACKAGE).as_posix().encode())
+        hashed.update(module.read_bytes())
+    hashed.update(sys.version.encode())
+    return hashed.hexdigest()
+
+
+def platform() -> str:
+    """The platform: the one Python was built for, and the C library's version.
+
+    The engine's ``exp``, ``ln`` and ``pow`` come from the platform's C library: glibc
+    on most Linux systems, whose version names it, and the system's own on macOS and
+    Windows, whose versions name it.
+
+    Examples:
+        >>> platform() != ""
+        True
+    """
+    library, release = platforms.libc_ver()
+    if not library:
+        library = platforms.system()
+        release = platforms.mac_ver()[0] or platforms.version()
+    return f"{sysconfig.get_platform()} {library} {release}"
+
+
+def plan_hash(plan: Plan) -> str:
+    """A SHA-256 hash, in hexadecimal, of `plan`'s analyses, options and conditions.
+
+    It hashes them as their representations spell them.
+
+    Examples:
+        >>> from jolty.plan import OperatingPoint
+        >>> plan_hash(Plan({"op": OperatingPoint()})) == plan_hash(
+        ...     Plan({"op": OperatingPoint()})
+        ... )
+        True
+    """
+    return hashlib.sha256(repr(plan).encode()).hexdigest()
+
+
+class Provenance(BaseModel):
+    """Where results come from, as a results file states it.
+
+    The jolty, the build and the platform that simulated them, and the circuit and the
+    plan they are of, by their hashes. Every results file states it, and
+    [`load_results`][jolty.files.load_results] given a circuit refuses a file whose
+    results are of another.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    jolty: str = Field(description="jolty's version.")
+    build: str = Field(
+        description="The [`build`][jolty.files.build] that simulated them."
+    )
+    platform: str = Field(
+        description="The [`platform`][jolty.files.platform] they were simulated on."
+    )
+    circuit: str | None = Field(
+        default=None,
+        description="The [`circuit_hash`][jolty.files.circuit_hash] of the circuit "
+        "they are of, when it was given.",
+    )
+    plan: str | None = Field(
+        default=None,
+        description="The [`plan_hash`][jolty.files.plan_hash] of the plan they are "
+        "of, when it was given.",
+    )
+
+    @classmethod
+    def of(cls, circuit: ir.Circuit | None = None, plan: Plan | None = None) -> Self:
+        """The provenance of results of `circuit` and `plan`, simulated here and now.
+
+        Examples:
+            >>> Provenance.of().circuit is None
+            True
+        """
+        return cls(
+            jolty=version("jolty"),
+            build=build(),
+            platform=platform(),
+            circuit=None if circuit is None else circuit_hash(circuit),
+            plan=None if plan is None else plan_hash(plan),
+        )
+
+
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[8] = 8
+    version: Literal[9] = 9
+    provenance: Provenance
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
     excursions: dict[str, tuple[results.Excursion, ...]] = Field(
@@ -368,8 +509,17 @@ def load_circuit(path: Path) -> ir.Circuit:
     return ir.Circuit.model_validate_json(path.read_bytes())
 
 
-def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
-    """Writes the results of `analyses`, by name, to `path`.
+def save_results(
+    path: Path,
+    analyses: Mapping[str, results.Result],
+    *,
+    circuit: ir.Circuit | None = None,
+    plan: Plan | None = None,
+) -> None:
+    """Writes the results of `analyses`, by name, to `path`, of `circuit` and `plan`.
+
+    The file states their [`Provenance`][jolty.files.Provenance]: this jolty, its
+    build and the platform, and the hashes of `circuit` and `plan` when they are given.
 
     Raises:
         ValueError: When the analyses are of different circuits, or none is given.
@@ -387,6 +537,7 @@ def save_results(path: Path, analyses: Mapping[str, results.Result]) -> None:
     names = circuits.pop()
     header = _Header(
         **names.model_dump(),
+        provenance=Provenance.of(circuit, plan),
         recordings=tuple(_Recording.of(recording) for recording in recordings),
         analyses=entries,
         excursions={
@@ -415,18 +566,28 @@ def _write(path: Path, arrays: Mapping[str, np.ndarray]) -> None:
                 )
 
 
-def load_results(path: Path) -> dict[str, results.Result]:
+def load_results(
+    path: Path, *, circuit: ir.Circuit | None = None
+) -> dict[str, results.Result]:
     """Reads the results file at `path`: the results of each analysis, by name.
 
+    Given the `circuit` they are to be of, it refuses a file whose
+    [`Provenance`][jolty.files.Provenance] names another circuit.
+
     Raises:
-        JoltyError: When the file is not a jolty results file, or one in an earlier
-            version of the format.
+        JoltyError: When the file is not a jolty results file, or one in another
+            version of the format, or its results are of a circuit other than `circuit`.
     """
     with np.load(path, allow_pickle=False) as data:
-        try:
-            header = _Header.model_validate_json(str(data[_HEADER]))
-        except KeyError, ValidationError:
-            raise _unreadable(path, data) from None
+        header = _header(path, data)
+        of = header.provenance.circuit
+        if circuit is not None and of is not None and of != circuit_hash(circuit):
+            message = (
+                f"{path} holds the results of another circuit than the one given: "
+                f"its circuit's hash is {of[:12]}, the one given's "
+                f"{circuit_hash(circuit)[:12]}; simulate the circuit again"
+            )
+            raise JoltyError(message)
         recordings = tuple(recording.recording() for recording in header.recordings)
         found = {
             name: _load(data, name, entry, header, recordings)
@@ -438,6 +599,30 @@ def load_results(path: Path) -> dict[str, results.Result]:
         else replace(result, excursions=header.excursions[name])
         for name, result in found.items()
     }
+
+
+def load_provenance(path: Path) -> Provenance:
+    """The [`Provenance`][jolty.files.Provenance] the results file at `path` states.
+
+    Raises:
+        JoltyError: When the file is not a jolty results file, or one in another
+            version of the format.
+    """
+    with np.load(path, allow_pickle=False) as data:
+        return _header(path, data).provenance
+
+
+def _header(path: Path, data: Mapping[str, np.ndarray]) -> _Header:
+    """The header of the results file at `path`, which holds `data`.
+
+    Raises:
+        JoltyError: When the file is not a jolty results file, or one in another
+            version of the format.
+    """
+    try:
+        return _Header.model_validate_json(str(data[_HEADER]))
+    except KeyError, ValidationError:
+        raise _unreadable(path, data) from None
 
 
 def _unreadable(path: Path, data: Mapping[str, np.ndarray]) -> JoltyError:

@@ -16,12 +16,8 @@ merge refuses shards whose fingerprints differ, or whose samples leave a gap or
 overlap.
 """
 
-import functools
 import hashlib
 import json
-import platform as platforms
-import sys
-import sysconfig
 from collections.abc import Iterable, Mapping, Sequence
 from importlib.metadata import version
 from pathlib import Path
@@ -30,7 +26,7 @@ from typing import Final
 import numpy as np
 from pydantic import JsonValue
 
-from jolty import _core, files, ir, report
+from jolty import files, report
 from jolty import specs as specs_module
 from jolty.errors import JoltyError
 from jolty.results import BatchResult
@@ -44,7 +40,7 @@ def fingerprint(described: Mapping[str, JsonValue]) -> str:
     """A SHA-256 hash, in hexadecimal, of what a shard's numbers depend on.
 
     It hashes `described`, which says what the shard ran, with jolty's version, its
-    [`build`][jolty.shards.build] and its [`platform`][jolty.shards.platform]: the
+    [`build`][jolty.files.build] and its [`platform`][jolty.files.platform]: the
     determinism contract holds the bits to one build on one platform.
 
     Examples:
@@ -54,76 +50,11 @@ def fingerprint(described: Mapping[str, JsonValue]) -> str:
     document = {
         "described": described,
         "jolty": version("jolty"),
-        "build": build(),
-        "platform": platform(),
+        "build": files.build(),
+        "platform": files.platform(),
     }
     text = json.dumps(document, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
-
-
-def circuit_hash(circuit: ir.Circuit) -> str:
-    """A SHA-256 hash, in hexadecimal, of what a simulation reads of `circuit`.
-
-    It hashes the circuit in the circuit format without each instance's
-    [`Source`][jolty.ir.Source], the script line that placed it, which names where a
-    problem lies and which no simulation reads: the same circuit built by scripts in two
-    places, or on two machines, hashes alike.
-
-    Examples:
-        >>> from jolty.ir import Circuit, Component, DeviceOf, Instance, Source
-        >>> def placed(file: str, resistance: float) -> Circuit:
-        ...     resistor = Instance(
-        ...         id="R1",
-        ...         of=DeviceOf(device="resistor"),
-        ...         parameters={"resistance": resistance},
-        ...         terminals={"a": "in", "b": "out"},
-        ...         source=Source(file=file, line=3),
-        ...     )
-        ...     return Circuit(
-        ...         top="top", components={"top": Component(instances=(resistor,))}
-        ...     )
-        >>> circuit_hash(placed("a.py", 1e3)) == circuit_hash(placed("b/a.py", 1e3))
-        True
-        >>> circuit_hash(placed("a.py", 1e3)) == circuit_hash(placed("a.py", 2e3))
-        False
-    """
-    sourceless = {"components": {"__all__": {"instances": {"__all__": {"source"}}}}}
-    text = circuit.model_dump_json(exclude=sourceless)
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
-@functools.cache
-def build() -> str:
-    """A SHA-256 hash of jolty's build: its engine, its Python modules and the Python.
-
-    It hashes the bytes of the engine's library and of every module of the package, by
-    their paths within it, and the interpreter's version, since a measurement a script
-    writes computes in Python.
-    """
-    hashed = hashlib.sha256(Path(_core.__file__).read_bytes())
-    for module in sorted(_PACKAGE.rglob("*.py")):
-        hashed.update(module.relative_to(_PACKAGE).as_posix().encode())
-        hashed.update(module.read_bytes())
-    hashed.update(sys.version.encode())
-    return hashed.hexdigest()
-
-
-def platform() -> str:
-    """The platform: the one Python was built for, and the C library's version.
-
-    The engine's ``exp``, ``ln`` and ``pow`` come from the platform's C library: glibc
-    on most Linux systems, whose version names it, and the system's own on macOS and
-    Windows, whose versions name it.
-
-    Examples:
-        >>> platform() != ""
-        True
-    """
-    library, release = platforms.libc_ver()
-    if not library:
-        library = platforms.system()
-        release = platforms.mac_ver()[0] or platforms.version()
-    return f"{sysconfig.get_platform()} {library} {release}"
 
 
 def merge(paths: Sequence[Path]) -> tuple[files.Shard, tuple[Path, ...]]:
