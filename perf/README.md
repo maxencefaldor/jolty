@@ -139,3 +139,41 @@ On each number of threads, the threshold is set at each size so that it spreads 
 The break-even on a number of threads is the smallest size measured from which setting the threshold made every run faster.
 Its value is the circuit's unknowns for `min_unknowns_inside`, which then spreads from that size on, and for each other threshold the value it was set to there: a task's devices or solves, or an interior's most unknowns.
 Set to it, such a threshold spreads a circuit of that size over every thread in pieces as large as there, and a larger one in more pieces as large; it spreads a smaller circuit in fewer pieces than threads, which may lose, from two tasks' worth of solves, from one task's worth of devices, and from a block larger than an interior.
+
+The sweeps ran on the machine of the baseline, with the engine of commit `6fe8824`, on 15 November 2026 from 11:58 to 13:12, each in pieces of at most ten minutes, their sizes given by `--sizes`, while two other agents built and ran the engine and ngspice on the same cores: the load average was 7 to 19 on the 12 cores, the measurement's own threads included.
+Each change is a spread run's time against the unset run's, at the smallest size from which every larger one gained too, and at the size below it; the load is the load average as that size's rounds began and as they ended.
+
+| Threshold | Circuits | Threads | Pays from | There | Below | Break-even | Load |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `min_instances_per_task` | chains of inverters | 2 | 100 inverters, 202 devices | -3.8% | +2.0% at 70 | 101 | 10.7 to 9.5 |
+| `min_instances_per_task` | chains of inverters | 4 | 200 inverters, 402 devices | -18.1% | +1.6% at 100 | 101 | 9.5 to 12.0 |
+| `min_instances_per_task` | chains of inverters | 8 | 500 inverters, 1,002 devices | -1.9% | +23.1% at 300 | 126 | 12.0 to 12.2 |
+| `min_instances_per_task` | chains of inverters | 12 | 1,000 inverters, 2,002 devices | -9.6% | +21.4% at 700 | 167 | 12.2 to 11.0 |
+| `min_instances_per_task` | meshes | 2 | 100 a side, 29,901 devices | -8.6% | +0.5% at 70 | 14,951 | 14.8 to 12.1 |
+| `min_instances_per_task` | meshes | 4 | 100 a side, 29,901 devices | -10.4% | +5.7% at 70 | 7,476 | 14.8 to 12.1 |
+| `min_instances_per_task` | meshes | 8 | 100 a side, 29,901 devices | -6.3% | +18.9% at 70 | 3,738 | 14.8 to 12.1 |
+| `min_instances_per_task` | meshes | 12 | 100 a side, 29,901 devices | -4.8% | +29.9% at 70 | 2,492 | 14.8 to 12.1 |
+| `min_unknowns_inside` | chains of inverters | 2 | 5,000 inverters, 35,004 unknowns | -8.5% | +3.0% at 4,000 | 35,004 | 11.5 to 15.7 |
+| `min_unknowns_inside` | chains of inverters | 4 | 3,000 inverters, 21,004 unknowns | -3.6% | +12.9% at 2,000 | 21,004 | 12.3 to 13.1 |
+| `min_unknowns_inside` | chains of inverters | 8 | 5,000 inverters, 35,004 unknowns | -9.1% | +8.7% at 4,000 | 35,004 | 11.5 to 15.7 |
+| `min_unknowns_inside` | chains of inverters | 12 | 5,000 inverters, 35,004 unknowns | -2.4% | +27.9% at 4,000 | 35,004 | 11.5 to 15.7 |
+| `min_unknowns_inside` | meshes | 2 | none to 300 a side, 90,001 unknowns | | +5.8% at 300 | | 15.8 to 10.6 |
+| `min_unknowns_inside` | meshes | 4 | none to 300 a side, 90,001 unknowns | | +0.1% at 300 | | 15.8 to 10.6 |
+| `min_unknowns_inside` | meshes | 8 | none to 300 a side, 90,001 unknowns | | +3.2% at 300 | | 15.8 to 10.6 |
+| `min_unknowns_inside` | meshes | 12 | none to 300 a side, 90,001 unknowns | | +4.4% at 300 | | 15.8 to 10.6 |
+| `max_unknowns_per_interior` | chains of inverters | 2 | none to 5,000 inverters, 35,004 unknowns | | +3.8% at 5,000 | | 15.3 to 10.4 |
+| `max_unknowns_per_interior` | chains of inverters | 4 | none to 5,000 inverters, 35,004 unknowns | | +6.2% at 5,000 | | 15.3 to 10.4 |
+| `max_unknowns_per_interior` | chains of inverters | 8 | none to 5,000 inverters, 35,004 unknowns | | +9.5% at 5,000 | | 15.3 to 10.4 |
+| `max_unknowns_per_interior` | chains of inverters | 12 | none to 5,000 inverters, 35,004 unknowns | | +45.4% at 5,000 | | 15.3 to 10.4 |
+| `max_unknowns_per_interior` | meshes | 2 | 70 a side, 4,901 unknowns | -17.0% | +14.8% at 50 | 2,451 | 13.8 to 13.3 |
+| `max_unknowns_per_interior` | meshes | 4 | 70 a side, 4,901 unknowns | -20.9% | +1.0% at 50 | 1,226 | 13.8 to 13.3 |
+| `max_unknowns_per_interior` | meshes | 8 | 70 a side, 4,901 unknowns | -16.7% | +22.7% at 50 | 613 | 13.8 to 13.3 |
+| `max_unknowns_per_interior` | meshes | 12 | 100 a side, 10,001 unknowns | -38.7% | +3.2% at 70 | 834 | 17.3 to 15.1 |
+| `min_solves_per_task` | `bjt_amp`'s response | 2 | 40 a decade, 360 solves | -11.4% | +3.2% at 30 | 180 | 15.4 to 12.9 |
+| `min_solves_per_task` | `bjt_amp`'s response | 4 | 30 a decade, 270 solves | -1.5% | +3.1% at 20 | 67 | 16.0 to 15.4 |
+| `min_solves_per_task` | `bjt_amp`'s response | 8 | 40 a decade, 360 solves | -7.6% | +5.5% at 30 | 45 | 15.4 to 12.9 |
+| `min_solves_per_task` | `bjt_amp`'s response | 12 | 40 a decade, 360 solves | -3.7% | +16.9% at 30 | 30 | 15.4 to 12.9 |
+
+Interleaving puts both sides of a comparison under the same load, but the load changed from round to round, by a few percent of a run, so a break-even whose gain is a few percent, such as the meshes' tasks of instances, is uncertain by a size of the sweep: the meshes of 50 a side gained on 2 and 4 threads, where those of 70 lost on all four.
+A chain spends 12% of its run factoring, by the profile above, and a dissection, which factors more slowly on one thread, spread that too little to pay; a mesh spends most of its run factoring, in few Newton iterations, so that spreading its work on each unknown cost more than it saved.
+Each threshold was measured alone, the others unset, so a dissection of a chain whose devices spread too, which leaves the factorization a larger share of the run, may pay sooner.

@@ -335,6 +335,25 @@ A batch runs each of its runs on one thread whenever it has a run for every thre
 The dissected factorization orders its operations otherwise than the one on a single thread, so a run with `max_unknowns_per_interior` set finds the same bits on any number of threads, but its results differ from those without it in their last digits, within the factorization's rounding.
 `jolty simulate` takes each threshold too, as `--min-solves-per-task` and its kin, in place of the plan's.
 
+A threshold makes a run faster only from some size of circuit, below which waking the threads costs more than they save, and `scripts/bench --break-even` measures it.
+On an Apple M2 Max of 8 performance and 4 efficiency cores, with the engine of commit `6fe8824`, while other programs and the measurement's own threads kept the load average at 7 to 19 on its 12 cores, each threshold, set alone to spread a circuit's work over every thread, made a run of the benchmarks' plans faster from these sizes on, and was set there to its break-even, in brackets:
+
+| Threshold | Circuits | 2 threads | 4 threads | 8 threads | 12 threads |
+| --- | --- | --- | --- | --- | --- |
+| `min_instances_per_task` | chains of inverters of level 1 MOSFETs | 202 devices (101) | 402 devices (101) | 1,002 devices (126) | 2,002 devices (167) |
+| `min_instances_per_task` | meshes of resistors and capacitors | 29,901 devices (14,951) | 29,901 devices (7,476) | 29,901 devices (3,738) | 29,901 devices (2,492) |
+| `min_unknowns_inside` | chains of inverters | 35,004 unknowns | 21,004 unknowns | 35,004 unknowns | 35,004 unknowns |
+| `min_unknowns_inside` | meshes | none to 90,001 unknowns | none to 90,001 unknowns | none to 90,001 unknowns | none to 90,001 unknowns |
+| `max_unknowns_per_interior` | chains of inverters | none to 35,004 unknowns | none to 35,004 unknowns | none to 35,004 unknowns | none to 35,004 unknowns |
+| `max_unknowns_per_interior` | meshes | 4,901 unknowns (2,451) | 4,901 unknowns (1,226) | 4,901 unknowns (613) | 10,001 unknowns (834) |
+| `min_solves_per_task` | `bjt_amp`'s response, 22 unknowns | 360 solves (180) | 270 solves (67) | 360 solves (45) | 360 solves (30) |
+
+The break-even is the circuit's unknowns for `min_unknowns_inside`, and for each other threshold the size of a piece of the work there: a task's devices or solves, or an interior's most unknowns.
+Set to it, a threshold spreads a circuit of that size over every thread in pieces as large, and a larger circuit in more pieces as large; it spreads a smaller one in fewer pieces than threads, which can make it slower.
+Spread over every thread, the smallest circuits measured ran up to 17 times as long as unset, a chain of one inverter on 12 threads.
+A chain's MOSFET costs far more to evaluate than a mesh's resistor or capacitor, so a task of fewer of them pays; a chain's factorization is cheap beside its devices, and a mesh's work on each unknown beside its factorization, so neither pays spread alone.
+On 8 and 12 threads the runs shared the cores with other programs, so a quiet machine's break-evens there are smaller.
+
 The unknowns cost a transient a number each at every point, eight bytes; a device recorded costs its terminals' currents and charges, the square of its unknowns twice over for its derivatives, and its variables: 12 numbers for a resistor, and 111 for a MOSFET whose gate oxide adds three unknowns to its four terminals.
 An operating point and a transient record the instances rated for a current or a power, whose ratings the checks read, and what the plan's or the analysis's [record](results.md#what-a-result-records) names, so a transient of a large circuit holds about its unknowns alone unless asked for more; recording every instance multiplies what it holds by thirty or more, and reaches `memory` sooner.
 

@@ -132,18 +132,20 @@ class Threshold(StrEnum):
 
 
 SWEPT: Final[Mapping[Threshold, Mapping[str, tuple[int, ...]]]] = {
-    Threshold.MIN_SOLVES_PER_TASK: {"bjt_amp": (1, 2, 5, 10, 20, 50, 100, 1111)},
+    Threshold.MIN_SOLVES_PER_TASK: {
+        "bjt_amp": (1, 2, 5, 10, 20, 30, 40, 50, 100, 200, 500, 1111)
+    },
     Threshold.MIN_INSTANCES_PER_TASK: {
-        "inverter_chain": (1, 2, 5, 10, 20, 50, 100, 500),
-        "rc_mesh": (10, 20, 50, 100, 300),
+        "inverter_chain": (1, 2, 5, 10, 20, 50, 70, 100, 200, 300, 500, 700, 1000),
+        "rc_mesh": (10, 20, 30, 40, 50, 70, 100, 300),
     },
     Threshold.MIN_UNKNOWNS_INSIDE: {
-        "inverter_chain": (100, 500, 1000, 2000, 5000),
+        "inverter_chain": (100, 500, 1000, 2000, 3000, 4000, 5000),
         "rc_mesh": (10, 20, 50, 100, 300),
     },
     Threshold.MAX_UNKNOWNS_PER_INTERIOR: {
         "inverter_chain": (10, 100, 500, 1000, 2000, 5000),
-        "rc_mesh": (10, 20, 50, 100, 300),
+        "rc_mesh": (10, 20, 50, 70, 100, 300),
     },
 }
 """The circuits each threshold's break-even is measured on: those of the scripts of
