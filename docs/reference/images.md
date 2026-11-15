@@ -8,7 +8,7 @@ Schematics show a circuit as engineers draw it, plots show what its analyses fou
 
 ::: jolty.plots
     options:
-      members: [plot, default_probes, save, COLORS, MAX_SERIES]
+      members: [plot, default_probes, save, COLORS, SURFACE, INK, MUTED, GRID, MAX_SERIES]
 
 ::: jolty.viewer
     options:
