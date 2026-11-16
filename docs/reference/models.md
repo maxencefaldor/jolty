@@ -551,6 +551,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `dmdg` | `0` | The distance of Mid-Diffusion to Gate edge, `dmdg`, in meters; default 0. |
 | `drain_area` |  | The drain diffusion's area, `ad`, in square meters; default derived from the fingers and `dmcg`, `dmci` and `dmcgt`. |
 | `drain_perimeter` |  | The drain diffusion's perimeter, `pd`, in meters; default derived from the fingers and `dmcg`, `dmci` and `dmcgt`. |
+| `drain_source_resistance_model` | `0` | The source and drain resistances, `rdsmod`, 0 or 1; default 0. |
 | `drain_squares` |  | The drain diffusion's length in squares, `nrd`, behind which `rsh` sets a resistance where it is positive; default none, and no resistance. |
 | `drout` | `0.56` | The DIBL coefficient of output resistance, `drout`; default 0.56. |
 | `dsub` |  | The DIBL coefficient in the subthreshold region, `dsub`; default `drout`. |

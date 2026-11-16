@@ -12,7 +12,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{BodyResistance, FlickerNoise, Perimeter, ThermalNoise, fringe};
+use super::{BodyResistance, DrainSourceResistance, FlickerNoise, Perimeter, ThermalNoise, fringe};
 use crate::kernel::bsim3::by_channel;
 use crate::kernel::jfet::Channel;
 use crate::{REFERENCE_TEMPERATURE, Real};
@@ -72,6 +72,8 @@ pub struct Bsim4Parameters<R: Real = f64> {
     /// What the diffusions' perimeters `ps` and `pd` include, `permod`, 0 or 1; default
     /// 1.
     pub perimeter_model: Perimeter,
+    /// The source and drain resistances, `rdsmod`, 0 or 1; default 0.
+    pub drain_source_resistance_model: DrainSourceResistance,
     /// The flicker noise model, `fnoimod`, 0 or 1; default 1.
     pub flicker_noise_model: FlickerNoise,
     /// The channel's thermal noise model, `tnoimod`, 0 or 1; default 0.
@@ -2248,6 +2250,7 @@ impl<R: Real> Default for Bsim4Parameters<R> {
             mobility_multiplier: R::constant(1.0),
             body_resistance_model: BodyResistance::Zero,
             perimeter_model: Perimeter::One,
+            drain_source_resistance_model: DrainSourceResistance::Zero,
             flicker_noise_model: FlickerNoise::One,
             thermal_noise_model: ThermalNoise::Zero,
             check_parameters: true,
@@ -3042,6 +3045,8 @@ pub(super) struct Binned<R: Real> {
     pub(super) pditsd: R,
     pub(super) delta: R,
     pub(super) rdsw: R,
+    pub(super) rdw: R,
+    pub(super) rsw: R,
     pub(super) prwg: R,
     pub(super) prwb: R,
     pub(super) prt: R,
@@ -3370,6 +3375,14 @@ impl<R: Real> Bsim4Parameters<R> {
                 + self.lrdsw * inverse_length
                 + self.wrdsw * inverse_width
                 + self.prdsw * inverse_area,
+            rdw: self.rdw
+                + self.lrdw * inverse_length
+                + self.wrdw * inverse_width
+                + self.prdw * inverse_area,
+            rsw: self.rsw
+                + self.lrsw * inverse_length
+                + self.wrsw * inverse_width
+                + self.prsw * inverse_area,
             prwg: self.prwg
                 + self.lprwg * inverse_length
                 + self.wprwg * inverse_width

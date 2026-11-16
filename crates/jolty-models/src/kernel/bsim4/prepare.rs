@@ -9,7 +9,9 @@
 use super::channel::theta;
 use super::charges::Depletion;
 use super::parameters::{Binned, Bsim4Parameters};
-use super::{BodyResistance, EPS0, FlickerNoise, PI, Perimeter, ThermalNoise};
+use super::{
+    BodyResistance, DrainSourceResistance, EPS0, FlickerNoise, PI, Perimeter, ThermalNoise,
+};
 use super::{D, dexp};
 use crate::kernel::bsim3::{EPSSI, KBOQ, Q, by_channel, check, lost};
 use crate::kernel::parts::series_value;
@@ -67,6 +69,7 @@ pub(super) struct Core<R: Real> {
     pub(super) voffcbn: R,
     pub(super) theta0vb0: R,
     pub(super) theta_rout: R,
+    /// `rdsw`'s resistance within the drain current, none at `rdsmod` 1.
     pub(super) rds0: R,
     pub(super) rdswmin: R,
     pub(super) ua: R,
@@ -124,6 +127,21 @@ pub(super) struct Overlaps<R: Real> {
     pub(super) fingers: R,
 }
 
+/// The bias-dependent drain and source resistances of `rdsmod` 1: of each one copy at
+/// zero and at high gate bias, `rd0` and `rdwmin` and `rs0` and `rswmin`, the flat-band
+/// voltage of the diffusions `vfbsd`, the bias coefficients `prwg` and `prwb`, and the
+/// conductances of `rsh` behind the drain and the source, 1 kS where `nrd` or `nrs` sets
+/// none, as `b4v5temp.c` resets them.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct External<R: Real> {
+    pub(super) minimums: [R; 2],
+    pub(super) resistances: [R; 2],
+    pub(super) vfbsd: R,
+    pub(super) prwg: R,
+    pub(super) prwb: R,
+    pub(super) sheet: [R; 2],
+}
+
 /// The numbers of the noise models.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Noise {
@@ -157,6 +175,7 @@ pub struct PreparedBsim4<R: Real> {
     /// The drain and source resistances' stamped values: each conductance, or each
     /// resistance where its current is an unknown, of the parallel copies together.
     pub(super) series: [R; 2],
+    pub(super) external: Option<External<R>>,
     /// The drain and source resistances, of the parallel copies together, none where
     /// there is no node behind them.
     pub(super) resistances: [R; 2],
@@ -728,6 +747,42 @@ impl<R: Real> Bsim4Parameters<R> {
                 rdswmin = R::constant(0.0);
             }
         }
+        let external =
+            (self.drain_source_resistance_model == DrainSourceResistance::One).then(|| {
+                let t10 = binned.prt * rise;
+                let at_least_zero = |resistance: R| {
+                    if resistance.value() < 0.0 {
+                        R::constant(0.0)
+                    } else {
+                        resistance
+                    }
+                };
+                let sheet = [self.drain_squares, self.source_squares].map(|squares| match squares
+                    .map(|squares| self.rsh * squares)
+                {
+                    Some(resistance) if resistance.value() > 0.0 => resistance.recip(),
+                    _ => R::constant(1.0e3),
+                });
+                External {
+                    minimums: [self.rdwmin, self.rswmin]
+                        .map(|minimum| at_least_zero(minimum + t10) / pow_weff_wr),
+                    resistances: [binned.rdw, binned.rsw]
+                        .map(|resistance| at_least_zero(resistance + t10) / pow_weff_wr),
+                    vfbsd: if ngate.value() > 0.0 {
+                        vtm0 * (ngate / nsd).ln()
+                    } else {
+                        R::constant(0.0)
+                    },
+                    prwg: binned.prwg,
+                    prwb: binned.prwb,
+                    sheet,
+                }
+            });
+        if external.is_some() {
+            // `b4v5ld.c` takes no resistance within the drain current at `rdsmod` 1.
+            rds0 = R::constant(0.0);
+            rdswmin = R::constant(0.0);
+        }
 
         // The overlaps, their defaults from the oxide.
         let dlc_given = self.dlc.filter(|dlc| dlc.value() > 0.0);
@@ -846,6 +901,7 @@ impl<R: Real> Bsim4Parameters<R> {
             length: (leff - self.lintnoi * 2.0).value(),
         };
         Ok(PreparedBsim4 {
+            external,
             overlaps,
             resistances,
             noise,

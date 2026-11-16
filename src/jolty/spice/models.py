@@ -333,6 +333,7 @@ mobility, and the body resistances it takes over from its card."""
 BSIM4_SELECTORS: Final = {
     "rbodymod": "body_resistance_model",
     "permod": "perimeter_model",
+    "rdsmod": "drain_source_resistance_model",
     "fnoimod": "flicker_noise_model",
     "tnoimod": "thermal_noise_model",
 }
@@ -350,7 +351,6 @@ BSIM4_MODES: Final = {
     "tempmod": 0,
     "geomod": 0,
     "rgeomod": 0,
-    "rdsmod": 0,
     "rgatemod": 0,
     "igcmod": 0,
     "igbmod": 0,

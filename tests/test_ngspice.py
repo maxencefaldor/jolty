@@ -2393,8 +2393,8 @@ def bsim_curves(c: Builder, transistor: devices.Device) -> None:
 
 
 @component
-def bsim3_stage(c: Builder, transistor: devices.Device) -> None:
-    """A common-source stage of a BSIM3 n-channel, which steps up at 1 µs.
+def bsim_stage(c: Builder, transistor: devices.Device) -> None:
+    """A common-source stage of a BSIM3 or BSIM4 n-channel, which steps up at 1 µs.
 
     Its gate is fed through 100 kΩ from `V1` at 1.2 V, and its drain loaded by 2 kΩ
     from 3.3 V and by 0.5 pF.
@@ -2512,6 +2512,25 @@ BSIM4_TRANSISTORS: Final = {
             "jtss": 1e-7 * A / m**2,
         },
     ),
+    "external-n": devices.bsim4(
+        width=2 * um,
+        length=0.5 * um,
+        drain_squares=2,
+        source_squares=1.5,
+        drain_source_resistance_model=1,
+        thermal_noise_model=1,
+        card={
+            "vth0": 0.5 * V,
+            "rsh": 5 * ohm,
+            "rdw": 150 * ohm,
+            "rsw": 120 * ohm,
+            "rdwmin": 10 * ohm,
+            "rswmin": 8 * ohm,
+            "prwg": 0.2 / V,
+            "prwb": -0.1 / V ** Fraction(1, 2),
+            "ngate": 1e26 / m**3,
+        },
+    ),
     "long-p": devices.bsim4(
         channel="p",
         width=5 * um,
@@ -2522,8 +2541,10 @@ BSIM4_TRANSISTORS: Final = {
 }
 """BSIM4 transistors written for ngspice: a short n-channel with its drain's sheet
 resistance, its body's network, its substrate current and gate-induced leakage, its
-velocity overshoot, its source end's limit and its junctions' tunneling, and a long
-p-channel of two fingers whose temperature scales its mobility and threshold."""
+velocity overshoot, its source end's limit and its junctions' tunneling, an n-channel
+whose bias-dependent drain and source resistances lie outside its channel, `rdsmod` 1,
+and a long p-channel of two fingers whose temperature scales its mobility and
+threshold."""
 
 
 @pytest.mark.parametrize(
@@ -2545,6 +2566,31 @@ def test_bsim4_curves_agree(name: str, source: str, temperature: Quantity) -> No
     bounds = (-1.0, 1.8) if source == "V2" else (-0.5, 1.8)
     levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 57)
     _bsim_sweep(simulation, source, levels, bsim_kelvins(temperature))
+
+
+@pytest.mark.parametrize(("name", "decades"), [("short-n", 5), ("external-n", 8)])
+def test_bsim4_noise_agrees(name: str, decades: int) -> None:
+    """A BSIM4 stage's noise at its output, as ngspice's, from 1 Hz up `decades`.
+
+    The short n-channel's thermal noise is the charge-based model's, `tnoimod` 0, the
+    other's the holistic model's, `tnoimod` 1, which moves a share of it to the
+    resistance on its source side, there bias-dependent, `rdsmod` 1; both make BSIM4's
+    flicker noise, `fnoimod` 1. The short one's body network carries its resistances'
+    noise through the body's capacitances, which ngspice's are not the derivatives of
+    its charges (the guide's departures): above 100 kHz, where they carry it, its noise
+    departs from ngspice's, and is compared below.
+    """
+    simulation = Simulation(bsim_stage(BSIM4_TRANSISTORS[name]))
+    stop = 10.0**decades
+    spectrum = simulation.run(
+        Noise("out", decade(1 * Hz, stop * Hz, 5), source="V1"), TIGHT
+    )
+    lines = netlist(simulation.circuit, excited="V1")
+    command = f"noise v(out) VV1 dec 5 1 {stop!r}\nsetplot noise1"
+    raw = ngspice.run(lines, command, temperature=bsim_kelvins(celsius(27)))
+    np.testing.assert_allclose(
+        np.sqrt(spectrum.densities), raw.real("onoise_spectrum"), rtol=1e-5
+    )
 
 
 _PARTITIONED: Final[list[tuple[Literal[0, 1, 2, 3], float]]] = [
@@ -2583,7 +2629,7 @@ def test_bsim3_ac_responses_agree(name: str) -> None:
 
     Its transistor's charges follow each charge model and partition.
     """
-    simulation = Simulation(bsim3_stage(_STAGES[name]))
+    simulation = Simulation(bsim_stage(_STAGES[name]))
     kelvins = bsim_kelvins(celsius(27))
     point = simulation.run(OperatingPoint(), TIGHT)
     raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
@@ -2620,7 +2666,7 @@ def test_bsim3_noise_agrees(noise_model: Literal[1, 2, 3, 4, 5, 6]) -> None:
     transistor = _bsim3(
         "n", 0.5 * um, noise_model=noise_model, more={"kf": 1e-26, "af": 1.2, "ef": 0.9}
     )
-    simulation = Simulation(bsim3_stage(transistor))
+    simulation = Simulation(bsim_stage(transistor))
     spectrum = simulation.run(
         Noise("out", decade(1 * Hz, 100 * MHz, 5), source="V1"), TIGHT
     )
@@ -2639,7 +2685,7 @@ def test_bsim3_noise_agrees(noise_model: Literal[1, 2, 3, 4, 5, 6]) -> None:
 @pytest.mark.parametrize(
     ("top", "stop", "step"),
     [
-        (lambda: bsim3_stage(_STAGES["capmod-3-xpart-0.0"]), 2 * us, 1 * ns),
+        (lambda: bsim_stage(_STAGES["capmod-3-xpart-0.0"]), 2 * us, 1 * ns),
         (
             lambda: bsim3_inverter(
                 BSIM3_TRANSISTORS["short-n"], BSIM3_TRANSISTORS["short-p"]

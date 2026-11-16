@@ -9,10 +9,10 @@
 //! and capacitances are the exact derivatives of the currents and charges computed.
 //!
 //! The modes are those the version 4.5 cards of the `SKY130` and `GF180MCU` process kits
-//! select: `mobmod` 0, `capmod` 2, `diomod` 1, `tempmod` 0,
-//! `geomod` 0, `rdsmod` 0, `rgatemod` 0, `igcmod` 0, `igbmod` 0, `trnqsmod` 0,
-//! `acnqsmod` 0, `wpemod` 0, `rgeomod` 0, `rbodymod` 0 or 1, and `permod` 0 or 1; a
-//! card's reader refuses any other by name.
+//! select: `mobmod` 0, `capmod` 2, `diomod` 1, `tempmod` 0, `geomod` 0, `rgatemod` 0,
+//! `igcmod` 0, `igbmod` 0, `trnqsmod` 0, `acnqsmod` 0, `wpemod` 0, `rgeomod` 0, and
+//! `rbodymod`, `rdsmod`, `permod`, `fnoimod` and `tnoimod` 0 or 1; a card's reader
+//! refuses any other by name.
 //!
 //! This model, here and in its submodules, is derived from BSIM4.5.0, developed by the UC
 //! Berkeley BSIM Research Group: Copyright 2005 Regents of the University of California.
@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use self::channel::Operating;
 pub use self::parameters::Bsim4Parameters;
-use self::prepare::{Junction, PreparedBsim4};
+use self::prepare::{External, Junction, PreparedBsim4};
 use crate::kernel::bsim3::{
     DELTA, EXP_THRESHOLD, MIN_EXP, N_MINLOG, NGSPICE_BOLTZMANN, NOISE_CHARGE, VT0, critical_voltage,
 };
@@ -129,6 +129,41 @@ impl From<Perimeter> for u8 {
     }
 }
 
+/// The source and drain resistances, `rdsmod`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(try_from = "u8", into = "u8")]
+pub enum DrainSourceResistance {
+    /// `rdsmod` 0: `rdsw` within the drain current, and `rsh` behind the drain and the
+    /// source where `nrd` or `nrs` sets one.
+    Zero,
+    /// `rdsmod` 1: `rdw` and `rsw` outside the channel, bias-dependent resistances
+    /// behind the drain and the source in series with `rsh`'s.
+    One,
+}
+
+impl TryFrom<u8> for DrainSourceResistance {
+    type Error = String;
+
+    fn try_from(rdsmod: u8) -> Result<Self, String> {
+        match rdsmod {
+            0 => Ok(Self::Zero),
+            1 => Ok(Self::One),
+            _ => Err(format!(
+                "BSIM4's drain_source_resistance_model is 0 or 1, not {rdsmod}"
+            )),
+        }
+    }
+}
+
+impl From<DrainSourceResistance> for u8 {
+    fn from(rdsmod: DrainSourceResistance) -> Self {
+        match rdsmod {
+            DrainSourceResistance::Zero => 0,
+            DrainSourceResistance::One => 1,
+        }
+    }
+}
+
 /// The flicker noise model, `fnoimod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
@@ -215,7 +250,8 @@ impl From<ThermalNoise> for u8 {
 /// the two swap.
 ///
 /// A sheet resistance `rsh` adds an internal node behind the drain and the source where
-/// `nrd` or `nrs` is positive, labelled `drain` and `source`; one below
+/// `nrd` or `nrs` is positive, labelled `drain` and `source`, and `rdsmod` 1 one behind
+/// each always, through bias-dependent resistances in series with `rsh`'s; one below
 /// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) also carries its current as an unknown,
 /// labelled `drain_current` or `source_current`. With `rbodymod` 1, three internal nodes,
 /// `body`, `drain_body` and `source_body`, lie under the channel and the junctions.
@@ -238,6 +274,9 @@ pub struct Bsim4Shape {
     stamp: Nodes<7>,
     drain_series: Series,
     source_series: Series,
+    /// At `rdsmod` 1, the gate, the body, the drain and source behind their
+    /// resistances and the drain and source terminals, in the order of [`EXTERNAL`].
+    external: Option<Nodes<6>>,
 }
 
 /// What a BSIM4 transistor remembers.
@@ -303,6 +342,31 @@ const VARIABLES: [(usize, usize); 3] = [
     (GATE, INNER_SOURCE),
     (INNER_DRAIN, INNER_SOURCE),
     (BODY, INNER_SOURCE),
+];
+
+/// Local node indices among the nodes of `rdsmod` 1's resistances.
+const EXTERNAL: [usize; 6] = [0, 1, 2, 3, 4, 5];
+const EXTERNAL_GATE: usize = EXTERNAL[0];
+const EXTERNAL_BODY: usize = EXTERNAL[1];
+const EXTERNAL_INNER_DRAIN: usize = EXTERNAL[2];
+const EXTERNAL_INNER_SOURCE: usize = EXTERNAL[3];
+const EXTERNAL_DRAIN: usize = EXTERNAL[4];
+const EXTERNAL_SOURCE: usize = EXTERNAL[5];
+
+/// The pairs of nodes across which the voltages `rdsmod` 1's drain and source
+/// resistances take as variables lie: the gate's, the body's and the terminal's over the
+/// node behind each.
+const EXTERNAL_VARIABLES: [[(usize, usize); 3]; 2] = [
+    [
+        (EXTERNAL_GATE, EXTERNAL_INNER_DRAIN),
+        (EXTERNAL_BODY, EXTERNAL_INNER_DRAIN),
+        (EXTERNAL_DRAIN, EXTERNAL_INNER_DRAIN),
+    ],
+    [
+        (EXTERNAL_GATE, EXTERNAL_INNER_SOURCE),
+        (EXTERNAL_BODY, EXTERNAL_INNER_SOURCE),
+        (EXTERNAL_SOURCE, EXTERNAL_INNER_SOURCE),
+    ],
 ];
 
 /// The pairs of nodes of the five body resistances: the channel's body to the drain's,
@@ -416,6 +480,65 @@ impl<R: Real> Junction<R> {
                     sum + (ratio - 1.0).scale(current)
                 });
         diode - tunneling + leak
+    }
+}
+
+impl<R: Real> External<R> {
+    /// The conductance of one copy's drain resistance, `side` 0, or source resistance, 1,
+    /// `rsh`'s in series with it, at the gate's and the body's voltages `vg` and `vb` over
+    /// the node behind it, oriented as an n-channel's.
+    fn conductance(&self, side: usize, [vg, vb]: [D<R>; 2]) -> D<R> {
+        let pick = |values: [R; 2]| if side == 0 { values[0] } else { values[1] };
+        let t0 = vg.plus(-self.vfbsd);
+        let vg_eff = (t0 + (t0 * t0 + 1.0e-4).sqrt()) * 0.5;
+        let t0 = vg_eff.scale(self.prwg) + 1.0;
+        let t2 = t0.recip() - vb.scale(self.prwb);
+        let t3 = t2 + (t2 * t2 + 0.01).sqrt();
+        let resistance = t3
+            .scale(pick(self.resistances) * 0.5)
+            .plus(pick(self.minimums));
+        let sheet = pick(self.sheet);
+        (resistance.scale(sheet) + 1.0).recip().scale(sheet)
+    }
+
+    /// The conductances of the drain's and the source's resistances of every copy, at
+    /// `at`.
+    fn conductances(&self, nodes: &Nodes<6>, sign: f64, multiplier: R, at: &Local<'_>) -> [f64; 2] {
+        let [drain, source] = EXTERNAL_VARIABLES;
+        [(0, drain), (1, source)].map(|(side, variables)| {
+            let [gate, body, _] = variables
+                .map(|(plus, minus)| sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
+            let [vg, vb] = [gate, body].map(D::number);
+            (self.conductance(side, [vg, vb]).value * multiplier).value()
+        })
+    }
+
+    /// Adds the currents through the drain's and the source's resistances of every copy,
+    /// from each terminal to the node behind it, and their derivatives.
+    fn add(
+        &self,
+        nodes: &Nodes<6>,
+        sign: f64,
+        multiplier: R,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let mut derivatives = Derivatives::new();
+        for (side, variables) in EXTERNAL_VARIABLES.into_iter().enumerate() {
+            let applied = variables
+                .map(|(plus, minus)| sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
+            let bias = parts::Bias::new(applied, applied);
+            let [vg, vb, across] = Dual::variables(applied);
+            let current = (self.conductance(side, [vg, vb]) * across).scale(multiplier);
+            let oriented = Oriented {
+                nodes,
+                sign,
+                bias: &bias,
+                variables,
+            };
+            oriented.add_current(stamp, &mut derivatives, variables[2], current);
+        }
+        derivatives.stamp(nodes, stamp);
     }
 }
 
@@ -602,14 +725,22 @@ impl Kernel for Bsim4 {
     ) -> Result<Bsim4Shape, ParameterError> {
         let [drain_resistance, source_resistance] = parameters.resistances()?;
         let [drain, gate, source, bulk] = [0, 1, 2, 3];
-        let (drain_series, inner_drain) =
-            Series::behind(layout, drain, drain_resistance, ("drain", "drain_current"));
-        let (source_series, inner_source) = Series::behind(
-            layout,
-            source,
-            source_resistance,
-            ("source", "source_current"),
-        );
+        let external = parameters.drain_source_resistance_model == DrainSourceResistance::One;
+        let (drain_series, inner_drain) = if external {
+            (Series::None, layout.internal("drain", Nature::Voltage))
+        } else {
+            Series::behind(layout, drain, drain_resistance, ("drain", "drain_current"))
+        };
+        let (source_series, inner_source) = if external {
+            (Series::None, layout.internal("source", Nature::Voltage))
+        } else {
+            Series::behind(
+                layout,
+                source,
+                source_resistance,
+                ("source", "source_current"),
+            )
+        };
         let [body, drain_body, source_body] = match parameters.body_resistance_model {
             BodyResistance::Zero => [bulk; 3],
             BodyResistance::One => ["body", "drain_body", "source_body"]
@@ -624,10 +755,18 @@ impl Kernel for Bsim4 {
             drain_body,
             source_body,
         ];
+        let stamp = Nodes::new(layout, nodes);
+        let external = external.then(|| {
+            Nodes::new(
+                layout,
+                [gate, body, inner_drain, inner_source, drain, source],
+            )
+        });
         Ok(Bsim4Shape {
-            stamp: Nodes::new(layout, nodes),
+            stamp,
             drain_series,
             source_series,
+            external,
         })
     }
 
@@ -728,6 +867,9 @@ impl Kernel for Bsim4 {
         drain_side.add_charge(stamp, sums, (DRAIN_BODY, INNER_DRAIN), drain_depletion);
         source_side.add_charge(stamp, sums, (SOURCE_BODY, INNER_SOURCE), source_depletion);
         derivatives.stamp(nodes, stamp);
+        if let (Some(nodes), Some(external)) = (&shape.external, &prepared.external) {
+            external.add(nodes, sign, prepared.multiplier, at, stamp);
+        }
     }
 
     /// The zero-bias threshold, which a transistor's first step is limited from, moves
@@ -784,6 +926,39 @@ impl Kernel for Bsim4 {
                 source = shape.source_series.value_of(source_resistance + added);
             } else {
                 drain = shape.drain_series.value_of(drain_resistance + added);
+            }
+        }
+        if let (Some(external_nodes), Some(external)) = (&shape.external, &prepared.external) {
+            // `rdsmod` 1's resistances, `tnoimod` 1's share on the source side added.
+            let [mut drain, mut source] =
+                external.conductances(external_nodes, core.sign, prepared.multiplier, at);
+            if let Some(added) = channel.source_side {
+                let shared = |conductance: f64| conductance / (1.0 + added * conductance);
+                if channel.forward {
+                    source = shared(source);
+                } else {
+                    drain = shared(drain);
+                }
+            }
+            for (name, conductance, terminal, inner) in [
+                ("drain thermal", drain, EXTERNAL_DRAIN, EXTERNAL_INNER_DRAIN),
+                (
+                    "source thermal",
+                    source,
+                    EXTERNAL_SOURCE,
+                    EXTERNAL_INNER_SOURCE,
+                ),
+            ] {
+                let equations = [
+                    external_nodes.equation(terminal),
+                    external_nodes.equation(inner),
+                ];
+                sources.push(NoiseSource::thermal(
+                    name,
+                    equations,
+                    conductance,
+                    temperature,
+                ));
             }
         }
         shape
@@ -1011,14 +1186,23 @@ mod tests {
             reverse in -0.6..1.5f64,
             xpart in proptest::sample::select(vec![0.0, 0.5, 1.0]),
             body in 0..2u8,
+            external in 0..2u8,
             p in proptest::bool::ANY,
         ) {
-            let models = format!(r#""charge_partition": {xpart}, "body_resistance_model": {body}"#);
+            let models = format!(
+                r#""charge_partition": {xpart}, "body_resistance_model": {body},
+                    "drain_source_resistance_model": {external}, "rdw": 150, "rsw": 120,
+                    "prwg": 0.2, "prwb": -0.1, "rdwmin": 10, "rswmin": 8, "rsh": 5,
+                    "drain_squares": 2, "source_squares": 1.5"#
+            );
             let parameters = with(SHORT, &models);
             let parameters = if p { p_channel(&parameters) } else { parameters };
             let sign = if p { -1.0 } else { 1.0 };
             let bulk = drain.min(0.0) - reverse;
             let mut x = vec![sign * drain, sign * gate, 0.0, sign * bulk];
+            // The drain and the source behind their resistances, which `rsh` alone makes
+            // at `rdsmod` 0 too, away from where their currents balance.
+            x.extend([sign * 0.95 * drain, sign * 0.01]);
             if body == 1 {
                 // The body's nodes near the bulk, away from where their currents balance.
                 x.extend([0.9, 1.0, 1.1].map(|share| sign * bulk * share));

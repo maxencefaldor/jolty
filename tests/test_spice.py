@@ -872,7 +872,10 @@ def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
         ("level=14", "`N1` is a BSIM4 card of version 4.8"),
         ("level=54 version=4.5 capmod=1", "jolty models BSIM4 with `CAPMOD` 2 alone"),
         ("level=54 version=4.5 igcmod=1", "jolty models BSIM4 with `IGCMOD` 0 alone"),
-        ("level=54 version=4.5 rdsmod=1", "jolty models BSIM4 with `RDSMOD` 0 alone"),
+        (
+            "level=54 version=4.5 rgatemod=1",
+            "jolty models BSIM4 with `RGATEMOD` 0 alone",
+        ),
         ("level=54 version=4.5 rbodymod=2", "body_resistance_model 0 or 1, not 2"),
         ("level=54 version=4.5 vto=1", "no counterpart to `VTO` of `N1`"),
     ],

@@ -2770,6 +2770,7 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
     mobility_multiplier: float | None = None,
     body_resistance_model: Literal[0, 1] | None = None,
     perimeter_model: Literal[0, 1] | None = None,
+    drain_source_resistance_model: Literal[0, 1] | None = None,
     flicker_noise_model: Literal[0, 1] | None = None,
     thermal_noise_model: Literal[0, 1] | None = None,
     check_parameters: bool | None = None,
@@ -2784,7 +2785,8 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
     the modes SKY130's and GF180MCU's cards select. The keywords before `card` are the
     instance's: its drawn geometry and fingers, its diffusions, the distances that set
     the stress of its length of diffusion, a shift of its threshold and a factor of its
-    mobility, then the card's body resistance network, perimeter and noise models,
+    mobility, then the card's body and drain and source resistances' models, its
+    perimeter and noise models,
     whether its sizes are checked and clamped, and the drain's share of the channel's
     charge. Each entry of `card` is a parameter of the BSIM4.5 manual by its name, such
     as ``vth0``, ``toxe`` or ``lvth0``, in SI units: a quantity where it has a
@@ -2850,6 +2852,7 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
             "channel": channel,
             "body_resistance_model": body_resistance_model,
             "perimeter_model": perimeter_model,
+            "drain_source_resistance_model": drain_source_resistance_model,
             "flicker_noise_model": flicker_noise_model,
             "thermal_noise_model": thermal_noise_model,
         },
