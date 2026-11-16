@@ -9,13 +9,18 @@ and end to end in Python, each fixture's circuit read from its file and its plan
 analyses run through ``Simulation.run``. A Monte Carlo fixture runs its first samples
 as the runner does, as one batch of the circuit elaborated once, on one thread and on a
 thread per core. It writes the times to ``benchmarks/speed/results/<commit>.json``,
-adding to what an earlier run on the same commit wrote, and prints them against a
-baseline's, flagging every change over 5 %.
+adding to what an earlier run on the same commit wrote, each time with its runs, and
+prints them against a baseline's, each median with its 95 % interval, naming a change
+only where the two intervals separate.
 
 Usage::
 
     scripts/bench [FIXTURE ...]       the suite's fixtures, or those named
-    scripts/bench --scale             the large fixtures, each run once in Python
+    scripts/bench --compare A,B       the builds of revisions A and B, their runs of
+                                      the suite alternating round after round
+    scripts/bench --nightly DIR       the checked-out commit's build against the
+                                      previous night's, kept in DIR
+    scripts/bench --scale             the large fixtures, serially and spread, in rounds
     scripts/bench --scale --largest   and the 50,000 inverters' chain on each too
     scripts/bench --view matched      every simulator on the fixtures, options matched
     scripts/bench --view defaults     every simulator on them, each at its defaults
@@ -31,13 +36,22 @@ Usage::
 
 Without ``--baseline``, the baseline is the newest ancestor of the checked-out commit
 whose results ``benchmarks/speed/results`` holds. A working tree with changes to
-tracked files writes ``<commit>-dirty.json``, which is never taken as a baseline.
+tracked files writes ``<commit>-dirty.json``, which is never taken as a baseline. The
+baseline was measured at another time, under another load, so a change is decided by
+``--compare`` instead: each revision built once in a worktree of its own, in
+``--builds``, and each of its runs made `afresh` by a process of its build's
+interpreter, ``benchmarks/speed/timing.py``, the two builds' runs of each time
+`alternated` round after round until each comparison is decided, and printed and
+written beside its results file as a table, wall and processor times apart.
+``--nightly`` does the same for the checked-out commit against the previous night's,
+in a directory of its own.
 
 ``--scale`` runs each large fixture serially, on one thread with no block of its matrix
 dissected, then on 1, 2, 4, 8 threads and every core with the default ``Parallelism``,
-every threshold at its break-even, and prints the speed-ups and its results'
-fingerprint, which must be the same on every number of threads; it runs the 50,000
-inverters' chain so only with ``--largest``, and else once with the defaults.
+every threshold at its break-even, in `alternated` rounds, and prints the speed-ups and
+its results' fingerprint, which must be the same on every number of threads; it runs
+the 50,000 inverters' chain so only with ``--largest``, and else once with the
+defaults.
 
 ``--view`` times every simulator instead, the owner's three views of them: jolty,
 ngspice with Sparse 1.3 and with KLU, and Xyce, each installed, or those ``--simulator``
@@ -54,8 +68,9 @@ digits of each fixture's exact answer.
 ``--break-even`` measures instead from which size of circuit setting one threshold of
 ``Parallelism`` makes one run faster than running it serially, on 2, 4, 8 threads and
 every core: on circuits of the fixtures' scripts at several sizes, each run serially and
-with the threshold set and the others spreading nothing, interleaved, and that size's
-value of the threshold, its break-even.
+with the threshold set and the others spreading nothing, in `alternated` rounds, and
+that size's value of the threshold, its break-even, from which every spread run's
+interval lay below the serial run's.
 ``benchmarks/speed/README.md`` says how it sets each threshold, and what it found.
 
 ``--robustness`` runs instead the corpus of hard circuits of ``benchmarks/robustness``,
@@ -81,9 +96,11 @@ writes its results headed by their provenance, ``benchmarks/measuring.py``'s.
 import dataclasses
 import functools
 import hashlib
-import importlib
+import itertools
 import json
+import mmap
 import os
+import random
 import statistics
 import subprocess
 import sys
@@ -92,8 +109,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from types import ModuleType
-from typing import Final
+from typing import IO, Any, Final
 
 import numpy as np
 import numpy.typing as npt
@@ -102,13 +118,19 @@ import numpy.typing as npt
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from measuring import (
     BENCHMARKS,
+    CONFIDENCE,
+    DIRTY,
     ROOT,
+    Median,
     Suite,
+    commit,
     duration,
     git,
     load,
     load_average,
+    median,
     provenance,
+    rank,
     results_directory,
     results_path,
     save,
@@ -127,11 +149,22 @@ from simulators import (
     runner,
     stopped,
 )
+from timing import (
+    Loaded,
+    Request,
+    Run,
+    clocked,
+    load_fixture,
+    planned,
+    run,
+    scripts,
+    work,
+)
 
 from jolty import circuit, cli, ir, plan, results, simulate
 from jolty.errors import JoltyError
-from jolty.plan import Ac, Analysis, MonteCarlo, Options, Parallelism, Plan, Transient
-from jolty.simulate import Elaborated, Simulation
+from jolty.plan import Ac, Analysis, Options, Parallelism, Transient
+from jolty.simulate import Simulation
 from jolty.spice import export, ngspice, xyce
 from jolty.unknowns import Unknown
 
@@ -145,7 +178,7 @@ import inverter_chain
 import matrix
 import rc_mesh
 import suite
-from fixture import CIRCUITS, PLANS, Fixture, engine_plan
+from fixture import CIRCUITS, PLANS, SPEED, Fixture, engine_plan
 
 SUITE: Final = (
     "bjt_amp",
@@ -183,7 +216,8 @@ SAMPLES: Final = 1000
 """The samples of a Monte Carlo fixture the suite times: a few seconds on one thread."""
 
 FLAGGED: Final = 0.05
-"""The relative change in a time that the comparison flags, as AGENTS.md says."""
+"""The relative change in a time a comparison must resolve, as AGENTS.md says: the
+change at which the two medians' intervals would separate (`Median.resolution`)."""
 
 FEWEST_RUNS: Final = 10
 """The fewest times the Python timing repeats a fixture: criterion's fewest samples."""
@@ -192,9 +226,17 @@ FEWEST_SECONDS: Final = 5.0
 """The least time the Python timing repeats a fixture for, as long as criterion
 measures each benchmark."""
 
-FEWEST_ROUNDS: Final = 3
-"""The fewest rounds a break-even's sweep runs a circuit's settings in, one after
-another: the fewest whose median no one slow run moves."""
+FEWEST_ROUNDS: Final = next(
+    count for count in itertools.count(1) if rank(count) is not None
+)
+"""The fewest rounds of compared works: the fewest runs whose median has an interval
+at `CONFIDENCE`, 6 at 95%, as `measuring.rank` derives."""
+
+MOST_ROUNDS: Final = 4 * FEWEST_ROUNDS
+"""The most rounds of compared works, once they have run for `FEWEST_SECONDS` each,
+unless ``--most-rounds`` says otherwise: four times the fewest, which about halves
+their medians' intervals, as an interval narrows with the square root of the runs. A
+comparison stopped there undecided says so."""
 
 SWEPT_THREADS: Final = (2, 4, 8)
 """The threads a break-even is measured on, as far as there are cores, and then
@@ -235,32 +277,52 @@ the fixtures' own among them, and others around the break-even."""
 
 @dataclass(frozen=True, slots=True)
 class Timing:
-    """A time measured: the median of its runs, in seconds, and their number.
+    """A time measured: the median of its runs' wall seconds, and their number.
 
-    Beside them, the machine's load average over the last minute as they began, when
-    it was measured.
+    Beside them, the machine's load average over the last minute as the runs began and
+    as they ended, when measured, and each run's seconds by the wall clock and of the
+    processor, when kept, from which the medians' intervals are read: a results file of
+    an earlier version holds neither.
     """
 
     seconds: float
     runs: int
     load: float | None = None
+    load_after: float | None = None
+    wall: tuple[float, ...] = ()
+    cpu: tuple[float, ...] = ()
 
+    @classmethod
+    def of(cls, runs: Sequence[Run], load: float, load_after: float) -> Timing:
+        """The timing of `runs`, which began at `load` and ended at `load_after`."""
+        wall = tuple(each.wall for each in runs)
+        cpu = tuple(each.cpu for each in runs)
+        return cls(statistics.median(wall), len(wall), load, load_after, wall, cpu)
 
-@dataclass(frozen=True, slots=True)
-class Loaded:
-    """A fixture as the timing runs it: its circuit read from its file, and its plan."""
+    @classmethod
+    def from_json(cls, value: Mapping[str, Any]) -> Timing:
+        """The timing a results file holds, as `to_json` wrote it."""
+        return cls(
+            value["seconds"],
+            value["runs"],
+            value.get("load"),
+            value.get("load_after"),
+            tuple(value.get("wall", ())),
+            tuple(value.get("cpu", ())),
+        )
 
-    circuit: ir.Circuit
-    plan: Plan
+    def to_json(self) -> dict[str, object]:
+        """The timing as its results file holds it, without what was not measured."""
+        written = dataclasses.asdict(self)
+        return {key: value for key, value in written.items() if value not in (None, ())}
 
+    def wall_median(self) -> Median:
+        """The median of the wall seconds, with its interval if the runs are kept."""
+        return median(self.wall) if self.wall else Median(self.seconds)
 
-def scripts() -> list[ModuleType]:
-    """The fixtures' scripts of ``benchmarks/speed/circuits``, by their names."""
-    return [
-        importlib.import_module(path.stem)
-        for path in sorted(CIRCUITS.glob("*.py"))
-        if path.stem != "fixture"
-    ]
+    def cpu_median(self) -> Median | None:
+        """The median of the processor's seconds, with its interval, if kept."""
+        return median(self.cpu) if self.cpu else None
 
 
 def fixtures() -> dict[str, Fixture]:
@@ -269,7 +331,6 @@ def fixtures() -> dict[str, Fixture]:
     Raises:
         SystemExit: When a fixture's files are not what its script writes.
     """
-    found: dict[str, Fixture] = {}
     stale: list[str] = []
     for script in scripts():
         for name, top in script.circuits().items():
@@ -277,108 +338,147 @@ def fixtures() -> dict[str, Fixture]:
             path = CIRCUITS / f"{name}.json"
             if not path.is_file() or path.read_text(encoding="utf-8") != written:
                 stale.append(f"{path.relative_to(ROOT)} ({script.__name__}.py)")
-        for name, fixture in script.fixtures().items():
-            written = json.dumps(engine_plan(fixture), indent=2) + "\n"
-            path = PLANS / f"{name}.json"
-            if not path.is_file() or path.read_text(encoding="utf-8") != written:
-                stale.append(f"{path.relative_to(ROOT)} ({script.__name__}.py)")
-            found[name] = fixture
+    found = planned()
+    for name, fixture in found.items():
+        written = json.dumps(engine_plan(fixture), indent=2) + "\n"
+        path = PLANS / f"{name}.json"
+        if not path.is_file() or path.read_text(encoding="utf-8") != written:
+            stale.append(f"{path.relative_to(ROOT)}")
     if stale:
         message = "these files are not what their scripts write; run the scripts:\n"
         raise SystemExit(message + "\n".join(f"  {each}" for each in stale))
     return found
 
 
-def load_fixture(fixture: Fixture) -> Loaded:
-    """The fixture's circuit, read from its file, and its plan."""
-    text = (CIRCUITS / f"{fixture.circuit}.json").read_text(encoding="utf-8")
-    return Loaded(ir.Circuit.model_validate_json(text), fixture.plan)
-
-
-def run(
-    loaded: Loaded, options: Options | None = None
-) -> dict[str, results.AnalysisResult]:
-    """Runs the fixture in jolty: its circuit elaborated, its analyses with `options`.
-
-    The options are the plan's unless given. Returns each analysis's result, by name.
-    """
-    chosen = loaded.plan.options if options is None else options
-    return Jolty().run(loaded.circuit, loaded.plan.analyses, chosen).found
-
-
-def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
-    """The first `samples` of the fixture's Monte Carlo analysis, run on `threads`.
-
-    The samples run as the runner runs them: one batch of the plan's analyses on the
-    circuit elaborated once, each sample drawn by the engine from its index, on a pool
-    of `threads` threads, the engine releasing the interpreter while it runs; the one
-    elaboration counts in the time.
-    """
-    monte_carlo = loaded.plan.monte_carlo
-    seed = 0 if monte_carlo is None else monte_carlo.seed
-
-    def every() -> None:
-        simulation = Simulation.from_elaborated(Elaborated(loaded.circuit))
-        with simulate.threads(threads):
-            simulation.batch(
-                loaded.plan.analyses, MonteCarlo(samples, seed), loaded.plan.options
-            )
-
-    return every
-
-
-def repeated[T](work: Callable[[], T], *, once: bool) -> tuple[list[T], float]:
-    """What each run of `work` returned, and the load average as they began.
+def repeated[T](work: Callable[[], T], *, once: bool) -> tuple[list[T], float, float]:
+    """What each run of `work` returned, and the load average as they began and ended.
 
     `work` runs once if `once`; else once to warm up, and then again until it has run
     `FEWEST_RUNS` times and for `FEWEST_SECONDS`, as criterion measures a benchmark.
     """
     load = load_average()
     if once:
-        return [work()], load
+        return [work()], load, load_average()
     work()
     found: list[T] = []
     begun = time.perf_counter()
     while len(found) < FEWEST_RUNS or time.perf_counter() - begun < FEWEST_SECONDS:
         found.append(work())
-    return found, load
+    return found, load, load_average()
 
 
-def timed(work: Callable[[], float], *, once: bool = False) -> Timing:
-    """The median of the seconds each run of `work` returns, `repeated`."""
-    found, load = repeated(work, once=once)
-    return Timing(statistics.median(found), len(found), load)
+def timed(work: Callable[[], Run], *, once: bool = False) -> Timing:
+    """The timing of the runs of `work`, `repeated`."""
+    found, load, load_after = repeated(work, once=once)
+    return Timing.of(found, load, load_after)
 
 
-def clocked(work: Callable[[], object]) -> Callable[[], float]:
-    """`work`, returning the seconds it took by the wall clock."""
+@dataclass(frozen=True, slots=True)
+class Rounds:
+    """Works timed in alternating rounds: each one's timing, and each round's load.
 
-    def measured() -> float:
-        started = time.perf_counter()
-        work()
-        return time.perf_counter() - started
-
-    return measured
-
-
-def python(
-    names: Iterable[str], found: Mapping[str, Fixture], *, scale: bool
-) -> dict[str, Timing]:
-    """The Python timings of the fixtures `names`, each run once if at `scale`.
-
-    A Monte Carlo fixture's time is per sample, named by the number of samples run: of
-    its first samples on one thread and on a thread per core, or of every sample on a
-    thread per core at scale.
+    The load average over the last minute as each round began and as it ended.
     """
-    timings: dict[str, Timing] = {}
+
+    timings: list[Timing]
+    loads: list[tuple[float, float]]
+
+    def summary(self) -> str:
+        """How many rounds ran, and the least and most load average around them."""
+        seen = [each for pair in self.loads for each in pair]
+        return f"{len(self.loads)} rounds, load {min(seen):.2f} to {max(seen):.2f}"
+
+
+def alternated(works: Sequence[Callable[[], Run]], most: int) -> Rounds:
+    """Each of `works` run once a round, each round in the reverse order of the last.
+
+    The rounds alternate their order so that no work always follows the same one: on
+    `cedar`, the median of a serial run of a quarter of a second was 261 ms when it
+    always followed one on 64 threads, and 225 ms when it followed one on 2. Every work
+    is compared with the first. A first round warms them up and is discarded, so that
+    no cold run widens an interval; then the rounds go on until there are
+    `FEWEST_ROUNDS` of them and they have taken `FEWEST_SECONDS` for each work, and
+    then until each comparison is decided, each work's median wall time `separated`
+    from the first's or resolving a change of `FLAGGED` (`Median.resolution`), or there
+    are `most` rounds, where a comparison may stop undecided. A rule on the intervals,
+    never on the change, stops them, so stopping favours no verdict.
+    """
+    for each in works:
+        each()
+    runs: list[list[Run]] = [[] for _ in works]
+    loads: list[tuple[float, float]] = []
+    begun = time.perf_counter()
+
+    def pending() -> bool:
+        count = len(loads)
+        if count < FEWEST_ROUNDS:
+            return True
+        if time.perf_counter() - begun < FEWEST_SECONDS * len(works):
+            return True
+        if count >= most:
+            return False
+        first = median([each.wall for each in runs[0]])
+        return any(
+            not settled(first, median([each.wall for each in others]))
+            for others in runs[1:]
+        )
+
+    while pending():
+        order = list(range(len(works)))
+        if len(loads) % 2:
+            order.reverse()
+        before = load_average()
+        for index in order:
+            runs[index].append(works[index]())
+        loads.append((before, load_average()))
+    timings = [Timing.of(each, loads[0][0], loads[-1][1]) for each in runs]
+    return Rounds(timings, loads)
+
+
+def settled(before: Median, now: Median) -> bool:
+    """Whether a comparison of `now` with `before` is decided, as `alternated` asks."""
+    if before.separated(now):
+        return True
+    resolution = before.resolution(now)
+    return resolution is not None and resolution <= FLAGGED
+
+
+def decided(before: Median, now: Median) -> str:
+    """The verdict on `now` against `before`: "slower", "faster", or none.
+
+    A change is named only when the two intervals separate; "no interval" when either
+    has none, and "undecided" when they neither separate nor resolve a change of
+    `FLAGGED`.
+    """
+    if before.resolution(now) is None:
+        return "no interval"
+    if before.separated(now):
+        return "slower" if now.value > before.value else "faster"
+    return "" if settled(before, now) else "undecided"
+
+
+def interval(found: Median) -> str:
+    """A median with its interval, as the tables print it."""
+    if found.lower is None or found.upper is None:
+        return f"{duration(found.value)} (no interval)"
+    return f"{duration(found.value)} [{duration(found.lower)}, {duration(found.upper)}]"
+
+
+def requests(
+    names: Iterable[str], found: Mapping[str, Fixture], *, scale: bool = False
+) -> dict[str, Request]:
+    """The runs that time the fixtures `names`, by the name of each time.
+
+    A fixture's own runs, named after it; a Monte Carlo fixture's first samples on one
+    thread and on a thread per core, or every sample on a thread per core at `scale`,
+    named by the number of samples run.
+    """
     cores = os.cpu_count() or 1
+    asked: dict[str, Request] = {}
     for name in names:
-        loaded = load_fixture(found[name])
-        monte_carlo = loaded.plan.monte_carlo
-        print(f"timing {name} in Python", flush=True)
+        monte_carlo = found[name].plan.monte_carlo
         if monte_carlo is None:
-            work = clocked(functools.partial(run, loaded))
-            timings[f"python/{name}"] = timed(work, once=scale)
+            asked[f"python/{name}"] = Request(name)
             continue
         samples = monte_carlo.samples if scale else min(SAMPLES, monte_carlo.samples)
         threads = (
@@ -387,10 +487,23 @@ def python(
             else ((1, "one core"), (cores, "every core"))
         )
         for count, label in threads:
-            whole = timed(clocked(sampled(loaded, samples, count)), once=scale)
-            timings[f"python/{name}/{samples} samples, {label}"] = Timing(
-                whole.seconds / samples, whole.runs, whole.load
+            asked[f"python/{name}/{samples} samples, {label}"] = Request(
+                name, samples, count
             )
+    return asked
+
+
+def python(
+    names: Iterable[str], found: Mapping[str, Fixture], *, scale: bool
+) -> dict[str, Timing]:
+    """The Python timings of the fixtures `names`' `requests`, each run once at `scale`.
+
+    A Monte Carlo fixture's times are per sample.
+    """
+    timings: dict[str, Timing] = {}
+    for key, request in requests(names, found, scale=scale).items():
+        print(f"timing {key}", flush=True)
+        timings[key] = timed(work(request, dict(found)), once=scale)
     return timings
 
 
@@ -410,68 +523,72 @@ def serially(loaded: Loaded) -> Options:
 
 
 def scaling(
-    name: str, loaded: Loaded, counts: Sequence[int]
+    name: str, loaded: Loaded, counts: Sequence[int], most: int
 ) -> tuple[dict[str, Timing], dict[str, str]]:
-    """One run of the fixture `name` serially, then one spread on each of `counts`.
+    """The fixture `name` serially and spread on each of `counts`, `interleaved`.
 
     The serial run runs on one thread with no block of its matrix dissected, `serially`;
     each spread run takes the fixture's options, which leave every setting of its
-    parallelism to its default, on a pool of so many threads. Prints each run's time,
-    its speed-up against the serial run and against the spread run on one thread, and
-    the fingerprint of its results; returns the times and the serial and spread
-    runs' fingerprints.
+    parallelism to its default, on a pool of so many threads; each is compared with the
+    serial run, in at most `most` rounds. Prints each one's median time with its
+    interval, its speed-up against the serial run and against the spread run on one
+    thread, whether it is `decided` against the serial run, and the fingerprint of its
+    results; returns the times and the serial and spread runs' fingerprints.
 
     Raises:
         SystemExit: When, but for a circuit large enough for a block to be dissected,
             whose default interiors depend on the threads, a spread run finds other
             bits than the serial run.
     """
-    print(f"timing {name} in Python, serially and spread", flush=True)
+    print(f"timing {name} in Python, serially and spread, in rounds", flush=True)
     alone_options = serially(loaded)
-    serial, alone = once(on(1, functools.partial(run, loaded, alone_options)))
-    timings = {f"python/{name}": serial}
-    rows = [("serially", serial, alone)]
-    print(f"{name}, serially: {duration(serial.seconds)}, load {serial.load:.2f}")
-    for count in counts:
-        label = f"{count} thread{'s' if count > 1 else ''}"
-        spread, found = once(on(count, functools.partial(run, loaded)))
-        timings[f"python/{name}/spread on {label}"] = spread
-        rows.append((label, spread, found))
-        print(f"{name}, spread on {label}: {duration(spread.seconds)}", flush=True)
-    print(f"\n{name}, serially and spread by the default parallelism:")
-    widths = (10, 10, 14, 16, 16, 0)
-    heads = ("threads", "time", "against serial", "against 1 thread", "results", "load")
+    labels = [
+        "serially",
+        *(f"{count} thread{'s' if count > 1 else ''}" for count in counts),
+    ]
+    works = [
+        on(1, functools.partial(run, loaded, alone_options)),
+        *(on(count, functools.partial(run, loaded)) for count in counts),
+    ]
+    measured, prints = interleaved(works, most)
+    found = measured.timings
+    timings = {f"python/{name}": found[0]} | {
+        f"python/{name}/spread on {label}": each
+        for label, each in zip(labels[1:], found[1:], strict=True)
+    }
+    print(
+        f"\n{name}, serially and spread by the default parallelism, "
+        f"{measured.summary()}:"
+    )
+    widths = (10, 34, 14, 16, 8, 16)
+    heads = ("threads", "time", "against serial", "against 1 thread", "", "results")
     print(table(heads, widths))
-    one = next((each.seconds for label, each, _ in rows if label == "1 thread"), None)
-    for label, each, found in rows:
+    serial = found[0]
+    one = found[labels.index("1 thread")] if "1 thread" in labels else None
+    for index, (label, each, fingerprinted) in enumerate(
+        zip(labels, found, prints, strict=True)
+    ):
         against = (
-            "" if one is None or label == "serially" else f"{one / each.seconds:.2f}x"
+            "" if one is None or index == 0 else f"{one.seconds / each.seconds:.2f}x"
         )
         cells = (
             label,
-            duration(each.seconds),
+            interval(each.wall_median()),
             f"{serial.seconds / each.seconds:.2f}x",
             against,
-            found,
-            f"{each.load:.2f}",
+            "" if index == 0 else decided(serial.wall_median(), each.wall_median()),
+            fingerprinted,
         )
         print(table(cells, widths))
-    spread_prints = {found for label, _, found in rows if label != "serially"}
+    alone = prints[0]
+    spread_prints = set(prints[1:])
     unknowns = alone_options.parallelism.max_unknowns_per_interior or 0
     interiors = plan.BREAK_EVENS["max_unknowns_per_interior"]
     dissectable = unknowns > min(each for each in interiors if each is not None)
     if not dissectable and spread_prints != {alone}:
-        message = f"{name} found other bits spread: {', '.join(f for *_, f in rows)}"
+        message = f"{name} found other bits spread: {', '.join(prints)}"
         raise SystemExit(message)
     return timings, {"serial": alone, "spread": next(iter(spread_prints), alone)}
-
-
-def once(work: Callable[[], dict[str, results.AnalysisResult]]) -> tuple[Timing, str]:
-    """The time of one run of `work`, and the fingerprint of what it found."""
-    load = load_average()
-    started = time.perf_counter()
-    found = work()
-    return Timing(time.perf_counter() - started, 1, load), fingerprint(found)
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,8 +615,8 @@ def profiles(
         print(f"profiling {name}", flush=True)
         simulation = Simulation(loaded.circuit)
         options = dataclasses.replace(loaded.plan.options, profile=True)
-        for analysis, planned in loaded.plan.analyses.items():
-            result = simulation.run(planned, options)
+        for analysis, asked in loaded.plan.analyses.items():
+            result = simulation.run(asked, options)
             if not isinstance(result, results.TransientResult):
                 continue
             work, profile = result.statistics.work, result.statistics.profile
@@ -586,12 +703,16 @@ def rust(names: Iterable[str], found: Mapping[str, Fixture]) -> dict[str, Timing
 def _criterion(new: Path, runs: int) -> Timing:
     """Criterion's median in `new`, per run of the `runs` each iteration makes.
 
-    The directory holds criterion's latest estimates and samples of one benchmark.
+    The directory holds criterion's latest estimates and samples of one benchmark; each
+    sample's time per iteration is kept as a run's, the median of which is criterion's
+    own.
     """
-    estimates = json.loads((new / "estimates.json").read_text("utf-8"))
     sample = json.loads((new / "sample.json").read_text("utf-8"))
-    seconds = estimates["median"]["point_estimate"] * 1e-9 / runs
-    return Timing(seconds, round(sum(sample["iters"])))
+    wall = tuple(
+        seconds * 1e-9 / iterations / runs
+        for seconds, iterations in zip(sample["times"], sample["iters"], strict=True)
+    )
+    return Timing(statistics.median(wall), round(sum(sample["iters"])), wall=wall)
 
 
 def commands(loaded: Loaded) -> list[str]:
@@ -894,19 +1015,17 @@ def cell(
     """
     load = load_average()
     try:
-        found, _ = repeated(work, once=once)
+        found, _, load_after = repeated(work, once=once)
     except JoltyError as error:
         return Cell(options, load, load_average(), failed=stopped(str(error)))
+    walls = tuple(each.seconds for each in found)
+    analysed = tuple(each.analysis_seconds for each in found)
     return Cell(
         options,
         load,
-        load_average(),
-        Timing(statistics.median(each.seconds for each in found), len(found), load),
-        Timing(
-            statistics.median(each.analysis_seconds for each in found),
-            len(found),
-            load,
-        ),
+        load_after,
+        Timing(statistics.median(walls), len(found), load, load_after, walls),
+        Timing(statistics.median(analysed), len(found), load, load_after, analysed),
         {} if reference is None else deviations(analyses, reference, found[0].voltages),
     )
 
@@ -1038,38 +1157,44 @@ def baseline(given: str | None) -> Path | None:
             return found
         message = f"no results of {given}; run scripts/bench on it first"
         raise SystemExit(message)
-    for commit in git("rev-list", "--max-count=1000", "HEAD").split()[1:]:
-        found = results_directory(Suite.SPEED) / f"{commit}.json"
+    for ancestor in git("rev-list", "--max-count=1000", "HEAD").split()[1:]:
+        found = results_directory(Suite.SPEED) / f"{ancestor}.json"
         if found.is_file():
             return found
     return None
 
 
-def compare(now: Mapping[str, Timing], before: Mapping[str, Timing], name: str) -> None:
+def against(now: Mapping[str, Timing], before: Mapping[str, Timing], name: str) -> None:
     """Prints the times `now` against those `before`, from the results `name`.
 
-    Each change over 5 % is flagged.
+    Each median with its interval, and a change named only where the intervals
+    separate; a time of results that kept no runs has no interval, so no change of it
+    is named. The two were measured at different times, under whatever load each met:
+    `--compare` alternates the builds' runs instead.
     """
     shared = [key for key in now if key in before]
     if not shared:
         print(f"\nno time measured here is in {name}")
         return
     width = max(len(key) for key in shared)
-    print(f"\nagainst {name}:")
-    print(f"{'':{width}}  {'before':>10}  {'now':>10}  {'change':>8}")
-    flagged = 0
+    print(f"\nagainst {name}, medians with their {CONFIDENCE:.0%} intervals:")
+    heads = (" ", "before", "now", "change", "")
+    widths = (width, 34, 34, 8, 0)
+    print(table(heads, widths))
+    named = 0
     for key in shared:
-        old, new = before[key].seconds, now[key].seconds
-        change = new / old - 1
-        mark = ""
-        if abs(change) > FLAGGED:
-            flagged += 1
-            mark = "  slower" if change > 0 else "  faster"
-        print(
-            f"{key:{width}}  {duration(old):>10}  {duration(new):>10}  "
-            f"{change:>+8.1%}{mark}"
+        old, new = before[key].wall_median(), now[key].wall_median()
+        verdict = decided(old, new)
+        named += verdict in {"slower", "faster"}
+        cells = (
+            key,
+            interval(old),
+            interval(new),
+            f"{new.value / old.value - 1:+.1%}",
+            verdict,
         )
-    print(f"{flagged} of {len(shared)} changed by more than {FLAGGED:.0%}")
+        print(table(cells, widths))
+    print(f"{named} of {len(shared)} changed, their intervals apart")
 
 
 def fingerprint(found: Mapping[str, results.AnalysisResult]) -> str:
@@ -1191,37 +1316,24 @@ def on(
 
 
 def interleaved(
-    works: Sequence[Callable[[], dict[str, results.AnalysisResult]]],
-) -> tuple[list[Timing], list[str]]:
-    """The median time of each of `works`, run in turn, and what each first found.
+    works: Sequence[Callable[[], dict[str, results.AnalysisResult]]], most: int
+) -> tuple[Rounds, list[str]]:
+    """Each of `works` timed in `alternated` rounds, and what each first found.
 
-    Each work runs once a round, one after another, so that each side of a comparison
-    runs under the same load as the others, and what it found in the first round is
-    fingerprinted. The rounds run the works in their order and in the reverse order by
-    turns, so that no work always follows the same one: on `cedar`, the median of a
-    serial run of a quarter of a second was 261 ms when it always followed one on 64
-    threads, and 225 ms when it followed one on 2. The rounds go on until there are
-    `FEWEST_ROUNDS` of them and they have taken `FEWEST_SECONDS` for each work; none is
-    warmed up, the median discarding a first slow run.
+    What each work found in its first run, which warms it up, is fingerprinted.
     """
-    load = load_average()
-    times: list[list[float]] = [[] for _ in works]
     prints: list[str | None] = [None for _ in works]
-    begun = time.perf_counter()
-    while len(
-        times[0]
-    ) < FEWEST_ROUNDS or time.perf_counter() - begun < FEWEST_SECONDS * len(works):
-        order = list(range(len(works)))
-        if len(times[0]) % 2:
-            order.reverse()
-        for index in order:
-            started = time.perf_counter()
+
+    def remembered(index: int) -> Callable[[], Run]:
+        def kept() -> None:
             found = works[index]()
-            times[index].append(time.perf_counter() - started)
             if prints[index] is None:
                 prints[index] = fingerprint(found)
-    timings = [Timing(statistics.median(each), len(each), load) for each in times]
-    return timings, [found or "" for found in prints]
+
+        return clocked(kept)
+
+    measured = alternated([remembered(index) for index in range(len(works))], most)
+    return measured, [found or "" for found in prints]
 
 
 SIZE: Final = {"inverter_chain": "inverters", "rc_mesh": "side", "bjt_amp": "a decade"}
@@ -1235,11 +1347,21 @@ def table(cells: Sequence[str], widths: Sequence[int]) -> str:
     ).rstrip()
 
 
-def pays_from(changes: Sequence[float]) -> int | None:
-    """The index of the first of `changes` from which each is a gain, if any."""
+MARKS: Final = {
+    "faster": "<",
+    "slower": ">",
+    "undecided": "?",
+    "no interval": "?",
+    "": "",
+}
+"""How a break-even's table marks each spread run's verdict against the serial run."""
+
+
+def pays_from(gains: Sequence[bool]) -> int | None:
+    """The index of the first of `gains` from which each is one, if any."""
     first: int | None = None
-    for index, change in enumerate(changes):
-        if change >= 0:
+    for index, gain in enumerate(gains):
+        if not gain:
             first = None
         elif first is None:
             first = index
@@ -1247,15 +1369,21 @@ def pays_from(changes: Sequence[float]) -> int | None:
 
 
 def sweep(
-    threshold: Threshold, script: str, sizes: Sequence[int], counts: Sequence[int]
+    threshold: Threshold,
+    script: str,
+    sizes: Sequence[int],
+    counts: Sequence[int],
+    most: int,
 ) -> dict[str, Timing]:
     """The times of `script`'s circuits at `sizes`, serially and `threshold` set.
 
     Each circuit runs serially, on one thread with no threshold spreading its work, and
     with `threshold` set to spread it over each of `counts` threads, on so many, the
-    others `spreading_none`, interleaved. The times are printed as they are
-    measured, and then the smallest size from which setting it pays on each count, and
-    its break-even there.
+    others `spreading_none`, `interleaved` in at most `most` rounds. The times are
+    printed as they are measured, each spread run's change against the serial run's
+    marked by its verdict, and then the smallest size from which setting it pays on
+    each count, and its break-even there: from which every spread run was `decided`
+    faster, its interval below the serial run's.
 
     Raises:
         SystemExit: When a run with `threshold` set finds other bits than the serial
@@ -1264,12 +1392,14 @@ def sweep(
     """
     labels = [f"{count} thread{'s' if count > 1 else ''}" for count in counts]
     heads = [SIZE[script], "devices", "unknowns", "solves", "serially"]
-    widths = [10, 9, 9, 7, 10, *(len(label) + 18 for label in labels), 0]
+    widths = [10, 9, 9, 7, 10, *(len(label) + 19 for label in labels), 0]
     print(f"\n{threshold} on {script}'s circuits, serially and set, to the value in")
-    print("brackets, to spread each circuit over each number of threads:")
-    print(table([*heads, *labels, "load"], widths), flush=True)
+    print("brackets, to spread each circuit over each number of threads; < marks a")
+    print("run faster than the serial run, > slower, their intervals apart, and ? one")
+    print(f"whose intervals neither part nor resolve {FLAGGED:.0%}:")
+    print(table([*heads, *labels, "rounds and load"], widths), flush=True)
     timings: dict[str, Timing] = {}
-    measured: list[tuple[Sized, list[float]]] = []
+    measured: list[tuple[Sized, list[float], list[bool]]] = []
     for size in sizes:
         at = sized(script, size)
         values = [setting(threshold, at, count) for count in counts]
@@ -1282,7 +1412,8 @@ def sweep(
             spread = Parallelism(**none | {threshold.value: value})
             options = dataclasses.replace(at.loaded.plan.options, parallelism=spread)
             works.append(on(count, functools.partial(run, at.loaded, options)))
-        found, prints = interleaved(works)
+        rounds, prints = interleaved(works, most)
+        found = rounds.timings
         # Interiors of other sizes order the factorization otherwise, so only the
         # other thresholds, which change no result, must find the serial run's bits.
         dissected = threshold is Threshold.MAX_UNKNOWNS_PER_INTERIOR
@@ -1294,7 +1425,10 @@ def sweep(
             raise SystemExit(message)
         unset = found[0].seconds
         changes = [each.seconds / unset - 1 for each in found[1:]]
-        measured.append((at, changes))
+        verdicts = [
+            decided(found[0].wall_median(), each.wall_median()) for each in found[1:]
+        ]
+        measured.append((at, changes, [each == "faster" for each in verdicts]))
         key = f"python/break-even/{threshold}/{script}_{size}"
         timings[f"{key}/serially"] = found[0]
         for label, each in zip(labels, found[1:], strict=True):
@@ -1302,14 +1436,16 @@ def sweep(
         cells = [f"{each:,}" for each in (size, at.devices, at.unknowns, at.solves)]
         cells.append(duration(unset))
         cells += [
-            f"{duration(each.seconds)} {change:+.1%} ({value:,})"
-            for each, change, value in zip(found[1:], changes, values, strict=True)
+            f"{duration(each.seconds)} {change:+.1%}{MARKS[verdict]} ({value:,})"
+            for each, change, verdict, value in zip(
+                found[1:], changes, verdicts, values, strict=True
+            )
         ]
-        cells.append(f"{found[0].load:.2f} to {load_average():.2f}")
+        cells.append(rounds.summary())
         print(table(cells, widths), flush=True)
     for place, label in enumerate(labels):
-        changes = [each[place] for _, each in measured]
-        first = pays_from(changes)
+        changes = [each[place] for _, each, _ in measured]
+        first = pays_from([gains[place] for _, _, gains in measured])
         if first is None:
             print(f"on {label}: no gain from any size up to {sizes[-1]:,}")
             continue
@@ -1355,7 +1491,8 @@ class Bench(cli.CommandLine):
         default=False,
         description=(
             "With --scale, run the 50,000 inverters' chain serially and on each "
-            "number of threads too: 17 minutes more on 12 cores."
+            "number of threads too, in rounds: once each took 17 minutes on 12 "
+            "cores."
         ),
     )
     sizes: list[int] = Field(
@@ -1449,6 +1586,36 @@ class Bench(cli.CommandLine):
     baseline: str | None = Field(
         default=None, description="The commit or results file to compare with."
     )
+    compare: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Two revisions, such as main and HEAD, whose builds to time against each "
+            "other instead: each built once in a worktree of its own, their runs of "
+            "each fixture alternating round after round, each median with its 95% "
+            "interval, by the wall clock and of the processor, and a change named "
+            "only where the intervals separate."
+        ),
+    )
+    nightly: Path | None = Field(
+        default=None,
+        description=(
+            "Time the checked-out commit's build against the previous night's "
+            "instead, as --compare does, writing what it found to a directory of "
+            "today's date in this one, beside the earlier nights'."
+        ),
+    )
+    builds: Path = Field(
+        default=ROOT / "target" / "builds",
+        description="Where --compare and --nightly keep each build's worktree.",
+    )
+    most_rounds: int = Field(
+        default=MOST_ROUNDS,
+        ge=FEWEST_ROUNDS,
+        description=(
+            "The most rounds --compare, --nightly, --scale and --break-even run a "
+            "comparison in before stopping it undecided."
+        ),
+    )
     output: Path | None = Field(default=None, description="The results file to write.")
 
     def cli_cmd(self) -> None:
@@ -1482,11 +1649,7 @@ def merged(
     """
     earlier = load(output) if output.is_file() else {}
     written = {**earlier.get("timings", {})}
-    written |= {
-        key: {"seconds": each.seconds, "runs": each.runs}
-        | ({} if each.load is None else {"load": each.load})
-        for key, each in timings.items()
-    }
+    written |= {key: each.to_json() for key, each in timings.items()}
     return {
         **provenance().model_dump(mode="json"),
         "timings": written,
@@ -1515,10 +1678,308 @@ def break_evens(arguments: Bench, threshold: Threshold) -> None:
     timings: dict[str, Timing] = {}
     for script in scripts:
         sizes = arguments.sizes or swept[script]
-        timings |= sweep(threshold, script, sizes, counts)
+        timings |= sweep(threshold, script, sizes, counts, arguments.most_rounds)
     print(f"\nmeasured in {duration(time.perf_counter() - started)}")
     output = arguments.output or results_path(Suite.SPEED)
     save(output, merged(output, timings))
+
+
+@dataclass(frozen=True, slots=True)
+class Build:
+    """A build of jolty at one commit, in a worktree of its own."""
+
+    revision: str
+    """The revision it was asked as, such as ``main``."""
+    commit: str
+    path: Path
+
+
+def outside() -> dict[str, str]:
+    """This process's environment, but for the environment ``uv run`` gave it.
+
+    So that a build's ``uv`` and interpreter take the build's own.
+    """
+    return {key: value for key, value in os.environ.items() if key != "VIRTUAL_ENV"}
+
+
+def build(revision: str, directory: Path, taken: Iterable[Path]) -> Build:
+    """`revision` built in its own worktree in `directory`, made there if missing.
+
+    The worktree is named by its commit, or by its commit and ``-2`` if `taken` holds
+    that path, for a second build of the same commit; its engine is built by
+    ``uv sync`` into its own target directory, so no build overwrites another's.
+    """
+    found = git("rev-parse", "--verify", f"{revision}^{{commit}}")
+    path = directory / found
+    if path in taken:
+        path = directory / f"{found}-2"
+    if not path.is_dir():
+        directory.mkdir(parents=True, exist_ok=True)
+        git("worktree", "add", "--detach", str(path), found)
+    elif git("-C", str(path), "rev-parse", "HEAD") != found:
+        git("-C", str(path), "checkout", "--detach", found)
+    print(f"building {revision} ({found[:12]}) in {shown(path)}", flush=True)
+    environment = outside() | {"CARGO_TARGET_DIR": str(path / "target")}
+    subprocess.run(
+        ["uv", "sync", "--locked"],  # noqa: S607 - uv is on the path
+        check=True,
+        cwd=path,
+        env=environment,
+    )
+    return Build(revision, found, path)
+
+
+@dataclass(frozen=True, slots=True)
+class Worker:
+    """A process of a build's interpreter, which times runs as `timing.serve` does."""
+
+    built: Build
+    process: subprocess.Popen[str]
+    requests: IO[str]
+    answers: IO[str]
+
+    @classmethod
+    def start(cls, built: Build, padding: int) -> Worker:
+        """The worker of `built`, once it has said that it imported the build's jolty.
+
+        Its environment holds a variable of `padding` bytes besides this process's.
+
+        Raises:
+            SystemExit: When it imported another jolty, or could not start.
+        """
+        interpreter = built.path / ".venv" / "bin" / "python"
+        process = subprocess.Popen(  # noqa: S603 - the build's own interpreter
+            [str(interpreter), str(SPEED / "timing.py")],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            cwd=ROOT,
+            env=outside() | {"JOLTY_BENCH_PADDING": "x" * padding},
+        )
+        if process.stdin is None or process.stdout is None:
+            message = f"{built.revision}'s process has no pipes"
+            raise SystemExit(message)
+        worker = cls(built, process, process.stdin, process.stdout)
+        said = worker.answers.readline()
+        if not said:
+            message = f"{built.revision}'s process ended before it imported jolty"
+            raise SystemExit(message)
+        imported = Path(json.loads(said)["jolty"]).resolve()
+        if not imported.is_relative_to(built.path.resolve()):
+            message = f"{built.revision}'s process imported jolty from {imported}"
+            raise SystemExit(message)
+        return worker
+
+    def time(self, request: Request) -> Run:
+        """One run of `request` in the build, and its seconds.
+
+        Raises:
+            SystemExit: When the process ended instead of answering.
+        """
+        self.requests.write(json.dumps(dataclasses.asdict(request)) + "\n")
+        self.requests.flush()
+        answer = self.answers.readline()
+        if not answer:
+            message = f"{self.built.revision}'s process ended running {request}"
+            raise SystemExit(message)
+        return Run(**json.loads(answer))
+
+    def close(self) -> None:
+        """Ends the process, once it has read every request."""
+        self.requests.close()
+        self.process.wait()
+
+
+def afresh(built: Build, request: Request, padding: Callable[[], int]) -> Run:
+    """One run of `request` in a process of `built` of its own, after one to warm up.
+
+    A program's time can move by several percent with where its stack begins, which
+    the size of its environment sets (Mytkowicz, Diwan, Hauswirth and Sweeney,
+    "Producing wrong data without doing anything obviously wrong!", ASPLOS 2009), and
+    with where the system places its memory and its threads, as two builds' processes
+    differ even for the same code: on `dogwood`, one commit's two builds, each timed by
+    one process for every round, were named apart in four of the suite's times, the
+    buck +3.0% and ``rc_mesh_100`` -6.3% among them, and in none once each run took a
+    process of its own, as the speed suite's page shows. So each run takes a process of
+    its own, its environment padded by `padding` bytes, drawn below a page, as every
+    offset of the stack within a page then occurs, and these effects widen each
+    build's interval rather than move its median.
+    """
+    worker = Worker.start(built, padding())
+    try:
+        worker.time(request)
+        return worker.time(request)
+    finally:
+        worker.close()
+
+
+def builds_compared(arguments: Bench) -> None:
+    """Times the builds of the two revisions ``--compare`` names against each other.
+
+    Raises:
+        SystemExit: When it names other than two.
+    """
+    if len(arguments.compare) != 2:
+        message = f"--compare names two revisions, not {len(arguments.compare)}"
+        raise SystemExit(message)
+    found = fixtures()
+    names = arguments.fixtures or SUITE
+    first, second = arguments.compare
+    output = arguments.output or results_directory(Suite.SPEED) / (
+        f"{git('rev-parse', '--short=12', first)}.."
+        f"{git('rev-parse', '--short=12', second)}.json"
+    )
+    compared((first, second), names, found, arguments, output)
+
+
+def compared(
+    revisions: tuple[str, str],
+    names: Sequence[str],
+    found: Mapping[str, Fixture],
+    arguments: Bench,
+    output: Path,
+) -> list[str]:
+    """Times the builds of `revisions` against each other on the fixtures `names`.
+
+    Each revision is built once in its own worktree, in ``--builds``, and each run of a
+    build takes place `afresh`, in a process of its own, a `Worker`, its environment's
+    padding drawn from a generator seeded alike for every comparison. Each time of the
+    fixtures' `requests` runs in `alternated` rounds, the first build's runs compared
+    with the second's, in at most ``--most-rounds`` once they are enough. Prints
+    the `comparison`, and writes it to `output`, as JSON, and beside it as Markdown.
+    Returns each change named, its intervals apart.
+    """
+    first = build(revisions[0], arguments.builds, ())
+    second = build(revisions[1], arguments.builds, (first.path,))
+    pair = (first, second)
+    generator = random.Random(0)  # noqa: S311 - paddings, drawn alike every time
+    page = mmap.PAGESIZE
+
+    def padding() -> int:
+        return generator.randrange(page)
+
+    measured: dict[str, Rounds] = {}
+    started = time.perf_counter()
+    for key, request in requests(names, found).items():
+        print(f"timing {key} in both builds, round after round", flush=True)
+        measured[key] = alternated(
+            [functools.partial(afresh, each, request, padding) for each in pair],
+            arguments.most_rounds,
+        )
+    print(f"\nmeasured in {duration(time.perf_counter() - started)}")
+    text, named = comparison(pair, measured)
+    print(f"\n{text}")
+    save(
+        output,
+        {
+            **provenance().model_dump(mode="json"),
+            "builds": [
+                {"revision": each.revision, "commit": each.commit} for each in pair
+            ],
+            "timings": {
+                key: {
+                    "loads": rounds.loads,
+                    "builds": [each.to_json() for each in rounds.timings],
+                }
+                for key, rounds in measured.items()
+            },
+            "named": named,
+        },
+    )
+    output.with_suffix(".md").write_text(text + "\n", encoding="utf-8")
+    print(f"wrote {shown(output.with_suffix('.md'))}")
+    return named
+
+
+def comparison(
+    pair: tuple[Build, Build], measured: Mapping[str, Rounds]
+) -> tuple[str, list[str]]:
+    """The table of two builds' times, and each change it names.
+
+    A row per time and clock, the wall clock's and the processor's: each build's median
+    with its interval, the change from the first build's to the second's, the least
+    change their intervals would separate at, the verdict, `decided`, and the rounds and
+    their load.
+    """
+    first, second = pair
+    rows = [
+        [
+            "Time",
+            "Clock",
+            f"`{first.revision}` ({first.commit[:12]})",
+            f"`{second.revision}` ({second.commit[:12]})",
+            "Change",
+            "Resolution",
+            "Verdict",
+            "Rounds and load",
+        ]
+    ]
+    rows.append(["---"] * len(rows[0]))
+    named: list[str] = []
+    for key, rounds in measured.items():
+        before, now = rounds.timings
+        clocks = [("wall", before.wall_median(), now.wall_median())]
+        cpu_before, cpu_now = before.cpu_median(), now.cpu_median()
+        if cpu_before is not None and cpu_now is not None:
+            clocks.append(("processor", cpu_before, cpu_now))
+        for clock, old, new in clocks:
+            change = new.value / old.value - 1
+            resolution = old.resolution(new)
+            verdict = decided(old, new)
+            if verdict in {"slower", "faster"}:
+                named.append(f"{key}, {clock}: {change:+.1%}, {verdict}")
+            rows.append(
+                [
+                    f"`{key}`",
+                    clock,
+                    interval(old),
+                    interval(new),
+                    f"{change:+.1%}",
+                    "" if resolution is None else f"{resolution:.1%}",
+                    verdict,
+                    rounds.summary(),
+                ]
+            )
+    lines = ["| " + " | ".join(row) + " |" for row in rows]
+    lines.append("")
+    lines.append(
+        f"Each time is the median of its rounds, with its {CONFIDENCE:.0%} interval; "
+        "a change is named only where the two intervals separate."
+    )
+    lines.append(
+        "Changes named: " + "; ".join(named) + "." if named else "No change named."
+    )
+    return "\n".join(lines), named
+
+
+def nightly(arguments: Bench, directory: Path) -> None:
+    """Times the checked-out commit's build against the previous night's, `compared`.
+
+    The previous night's is the second build of the newest comparison in `directory`
+    but today's, or, on the first night, the same commit built twice, which must name
+    no change. Writes the comparison to ``<directory>/<today>/compare.json`` and its
+    table beside it, then removes every build in ``--builds`` but tonight's, the next
+    night's first.
+
+    Raises:
+        SystemExit: When the working tree has changes to tracked files.
+    """
+    tonight = commit()
+    if tonight.endswith(DIRTY):
+        message = "--nightly times a commit, but the working tree has changes"
+        raise SystemExit(message)
+    today = time.strftime("%Y-%m-%d")
+    nights = sorted(
+        path for path in directory.glob("*/compare.json") if path.parent.name != today
+    )
+    last = load(nights[-1])["builds"][1]["commit"] if nights else tonight
+    output = directory / today / "compare.json"
+    compared(
+        (last, tonight), arguments.fixtures or SUITE, fixtures(), arguments, output
+    )
+    for path in arguments.builds.iterdir():
+        if path.name != tonight:
+            git("worktree", "remove", "--force", str(path))
 
 
 def robustness(arguments: Bench) -> None:
@@ -1561,7 +2022,7 @@ def instead(arguments: Bench) -> bool:
     """Runs the suite `arguments` name instead of the timing, if they name one.
 
     Returns whether they did: ``--robustness``, ``--coverage``, ``--precision``,
-    ``--view equal-error`` or ``--break-even``.
+    ``--view equal-error``, ``--break-even``, ``--compare`` or ``--nightly``.
     """
     if arguments.robustness:
         robustness(arguments)
@@ -1573,6 +2034,10 @@ def instead(arguments: Bench) -> bool:
         equal_error(arguments)
     elif arguments.break_even is not None:
         break_evens(arguments, arguments.break_even)
+    elif arguments.compare:
+        builds_compared(arguments)
+    elif arguments.nightly is not None:
+        nightly(arguments, arguments.nightly)
     else:
         return False
     return True
@@ -1633,7 +2098,7 @@ def measure(arguments: Bench) -> None:
         )
         raise SystemExit(message)
     output = arguments.output or results_path(Suite.SPEED)
-    against = baseline(arguments.baseline)
+    baseline_path = baseline(arguments.baseline)
     started = time.perf_counter()
     found_profiles: dict[str, dict[str, Profiled]] = {}
     fingerprints: dict[str, dict[str, str]] = {}
@@ -1653,7 +2118,7 @@ def measure(arguments: Bench) -> None:
         for name in names:
             if name in spread:
                 measured, fingerprints[name] = scaling(
-                    name, load_fixture(found[name]), counts
+                    name, load_fixture(found[name]), counts, arguments.most_rounds
                 )
                 timings |= measured
             else:
@@ -1668,11 +2133,12 @@ def measure(arguments: Bench) -> None:
         for name, analyses in found_profiles.items()
     }
     save(output, merged(output, timings, profiled, fingerprints, views))
-    if against is not None and against.resolve() != output.resolve():
+    if baseline_path is not None and baseline_path.resolve() != output.resolve():
         before = {
-            key: Timing(**value) for key, value in load(against)["timings"].items()
+            key: Timing.from_json(value)
+            for key, value in load(baseline_path)["timings"].items()
         }
-        compare(timings, before, against.name)
+        against(timings, before, baseline_path.name)
 
 
 if __name__ == "__main__":

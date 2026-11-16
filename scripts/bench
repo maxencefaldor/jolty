@@ -4,11 +4,14 @@
 # The benchmarks of benchmarks/, every suite's one command line. By default the speed
 # suite: the criterion benchmarks of the engine and a Python timing of the same
 # fixtures, written to benchmarks/speed/results/<commit>.json and compared with a
-# baseline's, every change over 5 % flagged. They stay out of scripts/check, which must
-# stay fast and deterministic.
+# baseline's, each median with its 95 % interval, a change named only where the
+# intervals separate. They stay out of scripts/check, which must stay fast and
+# deterministic.
 #
 #   scripts/bench                     the speed suite, a few minutes, before and after a change
-#   scripts/bench --scale             the large fixtures, each run once, and spread
+#   scripts/bench --compare A,B       the builds of revisions A and B, their runs alternating
+#   scripts/bench --nightly DIR       the checked-out commit against the previous night's
+#   scripts/bench --scale             the large fixtures, serially and spread, in rounds
 #   scripts/bench --scale --largest   and the 50,000 inverters' chain spread too
 #   scripts/bench --view matched      every simulator on the fixtures, at matched options
 #   scripts/bench --view defaults     every simulator on them, each at its own defaults
