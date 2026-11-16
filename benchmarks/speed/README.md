@@ -67,6 +67,37 @@ Only the intervals' widths stop the rounds, never the change itself, so stopping
 The table gives each time's medians and intervals by the wall clock and of the processor, the change, the resolution, the verdict, and the rounds with the least and most load average around them; it is printed, and written to `results/<A>..<B>.md` beside the results file, `results/<A>..<B>.json`, which holds every run and each round's loads.
 The break-evens' sweeps and `--scale` run their settings in the same rounds, each compared with the serial run.
 
+### Shown on `dogwood`
+
+On `dogwood`, an AMD Ryzen 9 7950X of 16 cores and 32 threads, on 16 November 2026, while other users' programs ran beside it, the comparison ran on two builds of one commit, `7488b6e`, built from the same source in two worktrees, where it must name no change.
+Timed as at first, by one process of each build kept for every round, at `fba9b0e`, from 20:33 to 20:36 UTC at a load average of 1.8 to 6.5, it named four changes by the wall clock, their intervals apart: `bjt_amp` −0.2%, the buck +3.0%, `rc_mesh_100` −6.3% and a Monte Carlo sample on one core +1.8%; and of the processor the same but the mesh's, +2.8%.
+Timed by a process a run, its environment padded, at `8702b11`, from 20:36 to 20:40 UTC at a load average of 1.6 to 9.1, it named none, each time's resolution by the wall clock 0.9% to 4.6%:
+
+| Time | `7488b6e` | `7488b6e` again | Change | Resolution | Rounds |
+| --- | --- | --- | --- | --- | --- |
+| `bjt_amp` | 1.151 ms [1.136, 1.166] | 1.147 ms [1.132, 1.161] | −0.4% | 2.6% | 21 |
+| `ac_wide` | 7.16 ms [7.039, 7.327] | 6.993 ms [6.886, 7.132] | −2.3% | 3.8% | 19 |
+| `buck` | 793.3 ms [774.7, 812.3] | 798.7 ms [781.1, 814.9] | +0.7% | 4.6% | 7 |
+| `inverter_chain_500` | 4.416 s [4.335, 4.488] | 4.407 s [4.308, 4.477] | −0.2% | 3.9% | 6 |
+| `rc_mesh_100` | 649.1 ms [634.5, 661] | 654.1 ms [650.7, 659.4] | +0.8% | 3.1% | 9 |
+| `monte_carlo`, a sample on one core | 530.5 µs [525.1, 542.1] | 532.2 µs [523.2, 535.6] | +0.3% | 3.9% | 6 |
+| `monte_carlo`, a sample on every core | 29.78 µs [29.67, 29.96] | 29.75 µs [29.67, 29.85] | −0.1% | 0.9% | 16 |
+
+Then, from 20:40 to 20:45 UTC at a load average of 1.1 to 2.3, it ran on `7488b6e` against a build of it that spins 120 ns at each Newton iteration of a time step, never to land, a known slowdown: at least 120 ns times each fixture's transient iterations, as the engine counts them, plus the spin's own reads of the clock, 0.055 µs each on `dogwood`.
+It named the slowdown wherever it exceeded the resolution, and nothing where there was none:
+
+| Time | Transient iterations | Least slowdown | Change | Resolution | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| `bjt_amp` | 106 | +1.1% | +2.3% | 2.9% | |
+| `ac_wide` | 0 | 0 | +0.3% | 4.7% | |
+| `buck` | 330,869 | +5.0% | +7.7% | 4.7% | slower |
+| `inverter_chain_500` | 11,798 | +0.03% | −1.2% | 3.3% | |
+| `rc_mesh_100` | 227 | +0.004% | +0.3% | 4.3% | |
+| `monte_carlo`, a sample on one core | each sample's | | +3.4% | 3.7% | |
+| `monte_carlo`, a sample on every core | each sample's | | +1.8% | 0.8% | slower |
+
+The buck's intervals, 777.8 to 810.4 ms and 834.1 to 862.2 ms, allow a change of +2.9% to +10.9%, around the spin's +5.0% and more; a Monte Carlo sample, whose transient spins too, was named slower on every core, where its interval is narrowest; the amplifier's +1.1% and a sample on one core lay below their resolution, as the comparison stated.
+
 ### The nightly
 
 `scripts/bench --nightly DIR` compares the checked-out commit's build with the previous night's, the second build of the newest comparison in `DIR` but today's, as `--compare` does, and writes the comparison to `DIR/<date>/compare.json` and `compare.md`, beside the earlier nights'.
@@ -114,6 +145,11 @@ Where jolty fails at the matched options, there is no reference, and each cell s
 A simulator whose run fails, or runs past `--timeout`, 300 s unless given, is marked with what stopped it: the first line of its message, the lines of what the simulator printed that say what went wrong, and how far an Xyce transient came; its row is never dropped.
 The results file holds every cell under `views`, by view, simulator and fixture, and the times among the others, so a view's times are compared with a baseline's as every time is.
 The equal-error view's target is `--digits`, or, on each output, the most digits that every simulator that runs the fixture reached; each simulator's time is its precision suite's engine time, of its fastest run that reached the target, beside that run's setting, and a simulator that never reached it is marked with the most it did.
+
+A machine's clock decides where the views can run.
+ngspice reads it 1,553,155 times in the buck's 195,852 Newton iterations, about eight times an iteration, for the statistics `rusage` prints, as callgrind counted its calls to `clock_gettime` on `elm` on 16 November 2026.
+On `dogwood` a read takes 0.055 µs, from the processor's time-stamp counter, and on `cedar` 1.375 µs, from the HPET, its kernel's only clock source but the ACPI timer, as Python's `time.perf_counter` measured over 300,000 calls each: so ngspice's buck took 2.25 s on `cedar` and 0.21 s on `dogwood`, the same 56,605 time points and 195,852 iterations on each, the same binary, and equally with `OMP_NUM_THREADS=1`.
+`cedar` times jolty's engine, which reads no clock unless its option `profile` is on, but no simulator that reads it in its loop, and no profile: ngspice's and Xyce's columns, and the profiles, come from `dogwood`.
 
 ## Baseline
 
