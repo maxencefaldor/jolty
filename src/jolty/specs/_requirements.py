@@ -535,13 +535,13 @@ def _passes(verdict: Verdict) -> bool:
 class Judged:
     """A requirement's verdicts on many runs, as columns, one entry per run.
 
-    Each run's `severity` is its status's, 0 failed, 1 unmeasured, 2 marginal and 3
+    Each run's `status` is its status, 0 failed, 1 unmeasured, 2 marginal and 3
     passed, with its `slack`, infinite where unmeasured, its `value`, not a number
     where unmeasured, and, among `units`, the unit of the values of the conditions
     each came from, by `origin`.
     """
 
-    severity: npt.NDArray[np.int8]
+    status: npt.NDArray[np.int8]
     slack: results.Real
     value: results.Real
     origin: npt.NDArray[np.intp]
@@ -561,7 +561,7 @@ def judged(
     the batch's is the requirement's; with no batch, the circuit does not elaborate,
     and no analysis ends on any run.
     """
-    severity = np.full(runs, _SEVERITY["unmeasured"], dtype=np.int8)
+    status = np.full(runs, _SEVERITY["unmeasured"], dtype=np.int8)
     slack = np.full(runs, math.inf)
     value = np.full(runs, math.nan)
     unit = ""
@@ -587,14 +587,14 @@ def judged(
                 other = requirement.maximum.value - values
                 room = np.where(other < room, other, room)
             margin = 0.0 if requirement.margin is None else requirement.margin.value
-            severity[measured] = np.where(
+            status[measured] = np.where(
                 room < 0,
                 _SEVERITY["failed"],
                 np.where(room < margin, _SEVERITY["marginal"], _SEVERITY["passed"]),
             )
             slack[measured] = room
             value[measured] = values
-    return Judged(severity, slack, value, np.zeros(runs, dtype=np.intp), (unit,))
+    return Judged(status, slack, value, np.zeros(runs, dtype=np.intp), (unit,))
 
 
 def worst(conditions: Sequence[Judged]) -> Judged:
@@ -610,24 +610,24 @@ def worst(conditions: Sequence[Judged]) -> Judged:
         message = "the worst verdict is of a condition or more"
         raise ValueError(message)
     first, *rest = conditions
-    severity, slack, value = (
-        first.severity.copy(),
+    status, slack, value = (
+        first.status.copy(),
         first.slack.copy(),
         first.value.copy(),
     )
-    origin = np.zeros(severity.shape, dtype=np.intp)
+    origin = np.zeros(status.shape, dtype=np.intp)
     for place, each in enumerate(rest, start=1):
-        worse = (each.severity < severity) | (
-            (each.severity == severity) & (each.slack < slack)
+        worse = (each.status < status) | (
+            (each.status == status) & (each.slack < slack)
         )
-        severity[worse] = each.severity[worse]
+        status[worse] = each.status[worse]
         slack[worse] = each.slack[worse]
         value[worse] = each.value[worse]
         origin[worse] = place
     units = tuple(
         each.units[int(each.origin[0])] if each.units else "" for each in conditions
     )
-    return Judged(severity, slack, value, origin, units)
+    return Judged(status, slack, value, origin, units)
 
 
 def spread_of(
@@ -641,11 +641,11 @@ def spread_of(
         _spread_of(requirement, each)
         for requirement, each in zip(specs.requirements, judged, strict=True)
     )
-    samples = int(judged[0].severity.shape[0]) if judged else 0
+    samples = int(judged[0].status.shape[0]) if judged else 0
     passing = (
         int(
             np.all(
-                [each.severity >= _SEVERITY["marginal"] for each in judged], axis=0
+                [each.status >= _SEVERITY["marginal"] for each in judged], axis=0
             ).sum()
         )
         if judged
@@ -664,7 +664,7 @@ def spread_of(
 
 def _spread_of(requirement: Requirement, judged: Judged) -> Spread:
     measured = ~np.isnan(judged.value)
-    passing = int((judged.severity >= _SEVERITY["marginal"]).sum())
+    passing = int((judged.status >= _SEVERITY["marginal"]).sum())
     stated = Spread(
         requirement=str(requirement), measured=int(measured.sum()), passing=passing
     )
