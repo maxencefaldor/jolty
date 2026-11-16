@@ -22,13 +22,13 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Final, Literal
+from typing import Literal
 
 from jolty import _core
 from jolty.errors import JoltyError
 from jolty.settings import Settings
 from jolty.spice.download import fetch
-from jolty.spice.library import VERILOG_A, Library, Use
+from jolty.spice.library import SIZES, VERILOG_A, Library, Use
 from jolty.spice.ngspice import Compatibility
 
 
@@ -272,7 +272,8 @@ def _subcircuit(library: Library, name: str) -> Device:
     uses = library.survey(name)
     middle = next((use.middle for use in uses if use.middle is not None), None)
     subcircuit = library.subcircuit(name)
-    if middle is None or subcircuit is None or not subcircuit.defaults.keys() >= SIZES:
+    sized = subcircuit is not None and subcircuit.defaults.keys() >= SIZES.keys()
+    if middle is None or subcircuit is None or not sized:
         return Device(name, "subcircuit", uses)
     scale = library.options.get("scale", 1.0)
     length, width = middle
@@ -281,7 +282,3 @@ def _subcircuit(library: Library, name: str) -> Device:
     if any(use.middle is not None for use in resized):
         return Device(name, "subcircuit", uses)
     return Device(name, "subcircuit", resized, parameters)
-
-
-SIZES: Final = frozenset({"l", "w"})
-"""The parameters of a subcircuit that size the MOSFETs it holds, by SPICE's names."""

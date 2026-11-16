@@ -647,9 +647,9 @@ pub struct Groups {
     /// The layout each instance added claims, and its local unknowns' nodes, kept to be
     /// used again.
     scratch: (Layout, Vec<Node>),
-    /// The circuit's unknown of every internal unknown an instance's layout claims
-    /// [pivoted](Layout::pivoted), in the order the instances were added.
-    pivoted: Vec<usize>,
+    /// The row and the column, circuit's unknowns, of every pivot an instance's layout
+    /// [claims](Layout::pivot), in the order the instances were added.
+    pivoted: Vec<(usize, usize)>,
 }
 
 /// Why a circuit's groups cannot be made: their slab, or the circuit, has more places than
@@ -717,8 +717,7 @@ impl Groups {
             layout
                 .pivots()
                 .iter()
-                .filter_map(|&local| node(local))
-                .map(UnknownIndex::index),
+                .filter_map(|&(row, column)| Some((node(row)?.index(), node(column)?.index()))),
         );
         let group = &mut self.kernels[index];
         let device = self.places.len();
@@ -939,10 +938,11 @@ impl Groups {
         }))
     }
 
-    /// The circuit's unknown of every internal unknown an instance's layout claims
-    /// [pivoted](Layout::pivoted), which the sparse solver may eliminate first.
+    /// The row and the column, circuit's unknowns, of every pivot an instance's layout
+    /// [claims](Layout::pivot), by which the sparse solver may eliminate the column's
+    /// unknown first.
     #[must_use]
-    pub fn pivoted(&self) -> &[usize] {
+    pub fn pivoted(&self) -> &[(usize, usize)] {
         &self.pivoted
     }
 

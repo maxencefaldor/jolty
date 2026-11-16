@@ -302,6 +302,11 @@ mod tests {
             ),
             ("mosfet", mosfet),
             (
+                "mosfet",
+                json!({"oxide_thickness": 5e-8, "drain_resistance": 0.01,
+                    "source_resistance": 0.5}),
+            ),
+            (
                 "photocell",
                 json!({"resistance": 1e4, "response_time": 0.02}),
             ),
@@ -354,19 +359,19 @@ mod tests {
         value.as_object().cloned().expect("an object")
     }
 
-    /// Every internal unknown a model's layout claims pivoted has a diagonal entry at least
-    /// as large as every other entry of its column, in `G`, `G + αC` and `G + jωC`, at
-    /// every point evaluated, at an operating point and in a transient: the property that
-    /// lets the sparse solver eliminate it without a search. The points spread each
-    /// unknown over ±10, and `α` and `ω` over 0 to 10¹⁵ per second, beyond any step's.
+    /// Every pivot a model's layout claims is at least as large as every other entry of
+    /// its column, in `G`, `G + αC` and `G + jωC`, at every point evaluated, at an
+    /// operating point and in a transient: the property that lets the sparse solver
+    /// eliminate its unknown without a search. The points spread each unknown over ±10,
+    /// and `α` and `ω` over 0 to 10¹⁵ per second, beyond any step's.
     #[test]
-    fn every_pivoted_unknowns_diagonal_is_its_columns_largest() {
+    fn every_claimed_pivot_is_its_columns_largest() {
         let library = Library::standard();
         let frequencies: Vec<(f64, f64)> = [0.0, 1e3, 1e9, 1e15]
             .into_iter()
             .flat_map(|scale| [(scale, 0.0), (0.0, scale)])
             .collect();
-        let mut checked = 0;
+        let (mut checked, mut off_diagonal) = (0, 0);
         for (name, parameters) in examples() {
             let Some(model) = library.get(name) else {
                 continue;
@@ -389,28 +394,30 @@ mod tests {
                     let evaluation = bench.evaluate(&x);
                     let (conductance, capacitance) =
                         (&evaluation.conductance, &evaluation.capacitance);
-                    for &pivot in &pivoted {
+                    for &(pivot, column) in &pivoted {
                         for &(real, imaginary) in &frequencies {
                             let entry = |row: usize| {
-                                let (g, c) = (conductance[row][pivot], capacitance[row][pivot]);
+                                let (g, c) = (conductance[row][column], capacitance[row][column]);
                                 (g + real * c).hypot(imaginary * c)
                             };
-                            let diagonal = entry(pivot);
+                            let claimed = entry(pivot);
                             for row in (0..x.len()).filter(|&row| row != pivot) {
                                 assert!(
-                                    entry(row) <= diagonal,
-                                    "{name}'s unknown {pivot} at {x:?}, s = {real} + {imaginary}j: \
-                                     {} against its diagonal's {diagonal}",
+                                    entry(row) <= claimed,
+                                    "{name}'s unknown {column} at {x:?}, s = {real} + {imaginary}j: \
+                                     {} against its pivot's {claimed} in row {pivot}",
                                     entry(row)
                                 );
                             }
                         }
                         checked += 1;
+                        off_diagonal += usize::from(pivot != column);
                     }
                 }
             }
         }
-        assert!(checked > 0, "no model claims a pivoted unknown");
+        assert!(checked > 0, "no model claims a pivot");
+        assert!(off_diagonal > 0, "no model claims a pivot off the diagonal");
     }
 
     #[test]

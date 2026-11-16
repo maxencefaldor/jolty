@@ -1,7 +1,7 @@
 //! The sparse LU solver against a dense reference: on random sparse matrices whose large
 //! entries lie off the diagonal, on the matrices of random circuits, real and complex, after
-//! their values change, with Meyer's displacements condensed, and on singular and nearly
-//! singular matrices.
+//! their values change, with Meyer's displacements and small series resistances' currents
+//! condensed, and on singular and nearly singular matrices.
 #![cfg(test)]
 
 use std::sync::Arc;
@@ -347,6 +347,13 @@ struct Circuit {
     /// farads, and Meyer's current `f · w` from the gate to the node, `f` the fraction of
     /// the oxide's capacitance Meyer's is, at most 1.
     displacements: Vec<(usize, usize, f64, f64)>,
+    /// Small series resistances, each from a terminal node to an inner node of its own, an
+    /// unknown after the displacements, with its current an unknown after it: the inner
+    /// node joined to another node by a conductance of up to 100 siemens, as a switch's
+    /// channel, and a Meyer's displacement after the current from that node to the inner
+    /// one; each the terminal, the other node, the conductance, the resistance, below 1 ohm,
+    /// and the displacement's oxide and fraction.
+    series: Vec<(usize, usize, f64, f64, f64, f64)>,
     /// A factor for each element's value in a second matrix of the same pattern, taken in
     /// turn.
     changes: Vec<f64>,
@@ -354,13 +361,36 @@ struct Circuit {
 
 impl Circuit {
     fn dimension(&self) -> usize {
-        self.nodes + self.sources.len() + self.displacements.len()
+        self.nodes + self.sources.len() + self.displacements.len() + 3 * self.series.len()
     }
 
     /// The unknowns of the displacements, whose pivots are at least their columns' entries.
     fn displaced(&self) -> Vec<usize> {
         let first = self.nodes + self.sources.len();
         (first..first + self.displacements.len()).collect()
+    }
+
+    /// The first unknown of the series resistances': the inner node, the current and the
+    /// displacement of each, in turn.
+    fn first_series(&self) -> usize {
+        self.nodes + self.sources.len() + self.displacements.len()
+    }
+
+    /// The pivots each at least every other entry of its column, each a row and the
+    /// column of an unknown: each displacement's own diagonal, and each series current's
+    /// entry in its inner node's row, −1, against its column's 1 at the terminal and its
+    /// resistance, below 1 ohm.
+    fn pivots(&self) -> Vec<(usize, usize)> {
+        let mut pivots: Vec<(usize, usize)> = self
+            .displaced()
+            .into_iter()
+            .map(|unknown| (unknown, unknown))
+            .collect();
+        for index in 0..self.series.len() {
+            let inner = self.first_series() + 3 * index;
+            pivots.extend([(inner, inner + 1), (inner + 2, inner + 2)]);
+        }
+        pivots
     }
 
     /// The matrix `G + s C`, its element values scaled by `changes` if `changed`.
@@ -432,6 +462,29 @@ impl Circuit {
             stamp(own, other, oxide);
             stamp(gate, own, T::from(fraction));
             stamp(other, own, -T::from(fraction));
+        }
+        for (index, &(terminal, other, conductance, resistance, oxide, fraction)) in
+            self.series.iter().enumerate()
+        {
+            let inner = self.first_series() + 3 * index;
+            let (current, own) = (Some(inner + 1), Some(inner + 2));
+            let (terminal, other, inner) = (node(terminal), node(other), Some(inner));
+            let conductance = T::from(scale(conductance));
+            stamp(inner, inner, conductance);
+            stamp(other, other, conductance);
+            stamp(inner, other, -conductance);
+            stamp(other, inner, -conductance);
+            stamp(terminal, current, T::ONE);
+            stamp(inner, current, -T::ONE);
+            stamp(current, terminal, T::ONE);
+            stamp(current, inner, -T::ONE);
+            stamp(current, current, -T::from(scale(resistance)));
+            let oxide = s * T::from(scale(oxide));
+            stamp(own, own, T::ONE);
+            stamp(own, other, -oxide);
+            stamp(own, inner, oxide);
+            stamp(other, own, T::from(fraction));
+            stamp(inner, own, -T::from(fraction));
         }
         matrix
     }
@@ -510,6 +563,7 @@ fn circuit() -> impl Strategy<Value = Circuit> {
                         })
                         .collect(),
                     displacements: Vec::new(),
+                    series: Vec::new(),
                     changes: changes.into_iter().map(power).collect(),
                 }
             },
@@ -539,15 +593,52 @@ fn meyer() -> impl Strategy<Value = Circuit> {
     })
 }
 
-/// A solver of `matrix`'s pattern that condenses `circuit`'s displacements, dissected into
-/// interiors of at most `interiors` positions if given.
+/// A random circuit with Meyer's displacements, as [`meyer`] makes, and small series
+/// resistances' currents, each from a random node to an inner node joined to another
+/// random node by a conductance of 0.1 to 100 siemens, the resistance 1 milliohm to
+/// 1 ohm, and a displacement from that node to the inner one.
+fn switched() -> impl Strategy<Value = Circuit> {
+    meyer().prop_flat_map(|circuit| {
+        let total = circuit.nodes;
+        let series = proptest::collection::vec(
+            (
+                0..=total,
+                0..=total,
+                (-1.0..2.0f64, -3.0..0.0f64),
+                (-3.0..0.0f64, 0.0..=1.0f64),
+            ),
+            1..total + 2,
+        );
+        (Just(circuit), series).prop_map(|(mut circuit, series)| {
+            circuit.series = series
+                .into_iter()
+                .map(
+                    |(terminal, other, (conductance, resistance), (oxide, fraction))| {
+                        (
+                            terminal,
+                            other,
+                            10f64.powf(conductance),
+                            10f64.powf(resistance),
+                            10f64.powf(oxide),
+                            fraction,
+                        )
+                    },
+                )
+                .collect();
+            circuit
+        })
+    })
+}
+
+/// A solver of `matrix`'s pattern that condenses `circuit`'s displacements and series
+/// currents, dissected into interiors of at most `interiors` positions if given.
 fn condensing<T: Scalar>(
     circuit: &Circuit,
     matrix: &Matrix<T>,
     interiors: Option<usize>,
 ) -> SparseLu<T> {
     let (pattern, _) = matrix.pattern();
-    let condensation = Arc::new(Condensation::new(pattern, &circuit.displaced()));
+    let condensation = Arc::new(Condensation::new(pattern, &circuit.pivots()));
     let ordering =
         Ordering::condensed(condensation, interiors.map(Dissecting::Every)).expect("fits");
     SparseLu::new(Arc::new(ordering))
@@ -715,6 +806,30 @@ proptest! {
         check(&mut lu, &circuit.matrix(10f64.powf(alpha), true))?;
         let statistics = lu.statistics();
         prop_assert_eq!(statistics.factorizations, 1);
+        let complex = circuit.matrix(Complex64::new(0.0, 10f64.powf(omega)), false);
+        check(&mut condensing(&circuit, &complex, Some(4)), &complex)?;
+    }
+
+    /// A solver that condenses small series resistances' currents too, each by its inner
+    /// node's row, eliminates every displacement Meyer's makes and every current, and
+    /// solves the whole system and its transpose as the dense reference does: real and
+    /// complex, dissected or not, and refactored with the pivots of the first.
+    #[test]
+    fn condenses_the_series_currents_of_circuits(
+        circuit in switched(),
+        alpha in -1.0..3.0f64,
+        omega in -1.0..3.0f64,
+    ) {
+        let first = circuit.matrix(10f64.powf(alpha), false);
+        let (pattern, _) = first.pattern();
+        let condensation = Condensation::new(pattern, &circuit.pivots());
+        let least = circuit.displacements.len() + circuit.series.len();
+        prop_assert!(condensation.eliminated() >= least);
+        let mut lu = condensing(&circuit, &first, None);
+        let kept = first.dimension - condensation.eliminated();
+        prop_assert_eq!(lu.ordering().factored().dimension(), kept);
+        check(&mut lu, &first)?;
+        check(&mut lu, &circuit.matrix(10f64.powf(alpha), true))?;
         let complex = circuit.matrix(Complex64::new(0.0, 10f64.powf(omega)), false);
         check(&mut condensing(&circuit, &complex, Some(4)), &complex)?;
     }
@@ -952,6 +1067,7 @@ fn supplied_ladder(stages: usize) -> Matrix<f64> {
         sources: vec![(supply, stages + 1)],
         transconductances: Vec::new(),
         displacements: Vec::new(),
+        series: Vec::new(),
         changes: vec![1.0],
     };
     circuit.matrix(1.0, false)

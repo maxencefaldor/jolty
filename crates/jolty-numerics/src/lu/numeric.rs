@@ -270,46 +270,54 @@ impl<T: Scalar> Numeric<T> {
     /// when every pivot reaches its tolerance, and else the first position whose pivot does
     /// not, the factors before it found.
     fn refactor(&mut self, ordering: &Ordering, values: &[T]) -> Option<usize> {
-        let columns = ordering
-            .block_starts()
-            .windows(2)
-            .enumerate()
-            .filter(|&(block, _)| ordering.dissection(block).is_none())
-            .flat_map(|(_, range)| range[0]..range[1]);
-        for column in columns {
-            for &(row, slot) in ordering.within(column) {
-                self.work[row] = values[slot];
+        let Self {
+            work,
+            upper,
+            lower,
+            pivot_rows,
+            pivots,
+            ..
+        } = self;
+        for (block, range) in ordering.block_starts().windows(2).enumerate() {
+            if ordering.dissection(block).is_some() {
+                continue;
             }
-            for entry in self.upper.starts[column]..self.upper.starts[column + 1] {
-                let position = self.upper.indices[entry];
-                let row = self.pivot_rows[position];
-                let multiplier = self.work[row];
-                self.work[row] = T::ZERO;
-                self.upper.values[entry] = multiplier;
-                let (indices, factors) = self.lower.column(position);
-                for (&index, &factor) in indices.iter().zip(factors) {
-                    self.work[index] -= factor * multiplier;
+            for column in range[0]..range[1] {
+                for &(row, slot) in ordering.within(column) {
+                    work[row] = values[slot];
                 }
+                for entry in upper.starts[column]..upper.starts[column + 1] {
+                    let position = upper.indices[entry];
+                    let row = pivot_rows[position];
+                    let multiplier = work[row];
+                    work[row] = T::ZERO;
+                    upper.values[entry] = multiplier;
+                    let (indices, factors) = lower.column(position);
+                    for (&index, &factor) in indices.iter().zip(factors) {
+                        work[index] -= factor * multiplier;
+                    }
+                }
+                let row = pivot_rows[column];
+                let pivot = work[row];
+                work[row] = T::ZERO;
+                // The largest entry below the pivot, as each is divided by it.
+                let mut largest = 0.0;
+                let below = lower.starts[column]..lower.starts[column + 1];
+                for (&index, value) in lower.indices[below.clone()]
+                    .iter()
+                    .zip(&mut lower.values[below])
+                {
+                    let entry = work[index];
+                    largest = f64::max(largest, entry.magnitude());
+                    *value = entry / pivot;
+                    work[index] = T::ZERO;
+                }
+                let magnitude = pivot.magnitude();
+                if !(magnitude > 0.0 && magnitude >= PIVOT_TOLERANCE * largest) {
+                    return Some(column);
+                }
+                pivots[column] = pivot;
             }
-            let row = self.pivot_rows[column];
-            let pivot = self.work[row];
-            self.work[row] = T::ZERO;
-            let below = self.lower.starts[column]..self.lower.starts[column + 1];
-            let largest = self.lower.indices[below.clone()]
-                .iter()
-                .map(|&index| self.work[index].magnitude())
-                .fold(0.0, f64::max);
-            let magnitude = pivot.magnitude();
-            let passes = magnitude > 0.0 && magnitude >= PIVOT_TOLERANCE * largest;
-            for entry in below {
-                let index = self.lower.indices[entry];
-                self.lower.values[entry] = self.work[index] / pivot;
-                self.work[index] = T::ZERO;
-            }
-            if !passes {
-                return Some(column);
-            }
-            self.pivots[column] = pivot;
         }
         None
     }
