@@ -114,7 +114,7 @@ impl PlacedLogic {
 
 /// What a logic device's timing reads that its domain bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Bound {
+pub enum ExcursionKind {
     /// An input's transition.
     Transition,
     /// The load an output drives.
@@ -123,7 +123,7 @@ pub enum Bound {
     Supply,
 }
 
-impl Bound {
+impl ExcursionKind {
     /// The bound in words, such as `input transition`.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -141,7 +141,7 @@ pub struct Excursion {
     /// The device's index among [`Simulator::logic_devices`](crate::Simulator::logic_devices).
     pub device: usize,
     /// What left the domain.
-    pub bound: Bound,
+    pub bound: ExcursionKind,
     /// The domain's minimum.
     pub minimum: f64,
     /// The domain's maximum.
@@ -345,7 +345,7 @@ pub(crate) struct Events {
     /// The capacitance each net's outputs drive, in farads.
     loads: Vec<f64>,
     /// Where the devices were used outside their domains, by device and bound.
-    excursions: BTreeMap<(usize, Bound), Excursion>,
+    excursions: BTreeMap<(usize, ExcursionKind), Excursion>,
 }
 
 impl Events {
@@ -399,7 +399,7 @@ impl Events {
     pub(crate) fn watch(
         &mut self,
         device: usize,
-        bound: Bound,
+        bound: ExcursionKind,
         value: f64,
         range: (f64, f64),
         time: f64,
@@ -667,7 +667,13 @@ impl Events {
         };
         let domain = placed.device.domain().cloned();
         if let Some(domain) = &domain {
-            self.watch(device, Bound::Transition, change.slew, domain.slews, time);
+            self.watch(
+                device,
+                ExcursionKind::Transition,
+                change.slew,
+                domain.slews,
+                time,
+            );
         }
         for (output, &level) in outputs.iter().enumerate() {
             let drive = logic.output_drive(device, output);
@@ -684,7 +690,13 @@ impl Events {
             }
             let net = placed.outputs[output];
             if let Some(domain) = &domain {
-                self.watch(device, Bound::Load, self.loads[net], domain.loads, time);
+                self.watch(
+                    device,
+                    ExcursionKind::Load,
+                    self.loads[net],
+                    domain.loads,
+                    time,
+                );
             }
             let timing = placed
                 .device

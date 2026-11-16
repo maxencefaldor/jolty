@@ -19,7 +19,7 @@ use jolty_models::{Input, LogicLevel, Nature};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::logic::{Bound, Events, detected};
+use crate::logic::{Events, ExcursionKind, detected};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
 use crate::solver::Solver;
 use crate::state::{Held, Warm};
@@ -620,7 +620,7 @@ impl Simulator {
             let range = (nominal - slack, nominal + slack);
             self.state
                 .events
-                .watch(index, Bound::Supply, voltage, range, time);
+                .watch(index, ExcursionKind::Supply, voltage, range, time);
         }
     }
 

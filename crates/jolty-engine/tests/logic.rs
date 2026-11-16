@@ -3,8 +3,8 @@
 #![cfg(test)]
 
 use jolty_engine::{
-    Bound, Conditions, DcSweep, ElaborationProblem, Endpoint, Options, Simulator, Transient,
-    TransientResult, Work,
+    Conditions, DcSweep, ElaborationProblem, Endpoint, ExcursionKind, Options, Simulator,
+    Transient, TransientResult, Work,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Library, LogicLevel};
@@ -628,17 +628,17 @@ fn a_cell_used_outside_its_domain_says_where() {
     simulator
         .transient(&transient(5e-9), &Options::default())
         .unwrap();
-    let found: Vec<(Bound, f64, f64)> = simulator
+    let found: Vec<(ExcursionKind, f64, f64)> = simulator
         .excursions()
         .iter()
         .map(|excursion| (excursion.bound, excursion.value, excursion.time))
         .collect();
     assert_eq!(found.len(), 3, "{found:?}");
-    assert_eq!((found[0].0, found[0].2), (Bound::Transition, 1e-9));
+    assert_eq!((found[0].0, found[0].2), (ExcursionKind::Transition, 1e-9));
     assert!((found[0].1 - 1e-9).abs() < 1e-24);
-    assert_eq!(found[1].0, Bound::Load);
+    assert_eq!(found[1].0, ExcursionKind::Load);
     assert!((found[1].1 - 1e-13).abs() < 1e-18, "{found:?}");
-    assert_eq!((found[2].0, found[2].2), (Bound::Supply, 0.0));
+    assert_eq!((found[2].0, found[2].2), (ExcursionKind::Supply, 0.0));
     assert!((found[2].1 - 1.2).abs() < 1e-12);
 }
 
