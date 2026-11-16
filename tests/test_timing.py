@@ -1,8 +1,11 @@
 # Copyright 2026 Maxence Faldor
 """The speed suite's timing protocol: medians' intervals, rounds and verdicts."""
 
+import json
 import math
+import time
 from collections.abc import Callable
+from pathlib import Path
 
 import bench
 import numpy as np
@@ -140,3 +143,55 @@ def test_a_time_written_reads_back_and_one_of_an_older_file_has_no_interval() ->
     older = bench.Timing.from_json({"seconds": 1.0, "runs": 10, "load": 3.0})
     assert older.wall_median().lower is None
     assert older.cpu_median() is None
+
+
+def test_a_night_compares_its_build_with_the_last_and_keeps_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tonight, last, older = "b" * 40, "a" * 40, "c" * 40
+    compared: list[tuple[tuple[str, str], Path]] = []
+
+    def compare(
+        revisions: tuple[str, str],
+        names: object,
+        found: object,
+        arguments: object,
+        output: Path,
+    ) -> list[str]:
+        del names, found, arguments
+        compared.append((revisions, output))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        builds = [{"revision": each, "commit": each} for each in revisions]
+        output.write_text(json.dumps({"builds": builds}), encoding="utf-8")
+        return []
+
+    removed: list[str] = []
+
+    def git(*arguments: str) -> str:
+        if arguments[:2] == ("worktree", "remove"):
+            removed.append(Path(arguments[-1]).name)
+        return ""
+
+    monkeypatch.setattr(bench, "compared", compare)
+    monkeypatch.setattr(bench, "fixtures", dict)
+    monkeypatch.setattr(bench, "commit", lambda: tonight)
+    monkeypatch.setattr(bench, "git", git)
+    builds = tmp_path / "builds"
+    for name in (tonight, f"{tonight}-2", last):
+        (builds / name).mkdir(parents=True)
+    arguments = bench.Bench.model_construct(builds=builds)
+    nights = tmp_path / "nights"
+    # The first night builds its commit twice, which must name no change.
+    bench.nightly(arguments, nights)
+    today = nights / time.strftime("%Y-%m-%d") / "compare.json"
+    assert compared == [((tonight, tonight), today)]
+    assert sorted(removed) == sorted([f"{tonight}-2", last])
+    # A later night compares with the second build of the newest earlier night.
+    for night, commit in (("2026-11-14", older), ("2026-11-15", last)):
+        (nights / night).mkdir()
+        builds_then = [{"commit": "d" * 40}, {"commit": commit}]
+        written = json.dumps({"builds": builds_then})
+        (nights / night / "compare.json").write_text(written, encoding="utf-8")
+    compared.clear()
+    bench.nightly(arguments, nights)
+    assert compared == [((last, tonight), today)]
