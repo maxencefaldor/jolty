@@ -142,8 +142,10 @@ pub struct Excursion {
     pub device: usize,
     /// What left the domain.
     pub bound: Bound,
-    /// The domain's least and most value.
-    pub range: (f64, f64),
+    /// The domain's minimum.
+    pub minimum: f64,
+    /// The domain's maximum.
+    pub maximum: f64,
     /// The value furthest outside it.
     pub value: f64,
     /// The time it first left, in seconds; zero at an operating point.
@@ -409,7 +411,8 @@ impl Events {
         let excursion = self.excursions.entry((device, bound)).or_insert(Excursion {
             device,
             bound,
-            range,
+            minimum: range.0,
+            maximum: range.1,
             value,
             time,
             count: 0,

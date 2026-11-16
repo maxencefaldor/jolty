@@ -159,7 +159,7 @@ def test_the_yield_matches_an_independent_monte_carlo_run(
     estimate = report.passing.estimate
     error = math.sqrt(2 * independent * (1 - independent) / SAMPLES)
     assert abs(estimate - independent) <= 4 * error
-    assert report.passing.low <= independent <= report.passing.high
+    assert report.passing.lower <= independent <= report.passing.upper
     assert report.passing.met is (estimate >= 0.9)
 
 

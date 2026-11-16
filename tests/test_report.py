@@ -79,7 +79,7 @@ def test_a_response_states_magnitudes() -> None:
     response = results.AcResult(UNKNOWNS, "V1", np.array([1e3, 1e6]), values, point)
     summary = report.report("bode", response, max_unknowns=10)
     assert isinstance(summary, report.AcReport)
-    assert (summary.lowest, summary.highest, summary.frequencies) == (1e3, 1e6, 2)
+    assert (summary.start, summary.stop, summary.frequencies) == (1e3, 1e6, 2)
     assert [extent.maximum for extent in summary.magnitudes] == [1.0, 1.0, 1e-3]
     assert summary.describe().startswith(
         "bode: response to V1 at 2 frequencies from 1 kHz to 1 MHz"

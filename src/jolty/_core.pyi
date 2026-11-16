@@ -187,8 +187,8 @@ class Diagnostic(TypedDict):
 class Excursion(TypedDict):
     instance: str
     bound: Literal["input transition", "load", "supply"]
-    low: float
-    high: float
+    minimum: float
+    maximum: float
     value: float
     time: float
     count: int

@@ -677,13 +677,13 @@ def test_a_yield_of_nothing_or_everything_has_an_exact_end() -> None:
     specs = Specs([requirement])
     _, none = spread(specs, [(failed,)] * 2000)
     _, every = spread(specs, [(passed,)] * 2000)
-    assert none.low == 0.0
-    assert every.high == 1.0
+    assert none.lower == 0.0
+    assert every.upper == 1.0
     _, some = spread(specs, [(passed,)] * 37 + [(failed,)] * 163)
     z, n, p = 1.959963984540054, 200, 37 / 200
     centre = (p + z * z / (2 * n)) / (1 + z * z / n)
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
-    assert (some.low, some.high) == (
+    assert (some.lower, some.upper) == (
         pytest.approx(centre - half, rel=1e-14),
         pytest.approx(centre + half, rel=1e-14),
     )
@@ -700,7 +700,7 @@ def test_the_wilson_interval_is_the_yield_s_and_refuses_what_is_no_proportion() 
         verdict_of(requirement, point(1)),
     )
     _, some = spread(Specs([requirement]), [(passed,)] * 37 + [(failed,)] * 163)
-    assert wilson(37, 200) == (some.low, some.high)
+    assert wilson(37, 200) == (some.lower, some.upper)
     z, n, p = 1.959963984540054, 7, 3 / 7
     centre = (p + z * z / (2 * n)) / (1 + z * z / n)
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)

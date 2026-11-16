@@ -466,8 +466,8 @@ class Yield(BaseModel):
     samples: int
     passing: int = Field(description="Samples on which every requirement passed.")
     estimate: float = Field(description="The fraction of samples that pass.")
-    low: float = Field(description="The 95 % Wilson interval's lower end.")
-    high: float = Field(description="The 95 % Wilson interval's upper end.")
+    lower: float = Field(description="The 95 % Wilson interval's lower end.")
+    upper: float = Field(description="The 95 % Wilson interval's upper end.")
     target: float | None = Field(
         default=None, description="The specs' yield target; null for none."
     )
@@ -481,7 +481,7 @@ class Yield(BaseModel):
         """The yield as one line."""
         head = (
             f"yield: {self.passing} of {self.samples}, {100 * self.estimate:.4g} % "
-            f"(95 % interval {100 * self.low:.4g} to {100 * self.high:.4g} %)"
+            f"(95 % interval {100 * self.lower:.4g} to {100 * self.upper:.4g} %)"
         )
         if self.target is None:
             return head
@@ -507,8 +507,8 @@ def spread(
         samples=len(sampled),
         passing=passing,
         estimate=passing / len(sampled),
-        low=low,
-        high=high,
+        lower=low,
+        upper=high,
         target=specs.yield_target,
     )
 
@@ -656,8 +656,8 @@ def spread_of(
         samples=samples,
         passing=passing,
         estimate=passing / samples,
-        low=low,
-        high=high,
+        lower=low,
+        upper=high,
         target=specs.yield_target,
     )
 

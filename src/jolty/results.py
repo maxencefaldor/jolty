@@ -432,8 +432,8 @@ class Excursion(BaseModel):
     bound: Literal["input transition", "load", "supply"] = Field(
         description="What left the domain."
     )
-    low: float = Field(description="The domain's least value, in SI base units.")
-    high: float = Field(description="The domain's most value.")
+    minimum: float = Field(description="The domain's minimum, in SI base units.")
+    maximum: float = Field(description="The domain's maximum.")
     value: float = Field(description="The value furthest outside it.")
     time: float = Field(
         description="When it first left, in seconds; zero at an operating point."

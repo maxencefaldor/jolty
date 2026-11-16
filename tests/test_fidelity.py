@@ -168,7 +168,7 @@ def test_outside_validity() -> None:
     assert watched is not None
     (excursion,) = watched
     assert (excursion.instance, excursion.bound) == ("X1", "load")
-    assert excursion.value > excursion.high
+    assert excursion.value > excursion.maximum
     outside = fidelity.Outside(analysis="step", excursion=excursion)
     assert outside.describe().startswith("warn[outside-validity]: X1's load reads")
 

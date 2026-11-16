@@ -241,8 +241,8 @@ class AcReport(_Model):
     kind: Literal["ac"] = "ac"
     name: str
     source: str = Field(description="The excited source's path.")
-    lowest: float = Field(description="Lowest frequency, in hertz.")
-    highest: float = Field(description="Highest frequency, in hertz.")
+    start: float = Field(description="Lowest frequency, in hertz.")
+    stop: float = Field(description="Highest frequency, in hertz.")
     frequencies: int = Field(description="Frequencies the analysis solved.")
     magnitudes: tuple[Extent, ...] = Field(
         description="Magnitude of each unknown's phasor, from the lowest frequency "
@@ -255,7 +255,7 @@ class AcReport(_Model):
         head = (
             f"{self.name}: response to {self.source} at {self.frequencies} "
             "frequencies from "
-            f"{format_si(self.lowest, 'Hz')} to {format_si(self.highest, 'Hz')}, "
+            f"{format_si(self.start, 'Hz')} to {format_si(self.stop, 'Hz')}, "
             "magnitudes per unit excitation"
         )
         return _join(head, _extents(self.magnitudes), self.unlisted)
@@ -308,8 +308,8 @@ class StabilityReport(_Model):
     kind: Literal["stability"] = "stability"
     name: str
     probe: str = Field(description="The probe's path.")
-    lowest: float = Field(description="Lowest frequency, in hertz.")
-    highest: float = Field(description="Highest frequency, in hertz.")
+    start: float = Field(description="Lowest frequency, in hertz.")
+    stop: float = Field(description="Highest frequency, in hertz.")
     frequencies: int = Field(description="Frequencies the analysis solved.")
     gain: float = Field(description="The loop gain at the lowest frequency, in dB.")
     phase: float = Field(
@@ -329,7 +329,7 @@ class StabilityReport(_Model):
 
     def describe(self) -> str:
         """The report as text."""
-        lowest, highest = format_si(self.lowest, "Hz"), format_si(self.highest, "Hz")
+        lowest, highest = format_si(self.start, "Hz"), format_si(self.stop, "Hz")
         head = (
             f"{self.name}: loop gain through {self.probe} at {self.frequencies} "
             f"frequencies from {lowest} to {highest}"
@@ -414,8 +414,8 @@ class NoiseReport(_Model):
         description="The node the output voltage is over; null for the ground."
     )
     nature: Nature = Field(description="What the output is.")
-    lowest: float = Field(description="Lowest frequency, in hertz.")
-    highest: float = Field(description="Highest frequency, in hertz.")
+    start: float = Field(description="Lowest frequency, in hertz.")
+    stop: float = Field(description="Highest frequency, in hertz.")
     frequencies: int = Field(description="Frequencies the analysis solved.")
     first: float = Field(
         description="The output's noise density at the lowest frequency, in V/√Hz or "
@@ -446,7 +446,7 @@ class NoiseReport(_Model):
 
     def describe(self) -> str:
         """The report as text."""
-        lowest, highest = format_si(self.lowest, "Hz"), format_si(self.highest, "Hz")
+        lowest, highest = format_si(self.start, "Hz"), format_si(self.stop, "Hz")
         over = "" if self.reference is None else f" over {self.reference}"
         unit = _SYMBOLS[self.nature]
         head = (
@@ -937,8 +937,8 @@ def report(
             return AcReport(
                 name=name,
                 source=result.source,
-                lowest=float(result.frequencies[0]),
-                highest=float(result.frequencies[-1]),
+                start=float(result.frequencies[0]),
+                stop=float(result.frequencies[-1]),
                 frequencies=len(result.frequencies),
                 magnitudes=_extents_of(
                     unknowns, np.abs(result.values[:, :max_unknowns])
@@ -1094,8 +1094,8 @@ def _noise(name: str, result: results.NoiseResult, max_unknowns: int) -> NoiseRe
         output=result.output,
         reference=result.reference,
         nature=result.nature,
-        lowest=float(frequencies[0]),
-        highest=float(frequencies[-1]),
+        start=float(frequencies[0]),
+        stop=float(frequencies[-1]),
         frequencies=len(frequencies),
         first=math.sqrt(float(result.densities[order[0]])),
         last=math.sqrt(float(result.densities[order[-1]])),
@@ -1145,8 +1145,8 @@ def _stability(name: str, result: results.StabilityResult) -> StabilityReport:
     return StabilityReport(
         name=name,
         probe=result.probe,
-        lowest=float(result.frequencies[order[0]]),
-        highest=float(result.frequencies[order[-1]]),
+        start=float(result.frequencies[order[0]]),
+        stop=float(result.frequencies[order[-1]]),
         frequencies=len(result.frequencies),
         gain=float(20 * np.log10(np.abs(lowest))),
         phase=float(np.degrees(np.angle(lowest))),

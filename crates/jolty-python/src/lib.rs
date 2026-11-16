@@ -488,8 +488,8 @@ impl Simulator {
                 simulator.logic_devices()[excursion.device].path(),
             )?;
             item.set_item("bound", excursion.bound.name())?;
-            item.set_item("low", excursion.range.0)?;
-            item.set_item("high", excursion.range.1)?;
+            item.set_item("minimum", excursion.minimum)?;
+            item.set_item("maximum", excursion.maximum)?;
             item.set_item("value", excursion.value)?;
             item.set_item("time", excursion.time)?;
             item.set_item("count", excursion.count)?;
