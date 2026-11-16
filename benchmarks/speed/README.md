@@ -9,7 +9,9 @@ The benchmarks stay out of `scripts/check`, which must stay fast and determinist
 ```sh
 scripts/bench                      # the suite: a few minutes, before and after a change
 scripts/bench bjt_amp buck         # only these fixtures
-scripts/bench --scale              # the large fixtures, each run once, and spread over threads
+scripts/bench --compare main,HEAD  # the builds of main and HEAD, their runs alternating, a change named only where it is decided
+scripts/bench --nightly DIR        # the checked-out commit's build against the previous night's, kept in DIR
+scripts/bench --scale              # the large fixtures, serially and spread over threads, in rounds
 scripts/bench --scale --largest    # and the 50,000 inverters' chain on each number of threads too
 scripts/bench --view matched       # every simulator on the fixtures, at matched options
 scripts/bench --view defaults      # every simulator on them, each at its own defaults
@@ -19,11 +21,11 @@ scripts/bench --baseline COMMIT    # against COMMIT's times, rather than an ance
 scripts/bench --break-even min_unknowns_per_task  # from which size a threshold pays
 ```
 
-`scripts/bench` first checks that each fixture's files are what its script writes, then times the fixtures, writes the times to `results/<commit>.json`, and prints them against a baseline's, flagging every change over 5%.
-The baseline is the newest ancestor of the checked-out commit whose times `results/` holds, unless `--baseline` names a commit or a results file.
+`scripts/bench` first checks that each fixture's files are what its script writes, then times the fixtures, writes the times to `results/<commit>.json`, each with its runs, and prints them against a baseline's, each median with its 95% interval, naming a change only where the two intervals separate.
+The baseline is the newest ancestor of the checked-out commit whose times `results/` holds, unless `--baseline` names a commit or a results file; a time of a results file written before the runs were kept has no interval, so no change of it is named.
 A working tree with changes to tracked files writes `results/<commit>-dirty.json`, which is never taken as a baseline.
 A later run on the same commit adds its times to the file, so the suite, `--scale` and each view can each run once.
-To compare two commits, check out the older one, run the suite, then do the same on the newer one.
+The baseline ran at another time, under another load, so a change is decided by `--compare`, as [Deciding a change](#deciding-a-change) says.
 
 ## Fixtures
 
@@ -44,6 +46,32 @@ Run a script from the repository root after changing it, such as `uv run python 
 The MOSFETs of a level 1 model each add three unknowns of their own, the displacements of their Meyer capacitances, so the chains of 500, 5,000 and 50,000 inverters solve for 3,504, 35,004 and 350,004 unknowns; the sparse solver eliminates the displacements before it factors, so it factors 504, 5,004 and 50,004 of them, and, with the currents through the buck's switches' 0.01 Ω drain and source resistances eliminated too, the buck's 13 of its 23.
 The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.1 at the transient's 800 points or so, more than the 2 the engine allows by default.
 
+## Deciding a change
+
+`scripts/bench --compare A,B` times the builds of the revisions `A` and `B` against each other, the suite's fixtures or those named.
+Each revision is built once, by `uv sync`, in a worktree of its own in `--builds`, `target/builds/<commit>` by default, with a target directory of its own, and a second build of the same commit in `<commit>-2`.
+Each build runs in a process of its own interpreter, which imports the build's jolty, as `timing.py` says, and runs each fixture as the Python timing does, measuring each run by the wall clock and by the processor time of every thread of its process.
+For each time of the suite, the two builds' runs alternate, round after round, each round in the reverse order of the one before, so that neither always follows the other, and the load average is read as each round begins and as it ends.
+A first round warms both up and is discarded.
+
+Each time is the median of its rounds, with the interval that holds the true median with 95% confidence whatever the distribution of the runs: between the `k`-th smallest and the `k`-th largest run, `k` the largest rank whose binomial tails, of the runs on each side of the median, hold at most 5% together, as `measuring.rank` computes them exactly.
+Six runs are the fewest that have such an interval, the smallest and the largest of six holding the median with probability 1 − 2/2⁶, 96.9%, where five reach only 93.8%.
+A change is named only where the two builds' intervals separate.
+The resolution of a comparison is the least change at which the intervals would separate, the sum of their inner half-widths over the first build's median.
+
+The rounds go on until there are six of them and they have taken five seconds for each build, criterion's least time per benchmark, and then until the comparison is decided: the intervals separate, or the resolution is 5% or less, the change `AGENTS.md` asks every change to account for.
+They stop at `--most-rounds`, 24 unless given, four times the fewest, which about halves the intervals as they narrow with the square root of the runs; a comparison stopped there undecided is marked so.
+Only the intervals' widths stop the rounds, never the change itself, so stopping favours no verdict.
+
+The table gives each time's medians and intervals by the wall clock and of the processor, the change, the resolution, the verdict, and the rounds with the least and most load average around them; it is printed, and written to `results/<A>..<B>.md` beside the results file, `results/<A>..<B>.json`, which holds every run and each round's loads.
+The break-evens' sweeps and `--scale` run their settings in the same rounds, each compared with the serial run.
+
+### The nightly
+
+`scripts/bench --nightly DIR` compares the checked-out commit's build with the previous night's, the second build of the newest comparison in `DIR` but today's, as `--compare` does, and writes the comparison to `DIR/<date>/compare.json` and `compare.md`, beside the earlier nights'.
+On its first night it builds the commit twice, a comparison that must name no change.
+It then removes every build but tonight's, the next night's first.
+
 ## What the times measure
 
 | Time | What it measures |
@@ -52,14 +80,14 @@ The chains' plans let their results hold 4 GiB, as the 50,000 inverters' hold 2.
 | `rust/<fixture>/shared` | Criterion's median of a setup from the circuit elaborated once and shared, as each of many runs of one circuit makes it: its devices made again, and a run's buffers. |
 | `rust/<fixture>/run` | Criterion's median of a run: the setup, then every analysis of the plan in order. |
 | `rust/monte_carlo/<n> samples, <t> threads` | Criterion's median of the fixture's first `n` samples run as one batch, per sample: drawn from their indices and run on the circuit elaborated once, on a pool of `t` threads, for 1, 2, 4 and 8 threads and every core, as far as there are cores. |
-| `python/<fixture>` | The median of at least ten runs over at least five seconds, after one to warm up: the circuit, read once from its file, elaborated by `Simulation`, and every analysis run by `Simulation.run`, whose results are made as a script's are. An operating point and a transient also record the instances rated for a current or a power, which the checks read. |
+| `python/<fixture>` | The median of at least ten runs over at least five seconds, after one to warm up: the circuit, read once from its file, elaborated by `Simulation`, and every analysis run by `Simulation.run`, whose results are made as a script's are. An operating point and a transient also record the instances rated for a current or a power, which the checks read. Each run's wall and processor seconds are kept, and the load average as the runs began and ended. |
 | `python/monte_carlo/<n> samples, one core`, `..., every core` | The time per sample of the fixture's first `n` samples, run as the runner runs them, as one batch of `Simulation.batch` on the circuit elaborated once, each sample drawn by the engine from its index, the one elaboration counted: on a pool of one thread, and of a thread per core. The suite runs the first 1,000, and `--scale` all of them, on every core. |
 | `<view>/jolty/<fixture>` | In the view `matched` or `defaults`, the median of at least ten runs over at least five seconds, after one to warm up, of the fixture's circuit elaborated by `Simulation` and every analysis run by `Simulation.run`, at the view's options. |
 | `<view>/ngspice-sparse/<fixture>`, `<view>/ngspice-klu/<fixture>` | The same of ngspice 47 in batch mode on the fixture's netlist as jolty writes it, with Sparse 1.3 or with KLU, its analyses run in turn in one ngspice, saving two nets at each end of the circuit's top: from its start to its exit, so its start-up and the parsing of its netlist count. |
 | `<view>/xyce-serial/<fixture>`, `<view>/xyce-mpi/<n> ranks/<fixture>` | The same of Xyce on the fixture's netlist in Xyce's dialect, each analysis in an Xyce of its own, printing the same nets: from its start to its exit, summed over the analyses; serially, or by its parallel build on `n` MPI ranks. |
 | `<view>/.../analysis` | The same runs' time in their analyses alone: jolty's `Simulation.run`, the engine's work and its results made in Python, its elaboration left out; ngspice's "Total analysis time" of `rusage`; Xyce's "Total Simulation Solvers Run Time", summed over the analyses. |
 
-Criterion takes ten samples of each benchmark over five seconds, each sample one run or more, after a second of warming up.
+Criterion takes ten samples of each benchmark over five seconds, each sample one run or more, after a second of warming up; each sample's time per run is kept as a run's, the median of which is criterion's own.
 The Python timings follow the same protocol, and so do the views'.
 Beside the times, the suite runs each fixture with a transient once more with the option `profile` on, and writes the transient's statistics' `work` and `profile`: its Newton iterations and factorizations, and where its time went.
 
@@ -109,7 +137,7 @@ A sample costs less than `bjt_amp`'s own run: Newton iteration alone finds 196 o
 The suite took 3 min 14 s, the benchmarks already built, and the `--scale` run 13 min 53 s.
 Run six times over an hour on the same engine, three times at this commit and three at an earlier one that differs only in `perf/`, each time but two spread by at most 5.6% from its fastest run to its slowest: `rc_mesh_100`'s Rust run by 9.8%, and the Monte Carlo samples on every core, which compete with every other program for the cores, by 19%.
 The baseline's own run was among the slower: the last run at this commit was faster in every time, by 0.6% to 4.4% but for those two.
-On a machine shared with other work, a change of a few percent is within the noise; the comparison flags those over 5%.
+On a machine shared with other work, a change of a few percent is within the noise, which is why a change is named only where two intervals separate, and decided by `--compare`.
 
 The engine is built twice from the same code, into the benchmark and into the Python extension, and the two builds differ: `buck`'s run takes 6% to 9% longer in the benchmark's.
 So each kind of time is compared only with its own.
@@ -147,9 +175,9 @@ A run spreads each kind of its work over the engine's threads in tasks of at lea
 
 `scripts/bench --break-even NAME` measures from which size of circuit setting the threshold `NAME` makes one run faster than running it serially.
 It sweeps circuits of the fixtures' scripts at several sizes: chains of inverters and meshes for the three thresholds a transient reads, and `ac_wide`'s response at fewer frequencies a decade for `min_solves_per_task`.
-Each circuit runs its fixtures' plan serially, on one thread with every threshold set to spread none of its work, a task of all of its solves, devices or unknowns and interiors as large as the circuit, and with the threshold set and the others still spreading none, on 2, 4 and 8 threads and every core, one after another, round after round, each round in the reverse order of the one before, until there are three rounds at least and they have taken five seconds for each.
+Each circuit runs its fixtures' plan serially, on one thread with every threshold set to spread none of its work, a task of all of its solves, devices or unknowns and interiors as large as the circuit, and with the threshold set and the others still spreading none, on 2, 4 and 8 threads and every core, in the rounds of [Deciding a change](#deciding-a-change), each spread run compared with the serial run.
 Alternating the order keeps any run from always following the same one: on `cedar`, the median of a serial run of the mesh of 50 a side was 261 ms when it always followed one on 64 threads and 225 ms when it followed one on 2, though none dissected the mesh.
-Each time is the median of its rounds, printed beside the load average as they began and as they ended.
+Each time is the median of its rounds, printed beside the number of rounds and the least and most load average around them, and each spread run's change marked `<` where its interval lies below the serial run's, `>` above, and `?` where the two neither separate nor resolve 5%.
 A run with the threshold set must find the bits of the serial run, or the sweep stops, but for a dissection: its interiors, of a size for each number of threads, order the factorization otherwise.
 `--sizes` and `--threads` sweep other sizes and threads, and naming a script, such as `inverter_chain`, sweeps its circuits alone.
 
@@ -162,7 +190,7 @@ On each number of threads, the threshold is set at each size so that it spreads 
 | `max_unknowns_per_interior` | its unknowns over the threads, rounded up | its matrix's block is dissected into an interior a thread or more, where that costs fewer multiply-adds than the minimum degree |
 | `min_solves_per_task` | its solves, its frequencies but the first, over the threads, rounded down | its frequencies are solved in a task a thread |
 
-The break-even on a number of threads is the smallest size measured from which setting the threshold made every run faster.
+The break-even on a number of threads is the smallest size measured from which setting the threshold made every run faster, its interval below the serial run's.
 Its value is the value the threshold was set to there: a task's solves, devices or unknowns, or an interior's most unknowns.
 Set to it, a threshold of tasks spreads a circuit of that size over every thread in tasks as large as there, and a larger one in tasks as large or larger, but spreads none of a smaller one's work, which would make fewer tasks than threads, an arrangement the sweep does not measure; an interior's most unknowns dissects a smaller circuit's block into fewer interiors than threads, where that still costs fewer multiply-adds.
 
@@ -222,7 +250,7 @@ On 64 threads a chain's devices and its work on each unknown stay on one thread,
 
 ### Scaling
 
-`scripts/bench --scale` runs each large fixture once serially, on one thread with no block of its matrix dissected, and then once with its plan's options, every setting of `Parallelism` at its default, on 1, 2, 4 and 8 threads and every core.
+`scripts/bench --scale` runs each large fixture serially, on one thread with no block of its matrix dissected, and with its plan's options, every setting of `Parallelism` at its default, on 1, 2, 4 and 8 threads and every core, in the rounds of [Deciding a change](#deciding-a-change), each compared with the serial run.
 The runs of `inverter_chain_50000` took 17 minutes on 12 cores of an Apple M2 Max, so it runs them only with `--largest`, and else once at the defaults; `--threads` names other numbers of threads.
 It prints each run's time, its speed-up against the serial run and against the spread run on one thread, and its results' fingerprint, the first 16 hexadecimal digits of the SHA-256 of their arrays.
 The spread runs must find the bits of the serial run, or it stops, unless the circuit has more unknowns than the least of the interiors' break-evens, so that its ordering may dissect a block, otherwise on each number of threads.

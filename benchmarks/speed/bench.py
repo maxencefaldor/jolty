@@ -9,13 +9,18 @@ and end to end in Python, each fixture's circuit read from its file and its plan
 analyses run through ``Simulation.run``. A Monte Carlo fixture runs its first samples
 as the runner does, as one batch of the circuit elaborated once, on one thread and on a
 thread per core. It writes the times to ``benchmarks/speed/results/<commit>.json``,
-adding to what an earlier run on the same commit wrote, and prints them against a
-baseline's, flagging every change over 5 %.
+adding to what an earlier run on the same commit wrote, each time with its runs, and
+prints them against a baseline's, each median with its 95 % interval, naming a change
+only where the two intervals separate.
 
 Usage::
 
     scripts/bench [FIXTURE ...]       the suite's fixtures, or those named
-    scripts/bench --scale             the large fixtures, each run once in Python
+    scripts/bench --compare A,B       the builds of revisions A and B, their runs of
+                                      the suite alternating round after round
+    scripts/bench --nightly DIR       the checked-out commit's build against the
+                                      previous night's, kept in DIR
+    scripts/bench --scale             the large fixtures, serially and spread, in rounds
     scripts/bench --scale --largest   and the 50,000 inverters' chain on each too
     scripts/bench --view matched      every simulator on the fixtures, options matched
     scripts/bench --view defaults     every simulator on them, each at its defaults
@@ -31,13 +36,21 @@ Usage::
 
 Without ``--baseline``, the baseline is the newest ancestor of the checked-out commit
 whose results ``benchmarks/speed/results`` holds. A working tree with changes to
-tracked files writes ``<commit>-dirty.json``, which is never taken as a baseline.
+tracked files writes ``<commit>-dirty.json``, which is never taken as a baseline. The
+baseline was measured at another time, under another load, so a change is decided by
+``--compare`` instead: each revision built once in a worktree of its own, in
+``--builds``, and its runs made by a process of its build's interpreter,
+``benchmarks/speed/timing.py``, the two builds' runs of each time `alternated` round
+after round until each comparison is decided, and printed and written beside its
+results file as a table, wall and processor times apart. ``--nightly`` does the same
+for the checked-out commit against the previous night's, in a directory of its own.
 
 ``--scale`` runs each large fixture serially, on one thread with no block of its matrix
 dissected, then on 1, 2, 4, 8 threads and every core with the default ``Parallelism``,
-every threshold at its break-even, and prints the speed-ups and its results'
-fingerprint, which must be the same on every number of threads; it runs the 50,000
-inverters' chain so only with ``--largest``, and else once with the defaults.
+every threshold at its break-even, in `alternated` rounds, and prints the speed-ups and
+its results' fingerprint, which must be the same on every number of threads; it runs
+the 50,000 inverters' chain so only with ``--largest``, and else once with the
+defaults.
 
 ``--view`` times every simulator instead, the owner's three views of them: jolty,
 ngspice with Sparse 1.3 and with KLU, and Xyce, each installed, or those ``--simulator``
@@ -54,8 +67,9 @@ digits of each fixture's exact answer.
 ``--break-even`` measures instead from which size of circuit setting one threshold of
 ``Parallelism`` makes one run faster than running it serially, on 2, 4, 8 threads and
 every core: on circuits of the fixtures' scripts at several sizes, each run serially and
-with the threshold set and the others spreading nothing, interleaved, and that size's
-value of the threshold, its break-even.
+with the threshold set and the others spreading nothing, in `alternated` rounds, and
+that size's value of the threshold, its break-even, from which every spread run's
+interval lay below the serial run's.
 ``benchmarks/speed/README.md`` says how it sets each threshold, and what it found.
 
 ``--robustness`` runs instead the corpus of hard circuits of ``benchmarks/robustness``,
@@ -137,6 +151,7 @@ from timing import (
     Run,
     clocked,
     load_fixture,
+    planned,
     run,
     scripts,
     work,
@@ -310,7 +325,6 @@ def fixtures() -> dict[str, Fixture]:
     Raises:
         SystemExit: When a fixture's files are not what its script writes.
     """
-    found: dict[str, Fixture] = {}
     stale: list[str] = []
     for script in scripts():
         for name, top in script.circuits().items():
@@ -318,12 +332,12 @@ def fixtures() -> dict[str, Fixture]:
             path = CIRCUITS / f"{name}.json"
             if not path.is_file() or path.read_text(encoding="utf-8") != written:
                 stale.append(f"{path.relative_to(ROOT)} ({script.__name__}.py)")
-        for name, fixture in script.fixtures().items():
-            written = json.dumps(engine_plan(fixture), indent=2) + "\n"
-            path = PLANS / f"{name}.json"
-            if not path.is_file() or path.read_text(encoding="utf-8") != written:
-                stale.append(f"{path.relative_to(ROOT)} ({script.__name__}.py)")
-            found[name] = fixture
+    found = planned()
+    for name, fixture in found.items():
+        written = json.dumps(engine_plan(fixture), indent=2) + "\n"
+        path = PLANS / f"{name}.json"
+        if not path.is_file() or path.read_text(encoding="utf-8") != written:
+            stale.append(f"{path.relative_to(ROOT)}")
     if stale:
         message = "these files are not what their scripts write; run the scripts:\n"
         raise SystemExit(message + "\n".join(f"  {each}" for each in stale))
@@ -592,8 +606,8 @@ def profiles(
         print(f"profiling {name}", flush=True)
         simulation = Simulation(loaded.circuit)
         options = dataclasses.replace(loaded.plan.options, profile=True)
-        for analysis, planned in loaded.plan.analyses.items():
-            result = simulation.run(planned, options)
+        for analysis, asked in loaded.plan.analyses.items():
+            result = simulation.run(asked, options)
             if not isinstance(result, results.TransientResult):
                 continue
             work, profile = result.statistics.work, result.statistics.profile
@@ -1462,7 +1476,8 @@ class Bench(cli.CommandLine):
         default=False,
         description=(
             "With --scale, run the 50,000 inverters' chain serially and on each "
-            "number of threads too: 17 minutes more on 12 cores."
+            "number of threads too, in rounds: once each took 17 minutes on 12 "
+            "cores."
         ),
     )
     sizes: list[int] = Field(
