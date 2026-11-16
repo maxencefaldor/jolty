@@ -127,7 +127,8 @@ include = ["src", "tests", "examples", "docs", "benchmarks", "discovery"]
 # agents' benchmark's scripts, which import each other, as their runs do, the
 # discoveries the parts the examples share, `examples/common.py`, as their scripts do,
 # and every other suite the measuring helpers and runners of `benchmarks/`, and its own
-# modules beside it: the speed suite's fixtures' scripts what they share,
+# modules beside it: the speed suite its timing, `benchmarks/speed/timing.py`, which its
+# tests import too, and its fixtures' scripts what they share,
 # `benchmarks/speed/circuits/fixture.py`, the corpus of hard circuits
 # `benchmarks/robustness/corpus.py` and those beside it, the precision suite its
 # modules, and the coverage matrix `benchmarks/coverage/matrix.py` and those beside it.
@@ -136,6 +137,7 @@ extra-paths = [
     "benchmarks/agents",
     "examples",
     "benchmarks",
+    "benchmarks/speed",
     "benchmarks/speed/circuits",
     "benchmarks/robustness",
     "benchmarks/precision",
@@ -155,10 +157,12 @@ patch = ["subprocess"]
 testpaths = ["src", "tests"]
 # The tests share harness modules, `differential` and `strategies`, which they import
 # from there, and import the suites' measuring helpers and runners from `benchmarks`,
-# and the corpus of hard circuits' modules and the coverage matrix's from beside them.
+# and the speed suite's timing, the corpus of hard circuits' modules and the coverage
+# matrix's from beside them.
 pythonpath = [
     "tests",
     "benchmarks",
+    "benchmarks/speed",
     "benchmarks/robustness",
     "benchmarks/coverage",
 ]
