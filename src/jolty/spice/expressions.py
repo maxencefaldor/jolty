@@ -136,6 +136,18 @@ type Expression = (
     Number | Name | Voltage | Current | Call | Unary | Binary | Conditional
 )
 
+
+@dataclass(frozen=True, slots=True)
+class Function:
+    """A user's function, SPICE's ``.func``: its parameters and its body.
+
+    The parameters are case-folded names, which the body, an expression, reads.
+    """
+
+    parameters: tuple[str, ...]
+    body: Expression
+
+
 _TOKEN: Final = re.compile(
     r"\s*(?:(?P<number>(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?[a-z]*)"
     r"|(?P<name>[a-z_][a-z0-9_.$]*)"
@@ -298,6 +310,82 @@ class _Parser:
             arguments.append(self.conditional())
         self.expect(")")
         return Call(function, tuple(arguments))
+
+
+def inlined(
+    expression: Expression,
+    functions: Mapping[str, Function],
+    calling: tuple[str, ...] = (),
+) -> Expression:
+    """`expression` with each call of one of the user's `functions` written out.
+
+    A call becomes its function's body, the function's parameters replaced by the
+    call's arguments, within the functions `calling`. A function may call another, but
+    none itself, directly or through others.
+
+    Examples:
+        >>> twice = Function(("x",), parse("2 * x"))
+        >>> inlined(parse("twice(twice(y)) + 1"), {"twice": twice})
+        Binary(operator='+', left=Binary(operator='*', left=Number(value=2.0), \
+right=Binary(operator='*', left=Number(value=2.0), right=Name(name='y'))), \
+right=Number(value=1.0))
+
+    Raises:
+        SpiceError: When a function calls itself, naming the functions through which,
+            or a call gives a function another number of arguments than it takes.
+    """
+
+    def inner(part: Expression) -> Expression:
+        return inlined(part, functions, calling)
+
+    match expression:
+        case Call(function, arguments) if function in functions:
+            if function in calling:
+                cycle = " calls ".join(
+                    f"`{name}`"
+                    for name in (*calling[calling.index(function) :], function)
+                )
+                message = f"a function calls itself: {cycle}"
+                raise SpiceError(message)
+            defined = functions[function]
+            if len(arguments) != len(defined.parameters):
+                message = (
+                    f"`{function}` takes {len(defined.parameters)} arguments, not "
+                    f"{len(arguments)}"
+                )
+                raise SpiceError(message)
+            given = dict(zip(defined.parameters, map(inner, arguments), strict=True))
+            body = _substituted(defined.body, given)
+            return inlined(body, functions, (*calling, function))
+        case Call(function, arguments):
+            return Call(function, tuple(map(inner, arguments)))
+        case Unary(operator, operand):
+            return Unary(operator, inner(operand))
+        case Binary(operator, left, right):
+            return Binary(operator, inner(left), inner(right))
+        case Conditional(condition, then, otherwise):
+            return Conditional(inner(condition), inner(then), inner(otherwise))
+    return expression
+
+
+def _substituted(expression: Expression, given: Mapping[str, Expression]) -> Expression:
+    """`expression` with each name `given` replaced by the expression it is given."""
+
+    def inner(part: Expression) -> Expression:
+        return _substituted(part, given)
+
+    match expression:
+        case Name(name) if name in given:
+            return given[name]
+        case Call(function, arguments):
+            return Call(function, tuple(map(inner, arguments)))
+        case Unary(operator, operand):
+            return Unary(operator, inner(operand))
+        case Binary(operator, left, right):
+            return Binary(operator, inner(left), inner(right))
+        case Conditional(condition, then, otherwise):
+            return Conditional(inner(condition), inner(then), inner(otherwise))
+    return expression
 
 
 _CONSTANTS: Final = {

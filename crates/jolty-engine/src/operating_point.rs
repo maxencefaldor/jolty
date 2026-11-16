@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 use std::sync::Arc;
 
-use jolty_models::{Input, LogicLevel, Nature};
+use jolty_models::{Input, LogicLevel, Nature, UnknownIndex};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
@@ -24,7 +24,7 @@ use crate::logic::{Events, ExcursionKind, detected};
 use crate::newton::{Failure, Mode, NAMED_UNKNOWNS};
 use crate::solver::Solver;
 use crate::state::{Held, Warm};
-use crate::{Options, ParameterId, RecordedValues, SimulationError, Simulator, Values};
+use crate::{Options, ParameterId, Partition, RecordedValues, SimulationError, Simulator, Values};
 
 /// The largest conductance gmin stepping starts from, in siemens.
 const FIRST_STEPPED: f64 = 1e-2;
@@ -95,6 +95,18 @@ pub(crate) struct Solved {
     /// Whether Newton iteration alone found it from the guess it started from, in its
     /// `iterations`.
     pub(crate) from_guess: bool,
+}
+
+/// The nets of one set of voltages, such as a transient's initial conditions, as a DC
+/// solution forces them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Forcing {
+    /// Each net forced, by its node's unknown, and its voltage.
+    pub(crate) forced: Vec<(UnknownIndex, f64)>,
+    /// Each net left free, by its node's unknown, and the voltage asked of it: one that
+    /// voltage sources and inductors join to the reference, or to a net forced before it,
+    /// so that they fix its voltage.
+    pub(crate) fixed: Vec<(UnknownIndex, f64)>,
 }
 
 /// The last operating point the simulator solved, what it solved it under, and the state
@@ -356,7 +368,133 @@ impl Simulator {
         if let Some(warm) = self.state.warm.take() {
             return self.solve_warm(warm, options);
         }
-        self.solve_dc(vec![0.0; self.elaborated.unknowns.len()], options)
+        let [nodesets] = self.forcings([(&options.nodesets, "nodeset")])?;
+        self.solve_forced(&[], &nodesets.forced, options)
+    }
+
+    /// Each set of `voltages`, by net name, as a DC solution forces it, the sets in
+    /// order and each set's nets in the order of their names: a net is forced unless
+    /// the circuit's voltage sources and inductors join it to the reference, or to a net
+    /// forced before it, which they fix it against, so that no two ideal sources hold one
+    /// voltage; each set is named, such as `nodeset`, by its `what`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::InvalidAnalysis`] when a set names something other than
+    /// a net of the circuit, or a voltage that is not finite.
+    pub(crate) fn forcings<const N: usize>(
+        &self,
+        sets: [(&BTreeMap<String, f64>, &str); N],
+    ) -> Result<[Forcing; N], SimulationError> {
+        let nodes = self.elaborated.node_diagonals.len();
+        let reference = nodes;
+        let mut partition = Partition::new(nodes + 1);
+        let end = |node: jolty_models::Node| node.map_or(reference, UnknownIndex::index);
+        for device in &self.elaborated.devices {
+            let ends = device.nodes();
+            for branch in device.branches() {
+                if branch.kind.fixes_dc_voltage() {
+                    partition.union(end(ends[branch.from]), end(ends[branch.to]));
+                }
+            }
+        }
+        let mut forcings = std::array::from_fn(|_| Forcing::default());
+        for ((voltages, what), forcing) in sets.into_iter().zip(&mut forcings) {
+            for (name, &voltage) in voltages {
+                let index = self
+                    .unknown(name)
+                    .filter(|unknown| {
+                        unknown.index() < nodes
+                            && self.elaborated.natures[unknown.index()] == Nature::Voltage
+                    })
+                    .ok_or_else(|| {
+                        SimulationError::InvalidAnalysis(format!(
+                            "the {what} names `{name}`, which is no net of the circuit"
+                        ))
+                    })?;
+                if !voltage.is_finite() {
+                    return Err(SimulationError::InvalidAnalysis(format!(
+                        "the {what} of `{name}` is {voltage:?} V, not a finite voltage"
+                    )));
+                }
+                if partition.union(index.index(), reference) {
+                    forcing.forced.push((index, voltage));
+                } else {
+                    forcing.fixed.push((index, voltage));
+                }
+            }
+        }
+        Ok(forcings)
+    }
+
+    /// The DC solution from zero with the nets `held` forced throughout, as a transient's
+    /// initial conditions hold theirs: solved first with the nets `released` forced
+    /// besides, as SPICE's nodesets, then, if there are any, again from there without
+    /// them, as SPICE releases its nodesets once the circuit converges with them, or from
+    /// zero where the circuit has no solution with them. The nets stay forced as `held`
+    /// says when it returns, for the logic to settle with.
+    pub(crate) fn solve_forced(
+        &mut self,
+        held: &[(UnknownIndex, f64)],
+        released: &[(UnknownIndex, f64)],
+        options: &Options,
+    ) -> Result<Solved, SimulationError> {
+        let zero = vec![0.0; self.elaborated.unknowns.len()];
+        if released.is_empty() {
+            self.state.forced = held.to_vec();
+            return self.solve_dc(zero, options);
+        }
+        let before = self.state.workspace.meter.iterations();
+        self.state.forced = [held, released].concat();
+        let guess = self.solve_dc(zero.clone(), options);
+        self.state.forced = held.to_vec();
+        let solved = self.solve_dc(guess.map_or(zero, |solved| solved.values), options)?;
+        Ok(Solved {
+            iterations: self.iterations_since(before),
+            from_guess: false,
+            ..solved
+        })
+    }
+
+    /// The operating point a transient starts from: the circuit solved from zero with the
+    /// nets of `initial` forced, after the nodesets of `options` released, and the logic
+    /// settled with it, the nets still forced. It is not remembered, as no other analysis
+    /// starts from it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::InvalidAnalysis`] when an initial condition names no
+    /// net, or one the voltage sources and inductors that fix it hold elsewhere, by more
+    /// than the tolerances, and the errors of [`Simulator::operating_point`].
+    pub(crate) fn forced_operating_point(
+        &mut self,
+        initial: &BTreeMap<String, f64>,
+        options: &Options,
+    ) -> Result<OperatingPointResult, SimulationError> {
+        let [initial, nodesets] = self.forcings([
+            (initial, "initial condition"),
+            (&options.nodesets, "nodeset"),
+        ])?;
+        self.state.solves += 1;
+        self.reset_logic();
+        let point = self
+            .solve_forced(&initial.forced, &nodesets.forced, options)
+            .and_then(|solved| self.settle(solved, options));
+        self.state.forced.clear();
+        let point = point?;
+        for &(unknown, voltage) in &initial.fixed {
+            let found = point.values[unknown.index()];
+            let tolerance = options.relative_tolerance * found.abs().max(voltage.abs())
+                + options.voltage_tolerance;
+            if (found - voltage).abs() > tolerance {
+                let name = &self.elaborated.unknowns[unknown.index()].name;
+                return Err(SimulationError::InvalidAnalysis(format!(
+                    "the initial condition of `{name}` is {voltage:?} V, but the voltage \
+                     sources and inductors that fix it hold it at {found:?} V"
+                )));
+            }
+        }
+        Ok(point)
     }
 
     /// The DC solution of a run of a chain, from `warm`, the operating point of the run

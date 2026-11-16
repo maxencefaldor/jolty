@@ -8,11 +8,17 @@
 //! - `sine`: `offset`, `amplitude`, `frequency`, `delay` (default 0), `damping` (default 0) and
 //!   `phase` in radians (default 0).
 //! - `piecewise`: `points`, a list of `[time, level]` pairs in increasing time.
+//! - `exponential`: `initial`, `pulsed`, `rise_delay` (default 0), `rise_time_constant`,
+//!   `fall_delay` and `fall_time_constant`.
 //!
 //! Times are in seconds, frequencies in hertz and damping in inverse seconds. A sine is
 //! `offset + amplitude · e^{-damping·s} · sin(2π·frequency·s + phase)`, where `s` is the time since
 //! its delay, and holds its value at `s = 0` before the delay. A piecewise waveform draws
-//! straight lines between its points and holds its first and last levels outside them.
+//! straight lines between its points and holds its first and last levels outside them. An
+//! exponential waveform is SPICE's `EXP` (ngspice 47 manual, §4.1.3): it holds `initial` until
+//! its rise delay, rises toward `pulsed` from then, `initial + (pulsed − initial)(1 −
+//! e^{−(t − rise_delay)/rise_time_constant})`, and from its fall delay on adds the fall back
+//! toward `initial`, `(initial − pulsed)(1 − e^{−(t − fall_delay)/fall_time_constant})`.
 
 use std::f64::consts::TAU;
 
@@ -52,6 +58,8 @@ enum Shape<R: Real> {
         /// Each point's time and level, in strictly increasing time; at least one.
         points: Vec<(R, R)>,
     },
+    /// A rise toward a level and a fall back, each exponential, as SPICE's `EXP`.
+    Exponential(Exponential<R>),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
@@ -96,6 +104,24 @@ struct Sine<R: Real> {
     phase: R,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields, bound = "")]
+struct Exponential<R: Real> {
+    /// The level before the rise delay.
+    initial: R,
+    /// The level the rise tends to.
+    pulsed: R,
+    /// The time the rise starts, in seconds.
+    #[serde(default)]
+    rise_delay: R,
+    /// The rise's time constant, in seconds; positive.
+    rise_time_constant: R,
+    /// The time the fall starts, in seconds; at or after the rise delay.
+    fall_delay: R,
+    /// The fall's time constant, in seconds; positive.
+    fall_time_constant: R,
+}
+
 impl<R: Real> TryFrom<Shape<R>> for Waveform<R> {
     type Error = ParameterError;
 
@@ -119,6 +145,26 @@ impl<R: Real> TryFrom<Shape<R>> for Waveform<R> {
             Shape::Sine(sine) => {
                 ParameterError::non_negative("sine frequency", sine.frequency)?;
                 ParameterError::non_negative("sine delay", sine.delay)?;
+            }
+            Shape::Exponential(exponential) => {
+                ParameterError::non_negative("exponential rise delay", exponential.rise_delay)?;
+                ParameterError::positive(
+                    "exponential rise time constant",
+                    exponential.rise_time_constant,
+                )?;
+                ParameterError::positive(
+                    "exponential fall time constant",
+                    exponential.fall_time_constant,
+                )?;
+                let (rise, fall) = (
+                    exponential.rise_delay.value(),
+                    exponential.fall_delay.value(),
+                );
+                if fall < rise {
+                    return Err(ParameterError(format!(
+                        "exponential fall delay {fall:?} is before its rise delay, {rise:?}"
+                    )));
+                }
             }
             Shape::Piecewise { points } => {
                 if points.is_empty() {
@@ -157,6 +203,7 @@ impl<R: Real> Waveform<R> {
             Shape::Pulse(pulse) => pulse.value(time),
             Shape::Sine(sine) => sine.value(time),
             Shape::Piecewise { points } => piecewise(points, time),
+            Shape::Exponential(exponential) => exponential.value(time),
         }
     }
 
@@ -193,6 +240,13 @@ impl<R: Real> Waveform<R> {
                     push(time.value());
                 }
             }
+            Shape::Exponential(exponential) => {
+                for delay in [exponential.rise_delay, exponential.fall_delay] {
+                    if delay.value() > 0.0 {
+                        push(delay.value());
+                    }
+                }
+            }
         }
     }
 }
@@ -224,6 +278,24 @@ impl<R: Real> Sine<R> {
         let since = (-(self.delay - time)).max(R::constant(0.0));
         let envelope = (-self.damping * since).exp();
         self.offset + self.amplitude * envelope * (self.frequency * TAU * since + self.phase).sin()
+    }
+}
+
+impl<R: Real> Exponential<R> {
+    /// The level at `time`, as ngspice 47's `vsrcload.c` computes it: the initial level up
+    /// to the rise delay, the rise after it, and the rise and the fall after the fall delay.
+    fn value(&self, time: f64) -> R {
+        if time <= self.rise_delay.value() {
+            return self.initial;
+        }
+        let swing = self.pulsed - self.initial;
+        let rising = ((self.rise_delay - time) / self.rise_time_constant).exp();
+        let risen = self.initial + swing * (R::constant(1.0) - rising);
+        if time <= self.fall_delay.value() {
+            return risen;
+        }
+        let falling = ((self.fall_delay - time) / self.fall_time_constant).exp();
+        risen - swing * (R::constant(1.0) - falling)
     }
 }
 
@@ -297,6 +369,23 @@ mod tests {
     }
 
     #[test]
+    fn an_exponential_holds_rises_and_falls_as_spice_writes_it() {
+        let wave = read(
+            r#"{"exponential": {"initial": 1, "pulsed": 3, "rise_delay": 1,
+                "rise_time_constant": 2, "fall_delay": 5, "fall_time_constant": 4}}"#,
+        )
+        .unwrap();
+        let risen = |t: f64| 1.0 + 2.0 * (1.0 - (-(t - 1.0) / 2.0).exp());
+        assert!(close(wave.value(0.5), 1.0));
+        assert!(close(wave.value(3.0), risen(3.0)));
+        let fallen = risen(7.0) - 2.0 * (1.0 - (-(7.0 - 5.0) / 4.0).exp());
+        assert!(close(wave.value(7.0), fallen));
+        let mut times = Vec::new();
+        wave.breakpoints(0.0, 10.0, &mut times);
+        assert_eq!(times, [1.0, 5.0]);
+    }
+
+    #[test]
     fn rejects_impossible_waveforms_as_they_are_read() {
         let short_period = PULSE.replace(r#""width": 3"#, r#""width": 3, "period": 5"#);
         let error = read(&short_period).unwrap_err().to_string();
@@ -307,5 +396,16 @@ mod tests {
         assert!(read(r#"{"piecewise": {"points": [[1, 0], [1, 2]]}}"#).is_err());
         assert!(read(r#"{"piecewise": {"points": []}}"#).is_err());
         assert!(read(r#"{"square": 1}"#).is_err());
+        let early = r#"{"exponential": {"initial": 0, "pulsed": 1, "rise_delay": 2,
+            "rise_time_constant": 1, "fall_delay": 1, "fall_time_constant": 1}}"#;
+        let error = read(early).unwrap_err().to_string();
+        assert!(
+            error.starts_with("exponential fall delay 1.0 is before its rise delay, 2.0"),
+            "{error}"
+        );
+        assert!(
+            read(&early.replace(r#""rise_time_constant": 1"#, r#""rise_time_constant": 0"#))
+                .is_err()
+        );
     }
 }

@@ -13,6 +13,7 @@ the devices, the waveforms and the numerics against the reference simulator.
 
 import math
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Final, Literal
@@ -43,12 +44,15 @@ from jolty import (
     Stability,
     TransferFunction,
     Transient,
+    _core,
     component,
     devices,
+    files,
     results,
     spice,
 )
 from jolty.plan import TIGHT, decade, linear
+from jolty.spice.export import node_voltages
 from jolty.units import (
     A,
     F,
@@ -86,7 +90,7 @@ from jolty.units import (
     uS,
     us,
 )
-from jolty.waveforms import Piecewise, Pulse, Sine
+from jolty.waveforms import Exponential, Piecewise, Pulse, Sine
 
 pytestmark = SKIP
 
@@ -109,6 +113,26 @@ def low_pass(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(1 * us, 0 * V), (1 * us + 10 * ns, 1 * V)])
     source = c.place(devices.voltage_source(step), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
+    c.connect(source.positive, resistor.a, name="in")
+    c.connect(resistor.b, capacitor.a, name="out")
+    c.connect(capacitor.b, source.negative, ground)
+
+
+@component
+def exponential(c: Builder) -> None:
+    """An RC driven by SPICE's ``EXP``: a rise at 1 µs and a fall back from 5 µs."""
+    ground = c.port("ground", Role.GROUND)
+    rise_and_fall = Exponential(
+        initial=0.5 * V,
+        pulsed=2 * V,
+        rise_delay=1 * us,
+        rise_time_constant=0.5 * us,
+        fall_delay=5 * us,
+        fall_time_constant=1 * us,
+    )
+    source = c.place(devices.voltage_source(rise_and_fall), name="V1")
     resistor = c.place(devices.resistor(1 * kohm), name="R1")
     capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
@@ -663,14 +687,16 @@ _NMOS = devices.mosfet(
 
 
 def _level_three(
-    max_drift_velocity: Quantity | None, saturation_field_factor: float = 0.4
+    max_drift_velocity: Quantity | None,
+    saturation_field_factor: float = 0.4,
+    lateral_diffusion: Quantity = 0.2 * um,
 ) -> devices.Device:
     """A level 3 n-channel with every effect of its law, and velocity saturation."""
     return devices.mosfet(
         level=3,
         width=50 * um,
         length=2 * um,
-        lateral_diffusion=0.2 * um,
+        lateral_diffusion=lateral_diffusion,
         width_narrowing=0.1 * um,
         length_adjustment=0.05 * um,
         width_adjustment=-0.05 * um,
@@ -728,13 +754,15 @@ def level_three_curves(
     c: Builder,
     max_drift_velocity: Quantity | None = None,
     saturation_field_factor: float = 0.4,
+    lateral_diffusion: Quantity = 0.2 * um,
 ) -> None:
     ground = c.port("ground", Role.GROUND)
     bias = c.place(devices.voltage_source(1.5 * V), name="V1")
     drain = c.place(devices.voltage_source(0 * V), name="V2")
     body = c.place(devices.voltage_source(-1 * V), name="V3")
     transistor = c.place(
-        _level_three(max_drift_velocity, saturation_field_factor), name="M1"
+        _level_three(max_drift_velocity, saturation_field_factor, lateral_diffusion),
+        name="M1",
     )
     c.connect(bias.positive, transistor.gate, name="gate")
     c.connect(drain.positive, transistor.drain, name="drain")
@@ -1755,6 +1783,13 @@ def test_loop_gains_agree() -> None:
         # `KAPPA=0`, read by ngspice as no channel shortening, with and without
         # velocity saturation.
         (lambda: level_three_curves(None, 0.0), "V2", linear(-3 * V, 5 * V, 81)),
+        # A negative lateral diffusion lengthens the channel, as CircuitSim90's jge's
+        # cards have it.
+        (
+            lambda: level_three_curves(lateral_diffusion=-0.025 * um),
+            "V2",
+            linear(-3 * V, 5 * V, 81),
+        ),
         (
             lambda: level_three_curves(1.5e5 * m / s, 0.0),
             "V2",
@@ -1938,6 +1973,7 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
     ("top", "stop", "step"),
     [
         (low_pass, 8 * us, 10 * ns),
+        (exponential, 12 * us, 10 * ns),
         (resonator, 60 * us, 50 * ns),
         (triangle, 60 * us, 50 * ns),
         (rectifier, 3 * ms, 1 * us),
@@ -1975,6 +2011,164 @@ def test_transients_agree(
             waveforms.times, waveforms.values[:, column], times, spice, step.value
         )
         compare(jolty, spice, unknown, scale=size(spice), tolerance=1e-3)
+
+
+@pytest.mark.parametrize("operating_point", [True, False], ids=["op", "uic"])
+@pytest.mark.parametrize(
+    ("top", "stop", "step"),
+    [(low_pass, 8 * us, 10 * ns), (resonator, 60 * us, 50 * ns)],
+)
+def test_transients_from_initial_conditions_agree(
+    top: Callable[[], Component],
+    stop: Quantity,
+    step: Quantity,
+    *,
+    operating_point: bool,
+) -> None:
+    """Each circuit's capacitor starts at 0.5 V, as ngspice's ``.ic`` sets it.
+
+    It is held there while the operating point is solved, the resonator's inductor
+    carrying the current its resistor then passes, or, as ``uic``, set there alone,
+    every other unknown at zero.
+    """
+    simulation = Simulation(top())
+    initial = {"out": 0.5 * V}
+    analysis = Transient(
+        stop=stop,
+        max_step=step,
+        initial_conditions=initial,
+        operating_point=operating_point,
+    )
+    waveforms = simulation.run(analysis, TIGHT)
+    start = "" if operating_point else " uic"
+    command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}{start}"
+    deck = [
+        *netlist(simulation.circuit, transient=True),
+        *node_voltages(".ic", simulation.circuit, {"out": 0.5}),
+    ]
+    raw = ngspice.run(deck, command)
+    times = raw.real("time")
+    assert waveforms.voltage("out")[0] == pytest.approx(0.5, abs=1e-12)
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown))
+        jolty = closest(
+            waveforms.times,
+            waveforms.values[:, column],
+            times,
+            spice_values,
+            step.value,
+        )
+        compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
+
+
+@component
+def tanh_latch(c: Builder) -> None:
+    """A node fed ``2 mA·tanh(v)`` and loaded by 1 kΩ: three DC solutions.
+
+    They are the roots of ``v = 2 tanh(v)``, 0 and ±1.915 V.
+    """
+    ground = c.port("ground", Role.GROUND)
+    feedback = c.place(
+        devices.behavioral_current_source("2e-3 * tanh(v(x))"), name="B1"
+    )
+    load = c.place(devices.resistor(1 * kohm), name="R1")
+    c.connect(feedback.negative, feedback.x, load.a, name="x")
+    c.connect(feedback.positive, load.b, ground)
+
+
+@pytest.mark.parametrize("nodeset", [None, 1.5, -1.5])
+def test_nodesets_lead_both_to_one_operating_point(nodeset: float | None) -> None:
+    """Both find the latch's solution at 0 V, or with a nodeset that of its sign."""
+    simulation = Simulation(tanh_latch())
+    nodesets = {} if nodeset is None else {"x": nodeset}
+    options = replace(TIGHT, nodesets={net: v * V for net, v in nodesets.items()})
+    point = simulation.run(OperatingPoint(), options)
+    deck = [
+        *netlist(simulation.circuit),
+        *node_voltages(".nodeset", simulation.circuit, nodesets),
+    ]
+    raw = ngspice.run(deck, "op")
+    for column, unknown in compared(simulation):
+        found = raw.real(vector(simulation.circuit, unknown))[0]
+        compare(point.values[column], found, unknown, scale=abs(found), tolerance=1e-6)
+    found = point.voltage("x")
+    if nodeset is None:
+        assert abs(found) < 1e-9
+    else:
+        # The root of v = 2 tanh(v) of the nodeset's sign, 1.915 V away from zero.
+        assert found * nodeset > 0
+        assert abs(found) > 1.9
+
+
+@pytest.mark.parametrize("binary", [False, True], ids=["ascii", "binary"])
+def test_raw_files_read_back_as_ngspices_own(tmp_path: Path, *, binary: bool) -> None:
+    """Results written as SPICE's raw file read back as computed, and as ngspice's.
+
+    A divider's operating point and an RC's response and step read back exactly; the
+    response's file has the vectors ngspice's raw file of the same run has, written in
+    the same format, and agrees with them within 1e-6, the Newton tolerance.
+    """
+    rc = Simulation(low_pass())
+    analyses = {
+        "op": Simulation(divider()).run(OperatingPoint(), TIGHT),
+        "bode": rc.run(Ac("V1", decade(1 * kHz, 1 * MHz, 2)), TIGHT),
+        "step": rc.run(Transient(stop=4 * us, max_step=10 * ns), TIGHT),
+    }
+    path = tmp_path / "jolty.raw"
+    files.save_raw(path, analyses, binary=binary)
+    ours = ngspice.read(path.read_bytes())
+    assert [plot.plot for plot in ours] == [
+        "Operating Point",
+        "AC Analysis",
+        "Transient Analysis",
+    ]
+    for plot, result in zip(ours, analyses.values(), strict=True):
+        assert isinstance(
+            result,
+            results.OperatingPointResult | results.AcResult | results.TransientResult,
+        )
+        points = len(next(iter(plot.vectors.values())))
+        table = np.asarray(result.values).reshape(points, -1)
+        for column, unknown in enumerate(result.unknowns):
+            written = plot.vectors[ngspice_name(unknown)]
+            np.testing.assert_array_equal(written, table[:, column])
+    filetype = "binary" if binary else "ascii"
+    temperature = ngspice.option_temperature(_core.REFERENCE_TEMPERATURE)
+    executed = ngspice.execute(
+        [
+            *netlist(rc.circuit, excited="V1"),
+            ngspice.OPTIONS,
+            f".options temp={temperature!r} tnom={temperature!r}",
+            ".control",
+            f"set filetype={filetype}",
+            "set appendwrite",
+            "ac dec 2 1k 1meg",
+            f"write {ngspice.VALUES} all",
+            ".endc",
+            ".end",
+        ]
+    )
+    assert executed.values is not None
+    (theirs,) = ngspice.read(executed.values)
+    (_, bode, _) = ours
+    response = analyses["bode"]
+    # ngspice steps each frequency from the last by the decade's ratio, gathering an
+    # ulp a step, where jolty's are each the nearest float to the exact frequency.
+    np.testing.assert_allclose(
+        theirs.real("frequency"), bode.real("frequency"), rtol=1e-14, atol=0
+    )
+    for unknown in response.unknowns:
+        theirs_vector = theirs.vectors[vector(rc.circuit, unknown)]
+        scale = float(np.max(np.abs(theirs_vector)))
+        ours_vector = bode.vectors[ngspice_name(unknown)]
+        compare(ours_vector, theirs_vector, unknown, scale=scale, tolerance=1e-6)
+
+
+def ngspice_name(unknown: results.Unknown) -> str:
+    """The name ngspice's raw reader gives the vector of `unknown`."""
+    if unknown.nature == "current":
+        return f"i({unknown.name.removesuffix(':current').lower()})"
+    return f"v({unknown.name.lower()})"
 
 
 VENDOR_CARDS: Final = """\

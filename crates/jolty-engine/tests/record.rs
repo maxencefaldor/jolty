@@ -3,7 +3,7 @@
 //! instances a record names.
 #![cfg(test)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use jolty_engine::{
     Ac, Conditions, DcSweep, Method, Options, Record, RecordedValues, RecordedView, Recording,
@@ -287,6 +287,8 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
             max_step: Some(2e-8),
             method,
             breakpoints: vec![1.234_567e-7, 1.5e-6],
+            initial_conditions: BTreeMap::new(),
+            operating_point: true,
         };
         let waveforms = simulator.transient(&transient, &tight()).unwrap();
         let out = simulator
@@ -591,6 +593,8 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         max_step: Some(1e-10),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     let waveforms = simulator.transient(&transient, &tight()).unwrap();
     let columns = Columns::from_record(&simulator, &Record::All);
@@ -628,6 +632,8 @@ fn pulse() -> Transient {
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
         breakpoints: vec![2.5e-7],
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     }
 }
 

@@ -39,6 +39,8 @@
 //! among the circuit's equations, so that a parameter costs what its instance does, not
 //! what the circuit does.
 
+use std::collections::BTreeMap;
+
 use jolty_ir::numbers;
 use jolty_models::{Gradient, Input, UnknownIndex};
 use jolty_numerics::integration::Formula;
@@ -641,6 +643,8 @@ impl Simulator {
             max_step: analysis.max_step,
             method: analysis.method,
             breakpoints: analysis.breakpoints.clone(),
+            initial_conditions: BTreeMap::new(),
+            operating_point: true,
         };
         let begun = || Some((start.clone(), waveforms.statistics.initial));
         let unknowns = start.len();

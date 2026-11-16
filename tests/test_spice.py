@@ -53,7 +53,7 @@ from jolty.units import (
     uF,
     um,
 )
-from jolty.waveforms import Piecewise, Pulse, Sine
+from jolty.waveforms import Exponential, Piecewise, Pulse, Sine
 
 
 def library(text: str) -> spice.Library:
@@ -233,6 +233,8 @@ def test_sources_read_their_waveforms_over_time() -> None:
         "I2 a b DC 1m AC 1 SIN(1m 1m 1k)\n"
         "V3 c 0 pulse -1 1 0 1n 1n 1n\n"
         "R1 c 0 1k\n"
+        "V4 d 0 EXP(0 4.5 1n 2n 600n 3n)\n"
+        "R2 d 0 1k\n"
         ".ends"
     )
     pulse: dict[str, float | None] = {"initial": 0.0, "pulsed": 5.0, "delay": 1e-9}
@@ -251,6 +253,16 @@ def test_sources_read_their_waveforms_over_time() -> None:
         "I1": {"sine": sine},
         "I2": {"sine": level},
         "V3": {"pulse": once},
+        "V4": {
+            "exponential": {
+                "initial": 0.0,
+                "pulsed": 4.5,
+                "rise_delay": 1e-9,
+                "rise_time_constant": 2e-9,
+                "fall_delay": number("600n"),
+                "fall_time_constant": number("3n"),
+            }
+        },
     }
 
 
@@ -274,6 +286,14 @@ def test_waveforms_read_back_as_the_exporter_writes_them() -> None:
             phase=math.pi / 2,
         ),
         "W": Piecewise([(0 * s, 0 * V), (1 * ns, 3.3 * V), (2 * ns, 1 * V)]),
+        "E": Exponential(
+            initial=0.5 * V,
+            pulsed=2 * V,
+            rise_delay=1 * ns,
+            rise_time_constant=2 * ns,
+            fall_delay=10 * ns,
+            fall_time_constant=3 * ns,
+        ),
     }
 
     @component
@@ -298,10 +318,12 @@ def test_waveforms_read_back_as_the_exporter_writes_them() -> None:
         ("V1 a 0 PULSE(0 5)", "a PULSE without a positive rise, fall and width"),
         ("V1 a 0 PULSE(0 5 0 0 1n 1n)", "a PULSE without a positive rise"),
         ("V1 a 0 SIN(0 1)", "a SIN without a positive frequency"),
-        ("V1 a 0 EXP(0 1 0 1n 1u 1n)", "jolty has no `EXP` waveform"),
+        ("V1 a 0 EXP(0 1 0 1n 1u 1n)", "an EXP without a positive rise delay"),
+        ("V1 a 0 EXP(0 1 1n 1n)", "an EXP without a positive rise delay"),
+        ("V1 a 0 SFFM(0 1 1k 2 1meg)", "jolty has no `SFFM` waveform"),
         ("V1 a 0 PWL(0 1 1n)", "jolty has no `PWL` waveform"),
         ("V1 a 0 DC 1 PULSE(0 5 0 1n 1n 1n)", "a DC level of 1.0 beside a waveform"),
-        ("V1 a 0 PULSE(0 5 0 1n 1n 1n) 0 1", "and its PULSE, SIN or PWL waveform only"),
+        ("V1 a 0 PULSE(0 5 0 1n 1n 1n) 0 1", "PULSE, SIN, PWL or EXP waveform only"),
     ],
 )
 def test_sources_refuse_what_their_waveforms_leave_out(
@@ -1321,3 +1343,67 @@ def test_a_resistor_on_a_vbics_thermal_node_is_a_thermal_resistance() -> None:
     assert found["CT"] == ("thermal_capacitance", {"capacitance": 1e-12})
     with pytest.raises(SpiceError, match="joins a thermal node to another"):
         read.component("mixed")
+
+
+def test_a_library_reads_initial_conditions_and_nodesets() -> None:
+    read = library(".param top=2\n.ic v(out)=0.5 V(In)={top}\n.nodeset v(x)=-1m")
+    assert read.initial_conditions == {"out": 0.5, "In": 2.0}
+    assert read.nodesets == {"x": -1e-3}
+    with pytest.raises(
+        SpiceError, match=re.escape("written `V(node)=value`, not `out")
+    ):
+        library(".ic out=1")
+
+
+@pytest.mark.parametrize(
+    ("element", "message"),
+    [
+        ("Rx/r1 a 0 1k", "an element named `Rx/r1`, whose `/` separates the levels"),
+        ("R1 a/b 0 1k", "a node named `a/b`, whose `/` separates the levels"),
+    ],
+)
+def test_a_name_that_holds_a_path_separator_is_refused(
+    element: str, message: str
+) -> None:
+    with pytest.raises(SpiceError, match=re.escape(message)):
+        library(f".subckt part a\n{element}\nR2 a 0 1k\n.ends").component("part")
+
+
+def test_user_functions_are_written_out_in_every_expression() -> None:
+    parts = library(
+        ".func twice(x) {2*x}\n"
+        ".func Quad(x) = {twice(twice(x))}\n"
+        ".param p={quad(1)}\n"
+        ".subckt parts a\n"
+        "R1 a 0 {twice(p)}\n"
+        "B1 b 0 V={twice(V(a))}\n"
+        "R2 b 0 1k\n"
+        ".ends"
+    )
+    read = {
+        instance.name: instance.parameters
+        for instance in parts.component("parts").definition.instances
+    }
+    assert parts.values()["p"] == 4.0
+    assert read["R1"]["resistance"] == 8.0
+    assert read["B1"]["expression"] == "(2.0 * v(a))"
+
+
+@pytest.mark.parametrize(
+    ("functions", "message"),
+    [
+        (".func f(x) {f(x)}", "a function calls itself: `f` calls `f`"),
+        (
+            ".func f(x) {g(x)}\n.func g(x) {1 + f(x)}",
+            "a function calls itself: `f` calls `g` calls `f`",
+        ),
+        (".func f(x, y) {x*y}", "`f` takes 2 arguments, not 1"),
+    ],
+)
+def test_a_function_that_calls_itself_is_refused_by_name(
+    functions: str, message: str
+) -> None:
+    with pytest.raises(SpiceError, match=re.escape(message)):
+        library(f"{functions}\n.subckt part a\nR1 a 0 {{f(2)}}\n.ends").component(
+            "part"
+        )

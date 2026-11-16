@@ -1,6 +1,8 @@
 //! Adjoint sensitivities against finite differences of the whole circuit.
 #![cfg(test)]
 
+use std::collections::BTreeMap;
+
 use jolty_engine::{
     Ac, Conditions, DcSweep, Derivatives, Differentiated, Method, Options, PeriodicSteadyState,
     Sensitivity, SimulationError, Simulator, Transient,
@@ -313,6 +315,8 @@ fn sensitivities_over_time_match_finite_differences() {
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     });
     assert_matches(&rectifier(), &["a", "out"], &transient, 1e-4);
     let gear = Differentiated::Transient(Transient {
@@ -320,6 +324,8 @@ fn sensitivities_over_time_match_finite_differences() {
         max_step: Some(1e-8),
         method: Method::Gear2,
         breakpoints: Vec::new(),
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     });
     assert_matches(&rectifier(), &["out"], &gear, 1e-4);
 }

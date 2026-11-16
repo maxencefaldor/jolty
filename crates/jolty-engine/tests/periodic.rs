@@ -1,6 +1,7 @@
 //! The periodic steady state against closed form and against long transients.
 #![cfg(test)]
 
+use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 use jolty_engine::{
@@ -58,6 +59,8 @@ fn run_with(
         max_step: Some(longest),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
+        initial_conditions: BTreeMap::new(),
+        operating_point: true,
     };
     match simulator.run(&Analysis::Transient(transient), options) {
         Ok(AnalysisResult::Transient(waveforms)) => waveforms,

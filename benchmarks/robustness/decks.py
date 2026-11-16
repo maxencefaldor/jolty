@@ -9,17 +9,18 @@ transient.
 
 ngspice runs the deck itself; jolty reads it through its SPICE reader, its elements
 wrapped in a subcircuit of their own beside the deck's definitions, every line kept at
-its place so that each instance records the deck's own line. A deck that the reader
-cannot read, or that asks for what jolty's plan has not, initial conditions or a
-nodeset, is unsupported in jolty, with the reason.
+its place so that each instance records the deck's own line, and its initial conditions
+and nodesets into the plan. A deck that the reader cannot read is unsupported in jolty,
+with the reason.
 
 A deck's defects are fixed by recorded rules, alike for every simulator (`RULES`); each
 fixture lists those its deck needed.
 """
 
 import json
+import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
 from typing import Final
@@ -39,13 +40,14 @@ from corpus import (
 )
 from simulators import Unsupported
 
-from jolty import _core, circuit
+from jolty import _core, circuit, ir
 from jolty.errors import JoltyError
 from jolty.plan import Method, Options
 from jolty.simulate import Simulation
 from jolty.spice import Library, fetch
 from jolty.spice.expressions import number
 from jolty.spice.netlist import Statement, statements, tokens
+from jolty.units import V
 
 MANIFEST: Final = ROBUSTNESS / "external.json"
 """The third-party decks: each one's address, commit, digest and licence."""
@@ -60,6 +62,15 @@ RULES: Final = {
         "Output requests, `.print`, `.plot`, `.probe`, `.save` and `.width`, are taken "
         "out: every simulator keeps every node, and Xyce's `.print` writes expressions "
         "in braces that SPICE does not read."
+    ),
+    "element-names": (
+        "An element whose name holds a `/`, as a flattened hierarchy's do, has each "
+        "written as `_`, as jolty's paths separate their levels with `/`."
+    ),
+    "exp-defaults": (
+        "An `EXP` waveform's delays and time constants left at 0 or out are written as "
+        "SPICE3 and ngspice 47 take them, from the transient's step: each time "
+        "constant and the rise delay the step, the fall delay the rise delay plus it."
     ),
 }
 """The rules that fix the decks' defects, alike for every simulator, by name."""
@@ -79,7 +90,17 @@ _DEFINITIONS: Final = frozenset({".model", ".param"})
 """The definitions outside subcircuits, which jolty's SPICE reader reads."""
 
 _CONDITIONS: Final = frozenset({".ic", ".nodeset"})
-"""What a deck asks of the operating point, which jolty's plan cannot state."""
+"""The nodes' voltages a deck starts its analyses from: initial conditions and
+nodesets, which the library reads with its definitions."""
+
+_EXP: Final = re.compile(r"\bexp\s*\(([^()]*)\)", re.IGNORECASE)
+"""An `EXP` waveform's arguments in a source's statement."""
+
+_EXP_LEVELS: Final = 2
+"""The levels an `EXP` gives first, its initial and its pulsed one."""
+
+_EXP_ARGUMENTS: Final = 6
+"""An `EXP`'s arguments: its two levels, then its two delays and two time constants."""
 
 _METHODS: Final[Mapping[str, Method]] = {
     "trap": "trapezoidal",
@@ -269,9 +290,51 @@ class Deck:
         return found
 
     @cached_property
+    def fixed(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Its lines with the rules that rewrite its elements applied, and those rules.
+
+        A statement rewritten is written on its first line, its continuations blank:
+        an `EXP` that takes a time from the transient's step with that time, and an
+        element whose name holds a `/` with each written as `_`, unless another element
+        is named so.
+        """
+        lines = self.text.splitlines()
+        step = next(
+            (
+                analysis.step
+                for analysis in self.analyses
+                if isinstance(analysis, Transient)
+            ),
+            None,
+        )
+        elements = [card for card in self.cards if card.kind == "element"]
+        taken = {card.statement.text.split()[0].casefold() for card in elements}
+        applied: list[str] = []
+        for card in elements:
+            text = card.statement.text
+            explicit = None if step is None else _exp_defaults(text, step)
+            if explicit is not None:
+                text = explicit
+                applied.append("exp-defaults")
+            name = text.split()[0]
+            renamed = name.replace(ir.SEPARATOR, "_")
+            if renamed != name and renamed.casefold() not in taken:
+                text = renamed + text[len(name) :]
+                applied.append("element-names")
+            if text != card.statement.text:
+                blank = [""] * (card.last - card.first)
+                lines[card.first - 1 : card.last] = [text, *blank]
+        return tuple(lines), tuple(dict.fromkeys(applied))
+
+    @property
+    def lines(self) -> tuple[str, ...]:
+        """Its lines, with the rules that rewrite its elements applied."""
+        return self.fixed[0]
+
+    @cached_property
     def rules(self) -> tuple[str, ...]:
         """The rules its defects need."""
-        needed: list[str] = []
+        needed: list[str] = list(self.fixed[1])
         for card in self.cards:
             words = card.statement.text.split()
             if (
@@ -327,10 +390,6 @@ class Deck:
             return _core.REFERENCE_TEMPERATURE
         return written + 273.15
 
-    def conditions(self) -> list[_Card]:
-        """Its initial conditions and nodesets."""
-        return [card for card in self.cards if card.kind == "condition"]
-
     def library(self) -> tuple[Library, str]:
         """The deck as a library of jolty's, and the name of its elements' subcircuit.
 
@@ -345,13 +404,13 @@ class Deck:
                 f"`{card.statement.text[:120]}`"
             )
             raise Unsupported(message)
-        lines = self.text.splitlines()
+        lines = self.lines
         definitions = [""] * len(lines)
         elements = [""] * len(lines)
         for card in self.cards:
             target = (
                 definitions
-                if card.kind == "definition"
+                if card.kind in {"definition", "condition"}
                 else elements
                 if card.kind == "element"
                 else None
@@ -380,20 +439,13 @@ class DeckCircuit:
     deck: Deck
 
     def jolty(self) -> Built:
-        """The deck as jolty's SPICE reader reads it, its elements a subcircuit.
+        """The deck as jolty's reader reads it, with its conditions and nodesets.
+
+        Its elements are a subcircuit's, beside its definitions.
 
         Raises:
-            Unsupported: When the reader cannot read it, or it sets initial conditions
-                or a nodeset, which jolty's plan cannot state.
+            Unsupported: When the reader cannot read it.
         """
-        conditions = self.deck.conditions()
-        if conditions:
-            card = conditions[0]
-            message = (
-                f"{self.deck.file}:{card.first}: jolty's plan sets no initial "
-                f"conditions or nodeset: `{card.statement.text[:120]}`"
-            )
-            raise Unsupported(message)
         library, name = self.deck.library()
         try:
             built = circuit(library.component(name))
@@ -405,14 +457,24 @@ class DeckCircuit:
             for unknown in unknowns
             if unknown.nature == "voltage" and not {"/", ":", "."} & set(unknown.name)
         )
-        return Built(built, self.deck.temperature(), self.deck.options(), nets)
+        options = replace(
+            self.deck.options(),
+            nodesets={node: volts * V for node, volts in library.nodesets.items()},
+        )
+        return Built(
+            built,
+            self.deck.temperature(),
+            options,
+            nets,
+            dict(library.initial_conditions),
+        )
 
     def spice(self) -> Spiced:
         """The deck as ngspice reads it, its rules applied and its analyses taken out.
 
         Its nodes are those jolty reads, when jolty reads it.
         """
-        lines = self.deck.text.splitlines()
+        lines = self.deck.lines
         kept = [lines[0]]
         for card in self.deck.cards:
             span = lines[card.first - 1 : card.last]
@@ -437,6 +499,38 @@ class DeckCircuit:
     def temperature(self) -> float:
         """The deck's temperature, in kelvins."""
         return self.deck.temperature()
+
+
+def _exp_defaults(text: str, step: float) -> str | None:
+    """The statement `text` with its `EXP`'s times of 0 or left out made explicit.
+
+    They are written as SPICE3 and ngspice 47 take them from the transient's `step`;
+    None when the statement has no such `EXP`, or one whose arguments are not all
+    numbers.
+    """
+    found = _EXP.search(text)
+    if found is None:
+        return None
+    given = [number(word) for word in tokens(found[1])]
+    numbers = [value for value in given if value is not None]
+    if len(numbers) != len(given) or not _EXP_LEVELS <= len(numbers) <= _EXP_ARGUMENTS:
+        return None
+    initial, pulsed, *times = numbers
+    times += [0.0] * (_EXP_ARGUMENTS - len(numbers))
+    if all(times):
+        return None
+    rise_delay = times[0] or step
+    fall_delay = times[2] or rise_delay + step
+    explicit = [
+        initial,
+        pulsed,
+        rise_delay,
+        times[1] or step,
+        fall_delay,
+        times[3] or step,
+    ]
+    arguments = " ".join(repr(value) for value in explicit)
+    return f"{text[: found.start()]}EXP({arguments}){text[found.end() :]}"
 
 
 def _spice_options(card: _Card) -> str:

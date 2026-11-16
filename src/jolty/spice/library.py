@@ -16,6 +16,7 @@ temperature the library reads at.
 """
 
 import itertools
+import json
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -38,11 +39,13 @@ from jolty.spice.expressions import (
     Current,
     Draw,
     Expression,
+    Function,
     Number,
     Unary,
     UndefinedError,
     Voltage,
     evaluate,
+    inlined,
     names,
     nominal,
     number,
@@ -61,6 +64,13 @@ PARAMETERS: Final = frozenset({".param", ".params"})
 
 OPTIONS: Final = frozenset({".option", ".options"})
 """The statements that set options, such as ``scale``."""
+
+FUNCTION: Final = ".func"
+"""The statement that defines a user's function, which every expression may call."""
+
+INITIAL: Final = frozenset({".ic", ".nodeset"})
+"""The statements that give nodes' voltages to start from: a transient's initial
+conditions, ``.ic``, and an operating point's nodesets, ``.nodeset``."""
 
 CONDITIONS: Final = frozenset({".if", ".elseif", ".else", ".endif"})
 """The statements of a subcircuit's ``.if`` blocks."""
@@ -166,6 +176,17 @@ class Library:
         self.temperature = temperature
         self.options: dict[str, float] = {}
         """The options its files set, such as ``scale``, by case-folded name."""
+        self.functions: dict[str, Function] = {}
+        """The user's functions its files define with ``.func``, by case-folded name,
+        which its expressions call as SPICE's own."""
+        self.initial_conditions: dict[str, float] = {}
+        """The voltage, in volts, its files' ``.ic`` statements give each node, by name
+        as they write it: where a plan's transient starts from, its
+        `initial_conditions`."""
+        self.nodesets: dict[str, float] = {}
+        """The voltage, in volts, its files' ``.nodeset`` statements give each node, by
+        name as they write it: where a plan's operating points start from, its options'
+        `nodesets`."""
         self._uses: list[Use] | None = None
 
     @property
@@ -243,9 +264,16 @@ class Library:
             self.options |= {
                 name: evaluate(value, {}) for name, value in _options(statement).items()
             }
+        elif keyword == FUNCTION:
+            name, function = _function(statement)
+            self.functions[name] = function
+        elif keyword in INITIAL:
+            given = self.initial_conditions if keyword == ".ic" else self.nodesets
+            given |= _voltages(statement, self.values(), self.functions)
         elif keyword != ".end":
             message = (
-                "a library defines subcircuits, models, parameters and options only"
+                "a library defines subcircuits, models, parameters, functions, "
+                "options, initial conditions and nodesets only"
             )
             raise statement.fail(message)
 
@@ -359,6 +387,7 @@ class Library:
             dict(self._parameters),
             {"temper": celsius_temperature},
             _Drawing(sample, "").draws,
+            self.functions,
         )
 
     def _component(
@@ -387,7 +416,11 @@ class Library:
             if parameter not in given
         }
         local = _resolved(
-            defaults, {**scope, **given}, drawing.draws, partial=self.surveying
+            defaults,
+            {**scope, **given},
+            drawing.draws,
+            self.functions,
+            partial=self.surveying,
         )
         values = {
             parameter: local[parameter]
@@ -599,10 +632,13 @@ def _resolved(
     definitions: Mapping[str, Expression],
     scope: Mapping[str, float],
     draws: Callable[[str], Draw],
+    functions: Mapping[str, Function],
     *,
     partial: bool = False,
 ) -> dict[str, float]:
     """`scope` with each parameter `definitions` defines, evaluated.
+
+    Each definition calls the user's `functions` as SPICE's own.
 
     Each parameter is evaluated once those it reads are, whatever the order of their
     definitions, as ngspice sorts them, its statistical functions drawn by `draws` of
@@ -615,7 +651,9 @@ def _resolved(
             wrong.
     """
     values = dict(scope)
-    pending = dict(definitions)
+    pending = {
+        name: inlined(expression, functions) for name, expression in definitions.items()
+    }
     while pending:
         ready = [
             name
@@ -632,6 +670,79 @@ def _resolved(
                 if not partial:
                     raise
     return values
+
+
+_FUNCTION: Final = re.compile(
+    r"\.func\s+(?P<name>[a-z_][a-z0-9_]*)\s*\((?P<parameters>[^()]*)\)\s*=?\s*"
+    r"(?P<body>.+)",
+    re.IGNORECASE | re.DOTALL,
+)
+"""A ``.func`` statement: ``.func name(a, b) {body}``, its body in braces or quotes
+or bare, after an ``=`` or not."""
+
+
+def _function(statement: Statement) -> tuple[str, Function]:
+    """The name, case-folded, and the definition of the function `statement` defines.
+
+    Raises:
+        SpiceError: When the statement is not a function's definition, or its body not
+            an expression.
+    """
+    found = _FUNCTION.fullmatch(statement.text.strip())
+    if found is None:
+        message = "a function is defined as `.func name(parameters) {expression}`"
+        raise statement.fail(message)
+    name, written, text = found.group("name", "parameters", "body")
+    parameters = tuple(
+        word.strip().casefold() for word in str(written).split(",") if word.strip()
+    )
+    try:
+        body = parse(str(text))
+    except SpiceError as error:
+        raise statement.fail(str(error)) from None
+    return str(name).casefold(), Function(parameters, body)
+
+
+def _voltages(
+    statement: Statement,
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function],
+) -> dict[str, float]:
+    """The voltage each node of an ``.ic`` or ``.nodeset`` statement is given, by name.
+
+    Each is written ``V(node)=value``, the value a number or an expression of the
+    parameters `scope` holds, which may call the user's `functions`.
+
+    Raises:
+        SpiceError: When the statement gives anything but a node's voltage.
+    """
+    words = tokens(statement.text)[1:]
+    found: dict[str, float] = {}
+    for index in range(0, len(words), 3):
+        written = words[index : index + 3]
+        match written:
+            case [voltage, "=", value] if (node := _node_of(voltage)) is not None:
+                given = number(value)
+                found[node] = (
+                    evaluate(inlined(parse(value), functions), scope)
+                    if given is None
+                    else given
+                )
+            case _:
+                message = (
+                    f"a node's voltage is written `V(node)=value`, not "
+                    f"`{' '.join(written)}`"
+                )
+                raise statement.fail(message)
+    return found
+
+
+def _node_of(written: str) -> str | None:
+    """The node `written`, ``V(node)``, names, or None when it names no one node."""
+    if written[:2].casefold() != "v(" or not written.endswith(")"):
+        return None
+    inside = written[2:-1].strip()
+    return inside if inside and "," not in inside else None
 
 
 def _assignments(statement: Statement) -> list[tuple[str, Expression]]:
@@ -748,7 +859,9 @@ class _Translation:
                 self._define(statement)
             else:
                 elements.append(statement)
-        self.scope = _resolved(self.parameters, self.scope, self.drawing.draws)
+        self.scope = _resolved(
+            self.parameters, self.scope, self.drawing.draws, self.library.functions
+        )
         for statement in elements:
             if _letter(statement) in _SENSED:
                 self._source(statement)
@@ -782,6 +895,12 @@ class _Translation:
         if key == GROUND:
             message = f"a node named `{node}`, which jolty names the ground port"
             raise self.subcircuit.statement.fail(message)
+        if ir.SEPARATOR in node:
+            message = (
+                f"a node named `{node}`, whose `{ir.SEPARATOR}` separates the levels "
+                "of jolty's paths"
+            )
+            raise self.subcircuit.statement.fail(message)
         return self.nets.setdefault(key, node)
 
     def value(self, word: str) -> float:
@@ -792,7 +911,16 @@ class _Translation:
         written = number(word)
         if written is not None:
             return written
-        return evaluate(parse(word), self.scope, self.draw)
+        return evaluate(self.parse(word), self.scope, self.draw)
+
+    def parse(self, text: str) -> Expression:
+        """The expression `text` writes, each call of the user's functions written out.
+
+        Raises:
+            SpiceError: When `text` is not an expression, or calls a function that
+                calls itself.
+        """
+        return inlined(parse(text), self.library.functions)
 
     def add(
         self,
@@ -997,6 +1125,13 @@ class _Translation:
                 self.library.use(Use(path, model))
 
     def _translated(self, statement: Statement) -> None:
+        name = statement.text.split()[0]
+        if ir.SEPARATOR in name:
+            message = (
+                f"an element named `{name}`, whose `{ir.SEPARATOR}` separates the "
+                "levels of jolty's paths"
+            )
+            raise statement.fail(message)
         letter = _letter(statement)
         translate = _ELEMENTS.get(letter)
         if translate is None:
@@ -1404,7 +1539,7 @@ def _passive(
         if len(values) != 1:
             message = f"a {model} has one value"
             raise statement.fail(message)
-        if _reads_unknowns(parse(values[0])):
+        if _reads_unknowns(translation.parse(values[0])):
             message = (
                 f"jolty reads no {model} whose value reads a voltage or a current, "
                 "which ngspice makes a behavioral source"
@@ -1562,9 +1697,9 @@ _SINE_OPTIONS: Final = ("delay", "damping", "phase")
 def _independent(model: str) -> Callable[[_Translation, Statement], None]:
     """The translation of an independent source of `model`.
 
-    Its level is its DC level, or its waveform over time, SPICE's `PULSE`, `SIN` or
-    `PWL`, whose level at time zero every other analysis reads, as ngspice reads it for
-    a source with no DC level.
+    Its level is its DC level, or its waveform over time, SPICE's `PULSE`, `SIN`, `PWL`
+    or `EXP`, whose level at time zero every other analysis reads, as ngspice reads it
+    for a source with no DC level.
     """
 
     def translated(translation: _Translation, statement: Statement) -> None:
@@ -1585,16 +1720,18 @@ def _independent(model: str) -> Callable[[_Translation, Statement], None]:
             ]
         if after:
             message = (
-                "jolty reads a source's DC level and its PULSE, SIN or PWL waveform "
-                f"only, not `{' '.join(after)}`"
+                "jolty reads a source's DC level and its PULSE, SIN, PWL or EXP "
+                f"waveform only, not `{' '.join(after)}`"
             )
             raise statement.fail(message)
         if waveform is None:
             waveform = {"dc": 0.0 if level is None else level}
-        elif level is not None and level != _at_zero(waveform):
+        elif level is not None and level != (
+            at_zero := _core.level(json.dumps(waveform), 0.0)
+        ):
             message = (
-                f"a DC level of {level!r} beside a waveform at {_at_zero(waveform)!r} "
-                "at time zero: jolty's source has one level at zero for every analysis"
+                f"a DC level of {level!r} beside a waveform at {at_zero!r} at time "
+                "zero: jolty's source has one level at zero for every analysis"
             )
             raise statement.fail(message)
         parameters: dict[str, JsonValue] = {"waveform": waveform}
@@ -1617,11 +1754,11 @@ def _transient_function(
     """`words` without a waveform over time, and that waveform, if they hold one.
 
     The waveform is written ``PULSE(...)`` or ``PULSE (...)``, or as SPICE2 wrote it,
-    ``PULSE`` followed by its arguments to the statement's end, and likewise ``SIN``
-    and ``PWL``.
+    ``PULSE`` followed by its arguments to the statement's end, and likewise ``SIN``,
+    ``PWL`` and ``EXP``.
 
     Raises:
-        SpiceError: When the waveform is one jolty has not, such as `EXP`, or leaves
+        SpiceError: When the waveform is one jolty has not, such as `SFFM`, or leaves
             out what SPICE takes from the transient analysis.
     """
     for index, word in enumerate(words):
@@ -1647,8 +1784,9 @@ def _waveform(
 
     Raises:
         SpiceError: When jolty has no such waveform, or the function leaves out what
-            SPICE takes from the transient analysis: a pulse's rise, fall or width, or
-            a sine's frequency.
+            SPICE takes from the transient analysis: a pulse's rise, fall or width, a
+            sine's frequency, or an exponential's delays and time constants, which
+            ngspice 47 takes from the transient's step wherever they are 0.
     """
     match name, arguments:
         case "pulse", [initial, pulsed, delay, rise, fall, width, *period] if (
@@ -1692,6 +1830,27 @@ def _waveform(
                 "transient analysis's stop, and jolty's circuit from no analysis"
             )
             raise statement.fail(message)
+        case "exp", [initial, pulsed, rise_delay, rise, fall_delay, fall] if (
+            min(rise_delay, rise, fall_delay, fall) > 0
+        ):
+            return {
+                "exponential": {
+                    "initial": initial,
+                    "pulsed": pulsed,
+                    "rise_delay": rise_delay,
+                    "rise_time_constant": rise,
+                    "fall_delay": fall_delay,
+                    "fall_time_constant": fall,
+                }
+            }
+        case "exp", _:
+            message = (
+                "an EXP without a positive rise delay, rise time constant, fall delay "
+                "and fall time constant, each of which ngspice 47 takes from the "
+                "transient analysis's step where it is 0 or left out, and jolty's "
+                "circuit from no analysis"
+            )
+            raise statement.fail(message)
         case "pwl", [*pairs] if pairs and len(pairs) % 2 == 0:
             points: list[JsonValue] = [
                 [pairs[index], pairs[index + 1]] for index in range(0, len(pairs), 2)
@@ -1699,31 +1858,6 @@ def _waveform(
             return {"piecewise": {"points": points}}
     message = f"jolty has no `{name.upper()}` waveform of these arguments"
     raise statement.fail(message)
-
-
-def _at_zero(waveform: Mapping[str, JsonValue]) -> float:
-    """The level of a waveform at time zero, as every analysis but a transient reads it.
-
-    Raises:
-        ValueError: When the waveform is not one `_waveform` writes.
-    """
-    match waveform:
-        case {"pulse": {"initial": float(initial)}}:
-            return initial
-        case {
-            "sine": {
-                "offset": float(offset),
-                "amplitude": float(amplitude),
-                "phase": float(phase),
-            }
-        }:
-            return offset + amplitude * math.sin(phase)
-        case {"piecewise": {"points": [[_, float(first)], *_]}}:
-            return first
-        case {"dc": float(level)}:
-            return level
-    message = f"no level at zero of {waveform}"
-    raise ValueError(message)
 
 
 def _semiconductor(
@@ -1951,7 +2085,7 @@ def _controlled(output: str) -> Callable[[_Translation, Statement], None]:
         if first.startswith("poly("):
             expression = _polynomial(statement, rest, by_current=by_current)
         elif first == "value" and not by_current:
-            expression = parse(rest[2] if rest[1:2] == ["="] else rest[1])
+            expression = translation.parse(rest[2] if rest[1:2] == ["="] else rest[1])
         elif first == "table" and not by_current:
             expression = _table(statement, rest)
         elif by_current and len(rest) == 2:  # noqa: PLR2004 - a source and a gain
@@ -2163,7 +2297,8 @@ def _arbitrary(translation: _Translation, statement: Statement) -> None:
         raise statement.fail(message)
     positive, negative, kind, written = match.groups()
     output = "voltage" if kind.casefold() == "v" else "current"
-    _behavioral(translation, statement, output, (positive, negative), parse(written))
+    expression = translation.parse(written)
+    _behavioral(translation, statement, output, (positive, negative), expression)
 
 
 def _switch(translation: _Translation, statement: Statement) -> None:
@@ -2247,8 +2382,11 @@ def _instance(translation: _Translation, statement: Statement) -> None:
             f"`{subcircuit.name}` has {len(subcircuit.pins)} pins, not {len(nodes)}"
         )
         raise statement.fail(message)
+    functions = translation.library.functions
     given = {
-        parameter: evaluate(expression, translation.scope, translation.draw)
+        parameter: evaluate(
+            inlined(expression, functions), translation.scope, translation.draw
+        )
         for parameter, expression in models.assignments(statement, assigned).items()
     }
     child = translation.library.place(

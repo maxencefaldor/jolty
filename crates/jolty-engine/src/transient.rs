@@ -1,6 +1,6 @@
 //! The transient analysis: the circuit's response over time.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use jolty_models::{Input, LogicLevel};
 use jolty_numerics::integration::{
@@ -45,7 +45,8 @@ const HISTORY: usize = 3;
 /// The earlier derivatives kept to tell the trapezoidal formula's ringing, besides the last.
 const RINGING: usize = 2;
 
-/// A transient analysis from time zero, starting at the operating point.
+/// A transient analysis from time zero, starting at the operating point, or from its
+/// initial conditions alone.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Transient {
@@ -61,6 +62,25 @@ pub struct Transient {
     /// restarting its integration there; none by default.
     #[serde(default)]
     pub breakpoints: Vec<f64>,
+    /// The voltage, in volts, each net named, such as `amplifier/mid`, starts from, as
+    /// SPICE's `.ic`: forced there while the operating point the transient starts from is
+    /// solved, then left free; or, without that operating point, set there. A net that
+    /// voltage sources and inductors join to the reference, or to a net named before it,
+    /// is left to them, and its voltage at the operating point must be the one given,
+    /// within the tolerances. None by default.
+    #[serde(default)]
+    pub initial_conditions: BTreeMap<String, f64>,
+    /// Whether the transient starts from the operating point; or else from its initial
+    /// conditions alone, every other unknown zero, as SPICE's `UIC`, so that its first
+    /// step leaves a state that need not solve the circuit's equations. From the
+    /// operating point by default.
+    #[serde(default = "from_operating_point")]
+    pub operating_point: bool,
+}
+
+/// That a transient starts from the operating point, unless it says otherwise.
+const fn from_operating_point() -> bool {
+    true
 }
 
 /// The waveforms of a transient analysis, at every accepted time point.
@@ -85,8 +105,9 @@ pub struct TransientResult {
 /// How a transient analysis went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Statistics {
-    /// How the initial operating point was found.
-    pub initial: Strategy,
+    /// How the initial operating point was found, or `None` for a transient that starts
+    /// from its initial conditions alone.
+    pub initial: Option<Strategy>,
     /// The steps accepted.
     pub accepted: usize,
     /// The steps rejected, for failing to converge or for too large an error.
@@ -107,8 +128,8 @@ pub struct Statistics {
 
 impl Statistics {
     /// The statistics of a transient before its first step, from an operating point found
-    /// by `initial`.
-    fn starting(initial: Strategy) -> Self {
+    /// by `initial`, or from its initial conditions with `None`.
+    fn starting(initial: Option<Strategy>) -> Self {
         Self {
             initial,
             accepted: 0,
@@ -546,6 +567,45 @@ impl Simulator {
         })
     }
 
+    /// The state `transient` starts from, and how its operating point was found: the
+    /// operating point, solved with its initial conditions forced if it has any, or else
+    /// its initial conditions alone, every other unknown zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::InvalidAnalysis`] for initial conditions that name no
+    /// net, or that the circuit's sources contradict, and for a transient from its
+    /// initial conditions alone of a circuit with logic, whose levels only an operating
+    /// point settles; and the errors of [`Simulator::operating_point`].
+    fn initial_state(
+        &mut self,
+        transient: &Transient,
+        options: &Options,
+    ) -> Result<(Vec<f64>, Option<Strategy>), SimulationError> {
+        let initial = &transient.initial_conditions;
+        if transient.operating_point {
+            let point = if initial.is_empty() {
+                self.operating_point(options)?
+            } else {
+                self.forced_operating_point(initial, options)?
+            };
+            return Ok((point.values, Some(point.strategy)));
+        }
+        if !self.elaborated.logic.devices.is_empty() {
+            return Err(SimulationError::InvalidAnalysis(
+                "a transient from its initial conditions alone of a circuit with logic, \
+                 whose levels only an operating point settles"
+                    .to_owned(),
+            ));
+        }
+        let [given] = self.forcings([(initial, "initial condition")])?;
+        let mut state = vec![0.0; self.elaborated.unknowns.len()];
+        for (unknown, voltage) in given.forced.into_iter().chain(given.fixed) {
+            state[unknown.index()] = voltage;
+        }
+        Ok((state, None))
+    }
+
     /// The longest step `transient` allows, after checking its times.
     fn longest_step(&self, transient: &Transient) -> Result<f64, SimulationError> {
         // Without unknowns, nothing analog needs steps, and the logic moves on at once.
@@ -615,13 +675,13 @@ impl Simulator {
     }
 
     /// Runs `transient` from `start`, a state of a circuit without logic and how the
-    /// operating point it came from was found, or else from the operating point, carrying
-    /// `carried` along its accepted steps.
+    /// operating point it came from was found, or else from its own initial state,
+    /// carrying `carried` along its accepted steps.
     pub(crate) fn transient_with(
         &mut self,
         transient: &Transient,
         options: &Options,
-        start: Option<(Vec<f64>, Strategy)>,
+        start: Option<(Vec<f64>, Option<Strategy>)>,
         mut carried: Carried<'_>,
     ) -> Result<TransientResult, SimulationError> {
         let reading = self.read_meter(options.profile);
@@ -640,11 +700,9 @@ impl Simulator {
         let mut held = width;
         let mut observations = transient.breakpoints.clone();
         observations.sort_by(f64::total_cmp);
-        let (initial, strategy) = if let Some(start) = start {
-            start
-        } else {
-            let point = self.operating_point(options)?;
-            (point.values, point.strategy)
+        let (initial, strategy) = match start {
+            Some(start) => start,
+            None => self.initial_state(transient, options)?,
         };
         self.start_carried(&mut carried, &initial, options)?;
         self.evaluate(&initial, Some(0.0), (1.0, options.gmin), true);

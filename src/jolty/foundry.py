@@ -41,6 +41,7 @@ from jolty.plan import (
     OperatingPoint,
     Options,
     Transient,
+    voltages,
 )
 from jolty.spice import export, ngspice, sky130
 from jolty.units import CURRENT, FREQUENCY, TIME, VOLTAGE, Quantity
@@ -136,12 +137,20 @@ class _Deck:
             "temperature": conditions.temperature,
             "seed": conditions.mismatch,
         }
+        transient = isinstance(analysis, Transient)
+        initial = analysis.initial_conditions if transient else {}
         return cls(
             flat,
             paths,
-            export.netlist(
-                flat, excited=excited, transient=isinstance(analysis, Transient)
-            ),
+            [
+                *export.netlist(flat, excited=excited, transient=transient),
+                *export.node_voltages(
+                    ".nodeset", flat, voltages(options.nodesets, "a nodeset")
+                ),
+                *export.node_voltages(
+                    ".ic", flat, voltages(initial, "an initial condition")
+                ),
+            ],
             _readable(flat, unknowns),
             running,
         )
@@ -218,7 +227,9 @@ class _Deck:
             if transient.max_step is None
             else transient.max_step.to(TIME, "a transient's longest step")
         )
-        steps = f"tran {longest!r} {stop!r} 0 {longest!r}"
+        # ngspice's `uic` starts the transient from its initial conditions alone.
+        start = "" if transient.operating_point else " uic"
+        steps = f"tran {longest!r} {stop!r} 0 {longest!r}{start}"
         (raw,) = self.runs((f"{steps}\nrusage traniter accept rejected",))
         counted = {
             name: [int(found) for found in pattern.findall(raw.printed)]
@@ -232,7 +243,7 @@ class _Deck:
             times=raw.real("time"),
             values=_table(raw, self.read),
             statistics=results.Statistics(
-                initial=STRATEGY,
+                initial=STRATEGY if transient.operating_point else None,
                 accepted=counted["accepted"][0],
                 rejected=counted["rejected"][0],
                 # ngspice steps across an event rather than landing on it.

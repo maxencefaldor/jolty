@@ -18,7 +18,7 @@ import json
 import math
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Literal
 
 from pydantic import JsonValue, TypeAdapter
 
@@ -57,7 +57,8 @@ class Dialect:
     """What joins an instance of a subcircuit and a node within it, in the simulator's
     names of nodes."""
     instant: float
-    """The width, in seconds, a pulse of no width is written with."""
+    """The time, in seconds, a pulse of no width and an exponential's delay of zero are
+    written with, which the simulator reads as given."""
     zero_level: bool
     """Whether a source that varies states its level at time zero as its DC level, as
     the simulator takes a level of 0 where none is stated, rather than jolty's, its
@@ -83,8 +84,9 @@ NGSPICE: Final = Dialect(
     simulator="ngspice",
     option_temperature=ngspice.option_temperature,
     separator=".",
-    # ngspice reads a width of 0 as the transient's stop time, while 1e-40 s vanishes
-    # beside any rise longer than 1e-24 s.
+    # ngspice reads a pulse's width of 0 as the transient's stop time and an
+    # exponential's delays of 0 as its step (both measured on ngspice 47), while 1e-40 s
+    # vanishes beside any rise or time constant longer than 1e-24 s.
     instant=1e-40,
     zero_level=False,
     flicker_over_oxide=True,
@@ -1390,6 +1392,41 @@ def vector(
     return f"i({source.lower()})"
 
 
+def node_voltages(
+    keyword: Literal[".ic", ".nodeset"],
+    circuit: ir.Circuit,
+    voltages: Mapping[str, float],
+    *,
+    subcircuits: Collection[str] = (),
+    dialect: Dialect = NGSPICE,
+) -> list[str]:
+    """The statement that gives each net of `voltages`, by path, its voltage in volts.
+
+    It is ``.ic``, a transient's initial conditions, or ``.nodeset``, an operating
+    point's nodesets, each net named as [`vector`][jolty.spice.export.vector] names it
+    for the netlist of `circuit` with `subcircuits` in the `dialect`; none without a
+    voltage.
+
+    Examples:
+        >>> from jolty import Builder, Role, circuit, devices
+        >>> from jolty.units import kohm
+        >>> c = Builder("rc")
+        >>> ground = c.port("ground", Role.GROUND)
+        >>> r = c.place(devices.resistor(1 * kohm), name="R1")
+        >>> c.connect(r.a, name="out")
+        >>> c.connect(r.b, ground)
+        >>> node_voltages(".ic", circuit(c.finish()), {"out": 0.5})
+        ['.ic v(out)=0.5']
+    """
+    if not voltages:
+        return []
+    written = " ".join(
+        f"{vector(circuit, Unknown(net, 'voltage'), subcircuits, dialect)}={volts!r}"
+        for net, volts in voltages.items()
+    )
+    return [f"{keyword} {written}"]
+
+
 def _waveform(spec: JsonValue, dialect: Dialect) -> str:
     """A source's waveform in the dialect's SPICE.
 
@@ -1402,7 +1439,10 @@ def _waveform(spec: JsonValue, dialect: Dialect) -> str:
 
 
 def _shape(spec: JsonValue, instant: float) -> str:
-    """A source's waveform in SPICE, a pulse of no width at the width `instant`."""
+    """A source's waveform in SPICE, a time of 0 SPICE reads otherwise at `instant`.
+
+    Those times are a pulse's width and an exponential's delays.
+    """
     match spec:
         case {"dc": float(level)}:
             return f"DC {level!r}"
@@ -1431,6 +1471,21 @@ def _shape(spec: JsonValue, instant: float) -> str:
             return _function(
                 "PWL", [number for point in points for number in _pair(point)]
             )
+        case {"exponential": dict(exponential)}:
+            order = (
+                "initial",
+                "pulsed",
+                "rise_delay",
+                "rise_time_constant",
+                "fall_delay",
+                "fall_time_constant",
+            )
+            delays = {"rise_delay", "fall_delay"}
+            numbers = [
+                instant if key in delays and exponential[key] == 0 else exponential[key]
+                for key in order
+            ]
+            return _function("EXP", numbers)
     message = f"no SPICE waveform for {spec}"
     raise _unwritable(message)
 

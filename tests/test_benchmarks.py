@@ -871,8 +871,8 @@ def test_the_score_says_why_a_netlist_falls_short(tmp_path: Path) -> None:
     stage(tmp_path, None, f"V1 supply 0 5\n{netlist}")
     (reason,) = score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons
     assert reason.startswith("the design does not build: ")
-    refusal = "a library defines subcircuits, models, parameters and options only"
-    assert refusal in reason
+    assert "a library defines" in reason
+    assert reason.endswith("only: `V1 supply 0 5`")
 
 
 def reference_netlists(work: Path) -> None:

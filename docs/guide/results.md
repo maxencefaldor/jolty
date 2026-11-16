@@ -186,6 +186,8 @@ op: operating point, found by Newton iteration in 11 iterations
 `jolty simulate` saves the results beside the script as `<script>.results.npz`, or where `--results` says.
 The file holds the analyses that ran to their end; when none did, the command removes an earlier results file at that path, so it never describes another circuit.
 
+`jolty.files.save_raw(path, results, binary=True)` writes results of operating points, DC sweeps, small-signal responses and transients, by analysis name, as SPICE's raw file, binary or ASCII, a plot each, in the format ngspice writes and other tools read, such as waveform viewers and ngspice itself: a net's vector named by its path, a source's current as ngspice names it, `V1#branch`; `jolty.spice.ngspice.read` reads it back, as it reads ngspice's own.
+
 A plan's batches go beside it as `<script>.batches.npz`, which `jolty.files.load_batches` reads back as each batch's [result](simulation.md#batches), with the requirements it measured.
 
 `jolty.files.load_results` reads it back as a dictionary of results by analysis name:

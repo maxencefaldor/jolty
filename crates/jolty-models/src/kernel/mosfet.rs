@@ -246,7 +246,7 @@ pub struct MosfetParameters<R: Real = f64> {
     /// The channel-length modulation, `λ`, per volt, level 1's alone; default 0.
     pub channel_length_modulation: Option<R>,
     /// The lateral diffusion, `ld`, by which the channel falls short of its drawn length at
-    /// each end, in meters; default 0.
+    /// each end, in meters, or past it where negative, as ngspice takes it; default 0.
     pub lateral_diffusion: R,
     /// The gate oxide's thickness, `tox`, in meters; default none at level 1, which leaves
     /// the gate without Meyer's capacitances, and 0.1 µm at level 3 and for flicker noise.
@@ -1114,8 +1114,9 @@ impl<R: Real> Geometry<R> {
         let multiplier = ParameterError::positive("multiplier", parameters.multiplier)?;
         let width = ParameterError::positive("width", parameters.width)?;
         let length = ParameterError::positive("length", parameters.length)?;
-        let diffusion =
-            ParameterError::non_negative("lateral_diffusion", parameters.lateral_diffusion)?;
+        // A negative lateral diffusion lengthens the channel past its drawn length, as
+        // ngspice 47 takes it; only the effective length must stay positive.
+        let diffusion = parameters.lateral_diffusion;
         let narrowing = ParameterError::non_negative(
             "width_narrowing",
             parameters.width_narrowing.unwrap_or(R::constant(0.0)),

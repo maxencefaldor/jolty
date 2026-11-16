@@ -45,7 +45,8 @@ Each circuit gives a fixture for its operating point, the problem every other an
 They are CircuitSim90's ten decks of level 3 MOSFETs and its bipolar voltage regulator, and four of its bipolar circuits that Xyce's regression suite keeps apart, all at that suite's commit `7bb7e98`, under the GPL, version 3 or later.
 
 ngspice runs each deck itself; jolty reads it through its SPICE reader, the deck's elements wrapped in a subcircuit of their own beside its definitions, each line kept at its place so that every instance records the deck's own line.
-A deck jolty's reader cannot read, or one that sets initial conditions or a nodeset, which jolty's plan cannot state, is unsupported in jolty, with the reason.
+A deck's initial conditions and nodesets, which the reader reads beside its definitions, start jolty's transient and operating points, as they start ngspice's.
+A deck jolty's reader cannot read is unsupported in jolty, with the reason.
 A deck's transient has no reference yet, so it is judged by its completion.
 
 A deck's defects are fixed by recorded rules, alike for every simulator, and each fixture lists those its deck needed:
@@ -54,6 +55,8 @@ A deck's defects are fixed by recorded rules, alike for every simulator, and eac
 | --- | --- |
 | `xyce-options` | Xyce's `.options` packages, such as `.options device temp=100` and `.options timeint method=gear reltol=1e-3`, are SPICE's `.options` without the package's name. |
 | `output-requests` | Output requests, `.print`, `.plot`, `.probe`, `.save` and `.width`, are taken out: every simulator keeps every node, and Xyce's `.print` writes expressions in braces that SPICE does not read. |
+| `element-names` | An element whose name holds a `/`, as a flattened hierarchy's do, has each written as `_`, as jolty's paths separate their levels with `/`. |
+| `exp-defaults` | An `EXP` waveform's delays and time constants left at 0 or out are written as SPICE3 and ngspice 47 take them, from the transient's step: each time constant and the rise delay the step, the fall delay the rise delay plus it. |
 
 Every simulator runs a deck at its temperature, with the options it sets that both have, its tolerances, iteration limits and integration method, and with SPICE's defaults for the rest.
 Before it runs, jolty's checks state what they find in each circuit, as facts, and the results keep them.

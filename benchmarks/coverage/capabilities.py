@@ -17,6 +17,7 @@ offers instead.
 import cmath
 import dataclasses
 import math
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -26,7 +27,7 @@ from typing import Final
 import numpy as np
 from simulators import Simulator, Unsupported
 
-from jolty import Builder, Component, Role, circuit, devices, ir, results
+from jolty import Builder, Component, Role, circuit, devices, files, ir, results
 from jolty.builder import Net
 from jolty.errors import JoltyError
 from jolty.plan import (
@@ -52,6 +53,7 @@ from jolty.plan import (
 from jolty.simulate import Simulation
 from jolty.specs import Specs, crossing, evaluate
 from jolty.spice import Library, export, ngspice
+from jolty.spice.library import FUNCTION, INITIAL
 from jolty.units import (
     A,
     Hz,
@@ -228,7 +230,9 @@ def _rejected(error: JoltyError) -> Unsupported:
 def deck_circuit(lines: Sequence[str]) -> ir.Circuit:
     """A deck's elements read by jolty's SPICE reader, as the top of a circuit.
 
-    The deck's title is left out, and its other lines become a subcircuit's body.
+    The deck's title is left out, its subcircuits and the statements a library reads
+    outside them, its functions, initial conditions and nodesets, stay outside, and its
+    other lines become a subcircuit's body.
 
     Raises:
         Unsupported: When the reader refuses a line, with its message.
@@ -239,7 +243,8 @@ def deck_circuit(lines: Sequence[str]) -> ir.Circuit:
     for line in lines[1:]:
         keyword = line.split()[0].casefold() if line.split() else ""
         within = within or keyword == ".subckt"
-        (definitions if within else elements).append(line)
+        outside = within or keyword in {FUNCTION, *INITIAL}
+        (definitions if outside else elements).append(line)
         within = within and keyword != ".ends"
     library = Library()
     try:
@@ -1930,6 +1935,16 @@ def syntax() -> list[Fixture]:
     ]
 
 
+def raw_divider() -> Values:
+    """The divider's output, written by jolty as SPICE's binary raw file, read back."""
+    point = simulation(deck_circuit(divider_deck())).run(OperatingPoint(), TIGHT)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "divider.raw"
+        files.save_raw(path, {"op": point})
+        (plot,) = ngspice.read(path.read_bytes())
+    return {"v(out)": complex(plot.vectors["v(out)"][0])}
+
+
 def outputs() -> list[Fixture]:
     """The rows of outputs: SPICE's raw file, and a measurement of a waveform."""
     rows = [
@@ -1941,10 +1956,7 @@ def outputs() -> list[Fixture]:
                 values={"v(out)": divider_out()},
                 source="closed form: a divider's ratio, read back from the raw file",
             ),
-            jolty=Unsupported(
-                "jolty.files writes results files as NumPy .npz archives, its "
-                "module says; no SPICE raw file"
-            ),
+            jolty=raw_divider,
             spice=Spice(
                 deck=divider_deck(),
                 ngspice=("op",),

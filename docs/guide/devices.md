@@ -114,8 +114,9 @@ Every analysis but a transient reads the level at time zero.
 - `Pulse(initial, pulsed, rise, fall, width, delay=0 s, period=None)`: a trapezoidal pulse from `initial` to `pulsed` and back, once, or every `period`.
 - `Sine(offset, amplitude, frequency, delay=0 s, damping=0 Hz, phase=0)`: `offset + amplitude·exp(-damping·t')·sin(2π·frequency·t' + phase)`, where `t'` is the time since the delay and the phase is in radians; before the delay the level holds its value at `t' = 0`.
 - `Piecewise(points)`: straight lines through `(time, level)` points, holding the first level before them and the last after.
+- `Exponential(initial, pulsed, rise_time_constant, fall_delay, fall_time_constant, rise_delay=0 s)`: SPICE's `EXP`, `initial` until the rise delay, then `initial + (pulsed - initial)·(1 - exp(-t₁/rise_time_constant))`, with `t₁` the time since the rise delay, and from the fall delay, at or after the rise delay, that minus `(pulsed - initial)·(1 - exp(-t₂/fall_time_constant))`, with `t₂` the time since the fall delay.
 
-The transient analysis lands a time step on every corner of a waveform, so a pulse's edges are never stepped over.
+The transient analysis lands a time step on every corner of a waveform, so a pulse's edges and an exponential's delays are never stepped over.
 
 ## Controlled sources
 

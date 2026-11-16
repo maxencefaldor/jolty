@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""Circuit, results, batch and shard files.
+"""Circuit, results, batch and shard files, and SPICE's raw files.
 
 A circuit file holds a [`Circuit`][jolty.ir.Circuit] as JSON. A batch file holds a
 plan's batches of runs, each a [`Batch`][jolty.files.Batch]: the arrays of its
@@ -1534,3 +1534,120 @@ def load_shard(path: Path) -> Shard:
                 for place, entry in enumerate(header.conditions)
             ),
         )
+
+
+_RAW_TYPES: Final = {"voltage": "voltage", "current": "current"}
+"""The type a raw file gives an unknown of each nature it has one for; ``notype`` for
+the others, a temperature or a device's state."""
+
+
+def save_raw(
+    path: Path,
+    analyses: Mapping[str, results.AnalysisResult],
+    *,
+    binary: bool = True,
+) -> None:
+    """Writes the results of `analyses` to `path` as SPICE's raw file, a plot each.
+
+    The file is ngspice's raw format, which other tools read: each plot a header, its
+    title the analysis's name, its scale and its vectors' names and types, then its
+    points, in `binary`, little-endian doubles, or ASCII, each plot named as ngspice 47
+    names its analysis's. An operating point is a plot
+    of one point and no scale, a DC sweep's scale is ``v-sweep`` or ``i-sweep``, a
+    small-signal response's ``frequency`` and its values complex, and a transient's
+    ``time``. A net's vector is named by its path, and a source's or an inductor's
+    current, such as ``V1:current``, as ngspice names it, ``V1#branch``; every other
+    unknown by its name. It holds no date, so the same results give the same bytes.
+
+    Raises:
+        ValueError: When an analysis is of a kind a raw file holds no plot of.
+    """
+    written = bytearray()
+    for name, result in analyses.items():
+        match result:
+            case results.TransientResult(times=times, values=values):
+                plot = "Transient Analysis"
+                scale: tuple[str, str, np.ndarray] | None = ("time", "time", times)
+                table: np.ndarray = values
+            case results.AcResult(frequencies=frequencies, values=values):
+                plot = "AC Analysis"
+                scale = ("frequency", "frequency", frequencies)
+                table = values
+            case results.DcSweepResult(swept=swept, values=values, nature=nature):
+                plot = "DC transfer characteristic"
+                kind = "current" if nature == "current" else "voltage"
+                scale = (f"{kind[0]}-sweep", kind, swept)
+                table = values
+            case results.OperatingPointResult(values=values):
+                plot = "Operating Point"
+                scale = None
+                table = np.asarray(values).reshape(1, -1)
+            case _:
+                message = (
+                    "a raw file holds operating points, DC sweeps, small-signal "
+                    f"responses and transients, not {name}'s {type(result).__name__}"
+                )
+                raise ValueError(message)
+        written += _raw_plot(name, plot, result.unknowns, scale, table, binary=binary)
+    path.write_bytes(bytes(written))
+
+
+def _raw_plot(  # noqa: PLR0913 - a plot's names, its scale, its values and its format
+    title: str,
+    plot: str,
+    unknowns: tuple[results.Unknown, ...],
+    scale: tuple[str, str, np.ndarray] | None,
+    table: np.ndarray,
+    *,
+    binary: bool,
+) -> bytes:
+    """One plot of a raw file: its header, then its values, ASCII or `binary`."""
+    named = [
+        (_raw_name(unknown), _RAW_TYPES.get(unknown.nature, "notype"))
+        for unknown in unknowns
+    ]
+    columns = [np.asarray(table[:, index]) for index in range(len(unknowns))]
+    if scale is not None:
+        named.insert(0, scale[:2])
+        columns.insert(0, np.asarray(scale[2]))
+    complex_values = np.iscomplexobj(table)
+    points = len(columns[0]) if columns else 0
+    lines = [
+        f"Title: {title}",
+        f"Plotname: {plot}",
+        f"Flags: {'complex' if complex_values else 'real'}",
+        f"No. Variables: {len(named)}",
+        f"No. Points: {points}",
+        "Variables:",
+        *(f"\t{index}\t{name}\t{kind}" for index, (name, kind) in enumerate(named)),
+        "Binary:" if binary else "Values:",
+    ]
+    header = ("\n".join(lines) + "\n").encode()
+    matrix = np.column_stack(columns) if columns else np.zeros((points, 0))
+    if complex_values:
+        matrix = matrix.astype(np.complex128)
+        if binary:
+            parts = np.stack([matrix.real, matrix.imag], axis=-1).reshape(points, -1)
+            return header + parts.astype("<f8").tobytes()
+        rows = (
+            "\t".join(f"{value.real:.17e},{value.imag:.17e}" for value in row)
+            for row in matrix
+        )
+    else:
+        matrix = matrix.astype(np.float64)
+        if binary:
+            return header + matrix.astype("<f8").tobytes()
+        rows = ("\t".join(f"{value:.17e}" for value in row) for row in matrix)
+    values = "".join(
+        f" {index}\t" + "\n\t".join(row.split("\t")) + "\n"
+        for index, row in enumerate(rows)
+    )
+    return header + values.encode()
+
+
+def _raw_name(unknown: results.Unknown) -> str:
+    """The name of `unknown`'s vector in a raw file, as ngspice names it."""
+    path, separator, label = unknown.name.rpartition(":")
+    if separator and label == "current" and unknown.nature == "current":
+        return f"{path}#branch"
+    return unknown.name

@@ -103,5 +103,40 @@ class Piecewise:
         return {"piecewise": {"points": points}}
 
 
-type Waveform = Dc | Pulse | Sine | Piecewise
+@dataclass(frozen=True, slots=True)
+class Exponential:
+    """A rise from `initial` toward `pulsed` after `rise_delay`, and a fall back after.
+
+    Its level, SPICE's ``EXP``, holds `initial` until the rise delay, then rises as
+    ``initial + (pulsed - initial)·(1 - exp(-(t - rise_delay)/rise_time_constant))``,
+    and from `fall_delay`, at or after the rise delay, adds the fall back toward
+    `initial`, ``(initial - pulsed)·(1 - exp(-(t - fall_delay)/fall_time_constant))``.
+    """
+
+    initial: Quantity
+    pulsed: Quantity
+    rise_time_constant: Quantity
+    fall_delay: Quantity
+    fall_time_constant: Quantity
+    rise_delay: Quantity = field(default_factory=lambda: Quantity(0.0, TIME))
+
+    def to_json(self, dimension: Dimension) -> JsonValue:
+        """The waveform in the circuit format, checked against `dimension`."""
+        return {
+            "exponential": {
+                "initial": self.initial.to(dimension, "an exponential's initial level"),
+                "pulsed": self.pulsed.to(dimension, "an exponential's pulsed level"),
+                "rise_delay": self.rise_delay.to(TIME, "an exponential's rise delay"),
+                "rise_time_constant": self.rise_time_constant.to(
+                    TIME, "an exponential's rise time constant"
+                ),
+                "fall_delay": self.fall_delay.to(TIME, "an exponential's fall delay"),
+                "fall_time_constant": self.fall_time_constant.to(
+                    TIME, "an exponential's fall time constant"
+                ),
+            }
+        }
+
+
+type Waveform = Dc | Pulse | Sine | Piecewise | Exponential
 """Any waveform."""

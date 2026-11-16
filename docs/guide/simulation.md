@@ -32,7 +32,7 @@ A plan's `fidelity` may choose characterized logic cells for some component inst
 | `OperatingPoints(max_solutions=8)` | every DC solution, up to `max_solutions`, the operating point first |
 | `DcSweep(source, values)` | the DC solution at each level of one independent source |
 | `Ac(source, frequencies)` | the small-signal response to a unit excitation of one source, around the operating point |
-| `Transient(stop, max_step=None, method="trapezoidal", breakpoints=())` | the response over time, from the operating point until `stop` |
+| `Transient(stop, max_step=None, method="trapezoidal", breakpoints=(), initial_conditions={}, operating_point=True)` | the response over time, from the operating point, or from [initial conditions](#initial-conditions-and-nodesets), until `stop` |
 | `PeriodicSteadyState(period=None, max_step=None, method="trapezoidal", breakpoints=())` | one period of the [steady state](#periodic-steady-state) a circuit repeats: driven by sources of `period`, or an oscillator's, whose period it finds |
 | `Sensitivity(outputs, of=None)` | the derivative of each output with respect to every number of every device's parameters but a device's [own temperature](devices.md), at the operating point or at each point of the analysis `of` |
 | `Stability(probe, frequencies)` | the loop gain through a probe in series with a feedback loop, at each frequency |
@@ -50,6 +50,23 @@ It steps onto each of `times` exactly, besides the times it chooses, without res
 
 A simulation solves its operating point once: it remembers the last one it solved, and every analysis about the operating point, a DC sweep that starts at its source's own level, and the checks at the operating point take it again, as long as the options stay the same, save `charge_tolerance`, `max_transient_iterations`, `truncation_tolerance`, `max_memory` and `profile`, which a DC solution does not read.
 Under other tolerances or another `max_dc_iterations` alone, Newton iteration goes on from where it stopped, as from zero it would, since it takes the same iterates from zero under any tolerances.
+
+## Initial conditions and nodesets
+
+A transient's `initial_conditions` give nets, by path, the voltages they start from, as SPICE's `.ic`: each is held at its voltage, as by an ideal source whose current takes up the sum of the net's, while the operating point the transient starts from is solved, and is left free from the first step on.
+With `operating_point=False`, as SPICE's `UIC`, the transient starts from its initial conditions alone, every other unknown at zero, an inductor's current among them, so a circuit starts from rest or from a state no DC solution has, such as an oscillator kicked off its balance; the first step, by backward Euler, takes each capacitor's charge from that state, and its results' statistics give no strategy for the operating point.
+The options' `nodesets` give nets, by path, voltages an operating point starts from, as SPICE's `.nodeset`: the circuit is solved from zero with each held at its voltage, then released and solved again from there, as SPICE releases them once the circuit converges with them, so that a circuit with several DC solutions, such as a latch, settles in the one they lead to; where the circuit has no solution with them held, it is solved from zero.
+A net that voltage sources and inductors join to the ground, or to a net named before it in the order of the names, is not held, as two ideal sources cannot hold one voltage: the sources fix it, and an initial condition there must agree with the voltage they give it within the tolerances, or the transient states both.
+
+```python
+from jolty.plan import Options, Plan, Transient
+from jolty.units import V, us
+
+Plan(
+    {"from_half": Transient(stop=10 * us, initial_conditions={"out": 0.5 * V})},
+    options=Options(nodesets={"latch/q": 3.3 * V}),
+)
+```
 
 ## Periodic steady state
 
@@ -352,6 +369,7 @@ A circuit of a foundry's devices runs each run in ngspice instead, as many at on
 | `max_memory` | 2 GiB | how much an analysis may hold at once, rather than fill the memory: a transient's results, past which it stops, and the dense matrices of a pole-zero analysis or a periodic steady state, past which it fails before it begins |
 | `profile` | off | whether a transient measures where its time goes, into its statistics' `profile`; the clock adds about a tenth to a small circuit's transient, and changes no other result |
 | `parallelism` | every thread | how a run spreads its own work across the engine's threads, a `Parallelism`, each threshold at its break-even; no setting changes any result but `max_unknowns_per_interior`, in the last digits |
+| `nodesets` | none | the voltage each net named, by path, holds while an operating point is first solved, then [released](#initial-conditions-and-nodesets), as SPICE's `.nodeset` |
 
 A `Parallelism` spreads each kind of a run's work over the engine's threads in tasks of at least its threshold, its least size per task, once the work fills such a task for every thread the run may use, as its break-even was measured, and keeps it on the run's own thread for less, since waking threads costs more than a small run's work repays.
 Each threshold left out takes its break-even on the threads the run may use, below:

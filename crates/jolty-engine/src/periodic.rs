@@ -51,6 +51,7 @@
 //! it show. Shooting starts from the last return, its period the time since the one
 //! before.
 
+use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 use jolty_numerics::integration::{Formula, Method};
@@ -327,9 +328,11 @@ impl Simulator {
                 max_step: analysis.max_step,
                 method: analysis.method,
                 breakpoints: analysis.breakpoints.clone(),
+                initial_conditions: BTreeMap::new(),
+                operating_point: true,
             };
             let carried = Carried::Monodromy(&mut monodromy);
-            let begun = Some((start.clone(), strategy));
+            let begun = Some((start.clone(), Some(strategy)));
             let waveforms = self.transient_with(&transient, options, begun, carried)?;
             let end = waveforms.values.last().unwrap_or(&start);
             let tolerances = self.tolerances(&start, end, options);
@@ -428,9 +431,11 @@ impl Simulator {
                 max_step: analysis.max_step.or(shown),
                 method: analysis.method,
                 breakpoints: Vec::new(),
+                initial_conditions: BTreeMap::new(),
+                operating_point: true,
             };
             returns.restart();
-            let begun = Some((state, point.strategy));
+            let begun = Some((state, Some(point.strategy)));
             let waveforms = self.transient_with(&stretch, options, begun, Carried::Nothing)?;
             let points = waveforms.times.iter().zip(&waveforms.values);
             for ((before, from), (after, to)) in points.clone().zip(points.skip(1)) {

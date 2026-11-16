@@ -64,18 +64,19 @@ component places. The top component has a ground port, the reference of every vo
 
 Devices, in jolty.devices: resistor (a, b), capacitor (a, b), inductor (a, b),
 voltage_source and current_source (positive, negative; a level or a waveform of
-jolty.waveforms: Dc, Pulse, Sine, Piecewise), voltage_controlled_voltage_source and
-voltage_controlled_current_source (positive, negative, control_positive,
-control_negative), and diode (anode, cathode; SPICE parameters). Values carry units:
-10 * kohm, 4.7 * uF, from jolty.units. Logic devices join logic nets, which an event
-scheduler simulates: logic_gate(gate, inputs, rise=, transition=) with inputs a, b and
-output y, logic_cell(inputs, outputs, rise=, transition=), and logic_source(initial,
-changes, transition=) with output output; electrical=True gives a cell supply and ground
-terminals, so its pins may join electrical nets. Results read a logic net's level with
-level(net): 0, 1, or NaN for unknown. A plan's fidelity, such as
-fidelity={"adder/*": Characterized(3.3 * V)}, simulates the component instances a scope
-matches as logic cells characterized from their circuits, whose ports are Role.INPUT,
-Role.OUTPUT, one supply and one ground, and spot checks hold each cell to its circuit.
+jolty.waveforms: Dc, Pulse, Sine, Piecewise, Exponential),
+voltage_controlled_voltage_source and voltage_controlled_current_source (positive,
+negative, control_positive, control_negative), and diode (anode, cathode; SPICE
+parameters). Values carry units: 10 * kohm, 4.7 * uF, from jolty.units. Logic devices
+join logic nets, which an event scheduler simulates: logic_gate(gate, inputs, rise=,
+transition=) with inputs a, b and output y, logic_cell(inputs, outputs, rise=,
+transition=), and logic_source(initial, changes, transition=) with output output;
+electrical=True gives a cell supply and ground terminals, so its pins may join
+electrical nets. Results read a logic net's level with level(net): 0, 1, or NaN for
+unknown. A plan's fidelity, such as fidelity={"adder/*": Characterized(3.3 * V)},
+simulates the component instances a scope matches as logic cells characterized from
+their circuits, whose ports are Role.INPUT, Role.OUTPUT, one supply and one ground, and
+spot checks hold each cell to its circuit.
 
 Analyses, in jolty.plan: OperatingPoint(), OperatingPoints(max_solutions=8): every DC
 solution, such as a latch's states, read with jolty.specs.solutions, DcSweep(source,

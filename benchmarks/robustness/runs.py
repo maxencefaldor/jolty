@@ -47,7 +47,7 @@ from jolty.errors import JoltyError
 from jolty.foundry import SPICE_OPTIONS
 from jolty.simulate import Simulation
 from jolty.spice import ngspice
-from jolty.units import CURRENT, VOLTAGE, K, Quantity, s
+from jolty.units import CURRENT, VOLTAGE, K, Quantity, V, s
 
 _REACHED: Final = re.compile(r"at t = (\S+) s")
 """Where jolty's message says a transient stopped: its step fell below the smallest
@@ -180,10 +180,16 @@ def _analysis(fixture: Fixture, built: Built, simulation: Simulation) -> Fixture
                 values=rows,
             )
         case Transient(stop=stop, method=method) as transient:
-            waveforms = simulation.run(
-                plan.Transient(stop * s, max_step=transient.longest * s, method=method),
-                options,
+            initial = {
+                net: volts * V for net, volts in built.initial_conditions.items()
+            }
+            analysis = plan.Transient(
+                stop * s,
+                max_step=transient.longest * s,
+                method=method,
+                initial_conditions=initial,
             )
+            waveforms = simulation.run(analysis, options)
             end = {net: float(waveforms.voltage(net)[-1]) for net in built.nets}
             work = waveforms.statistics.work
             return FixtureRun(
