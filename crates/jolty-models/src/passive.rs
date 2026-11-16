@@ -496,7 +496,7 @@ pub struct CoupledInductors;
 /// Where coupled inductors' contributions go: each winding's branch, and the entry at
 /// (current k, current j), row by row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CoupledShape {
+pub struct CoupledInductorsShape {
     branches: Vec<CurrentBranch>,
     entries: Vec<usize>,
 }
@@ -525,7 +525,7 @@ pub struct Coupling<R: Real = f64> {
 impl Kernel for CoupledInductors {
     const NAME: &'static str = "coupled_inductors";
     type Parameters<R: Real> = CoupledInductorsParameters<R>;
-    type Shape = CoupledShape;
+    type Shape = CoupledInductorsShape;
     /// The inductance matrix, row by row.
     type Prepared<R: Real> = Vec<R>;
     type Memory = ();
@@ -605,7 +605,7 @@ impl Kernel for CoupledInductors {
         parameters: &CoupledInductorsParameters<R>,
         _: &Vec<R>,
         layout: &mut Layout,
-    ) -> Result<CoupledShape, ParameterError> {
+    ) -> Result<CoupledInductorsShape, ParameterError> {
         let branches: Vec<CurrentBranch> = (0..parameters.windings.len())
             .map(|winding| {
                 let label = format!("current{}", winding + 1);
@@ -621,15 +621,15 @@ impl Kernel for CoupledInductors {
             })
             .map(|(row, column)| layout.entry(row, column))
             .collect();
-        Ok(CoupledShape { branches, entries })
+        Ok(CoupledInductorsShape { branches, entries })
     }
 
-    fn linear(_: &CoupledShape, _: &Vec<f64>) -> bool {
+    fn linear(_: &CoupledInductorsShape, _: &Vec<f64>) -> bool {
         true
     }
 
     fn evaluate<R: Real>(
-        shape: &CoupledShape,
+        shape: &CoupledInductorsShape,
         inductances: &Vec<R>,
         (): &mut (),
         at: &Local<'_>,

@@ -44,7 +44,7 @@ const GROUND: usize = 2;
 /// Where a logic driver's contributions go: through the branch from the output to the
 /// ground, and at the entries of its current's equation at the ground and the supply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DriverShape {
+pub struct LogicDriverShape {
     branch: kernel_parts::CurrentBranch,
     entries: [usize; 2],
 }
@@ -95,7 +95,7 @@ impl Ramp {
 impl Kernel for LogicDriver {
     const NAME: &'static str = "logic_driver";
     type Parameters<R: Real> = LogicDriverParameters;
-    type Shape = DriverShape;
+    type Shape = LogicDriverShape;
     type Prepared<R: Real> = ();
     type Memory = Ramp;
 
@@ -114,15 +114,15 @@ impl Kernel for LogicDriver {
         _: &LogicDriverParameters,
         (): &(),
         layout: &mut Layout,
-    ) -> Result<DriverShape, ParameterError> {
+    ) -> Result<LogicDriverShape, ParameterError> {
         let branch = kernel_parts::CurrentBranch::new(layout, "current", [PIN, GROUND]);
         let row = branch.unknown();
         let entries = [layout.entry(row, GROUND), layout.entry(row, SUPPLY)];
-        Ok(DriverShape { branch, entries })
+        Ok(LogicDriverShape { branch, entries })
     }
 
     fn evaluate<R: Real>(
-        shape: &DriverShape,
+        shape: &LogicDriverShape,
         (): &(),
         ramp: &mut Ramp,
         at: &Local<'_>,
@@ -154,7 +154,7 @@ impl Kernel for LogicDriver {
         Some(ramp.end)
     }
 
-    fn driven(shape: &DriverShape) -> Option<usize> {
+    fn driven(shape: &LogicDriverShape) -> Option<usize> {
         Some(shape.branch.unknown())
     }
 }
@@ -178,12 +178,12 @@ pub struct ThresholdDetector;
 
 /// Where a threshold detector's contributions go: across its input and its ground.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DetectorShape(kernel_parts::Pair);
+pub struct ThresholdDetectorShape(kernel_parts::Pair);
 
 impl Kernel for ThresholdDetector {
     const NAME: &'static str = "threshold_detector";
     type Parameters<R: Real> = ThresholdDetectorParameters;
-    type Shape = DetectorShape;
+    type Shape = ThresholdDetectorShape;
     type Prepared<R: Real> = ThresholdDetectorParameters;
     type Memory = ();
 
@@ -208,12 +208,14 @@ impl Kernel for ThresholdDetector {
         _: &ThresholdDetectorParameters,
         _: &ThresholdDetectorParameters,
         layout: &mut Layout,
-    ) -> Result<DetectorShape, ParameterError> {
-        Ok(DetectorShape(kernel_parts::Pair::new(layout, PIN, GROUND)))
+    ) -> Result<ThresholdDetectorShape, ParameterError> {
+        Ok(ThresholdDetectorShape(kernel_parts::Pair::new(
+            layout, PIN, GROUND,
+        )))
     }
 
     fn evaluate<R: Real>(
-        DetectorShape(pair): &DetectorShape,
+        ThresholdDetectorShape(pair): &ThresholdDetectorShape,
         parameters: &ThresholdDetectorParameters,
         (): &mut (),
         at: &Local<'_>,
@@ -225,7 +227,7 @@ impl Kernel for ThresholdDetector {
     }
 
     fn sense<R: Real>(
-        DetectorShape(pair): &DetectorShape,
+        ThresholdDetectorShape(pair): &ThresholdDetectorShape,
         parameters: &ThresholdDetectorParameters,
         at: &Local<'_>,
     ) -> Option<(f64, f64)> {

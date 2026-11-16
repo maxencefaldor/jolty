@@ -41,7 +41,7 @@ pub struct VoltageControlledVoltageSource;
 /// Where a voltage-controlled voltage source's contributions go: through its branch, and
 /// at the entries of its current's equation at each control terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ControlledVoltageShape {
+pub struct VoltageControlledVoltageSourceShape {
     branch: CurrentBranch,
     entries: [usize; 2],
 }
@@ -57,7 +57,7 @@ pub struct VoltageControlledVoltageSourceParameters<R: Real = f64> {
 impl Kernel for VoltageControlledVoltageSource {
     const NAME: &'static str = "voltage_controlled_voltage_source";
     type Parameters<R: Real> = VoltageControlledVoltageSourceParameters<R>;
-    type Shape = ControlledVoltageShape;
+    type Shape = VoltageControlledVoltageSourceShape;
     type Prepared<R: Real> = R;
     type Memory = ();
 
@@ -79,22 +79,22 @@ impl Kernel for VoltageControlledVoltageSource {
         _: &VoltageControlledVoltageSourceParameters<R>,
         _: &R,
         layout: &mut Layout,
-    ) -> Result<ControlledVoltageShape, ParameterError> {
+    ) -> Result<VoltageControlledVoltageSourceShape, ParameterError> {
         let branch = CurrentBranch::new(layout, "current", [POSITIVE, NEGATIVE]);
         let row = branch.unknown();
         let entries = [
             layout.entry(row, CONTROL_POSITIVE),
             layout.entry(row, CONTROL_NEGATIVE),
         ];
-        Ok(ControlledVoltageShape { branch, entries })
+        Ok(VoltageControlledVoltageSourceShape { branch, entries })
     }
 
-    fn linear(_: &ControlledVoltageShape, _: &f64) -> bool {
+    fn linear(_: &VoltageControlledVoltageSourceShape, _: &f64) -> bool {
         true
     }
 
     fn evaluate<R: Real>(
-        shape: &ControlledVoltageShape,
+        shape: &VoltageControlledVoltageSourceShape,
         &gain: &R,
         (): &mut (),
         at: &Local<'_>,
@@ -203,7 +203,7 @@ pub struct CurrentControlledCurrentSource;
 /// Where a current-controlled current source's contributions go: through its sensing
 /// port, and at the entries of each output terminal's equation at the control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SensedCurrentShape {
+pub struct CurrentControlledCurrentSourceShape {
     sense: CurrentBranch,
     entries: [usize; 2],
 }
@@ -225,7 +225,7 @@ fn add_sense<R: Real>(sense: &CurrentBranch, at: &Local<'_>, stamp: &mut Stamp<'
 impl Kernel for CurrentControlledCurrentSource {
     const NAME: &'static str = "current_controlled_current_source";
     type Parameters<R: Real> = CurrentControlledCurrentSourceParameters<R>;
-    type Shape = SensedCurrentShape;
+    type Shape = CurrentControlledCurrentSourceShape;
     type Prepared<R: Real> = R;
     type Memory = ();
 
@@ -250,22 +250,22 @@ impl Kernel for CurrentControlledCurrentSource {
         _: &CurrentControlledCurrentSourceParameters<R>,
         _: &R,
         layout: &mut Layout,
-    ) -> Result<SensedCurrentShape, ParameterError> {
+    ) -> Result<CurrentControlledCurrentSourceShape, ParameterError> {
         let sense = CurrentBranch::new(layout, "control", [CONTROL_POSITIVE, CONTROL_NEGATIVE]);
         let control = sense.unknown();
         let entries = [
             layout.entry(POSITIVE, control),
             layout.entry(NEGATIVE, control),
         ];
-        Ok(SensedCurrentShape { sense, entries })
+        Ok(CurrentControlledCurrentSourceShape { sense, entries })
     }
 
-    fn linear(_: &SensedCurrentShape, _: &f64) -> bool {
+    fn linear(_: &CurrentControlledCurrentSourceShape, _: &f64) -> bool {
         true
     }
 
     fn evaluate<R: Real>(
-        shape: &SensedCurrentShape,
+        shape: &CurrentControlledCurrentSourceShape,
         &gain: &R,
         (): &mut (),
         at: &Local<'_>,
