@@ -17,6 +17,6 @@ Examples:
 """
 
 from jolty.spice.download import fetch
-from jolty.spice.library import GROUND, Library, load
+from jolty.spice.library import GROUND, Library, Sample, Use, load
 
-__all__ = ["GROUND", "Library", "fetch", "load"]
+__all__ = ["GROUND", "Library", "Sample", "Use", "fetch", "load"]

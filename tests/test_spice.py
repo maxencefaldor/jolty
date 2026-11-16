@@ -7,6 +7,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Final
 
 import pytest
 from pydantic import JsonValue
@@ -131,6 +132,7 @@ def test_numbers_take_scale_suffixes(text: str, value: float) -> None:
         ("PWR(-2, 2)", 4.0),
         ("PWRS(-2, 2)", -4.0),
         ("LIMIT(5, 2, 1)", 2.0),
+        ("LIMIT(5, 2) + AGAUSS(1, 0.1, 3) + AUNIF(2, 1)", 8.0),
         ("1 < 2 & 3 > 2 ? 10 : 20", 10.0),
         ("IF(0, 1, 2) + INT(-2.5)", 0.0),
         ("TABLE(1.5, 1, 10, 2, 20)", 15.0),
@@ -149,7 +151,8 @@ def test_expressions_mean_what_pspice_and_ngspice_mean(text: str, value: float) 
         ("(1", r"expected `\)`"),
         ("1 2", "expected an operator"),
         ("FOO(1)", "no function is named `foo`"),
-        ("LIMIT(1, 2)", "`limit` takes 3 arguments, not 2"),
+        ("LIMIT(1)", "`limit` takes 3 arguments, not 1"),
+        ("AGAUSS(1, 2)", "`agauss` takes 3 arguments, not 2"),
         ("x + 1", "no parameter is named `x`"),
         ("V(a)", "reads no voltage or current, not `a`"),
     ],
@@ -1193,3 +1196,128 @@ def test_downloads_are_kept_in_the_configured_cache(
     monkeypatch.setenv("JOLTY_CACHE", str(tmp_path / "configured"))
     kept = spice.fetch(published.as_uri(), digest)
     assert kept.is_relative_to(tmp_path / "configured")
+
+
+# A process kit's constructs, read as ngspice reads them.
+
+
+def _devices(part: Component) -> dict[str, tuple[str, dict[str, JsonValue]]]:
+    """Each device `part` holds, by name: its model and its parameters."""
+    return {
+        instance.name: (instance.of.model, dict(instance.parameters))
+        for instance in part.definition.instances
+        if isinstance(instance.of, ir.DeviceOf)
+    }
+
+
+def test_a_library_reads_a_section_and_the_files_it_includes(tmp_path: Path) -> None:
+    (tmp_path / "corners.lib").write_text(
+        ".lib typical\n.param sheet=1k\n.include 'parts/divider.lib'\n.endl typical\n"
+        ".lib fast\n.param sheet=900\n.lib corners.lib shared\n.endl fast\n"
+        '.lib shared\n.option scale=1u\n.include "parts/divider.lib"\n.endl shared\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "parts").mkdir()
+    (tmp_path / "parts" / "divider.lib").write_text(
+        ".subckt divider a b\nR1 a b {2 * sheet}\n.ends\n", encoding="utf-8"
+    )
+    typical, fast = spice.Library(), spice.Library()
+    typical.include(tmp_path / "corners.lib", "typical")
+    fast.include(tmp_path / "corners.lib", "FAST")
+    resistances = [
+        _devices(read.component("divider"))["R1"][1]["resistance"]
+        for read in (typical, fast)
+    ]
+    assert resistances == [2e3, 1.8e3]
+    assert (typical.options, fast.options) == ({}, {"scale": 1e-6})
+    with pytest.raises(SpiceError, match="has no section `slow`"):
+        spice.Library().include(tmp_path / "corners.lib", "slow")
+    (tmp_path / "loop.lib").write_text(".include loop.lib\n", encoding="utf-8")
+    with pytest.raises(SpiceError, match="includes itself"):
+        spice.load(tmp_path / "loop.lib")
+
+
+def test_a_subcircuits_if_blocks_choose_by_its_parameters() -> None:
+    read = library(
+        ".subckt pick a b mode=0\n.if (mode == 0)\nR1 a b 1k\n.elseif (mode == 1)\n"
+        "R1 a b 2k\n.else\n.if (mode > 5)\nR1 a b 4k\n.else\nR1 a b 3k\n.endif\n"
+        ".endif\n.ends"
+    )
+    chosen = [
+        _devices(read.component("pick", mode=mode))["R1"][1]["resistance"]
+        for mode in (0, 1, 2, 9)
+    ]
+    assert chosen == [1e3, 2e3, 3e3, 4e3]
+
+
+def test_an_instance_gives_its_subcircuits_own_parameters() -> None:
+    read = library(
+        ".subckt load a b\n.param r = 1k + extra extra = 0\nR1 a b {r}\n.ends\n"
+        ".subckt pair a b\nX1 a b r = 2k load\nX2 a b load\n.ends"
+    )
+    assert _devices(read.component("load", r=5e3))["R1"][1]["resistance"] == 5e3
+    pair = read.component("pair")
+    loads = [child for child in pair.children if child.name.startswith("load")]
+    resistances = {_devices(load)["R1"][1]["resistance"] for load in loads}
+    assert resistances == {1e3, 2e3}
+
+
+def test_temper_is_the_temperature_a_library_reads_at() -> None:
+    hot = spice.Library(celsius(127).value)
+    hot.read(".subckt warm a b\nR1 a b {1k * (1 + temper / 100)}\n.ends", "kit.lib")
+    assert _devices(hot.component("warm"))["R1"][1]["resistance"] == pytest.approx(
+        2.27e3
+    )
+
+
+MISMATCHED: Final = (
+    ".param global = agauss(0, 1, 1)\n"
+    ".subckt matched a b\n.param x = agauss(1, 0.1, 1)\n"
+    "R1 a b {1k * x * (1 + global)}\n.ends"
+)
+"""A resistor drawn per placement and per sample, and scaled by a global draw."""
+
+
+def test_a_placements_draws_are_its_own_and_its_samples() -> None:
+    first, second = library(MISMATCHED), library(MISMATCHED)
+
+    def drawn(read: spice.Library, sample: spice.Sample, path: str) -> JsonValue:
+        return _devices(read.drawn("matched", sample, path))["R1"][1]["resistance"]
+
+    sample = spice.Sample(seed=3, index=8)
+    assert drawn(first, sample, "X1") == drawn(second, sample, "X1")
+    assert drawn(first, sample, "X1") != drawn(first, sample, "X2")
+    assert drawn(first, sample, "X1") != drawn(first, spice.Sample(3, 9), "X1")
+    assert _devices(first.component("matched"))["R1"][1]["resistance"] == 1e3
+
+
+def test_a_resistor_whose_value_reads_a_voltage_is_refused() -> None:
+    read = library(".subckt bent a b\nR1 a b r='1k * (1 + abs(v(a, b)))'\n.ends")
+    with pytest.raises(SpiceError, match="whose value reads a voltage or a current"):
+        read.component("bent")
+
+
+def test_a_diodes_level_is_its_cards_and_its_area_positive() -> None:
+    read = library(
+        ".model plain d level=1 is=1e-14\n.model geometric d level=3 is=1e-14\n"
+        ".subckt one a b\nD1 a b plain\n.ends\n.subckt three a b\nD1 a b geometric\n"
+        ".ends\n.subckt none a b\nD1 a b plain area=0\n.ends"
+    )
+    assert _devices(read.component("one"))["D1"][0] == "diode"
+    with pytest.raises(SpiceError, match="a diode of level 3; jolty models level 1"):
+        read.component("three")
+    with pytest.raises(SpiceError, match="area times its copies is positive, not 0"):
+        read.component("none")
+
+
+def test_a_resistor_on_a_vbics_thermal_node_is_a_thermal_resistance() -> None:
+    read = library(
+        ".model hot npn level=9 is=1e-16 rth=300 cth=1e-12\n"
+        ".subckt heated c b e t\nQ1 c b e 0 t hot\nRT t 0 1e9\nCT t 0 1p\n.ends\n"
+        ".subckt mixed c b e t\nQ1 c b e 0 t hot\nRT t c 1k\n.ends"
+    )
+    found = _devices(read.component("heated"))
+    assert found["RT"] == ("thermal_resistance", {"resistance": 1e9})
+    assert found["CT"] == ("thermal_capacitance", {"capacitance": 1e-12})
+    with pytest.raises(SpiceError, match="joins a thermal node to another"):
+        read.component("mixed")

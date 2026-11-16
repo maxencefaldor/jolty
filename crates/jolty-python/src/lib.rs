@@ -1149,6 +1149,27 @@ fn sample(varied: &str, seed: u64, index: u64) -> PyResult<Vec<f64>> {
         .collect())
 }
 
+/// The standard `variate`, `"normal"` or `"uniform"`, a process kit's statistical function
+/// draws in the sample `index` of a Monte Carlo analysis seeded with `seed`, at the call
+/// `call` within `scope`, as the engine draws its tolerances.
+///
+/// Raises `ValueError` for another variate.
+#[pyfunction]
+fn variate(variate: &str, seed: u64, index: u64, scope: &str, call: &str) -> PyResult<f64> {
+    let kind = match variate {
+        "normal" => jolty_engine::variants::Variate::Normal,
+        "uniform" => jolty_engine::variants::Variate::Uniform,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "no variate is named `{variate}`: `normal` or `uniform`"
+            )));
+        }
+    };
+    Ok(jolty_engine::variants::variate(
+        kind, seed, index, scope, call,
+    ))
+}
+
 /// Every number of every device instance of the circuit whose JSON text is `circuit` that
 /// has a tolerance, in the order of the hierarchy, each instance's numbers by path: each
 /// as its instance's path, its own path, its nominal value and its tolerance's JSON text.
@@ -1175,6 +1196,7 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Pool>()?;
     module.add_function(wrap_pyfunction!(sample, module)?)?;
     module.add_function(wrap_pyfunction!(toleranced, module)?)?;
+    module.add_function(wrap_pyfunction!(variate, module)?)?;
     measure::register(module)?;
     module.add_class::<Elaborated>()?;
     module.add_class::<Values>()?;
