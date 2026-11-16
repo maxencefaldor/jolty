@@ -18,12 +18,12 @@ import pytest
 
 from differential import SKIP, compare
 from jolty import Builder, Component, Role, Simulation, component, devices, ir, results
-from jolty.plan import TIGHT, Ac, DcSweep, decade, linear
+from jolty.plan import TIGHT, Ac, DcSweep, OperatingPoint, decade, linear
 from jolty.settings import Settings
 from jolty.spice import gf180mcu, kits, ngspice, sg13g2, sky130
 from jolty.spice.expressions import STATISTICAL
 from jolty.spice.library import Library, Sample
-from jolty.units import GHz, MHz, V, celsius
+from jolty.units import GHz, MHz, V, celsius, kHz
 
 KITS: Final = (sky130.KIT, gf180mcu.KIT, sg13g2.KIT)
 """The open process kits."""
@@ -369,7 +369,7 @@ def test_a_sky130_mim_capacitor_agrees_with_ngspice(
         ],
         ("ac dec 2 1meg 100g",),
         sections=((kits.root(sky130.KIT, kept) / sky130.LIBRARY, corner),),
-        compatibility="hsa",
+        compatibility=sky130.KIT.compatibility,
         temperature=celsius(85).value,
     )[0]
     unknown = results.Unknown("V1:current", "current")
@@ -378,6 +378,87 @@ def test_a_sky130_mim_capacitor_agrees_with_ngspice(
     compare(
         found, spice, unknown, scale=float(np.abs(spice).max()), tolerance=AGREEMENT
     )
+
+
+DRIVE: Final = 0.5
+"""The volts each native device's first pin is held at, its others grounded, in
+`test_every_native_device_agrees_with_ngspice`: within every device's ratings, and
+enough to bias a junction."""
+
+FLOOR: Final = 2 * ngspice.CURRENT_TOLERANCE
+"""How far apart two currents the engines find may lie however small they are: each
+engine's Newton iteration stops once its step on a current lies within its absolute
+tolerance, so the two lie within twice it."""
+
+
+@SKIP
+@pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
+def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) -> None:
+    """Each subcircuit the inventory finds native, at its typical corner, as ngspice's.
+
+    One source holds every device's first pin at `DRIVE` and drives it at AC, through
+    a source of no volts of each device's own, which senses its current, its other
+    pins grounded; each device's current is compared at the operating point and from
+    1 kHz to 100 GHz with ngspice's, which reads the same libraries and places the same
+    subcircuits, at the same kelvins.
+    """
+    library = kits.read(kit, settings=kept)
+    native = [
+        device.name
+        for device in kits.inventory(kit, settings=kept)
+        if device.status == "native" and device.kind == "subcircuit"
+    ]
+    driven = {
+        name: part
+        for name in native
+        if (part := library.component(name)).definition.ports[0].role == Role.SIGNAL
+    }
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(DRIVE * V), name="V0")
+        c.connect(source.negative, ground)
+        senses = []
+        for number, part in enumerate(driven.values()):
+            sense = c.place(devices.voltage_source(0 * V), name=f"A{number}")
+            placed = c.place(part, name=f"X{number}")
+            first, *rest = part.definition.ports
+            c.connect(sense.negative, placed[first.name], name=f"n{number}")
+            c.connect(*(placed[port.name] for port in rest), ground)
+            senses.append(sense.positive)
+        c.connect(source.positive, *senses, name="drive")
+
+    simulation = Simulation(bench())
+    point = simulation.run(OperatingPoint(), TIGHT)
+    response = simulation.run(Ac("V0", decade(1 * kHz, 100 * GHz, 1)), TIGHT)
+    root = kits.root(kit, kept)
+    deck = [f"* every native device of {kit.name}", f"V0 drive 0 {DRIVE!r} ac 1"]
+    for number, (name, part) in enumerate(driven.items()):
+        pins = sum(port.role == Role.SIGNAL for port in part.definition.ports)
+        deck.append(f"VA{number} drive n{number} 0")
+        deck.append(f"X{number} n{number}{' 0' * (pins - 1)} {name}")
+    raw_point, raw_response = ngspice.runs(
+        deck,
+        ("op", "ac dec 1 1k 100g"),
+        libraries=tuple(root / path for path in kit.includes),
+        sections=tuple((root / path, section) for path, section in kit.typical),
+        compatibility=kit.compatibility,
+        temperature=ngspice.same_kelvins(celsius(27).value),
+    )
+    for number in range(len(driven)):
+        column = simulation.unknowns.index(
+            results.Unknown(f"A{number}:current", "current")
+        )
+        found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
+        assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
+        spice_ac = raw_response.vectors[f"i(va{number})"]
+        np.testing.assert_allclose(
+            response.values[:, column],
+            spice_ac,
+            rtol=0,
+            atol=AGREEMENT * float(np.abs(spice_ac).max()) + FLOOR,
+        )
 
 
 def test_the_tables_name_every_status() -> None:

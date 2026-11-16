@@ -77,10 +77,12 @@ KIT: Final = Kit(
             ),
         ),
     ),
+    compatibility="hsa",
 )
 """The release's archives, each with its digest and the directory it keeps: the model
-library, and the models of the primitive devices it includes; and the library's
-corners, each with its mismatch after it."""
+library, and the models of the primitive devices it includes; the library's corners,
+each with its mismatch after it; and HSPICE's compatibility, which the library asks
+ngspice for."""
 
 
 TRANSISTORS: Final = (
@@ -220,7 +222,10 @@ def running(process: str | None, *, mismatched: bool) -> Running:
         message = f"SKY130 has no process corner {corner!r}: it has {CORNERS}"
         raise SimulationError(message)
     section = f"{corner}{MISMATCH}" if mismatched else corner
-    return {"sections": ((root(KIT) / LIBRARY, section),), "compatibility": "hsa"}
+    return {
+        "sections": ((root(KIT) / LIBRARY, section),),
+        "compatibility": KIT.compatibility,
+    }
 
 
 def inner(element: str, model: str) -> str:

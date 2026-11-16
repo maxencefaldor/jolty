@@ -29,6 +29,7 @@ from jolty.errors import JoltyError
 from jolty.settings import Settings
 from jolty.spice.download import fetch
 from jolty.spice.library import VERILOG_A, Library, Use
+from jolty.spice.ngspice import Compatibility
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +81,8 @@ class Kit:
     includes: tuple[PurePosixPath, ...]
     corners: tuple[Corners, ...]
     statistics: tuple[Section, ...] = ()
+    compatibility: Compatibility | None = None
+    """The compatibility mode ngspice reads the kit in, its own unless given."""
 
     @property
     def typical(self) -> tuple[Section, ...]:

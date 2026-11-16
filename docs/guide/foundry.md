@@ -162,7 +162,7 @@ At their typical corners, SKY130 has 30 of its 263 devices native, GF180MCU 1 of
 | neither | capacitor's model card | jolty has no device for `cmim_core`, a model of type `c` | 1: `cmim_core` (model) |
 | native | Gummel-Poon (level 1) |  | 1: `mod1_pnp` (model) |
 
-The native devices agree with ngspice reading the same kit at the same corner: SG13G2's `npn13G2`, a VBIC heated through its fifth node, within twice the relative tolerance from off to 1 V of base drive, where it warms by 60 to 130 K, at its three corners, and its gain to 10 GHz at 85 °C, which reads its transit time at that temperature; SKY130's MIM capacitor, its admittance to 100 GHz at its `tt`, `ll` and `hh` corners at 85 °C.
+The native devices agree with ngspice reading the same kit at the same corner: every native subcircuit of the three kits at its typical corner, its current at an operating point and from 1 kHz to 100 GHz with its first pin at 0.5 V and its others grounded; SG13G2's `npn13G2`, a VBIC heated through its fifth node, within twice the relative tolerance from off to 1 V of base drive, where it warms by 60 to 130 K, at its three corners, and its gain to 10 GHz at 85 °C, which reads its transit time at that temperature; SKY130's MIM capacitor, its admittance to 100 GHz at its `tt`, `ll` and `hh` corners at 85 °C.
 Away from its card's nominal temperature, a heated VBIC departs from ngspice's, as the [departures](departures.md) state.
 
 ## The process design kit
