@@ -4,9 +4,9 @@ use serde::Deserialize;
 
 use crate::{
     Ac, AcResult, DcSweep, DcSweepResult, Noise, NoiseResult, OperatingPointResult,
-    OperatingPoints, Options, PoleZero, PoleZeroResult, Sensitivity, SensitivityResult,
-    SimulationError, Simulator, Sizes, Stability, StabilityResult, TransferFunction,
-    TransferFunctionResult, Transient, TransientResult,
+    OperatingPoints, Options, PeriodicSteadyState, PeriodicSteadyStateResult, PoleZero,
+    PoleZeroResult, Sensitivity, SensitivityResult, SimulationError, Simulator, Sizes, Stability,
+    StabilityResult, TransferFunction, TransferFunctionResult, Transient, TransientResult,
 };
 
 /// An analysis to run.
@@ -24,6 +24,8 @@ pub enum Analysis {
     Ac(Ac),
     /// A transient analysis.
     Transient(Transient),
+    /// One period of a periodic steady state.
+    PeriodicSteadyState(PeriodicSteadyState),
     /// The DC sensitivities of some unknowns to every device parameter.
     Sensitivity(Sensitivity),
     /// The loop gain through a probe.
@@ -49,6 +51,8 @@ pub enum AnalysisResult {
     Ac(AcResult),
     /// The waveforms of a transient analysis.
     Transient(TransientResult),
+    /// One period of a periodic steady state.
+    PeriodicSteadyState(PeriodicSteadyStateResult),
     /// The DC sensitivities.
     Sensitivity(SensitivityResult),
     /// The loop gain.
@@ -82,6 +86,7 @@ impl Simulator {
             Analysis::OperatingPoint
             | Analysis::DcSweep(_)
             | Analysis::Transient(_)
+            | Analysis::PeriodicSteadyState(_)
             | Analysis::PoleZero(_)
             | Analysis::OperatingPoints(_)
             | Analysis::TransferFunction(_) => 0,
@@ -122,6 +127,9 @@ impl Simulator {
             Analysis::Ac(ac) => AnalysisResult::Ac(self.ac(ac, options)?),
             Analysis::Transient(transient) => {
                 AnalysisResult::Transient(self.transient(transient, options)?)
+            }
+            Analysis::PeriodicSteadyState(analysis) => {
+                AnalysisResult::PeriodicSteadyState(self.periodic_steady_state(analysis, options)?)
             }
             Analysis::Sensitivity(sensitivity) => {
                 AnalysisResult::Sensitivity(self.sensitivity(sensitivity, options)?)

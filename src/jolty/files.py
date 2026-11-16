@@ -19,10 +19,11 @@ the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 devices outside their domains. Its header also states the results'
 [`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
 simulated them, and the digests of the circuit and the plan they are of. The header is
-in version 17 of the format, which holds that provenance, the regions of operation
+in version 18 of the format, which holds that provenance, the regions of operation
 each recorded transistor's model distinguishes, the Newton iterations that found each
-operating point, and each recording's summed terminals as its ``summed_terminals``; a
-file of another version is not read.
+operating point, each recording's summed terminals as its ``summed_terminals``, and a
+periodic steady state as an analysis of its own; a file of another version is not
+read.
 
 Examples:
     >>> import tempfile
@@ -132,6 +133,14 @@ class _TransientResult(_Model):
     recording: int
 
 
+class _PeriodicSteadyStateResult(_Model):
+    kind: Literal["periodic_steady_state"] = "periodic_steady_state"
+    period: float
+    periods: int
+    statistics: results.Statistics
+    recording: int
+
+
 class _SensitivityResult(_Model):
     kind: Literal["sensitivity"] = "sensitivity"
     outputs: tuple[str, ...]
@@ -187,6 +196,7 @@ type _Entry = Annotated[
     | _DcSweepResult
     | _AcResult
     | _TransientResult
+    | _PeriodicSteadyStateResult
     | _SensitivityResult
     | _StabilityResult
     | _NoiseResult
@@ -395,7 +405,7 @@ class Provenance(BaseModel):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[17] = 17
+    version: Literal[18] = 18
     provenance: Provenance
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
@@ -711,23 +721,7 @@ def _save(
                 recording=_indexed(recordings, result.recording),
             )
         case results.TransientResult():
-            arrays[f"{name}.times"] = result.times
-            arrays[f"{name}.values"] = result.values
-            arrays.update(_observed_arrays(name, result))
-            traces = result.logic
-            arrays[f"{name}.logic.counts"] = np.array(
-                [len(trace.times) for trace in traces], dtype=np.int64
-            )
-            arrays[f"{name}.logic.times"] = np.concatenate(
-                [np.empty(0), *(trace.times for trace in traces)]
-            )
-            arrays[f"{name}.logic.levels"] = np.concatenate(
-                [np.empty(0), *(trace.levels for trace in traces)]
-            )
-            return _TransientResult(
-                statistics=result.statistics,
-                recording=_indexed(recordings, result.recording),
-            )
+            return _save_waveforms(name, result, arrays, recordings)
         case results.OperatingPointsResult():
             for index, point in enumerate(result.points):
                 arrays.update(_point_arrays(f"{name}.{index}", point))
@@ -737,6 +731,37 @@ def _save(
             )
         case _:
             return _save_linear(name, result, arrays, recordings)
+
+
+def _save_waveforms(
+    name: str,
+    result: results.TransientResult,
+    arrays: dict[str, np.ndarray],
+    recordings: dict[results.Recording, int],
+) -> _TransientResult | _PeriodicSteadyStateResult:
+    """The entry of `result`, a transient's or a period's waveforms, and its arrays."""
+    arrays[f"{name}.times"] = result.times
+    arrays[f"{name}.values"] = result.values
+    arrays.update(_observed_arrays(name, result))
+    traces = result.logic
+    arrays[f"{name}.logic.counts"] = np.array(
+        [len(trace.times) for trace in traces], dtype=np.int64
+    )
+    arrays[f"{name}.logic.times"] = np.concatenate(
+        [np.empty(0), *(trace.times for trace in traces)]
+    )
+    arrays[f"{name}.logic.levels"] = np.concatenate(
+        [np.empty(0), *(trace.levels for trace in traces)]
+    )
+    recording = _indexed(recordings, result.recording)
+    if isinstance(result, results.PeriodicSteadyStateResult):
+        return _PeriodicSteadyStateResult(
+            period=result.period,
+            periods=result.periods,
+            statistics=result.statistics,
+            recording=recording,
+        )
+    return _TransientResult(statistics=result.statistics, recording=recording)
 
 
 def _indexed(
@@ -879,18 +904,34 @@ def _load(
                 recording=recordings[recording],
                 currents=data[f"{name}.currents"],
             )
-        case _TransientResult(statistics=statistics, recording=recording):
-            return results.TransientResult(
-                unknowns,
-                data[f"{name}.times"],
-                data[f"{name}.values"],
-                statistics,
-                nets,
-                _traces(data, name),
-                **_observed(data, name, recordings[recording]),
-            )
+        case _TransientResult() | _PeriodicSteadyStateResult():
+            return _load_waveforms(data, name, entry, header, recordings)
         case _:
             return _load_linear(data, name, entry, header, recordings)
+
+
+def _load_waveforms(
+    data: Mapping[str, np.ndarray],
+    name: str,
+    entry: _TransientResult | _PeriodicSteadyStateResult,
+    header: _Header,
+    recordings: tuple[results.Recording, ...],
+) -> results.TransientResult:
+    """The waveforms stored under `name` in `data`, a transient's or a period's."""
+    fields = (
+        header.unknowns,
+        data[f"{name}.times"],
+        data[f"{name}.values"],
+        entry.statistics,
+        header.nets,
+        _traces(data, name),
+    )
+    observed = _observed(data, name, recordings[entry.recording])
+    if isinstance(entry, _PeriodicSteadyStateResult):
+        return results.PeriodicSteadyStateResult(
+            *fields, **observed, period=entry.period, periods=entry.periods
+        )
+    return results.TransientResult(*fields, **observed)
 
 
 def _load_linear(

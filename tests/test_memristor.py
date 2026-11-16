@@ -27,7 +27,14 @@ from jolty import (
     devices,
     results,
 )
-from jolty.plan import Ac, DcSweep, OperatingPoint, Sensitivity, Transient
+from jolty.plan import (
+    Ac,
+    DcSweep,
+    OperatingPoint,
+    PeriodicSteadyState,
+    Sensitivity,
+    Transient,
+)
 from jolty.plots import plot
 from jolty.report import report
 from jolty.specs import Specs, evaluate, value
@@ -229,9 +236,9 @@ def test_a_periodic_steady_state_keeps_a_state_its_drive_leaves_alone() -> None:
 
     period = 1 / FREQUENCY
     steady = Simulation(filtered()).run(
-        Transient(period * s, max_step=5e-3 * period * s, periodic=True)
+        PeriodicSteadyState(period * s, max_step=5e-3 * period * s)
     )
-    assert steady.statistics.periods == 2
+    assert steady.periods == 2
     np.testing.assert_allclose(steady.state("M1:state"), START, rtol=0, atol=1e-15)
     omega = 2 * math.pi * FREQUENCY
     lag = omega * float(_resistance(np.array(START), "linear")) * 100e-9

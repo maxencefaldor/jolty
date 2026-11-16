@@ -66,6 +66,7 @@ from jolty.plan import (
     OperatingPoint,
     OperatingPoints,
     Options,
+    PeriodicSteadyState,
     Plan,
     PoleZero,
     Product,
@@ -611,6 +612,10 @@ class Simulation:
     ) -> results.TransientResult: ...
     @overload
     def run(
+        self, analysis: PeriodicSteadyState, options: Options | None = None
+    ) -> results.PeriodicSteadyStateResult: ...
+    @overload
+    def run(
         self, analysis: Sensitivity, options: Options | None = None
     ) -> results.SensitivityResult: ...
     @overload
@@ -758,10 +763,10 @@ class Simulation:
     def _record(self, analysis: Analysis) -> JsonValue:
         """What `analysis` records, in the engine's format.
 
-        An operating point and a transient record the instances rated for a current or
-        a power, whose currents the checks of ratings read, and every analysis that
-        records ([`Recorded`][jolty.plan.Recorded]) the instances its record names
-        besides.
+        An operating point, a transient and a periodic steady state record the
+        instances rated for a current or a power, whose currents the checks of
+        ratings read, and every analysis that records
+        ([`Recorded`][jolty.plan.Recorded]) the instances its record names besides.
 
         Raises:
             SimulationError: When the record names an instance the circuit does not
@@ -771,7 +776,7 @@ class Simulation:
         if named not in self._records:
             self._records[named] = self._resolve(named)
         found = self._records[named]
-        if isinstance(analysis, OperatingPoint | Transient):
+        if isinstance(analysis, OperatingPoint | Transient | PeriodicSteadyState):
             found |= frozenset(self._rated)
         if found == self._known:
             return "all"
@@ -945,23 +950,37 @@ class Simulation:
                     recording=recording,
                     currents=outcome["currents"],
                 )
-            case "transient":
-                statistics = _statistics(outcome["statistics"])
-                traces = tuple(
-                    results.LogicTrace(times, levels)
-                    for times, levels in outcome["logic"]
-                )
-                return results.TransientResult(
-                    unknowns,
-                    outcome["times"],
-                    outcome["values"],
-                    statistics,
-                    nets,
-                    traces,
-                    **_observed(outcome, recording),
-                )
+            case "transient" | "periodic_steady_state":
+                return self._waveforms(outcome, recording)
             case _:
                 return self._linear(outcome, recording)
+
+    def _waveforms(
+        self,
+        outcome: _core.TransientResult | _core.PeriodicSteadyStateResult,
+        recording: results.Recording,
+    ) -> results.TransientResult:
+        """The waveforms of a transient or a periodic steady state's period."""
+        traces = tuple(
+            results.LogicTrace(times, levels) for times, levels in outcome["logic"]
+        )
+        fields = (
+            self.unknowns,
+            outcome["times"],
+            outcome["values"],
+            _statistics(outcome["statistics"]),
+            self.nets,
+            traces,
+        )
+        observed = _observed(outcome, recording)
+        if outcome["kind"] == "transient":
+            return results.TransientResult(*fields, **observed)
+        return results.PeriodicSteadyStateResult(
+            *fields,
+            **observed,
+            period=outcome["period"],
+            periods=outcome["periods"],
+        )
 
     def _linear(
         self,
@@ -1144,9 +1163,15 @@ class Simulation:
             case Ac():
                 phasors = np.empty((0, width), dtype=np.complex128)
                 return results.AcResult(unknowns, analysis.source, no, phasors, point)
-            case Transient():
+            case Transient() | PeriodicSteadyState():
                 statistics = results.Statistics("", 0, 0, 0, 0)
-                return results.TransientResult(unknowns, no, rows, statistics)
+                return (
+                    results.TransientResult(unknowns, no, rows, statistics)
+                    if isinstance(analysis, Transient)
+                    else results.PeriodicSteadyStateResult(
+                        unknowns, no, rows, statistics, period=math.nan, periods=0
+                    )
+                )
         return self._linear_shape(analysis, point)
 
     def _linear_shape(
@@ -1376,7 +1401,10 @@ class _Planned:
             and name in planned.engine
             and (
                 isinstance(analysis, OperatingPoint | DcSweep | Ac)
-                or (isinstance(analysis, Transient) and analysis.breakpoints)
+                or (
+                    isinstance(analysis, Transient | PeriodicSteadyState)
+                    and analysis.breakpoints
+                )
             )
         ]
         return planned
@@ -1795,6 +1823,7 @@ _ALONG: Final[dict[type, Literal["point", "swept", "frequency", "time"]]] = {
     DcSweep: "swept",
     Ac: "frequency",
     Transient: "time",
+    PeriodicSteadyState: "time",
 }
 """What the points of each kind of analysis a batch traces are."""
 
@@ -1806,7 +1835,7 @@ def _points(analysis: Analysis) -> int:
             return len(levels)
         case Ac(frequencies=frequencies):
             return len(frequencies)
-        case Transient(breakpoints=times):
+        case Transient(breakpoints=times) | PeriodicSteadyState(breakpoints=times):
             return len(times)
     return 1
 
@@ -1821,7 +1850,7 @@ def _axis(analysis: Analysis, simulation: Simulation) -> results.Real:
             )
         case Ac(frequencies=frequencies):
             return np.array([each.to(FREQUENCY, "a frequency") for each in frequencies])
-        case Transient(breakpoints=times):
+        case Transient(breakpoints=times) | PeriodicSteadyState(breakpoints=times):
             return np.array([each.to(TIME, "a time to step onto") for each in times])
     return np.empty(0)
 
@@ -1848,7 +1877,9 @@ def _at(
             _picked(result.values[np.newaxis, :], result.unknowns, unknowns, found)
         case results.DcSweepResult():
             _picked(result.values, result.unknowns, unknowns, found)
-        case results.TransientResult() if isinstance(analysis, Transient):
+        case results.TransientResult() if isinstance(
+            analysis, Transient | PeriodicSteadyState
+        ):
             times = [
                 time.to(TIME, "a time to step onto") for time in analysis.breakpoints
             ]
@@ -1921,7 +1952,6 @@ def _statistics(outcome: _core.Statistics) -> results.Statistics:
         outcome["rejected"],
         outcome["landed"],
         outcome["iterations"],
-        outcome["periods"],
         results.Work(**outcome["work"]),
         None if profile is None else results.Profile(**profile),
     )

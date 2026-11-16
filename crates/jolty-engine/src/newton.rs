@@ -800,7 +800,6 @@ mod tests {
             max_step: Some(1e-6),
             method: Method::Trapezoidal,
             breakpoints: Vec::new(),
-            periodic: false,
         };
         let waveforms = simulator.transient(&transient, &options).unwrap();
         let (searched, refactored, reused) = work(before, simulator.state.solver.statistics());
@@ -841,7 +840,6 @@ mod tests {
             max_step: Some(1e-5),
             method: Method::Trapezoidal,
             breakpoints: Vec::new(),
-            periodic: false,
         };
         let plain = ladder(3, &sine, true)
             .transient(&transient, &Options::default())

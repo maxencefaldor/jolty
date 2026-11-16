@@ -22,6 +22,7 @@ from jolty import (
     OperatingPoint,
     OperatingPoints,
     Options,
+    PeriodicSteadyState,
     Plan,
     PoleZero,
     Role,
@@ -370,7 +371,7 @@ def test_dense_matrices_past_the_memory_fail_before_they_are_made() -> None:
         r"than its `max_memory` option's 1e-9 GiB",
     ):
         simulation.run(PoleZero(), tiny)
-    periodic = Transient(stop=1 * us, periodic=True)
+    periodic = PeriodicSteadyState(period=1 * us)
     with pytest.raises(SimulationError, match="periodic steady state's dense matrices"):
         simulation.run(periodic, tiny)
 
@@ -721,12 +722,12 @@ def slow_rc(c: Builder) -> None:
     c.connect(capacitor.b, source.negative, ground)
 
 
-def test_a_periodic_transient_finds_the_steady_state_at_once() -> None:
+def test_a_periodic_steady_state_is_found_at_once() -> None:
     # The time constant is ten periods; the steady state is the phasor's.
     steady = Simulation(slow_rc()).run(
-        Transient(stop=1 * ms, max_step=5e-3 * ms, periodic=True)
+        PeriodicSteadyState(period=1 * ms, max_step=5e-3 * ms)
     )
-    assert steady.statistics.periods == 2
+    assert (steady.period, steady.periods) == (1e-3, 2)
     lag = 2 * math.pi * 1e3 * 1e3 * 10e-6
     expected = np.sin(2 * math.pi * 1e3 * steady.times - math.atan(lag))
     np.testing.assert_allclose(

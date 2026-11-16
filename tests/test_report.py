@@ -87,14 +87,19 @@ def test_a_transient_states_the_range_of_each_unknown() -> None:
     )
 
 
-def test_a_periodic_steady_state_states_its_periods() -> None:
-    statistics = results.Statistics("direct", 2, 0, 0, 4, periods=3)
-    waveforms = results.TransientResult(
-        UNKNOWNS, np.array([0.0, 1e-6]), np.zeros((2, 3)), statistics
+def test_a_periodic_steady_state_states_its_period_and_periods() -> None:
+    statistics = results.Statistics("direct", 2, 0, 0, 4)
+    waveforms = results.PeriodicSteadyStateResult(
+        UNKNOWNS,
+        np.array([0.0, 1e-6]),
+        np.zeros((2, 3)),
+        statistics,
+        period=1e-6,
+        periods=3,
     )
     summary = report.report("steady", waveforms, max_unknowns=3)
     assert summary.describe().splitlines()[0] == (
-        "steady: periodic steady state of period 1 µs, found in 3 periods, "
+        "steady: periodic steady state of period 1 µs, 1 MHz, found in 3 periods, "
         "the last in 2 steps, 0 rejected"
     )
 

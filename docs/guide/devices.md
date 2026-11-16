@@ -200,7 +200,7 @@ A window slows the state as it nears the bound it moves toward, by `1 − e^(−
 Only time moves a state.
 At an operating point, and in the DC sweeps, small-signal responses and noise about one, a memristor's state is the one it was made in, its `state`, as SPICE's initial conditions hold a node: the memristor is a resistor there, and its `rate` says how fast a transient would move it.
 A transient starts from that state.
-A [periodic](simulation.md#periodic-steady-state) transient finds one periodic steady state: when the drive returns a memristor's state each period, as a symmetric one does, any state it starts from repeats, and the one found need not be the state it was made in.
+A [periodic steady state](simulation.md#periodic-steady-state) finds one steady state: when the drive returns a memristor's state each period, as a symmetric one does, any state it starts from repeats, and the one found need not be the state it was made in.
 
 `voltage_controlled_memristor(...)` is VTEAM's memristor (Kvatinsky, Ramadan, Friedman and Kolodny, 2015), whose state a voltage moves only past a threshold, as a memory's cell holds under the voltage that reads it.
 A voltage `v` of `positive` over `negative` above `off_voltage` moves the state toward off at `off_rate · (v/v_off − 1)^α_off`, and one below `on_voltage`, a negative voltage, toward on at `on_rate · (v/v_on − 1)^α_on`; between them, the state holds.

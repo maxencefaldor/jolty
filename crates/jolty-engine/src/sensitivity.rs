@@ -207,7 +207,6 @@ impl Simulator {
     /// # Errors
     ///
     /// Returns [`SimulationError::UnknownOutput`] for an output that is no unknown,
-    /// [`SimulationError::InvalidAnalysis`] for a periodic transient,
     /// [`SimulationError::Singular`] when a Jacobian is, and the errors of the analysis
     /// differentiated.
     pub fn sensitivity(
@@ -249,13 +248,6 @@ impl Simulator {
                     (Derivatives::Complex(found), AnalysisResult::Ac(response))
                 }
                 Differentiated::Transient(transient) => {
-                    if transient.periodic {
-                        return Err(SimulationError::InvalidAnalysis(
-                            "a sensitivity differentiates a transient from its operating point, \
-                             not a periodic steady state"
-                                .to_owned(),
-                        ));
-                    }
                     let mut forward = Forward {
                         outputs,
                         twins,

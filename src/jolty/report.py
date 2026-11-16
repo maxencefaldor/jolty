@@ -330,30 +330,60 @@ class TransientReport(_Model):
         description="Time steps tried again shorter to land on an event within them: "
         "a detector's crossing, a logic driver's change or a device's jump."
     )
-    periods: int | None = Field(
-        default=None,
-        description="For a periodic steady state, the periods simulated to find it; "
-        "the steps counted are the last's.",
-    )
     extents: tuple[Extent, ...]
     activities: tuple[Activity, ...] = ()
     unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
 
     def describe(self) -> str:
         """The report as text."""
-        steps = f"in {self.accepted} steps, {self.rejected} rejected"
-        if self.landed:
-            steps += f", {self.landed} shortened to land on events"
-        if self.periods is None:
-            head = f"{self.name}: transient to {format_si(self.stop, 's')} {steps}"
-        else:
-            head = (
-                f"{self.name}: periodic steady state of period "
-                f"{format_si(self.stop, 's')}, found in {self.periods} periods, "
-                f"the last {steps}"
-            )
+        steps = _steps(self.accepted, self.rejected, self.landed)
+        head = f"{self.name}: transient to {format_si(self.stop, 's')} {steps}"
         lines = _extents(self.extents) + _activities(self.activities)
         return _join(head, lines, self.unlisted)
+
+
+class PeriodicSteadyStateReport(_Model):
+    """One period of a periodic steady state."""
+
+    kind: Literal["periodic_steady_state"] = "periodic_steady_state"
+    name: str
+    period: float = Field(
+        description="The period in seconds: the analysis's, or an oscillator's, which "
+        "it found."
+    )
+    periods: int = Field(
+        description="The periods shooting simulated to find the steady state; the "
+        "steps counted are the last's."
+    )
+    accepted: int = Field(description="Time steps the last period accepted.")
+    rejected: int = Field(
+        description="Time steps the last period rejected for their error or for "
+        "Newton iteration that did not converge."
+    )
+    landed: int = Field(
+        description="Time steps the last period tried again shorter to land on an "
+        "event within them, a device's jump."
+    )
+    extents: tuple[Extent, ...]
+    unlisted: int = Field(description="Unknowns left out of the list.")
+
+    def describe(self) -> str:
+        """The report as text."""
+        steps = _steps(self.accepted, self.rejected, self.landed)
+        head = (
+            f"{self.name}: periodic steady state of period "
+            f"{format_si(self.period, 's')}, {format_si(1 / self.period, 'Hz')}, "
+            f"found in {self.periods} periods, the last {steps}"
+        )
+        return _join(head, _extents(self.extents), self.unlisted)
+
+
+def _steps(accepted: int, rejected: int, landed: int) -> str:
+    """How many time steps a transient or a period took: its steps' clause."""
+    steps = f"in {accepted} steps, {rejected} rejected"
+    if landed:
+        steps += f", {landed} shortened to land on events"
+    return steps
 
 
 class StabilityReport(_Model):
@@ -931,6 +961,7 @@ type AnalysisReport = Annotated[
     | DcSweepReport
     | AcReport
     | TransientReport
+    | PeriodicSteadyStateReport
     | SensitivityReport
     | StabilityReport
     | NoiseReport
@@ -940,6 +971,42 @@ type AnalysisReport = Annotated[
     Field(discriminator="kind"),
 ]
 """The report of any analysis."""
+
+
+def _waveforms_report(
+    name: str,
+    result: results.TransientResult,
+    listed: tuple[tuple[Extent, ...], tuple[str, ...], int],
+) -> TransientReport | PeriodicSteadyStateReport:
+    """The report of `result`, a transient's or a period's waveforms.
+
+    It lists `listed`: its unknowns' extents, its logic nets and how many it leaves out.
+    """
+    extents, nets, unlisted = listed
+    statistics = result.statistics
+    if isinstance(result, results.PeriodicSteadyStateResult):
+        return PeriodicSteadyStateReport(
+            name=name,
+            period=result.period,
+            periods=result.periods,
+            accepted=statistics.accepted,
+            rejected=statistics.rejected,
+            landed=statistics.landed,
+            extents=extents,
+            unlisted=unlisted,
+        )
+    return TransientReport(
+        name=name,
+        stop=float(result.times[-1]),
+        accepted=statistics.accepted,
+        rejected=statistics.rejected,
+        landed=statistics.landed,
+        extents=extents,
+        activities=tuple(
+            _activity(net, result.logic_level(net).levels) for net in nets
+        ),
+        unlisted=unlisted,
+    )
 
 
 def report(
@@ -1009,19 +1076,8 @@ def report(
                 unlisted=unlisted,
             )
         case results.TransientResult():
-            return TransientReport(
-                name=name,
-                stop=float(result.times[-1]),
-                accepted=result.statistics.accepted,
-                rejected=result.statistics.rejected,
-                landed=result.statistics.landed,
-                periods=result.statistics.periods,
-                extents=_extents_of(unknowns, result.values[:, :max_unknowns]),
-                activities=tuple(
-                    _activity(net, result.logic_level(net).levels) for net in nets
-                ),
-                unlisted=unlisted,
-            )
+            extents = _extents_of(unknowns, result.values[:, :max_unknowns])
+            return _waveforms_report(name, result, (extents, nets, unlisted))
         case results.OperatingPointsResult():
             return OperatingPointsReport(
                 name=name,

@@ -175,14 +175,14 @@ class _Deck:
                     ).reshape(len(frequencies), len(self.read)),
                     operating_point=self.operating_point(point),
                 )
-            case Transient(periodic=False):
+            case Transient():
                 return self.transient(analysis)
             case Noise():
                 return self.noise(analysis)
         message = (
             f"ngspice runs no {type(analysis).__name__} analysis of a circuit that "
             "holds a foundry's device here: only an operating point, a DC sweep, a "
-            "small-signal response, a transient that is not periodic and noise"
+            "small-signal response, a transient and noise"
         )
         raise SimulationError(message)
 

@@ -69,7 +69,7 @@ from simulators import (
 
 from jolty import circuit, foundry, plan, plots, results
 from jolty.errors import JoltyError
-from jolty.plan import Ac, Noise, Options, PoleZero, Transient
+from jolty.plan import Ac, Noise, Options, PeriodicSteadyState, PoleZero, Transient
 from jolty.simulate import Elaborated, Simulation
 from jolty.spice import export, ngspice, xyce
 from jolty.units import VOLTAGE
@@ -361,9 +361,7 @@ def run_xyce(
     """
     fixture = prepared.fixture
     analysis = fixture.analysis
-    if isinstance(analysis, PoleZero) or (
-        isinstance(analysis, Transient) and analysis.periodic
-    ):
+    if isinstance(analysis, PoleZero | PeriodicSteadyState):
         message = (
             "Xyce 7.10 has no pole-zero analysis, and finds a periodic steady state "
             "by harmonic balance alone, which the suite does not run"

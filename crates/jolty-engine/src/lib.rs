@@ -108,6 +108,7 @@ pub use logic::{Endpoint, Excursion, ExcursionKind, LogicNet, PlacedLogic};
 pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseResult};
 pub use operating_point::{OperatingPointResult, OperatingPoints, Strategy};
 pub use options::{BREAK_EVENS, BreakEvens, Options, Parallelism, Record, Sizes};
+pub use periodic::{PeriodicSteadyState, PeriodicSteadyStateResult};
 pub use pole_zero::{Mode, PoleZero, PoleZeroResult};
 pub use profile::{Profile, Work};
 pub use record::{RecordedSeries, RecordedValues, RecordedView, Recording};
@@ -591,6 +592,25 @@ pub enum SimulationError {
         periods: usize,
         /// The unknowns furthest from repeating over the last period, worst first.
         worst: Vec<String>,
+    },
+    /// No natural mode of an oscillator linearized at its operating point grows, so no
+    /// oscillation starts from it.
+    #[error(
+        "no natural mode of the circuit linearized at its operating point grows, so no \
+         oscillation starts from it"
+    )]
+    NoGrowingMode,
+    /// An oscillator's transient from its operating point did not stop growing.
+    #[error(
+        "the oscillation from the operating point, kicked along its fastest-growing mode, \
+         did not stop growing in {time:e} s: it returned {returns} times, each further from \
+         the one before"
+    )]
+    Unsettled {
+        /// The time the transient ran, in seconds.
+        time: f64,
+        /// Its returns to the hyperplane through the operating point across its kick.
+        returns: usize,
     },
     /// The options are out of range.
     #[error("invalid options: {0}")]

@@ -31,6 +31,7 @@ from jolty.plan import (
     Ac,
     DcSweep,
     Noise,
+    PeriodicSteadyState,
     PoleZero,
     Transient,
     decade,
@@ -51,7 +52,7 @@ type Score = Literal["relative", "mixed"]
 """How a quantity's error is judged: against its exact value, or against its exact
 value plus its scale, for a quantity that passes through or near zero."""
 
-type Analysis = Transient | DcSweep | Ac | Noise | PoleZero
+type Analysis = Transient | PeriodicSteadyState | DcSweep | Ac | Noise | PoleZero
 """An analysis a fixture runs."""
 
 
@@ -642,7 +643,7 @@ def rc_periodic() -> Fixture:
         "1 kHz, its time constant ten periods: one period",
         "the phasor's steady state, |H| sin(ωt + arg H), in mpmath",
         driven_rc(resistance, capacitance, frequency),
-        Transient(stop=1e-3 * s, periodic=True),
+        PeriodicSteadyState(period=1e-3 * s),
         ("out",),
         (ScoredOutput("v(out)", "mixed", float(abs(gain)), "V"),),
         compare,
