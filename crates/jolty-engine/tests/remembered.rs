@@ -180,7 +180,7 @@ fn analyses() -> Vec<Analysis> {
             outputs: vec!["out".to_owned()],
             of: Differentiated::Transient(transient),
         }),
-        Analysis::OperatingPoints(OperatingPoints { most: 2 }),
+        Analysis::OperatingPoints(OperatingPoints { max_solutions: 2 }),
     ]
 }
 
@@ -233,10 +233,10 @@ fn options_that_change_the_dc_solution_solve_it_again() {
     point(&mut simulator, &Options::default());
     // A transient's options and the memory leave the DC solution as it is.
     let transient = Options {
-        transient_iterations: 50,
+        max_transient_iterations: 50,
         truncation_tolerance: 1.0,
         charge_tolerance: 1e-18,
-        memory: 4.0,
+        max_memory: 4.0,
         ..Options::default()
     };
     assert_eq!(

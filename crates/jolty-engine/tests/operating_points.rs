@@ -35,7 +35,12 @@ fn search(
 ) -> Result<(Simulator, Vec<OperatingPointResult>), SimulationError> {
     let mut simulator = Simulator::new(circuit, &Library::standard(), &Conditions::default())
         .expect("the circuit elaborates");
-    let points = simulator.operating_points(&OperatingPoints { most }, &Options::default())?;
+    let points = simulator.operating_points(
+        &OperatingPoints {
+            max_solutions: most,
+        },
+        &Options::default(),
+    )?;
     Ok((simulator, points))
 }
 

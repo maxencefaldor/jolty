@@ -78,7 +78,7 @@ An analysis fails when its record names a path the circuit does not have, saying
 Whatever the record names, an operating point and a transient also record the instances rated for a current or a power, whose currents the [checks of ratings](checks.md#on-analyses-results) read, and the plan's own operating points, as `jolty simulate` runs them, every transistor, whose regions their report lists; specs, plots, schematics and the operating point's rules read the unknowns alone.
 A plan's corners, Monte Carlo samples, worst-case runs and spot checks record no more than that, since only specs read their results.
 
-Recording costs memory at every point: a MOSFET recorded keeps 48 numbers, or 114 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and the `memory` option bounds them all (see [Options](simulation.md#options)).
+Recording costs memory at every point: a MOSFET recorded keeps 48 numbers, or 114 where its gate oxide adds three unknowns, while its nets hold a few unknowns, and the `max_memory` option bounds them all (see [Options](simulation.md#options)).
 Reading what a result did not record raises a `KeyError` that suggests the closest names it holds and how to record the instance:
 
 ```text

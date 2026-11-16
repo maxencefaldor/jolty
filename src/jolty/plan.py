@@ -103,7 +103,7 @@ class OperatingPoint(Recorded):
 
 @dataclass(frozen=True, slots=True)
 class OperatingPoints(Recorded):
-    """Every DC solution the circuit has, up to `most`, the operating point first.
+    """The circuit's DC solutions, up to `max_solutions`, the operating point first.
 
     Once the operating point is found, the circuit's equations deflated by the
     solutions found so far lead Newton iteration to another, until none does, so a
@@ -111,7 +111,7 @@ class OperatingPoints(Recorded):
     reference its zero-current state beside its working one.
     """
 
-    most: int = 8
+    max_solutions: int = 8
 
     def __post_init__(self) -> None:
         """Checks that the search finds a solution or more.
@@ -121,13 +121,16 @@ class OperatingPoints(Recorded):
             TypeError: When the record is a string, or holds anything but strings.
         """
         Recorded.__post_init__(self)
-        if self.most < 1:
-            message = f"a search for operating points finds 1 or more, not {self.most}"
+        if self.max_solutions < 1:
+            message = (
+                "a search for operating points finds 1 or more, "
+                f"not {self.max_solutions}"
+            )
             raise ValueError(message)
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
-        return {"operating_points": {"most": self.most}}
+        return {"operating_points": {"max_solutions": self.max_solutions}}
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,10 +446,10 @@ class Options:
     current_tolerance: float | None = None
     charge_tolerance: float | None = None
     gmin: float | None = None
-    dc_iterations: int | None = None
-    transient_iterations: int | None = None
+    max_dc_iterations: int | None = None
+    max_transient_iterations: int | None = None
     truncation_tolerance: float | None = None
-    memory: float | None = None
+    max_memory: float | None = None
     profile: bool | None = None
     """Whether a transient measures where its time goes, into its statistics' profile;
     it changes no other result."""

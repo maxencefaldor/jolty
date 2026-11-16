@@ -62,7 +62,7 @@ impl Simulator {
     ///
     /// Returns [`SimulationError::InvalidAnalysis`] for a circuit with logic, whose state
     /// shooting does not carry, [`SimulationError::TooMuchMemory`] when its dense matrices
-    /// would hold more than the options' `memory`, [`SimulationError::NoSteadyState`] when
+    /// would hold more than the options' `max_memory`, [`SimulationError::NoSteadyState`] when
     /// the periods do not converge, and the errors of [`Simulator::transient`], each
     /// period's results holding what the dense matrices leave of the memory.
     pub(crate) fn periodic_steady_state(
@@ -82,7 +82,7 @@ impl Simulator {
         let dense = DENSE_MATRICES * size * size;
         options.hold("periodic steady state", unknowns, dense)?;
         let period_options = Options {
-            memory: options.memory - dense / NUMBERS_PER_GIB,
+            max_memory: options.max_memory - dense / NUMBERS_PER_GIB,
             ..options.clone()
         };
         let point = self.operating_point(options)?;

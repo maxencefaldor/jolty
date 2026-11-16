@@ -23,7 +23,7 @@
 //! with the sparse factorization of `G + sC` just beside it.
 //!
 //! The dense pencils take memory as the square of the unknowns, so an analysis checks
-//! them against its options' `memory` before it makes them, and fails if they pass it.
+//! them against its options' `max_memory` before it makes them, and fails if they pass it.
 
 use std::cmp::Ordering;
 
@@ -130,7 +130,7 @@ impl Simulator {
     /// [`SimulationError::Singular`] when the linearized circuit is singular at every
     /// frequency; [`SimulationError::Unconverged`] when the QZ iteration does not
     /// converge; [`SimulationError::TooMuchMemory`] when its dense matrices would hold
-    /// more than the options' `memory`; and the errors of [`Simulator::operating_point`].
+    /// more than the options' `max_memory`; and the errors of [`Simulator::operating_point`].
     pub fn pole_zero(
         &mut self,
         analysis: &PoleZero,
@@ -250,7 +250,7 @@ impl Simulator {
         })
     }
 
-    /// Checks that the dense pencils of a pole-zero analysis fit the options' `memory`,
+    /// Checks that the dense pencils of a pole-zero analysis fit the options' `max_memory`,
     /// `bordered` if it finds zeros too, its matrices a row larger.
     fn pencils_fit(&self, bordered: bool, options: &Options) -> Result<(), SimulationError> {
         let rows = self.elaborated.unknowns.len() + usize::from(bordered);

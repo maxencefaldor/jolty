@@ -625,12 +625,12 @@ impl Simulator {
         let longest = self.longest_step(transient)?;
         let shortest = longest * SMALLEST_STEP_FRACTION;
         let width = self.point_width();
-        let most_held = options.memory * NUMBERS_PER_GIB;
+        let most_held = options.max_memory * NUMBERS_PER_GIB;
         if transient.stop / longest * width > most_held {
             return Err(SimulationError::TooManyPoints {
                 time: 0.0,
                 step: longest,
-                memory: options.memory,
+                max_memory: options.max_memory,
             });
         }
         let mut held = width;
@@ -695,7 +695,7 @@ impl Simulator {
                             return Err(SimulationError::TooManyPoints {
                                 time: point.time,
                                 step: point.length,
-                                memory: options.memory,
+                                max_memory: options.max_memory,
                             });
                         }
                         times.push(point.time);
@@ -790,7 +790,12 @@ impl Simulator {
             alpha: formula.alpha,
             history: &stepper.terms,
         };
-        let solved = self.newton(&mut candidate, mode, options, options.transient_iterations);
+        let solved = self.newton(
+            &mut candidate,
+            mode,
+            options,
+            options.max_transient_iterations,
+        );
         let Ok(iterations) = solved else {
             if solved == Err(Failure::Diverged) && candidate.iter().all(|value| value.is_finite()) {
                 stepper.resume = Some(candidate.clone());

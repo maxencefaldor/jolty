@@ -244,7 +244,10 @@ fn measures_read_noise_poles_and_solutions() {
         Ok(smallest(natural_frequencies(&found.poles)))
     );
 
-    let solutions = run(&mut simulator, &json!({"operating_points": {"most": 3}}));
+    let solutions = run(
+        &mut simulator,
+        &json!({"operating_points": {"max_solutions": 3}}),
+    );
     assert_eq!(measure(Measure::Solutions, &solutions), Ok(1.0));
 }
 

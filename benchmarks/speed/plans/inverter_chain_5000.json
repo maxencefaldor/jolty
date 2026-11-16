@@ -12,7 +12,7 @@
     ]
   ],
   "options": {
-    "memory": 4.0
+    "max_memory": 4.0
   },
   "monte_carlo": null
 }

@@ -83,7 +83,7 @@ A simulation checks it at its plan's operating point, on circuits of at most 500
 
 The circuit linearized at its operating point has a pole whose real part is above a millionth of its magnitude: a natural mode grows away from the operating point, as an oscillation that builds up or a latch that tips, so the circuit does not rest there.
 A real pole, or a conjugate pair, raises one diagnostic, naming the nets where its mode's amplitude is at least half its largest.
-A simulation checks it at its plan's operating point, on circuits of at most 500 unknowns whose linearization fits its memory option.
+A simulation checks it at its plan's operating point, on circuits of at most 500 unknowns whose linearization fits its max_memory option.
 
 ## phase-margin
 

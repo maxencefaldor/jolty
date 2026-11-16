@@ -54,8 +54,8 @@ SPICE_OPTIONS: Final = {
     "current_tolerance": "abstol",
     "charge_tolerance": "chgtol",
     "gmin": "gmin",
-    "dc_iterations": "itl1",
-    "transient_iterations": "itl4",
+    "max_dc_iterations": "itl1",
+    "max_transient_iterations": "itl4",
     "truncation_tolerance": "trtol",
 }
 """ngspice's ``.options`` name of each option of [`Options`][jolty.plan.Options] it

@@ -701,9 +701,9 @@ fn a_transient_holds_what_it_records_against_its_memory() {
     let mut simulator = simulator(&bench());
     // Four thousand numbers: a hundred points of every device's hundred-odd numbers
     // overflow them, and a thousand points of the three unknowns alone fit.
-    let memory = 4000.0 / 134_217_728.0;
+    let max_memory = 4000.0 / 134_217_728.0;
     let every = Options {
-        memory,
+        max_memory,
         record: Record::All,
         ..Options::default()
     };
@@ -713,7 +713,7 @@ fn a_transient_holds_what_it_records_against_its_memory() {
         "{error}"
     );
     let unknowns = Options {
-        memory,
+        max_memory,
         ..Options::default()
     };
     let waveforms = simulator.transient(&pulse(), &unknowns).unwrap();

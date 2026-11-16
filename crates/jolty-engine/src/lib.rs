@@ -535,7 +535,7 @@ pub enum SimulationError {
     },
     /// A transient's results would hold more numbers than its options let it keep.
     #[error(
-        "the transient's results would pass {memory:?} GiB before it stops, its steps \
+        "the transient's results would pass {max_memory:?} GiB before it stops, its steps \
          {step:?} s long at t = {time:?} s"
     )]
     TooManyPoints {
@@ -543,14 +543,14 @@ pub enum SimulationError {
         time: f64,
         /// The length of its steps there, in seconds.
         step: f64,
-        /// The gibibytes its results may hold: its `memory` option, less what a periodic
+        /// The gibibytes its results may hold: its `max_memory` option, less what a periodic
         /// steady state's dense matrices hold beside them.
-        memory: f64,
+        max_memory: f64,
     },
     /// An analysis's dense matrices would hold more numbers than its options let it.
     #[error(
         "the {analysis}'s dense matrices of {rows} rows would hold {needed:?} GiB, more than \
-         its `memory` option's {memory:?} GiB"
+         its `max_memory` option's {max_memory:?} GiB"
     )]
     TooMuchMemory {
         /// The analysis, such as `pole-zero analysis`.
@@ -559,8 +559,8 @@ pub enum SimulationError {
         rows: usize,
         /// The gibibytes it would hold at once.
         needed: f64,
-        /// The gibibytes it may hold, its `memory` option.
-        memory: f64,
+        /// The gibibytes it may hold, its `max_memory` option.
+        max_memory: f64,
     },
     /// A sensitivity analysis names an output that is no unknown.
     #[error("there is no unknown named `{0}`")]

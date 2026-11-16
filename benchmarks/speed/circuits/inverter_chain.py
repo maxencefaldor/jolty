@@ -121,7 +121,7 @@ def build(length: int = LENGTHS[0]) -> Component:
 
 def plan() -> Plan:
     """Forty nanoseconds from the operating point."""
-    return Plan({"tran": Transient(stop=40 * ns)}, options=Options(memory=MEMORY))
+    return Plan({"tran": Transient(stop=40 * ns)}, options=Options(max_memory=MEMORY))
 
 
 def circuits() -> dict[str, Component]:

@@ -70,13 +70,13 @@ pub struct OperatingPointResult {
     pub strategy: Strategy,
 }
 
-/// A search for every DC solution of the circuit, up to `most`: the operating point, then
+/// A search for every DC solution of the circuit, up to `max_solutions`: the operating point, then
 /// each solution that the equations deflated by those found so far lead to.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperatingPoints {
     /// The most solutions to find; at least 1.
-    pub most: usize,
+    pub max_solutions: usize,
 }
 
 /// A DC solution of the analog circuit, with its logic drivers held.
@@ -136,9 +136,9 @@ fn read_at_dc(options: &Options) -> Options {
     let unread = Options::default();
     Options {
         charge_tolerance: unread.charge_tolerance,
-        transient_iterations: unread.transient_iterations,
+        max_transient_iterations: unread.max_transient_iterations,
         truncation_tolerance: unread.truncation_tolerance,
-        memory: unread.memory,
+        max_memory: unread.max_memory,
         record: unread.record,
         profile: unread.profile,
         parallelism: Parallelism {
@@ -158,7 +158,7 @@ fn read_by_equations(options: &Options) -> Options {
         relative_tolerance: unread.relative_tolerance,
         voltage_tolerance: unread.voltage_tolerance,
         current_tolerance: unread.current_tolerance,
-        dc_iterations: unread.dc_iterations,
+        max_dc_iterations: unread.max_dc_iterations,
         ..read_at_dc(options)
     }
 }
@@ -314,7 +314,7 @@ impl Simulator {
         self.state.solves += 1;
         if let Some((_, solved)) = start
             && let Some(taken) = solved.iterations
-            && let Some(left) = options.dc_iterations.checked_sub(taken)
+            && let Some(left) = options.max_dc_iterations.checked_sub(taken)
         {
             let mut values = solved.values;
             let direct = Mode::Dc {
@@ -418,7 +418,7 @@ impl Simulator {
         found
     }
 
-    /// Finds the operating point, then the other DC solutions, up to `search.most` in all,
+    /// Finds the operating point, then the other DC solutions, up to `search.max_solutions` in all,
     /// in the order found: the equations deflated by the solutions found so far lead
     /// Newton iteration, gmin stepping or source stepping from zero to another, or else
     /// Newton iteration from the reflection of a solution found through another, or from
@@ -439,13 +439,13 @@ impl Simulator {
         options.parallelism.confined(|| {
             self.solvable()?;
             self.prepare(options)?;
-            if search.most == 0 {
+            if search.max_solutions == 0 {
                 return Err(SimulationError::InvalidAnalysis(
                     "a search for operating points finds one or more".to_owned(),
                 ));
             }
             let (first, point) = self.settled_from_zero(options)?;
-            if search.most == 1 {
+            if search.max_solutions == 1 {
                 return Ok(vec![point]);
             }
             // The search starts with every logic driver at its unknown level, as the operating
@@ -453,7 +453,7 @@ impl Simulator {
             self.reset_logic();
             let mut known = vec![first.values];
             let mut others = Vec::new();
-            while known.len() < search.most {
+            while known.len() < search.max_solutions {
                 let Some(solved) = self.another(&known, options) else {
                     break;
                 };
@@ -519,7 +519,8 @@ impl Simulator {
             deflated: known,
         };
         for mut values in starts {
-            if let Ok(iterations) = self.newton(&mut values, direct, options, options.dc_iterations)
+            if let Ok(iterations) =
+                self.newton(&mut values, direct, options, options.max_dc_iterations)
                 && self.distinct(known, &values, options)
             {
                 return Some(Solved {
@@ -702,7 +703,8 @@ impl Simulator {
             anchor: None,
             deflated,
         };
-        if let Ok(iterations) = self.newton(&mut values, direct, options, options.dc_iterations) {
+        if let Ok(iterations) = self.newton(&mut values, direct, options, options.max_dc_iterations)
+        {
             return Ok(Solved {
                 values,
                 strategy: Strategy::Direct,
@@ -795,13 +797,13 @@ impl Simulator {
                 gmin,
                 ..options.clone()
             };
-            match self.newton(values, mode, &stepping, options.dc_iterations) {
+            match self.newton(values, mode, &stepping, options.max_dc_iterations) {
                 Ok(_) if conductance <= options.gmin => break,
                 Ok(iterations) => {
                     last = Some((conductance, values.to_vec()));
-                    if iterations < options.dc_iterations / 4 {
+                    if iterations < options.max_dc_iterations / 4 {
                         divisor = (divisor * divisor.sqrt()).min(STEPPED_DIVISOR);
-                    } else if iterations > 3 * options.dc_iterations / 4 {
+                    } else if iterations > 3 * options.max_dc_iterations / 4 {
                         divisor = divisor.sqrt();
                         // Stage after stage barely converging, the conductance would creep
                         // toward gmin without end: the stepping has stalled.
@@ -834,7 +836,7 @@ impl Simulator {
                     anchor: None,
                     deflated,
                 };
-                self.newton(values, direct, options, options.dc_iterations)
+                self.newton(values, direct, options, options.max_dc_iterations)
                     .map(|_| ())
             }
         }
@@ -865,7 +867,7 @@ impl Simulator {
                 anchor: Some(&last),
                 deflated,
             };
-            match self.newton(values, mode, options, options.dc_iterations) {
+            match self.newton(values, mode, options, options.max_dc_iterations) {
                 Ok(iterations) => {
                     let settled = values.iter().zip(&last).zip(&self.elaborated.unknowns).all(
                         |((value, before), unknown)| {
@@ -884,10 +886,10 @@ impl Simulator {
                             deflated,
                         };
                         return self
-                            .newton(values, direct, options, options.dc_iterations)
+                            .newton(values, direct, options, options.max_dc_iterations)
                             .map(|_| ());
                     }
-                    held /= if iterations < options.dc_iterations / 4 {
+                    held /= if iterations < options.max_dc_iterations / 4 {
                         STEPPED_DIVISOR
                     } else {
                         STEPPED_DIVISOR.sqrt()
@@ -928,7 +930,7 @@ impl Simulator {
                     deflated,
                 },
                 options,
-                options.dc_iterations,
+                options.max_dc_iterations,
             ) {
                 Ok(_) => {
                     scale = next;

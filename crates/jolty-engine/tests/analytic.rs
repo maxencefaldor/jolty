@@ -1467,7 +1467,7 @@ fn a_transient_whose_results_would_fill_the_memory_fails_at_once() {
         SimulationError::TooManyPoints {
             time: 0.0,
             step: 1e-12,
-            memory: 2.0
+            max_memory: 2.0
         }
     );
     assert_eq!(

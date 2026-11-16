@@ -1266,7 +1266,7 @@ fn latch() -> Circuit {
 /// solutions found before, finds them spread over threads as it finds them on one.
 #[test]
 fn a_deflated_search_spread_over_threads_finds_what_it_finds_on_one() {
-    let search = Analysis::OperatingPoints(OperatingPoints { most: 8 });
+    let search = Analysis::OperatingPoints(OperatingPoints { max_solutions: 8 });
     spread_finds_what_one_thread_finds(&latch(), &[search], &Options::default(), &SPREADS);
 }
 
@@ -1309,7 +1309,9 @@ fn a_dissected_factorization_finds_the_same_on_any_number_of_threads() {
         ),
         (
             latch(),
-            vec![Analysis::OperatingPoints(OperatingPoints { most: 8 })],
+            vec![Analysis::OperatingPoints(OperatingPoints {
+                max_solutions: 8,
+            })],
             dissecting(&Options::default(), 2),
         ),
     ];

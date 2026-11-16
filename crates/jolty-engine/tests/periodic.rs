@@ -290,7 +290,7 @@ fn a_periodic_steady_state_whose_matrices_would_fill_the_memory_fails_at_once() 
         periodic: true,
     };
     let options = Options {
-        memory: 1e-9,
+        max_memory: 1e-9,
         ..Options::default()
     };
     let error = simulator
@@ -302,13 +302,13 @@ fn a_periodic_steady_state_whose_matrices_would_fill_the_memory_fails_at_once() 
             analysis: "periodic steady state",
             rows: 3,
             needed: 14.0 * 9.0 / 134_217_728.0,
-            memory: 1e-9,
+            max_memory: 1e-9,
         }
     );
     assert_eq!(
         error.to_string(),
         "the periodic steady state's dense matrices of 3 rows would hold \
-         9.387731552124023e-7 GiB, more than its `memory` option's 1e-9 GiB"
+         9.387731552124023e-7 GiB, more than its `max_memory` option's 1e-9 GiB"
     );
     assert_eq!(simulator.operating_point_solves(), 0);
 }

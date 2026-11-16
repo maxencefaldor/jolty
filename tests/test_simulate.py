@@ -345,7 +345,7 @@ def test_a_latch_has_two_states_and_a_balance_between_them() -> None:
     single = Simulation(low_pass()).run(OperatingPoints())
     assert len(single.points) == 1
     with pytest.raises(ValueError, match="finds 1 or more, not 0"):
-        OperatingPoints(most=0)
+        OperatingPoints(max_solutions=0)
 
 
 def test_a_low_pass_has_one_real_pole_and_no_zero() -> None:
@@ -363,11 +363,11 @@ def test_a_low_pass_has_one_real_pole_and_no_zero() -> None:
 
 def test_dense_matrices_past_the_memory_fail_before_they_are_made() -> None:
     simulation = Simulation(low_pass())
-    tiny = Options(memory=1e-9)
+    tiny = Options(max_memory=1e-9)
     with pytest.raises(
         SimulationError,
         match=r"pole-zero analysis's dense matrices of 3 rows would hold .* GiB, more "
-        r"than its `memory` option's 1e-9 GiB",
+        r"than its `max_memory` option's 1e-9 GiB",
     ):
         simulation.run(PoleZero(), tiny)
     periodic = Transient(stop=1 * us, periodic=True)
@@ -671,9 +671,9 @@ def test_a_transient_holds_only_what_it_records_against_its_memory() -> None:
     with pytest.raises(SimulationError, match="the transient's results would pass"):
         simulation.run(
             Transient(stop=5 * us, record=EVERYTHING),
-            Options(memory=memory),
+            Options(max_memory=memory),
         )
-    waveforms = simulation.run(Transient(stop=5 * us), Options(memory=memory))
+    waveforms = simulation.run(Transient(stop=5 * us), Options(max_memory=memory))
     assert waveforms.currents.shape == (len(waveforms.times), 0)
     assert waveforms.conductances.shape == (len(waveforms.times), 0)
 

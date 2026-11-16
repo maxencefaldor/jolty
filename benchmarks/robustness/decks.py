@@ -303,8 +303,8 @@ class Deck:
             current_tolerance=read("abstol"),
             charge_tolerance=read("chgtol"),
             gmin=read("gmin"),
-            dc_iterations=iterations.get("itl1"),
-            transient_iterations=iterations.get("itl4"),
+            max_dc_iterations=iterations.get("itl1"),
+            max_transient_iterations=iterations.get("itl4"),
             truncation_tolerance=read("trtol"),
         )
 

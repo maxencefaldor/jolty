@@ -513,7 +513,9 @@ def analyses() -> list[Fixture]:
     conductance = 1e-9
 
     def every() -> Values:
-        found = simulation(deck_circuit(cubic)).run(OperatingPoints(most=8), TIGHT)
+        found = simulation(deck_circuit(cubic)).run(
+            OperatingPoints(max_solutions=8), TIGHT
+        )
         roots = sorted(float(v) for v in found.voltages("x"))
         return {f"v(x)#{index}": complex(root) for index, root in enumerate(roots)}
 

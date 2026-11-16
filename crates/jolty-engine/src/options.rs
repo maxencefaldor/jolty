@@ -249,10 +249,10 @@ pub struct Options {
     /// The conductance placed across every nonlinear junction, in siemens; default 1e-12.
     pub gmin: f64,
     /// The Newton iterations allowed for one DC solution; default 100.
-    pub dc_iterations: usize,
+    pub max_dc_iterations: usize,
     /// The Newton iterations one time step takes before it goes on only while each step is
     /// shorter than the one before, and is shortened once one is not; default 10.
-    pub transient_iterations: usize,
+    pub max_transient_iterations: usize,
     /// How many times the tolerances a step's truncation error may reach, as SPICE estimates
     /// the error, before the step is rejected; default 7, SPICE's `TRTOL`. SPICE's estimate
     /// leaves out a factorial, so the error itself may reach twice as many after a step of
@@ -264,7 +264,7 @@ pub struct Options {
     /// that would hold more fails instead of filling the memory: a transient whose steps
     /// shrink to a crawl, once it passes the limit, and a dense analysis before it begins;
     /// default 2.
-    pub memory: f64,
+    pub max_memory: f64,
     /// What the results record of the devices beside the unknowns; by default nothing.
     pub record: Record,
     /// Whether a transient measures where its time goes, into its statistics' profile; by
@@ -284,10 +284,10 @@ impl Default for Options {
             current_tolerance: 1e-12,
             charge_tolerance: 1e-14,
             gmin: 1e-12,
-            dc_iterations: 100,
-            transient_iterations: 10,
+            max_dc_iterations: 100,
+            max_transient_iterations: 10,
             truncation_tolerance: 7.0,
-            memory: 2.0,
+            max_memory: 2.0,
             record: Record::default(),
             profile: false,
             parallelism: Parallelism::default(),
@@ -323,7 +323,7 @@ impl Options {
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::TooMuchMemory`] when they would pass its `memory`.
+    /// Returns [`SimulationError::TooMuchMemory`] when they would pass its `max_memory`.
     pub(crate) fn hold(
         &self,
         analysis: &'static str,
@@ -331,12 +331,12 @@ impl Options {
         numbers: f64,
     ) -> Result<(), SimulationError> {
         let needed = numbers / NUMBERS_PER_GIB;
-        if needed > self.memory {
+        if needed > self.max_memory {
             return Err(SimulationError::TooMuchMemory {
                 analysis,
                 rows,
                 needed,
-                memory: self.memory,
+                max_memory: self.max_memory,
             });
         }
         Ok(())
@@ -354,7 +354,7 @@ impl Options {
             ("current_tolerance", self.current_tolerance),
             ("charge_tolerance", self.charge_tolerance),
             ("truncation_tolerance", self.truncation_tolerance),
-            ("memory", self.memory),
+            ("max_memory", self.max_memory),
         ];
         if let Some((name, value)) = tolerances.into_iter().find(|&(_, value)| value <= 0.0) {
             return Err(SimulationError::InvalidOptions(format!(
@@ -367,7 +367,7 @@ impl Options {
                 self.gmin
             )));
         }
-        if self.dc_iterations == 0 || self.transient_iterations == 0 {
+        if self.max_dc_iterations == 0 || self.max_transient_iterations == 0 {
             return Err(SimulationError::InvalidOptions(
                 "iteration limits must be at least 1".to_owned(),
             ));

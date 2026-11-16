@@ -266,7 +266,7 @@ impl Simulator {
             }
             let mut trial = solution.clone();
             if self
-                .newton(&mut trial, direct, options, options.dc_iterations)
+                .newton(&mut trial, direct, options, options.max_dc_iterations)
                 .is_ok()
             {
                 solution = trial;

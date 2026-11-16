@@ -290,7 +290,7 @@ fn a_pencil_that_would_fill_the_memory_fails_at_once() {
     let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
         .expect("the circuit elaborates");
     let options = Options {
-        memory: 1e-9,
+        max_memory: 1e-9,
         ..Options::default()
     };
     let analysis = PoleZero {
@@ -307,13 +307,13 @@ fn a_pencil_that_would_fill_the_memory_fails_at_once() {
             analysis: "pole-zero analysis",
             rows: 4,
             needed: 128.0 / 134_217_728.0,
-            memory: 1e-9,
+            max_memory: 1e-9,
         }
     );
     assert_eq!(
         error.to_string(),
         "the pole-zero analysis's dense matrices of 4 rows would hold 9.5367431640625e-7 \
-         GiB, more than its `memory` option's 1e-9 GiB"
+         GiB, more than its `max_memory` option's 1e-9 GiB"
     );
     // The poles alone take the pencil of the unknowns, and so do the modes that grow.
     let poles = PoleZero::default();
