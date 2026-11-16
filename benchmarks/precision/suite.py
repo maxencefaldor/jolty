@@ -23,13 +23,12 @@ Usage::
 
 The results go to ``benchmarks/precision/results/<commit>.json``, ``-dirty`` for a
 changed tree, a run adding its fixtures to what an earlier one on the same commit
-wrote; the diagrams, one per fixture, and the table at defaults go to the directory of
-the same name. ``benchmarks/precision/README.md`` says what each fixture measures, and
-what the first diagrams found.
+wrote; the diagrams, one per fixture, the table at defaults and the table at equal
+error go to the directory of the same name. ``benchmarks/precision/README.md`` says
+what each fixture measures, and what the first diagrams found.
 """
 
 import math
-import re
 import statistics
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -56,6 +55,7 @@ from measuring import (
 from pydantic import BaseModel, Field
 from simulators import (
     RUSAGE,
+    XYCE_STEPS,
     Jolty,
     Ngspice,
     Simulator,
@@ -64,7 +64,7 @@ from simulators import (
     command,
     netlist,
     runner,
-    trouble,
+    stopped,
 )
 
 from jolty import circuit, foundry, plan, plots, results
@@ -110,12 +110,6 @@ XYCE_DEFAULTS: Final = {
 operating point and a DC sweep, ``NONLIN``'s (``N_NLS_NLParams.C``, lines 444, 445 and
 448), and in a transient, ``NONLIN-TRAN``'s (lines 109 to 111), and its time steps'
 error, ``TIMEINT``'s (``N_TIA_TIAParams.C``, lines 102 and 104)."""
-
-XYCE_STEPS: Final = {
-    "accepted": re.compile(r"^\s*Successful Step\s+(\d+)", re.MULTILINE),
-    "rejected": re.compile(r"^\s*Failed Steps\s+(\d+)", re.MULTILINE),
-}
-"""What Xyce's timing table states of a transient's steps, accepted and rejected."""
 
 
 class Sweep(StrEnum):
@@ -410,25 +404,22 @@ def _xyce_found(
 ) -> Found:
     """What Xyce printed of the vectors a fixture reads, at its points.
 
-    Xyce prints no levels of a DC sweep, which steps through the plan's own.
+    Xyce prints no levels of a DC sweep, which steps through the plan's own, and its
+    noise densities themselves; else it reads as ngspice's plot does.
     """
     match analysis:
-        case Transient():
-            points = found.real("time")
         case plan.DcSweep(values=levels):
             points = np.array([level.to(VOLTAGE, "a level") for level in levels])
-        case Ac():
-            points = found.real("frequency")
             return Found(
-                points, {read: found.vectors[name] for read, name in vectors.items()}
+                points, {read: found.real(name) for read, name in vectors.items()}
             )
-        case _:
+        case Noise():
             return Found(found.real("frequency"), {"noise": found.real("onoise")})
-    return Found(points, {read: found.real(name) for read, name in vectors.items()})
+    return _spice_found(found, analysis, vectors)
 
 
 def _spice_found(
-    raw: ngspice.Result, analysis: object, vectors: Mapping[str, str]
+    raw: ngspice.Result | xyce.Result, analysis: object, vectors: Mapping[str, str]
 ) -> Found:
     """What ngspice's plot holds of the vectors a fixture reads, at its points."""
     match analysis:
@@ -553,12 +544,14 @@ def measure(  # noqa: PLR0913, PLR0917 - the fixtures, how they run, and their f
     repeats: int,
     output: Path,
     plot: Path | None,
+    digits: float | None,
 ) -> SuiteResults:
     """Runs the fixtures `names`, writes their results to `output`, and draws them.
 
-    Every fixture runs without names, in the `SIMULATORS` without simulators named;
-    given a results file to `plot`, it draws that file's diagrams and table instead.
-    Returns the results drawn.
+    Every fixture runs without names, in the `SIMULATORS` installed without
+    simulators named; given a results file to `plot`, it draws that file's diagrams
+    and tables instead, its table at equal error at `digits`. Returns the results
+    drawn.
 
     Raises:
         SystemExit: When a fixture named does not exist, or a simulator named does not
@@ -566,7 +559,7 @@ def measure(  # noqa: PLR0913, PLR0917 - the fixtures, how they run, and their f
     """
     if plot is not None:
         read = SuiteResults.model_validate(load(plot))
-        draw(read, plot.with_suffix(""))
+        draw(read, plot.with_suffix(""), digits)
         return read
     every = fixtures()
     unknown = [name for name in names if name not in every]
@@ -595,7 +588,7 @@ def measure(  # noqa: PLR0913, PLR0917 - the fixtures, how they run, and their f
         )
         save(output, document)
     print(f"\nmeasured in {duration(time.perf_counter() - started)}")
-    draw(document, output.with_suffix(""))
+    draw(document, output.with_suffix(""), digits)
     return document
 
 
@@ -668,7 +661,7 @@ def _run(
         )
     except JoltyError as error:
         message = str(error)
-        said = trouble(message) or message.splitlines()[0]
+        said = stopped(message)
         return begun.model_copy(update={"status": "failed", "message": said})
     try:
         compared = fixture.compare(measured.found)
@@ -712,16 +705,19 @@ STYLES: Final = {Sweep.RELTOL: "-", Sweep.SCALED: "--"}
 """Each sweep's line: solid for the relative tolerance alone, dashed for all scaled."""
 
 
-def draw(document: SuiteResults, directory: Path) -> None:
-    """Draws each fixture's diagram into `directory`, and writes the table at defaults.
+def draw(document: SuiteResults, directory: Path, digits: float | None) -> None:
+    """Draws each fixture's diagram into `directory`, and writes its tables there.
 
-    The table is printed too.
+    The table at defaults, which is printed too, and the table at equal error, at
+    `digits`.
     """
     directory.mkdir(parents=True, exist_ok=True)
     for name, measured in document.fixtures.items():
         diagram(name, measured, document).savefig(directory / f"{name}.png")
     table = defaults_table(document)
     (directory / "defaults.md").write_text(table + "\n", encoding="utf-8")
+    equal = equal_error_table(document, digits)
+    (directory / "equal-error.md").write_text(equal + "\n", encoding="utf-8")
     print(f"\n{table}")
     print(f"drew {len(document.fixtures)} diagrams into {directory}")
 

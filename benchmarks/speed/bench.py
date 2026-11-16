@@ -84,7 +84,6 @@ import hashlib
 import importlib
 import json
 import os
-import re
 import statistics
 import subprocess
 import sys
@@ -126,7 +125,7 @@ from simulators import (
     command,
     netlist,
     runner,
-    trouble,
+    stopped,
 )
 
 from jolty import circuit, cli, ir, plan, results, simulate
@@ -636,9 +635,6 @@ PRINTED: Final = 2
 what they write costs little beside what they solve, as other simulators' comparisons
 turn output off: the first two and the last two."""
 
-PROGRESS: Final = re.compile(r"Percent complete: (\S+) %")
-"""What Xyce prints of how far its transient has come."""
-
 
 def printed(loaded: Loaded) -> list[str]:
     """The nets of the fixture's top the views read: `PRINTED` at each end, in order."""
@@ -827,10 +823,10 @@ def ran(
                 options=ngspice.OPTIONS if matched else ngspice.NO_OPTIONS,
                 timeout=timeout,
             )
-            printed, seconds = found[-1].printed, found[-1].seconds
-            stated = RUSAGE["analysis_seconds"].search(printed)
-            if runner.solver not in printed or stated is None or seconds is None:
-                message = f"ngspice ran another solver, or stated no time:\n{printed}"
+            said, seconds = found[-1].printed, found[-1].seconds
+            stated = RUSAGE["analysis_seconds"].search(said)
+            if runner.solver not in said or stated is None or seconds is None:
+                message = f"ngspice ran another solver, or stated no time:\n{said}"
                 raise JoltyError(message)
             voltages = {
                 name: spice_voltages(each, analysis, vectors)
@@ -882,22 +878,6 @@ class Cell:
     """What stopped the runs, if anything did."""
 
 
-def stopped(error: JoltyError) -> str:
-    """What stopped a run, as a view's table says: what went wrong, and how far.
-
-    The first line of the error, then each line of what the simulator printed that
-    says what went wrong, and the last of Xyce's reports of how far its transient
-    came.
-    """
-    message = str(error)
-    first, *rest = message.splitlines() or [""]
-    said = [first.removesuffix(":"), *filter(None, [trouble("\n".join(rest))])]
-    reached = PROGRESS.findall(message)
-    if reached:
-        said.append(f"{float(reached[-1]):.3g}% of its transient done")
-    return "; ".join(said)
-
-
 def cell(
     options: str,
     work: Callable[[], Ran],
@@ -916,7 +896,7 @@ def cell(
     try:
         found, _ = repeated(work, once=once)
     except JoltyError as error:
-        return Cell(options, load, load_average(), failed=stopped(error))
+        return Cell(options, load, load_average(), failed=stopped(str(error)))
     return Cell(
         options,
         load,
@@ -988,7 +968,7 @@ def view_timings(  # noqa: PLR0913 - the view, its fixtures, and how they run
         try:
             found_tight = run(loaded, tightened(loaded.plan.options))
         except JoltyError as error:
-            print(f"  no reference: {stopped(error)}", flush=True)
+            print(f"  no reference: {stopped(str(error))}", flush=True)
             reference = None
         else:
             reference = {
@@ -1400,8 +1380,9 @@ class Bench(cli.CommandLine):
         default=None,
         gt=0,
         description=(
-            "The correct digits --view equal-error times each simulator to; on each "
-            "output, the most that every simulator reached by default."
+            "The correct digits --precision and --view equal-error time each "
+            "simulator to; on each output, the most every simulator reached by "
+            "default."
         ),
     )
     robustness: bool = Field(
@@ -1563,6 +1544,7 @@ def precision(arguments: Bench) -> suite.SuiteResults:
         arguments.repeats,
         arguments.output or results_path(Suite.PRECISION),
         arguments.plot,
+        arguments.digits,
     )
 
 
@@ -1570,14 +1552,9 @@ def equal_error(arguments: Bench) -> None:
     """Prints each simulator's least time to equal error, from the precision suite.
 
     The suite runs as ``--precision`` runs it, or its results file `--plot` names is
-    read, and the table goes beside its diagrams too.
+    read, and draws the table beside its diagrams.
     """
-    document = precision(arguments)
-    table = suite.equal_error_table(document, arguments.digits)
-    drawn = arguments.plot or arguments.output or results_path(Suite.PRECISION)
-    path = drawn.with_suffix("") / f"{View.EQUAL_ERROR}.md"
-    path.write_text(table + "\n", encoding="utf-8")
-    print(f"\n{table}")
+    print(f"\n{suite.equal_error_table(precision(arguments), arguments.digits)}")
 
 
 def instead(arguments: Bench) -> bool:

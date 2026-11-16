@@ -17,7 +17,7 @@ scripts/bench --view equal-error                # each simulator's least time to
 ```
 
 The results go to `results/<commit>.json`, `-dirty` for a working tree with changes to tracked files, and a later run on the same commit adds its fixtures to the file, so that the suite can run in pieces.
-The diagrams, one per fixture, and the table of each simulator at its defaults go to the directory of the same name beside it, which `--plot` draws again from the file.
+The diagrams, one per fixture, the table of each simulator at its defaults and the table at equal error go to the directory of the same name beside it, which `--plot` draws again from the file.
 The exact answers of the networks of 1,000 nodes take about a minute each on the machine below, and the whole suite took 6 min 18 s there, in three runs of its fixtures.
 
 ## Fixtures
@@ -107,8 +107,7 @@ At their defaults, the simulators reach the same digits on the RC steps and the 
 | `butterworth_poles` | 15.3, 31 µs | 14.7, 160 µs | unsupported |
 
 Few digits at defaults: on the RC steps the longest step, a fiftieth of the run, holds both simulators at 3.8 digits whatever their tolerances ask, and on the RLC and the tank both error controls accept about nine steps a period, which misses the tank's frequency by 5%.
-`results/<commit>/defaults.md` holds the table of every fixture.
-`scripts/bench --view equal-error` runs the suite and writes `results/<commit>/equal-error.md` beside it, each simulator's least time to the same correct digits of each output, the speed suite's view at equal error ([`../speed/README.md`](../speed/README.md)).
+`results/<commit>/defaults.md` holds the table of every fixture, and `equal-error.md` beside it each simulator's least time to the same correct digits of each output, at `--digits` or the most that every simulator reached: the speed suite's view at equal error ([`../speed/README.md`](../speed/README.md)), which `scripts/bench --view equal-error` prints.
 
 What the sweeps found:
 
