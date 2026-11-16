@@ -119,13 +119,13 @@ def value(
     In a transient or a DC sweep, the value is interpolated `at` a time or a level of
     the swept source.
     """
-    traced = _Signal(signal, reference)
+    traces = _Signal(signal, reference)
     _check(at, "at")
 
     def read(result: results.AnalysisResult) -> Reading:
         match result:
             case results.OperatingPointResult() if at is None:
-                values, dimension = traced.trace(result)
+                values, dimension = traces.trace(result)
                 return Reading(float(values), dimension)
             case results.OperatingPointResult():
                 message = f"an operating point holds one value, not one at {at}"
@@ -143,14 +143,14 @@ def value(
                     f"not {_kind(result)}"
                 )
                 raise MeasureError(message)
-        axis, values, dimension = _traced(result, traced, "a value")
+        axis, values, dimension = _traced(result, traces, "a value")
         if at is None:
             message = f"{_kind(result)} holds a value per {axis.noun}, and at is unset"
             raise MeasureError(message)
         point = axis.locate(at, "at")
         return Reading(float(np.interp(point, axis.points, values)), dimension)
 
-    described = str(traced) if at is None else f"{traced} at {at}"
+    described = str(traces) if at is None else f"{traces} at {at}"
     return Measure(analysis, described, None, read)
 
 
@@ -168,16 +168,16 @@ def gain(
     frequency `at` the frequency. Without an output, it is the loop gain of a
     stability analysis.
     """
-    traced, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(output, over, reference)
     _check(at, "at")
 
     def read(result: results.AnalysisResult) -> Reading:
-        frequencies, transfer = _transfer(result, traced, divisor)
+        frequencies, transfer = _transfer(result, traces, divisor)
         point = math.log(_frequency_axis(frequencies).locate(at, "at"))
         gains = _decibels(transfer)
         return Reading(float(np.interp(point, np.log(frequencies), gains)), "dB")
 
-    return Measure(analysis, f"gain of {_over(traced, over)} at {at}", "dB", read)
+    return Measure(analysis, f"gain of {_over(traces, over)} at {at}", "dB", read)
 
 
 def phase(
@@ -194,16 +194,16 @@ def phase(
     frequency and interpolated over log frequency `at` the frequency. Without an output,
     it is the loop gain's, of a stability analysis.
     """
-    traced, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(output, over, reference)
     _check(at, "at")
 
     def read(result: results.AnalysisResult) -> Reading:
-        frequencies, transfer = _transfer(result, traced, divisor)
+        frequencies, transfer = _transfer(result, traces, divisor)
         point = math.log(_frequency_axis(frequencies).locate(at, "at"))
         phases = np.degrees(np.unwrap(np.angle(transfer)))
         return Reading(float(np.interp(point, np.log(frequencies), phases)), "°")
 
-    return Measure(analysis, f"phase of {_over(traced, over)} at {at}", "°", read)
+    return Measure(analysis, f"phase of {_over(traces, over)} at {at}", "°", read)
 
 
 def bandwidth(
@@ -226,22 +226,22 @@ def bandwidth(
     if not drop > 0:
         message = f"a bandwidth's drop is positive, not {drop}"
         raise ValueError(message)
-    traced, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(output, over, reference)
 
     def read(result: results.AnalysisResult) -> Reading:
-        frequencies, transfer = _transfer(result, traced, divisor)
+        frequencies, transfer = _transfer(result, traces, divisor)
         gains = _decibels(transfer)
         below = _crossings(np.log(frequencies), gains, gains[0] - drop, "falling")
         if not below.size:
             lowest = format_si(frequencies[0], "Hz")
             message = (
-                f"the gain of {_over(traced, over)} stays within {drop:g} dB of its "
+                f"the gain of {_over(traces, over)} stays within {drop:g} dB of its "
                 f"gain at {lowest}"
             )
             raise MeasureError(message)
         return Reading(math.exp(below[0]), FREQUENCY)
 
-    described = f"{drop:g} dB bandwidth of {_over(traced, over)}"
+    described = f"{drop:g} dB bandwidth of {_over(traces, over)}"
     return Measure(analysis, described, None, read)
 
 
@@ -258,14 +258,14 @@ def crossover(
     response; without an output, it is the loop gain of a stability analysis, and this
     its crossover frequency. It is interpolated over log frequency.
     """
-    traced, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(output, over, reference)
 
     def read(result: results.AnalysisResult) -> Reading:
-        frequencies, transfer = _transfer(result, traced, divisor)
+        frequencies, transfer = _transfer(result, traces, divisor)
         logarithms = np.log(frequencies)
-        return Reading(math.exp(_unity(logarithms, transfer, traced, over)), FREQUENCY)
+        return Reading(math.exp(_unity(logarithms, transfer, traces, over)), FREQUENCY)
 
-    described = f"crossover frequency of {_over(traced, over)}"
+    described = f"crossover frequency of {_over(traces, over)}"
     return Measure(analysis, described, None, read)
 
 
@@ -282,16 +282,16 @@ def phase_margin(
     a small-signal response. Without an output, they are the loop gain's, of a
     stability analysis, and this is the loop's phase margin.
     """
-    traced, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(output, over, reference)
 
     def read(result: results.AnalysisResult) -> Reading:
-        frequencies, transfer = _transfer(result, traced, divisor)
+        frequencies, transfer = _transfer(result, traces, divisor)
         logarithms = np.log(frequencies)
-        unity = _unity(logarithms, transfer, traced, over)
+        unity = _unity(logarithms, transfer, traces, over)
         phases = np.degrees(np.unwrap(np.angle(transfer)))
         return Reading(180.0 + float(np.interp(unity, logarithms, phases)), "°")
 
-    return Measure(analysis, f"phase margin of {_over(traced, over)}", "°", read)
+    return Measure(analysis, f"phase margin of {_over(traces, over)}", "°", read)
 
 
 def gain_margin(
@@ -308,20 +308,20 @@ def gain_margin(
     output, they are the loop gain's, of a stability analysis, and this is the loop's
     gain margin.
     """
-    traced, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(output, over, reference)
 
     def read(result: results.AnalysisResult) -> Reading:
-        frequencies, transfer = _transfer(result, traced, divisor)
+        frequencies, transfer = _transfer(result, traces, divisor)
         logarithms = np.log(frequencies)
         phases = np.degrees(np.unwrap(np.angle(transfer)))
         inverted = _crossings(logarithms, phases, -180.0, "falling")
         if not inverted.size:
-            message = f"the phase of {_over(traced, over)} never falls through -180°"
+            message = f"the phase of {_over(traces, over)} never falls through -180°"
             raise MeasureError(message)
         gains = _decibels(transfer)
         return Reading(-float(np.interp(inverted[0], logarithms, gains)), "dB")
 
-    return Measure(analysis, f"gain margin of {_over(traced, over)}", "dB", read)
+    return Measure(analysis, f"gain margin of {_over(traces, over)}", "dB", read)
 
 
 def maximum(

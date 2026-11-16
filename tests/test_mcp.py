@@ -94,7 +94,7 @@ def test_tools_mirror_the_service_requests() -> None:
         "max_diagnostics",
         "schematic",
         "plot",
-        "probes",
+        "traces",
         "record",
         "min_solves_per_task",
         "min_instances_per_task",
@@ -195,6 +195,6 @@ def test_schematics_and_plots_come_back_as_images(script: Path) -> None:
         assert isinstance(image, ImageContent)
         assert image.mime_type == "image/png"
     results = script.with_name("divider.results.npz")
-    plotted = call("plot_results", {"results": str(results), "probes": ["out"]})
+    plotted = call("plot_results", {"results": str(results), "traces": ["out"]})
     assert "plotted sweep: " in text_of(plotted)
     assert isinstance(plotted.content[1], ImageContent)

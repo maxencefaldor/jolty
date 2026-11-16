@@ -20,7 +20,7 @@ from jolty import (
 from jolty.cli import main
 from jolty.files import Batch, save_results
 from jolty.plan import MonteCarlo, decade
-from jolty.plots import MAX_SERIES, default_probes, envelope, histograms, plot
+from jolty.plots import MAX_SERIES, default_traces, envelope, histograms, plot
 from jolty.specs import bandwidth, value
 from jolty.units import MHz, V, kHz, kohm, nF
 
@@ -41,9 +41,9 @@ def waveforms() -> results.TransientResult:
 
 
 def test_plots_draw_the_nets_the_top_names_by_default() -> None:
-    assert default_probes(UNKNOWNS) == ("in", "out")
+    assert default_traces(UNKNOWNS) == ("in", "out")
     unnamed = (results.Unknown("R1.b", "voltage"), results.Unknown("X1/a", "voltage"))
-    assert default_probes(unnamed) == ("R1.b", "X1/a")
+    assert default_traces(unnamed) == ("R1.b", "X1/a")
 
 
 def test_voltages_and_currents_never_share_an_axis() -> None:
@@ -215,7 +215,7 @@ def test_a_batch_draws_a_histogram_per_measurement_and_an_envelope_per_analysis(
         {"op": OperatingPoint(), "bode": Ac("V1", decade(1 * kHz, 10 * MHz, 5))},
         MonteCarlo(30),
         measures=[requirement.measure for requirement in requirements],
-        traced=["out", "V1:current"],
+        traces=["out", "V1:current"],
     )
     batch = Batch(
         found,
@@ -229,7 +229,7 @@ def test_a_batch_draws_a_histogram_per_measurement_and_an_envelope_per_analysis(
     ]
     # Each panel counts every run, and draws its requirement's bounds.
     assert [len(axes.lines) for axes in figure.axes] == [1, 2]
-    _, bode = found.traced
+    _, bode = found.traces
     figure = envelope("monte-carlo", bode)
     assert [axes.get_ylabel() for axes in figure.axes] == [
         "voltage magnitude",

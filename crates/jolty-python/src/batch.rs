@@ -426,7 +426,7 @@ struct Written<'a> {
     measured: &'a mut [f64],
     causes: &'a mut [i32],
     ended: &'a mut [bool],
-    traced: Vec<Buffer<'a>>,
+    traces: Vec<Buffer<'a>>,
     /// Each cause, in the order the runs that met it first ended.
     reasons: Vec<Cause>,
     /// Each cause's place among `reasons`, by its text.
@@ -445,7 +445,7 @@ struct Columns<'a> {
     temperature: f64,
     analyses: usize,
     measures: usize,
-    traced: &'a [Traced],
+    traces: &'a [Traced],
     written: Mutex<Written<'a>>,
     each: Option<Each>,
 }
@@ -547,10 +547,10 @@ impl Sink for Columns<'_> {
             .iter()
             .map(|column| self.value(column, &outcome.values))
             .collect();
-        let traced: Vec<Vec<Complex64>> = self
-            .traced
+        let traces: Vec<Vec<Complex64>> = self
+            .traces
             .iter()
-            .map(|traced| trace(&outcome, traced))
+            .map(|traces| trace(&outcome, traces))
             .collect();
         let ended: Vec<bool> = if outcome.problems.is_some() {
             vec![false; self.analyses]
@@ -593,9 +593,9 @@ impl Sink for Columns<'_> {
                     }
                 }
             }
-            for ((buffer, traced), found) in written.traced.iter_mut().zip(self.traced).zip(traced)
+            for ((buffer, traces), found) in written.traces.iter_mut().zip(self.traces).zip(traces)
             {
-                let stride = traced.points.len() * traced.unknowns.len();
+                let stride = traces.points.len() * traces.unknowns.len();
                 let range = row * stride..(row + 1) * stride;
                 match buffer {
                     Buffer::Real(buffer) => {
@@ -618,16 +618,16 @@ impl Sink for Columns<'_> {
     }
 }
 
-/// The values of the unknowns `traced` names at each of its points in `outcome`, points
+/// The values of the unknowns `traces` names at each of its points in `outcome`, points
 /// first, as complex numbers: not a number where the run did not end its analysis or has
 /// no such unknown.
-fn trace(outcome: &Outcome, traced: &Traced) -> Vec<Complex64> {
+fn trace(outcome: &Outcome, traces: &Traced) -> Vec<Complex64> {
     let missing = Complex64::new(f64::NAN, f64::NAN);
-    let mut found = vec![missing; traced.points.len() * traced.unknowns.len()];
-    let Some(Ok(result)) = outcome.results.get(traced.analysis) else {
+    let mut found = vec![missing; traces.points.len() * traces.unknowns.len()];
+    let Some(Ok(result)) = outcome.results.get(traces.analysis) else {
         return found;
     };
-    let columns: Vec<Option<usize>> = traced
+    let columns: Vec<Option<usize>> = traces
         .unknowns
         .iter()
         .map(|&unknown| outcome.column(unknown))
@@ -640,7 +640,7 @@ fn trace(outcome: &Outcome, traced: &Traced) -> Vec<Complex64> {
         }
     };
     let real = |values: &[f64], column: usize| values.get(column).map(|&value| value.into());
-    match (result, &traced.points) {
+    match (result, &traces.points) {
         (jolty_engine::AnalysisResult::OperatingPoint(point), Points::Point) => {
             put(0, &|column| real(&point.values, column));
         }
@@ -709,7 +709,7 @@ pub(crate) struct Request {
     pub(crate) analyses: Vec<(String, String)>,
     pub(crate) runs: Range<u64>,
     pub(crate) measures: Vec<(usize, Py<measure::Measure>)>,
-    pub(crate) traced: Vec<(usize, Vec<usize>)>,
+    pub(crate) traces: Vec<(usize, Vec<usize>)>,
     pub(crate) each: Option<Py<PyAny>>,
 }
 
@@ -720,7 +720,7 @@ struct Arrays<'py> {
     causes: Bound<'py, PyArray1<i32>>,
     ended: Bound<'py, PyArray1<bool>>,
     /// Each traced analysis's values, real or complex, in the order of the traced.
-    traced: Vec<Traces<'py>>,
+    traces: Vec<Traces<'py>>,
 }
 
 /// A traced analysis's array: complex for a small-signal response's phasors.
@@ -734,7 +734,7 @@ enum Traces<'py> {
 struct Prepared {
     batch: Batch,
     runs: Range<u64>,
-    traced: Vec<Traced>,
+    traces: Vec<Traced>,
     analyses: usize,
     measures: usize,
 }
@@ -750,8 +750,8 @@ fn prepare(elaborated: &Arc<jolty_engine::Elaborated>, request: &Request) -> PyR
             Ok((read, options))
         })
         .collect::<PyResult<_>>()?;
-    let traced: Vec<Traced> = request
-        .traced
+    let traces: Vec<Traced> = request
+        .traces
         .iter()
         .map(|(analysis, unknowns)| {
             let (found, _) = analyses
@@ -778,7 +778,7 @@ fn prepare(elaborated: &Arc<jolty_engine::Elaborated>, request: &Request) -> PyR
     Ok(Prepared {
         batch,
         runs: request.runs.clone(),
-        traced,
+        traces,
         analyses: count,
         measures: width,
     })
@@ -788,12 +788,12 @@ impl<'py> Arrays<'py> {
     /// The arrays of `runs` runs of `prepared`, varying `columns` numbers, each element not
     /// a number, or no cause, or an analysis not ended, until a run writes it.
     fn new(py: Python<'py>, runs: usize, columns: usize, prepared: &Prepared) -> Self {
-        let traced = prepared
-            .traced
+        let traces = prepared
+            .traces
             .iter()
-            .map(|traced| {
-                let len = runs * traced.points.len() * traced.unknowns.len();
-                if matches!(traced.points, Points::Frequencies(_)) {
+            .map(|traces| {
+                let len = runs * traces.points.len() * traces.unknowns.len();
+                if matches!(traces.points, Points::Frequencies(_)) {
                     Traces::Complex(filled(py, len, Complex64::new(f64::NAN, f64::NAN)))
                 } else {
                     Traces::Real(filled(py, len, f64::NAN))
@@ -805,7 +805,7 @@ impl<'py> Arrays<'py> {
             measured: filled(py, runs * prepared.measures, f64::NAN),
             causes: filled(py, runs * prepared.measures, -1),
             ended: filled(py, runs * prepared.analyses, false),
-            traced,
+            traces,
         }
     }
 
@@ -824,15 +824,15 @@ impl<'py> Arrays<'py> {
         )?;
         found.set_item("causes", self.causes.reshape([runs, prepared.measures])?)?;
         found.set_item("ended", self.ended.reshape([runs, prepared.analyses])?)?;
-        let traced = PyList::empty(found.py());
-        for (array, each) in self.traced.into_iter().zip(&prepared.traced) {
+        let traces = PyList::empty(found.py());
+        for (array, each) in self.traces.into_iter().zip(&prepared.traces) {
             let shape = [runs, each.points.len(), each.unknowns.len()];
             match array {
-                Traces::Real(array) => traced.append(array.reshape(shape)?)?,
-                Traces::Complex(array) => traced.append(array.reshape(shape)?)?,
+                Traces::Real(array) => traces.append(array.reshape(shape)?)?,
+                Traces::Complex(array) => traces.append(array.reshape(shape)?)?,
             }
         }
-        found.set_item("traced", traced)
+        found.set_item("traces", traces)
     }
 }
 
@@ -935,15 +935,15 @@ fn write(
     let mut ended = arrays.ended.readwrite();
     let mut real = Vec::new();
     let mut complex = Vec::new();
-    for traces in &arrays.traced {
+    for traces in &arrays.traces {
         match traces {
             Traces::Real(array) => real.push(array.readwrite()),
             Traces::Complex(array) => complex.push(array.readwrite()),
         }
     }
-    let mut buffers = Vec::with_capacity(arrays.traced.len());
+    let mut buffers = Vec::with_capacity(arrays.traces.len());
     let (mut reals, mut complexes) = (real.iter_mut(), complex.iter_mut());
-    for traces in &arrays.traced {
+    for traces in &arrays.traces {
         let buffer = match traces {
             Traces::Real(_) => reals.next().map(|array| slice(array).map(Buffer::Real)),
             Traces::Complex(_) => complexes
@@ -961,13 +961,13 @@ fn write(
         temperature: elaborated.temperature(),
         analyses: prepared.analyses,
         measures: prepared.measures,
-        traced: &prepared.traced,
+        traces: &prepared.traces,
         written: Mutex::new(Written {
             values: slice(&mut values)?,
             measured: slice(&mut measured)?,
             causes: slice(&mut causes)?,
             ended: slice(&mut ended)?,
-            traced: buffers,
+            traces: buffers,
             reasons: Vec::new(),
             known: HashMap::new(),
             problems: BTreeMap::new(),

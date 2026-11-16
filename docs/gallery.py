@@ -657,7 +657,7 @@ def _replication_plot(
     name: str, ours: results.AnalysisResult, theirs: results.AnalysisResult
 ) -> Figure:
     """The signals jolty found, solid, and ngspice's, dashed, on one plot."""
-    probes = plots.default_probes(ours.unknowns)[:4]
+    traces = plots.default_traces(ours.unknowns)[:4]
     figure = Figure(
         figsize=(8, 3.4), dpi=150, layout="constrained", facecolor="#fcfcfb"
     )
@@ -665,12 +665,12 @@ def _replication_plot(
     figure.suptitle(
         f"{name}: jolty, solid, and ngspice, dashed", color="#0b0b0b", x=0.02, ha="left"
     )
-    for index, probe in enumerate(probes):
+    for index, trace in enumerate(traces):
         color = plots.COLORS[index]
-        column = results.column(ours.unknowns, probe)
+        column = results.column(ours.unknowns, trace)
         x_ours, y_ours = _trace(ours, column)
         x_theirs, y_theirs = _trace(theirs, column)
-        axes.plot(x_ours, y_ours, color=color, linewidth=1.6, label=probe)
+        axes.plot(x_ours, y_ours, color=color, linewidth=1.6, label=trace)
         axes.plot(x_theirs, y_theirs, color="#0b0b0b", linewidth=0.9, linestyle="--")
     if isinstance(ours, results.AcResult):
         axes.set_xscale("log")

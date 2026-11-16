@@ -25,17 +25,17 @@ IMAGES: Final = ROOT / "docs" / "images"
 class Example(NamedTuple):
     """What to draw of an example."""
 
-    probes: list[str]
+    traces: list[str]
     """The unknowns to plot, or none for the defaults."""
     inside: list[str]
     """The instances whose components to draw."""
 
 
 EXAMPLES: Final = {
-    "rc_filter": Example(probes=[], inside=["X1"]),
-    "rectifier": Example(probes=["in", "out", "V1:current"], inside=["X1"]),
+    "rc_filter": Example(traces=[], inside=["X1"]),
+    "rectifier": Example(traces=["in", "out", "V1:current"], inside=["X1"]),
     "full_adder": Example(
-        probes=["a", "b", "carry_in", "sum", "carry_out", "adder/half"],
+        traces=["a", "b", "carry_in", "sum", "carry_out", "adder/half"],
         inside=["adder", "adder/U1"],
     ),
 }
@@ -47,7 +47,7 @@ async def illustrate(name: str, example: Example, scratch: Path) -> None:
         script=ROOT / "examples" / f"{name}.py",
         output=scratch / f"{name}.jolty.json",
         results=scratch / f"{name}.results.npz",
-        probes=example.probes,
+        traces=example.traces,
     )
     simulated = await service.simulate(request, Settings())
     pointed = any(

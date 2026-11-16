@@ -36,10 +36,10 @@ A legend names the series, and up to four are also labeled at their end:
 Logic nets share a panel of their own, one lane each, with unknown levels hatched (see [Logic](logic.md#levels-in-results)).
 
 By default a plot draws the nets the top component names, voltages then logic nets, up to eight.
-The option `--probes` chooses other unknowns, such as `X1/mid` or `V1:current`, and `jolty plot` draws a saved results file again, with other probes, without simulating:
+The option `--traces` chooses other unknowns, such as `X1/mid` or `V1:current`, and `jolty plot` draws a saved results file again, with other probes, without simulating:
 
 ```sh
-uv run jolty plot rectifier.results.npz --analyses ripple --probes out --probes V1:current
+uv run jolty plot rectifier.results.npz --analyses ripple --traces out --traces V1:current
 ```
 
 A plan's [Monte Carlo analysis](simulation.md#monte-carlo) and [variants](simulation.md#variants) plot the distribution of their runs at the plan's own conditions, not each run: a histogram of what each requirement read, against its bounds, as `<script>.monte-carlo.plot.png` or `<script>.variant-runs.plot.png`, and the envelope of each plotted net along each analysis, its least, median and greatest value at each point, as `<script>.monte-carlo.<analysis>.plot.png`.

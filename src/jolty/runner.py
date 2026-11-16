@@ -143,7 +143,7 @@ class Job(BaseModel):
         description="Whether each batch traces the unknowns its plots draw, at the "
         "plan's own conditions.",
     )
-    probes: list[str] = Field(
+    traces: list[str] = Field(
         default_factory=list,
         description="The unknowns a batch traces for its plots; by default the nets "
         "the top component names, as a plot draws them.",
@@ -367,7 +367,7 @@ def _batched(  # noqa: PLR0913 - the job, the plan, and where its batches run
     Their batches at the plan's own conditions, tracing the unknowns the job's plots
     draw, which `simulation` runs, are written to `directory`.
     """
-    traced = _traced(job, simulation)
+    traces = _traces(job, simulation)
     batches: dict[str, files.Batch] = {}
     monte_carlo = None
     if plan.monte_carlo is not None:
@@ -377,12 +377,12 @@ def _batched(  # noqa: PLR0913 - the job, the plan, and where its batches run
             plan.monte_carlo,
             specs,
             mismatched=len(simulation.foundry),
-            traced=traced,
+            traces=traces,
         )
     variants = None
     if plan.variants is not None:
         variants, batches[VARIANT_RUNS] = _variants(
-            conditions, plan, plan.variants, specs, traced=traced
+            conditions, plan, plan.variants, specs, traces=traces
         )
     if batches:
         files.save_batches(directory / BATCHES, batches)
@@ -648,7 +648,7 @@ def _batches(  # noqa: PLR0913 - the runs, where they run, and what they measure
     variants: Variants,
     specs: Specs | None,
     *,
-    traced: Sequence[str] = (),
+    traces: Sequence[str] = (),
     taken: range | None = None,
 ) -> list[BatchResult | None]:
     """What the plan's analyses find on runs `taken` of `variants` at each condition.
@@ -656,7 +656,7 @@ def _batches(  # noqa: PLR0913 - the runs, where they run, and what they measure
     It runs every run of the variants unless `taken` names some. Each condition whose
     circuit elaborates holds the batch of its runs, a batch of its own on the circuit
     it shares with others, measuring the requirements of `specs`, the plan's own
-    tracing the unknowns `traced` names; one whose circuit does not, none.
+    tracing the unknowns `traces` names; one whose circuit does not, none.
     """
     analyses = _unrecorded(plan)
     measures = [] if specs is None else [each.measure for each in specs.requirements]
@@ -668,7 +668,7 @@ def _batches(  # noqa: PLR0913 - the runs, where they run, and what they measure
                 Product(_at_temperatures(conditions, [member]), variants),
                 plan.options,
                 measures=measures,
-                traced=traced if member == 0 else (),
+                traces=traces if member == 0 else (),
                 runs=taken,
             )
     return found
@@ -681,7 +681,7 @@ def _monte_carlo(  # noqa: PLR0913 - the analysis, where it runs, and what it ju
     specs: Specs | None,
     *,
     mismatched: int,
-    traced: Sequence[str],
+    traces: Sequence[str],
 ) -> tuple[report.MonteCarloReport, files.Batch]:
     """What `plan`'s analyses find on each sample of `monte_carlo`, against `specs`.
 
@@ -691,7 +691,7 @@ def _monte_carlo(  # noqa: PLR0913 - the analysis, where it runs, and what it ju
     circuits' nominal parts. Every condition draws its samples from the seed afresh, so
     a corner whose circuit holds the same toleranced parameters runs each sample on the
     same parts, and a requirement's verdict on a sample is its worst over the runs.
-    Also returns the samples at the plan's own conditions, tracing `traced`. They are
+    Also returns the samples at the plan's own conditions, tracing `traces`. They are
     the one shard of every sample, which [`jolty.shards`][jolty.shards] reports as it
     reports the merge of many.
     """
@@ -703,7 +703,7 @@ def _monte_carlo(  # noqa: PLR0913 - the analysis, where it runs, and what it ju
             monte_carlo,
             specs,
             taken=every,
-            traced=traced,
+            traces=traces,
             mismatched=mismatched,
         )
     )
@@ -716,16 +716,16 @@ def _sampled(  # noqa: PLR0913 - the analysis, where it runs, and what it judges
     specs: Specs | None,
     *,
     taken: range,
-    traced: Sequence[str],
+    traces: Sequence[str],
     mismatched: int,
 ) -> files.Shard:
     """The shard of the samples `taken` of `monte_carlo`, run at each of `conditions`.
 
-    They are measured against `specs`, and the plan's own conditions trace `traced`.
+    They are measured against `specs`, and the plan's own conditions trace `traces`.
     """
     nominal = conditions[0].chosen
-    described = _described(conditions, plan, monte_carlo, specs, traced)
-    found = _batches(conditions, plan, monte_carlo, specs, traced=traced, taken=taken)
+    described = _described(conditions, plan, monte_carlo, specs, traces)
+    found = _batches(conditions, plan, monte_carlo, specs, traces=traces, taken=taken)
     return files.Shard(
         start=taken.start,
         stop=taken.stop,
@@ -777,7 +777,7 @@ def _shard(  # noqa: PLR0913 - the job, the plan, and where its samples run
         monte_carlo,
         specs,
         taken=taken,
-        traced=_traced(job, simulation),
+        traces=_traces(job, simulation),
         mismatched=len(simulation.foundry),
     )
     files.save_shard(directory / SHARD, shard)
@@ -798,7 +798,7 @@ def _shard(  # noqa: PLR0913 - the job, the plan, and where its samples run
 def _size(batch: BatchResult) -> int:
     """The bytes of the arrays of `batch`, the same for each of its runs."""
     arrays = [batch.values, batch.ended, batch.measured, batch.causes]
-    arrays.extend(traced.values for traced in batch.traced)
+    arrays.extend(traces.values for traces in batch.traces)
     return sum(array.nbytes for array in arrays)
 
 
@@ -807,7 +807,7 @@ def _described(
     plan: Plan,
     monte_carlo: MonteCarlo,
     specs: Specs | None,
-    traced: Sequence[str],
+    traces: Sequence[str],
 ) -> dict[str, JsonValue]:
     """What the numbers of a shard of `monte_carlo`'s samples depend on, as JSON.
 
@@ -817,7 +817,7 @@ def _described(
     temperature, process corner, and the [`circuit_hash`][jolty.files.circuit_hash] of
     its circuit, which leaves out the script lines that placed its instances, none where
     it does not elaborate; the requirements of `specs`, in words, and their yield
-    target; and the unknowns `traced` names.
+    target; and the unknowns `traces` names.
     """
     hashed: dict[int, str] = {}
 
@@ -858,7 +858,7 @@ def _described(
             "requirements": [str(each) for each in specs.requirements],
             "yield_target": specs.yield_target,
         },
-        "traced": list(traced),
+        "traces": list(traces),
     }
 
 
@@ -868,15 +868,15 @@ def _variants(
     variants: Variants,
     specs: Specs | None,
     *,
-    traced: Sequence[str],
+    traces: Sequence[str],
 ) -> tuple[report.VariantsReport, files.Batch]:
     """What `plan`'s analyses find on each run of `variants`, against `specs`.
 
     Each run takes its values at every one of `conditions` whose circuit elaborates,
     and a requirement's verdict on it is its worst over the conditions. Also returns
-    the runs at the plan's own conditions, tracing `traced`.
+    the runs at the plan's own conditions, tracing `traces`.
     """
-    found = _batches(conditions, plan, variants, specs, traced=traced)
+    found = _batches(conditions, plan, variants, specs, traces=traces)
     count = runs(variants)
     planned = tuple(plan.analyses)
     failed, spreads, passing = shards.spreads(planned, found, count, specs)
@@ -893,17 +893,17 @@ def _variants(
     return analysed, shards.saved(found[0], count, planned, specs)
 
 
-def _traced(job: Job, simulation: Simulation) -> tuple[str, ...]:
+def _traces(job: Job, simulation: Simulation) -> tuple[str, ...]:
     """The unknowns each batch traces for the plots of `job`, by name; none unplotted.
 
-    They are the job's probes, or the nets the top component names, as a plot draws
+    They are the job's traces, or the nets the top component names, as a plot draws
     them, that are unknowns of `simulation`'s circuit.
     """
     if not job.plot:
         return ()
     named = {unknown.name for unknown in simulation.unknowns}
-    probes = job.probes or plots.default_probes(simulation.unknowns, simulation.nets)
-    return tuple(probe for probe in probes if probe in named)
+    traces = job.traces or plots.default_traces(simulation.unknowns, simulation.nets)
+    return tuple(trace for trace in traces if trace in named)
 
 
 def _worst_case(

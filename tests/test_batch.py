@@ -125,12 +125,12 @@ VARIANTS = Explicit(
 def test_a_batch_finds_what_each_run_alone_finds() -> None:
     built = circuit(clipper())
     found = Simulation(built).batch(
-        ANALYSES, VARIANTS, measures=MEASUREMENTS, traced=["out", "in"]
+        ANALYSES, VARIANTS, measures=MEASUREMENTS, traces=["out", "in"]
     )
     assert found.runs == len(VARIANTS.variants)
     assert found.analyses == ("op", "bode", "step")
     assert not found.failed.any()
-    op, bode, step = found.traced
+    op, bode, step = found.traces
     assert (op.along, bode.along, step.along) == ("point", "frequency", "time")
     for index, variant in enumerate(VARIANTS.variants):
         simulation, point, response, waveforms = _alone(built, variant)
@@ -165,7 +165,7 @@ def test_a_batch_finds_the_same_on_any_number_of_threads() -> None:
         with simulate.threads(count):
             found.append(
                 simulation.batch(
-                    ANALYSES, variants, measures=MEASUREMENTS, traced=["out"]
+                    ANALYSES, variants, measures=MEASUREMENTS, traces=["out"]
                 )
             )
     first, *others = found
@@ -174,7 +174,7 @@ def test_a_batch_finds_the_same_on_any_number_of_threads() -> None:
             assert np.array_equal(
                 _bits(getattr(other, array)), _bits(getattr(first, array))
             )
-        for mine, theirs in zip(other.traced, first.traced, strict=True):
+        for mine, theirs in zip(other.traces, first.traces, strict=True):
             assert np.array_equal(_bits(mine.values), _bits(theirs.values))
         assert other.reasons == first.reasons
 
@@ -185,7 +185,7 @@ def _same(found: results.BatchResult, other: results.BatchResult) -> None:
         mine, theirs = getattr(found, array), getattr(other, array)
         assert mine.shape == theirs.shape, array
         assert np.array_equal(_bits(mine), _bits(theirs)), array
-    for mine, theirs in zip(found.traced, other.traced, strict=True):
+    for mine, theirs in zip(found.traces, other.traces, strict=True):
         assert np.array_equal(_bits(mine.values), _bits(theirs.values))
         assert np.array_equal(_bits(mine.axis), _bits(theirs.axis))
     rest = ("analyses", "parameters", "measures", "units", "reasons")
@@ -218,7 +218,7 @@ def test_ranges_of_a_batch_hold_its_rows_and_join_into_it() -> None:
 
     def batch(taken: range | None = None) -> results.BatchResult:
         return simulation.batch(
-            ANALYSES, variants, measures=measures, traced=["out"], runs=taken
+            ANALYSES, variants, measures=measures, traces=["out"], runs=taken
         )
 
     whole = batch()

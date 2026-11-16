@@ -280,15 +280,15 @@ found = simulation.batch(
     {"op": OperatingPoint(), "bode": Ac("V1", decade(10 * Hz, 10 * MHz, 20))},
     MonteCarlo(10_000, seed=1),
     measures=[gain("bode", "out", at=1 * kHz), value("op", "out")],
-    traced=["out"],
+    traces=["out"],
 )
 gains = found.measured[:, 0]  # each run's gain at 1 kHz, in dB
 resistances = found.parameter("R1 resistance")  # each run's R1
 failed = found.failed  # whether each run failed; found.failure(run) says why
-responses = found.traced[1].values_of("out")  # a row per run, a column per frequency
+responses = found.traces[1].values_of("out")  # a row per run, a column per frequency
 ```
 
-The result holds its columns as NumPy arrays, one row per run, which the engine writes at each run's row as it ends: the values each run took, whether each analysis ended, what each [measure](specs.md#measures) read and why one read nothing, and the values of the unknowns `traced` names at each point of an operating point, a DC sweep, a response and a transient that names its `times`, which it steps onto.
+The result holds its columns as NumPy arrays, one row per run, which the engine writes at each run's row as it ends: the values each run took, whether each analysis ended, what each [measure](specs.md#measures) read and why one read nothing, and the values of the unknowns `traces` names at each point of an operating point, a DC sweep, a response and a transient that names its `times`, which it steps onto.
 The engine reads every measure of `jolty.specs` itself, without Python; a measure a script writes is read under the interpreter's lock as each run ends, as is the function given as `each`, which sees every analysis's result.
 Each run finds what a simulation at its values alone finds, bit for bit.
 `runs=range(start, stop)` runs only those runs, row 0 the run at `start`: the result holds the rows of the whole batch's that the range names, and `BatchResult.joined` joins the results of ranges that tile the runs into the whole batch's, as `rows` cuts one into ranges.

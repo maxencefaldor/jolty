@@ -670,7 +670,7 @@ class Simulation:
         options: Options | None = None,
         *,
         measures: Sequence[specs.Measure] = (),
-        traced: Sequence[str] = (),
+        traces: Sequence[str] = (),
         each: Callable[[results.Run], object] | None = None,
         runs: range | None = None,
     ) -> results.BatchResult:
@@ -689,7 +689,7 @@ class Simulation:
         result holds, one row per run, the values each run took, whether each analysis
         ended, what each of `measures` read, the engine reading each it can resolve
         from the analysis's kind and the circuit's unknowns, and the values of the
-        unknowns `traced` names at every point of each operating point, DC sweep,
+        unknowns `traces` names at every point of each operating point, DC sweep,
         response and transient that names its times. `each`, if given, is called with
         what each run found, under the interpreter's lock, as each run ends, in no
         particular order. A circuit that holds a foundry's devices runs each run in
@@ -699,14 +699,14 @@ class Simulation:
         Raises:
             ElaborationError: When the variants name a number the circuit's devices do
                 not write.
-            KeyError: When `traced` names no unknown.
+            KeyError: When `traces` names no unknown.
             ValueError: When `runs` steps by other than one, or does not lie within the
                 variants' runs.
             JoltyError: When the settings are invalid, or their analysis log cannot be
                 written.
         """
         chosen = Options() if options is None else options
-        planned = _Planned.of(self, analyses, chosen, measures, traced)
+        planned = _Planned.of(self, analyses, chosen, measures, traces)
         ran = self._variants(variants)
         taken = range(len(ran)) if runs is None else runs
         if taken.step != 1 or not 0 <= taken.start <= taken.stop <= len(ran):
@@ -936,7 +936,8 @@ class Simulation:
             case "transient":
                 statistics = _statistics(outcome["statistics"])
                 traces = tuple(
-                    results.Trace(times, levels) for times, levels in outcome["logic"]
+                    results.LogicTrace(times, levels)
+                    for times, levels in outcome["logic"]
                 )
                 return results.TransientResult(
                     unknowns,
@@ -1304,7 +1305,7 @@ class _Planned:
     refused: dict[str, str]
     """Why each analysis that fails on every run fails, by name."""
     readings: list[_Reading]
-    traced: list[tuple[str, list[int]]]
+    traces: list[tuple[str, list[int]]]
     """Each analysis traced, by name, and the unknowns traced, by their columns."""
     read: dict[tuple[int, int], specs.Reading | str]
     """What each measure read in Python read of each run, or why it read nothing,
@@ -1317,12 +1318,12 @@ class _Planned:
         analyses: Mapping[str, Analysis],
         options: Options,
         measures: Sequence[specs.Measure],
-        traced: Sequence[str],
+        traces: Sequence[str],
     ) -> _Planned:
         """The batch of `analyses` on `simulation`.
 
         Raises:
-            KeyError: When `traced` names no unknown.
+            KeyError: When `traces` names no unknown.
         """
         planned = cls(
             simulation,
@@ -1354,8 +1355,8 @@ class _Planned:
             planned.settings.append((encoded, json.dumps(settings, allow_nan=False)))
         for measure in measures:
             planned.readings.append(planned._reading(measure))
-        columns = [results.column(simulation.unknowns, name) for name in traced]
-        planned.traced = [
+        columns = [results.column(simulation.unknowns, name) for name in traces]
+        planned.traces = [
             (name, columns)
             for name, analysis in analyses.items()
             if columns
@@ -1420,7 +1421,7 @@ class _Planned:
             for reading in self.readings
             if reading.native is not None
         ]
-        traced = [(self.engine[name], columns) for name, columns in self.traced]
+        traces = [(self.engine[name], columns) for name, columns in self.traces]
         views: dict[int, Simulation] = {}
 
         def hand(
@@ -1446,7 +1447,7 @@ class _Planned:
             ran,
             (runs.start, runs.stop),
             measures,
-            traced,
+            traces,
             _engine(),
             hand if handing else None,
         )
@@ -1495,19 +1496,19 @@ class _Planned:
         ended = np.zeros((count, len(self.names)), dtype=np.bool_)
         problems: dict[int, list[_core.Problem]] = {}
         errors: dict[int, list[tuple[int, str]]] = {}
-        traced: list[results.Real | results.Complex] = []
-        for name, columns in self.traced:
+        traces: list[results.Real | results.Complex] = []
+        for name, columns in self.traces:
             unknowns = [simulation.unknowns[column] for column in columns]
             analysis = self.analyses[name]
             shape = (count, _points(analysis), len(unknowns))
-            traces: results.Real | results.Complex = (
+            array: results.Real | results.Complex = (
                 np.empty(shape, dtype=np.complex128)
                 if isinstance(analysis, Ac)
                 else np.empty(shape)
             )
             for row, (run, _, _) in enumerate(found):
-                traces[row] = _at(run.results.get(name), analysis, unknowns)
-            traced.append(traces)
+                array[row] = _at(run.results.get(name), analysis, unknowns)
+            traces.append(array)
         for row, (run, problem, _) in enumerate(found):
             self._readings(row, run)
             if problem is not None:
@@ -1533,7 +1534,7 @@ class _Planned:
             "ended": ended,
             "problems": problems,
             "errors": errors,
-            "traced": traced,
+            "traces": traces,
         }
 
     def _ngspice(
@@ -1682,15 +1683,15 @@ class _Planned:
             for index, errors in sorted(failed.items())
         }
 
-    def _traces(self, found: _core.BatchResult) -> tuple[results.Traced, ...]:
+    def _traces(self, found: _core.BatchResult) -> tuple[results.Traces, ...]:
         """Each analysis traced, from the arrays `found` holds."""
         simulation = self.simulation
         traces = []
-        for (name, columns), values in zip(self.traced, found["traced"], strict=True):
+        for (name, columns), values in zip(self.traces, found["traces"], strict=True):
             analysis = self.analyses[name]
             source = getattr(analysis, "source", None)
             traces.append(
-                results.Traced(
+                results.Traces(
                     name,
                     _ALONG[type(analysis)],
                     _axis(analysis, simulation),

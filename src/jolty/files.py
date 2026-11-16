@@ -1062,14 +1062,16 @@ def _point(
     )
 
 
-def _traces(data: Mapping[str, np.ndarray], name: str) -> tuple[results.Trace, ...]:
+def _traces(
+    data: Mapping[str, np.ndarray], name: str
+) -> tuple[results.LogicTrace, ...]:
     """The logic traces of the transient `name`, stored end to end in `data`."""
     counts = data[f"{name}.logic.counts"]
     ends = np.cumsum(counts)
     times = np.split(data[f"{name}.logic.times"], ends[:-1])
     levels = np.split(data[f"{name}.logic.levels"], ends[:-1])
     return tuple(
-        results.Trace(times[index], levels[index]) for index in range(len(counts))
+        results.LogicTrace(times[index], levels[index]) for index in range(len(counts))
     )
 
 
@@ -1087,7 +1089,7 @@ class Batch:
     bounds: tuple[tuple[float | None, float | None], ...]
 
 
-class _Traced(_Model):
+class _Traces(_Model):
     analysis: str
     along: Literal["point", "level", "frequency", "time"]
     unknowns: tuple[results.Unknown, ...]
@@ -1151,7 +1153,7 @@ class _Columns(_Model):
     reasons: tuple[str, ...]
     problems: dict[int, tuple[str, ...]]
     errors: dict[int, dict[str, str]]
-    traced: tuple[_Traced, ...]
+    traces: tuple[_Traces, ...]
 
     @classmethod
     def of(cls, found: results.BatchResult) -> _Columns:
@@ -1164,33 +1166,33 @@ class _Columns(_Model):
             reasons=found.reasons,
             problems=found.problems,
             errors=found.errors,
-            traced=tuple(
-                _Traced(
-                    analysis=traced.analysis,
-                    along=traced.along,
-                    unknowns=traced.unknowns,
-                    source=traced.source,
-                    nature=traced.nature,
-                    parameter=traced.parameter,
+            traces=tuple(
+                _Traces(
+                    analysis=traces.analysis,
+                    along=traces.along,
+                    unknowns=traces.unknowns,
+                    source=traces.source,
+                    nature=traces.nature,
+                    parameter=traces.parameter,
                 )
-                for traced in found.traced
+                for traces in found.traces
             ),
         )
 
     def result(self, name: str, data: Mapping[str, np.ndarray]) -> results.BatchResult:
         """The result whose arrays `data` holds under keys that start with `name`."""
-        traced = tuple(
-            results.Traced(
+        traces = tuple(
+            results.Traces(
                 each.analysis,
                 each.along,
                 data[f"{name}.axis.{index}"],
                 each.unknowns,
-                data[f"{name}.traced.{index}"],
+                data[f"{name}.traces.{index}"],
                 each.source,
                 each.nature,
                 each.parameter,
             )
-            for index, each in enumerate(self.traced)
+            for index, each in enumerate(self.traces)
         )
         return results.BatchResult(
             self.analyses,
@@ -1204,16 +1206,16 @@ class _Columns(_Model):
             self.reasons,
             {int(index): tuple(each) for index, each in self.problems.items()},
             {int(index): dict(each) for index, each in self.errors.items()},
-            traced,
+            traces,
         )
 
 
 def _arrays(name: str, found: results.BatchResult) -> dict[str, np.ndarray]:
     """The arrays of `found`, under keys that start with `name`."""
     arrays = {f"{name}.{key}": getattr(found, key) for key in _ARRAYS}
-    for index, traced in enumerate(found.traced):
-        arrays[f"{name}.traced.{index}"] = traced.values
-        arrays[f"{name}.axis.{index}"] = traced.axis
+    for index, traces in enumerate(found.traces):
+        arrays[f"{name}.traces.{index}"] = traces.values
+        arrays[f"{name}.axis.{index}"] = traces.axis
     return arrays
 
 
@@ -1228,7 +1230,7 @@ class _Batch(_Columns):
 
 class _Batches(_Model):
     format: Literal["jolty-batches"] = "jolty-batches"
-    version: Literal[2] = 2
+    version: Literal[3] = 3
     batches: dict[str, _Batch]
 
 

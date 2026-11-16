@@ -115,13 +115,13 @@ def value(
     In a transient or a DC sweep, the value is interpolated `at` a time or a level of
     the swept source.
     """
-    traced = _Signal(signal, reference)
+    traces = _Signal(signal, reference)
     _check(at, "at")
 
     def resolve(result: results.AnalysisResult) -> Native:
         match result:
             case results.OperatingPointResult() if at is None:
-                resolved, dimension = traced.resolve(result.unknowns)
+                resolved, dimension = traces.resolve(result.unknowns)
                 return Native(
                     _core.Measure.value(resolved, None), dimension, _explain()
                 )
@@ -142,7 +142,7 @@ def value(
                 )
                 raise MeasureError(message)
         axis = _axis(result, "a value")
-        resolved, dimension = traced.resolve(result.unknowns)
+        resolved, dimension = traces.resolve(result.unknowns)
         if at is None:
             message = f"{_kind(result)} holds a value per {axis.noun}, and at is unset"
             raise MeasureError(message)
@@ -150,7 +150,7 @@ def value(
         measure = _core.Measure.value(resolved, point)
         return Native(measure, dimension, _explain(axis.outside({"at": ("at", at)})))
 
-    described = str(traced) if at is None else f"{traced} at {at}"
+    described = str(traces) if at is None else f"{traces} at {at}"
     return _native(analysis, described, None, resolve)
 
 

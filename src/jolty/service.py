@@ -89,7 +89,7 @@ _RECORD_DESCRIPTION = (
     "beside the unknowns, by path or pattern, such as 'M1', 'X1/**' or '!X1/bias/**', "
     "a pattern after ! taking back what earlier ones named; replaces the plan's record."
 )
-_PROBES_DESCRIPTION = (
+_TRACES_DESCRIPTION = (
     "Unknowns to plot, such as 'out', 'X1/mid' or 'V1:current'; defaults to the "
     "nets the top component names, up to eight."
 )
@@ -118,7 +118,7 @@ _SAMPLES_DESCRIPTION = (
     "written START:STOP, such as 0:1000000, as a shard of the analysis: at the plan's "
     "own conditions and at every corner, running none of its other analyses, into "
     "the directory of shards, for jolty merge to report with the others. A shard "
-    "draws no schematic and no plot, and traces only the probes named."
+    "draws no schematic and no plot, and traces only the unknowns its traces name."
 )
 _SHARDS_DESCRIPTION = (
     "The directory a shard of samples is written to, as shard-START-STOP.npz; "
@@ -312,7 +312,7 @@ class SimulateRequest(_Model):
         description="Plot every analysis but operating points and sensitivities "
         "beside the results.",
     )
-    probes: list[str] = Field(default_factory=list, description=_PROBES_DESCRIPTION)
+    traces: list[str] = Field(default_factory=list, description=_TRACES_DESCRIPTION)
     record: list[str] | None = Field(default=None, description=_RECORD_DESCRIPTION)
     min_solves_per_task: int | None = Field(
         default=None, ge=1, description=_SOLVES_DESCRIPTION
@@ -528,9 +528,9 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         max_unknowns=settings.max_unknowns,
         check=request.check,
         record=request.record,
-        # A shard's outcome is its measures, and the probes named alone besides.
-        plot=request.plot and (taken is None or bool(request.probes)),
-        probes=request.probes,
+        # A shard's outcome is its measures, and the traces named alone besides.
+        plot=request.plot and (taken is None or bool(request.traces)),
+        traces=request.traces,
         parallelism=runner.Thresholds(
             min_solves_per_task=request.min_solves_per_task,
             min_instances_per_task=request.min_instances_per_task,
@@ -584,7 +584,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         else None
     )
     plotted = (
-        await asyncio.to_thread(_plot, target, loaded, [], request.probes)
+        await asyncio.to_thread(_plot, target, loaded, [], request.traces)
         if request.plot
         else ()
     )
@@ -733,7 +733,7 @@ class PlotRequest(_Model):
         description="Analyses to plot, by name; every one but operating points and "
         "sensitivities by default.",
     )
-    probes: list[str] = Field(default_factory=list, description=_PROBES_DESCRIPTION)
+    traces: list[str] = Field(default_factory=list, description=_TRACES_DESCRIPTION)
 
 
 class PlotResult(CommandResult):
@@ -763,12 +763,12 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
 
     Raises:
         JoltyError: When the file is missing or holds no results, an analysis named is
-            not in it or is taken at DC solutions, or a probe names no unknown.
+            not in it or is taken at DC solutions, or a trace names no unknown.
     """
     del settings
     loaded = await asyncio.to_thread(_load, request.results)
     drawn = await asyncio.to_thread(
-        _plot, request.results, loaded, request.analyses, request.probes
+        _plot, request.results, loaded, request.analyses, request.traces
     )
     return PlotResult(plots=drawn)
 
@@ -790,13 +790,13 @@ def _plot(
     path: Path,
     loaded: Mapping[str, results.AnalysisResult],
     analyses: list[str],
-    probes: list[str],
+    traces: list[str],
 ) -> tuple[Plot, ...]:
     """Plots the `analyses` of the results `loaded` from `path`, or all, beside it.
 
     Raises:
         JoltyError: When an analysis named is not in the results or is taken at DC
-            solutions, or a probe names no unknown.
+            solutions, or a trace names no unknown.
     """
     missing = [name for name in analyses if name not in loaded]
     if missing:
@@ -828,7 +828,7 @@ def _plot(
                 result,
                 results.StabilityResult | results.NoiseResult | results.PoleZeroResult,
             )
-            else tuple(probes) or plots.default_probes(result.unknowns, nets)
+            else tuple(traces) or plots.default_traces(result.unknowns, nets)
         )
         target = files.plot_path(path, name)
         plots.save(plots.plot(name, result, chosen), target)
@@ -848,12 +848,12 @@ def _plot_batches(results_path: Path, path: Path) -> tuple[Plot, ...]:
             target = files.plot_path(results_path, name)
             plots.save(plots.histograms(name, batch), target)
             drawn.append(Plot(analysis=name, path=target))
-        for traced in batch.result.traced:
-            if traced.along == "point":
+        for traces in batch.result.traces:
+            if traces.along == "point":
                 continue
-            named = f"{name}.{traced.analysis}"
+            named = f"{name}.{traces.analysis}"
             target = files.plot_path(results_path, named)
-            plots.save(plots.envelope(name, traced), target)
+            plots.save(plots.envelope(name, traces), target)
             drawn.append(Plot(analysis=named, path=target))
     return tuple(drawn)
 

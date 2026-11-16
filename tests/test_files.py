@@ -404,7 +404,7 @@ def test_batch_files_hold_every_column_of_a_batch(tmp_path: Path) -> None:
             Explicit([Variant(), Variant({"R2": {"resistance": -1.0}})]), MonteCarlo(3)
         ),
         measures=measures,
-        traced=["out"],
+        traces=["out"],
     )
     assert found.problems, "the runs at a negative resistance make problems"
     path = tmp_path / "filtered.batches.npz"

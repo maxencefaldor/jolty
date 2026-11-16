@@ -25,7 +25,7 @@ Examples:
     >>> step = results.TransientResult(
     ...     unknowns, np.array([0.0, 1e-6]), np.array([[0.0], [1.0]]), statistics
     ... )
-    >>> figure = plot("step", step, default_probes(unknowns))
+    >>> figure = plot("step", step, default_traces(unknowns))
     >>> [axes.get_ylabel() for axes in figure.axes]
     ['voltage']
 """
@@ -87,7 +87,7 @@ _LANE: Final = 1.5
 """The height of a logic net's lane, in levels: its level spans 1, and a gap follows."""
 
 
-def default_probes(
+def default_traces(
     unknowns: Sequence[results.Unknown], nets: Sequence[str] = ()
 ) -> tuple[str, ...]:
     """What a plot draws unless told otherwise: the top component's named nets.
@@ -110,15 +110,15 @@ def default_probes(
     return tuple((named or nodes or list(nets))[:MAX_SERIES])
 
 
-def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
-    """The plot of the unknowns `probes` in the result of the analysis `name`.
+def plot(name: str, result: Plotted, traces: Sequence[str]) -> Figure:
+    """The plot of the unknowns `traces` in the result of the analysis `name`.
 
     A loop gain's plot draws the loop gain alone, a noise spectrum's the noise alone,
-    and a pole-zero analysis's its poles and zeros alone, whatever the probes.
+    and a pole-zero analysis's its poles and zeros alone, whatever the traces.
 
     Raises:
-        JoltyError: When a probe names no unknown, or there are more than
-            [`MAX_SERIES`][jolty.plots.MAX_SERIES] probes.
+        JoltyError: When a trace names no unknown, or there are more than
+            [`MAX_SERIES`][jolty.plots.MAX_SERIES] traces.
     """
     if isinstance(result, results.StabilityResult):
         return _loop(name, result)
@@ -126,27 +126,27 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
         return _noise(name, result)
     if isinstance(result, results.PoleZeroResult):
         return _poles_zeros(name, result)
-    if len(probes) > MAX_SERIES:
-        message = f"a plot draws at most {MAX_SERIES} unknowns, not {len(probes)}"
+    if len(traces) > MAX_SERIES:
+        message = f"a plot draws at most {MAX_SERIES} unknowns, not {len(traces)}"
         raise JoltyError(message)
-    groups, columns = _grouped(result, probes)
+    groups, columns = _grouped(result, traces)
     natures = list(groups)
     panels = 2 * len(natures) if isinstance(result, results.AcResult) else len(natures)
     figure, axes = _figure(name, result, panels)
-    colors = {probe: COLORS[index] for index, probe in enumerate(probes)}
+    colors = {trace: COLORS[index] for index, trace in enumerate(traces)}
     x, x_unit = _abscissa(result)
     if isinstance(result, results.AcResult):
         for index, nature in enumerate(natures):
             phasors = [
-                (probe, colors[probe], result.values[:, columns[probe]])
-                for probe in groups[nature]
+                (trace, colors[trace], result.values[:, columns[trace]])
+                for trace in groups[nature]
             ]
             magnitudes = [
-                (probe, color, _decibels(values)) for probe, color, values in phasors
+                (trace, color, _decibels(values)) for trace, color, values in phasors
             ]
             phases = [
-                (probe, color, np.degrees(np.unwrap(np.angle(values))))
-                for probe, color, values in phasors
+                (trace, color, np.degrees(np.unwrap(np.angle(values))))
+                for trace, color, values in phasors
             ]
             _draw(axes[2 * index], x, magnitudes, f"{nature} magnitude", "dB")
             _draw(axes[2 * index + 1], x, phases, f"{nature} phase", "°")
@@ -156,14 +156,14 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
         for index, nature in enumerate(natures):
             if nature == "logic":
                 lanes = [
-                    (probe, colors[probe], *_steps(result, probe))
-                    for probe in groups[nature]
+                    (trace, colors[trace], *_steps(result, trace))
+                    for trace in groups[nature]
                 ]
                 _draw_logic(axes[index], lanes)
                 continue
             series = [
-                (probe, colors[probe], result.values[:, columns[probe]])
-                for probe in groups[nature]
+                (trace, colors[trace], result.values[:, columns[trace]])
+                for trace in groups[nature]
             ]
             label = "temperature rise" if nature == "temperature" else nature
             _draw(axes[index], x, series, label, _UNITS[nature])
@@ -173,12 +173,12 @@ def plot(name: str, result: Plotted, probes: Sequence[str]) -> Figure:
 
 def _grouped(
     result: results.DcSweepResult | results.AcResult | results.TransientResult,
-    probes: Sequence[str],
+    traces: Sequence[str],
 ) -> tuple[dict[_Quantity, list[str]], dict[str, int]]:
-    """The `probes` by quantity, each quantity that has one, and each unknown's column.
+    """The `traces` by quantity, each quantity that has one, and each unknown's column.
 
     Raises:
-        JoltyError: When a probe names neither an unknown nor a logic net.
+        JoltyError: When a trace names neither an unknown nor a logic net.
     """
     nets = () if isinstance(result, results.AcResult) else result.nets
     columns = {}
@@ -189,15 +189,15 @@ def _grouped(
         "state": [],
         "logic": [],
     }
-    for probe in probes:
-        if probe in nets:
-            groups["logic"].append(probe)
+    for trace in traces:
+        if trace in nets:
+            groups["logic"].append(trace)
             continue
         try:
-            columns[probe] = results.column(result.unknowns, probe)
+            columns[trace] = results.column(result.unknowns, trace)
         except KeyError as error:
             raise JoltyError(error.args[0]) from None
-        groups[result.unknowns[columns[probe]].nature].append(probe)
+        groups[result.unknowns[columns[trace]].nature].append(trace)
     return {nature: found for nature, found in groups.items() if found}, columns
 
 
@@ -445,16 +445,16 @@ def histograms(name: str, batch: files.Batch) -> Figure:
     return figure
 
 
-def envelope(name: str, traced: results.Traced) -> Figure:
-    """The envelope of each unknown `traced` along an analysis of the batch `name`.
+def envelope(name: str, traces: results.Traces) -> Figure:
+    """The envelope of each unknown `traces` along an analysis of the batch `name`.
 
     Each draws its least and its greatest value over the runs at each point as a band,
     and its median as a line, the runs that did not end the analysis left out; a
     response draws its magnitude and its phase, each run's phase unwrapped first. The
     unknowns of each quantity share a panel, as a plot's do.
     """
-    natures = list(dict.fromkeys(unknown.nature for unknown in traced.unknowns))
-    response = traced.along == "frequency"
+    natures = list(dict.fromkeys(unknown.nature for unknown in traces.unknowns))
+    response = traces.along == "frequency"
     panels = 2 * len(natures) if response else len(natures)
     figure = Figure(
         figsize=(8, 0.8 + 2.4 * max(panels, 1)),
@@ -462,9 +462,9 @@ def envelope(name: str, traced: results.Traced) -> Figure:
         layout="constrained",
         facecolor=SURFACE,
     )
-    runs = int(traced.values.shape[0])
+    runs = int(traces.values.shape[0])
     figure.suptitle(
-        f"{name}: {traced.analysis}, the least, median and greatest of {runs} runs",
+        f"{name}: {traces.analysis}, the least, median and greatest of {runs} runs",
         color=INK,
         x=0.02,
         ha="left",
@@ -473,12 +473,12 @@ def envelope(name: str, traced: results.Traced) -> Figure:
     axes = figure.axes
     colors = {
         unknown.name: COLORS[index % len(COLORS)]
-        for index, unknown in enumerate(traced.unknowns)
+        for index, unknown in enumerate(traces.unknowns)
     }
     for index, nature in enumerate(natures):
         columns = [
             (place, unknown)
-            for place, unknown in enumerate(traced.unknowns)
+            for place, unknown in enumerate(traces.unknowns)
             if unknown.nature == nature
         ]
         if response:
@@ -486,7 +486,7 @@ def envelope(name: str, traced: results.Traced) -> Figure:
                 (
                     unknown.name,
                     colors[unknown.name],
-                    np.asarray(traced.values[:, :, place], dtype=np.complex128),
+                    np.asarray(traces.values[:, :, place], dtype=np.complex128),
                 )
                 for place, unknown in columns
             ]
@@ -497,28 +497,28 @@ def envelope(name: str, traced: results.Traced) -> Figure:
                 (name, color, np.degrees(np.unwrap(np.angle(values), axis=1)))
                 for name, color, values in phasors
             ]
-            _band(axes[2 * index], traced.axis, magnitudes, f"{nature} magnitude", "dB")
-            _band(axes[2 * index + 1], traced.axis, phases, f"{nature} phase", "°")
+            _band(axes[2 * index], traces.axis, magnitudes, f"{nature} magnitude", "dB")
+            _band(axes[2 * index + 1], traces.axis, phases, f"{nature} phase", "°")
             continue
         series = [
-            (unknown.name, colors[unknown.name], np.real(traced.values[:, :, place]))
+            (unknown.name, colors[unknown.name], np.real(traces.values[:, :, place]))
             for place, unknown in columns
         ]
         label = "temperature rise" if nature == "temperature" else nature
-        _band(axes[index], traced.axis, series, label, _UNITS[nature])
+        _band(axes[index], traces.axis, series, label, _UNITS[nature])
     if response:
         for each in axes:
             each.set_xscale("log")
-    unit = {"time": "s", "frequency": "Hz"}.get(traced.along, "")
-    if traced.along == "level" and traced.nature is not None:
-        unit = _UNITS[traced.nature]
+    unit = {"time": "s", "frequency": "Hz"}.get(traces.along, "")
+    if traces.along == "level" and traces.nature is not None:
+        unit = _UNITS[traces.nature]
     axes[-1].xaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
     along = {
         "time": "time",
         "frequency": "frequency",
-        "level": f"{traced.source} {traced.parameter or traced.nature}",
+        "level": f"{traces.source} {traces.parameter or traces.nature}",
         "point": "",
-    }[traced.along]
+    }[traces.along]
     axes[-1].set_xlabel(along, color=MUTED)
     return figure
 

@@ -290,7 +290,7 @@ impl Simulator {
     ///
     /// Each run runs `analyses` in order, each the JSON texts of an analysis and of its
     /// options; reads `measures`, each the index of the analysis it reads and the measure;
-    /// and traces `traced`, each the index of an analysis and the indices of the unknowns
+    /// and traces `traces`, each the index of an analysis and the indices of the unknowns
     /// whose values it keeps at each of its points: an operating point's one, a DC sweep's
     /// levels, a response's frequencies, or a transient's times, interpolated linearly
     /// between the times it accepted. Returns a dictionary of `NumPy` arrays, one row per
@@ -298,7 +298,7 @@ impl Simulator {
     /// or not a number; `causes`, -1 where it read a number and else the index among
     /// `reasons` of why it read none, each `("failed", [], "")` where the analysis did not
     /// end, or a `MeasureError`'s reason, numbers and message; `ended`, whether each
-    /// analysis ended; and each traced array, runs × points × unknowns, among `traced`.
+    /// analysis ended; and each traced array, runs × points × unknowns, among `traces`.
     /// `problems` holds, by row, the problems its run's values made, as
     /// `ElaborationError`'s, and `errors`, by row, the index of each analysis that failed
     /// and why. The run at `runs`' start is row 0.
@@ -309,7 +309,7 @@ impl Simulator {
     /// as `run` returns it, or why it failed; the first exception it raises is raised once
     /// every run has ended. Raises `ValueError` for input the engine cannot read, or runs
     /// that do not lie within the variants'.
-    #[pyo3(signature = (analyses, variants, runs, measures, traced, pool, each = None))]
+    #[pyo3(signature = (analyses, variants, runs, measures, traces, pool, each = None))]
     #[expect(
         clippy::too_many_arguments,
         reason = "a batch is its runs, its analyses, its measures, what it traces, its \
@@ -322,7 +322,7 @@ impl Simulator {
         variants: &batch::Variants,
         runs: (u64, u64),
         measures: Vec<(usize, Py<measure::Measure>)>,
-        traced: Vec<(usize, Vec<usize>)>,
+        traces: Vec<(usize, Vec<usize>)>,
         pool: &Pool,
         each: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyDict>> {
@@ -337,7 +337,7 @@ impl Simulator {
             analyses,
             runs: runs.0..runs.1,
             measures,
-            traced,
+            traces,
             each,
         };
         batch::run(py, (&elaborated, &base), variants, request, pool)

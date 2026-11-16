@@ -13,7 +13,7 @@ from jolty import (
     devices,
 )
 from jolty.plan import Transient
-from jolty.plots import default_probes, plot
+from jolty.plots import default_traces, plot
 from jolty.units import J, K, V, W, ms, ohm
 
 
@@ -37,7 +37,7 @@ def test_heat_raises_a_net_by_its_flow_through_the_resistance_to_the_ambient() -
         point.voltage("hot")
     waveforms = simulation.run(Transient(stop=100 * ms))
     assert waveforms.rise("hot")[-1] == pytest.approx(50.0, rel=1e-9)
-    assert default_probes(simulation.unknowns) == ("hot",)
+    assert default_traces(simulation.unknowns) == ("hot",)
     figure = plot("warm", waveforms, ["hot"])
     assert figure.axes[0].get_ylabel() == "temperature rise"
 

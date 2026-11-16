@@ -124,5 +124,5 @@ The merge reads every shard on one machine, so its time grows with the samples, 
 ## Small outputs
 
 A shard's outcome is its measures: for each sample, at each condition, 8 bytes for each number the samples vary, 12 for each requirement, a number and why it read none, and one for each analysis, whether it ended.
-It holds waveforms only of the unknowns `--probes` names, 8 bytes at each point of each, 16 for a response's phasors.
+It holds waveforms only of the unknowns `--traces` names, 8 bytes at each point of each, 16 for a response's phasors.
 So the size of every shard's arrays is known from one shard's, and a shard's report warns when the shards of every sample would hold more than 10 GB.

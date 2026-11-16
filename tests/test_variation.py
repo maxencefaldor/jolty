@@ -528,12 +528,12 @@ def test_the_runner_saves_its_batches_tracing_what_their_plots_draw(
     assert batch.bounds == ((2.5 - 7.5e-3, 2.5 + 7.5e-3),)
     found = batch.result
     assert found.runs == 20
-    (traced,) = found.traced
+    (traces,) = found.traces
     # The top component names one net, which a plot draws by default.
-    assert [unknown.name for unknown in traced.unknowns] == ["out"]
-    assert (traced.values[:, 0, 0] == found.measured[:, 0]).all()
+    assert [unknown.name for unknown in traces.unknowns] == ["out"]
+    assert (traces.values[:, 0, 0] == found.measured[:, 0]).all()
     # Without plots, a batch traces nothing.
     unplotted = tmp_path / "unplotted"
     unplotted.mkdir()
     run(Job(script=script, plan=script, max_unknowns=10), unplotted)
-    assert files.load_batches(unplotted / BATCHES)[MONTE_CARLO].result.traced == ()
+    assert files.load_batches(unplotted / BATCHES)[MONTE_CARLO].result.traces == ()

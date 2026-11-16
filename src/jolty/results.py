@@ -401,11 +401,11 @@ def _find(names: list[str], name: str, missing: str) -> int:
 
 
 @dataclass(frozen=True, slots=True)
-class Trace:
+class LogicTrace:
     """A logic net's level over time: its level at time zero, then at each change.
 
     Examples:
-        >>> trace = Trace(np.array([0.0, 2e-9]), np.array([0.0, 1.0]))
+        >>> trace = LogicTrace(np.array([0.0, 2e-9]), np.array([0.0, 1.0]))
         >>> trace.at(np.array([1e-9, 2e-9, 3e-9])).tolist()
         [0.0, 1.0, 1.0]
     """
@@ -806,7 +806,7 @@ class TransientResult(_Devices[Real], _Watched):
     statistics: Statistics
     nets: tuple[str, ...] = ()
     """The logic nets, in the order of `logic`."""
-    logic: tuple[Trace, ...] = ()
+    logic: tuple[LogicTrace, ...] = ()
     """Each logic net's level over time."""
     recording: Recording = field(default_factory=Recording)
     """What the result recorded of the devices, and where its arrays hold each."""
@@ -822,7 +822,7 @@ class TransientResult(_Devices[Real], _Watched):
     readings: Real = field(default_factory=_no_rows)
     """Each recorded variable's value at each time, one row per time."""
 
-    def level(self, net: str) -> Trace:
+    def level(self, net: str) -> LogicTrace:
         """The level of the logic net `net` over time."""
         return self.logic[net_column(self.nets, net)]
 
@@ -1217,7 +1217,7 @@ type AnalysisResult = (
 
 
 @dataclass(frozen=True, slots=True)
-class Traced:
+class Traces:
     """The values of some unknowns at each point of one analysis, over a batch's runs.
 
     `values` has one row per run, one column per point, then one entry per unknown:
@@ -1277,7 +1277,7 @@ class BatchResult:
     each of the `measures` read on each run, in its unit among `units`, and not a
     number where it read none, `causes` then indexing `reasons`, the words that say why,
     each once, in the order the cells first name them, row by row, and -1 where it read
-    a number. `traced` holds the unknowns a batch traced along its analyses. Every row
+    a number. `traces` holds the unknowns a batch traced along its analyses. Every row
     is a pure function of its run's index, whatever the threads, and the reasons a
     function of the rows, so the rows of a range of runs, and the runs of results joined
     one after another, hold what a batch of those runs alone holds.
@@ -1299,7 +1299,7 @@ class BatchResult:
     """The problems the values of each run that made some made, by the run's index."""
     errors: dict[int, dict[str, str]] = field(default_factory=dict)
     """Why each analysis that failed on a run failed, by the run's index then name."""
-    traced: tuple[Traced, ...] = ()
+    traces: tuple[Traces, ...] = ()
 
     def __post_init__(self) -> None:
         """Keeps each reason once, in the order the cells of `causes` first name them.
@@ -1367,7 +1367,7 @@ class BatchResult:
                 first.analyses,
                 first.parameters,
                 first.measures,
-            ) or not _alike(first.traced, part.traced):
+            ) or not _alike(first.traces, part.traces):
                 message = (
                     f"part {place} ran other analyses, varied other numbers, read "
                     "other measures or traced otherwise than part 0"
@@ -1396,18 +1396,18 @@ class BatchResult:
                 (offset + index, found) for index, found in part.errors.items()
             )
             offset += part.runs
-        traced = tuple(
-            Traced(
+        traces = tuple(
+            Traces(
                 each.analysis,
                 each.along,
                 each.axis,
                 each.unknowns,
-                np.concatenate([part.traced[index].values for part in parts]),
+                np.concatenate([part.traces[index].values for part in parts]),
                 each.source,
                 each.nature,
                 each.parameter,
             )
-            for index, each in enumerate(first.traced)
+            for index, each in enumerate(first.traces)
         )
         return BatchResult(
             first.analyses,
@@ -1421,7 +1421,7 @@ class BatchResult:
             tuple(texts),
             problems,
             errors,
-            traced,
+            traces,
         )
 
     def rows(self, start: int, stop: int) -> BatchResult:
@@ -1447,17 +1447,17 @@ class BatchResult:
             kept(self.problems),
             kept(self.errors),
             tuple(
-                Traced(
-                    traced.analysis,
-                    traced.along,
-                    traced.axis,
-                    traced.unknowns,
-                    traced.values[start:stop],
-                    traced.source,
-                    traced.nature,
-                    traced.parameter,
+                Traces(
+                    traces.analysis,
+                    traces.along,
+                    traces.axis,
+                    traces.unknowns,
+                    traces.values[start:stop],
+                    traces.source,
+                    traces.nature,
+                    traces.parameter,
                 )
-                for traced in self.traced
+                for traces in self.traces
             ),
         )
 
@@ -1488,9 +1488,9 @@ def _canonical(
     return table[causes], tuple(texts)
 
 
-def _alike(traced: tuple[Traced, ...], other: tuple[Traced, ...]) -> bool:
-    """Whether `other` traces the unknowns `traced` does, along the same points."""
-    return len(traced) == len(other) and all(
+def _alike(traces: tuple[Traces, ...], other: tuple[Traces, ...]) -> bool:
+    """Whether `other` traces the unknowns `traces` does, along the same points."""
+    return len(traces) == len(other) and all(
         (one.analysis, one.along, one.unknowns, one.source, one.nature, one.parameter)
         == (
             two.analysis,
@@ -1501,7 +1501,7 @@ def _alike(traced: tuple[Traced, ...], other: tuple[Traced, ...]) -> bool:
             two.parameter,
         )
         and np.array_equal(one.axis, two.axis)
-        for one, two in zip(traced, other, strict=True)
+        for one, two in zip(traces, other, strict=True)
     )
 
 

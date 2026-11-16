@@ -10,7 +10,7 @@ import pytest
 from jolty import Builder, Role, Simulation, component, devices, results
 from jolty.files import load_results, save_results
 from jolty.plan import DcSweep, OperatingPoint, Transient
-from jolty.plots import default_probes, plot
+from jolty.plots import default_traces, plot
 from jolty.report import report
 from jolty.units import V, fF, ns, ps
 from jolty.waveforms import Pulse
@@ -149,12 +149,12 @@ def test_reports_and_plots_state_the_logic() -> None:
         "  n  1      1        0",
         "  ... and 1 more in the results file",
     ]
-    probes = default_probes(waveforms.unknowns, waveforms.nets)
-    assert probes == ("a", "b", "n", "y")
-    figure = plot("step", waveforms, probes)
+    traces = default_traces(waveforms.unknowns, waveforms.nets)
+    assert traces == ("a", "b", "n", "y")
+    figure = plot("step", waveforms, traces)
     (axes,) = figure.axes
     assert axes.get_ylabel() == "logic"
-    assert [label.get_text() for label in axes.get_yticklabels()] == list(probes)
+    assert [label.get_text() for label in axes.get_yticklabels()] == list(traces)
 
 
 def test_a_logic_cell_takes_tables_or_functions() -> None:

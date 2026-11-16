@@ -270,7 +270,7 @@ class Simulator:
         variants: Variants,
         runs: tuple[int, int],
         measures: list[tuple[int, Measure]],
-        traced: list[tuple[int, list[int]]],
+        traces: list[tuple[int, list[int]]],
         pool: Pool,
         each: Callable[
             [int, Simulator | None, list[Problem] | None, list[AnalysisResult | str]],
@@ -288,7 +288,7 @@ class BatchResult(TypedDict):
     ended: npt.NDArray[np.bool_]
     problems: dict[int, list[Problem]]
     errors: dict[int, list[tuple[int, str]]]
-    traced: list[npt.NDArray[np.float64] | npt.NDArray[np.complex128]]
+    traces: list[npt.NDArray[np.float64] | npt.NDArray[np.complex128]]
 
 @final
 class Variants:

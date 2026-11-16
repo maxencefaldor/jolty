@@ -613,9 +613,9 @@ def sweeps() -> list[Fixture]:
         built = deck_circuit(drifting)
         grid = Grid([Axis.temperature([k * K for k in kelvins])])
         found = simulation(built).batch(
-            {"op": OperatingPoint()}, grid, traced=["out"], options=TIGHT
+            {"op": OperatingPoint()}, grid, traces=["out"], options=TIGHT
         )
-        values = np.asarray(found.traced[0].values_of("out"))
+        values = np.asarray(found.traces[0].values_of("out"))
         return {name: complex(values[index][0]) for index, name in enumerate(hot)}
 
     first, last = (ngspice.spice_celsius(k) for k in (kelvins[0], kelvins[-1]))
@@ -656,9 +656,9 @@ def sweeps() -> list[Fixture]:
             ]
         )
         found = simulation(deck_circuit(summed)).batch(
-            {"op": OperatingPoint()}, grid, traced=["out"], options=TIGHT
+            {"op": OperatingPoint()}, grid, traces=["out"], options=TIGHT
         )
-        values = np.asarray(found.traced[0].values_of("out"))
+        values = np.asarray(found.traces[0].values_of("out"))
         return {name: complex(values[index][0]) for index, name in enumerate(names)}
 
     # ngspice and Xyce sweep the first source fastest; jolty's grid its last axis.
@@ -2012,10 +2012,10 @@ def monte_carlo() -> Fixture:
         found = simulation(built).batch(
             {"op": OperatingPoint()},
             MonteCarlo(samples, seed=1),
-            traced=["out"],
+            traces=["out"],
             options=TIGHT,
         )
-        outs = np.asarray(found.traced[0].values_of("out"))[:, 0]
+        outs = np.asarray(found.traces[0].values_of("out"))[:, 0]
         uppers, lowers = (
             found.parameter("R1 resistance"),
             found.parameter("R2 resistance"),
