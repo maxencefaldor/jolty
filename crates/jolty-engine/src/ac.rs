@@ -7,7 +7,7 @@ use jolty_numerics::Complex64;
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use crate::solver::{Factors, Solver};
+use crate::solver::{Factors, Refinement, Solver};
 use crate::{OperatingPointResult, Options, Parallelism, SimulationError, Simulator};
 
 /// A small-signal analysis: the response to a unit excitation of one independent source.
@@ -329,6 +329,7 @@ impl<R> FrequencyRun<R> {
 pub(crate) struct Linearization {
     solver: Solver<Complex64>,
     matrix: Vec<Complex64>,
+    refinement: Refinement<Complex64>,
 }
 
 impl Linearization {
@@ -338,6 +339,7 @@ impl Linearization {
         Self {
             solver: solver.sharing(),
             matrix: vec![Complex64::default(); solver.pattern().len()],
+            refinement: Refinement::default(),
         }
     }
 
@@ -371,6 +373,7 @@ impl Linearization {
         {
             *value = conductance + s * capacitance;
         }
-        self.solver.factor(&self.matrix)
+        self.solver
+            .factor_refined(&self.matrix, &mut self.refinement)
     }
 }

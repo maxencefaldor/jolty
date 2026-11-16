@@ -68,6 +68,11 @@ pub trait Scalar:
     /// The value's magnitude: its absolute value, or a complex number's modulus.
     fn magnitude(self) -> f64;
 
+    /// The value's size in the 1-norm: its absolute value, or a complex number's
+    /// `|re| + |im|`, between its modulus and √2 times it, and cheaper, needing no square
+    /// root.
+    fn size(self) -> f64;
+
     /// Whether the value is neither infinite nor NaN.
     fn is_finite(self) -> bool;
 
@@ -80,6 +85,10 @@ impl Scalar for f64 {
     const ZERO: Self = 0.0;
 
     fn magnitude(self) -> f64 {
+        self.abs()
+    }
+
+    fn size(self) -> f64 {
         self.abs()
     }
 
@@ -97,6 +106,10 @@ impl Scalar for Complex64 {
 
     fn magnitude(self) -> f64 {
         self.norm()
+    }
+
+    fn size(self) -> f64 {
+        self.re.abs() + self.im.abs()
     }
 
     fn is_finite(self) -> bool {

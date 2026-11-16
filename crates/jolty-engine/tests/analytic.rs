@@ -530,6 +530,68 @@ fn a_series_rlc_passes_everything_at_resonance() {
     assert!((gain - Complex64::new(1.0, 0.0)).norm() < 1e-9, "{gain}");
 }
 
+/// A series RLC low-pass of quality factor 31.6, swept from 1 Hz to 1 GHz, keeps every
+/// digit of its response far above its resonance of 5 MHz, where the response falls to
+/// 2.5e-5 of the source: the sweep keeps the pivots it chose at 1 Hz, where conductances
+/// rule, and elimination with them computes the output as a difference of volts, losing
+/// four digits, which refinement against `G + jωC` recovers. The response's relative
+/// condition there is under 3, the refined solve's componentwise backward error at most ε,
+/// and the closed form rounds within a few ε, so the two agree within 32 ε.
+#[test]
+fn a_series_rlc_keeps_its_digits_far_above_resonance() {
+    let (resistance, inductance, capacitance) = (1.0, 1e-6, 1e-9);
+    let circuit = circuit(&[
+        (
+            "V1",
+            "voltage_source",
+            dc(0.0),
+            &[("positive", "in"), ("negative", "0")],
+        ),
+        (
+            "R1",
+            "resistor",
+            json!({"resistance": resistance}),
+            &[("a", "in"), ("b", "mid")],
+        ),
+        (
+            "L1",
+            "inductor",
+            json!({"inductance": inductance}),
+            &[("a", "mid"), ("b", "out")],
+        ),
+        (
+            "C1",
+            "capacitor",
+            json!({"capacitance": capacitance}),
+            &[("a", "out"), ("b", "0")],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let frequencies: Vec<f64> = (0..=18)
+        .map(|step| 10f64.powf(f64::from(step) / 2.0))
+        .collect();
+    let ac = Ac {
+        source: "V1".to_owned(),
+        frequencies: frequencies.clone(),
+    };
+    let response = simulator.ac(&ac, &Options::default()).unwrap();
+    let out = index(&simulator, "out");
+    for (values, frequency) in response.values.iter().zip(frequencies) {
+        let omega = TAU * frequency;
+        let exact = Complex64::new(
+            1.0 - omega * omega * inductance * capacitance,
+            omega * resistance * capacitance,
+        )
+        .inv();
+        let error = (values[out] - exact).norm() / exact.norm();
+        assert!(
+            error <= 32.0 * f64::EPSILON,
+            "{frequency} Hz: {} ε",
+            error / f64::EPSILON
+        );
+    }
+}
+
 /// The response of an RC low-pass to a ramp from 0 to 1 that starts at `delay` and lasts
 /// `rise`, after the ramp ends.
 fn rc_ramp_response(time: f64, delay: f64, rise: f64, tau: f64) -> f64 {
