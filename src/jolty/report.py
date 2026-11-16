@@ -390,11 +390,11 @@ class TransferFunctionReport(_Model):
         )
 
 
-class NoiseContributor(_Model):
+class NoiseContribution(_Model):
     """What one noise source of a device adds to a noise analysis's output."""
 
     instance: str = Field(description="The device's path.")
-    noise: str = Field(
+    name: str = Field(
         description="What makes the noise, such as thermal or collector shot."
     )
     rms: float = Field(
@@ -441,7 +441,7 @@ class NoiseReport(_Model):
     referred_nature: Nature | None = Field(
         description="What the source's level is; null without a source."
     )
-    contributors: tuple[NoiseContributor, ...] = Field(
+    contributions: tuple[NoiseContribution, ...] = Field(
         description="The noise sources that make the most noise, the most first."
     )
     unlisted: int = Field(description="Noise sources left out of the list.")
@@ -469,11 +469,11 @@ class NoiseReport(_Model):
                     [
                         [
                             each.instance,
-                            each.noise,
+                            each.name,
                             f"{format_si(each.rms, unit)} RMS",
                             f"{each.share:.1%}",
                         ]
-                        for each in self.contributors
+                        for each in self.contributions
                     ]
                 )
             )
@@ -1082,10 +1082,10 @@ def _noise(name: str, result: results.NoiseResult, max_unknowns: int) -> NoiseRe
     noisiest = sorted(range(len(powers)), key=lambda index: -powers[index])[
         :max_unknowns
     ]
-    contributors = tuple(
-        NoiseContributor(
+    contributions = tuple(
+        NoiseContribution(
             instance=result.sources[index].instance,
-            noise=result.sources[index].name,
+            name=result.sources[index].name,
             rms=math.sqrt(powers[index]),
             share=powers[index] / total if total > 0 else 0.0,
         )
@@ -1109,8 +1109,8 @@ def _noise(name: str, result: results.NoiseResult, max_unknowns: int) -> NoiseRe
         if banded and noise_input is not None
         else None,
         referred_nature=None if noise_input is None else noise_input.nature,
-        contributors=contributors,
-        unlisted=len(result.sources) - len(contributors),
+        contributions=contributions,
+        unlisted=len(result.sources) - len(contributions),
     )
 
 

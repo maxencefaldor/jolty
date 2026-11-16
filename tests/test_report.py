@@ -218,8 +218,8 @@ def test_a_noise_spectrum_states_its_noisiest_sources() -> None:
     assert summary.rms == spectrum.rms()
     assert summary.rms == pytest.approx(math.sqrt(white_power + flicker_power), 1e-2)
     assert summary.referred == pytest.approx(2 * spectrum.rms())
-    (noisiest,) = summary.contributors
-    assert (noisiest.instance, noisiest.noise) == ("R1", "thermal")
+    (noisiest,) = summary.contributions
+    assert (noisiest.instance, noisiest.name) == ("R1", "thermal")
     assert noisiest.rms == pytest.approx(math.sqrt(white_power))
     assert noisiest.share == pytest.approx(white_power / (white_power + flicker_power))
     assert summary.unlisted == 1
@@ -239,7 +239,7 @@ def test_a_noise_spectrum_states_its_noisiest_sources() -> None:
     )
     quiet = report.report("hiss", single, max_unknowns=10)
     assert isinstance(quiet, report.NoiseReport)
-    assert (quiet.rms, quiet.referred, quiet.contributors) == (None, None, ())
+    assert (quiet.rms, quiet.referred, quiet.contributions) == (None, None, ())
 
 
 def test_poles_and_zeros_list_each_pair_once() -> None:
