@@ -49,14 +49,14 @@ const MEYER_SATURATION: f64 = 0.025;
 /// Which of SPICE's MOSFET models a transistor follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "u8", into = "u8")]
-pub enum Level {
+pub enum ModelLevel {
     /// Level 1, Shichman and Hodges's square law.
     One,
     /// Level 3, a semi-empirical law of short channels.
     Three,
 }
 
-impl TryFrom<u8> for Level {
+impl TryFrom<u8> for ModelLevel {
     type Error = String;
 
     fn try_from(level: u8) -> Result<Self, String> {
@@ -70,11 +70,11 @@ impl TryFrom<u8> for Level {
     }
 }
 
-impl From<Level> for u8 {
-    fn from(level: Level) -> Self {
+impl From<ModelLevel> for u8 {
+    fn from(level: ModelLevel) -> Self {
         match level {
-            Level::One => 1,
-            Level::Three => 3,
+            ModelLevel::One => 1,
+            ModelLevel::Three => 3,
         }
     }
 }
@@ -229,7 +229,7 @@ const VARIABLES: [(usize, usize); 3] = [
 #[serde(default, deny_unknown_fields, bound = "")]
 pub struct MosfetParameters<R: Real = f64> {
     /// The model's level, 1 or 3; default 1.
-    pub level: Level,
+    pub level: ModelLevel,
     /// The channel; default `n`.
     pub channel: Channel,
     /// The channel's width, `w`, in meters; default 100 µm.
@@ -358,7 +358,7 @@ pub struct MosfetParameters<R: Real = f64> {
 impl<R: Real> Default for MosfetParameters<R> {
     fn default() -> Self {
         Self {
-            level: Level::One,
+            level: ModelLevel::One,
             channel: Channel::N,
             width: R::constant(100e-6),
             length: R::constant(100e-6),
@@ -464,8 +464,8 @@ impl<R: Real> MosfetParameters<R> {
     /// where not given, as SPICE derives them.
     fn process(&self) -> Result<Process<R>, ParameterError> {
         let thickness = match self.level {
-            Level::One => self.oxide_thickness,
-            Level::Three => Some(
+            ModelLevel::One => self.oxide_thickness,
+            ModelLevel::Three => Some(
                 self.oxide_thickness
                     .unwrap_or(R::constant(DEFAULT_OXIDE_THICKNESS)),
             ),
@@ -507,8 +507,8 @@ impl<R: Real> MosfetParameters<R> {
         // Level 1 takes silicon's intrinsic concentration at 300 K; level 3 scales it to
         // the nominal temperature.
         let intrinsic = match self.level {
-            Level::One => R::constant(INTRINSIC_CONCENTRATION),
-            Level::Three => {
+            ModelLevel::One => R::constant(INTRINSIC_CONCENTRATION),
+            ModelLevel::Three => {
                 let ratio = nominal / 300.0;
                 ratio
                     * INTRINSIC_CONCENTRATION
@@ -1175,8 +1175,8 @@ impl<R: Real> MosfetParameters<R> {
         let potential = ParameterError::positive("junction_potential", self.junction_potential)?;
         let bottom_grading = below_one("bottom_grading", self.bottom_grading)?;
         let default_sidewall = match self.level {
-            Level::One => R::constant(0.5),
-            Level::Three => R::constant(0.33),
+            ModelLevel::One => R::constant(0.5),
+            ModelLevel::Three => R::constant(0.33),
         };
         let sidewall_grading = below_one(
             "sidewall_grading",
@@ -1278,7 +1278,7 @@ impl<R: Real> MosfetParameters<R> {
             ("width_adjustment", self.width_adjustment),
             ("threshold_adjustment", self.threshold_adjustment),
         ];
-        let Level::Three = self.level else {
+        let ModelLevel::Three = self.level else {
             if let Some((name, _)) = level_three.iter().find(|(_, value)| value.is_some()) {
                 return Err(ParameterError(format!("{name} is level 3's")));
             }
@@ -1364,8 +1364,8 @@ impl<R: Real> MosfetParameters<R> {
     /// thickness, or always at level 3, which takes SPICE's by default.
     fn has_oxide(&self) -> bool {
         match self.level {
-            Level::One => self.oxide_thickness.is_some(),
-            Level::Three => true,
+            ModelLevel::One => self.oxide_thickness.is_some(),
+            ModelLevel::Three => true,
         }
     }
 }
