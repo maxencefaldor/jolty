@@ -15,7 +15,7 @@ Simulate it with `jolty simulate examples/boost_converter.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| average of out from 9 ms in start ≥ 11 V and ≤ 12.5 V | 12.0305 V, passed | 12.0269 V, passed | 3.0e-04 |
+| mean of out from 9 ms in start ≥ 11 V and ≤ 12.5 V | 12.0305 V, passed | 12.0269 V, passed | 3.0e-04 |
 
 ## Replicated in ngspice
 

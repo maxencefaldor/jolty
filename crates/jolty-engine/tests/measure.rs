@@ -291,7 +291,7 @@ fn measures_read_exact_signals_exactly() {
         Ok(3.25)
     );
     assert_eq!(
-        read(Measure::Average {
+        read(Measure::Mean {
             signal: ramp,
             window
         }),
@@ -388,7 +388,7 @@ fn measure_strategy() -> impl Strategy<Value = Measure> {
         (signal(), window()).prop_map(|(signal, window)| Measure::Maximum { signal, window }),
         (signal(), window()).prop_map(|(signal, window)| Measure::Minimum { signal, window }),
         (signal(), window()).prop_map(|(signal, window)| Measure::PeakToPeak { signal, window }),
-        (signal(), window()).prop_map(|(signal, window)| Measure::Average { signal, window }),
+        (signal(), window()).prop_map(|(signal, window)| Measure::Mean { signal, window }),
         (signal(), window()).prop_map(|(signal, window)| Measure::Rms { signal, window }),
         (signal(), window(), number(), number()).prop_map(|(signal, window, low, high)| {
             Measure::RiseTime {

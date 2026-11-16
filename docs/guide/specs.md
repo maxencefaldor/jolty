@@ -35,7 +35,7 @@ Bounds are quantities, such as `2.5 * us`; a gain is in decibels, a phase in deg
 | --- | --- | --- |
 | `value(analysis, signal, at=None)` | the signal's value, interpolated `at` a time or a level | an operating point, a transient or a DC sweep |
 | `solutions(analysis)` | how many DC solutions were found, a plain number | a search for operating points |
-| `maximum`, `minimum`, `peak_to_peak`, `average`, `rms` | the statistic over a window from `start` to `stop`, by default the whole axis | a transient or a DC sweep |
+| `maximum`, `minimum`, `peak_to_peak`, `mean`, `rms` | the statistic over a window from `start` to `stop`, by default the whole axis | a transient or a DC sweep |
 | `rise_time(analysis, signal, low=0.1, high=0.9)` | the time from `low` to `high` of the signal's step, rising or falling | a transient |
 | `overshoot(analysis, signal)` | how far the signal passes its final value, in percent of its step | a transient |
 | `settling_time(analysis, signal, band=0.02)` | the time until the signal stays within `band` of its step from its final value | a transient |

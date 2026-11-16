@@ -16,9 +16,9 @@ Simulate it with `jolty simulate examples/buck_converter.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| average of out from 5 ms in start ≥ 5.5 V and ≤ 6 V | 5.74355 V, passed | 5.74109 V, passed | 4.3e-04 |
+| mean of out from 5 ms in start ≥ 5.5 V and ≤ 6 V | 5.74355 V, passed | 5.74109 V, passed | 4.3e-04 |
 | peak-to-peak of out from 5.9 ms in start ≤ 20 mV | 7.87622 mV, passed | 7.54427 mV, passed | 4.2 % |
-| average of X1/L1:current from 5 ms in start ≥ 550 mA and ≤ 600 mA | 575.215 mA, passed | 574.884 mA, passed | 5.8e-04 |
+| mean of X1/L1:current from 5 ms in start ≥ 550 mA and ≤ 600 mA | 575.215 mA, passed | 574.884 mA, passed | 5.8e-04 |
 
 ## Replicated in ngspice
 

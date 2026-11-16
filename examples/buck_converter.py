@@ -10,7 +10,7 @@ times the input, less the diode's share. With 100 µH and 100 µF, the LC filter
 
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
 from jolty.plan import Transient
-from jolty.specs import average, peak_to_peak
+from jolty.specs import mean, peak_to_peak
 from jolty.units import A, V, ms, mV, nA, ns, ohm, uF, uH, us
 from jolty.waveforms import Pulse
 
@@ -87,8 +87,8 @@ def specs() -> Specs:
     """About 5.8 V at the output, its ripple a few millivolts."""
     return Specs(
         [
-            average("start", "out", start=5 * ms).between(5.5 * V, 6 * V),
+            mean("start", "out", start=5 * ms).between(5.5 * V, 6 * V),
             peak_to_peak("start", "out", start=5.9 * ms) <= 20 * mV,
-            average("start", "X1/L1:current", start=5 * ms).between(0.55 * A, 0.6 * A),
+            mean("start", "X1/L1:current", start=5 * ms).between(0.55 * A, 0.6 * A),
         ]
     )

@@ -9,7 +9,7 @@ Vin/(1 - D) = 12.5 V from 5 V, less the losses. Simulate it with
 
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
 from jolty.plan import Transient
-from jolty.specs import average
+from jolty.specs import mean
 from jolty.units import V, ms, nA, ns, ohm, uF, uH, us
 from jolty.waveforms import Pulse
 
@@ -79,4 +79,4 @@ def plan() -> Plan:
 
 def specs() -> Specs:
     """Near Vin/(1 - D), less the diode's drop and the switch's loss."""
-    return Specs([average("start", "out", start=9 * ms).between(11 * V, 12.5 * V)])
+    return Specs([mean("start", "out", start=9 * ms).between(11 * V, 12.5 * V)])

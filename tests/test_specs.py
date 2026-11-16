@@ -16,7 +16,6 @@ from jolty.specs import (
     Requirement,
     Specs,
     Verdict,
-    average,
     bandwidth,
     crossing,
     crossover,
@@ -32,6 +31,7 @@ from jolty.specs import (
     integrated_noise,
     judge,
     maximum,
+    mean,
     minimum,
     noise_density,
     overshoot,
@@ -144,11 +144,11 @@ def test_windowed_statistics_match_a_sine_over_whole_periods() -> None:
     assert maximum("t", "out").read(sine).value == pytest.approx(2, rel=1e-6)
     assert minimum("t", "out").read(sine).value == pytest.approx(-2, rel=1e-6)
     assert peak_to_peak("t", "out").read(sine).value == pytest.approx(4, rel=1e-6)
-    assert average("t", "out").read(sine).value == pytest.approx(0, abs=1e-9)
+    assert mean("t", "out").read(sine).value == pytest.approx(0, abs=1e-9)
     assert rms("t", "out").read(sine).value == pytest.approx(math.sqrt(2), rel=1e-6)
     measured = frequency("t", "out").read(sine)
     assert (measured.value, measured.dimension) == (pytest.approx(1e3), FREQUENCY)
-    half = average("t", "out", start=0 * s, stop=0.5 * ms).read(sine).value
+    half = mean("t", "out", start=0 * s, stop=0.5 * ms).read(sine).value
     assert half == pytest.approx(4 / math.pi, rel=1e-6)
 
 

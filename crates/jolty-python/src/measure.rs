@@ -149,8 +149,8 @@ impl Measure {
 
     /// The mean of `signal` in `window`, by the trapezoidal rule.
     #[staticmethod]
-    fn average(signal: PySignal, window: PyWindow) -> Self {
-        Self(measure::Measure::Average {
+    fn mean(signal: PySignal, window: PyWindow) -> Self {
+        Self(measure::Measure::Mean {
             signal: to_signal(signal),
             window: to_window(window),
         })

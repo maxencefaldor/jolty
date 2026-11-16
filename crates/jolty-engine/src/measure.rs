@@ -22,7 +22,7 @@
 //! let results = AnalysisResult::Transient { times: &times, values: &values };
 //! let signal = Signal { unknown: 0, reference: None };
 //! let window = Window { start: Some(0.25), stop: None };
-//! assert_eq!(Measure::Average { signal, window }.measure(&results), Ok(0.625));
+//! assert_eq!(Measure::Mean { signal, window }.measure(&results), Ok(0.625));
 //! ```
 
 mod arithmetic;
@@ -171,7 +171,7 @@ pub enum Measure {
     },
     /// The mean of `signal` in `window`, of a transient or a DC sweep, by the trapezoidal
     /// rule.
-    Average {
+    Mean {
         /// The signal.
         signal: Signal,
         /// The window.
@@ -572,7 +572,7 @@ impl Measure {
             | Self::Maximum { signal, .. }
             | Self::Minimum { signal, .. }
             | Self::PeakToPeak { signal, .. }
-            | Self::Average { signal, .. }
+            | Self::Mean { signal, .. }
             | Self::Rms { signal, .. }
             | Self::RiseTime { signal, .. }
             | Self::Overshoot { signal, .. }
@@ -624,7 +624,7 @@ impl Measure {
                 let (_, values) = windowed(signal, window, results, false)?;
                 Ok(arithmetic::maximum(&values) - arithmetic::minimum(&values))
             }
-            Self::Average { signal, window } => {
+            Self::Mean { signal, window } => {
                 let (points, values) = windowed(signal, window, results, false)?;
                 Ok(mean(&points, &values))
             }

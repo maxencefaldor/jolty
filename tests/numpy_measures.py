@@ -368,7 +368,7 @@ def peak_to_peak(
     return _statistic("peak-to-peak", analysis, window, _span)
 
 
-def average(
+def mean(
     analysis: str,
     signal: str,
     *,
@@ -381,7 +381,7 @@ def average(
     The window runs from `start` to `stop`, times or levels, by default over all.
     """
     window = _Window(_Signal(signal, reference), start, stop)
-    return _statistic("average", analysis, window, _mean)
+    return _statistic("mean", analysis, window, _mean)
 
 
 def rms(

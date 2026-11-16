@@ -35,7 +35,6 @@ Examples:
 
 from jolty.specs._measures import (
     Edge,
-    average,
     bandwidth,
     crossing,
     crossover,
@@ -48,6 +47,7 @@ from jolty.specs._measures import (
     gain_margin,
     integrated_noise,
     maximum,
+    mean,
     minimum,
     noise_density,
     overshoot,
@@ -104,7 +104,6 @@ __all__ = [
     "Values",
     "Verdict",
     "Yield",
-    "average",
     "bandwidth",
     "crossing",
     "crossover",
@@ -121,6 +120,7 @@ __all__ = [
     "judge",
     "judged",
     "maximum",
+    "mean",
     "minimum",
     "noise_density",
     "overshoot",

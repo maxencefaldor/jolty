@@ -201,7 +201,7 @@ def windowed(
     result: results.AnalysisResult, start: Quantity | None, stop: Quantity | None
 ) -> None:
     """Checks every measure of a window of `result` alike."""
-    for name in ("maximum", "minimum", "peak_to_peak", "average", "rms"):
+    for name in ("maximum", "minimum", "peak_to_peak", "mean", "rms"):
         for signal, signal_reference in (
             ("out", None),
             ("out", "ref"),
