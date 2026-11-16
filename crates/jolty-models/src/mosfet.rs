@@ -1731,7 +1731,8 @@ mod tests {
             for every in [every.to_owned(), p_channel(every)] {
                 let sign = if every.contains(r#""p""#) { -1.0 } else { 1.0 };
                 let heated = every.replace('{', r#"{"thermal": true, "#);
-                let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
+                let mut bench =
+                    Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
                 for rise in [0.0, 40.0] {
                     let mut plain = Bench::at::<Mosfet>(&every, REFERENCE_TEMPERATURE + rise);
                     let [d, g, b] = [3.0, 2.0, -0.5].map(|v| sign * v);

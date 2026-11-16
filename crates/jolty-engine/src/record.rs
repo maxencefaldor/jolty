@@ -143,7 +143,7 @@ pub struct Recording {
 
 impl Recording {
     /// What `record` keeps of `system`'s devices.
-    fn of(system: &Elaborated, record: &Record) -> Self {
+    fn from_record(system: &Elaborated, record: &Record) -> Self {
         Self {
             devices: (0..system.devices.len())
                 .filter(|&index| record.names(system.devices[index].path()))
@@ -160,7 +160,7 @@ impl Simulator {
     /// analysis run with it holds each value.
     #[must_use]
     pub fn recorded(&self, record: &Record) -> Recording {
-        Recording::of(&self.elaborated, record)
+        Recording::from_record(&self.elaborated, record)
     }
 
     /// Checks `options`, gives the solver the ordering and the threads their parallelism
@@ -322,7 +322,7 @@ impl Observer {
         if self.selection.record == *record {
             return;
         }
-        let recorded = Recording::of(system, record);
+        let recorded = Recording::from_record(system, record);
         let mut kept = vec![false; system.devices.len()];
         for &device in &recorded.devices {
             kept[device] = true;

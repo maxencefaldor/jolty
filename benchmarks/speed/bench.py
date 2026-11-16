@@ -320,7 +320,7 @@ def sampled(loaded: Loaded, samples: int, threads: int) -> Callable[[], None]:
     seed = 0 if monte_carlo is None else monte_carlo.seed
 
     def every() -> None:
-        simulation = Simulation.of(Elaborated(loaded.circuit))
+        simulation = Simulation.from_elaborated(Elaborated(loaded.circuit))
         with simulate.threads(threads):
             simulation.batch(
                 loaded.plan.analyses, MonteCarlo(samples, seed), loaded.plan.options

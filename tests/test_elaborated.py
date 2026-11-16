@@ -123,7 +123,7 @@ def test_numbers_replaced_simulate_the_same_on_a_shared_circuit(
     problems: list[str] = []
     for elaborate in (
         lambda: Simulation(loaded, temperature, overrides),
-        lambda: Simulation.of(Elaborated(loaded, temperature), overrides),
+        lambda: Simulation.from_elaborated(Elaborated(loaded, temperature), overrides),
     ):
         try:
             elaborate()
@@ -135,7 +135,7 @@ def test_numbers_replaced_simulate_the_same_on_a_shared_circuit(
         assert problems[0] == problems[1]
         return
     direct = Simulation(loaded, temperature, overrides)
-    shared = Simulation.of(Elaborated(loaded, temperature), overrides)
+    shared = Simulation.from_elaborated(Elaborated(loaded, temperature), overrides)
     assert shared.unknowns == direct.unknowns
     source = _source(loaded)
     assert _found(shared, source) == _found(direct, source)
@@ -153,18 +153,21 @@ def test_one_elaboration_serves_each_structure() -> None:
         c.connect(lower.b, source.negative, ground)
 
     elaborated = Elaborated(divider())
-    below = [Simulation.of(elaborated, {"R1": {"resistance": r}}) for r in (0.5, 0.25)]
+    below = [
+        Simulation.from_elaborated(elaborated, {"R1": {"resistance": r}})
+        for r in (0.5, 0.25)
+    ]
     # A resistance below 1 Ω carries its current as an unknown of its own, so both run
     # on the circuit elaborated once for that structure.
     assert all(
         "R1:current" in (unknown.name for unknown in each.unknowns) for each in below
     )
     assert len(elaborated._structures) == 1  # noqa: SLF001 - the structures elaborated
-    above = Simulation.of(elaborated, {"R1": {"resistance": 4.0}})
+    above = Simulation.from_elaborated(elaborated, {"R1": {"resistance": 4.0}})
     assert "R1:current" not in (unknown.name for unknown in above.unknowns)
     point = above.run(OperatingPoint())
     assert point.voltage("out") == pytest.approx(3 / 7, rel=1e-12)
     with pytest.raises(ElaborationError, match="names no number among the parameters"):
-        Simulation.of(elaborated, {"R1": {"inductance": 1.0}})
+        Simulation.from_elaborated(elaborated, {"R1": {"inductance": 1.0}})
     with pytest.raises(ElaborationError, match="resistance must be positive"):
-        Simulation.of(elaborated, {"R1": {"resistance": -1.0}})
+        Simulation.from_elaborated(elaborated, {"R1": {"resistance": -1.0}})

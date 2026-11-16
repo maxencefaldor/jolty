@@ -697,7 +697,7 @@ class Fidelity:
                 self.built, self.temperature, self.substitutes(opened)
             )
             shared = self.elaborated.setdefault(opened, elaborated)
-        return Simulation.of(
+        return Simulation.from_elaborated(
             shared,
             overrides and self.overrides(overrides),
             process=self.process,

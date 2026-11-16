@@ -1647,7 +1647,7 @@ mod tests {
     fn a_heated_transistor_is_the_transistor_at_its_temperature() {
         let model = crate::Thermal::<BipolarTransistor>::new();
         let heated = FULL.replace('{', r#"{"thermal": true, "base_resistance": 50, "#);
-        let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
+        let mut bench = Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
         let cool = FULL.replace('{', r#"{"base_resistance": 50, "#);
         for rise in [0.0, 35.0] {
             let mut plain = Bench::at::<BipolarTransistor>(&cool, REFERENCE_TEMPERATURE + rise);

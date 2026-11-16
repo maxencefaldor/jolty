@@ -207,7 +207,7 @@ class _Recording(_Model):
     thermal: tuple[str, ...] = ()
 
     @classmethod
-    def of(cls, recording: results.Recording) -> _Recording:
+    def from_recording(cls, recording: results.Recording) -> _Recording:
         """The header's entry of `recording`."""
         return cls(
             devices=tuple(
@@ -360,11 +360,13 @@ class Provenance(BaseModel):
     )
 
     @classmethod
-    def of(cls, circuit: ir.Circuit | None = None, plan: Plan | None = None) -> Self:
+    def from_circuit_and_plan(
+        cls, circuit: ir.Circuit | None = None, plan: Plan | None = None
+    ) -> Self:
         """The provenance of results of `circuit` and `plan`, simulated here and now.
 
         Examples:
-            >>> Provenance.of().circuit is None
+            >>> Provenance.from_circuit_and_plan().circuit is None
             True
         """
         return cls(
@@ -549,8 +551,10 @@ def save_results(
     names = circuits.pop()
     header = _Header(
         **names.model_dump(),
-        provenance=Provenance.of(circuit, plan),
-        recordings=tuple(_Recording.of(recording) for recording in recordings),
+        provenance=Provenance.from_circuit_and_plan(circuit, plan),
+        recordings=tuple(
+            _Recording.from_recording(recording) for recording in recordings
+        ),
         analyses=entries,
         excursions={
             name: result.excursions
@@ -1156,7 +1160,7 @@ class _Columns(_Model):
     traces: tuple[_Traces, ...]
 
     @classmethod
-    def of(cls, found: results.BatchResult) -> _Columns:
+    def from_batch(cls, found: results.BatchResult) -> _Columns:
         """What the header holds of `found`."""
         return cls(
             analyses=found.analyses,
@@ -1245,7 +1249,7 @@ def save_batches(path: Path, batches: Mapping[str, Batch]) -> None:
     for name, batch in batches.items():
         arrays |= _arrays(name, batch.result)
         entries[name] = _Batch(
-            **_Columns.of(batch.result).model_dump(),
+            **_Columns.from_batch(batch.result).model_dump(),
             requirements=batch.requirements,
             bounds=batch.bounds,
         )
@@ -1315,7 +1319,7 @@ class _Requirement(_Model):
     margin: _Bound | None
 
     @classmethod
-    def of(cls, requirement: Requirement) -> _Requirement:
+    def from_requirement(cls, requirement: Requirement) -> _Requirement:
         """How the header states `requirement`."""
         measure = requirement.measure
         return cls(
@@ -1402,10 +1406,13 @@ def save_shard(path: Path, shard: Shard) -> None:
         analyses=shard.analyses,
         requirements=None
         if shard.specs is None
-        else tuple(_Requirement.of(each) for each in shard.specs.requirements),
+        else tuple(
+            _Requirement.from_requirement(each) for each in shard.specs.requirements
+        ),
         yield_target=None if shard.specs is None else shard.specs.yield_target,
         conditions=tuple(
-            None if found is None else _Columns.of(found) for found in shard.conditions
+            None if found is None else _Columns.from_batch(found)
+            for found in shard.conditions
         ),
     )
     arrays[_HEADER] = np.array(header.model_dump_json())

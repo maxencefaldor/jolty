@@ -363,7 +363,7 @@ impl Points {
     /// The points of `analysis`, which a batch traces unknowns along.
     ///
     /// Raises `ValueError` for an analysis of no such points.
-    fn of(analysis: &Analysis) -> PyResult<Self> {
+    fn from_analysis(analysis: &Analysis) -> PyResult<Self> {
         Ok(match analysis {
             Analysis::OperatingPoint => Self::Point,
             Analysis::DcSweep(sweep) => Self::Levels(sweep.levels.len()),
@@ -751,7 +751,7 @@ fn prepare(elaborated: &Arc<jolty_engine::Elaborated>, request: &Request) -> PyR
             Ok(Traced {
                 analysis: *analysis,
                 unknowns: unknowns.clone(),
-                points: Points::of(found)?,
+                points: Points::from_analysis(found)?,
             })
         })
         .collect::<PyResult<_>>()?;

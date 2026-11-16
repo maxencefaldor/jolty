@@ -87,7 +87,7 @@ struct Columns {
 }
 
 impl Columns {
-    fn of(simulator: &Simulator, record: &Record) -> Self {
+    fn from_record(simulator: &Simulator, record: &Record) -> Self {
         let recorded = simulator.recorded(record);
         let mut columns = Self::default();
         for &device in &recorded.devices {
@@ -145,7 +145,7 @@ impl Columns {
 
 /// The index of `name` among the terminals every device's record holds.
 fn terminal(simulator: &Simulator, name: &str) -> usize {
-    Columns::of(simulator, &Record::All).terminal(name)
+    Columns::from_record(simulator, &Record::All).terminal(name)
 }
 
 /// On each node, the sum of some values at the device terminals on it, the largest of them
@@ -199,7 +199,7 @@ fn assert_exact(found: f64, expected: f64) {
 fn every_terminal_is_named_by_its_device_and_its_own_name() {
     let simulator = simulator(&bench());
     assert_eq!(
-        Columns::of(&simulator, &Record::All).terminals,
+        Columns::from_record(&simulator, &Record::All).terminals,
         [
             "V1.positive",
             "V1.negative",
@@ -396,7 +396,7 @@ fn each_device_reports_its_own_small_signal_model_and_variables() {
         variables,
         ..
     } = &point.observation;
-    let columns = Columns::of(&simulator, &Record::All);
+    let columns = Columns::from_record(&simulator, &Record::All);
     let conductance = |row: &str, column: &str| conductances[columns.derivative(row, column)];
     let capacitance = |row: &str, column: &str| capacitances[columns.derivative(row, column)];
     assert_exact(conductance("R1.a", "R1.a"), 2.5e-4);
@@ -504,7 +504,7 @@ fn a_component_instance_s_terminals_sum_the_device_terminals_inside_it() {
         .map(Composite::owner)
         .collect();
     assert_eq!(owners, ["X1", "X1", "X1/X2", "X1/X2"]);
-    let columns = Columns::of(&simulator, &Record::All);
+    let columns = Columns::from_record(&simulator, &Record::All);
     let point = simulator.operating_point(&tight()).unwrap();
     let currents = &point.observation.currents;
     let current = |name: &str| currents[columns.terminal(name)];
@@ -532,7 +532,7 @@ fn a_component_instance_s_terminals_sum_the_device_terminals_inside_it() {
 fn a_component_instance_recorded_alone_keeps_its_terminals_and_none_of_its_devices() {
     let mut simulator = nested(("in", "0"));
     let everything = simulator.operating_point(&tight()).unwrap();
-    let all = Columns::of(&simulator, &Record::All);
+    let all = Columns::from_record(&simulator, &Record::All);
     let record = instances(&["X1"]);
     let recorded = simulator.recorded(&record);
     assert_eq!(recorded.devices, Vec::<usize>::new());
@@ -550,7 +550,10 @@ fn a_component_instance_recorded_alone_keeps_its_terminals_and_none_of_its_devic
         variables,
     } = &alone.observation;
     assert!(conductances.is_empty() && capacitances.is_empty() && variables.is_empty());
-    assert_eq!(Columns::of(&simulator, &record).terminals, ["X1.p", "X1.q"]);
+    assert_eq!(
+        Columns::from_record(&simulator, &record).terminals,
+        ["X1.p", "X1.q"]
+    );
     for (index, name) in ["X1.p", "X1.q"].into_iter().enumerate() {
         let column = all.terminal(name);
         assert_exact(currents[index], everything.observation.currents[column]);
@@ -587,7 +590,7 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         periodic: false,
     };
     let waveforms = simulator.transient(&transient, &tight()).unwrap();
-    let columns = Columns::of(&simulator, &Record::All);
+    let columns = Columns::from_record(&simulator, &Record::All);
     let pins: Vec<usize> = ["U1.a", "U1.y", "U1.supply", "U1.ground"]
         .into_iter()
         .map(|name| columns.terminal(name))
@@ -649,8 +652,8 @@ fn a_device_recorded_alone_reads_as_it_does_among_every_device() {
     let record = instances(&["C1", "M1", "R9"]);
     let mut simulator = simulator(&bench());
     assert_eq!(simulator.recorded(&record).devices, [2, 4]);
-    let all = Columns::of(&simulator, &Record::All);
-    let some = Columns::of(&simulator, &record);
+    let all = Columns::from_record(&simulator, &Record::All);
+    let some = Columns::from_record(&simulator, &record);
     assert_eq!(
         some.terminals,
         [

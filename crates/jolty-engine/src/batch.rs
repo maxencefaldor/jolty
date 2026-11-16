@@ -451,7 +451,7 @@ impl Batch {
             .collect();
         let read = |measured: &Measured| match &results[measured.analysis] {
             Ok(found) => {
-                let read = AnalysisResult::of(found).ok_or(MeasureError::Kind)?;
+                let read = AnalysisResult::from_result(found).ok_or(MeasureError::Kind)?;
                 Ok(measured.measure.measure(&read)?)
             }
             Err(_) => Err(Unmeasured::Failed),

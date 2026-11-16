@@ -35,7 +35,7 @@ enum Partition {
 }
 
 impl Partition {
-    fn of(xpart: f64) -> Self {
+    fn from_xpart(xpart: f64) -> Self {
         if xpart > 0.5 {
             Self::None
         } else if xpart < 0.5 {
@@ -85,7 +85,7 @@ impl<R: Real> Core<R> {
         if self.xpart < 0.0 {
             return zero;
         }
-        let partition = Partition::of(self.xpart);
+        let partition = Partition::from_xpart(self.xpart);
         match self.capmod {
             Charges::Zero => self.capmod_zero(vds, vbs, channel, partition),
             Charges::One => self.capmod_one(&self.cv(vds, channel, partition)),

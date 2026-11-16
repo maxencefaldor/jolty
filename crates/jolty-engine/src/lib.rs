@@ -231,7 +231,7 @@ impl Simulator {
         elaborated: Arc<Elaborated>,
         values: Values,
     ) -> Result<Self, ElaborationError> {
-        if let Some(state) = State::of(&elaborated, &values)? {
+        if let Some(state) = State::from_values(&elaborated, &values)? {
             return Ok(Self {
                 elaborated,
                 values,

@@ -89,7 +89,9 @@ def run(
             circuit, saying why.
     """
     try:
-        return _Deck.of(circuit, analysis, options, conditions, unknowns).run(analysis)
+        return _Deck.from_circuit(circuit, analysis, options, conditions, unknowns).run(
+            analysis
+        )
     except JoltyError as error:
         if isinstance(error, SimulationError):
             raise
@@ -109,7 +111,7 @@ class _Deck:
     running: ngspice.Running
 
     @classmethod
-    def of(
+    def from_circuit(
         cls,
         circuit: ir.Circuit,
         analysis: Analysis,

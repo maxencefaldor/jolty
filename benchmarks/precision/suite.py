@@ -152,7 +152,7 @@ class Prepared:
     def of(cls, fixture: Fixture) -> Prepared:
         """`fixture`, its circuit elaborated."""
         elaborated = Elaborated(fixture.top)
-        unknowns = Simulation.of(elaborated).unknowns
+        unknowns = Simulation.from_elaborated(elaborated).unknowns
         return cls(fixture, elaborated, {unknown.name: unknown for unknown in unknowns})
 
 
@@ -177,10 +177,12 @@ def run_jolty(prepared: Prepared, setting: Setting, repeats: int) -> Measured:
     options = setting.options()
     seconds: list[float] = []
     # One run to warm up first, as the speed suite's timing does, its time left out.
-    Simulation.of(prepared.elaborated).run(prepared.fixture.analysis, options)
+    Simulation.from_elaborated(prepared.elaborated).run(
+        prepared.fixture.analysis, options
+    )
     result: results.AnalysisResult | None = None
     for _ in range(repeats):
-        simulation = Simulation.of(prepared.elaborated)
+        simulation = Simulation.from_elaborated(prepared.elaborated)
         started = time.perf_counter()
         result = simulation.run(prepared.fixture.analysis, options)
         seconds.append(time.perf_counter() - started)

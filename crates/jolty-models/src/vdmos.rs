@@ -1317,7 +1317,8 @@ mod tests {
         for every in [every.clone(), p_channel(&every)] {
             let sign = if every.contains(r#""p""#) { -1.0 } else { 1.0 };
             let heated = every.replace('{', r#"{"thermal": true, "#);
-            let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
+            let mut bench =
+                Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
             let inner = [11.6, 0.3, 5.9, 0.2].map(|v| sign * v);
             for rise in [0.0, 40.0] {
                 let mut plain = Bench::at::<Vdmos>(&every, REFERENCE_TEMPERATURE + rise);

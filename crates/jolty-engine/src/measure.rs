@@ -348,7 +348,7 @@ impl<'a> AnalysisResult<'a> {
     /// The numbers of `outcome`; none for sensitivities and transfer functions, which no
     /// measure reads.
     #[must_use]
-    pub fn of(outcome: &'a crate::AnalysisResult) -> Option<Self> {
+    pub fn from_result(outcome: &'a crate::AnalysisResult) -> Option<Self> {
         Some(match outcome {
             crate::AnalysisResult::OperatingPoint(point) => point.into(),
             crate::AnalysisResult::DcSweep(sweep) => sweep.into(),

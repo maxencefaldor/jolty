@@ -162,7 +162,7 @@ class _Index:
     """The devices, by path."""
 
     @classmethod
-    def of(cls, recording: Recording) -> _Index:
+    def from_recording(cls, recording: Recording) -> _Index:
         """The columns of `recording`."""
         terminals = (
             *(
@@ -328,7 +328,7 @@ class Recording:
 
     def _columns(self) -> _Index:
         if not self._index:
-            self._index.append(_Index.of(self))
+            self._index.append(_Index.from_recording(self))
         return self._index[0]
 
 

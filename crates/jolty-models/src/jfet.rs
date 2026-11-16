@@ -695,7 +695,7 @@ mod tests {
             "gate_source_capacitance": 2e-12, "threshold_voltage_temperature_coefficient": -2e-3,
             "transconductance_parameter_temperature_exponent": -1.5, "saturation_current_temperature_exponent": 2}"#;
         let heated = every.replace('{', r#"{"thermal": true, "#);
-        let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
+        let mut bench = Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
         for rise in [0.0, 30.0] {
             let mut plain = Bench::at::<Jfet>(every, REFERENCE_TEMPERATURE + rise);
             let hot = bench.settle(&[5.0, -0.5, 0.0, rise, 4.9]);

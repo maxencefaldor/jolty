@@ -52,7 +52,7 @@ fn signal(simulator: &Simulator, name: &str) -> Signal {
 }
 
 fn measure(measure: Measure, outcome: &jolty_engine::AnalysisResult) -> Result<f64, MeasureError> {
-    measure.measure(&AnalysisResult::of(outcome).expect("a measurable result"))
+    measure.measure(&AnalysisResult::from_result(outcome).expect("a measurable result"))
 }
 
 #[test]

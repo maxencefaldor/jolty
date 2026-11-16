@@ -125,7 +125,7 @@ impl State {
     /// # Errors
     ///
     /// Returns every problem the values make, as [`Elaborated::structure_of`] does.
-    pub(crate) fn of(
+    pub(crate) fn from_values(
         elaborated: &Elaborated,
         values: &Values,
     ) -> Result<Option<Self>, ElaborationError> {

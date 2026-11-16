@@ -172,7 +172,8 @@ mod tests {
     /// The current through 1 kΩ, drifting by 1e-3 per kelvin, with 1 V across it.
     fn current(own: &str) -> f64 {
         let parameters = format!(r#"{{"resistance": 1000, "temperature_coefficient": 1e-3{own}}}"#);
-        let mut bench = Bench::of(&model(), &parameters, REFERENCE_TEMPERATURE).expect("valid");
+        let mut bench =
+            Bench::from_model(&model(), &parameters, REFERENCE_TEMPERATURE).expect("valid");
         bench.evaluate(&[1.0, 0.0]).residual[0]
     }
 
@@ -188,7 +189,7 @@ mod tests {
     fn a_devices_own_temperature_is_one_number_of_kelvins_above_zero() {
         let error = |own: &str| {
             let parameters = format!(r#"{{"resistance": 1000{own}}}"#);
-            Bench::of(&model(), &parameters, REFERENCE_TEMPERATURE)
+            Bench::from_model(&model(), &parameters, REFERENCE_TEMPERATURE)
                 .expect_err("an error")
                 .to_string()
         };

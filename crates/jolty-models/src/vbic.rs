@@ -2548,7 +2548,7 @@ mod tests {
         let model = crate::Thermal::<Vbic>::new();
         let every = with(&with(FULL, SERIES), WARM);
         let heated = with(&every, r#""thermal": true, "#);
-        let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
+        let mut bench = Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
         let cool = Bench::new::<Vbic>(&every);
         let inner = biased(&cool, &every, [3.0, 0.75, 0.0, -1.0], 1.0);
         let with_rise = |rise: f64| {

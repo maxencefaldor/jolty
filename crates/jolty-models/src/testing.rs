@@ -90,11 +90,11 @@ impl Bench {
         parameters: &str,
         temperature: f64,
     ) -> Result<Self, ParameterError> {
-        Self::of(&Differentiable::<K>::new(), parameters, temperature)
+        Self::from_model(&Differentiable::<K>::new(), parameters, temperature)
     }
 
     /// A bench for a device of `model` with `parameters`, a JSON object, at `temperature`.
-    pub(crate) fn of(
+    pub(crate) fn from_model(
         model: &dyn Model,
         parameters: &str,
         temperature: f64,
@@ -278,7 +278,7 @@ pub(crate) fn assert_stepping_jacobians_match<K: Kernel>(parameters: &str, x: &[
 
 /// As [`assert_jacobians_match`], for a device of any `model`.
 pub(crate) fn assert_model_jacobians_match(model: &dyn Model, parameters: &str, x: &[f64]) {
-    let mut bench = Bench::of(model, parameters, REFERENCE_TEMPERATURE).expect("valid");
+    let mut bench = Bench::from_model(model, parameters, REFERENCE_TEMPERATURE).expect("valid");
     assert_bench_jacobians_match(&mut bench, model.name(), x);
 }
 
@@ -644,7 +644,7 @@ mod tests {
         let mut checked = 0;
         for &(name, parameters, _) in cases::CASES {
             let model = library.get(name).expect("a model of the library");
-            let mut bench = Bench::of(&**model, parameters, REFERENCE_TEMPERATURE)
+            let mut bench = Bench::from_model(&**model, parameters, REFERENCE_TEMPERATURE)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             if !bench.groups.is_linear(0) {
                 continue;
@@ -710,7 +710,7 @@ mod tests {
         let library = Library::standard();
         for &(name, parameters, given) in cases::CASES {
             let model = library.get(name).expect("a model of the library");
-            let mut bench = Bench::of(&**model, parameters, REFERENCE_TEMPERATURE)
+            let mut bench = Bench::from_model(&**model, parameters, REFERENCE_TEMPERATURE)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             let regions = bench.regions;
             assert_eq!(
@@ -746,7 +746,7 @@ mod tests {
         );
         for &(name, parameters, given) in cases::CASES {
             let model = library.get(name).expect("a model of the library");
-            let mut bench = Bench::of(&**model, parameters, REFERENCE_TEMPERATURE)
+            let mut bench = Bench::from_model(&**model, parameters, REFERENCE_TEMPERATURE)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             let x = cases::values(given, bench.unknowns.len());
             assert_bench_jacobians_match(&mut bench, name, &x);

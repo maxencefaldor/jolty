@@ -371,7 +371,7 @@ mod tests {
                 continue;
             };
             for stepping in [false, true] {
-                let bench = testing::Bench::of(
+                let bench = testing::Bench::from_model(
                     model.as_ref(),
                     &parameters.to_string(),
                     REFERENCE_TEMPERATURE,

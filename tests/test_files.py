@@ -354,7 +354,7 @@ def test_a_results_file_states_its_provenance(tmp_path: Path) -> None:
     path = tmp_path / "load.results.npz"
     save_results(path, every_kind(), circuit=written, plan=plan)
     found = load_provenance(path)
-    assert found == Provenance.of(written, plan)
+    assert found == Provenance.from_circuit_and_plan(written, plan)
     assert found.jolty == jolty.__version__
     assert found.circuit == circuit_digest(written)
     assert found.plan == plan_digest(plan)

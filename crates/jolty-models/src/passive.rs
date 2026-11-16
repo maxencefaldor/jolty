@@ -680,7 +680,8 @@ mod tests {
         for resistance in [1000.0, 1e-4] {
             let every = format!(r#"{{"resistance": {resistance}, {coefficients}}}"#);
             let heated = every.replace('{', r#"{"thermal": true, "#);
-            let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
+            let mut bench =
+                Bench::from_model(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
             // A current of its own, where it has one, follows the thermal terminal.
             let current = (resistance < 1.0).then_some(2.0 / resistance);
             for rise in [0.0, 50.0] {

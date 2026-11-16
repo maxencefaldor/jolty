@@ -534,7 +534,7 @@ struct Copied {
 impl Copied {
     /// The locals of each of `members` instances of `per` locals, whose targets are
     /// `targets`, instance after instance, that contribute to a target `long` marks.
-    fn of(targets: &[u32], (members, per): (usize, usize), long: &[bool]) -> Self {
+    fn from_targets(targets: &[u32], (members, per): (usize, usize), long: &[bool]) -> Self {
         let mut copied = Self {
             starts: Vec::with_capacity(members + 1),
             locals: Vec::new(),
@@ -836,8 +836,9 @@ impl Groups {
             // A linear instance's entries are gathered once a run, into the base, from their
             // blocks.
             let entries_long: &[bool] = if group.linear { &[] } else { &long.1 };
-            let mut rows = Copied::of(&group.nodes, (members, group.unknowns()), &long.0);
-            let mut entries = Copied::of(&group.slots, (members, group.stride()), entries_long);
+            let mut rows = Copied::from_targets(&group.nodes, (members, group.unknowns()), &long.0);
+            let mut entries =
+                Copied::from_targets(&group.slots, (members, group.stride()), entries_long);
             (rows.first, entries.first) = copies;
             copies = (copies.0 + rows.len(), copies.1 + entries.len());
             group.copied = [rows, entries];
@@ -2008,7 +2009,7 @@ impl<K: Kind> GroupRun for KernelRun<K> {
                 stamp_entries::<K>(&self.shape, prepared, map, &mut stamp);
             }
         }
-        self.terms = Terms::of(&group.layout, stride, [conductance, capacitance]);
+        self.terms = Terms::from_layout(&group.layout, stride, [conductance, capacitance]);
     }
 
     fn evaluate(
@@ -2399,7 +2400,7 @@ struct Terms {
 impl Terms {
     /// The terms of the instances of `layout` whose blocks' entries, a `stride` apart, are
     /// `[conductances, capacitances]`.
-    fn of(layout: &Layout, stride: usize, planes: [&[f64]; 2]) -> Self {
+    fn from_layout(layout: &Layout, stride: usize, planes: [&[f64]; 2]) -> Self {
         let mut terms = Self::default();
         let claimed = layout.entries();
         for (plane, values) in planes.into_iter().enumerate() {

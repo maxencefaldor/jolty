@@ -99,7 +99,7 @@ def _alone(
 ]:
     """A simulation made for `variant` alone, and what its analyses find."""
     elaborated = Elaborated(built, variant.temperature)
-    simulation = Simulation.of(elaborated, variant.overrides)
+    simulation = Simulation.from_elaborated(elaborated, variant.overrides)
     point = simulation.run(OperatingPoint())
     response = simulation.run(BODE)
     waveforms = simulation.run(STEP)
@@ -377,7 +377,7 @@ def test_a_run_of_another_structure_measures_its_own_unknowns() -> None:
     )
     assert sorted(seen) == list(range(6))
     for index, variant in enumerate(variants.variants):
-        alone = Simulation.of(Elaborated(built), variant.overrides).run(
+        alone = Simulation.from_elaborated(Elaborated(built), variant.overrides).run(
             OperatingPoint()
         )
         assert found.measured[index, 0] == alone.current("V1"), f"run {index}"

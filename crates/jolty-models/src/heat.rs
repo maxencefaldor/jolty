@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn a_heated_diode_is_the_diode_at_its_temperature() {
         let model = Thermal::<Diode>::new();
-        let mut heated = Bench::of(&model, DIODE, REFERENCE_TEMPERATURE).expect("valid");
+        let mut heated = Bench::from_model(&model, DIODE, REFERENCE_TEMPERATURE).expect("valid");
         assert_eq!(heated.unknowns(), ["n0", "n1", "n2", "device:junction"]);
         let cool = DIODE.replace(r#", "thermal": true"#, "");
         for rise in [0.0, 40.0] {

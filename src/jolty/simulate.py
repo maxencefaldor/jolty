@@ -268,7 +268,9 @@ class Elaborated:
         ...     c.connect(upper.b, lower.a, name="out")
         ...     c.connect(lower.b, source.negative, ground)
         >>> elaborated = Elaborated(divider())
-        >>> sample = Simulation.of(elaborated, {"R1": {"resistance": 3000.0}})
+        >>> sample = Simulation.from_elaborated(
+        ...     elaborated, {"R1": {"resistance": 3000.0}}
+        ... )
         >>> sample.run(OperatingPoint()).voltage("out")
         1.25
     """
@@ -417,7 +419,7 @@ class Simulation:
         )
 
     @classmethod
-    def of(
+    def from_elaborated(
         cls,
         elaborated: Elaborated,
         overrides: Mapping[str, Mapping[str, float]] | None = None,
@@ -706,7 +708,7 @@ class Simulation:
                 written.
         """
         chosen = Options() if options is None else options
-        planned = _Planned.of(self, analyses, chosen, measures, traces)
+        planned = _Planned.from_simulation(self, analyses, chosen, measures, traces)
         ran = self._variants(variants)
         taken = range(len(ran)) if runs is None else runs
         if taken.step != 1 or not 0 <= taken.start <= taken.stop <= len(ran):
@@ -1312,7 +1314,7 @@ class _Planned:
     by the run's index and the measure's."""
 
     @classmethod
-    def of(
+    def from_simulation(
         cls,
         simulation: Simulation,
         analyses: Mapping[str, Analysis],

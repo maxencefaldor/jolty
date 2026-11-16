@@ -403,7 +403,9 @@ class SummaryStatistics(BaseModel):
     )
 
     @classmethod
-    def of(cls, numbers: npt.NDArray[np.float64], unit: str) -> SummaryStatistics:
+    def from_numbers(
+        cls, numbers: npt.NDArray[np.float64], unit: str
+    ) -> SummaryStatistics:
         """The least, the greatest, the mean and the deviation of `numbers`.
 
         An infinity among them is their mean, unless one of each sign is, and leaves
@@ -524,7 +526,9 @@ def _spread(requirement: Requirement, verdicts: Sequence[Verdict]) -> Spread:
     stated = Spread(requirement=str(requirement), measured=len(read), passing=passing)
     if not read:
         return stated
-    values = SummaryStatistics.of(np.array([value for value, _ in read]), read[0][1])
+    values = SummaryStatistics.from_numbers(
+        np.array([value for value, _ in read]), read[0][1]
+    )
     return stated.model_copy(update={"values": values})
 
 
@@ -673,7 +677,7 @@ def _spread_of(requirement: Requirement, judged: Judged) -> Spread:
         return stated
     first = int(np.argmax(measured))
     unit = judged.units[int(judged.origin[first])]
-    values = SummaryStatistics.of(judged.value[measured], unit)
+    values = SummaryStatistics.from_numbers(judged.value[measured], unit)
     return stated.model_copy(update={"values": values})
 
 
