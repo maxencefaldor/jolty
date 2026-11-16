@@ -70,6 +70,10 @@ pub struct OperatingPointResult {
     pub logic: Vec<LogicLevel>,
     /// The strategy that found the solution.
     pub strategy: Strategy,
+    /// The Newton iterations that found it: those of the strategy that found it, of every
+    /// strategy tried before it, and of every solve again as the logic settled with it, as
+    /// solving it afresh runs them, whatever the simulator remembered.
+    pub iterations: usize,
 }
 
 /// A search for every DC solution of the circuit, up to `max_solutions`: the operating point, then
@@ -86,9 +90,12 @@ pub struct OperatingPoints {
 pub(crate) struct Solved {
     pub(crate) values: Vec<f64>,
     pub(crate) strategy: Strategy,
-    /// The Newton iterations that found it, when Newton iteration alone found it from the
-    /// guess it started from.
-    pub(crate) iterations: Option<usize>,
+    /// The Newton iterations that found it, every strategy's tried before the one that
+    /// found it among them.
+    pub(crate) iterations: usize,
+    /// Whether Newton iteration alone found it from the guess it started from, in its
+    /// `iterations`.
+    pub(crate) from_guess: bool,
 }
 
 /// The last operating point the simulator solved, what it solved it under, and the state
@@ -315,9 +322,10 @@ impl Simulator {
         }
         self.state.solves += 1;
         if let Some((_, solved)) = start
-            && let Some(taken) = solved.iterations
-            && let Some(left) = options.max_dc_iterations.checked_sub(taken)
+            && solved.from_guess
+            && let Some(left) = options.max_dc_iterations.checked_sub(solved.iterations)
         {
+            let taken = solved.iterations;
             let mut values = solved.values;
             let direct = Mode::Dc {
                 source_scale: 1.0,
@@ -329,7 +337,8 @@ impl Simulator {
                 return Ok(Solved {
                     values,
                     strategy: Strategy::Direct,
-                    iterations: Some(taken + more),
+                    iterations: taken + more,
+                    from_guess: true,
                 });
             }
         }
@@ -345,6 +354,7 @@ impl Simulator {
     /// number and the temperature that differ between the two runs' values, or else
     /// solved from it by every strategy.
     fn solve_warm(&mut self, warm: Warm, options: &Options) -> Result<Solved, SimulationError> {
+        let before = self.state.workspace.meter.iterations();
         let to = self.values.clone();
         self.evaluate(&warm.solution, None, (1.0, options.gmin), false);
         let coordinates = self.coordinates(&warm.values, &to);
@@ -369,7 +379,8 @@ impl Simulator {
             return Ok(Solved {
                 values,
                 strategy: Strategy::Direct,
-                iterations: None,
+                iterations: self.iterations_since(before),
+                from_guess: false,
             });
         }
         if !self
@@ -380,7 +391,18 @@ impl Simulator {
                 "a run of a chain has another structure than the run before it".to_owned(),
             ));
         }
-        self.solve_dc(warm.solution, options)
+        let continued = self.iterations_since(before);
+        let solved = self.solve_dc(warm.solution, options)?;
+        Ok(Solved {
+            iterations: continued + solved.iterations,
+            from_guess: false,
+            ..solved
+        })
+    }
+
+    /// The Newton iterations the simulator has run since it had run `before`.
+    pub(crate) fn iterations_since(&self, before: usize) -> usize {
+        self.state.workspace.meter.iterations() - before
     }
 
     /// Each number, by its parameter, and the temperature, as `None`, that differ between
@@ -478,6 +500,7 @@ impl Simulator {
     /// reflection of a known solution through another, or from beside one, on the
     /// equations they deflate.
     fn another(&mut self, known: &[Vec<f64>], options: &Options) -> Option<Solved> {
+        let before = self.state.workspace.meter.iterations();
         let zero = vec![0.0; self.elaborated.unknowns.len()];
         if let Ok(solved) = self.solve_deflated(zero, options, known)
             && self.distinct(known, &solved.values, options)
@@ -521,14 +544,16 @@ impl Simulator {
             deflated: known,
         };
         for mut values in starts {
-            if let Ok(iterations) =
-                self.newton(&mut values, direct, options, options.max_dc_iterations)
+            if self
+                .newton(&mut values, direct, options, options.max_dc_iterations)
+                .is_ok()
                 && self.distinct(known, &values, options)
             {
                 return Some(Solved {
                     values,
                     strategy: Strategy::Direct,
-                    iterations: Some(iterations),
+                    iterations: self.iterations_since(before),
+                    from_guess: false,
                 });
             }
         }
@@ -631,6 +656,7 @@ impl Simulator {
         mut solved: Solved,
         options: &Options,
     ) -> Result<OperatingPointResult, SimulationError> {
+        let mut iterations = solved.iterations;
         let detectors = self.elaborated.logic.detectors.len();
         let mut previous = vec![LogicLevel::Unknown; detectors];
         let mut unsettled = vec![false; detectors];
@@ -669,6 +695,7 @@ impl Simulator {
                 self.drive(element, (0.0, level, 0.0));
             }
             solved = self.solve_dc(solved.values, options)?;
+            iterations += solved.iterations;
         }
         self.measure_loads(&solved.values, options);
         self.watch_supplies(&solved.values, 0.0, options);
@@ -677,6 +704,7 @@ impl Simulator {
             values: solved.values,
             logic: self.state.events.levels().to_vec(),
             strategy: solved.strategy,
+            iterations,
         })
     }
 
@@ -698,6 +726,7 @@ impl Simulator {
         options: &Options,
         deflated: &[Vec<f64>],
     ) -> Result<Solved, SimulationError> {
+        let before = self.state.workspace.meter.iterations();
         let mut values = guess.clone();
         let direct = Mode::Dc {
             source_scale: 1.0,
@@ -710,7 +739,8 @@ impl Simulator {
             return Ok(Solved {
                 values,
                 strategy: Strategy::Direct,
-                iterations: Some(iterations),
+                iterations,
+                from_guess: true,
             });
         }
         let mut values = guess.clone();
@@ -721,7 +751,8 @@ impl Simulator {
             return Ok(Solved {
                 values,
                 strategy: Strategy::GminStepping,
-                iterations: None,
+                iterations: self.iterations_since(before),
+                from_guess: false,
             });
         }
         let mut values = guess;
@@ -732,7 +763,8 @@ impl Simulator {
             return Ok(Solved {
                 values,
                 strategy: Strategy::JunctionGminStepping,
-                iterations: None,
+                iterations: self.iterations_since(before),
+                from_guess: false,
             });
         }
         let zero = vec![0.0; values.len()];
@@ -742,7 +774,8 @@ impl Simulator {
                 return Ok(Solved {
                     values,
                     strategy: Strategy::SourceStepping,
-                    iterations: None,
+                    iterations: self.iterations_since(before),
+                    from_guess: false,
                 });
             }
             Err(failure) => failure,
@@ -758,7 +791,8 @@ impl Simulator {
             (_, Ok(())) => Ok(Solved {
                 values,
                 strategy: Strategy::PseudoTransient,
-                iterations: None,
+                iterations: self.iterations_since(before),
+                from_guess: false,
             }),
             (Failure::Solver(error), _) | (_, Err(Failure::Solver(error))) => Err(error),
             (Failure::Diverged, Err(Failure::Diverged)) => Err(SimulationError::NoOperatingPoint {

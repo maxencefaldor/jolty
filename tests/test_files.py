@@ -92,6 +92,7 @@ def every_kind() -> dict[str, results.AnalysisResult]:
         UNKNOWNS,
         np.array([1.0, -1e-3]),
         "gmin_stepping",
+        412,
         recording=RECORDING,
         currents=np.array([1e-3, -1e-3, 0.0, 0.0]),
         charges=np.array([1e-12, -1e-12, 0.0, 0.0]),
@@ -113,6 +114,8 @@ def every_kind() -> dict[str, results.AnalysisResult]:
             conductances=np.zeros((2, 8)),
             capacitances=np.zeros((2, 8)),
             variables=np.zeros((2, 3)),
+            strategies=("direct", "source_stepping"),
+            iterations=(5, 230),
         ),
         "bode": results.AcResult(
             UNKNOWNS,
@@ -230,6 +233,10 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     sweep = read["sweep"]
     assert isinstance(sweep, results.DcSweepResult)
     assert (sweep.source, sweep.nature) == ("V1", "voltage")
+    assert (sweep.strategies, sweep.iterations) == (
+        ("direct", "source_stepping"),
+        (5, 230),
+    )
     op = read["op"]
     assert isinstance(op, results.OperatingPointResult)
     assert op.current("C1", "a") == 1e-3
@@ -246,6 +253,7 @@ def test_results_files_hold_every_kind_of_result(tmp_path: Path) -> None:
     assert bode.operating_point.current("C1", "a") == 1e-3
     assert bode.source == "V1"
     assert bode.operating_point.strategy == "gmin_stepping"
+    assert bode.operating_point.iterations == 412
     step = read["step"]
     assert isinstance(step, results.TransientResult)
     assert step.statistics == STATISTICS
@@ -317,7 +325,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 15
+    assert header["version"] == 16
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {

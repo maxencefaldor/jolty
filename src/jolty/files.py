@@ -19,9 +19,9 @@ the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 devices outside their domains. Its header also states the results'
 [`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
 simulated them, and the digests of the circuit and the plan they are of. The header is
-in version 15 of the format, which holds that provenance and the regions of operation
-each recorded transistor's model distinguishes; a file of another version is not
-read.
+in version 16 of the format, which holds that provenance, the regions of operation
+each recorded transistor's model distinguishes, and the Newton iterations that found
+each operating point; a file of another version is not read.
 
 Examples:
     >>> import tempfile
@@ -84,15 +84,27 @@ class _Model(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+class _Found(_Model):
+    """How an operating point was found: its strategy, and its Newton iterations."""
+
+    strategy: str
+    iterations: int | None = None
+
+    @classmethod
+    def of(cls, point: results.OperatingPointResult) -> Self:
+        """How `point` was found."""
+        return cls(strategy=point.strategy, iterations=point.iterations)
+
+
 class _OperatingPointResult(_Model):
     kind: Literal["operating_point"] = "operating_point"
-    strategy: str
+    found: _Found
     recording: int
 
 
 class _OperatingPointsResult(_Model):
     kind: Literal["operating_points"] = "operating_points"
-    strategies: tuple[str, ...]
+    found: tuple[_Found, ...]
     recording: int
 
 
@@ -101,13 +113,15 @@ class _DcSweepResult(_Model):
     source: str
     nature: results.Nature | None
     parameter: str | None = None
+    strategies: tuple[str, ...] = ()
+    iterations: tuple[int, ...] = ()
     recording: int
 
 
 class _AcResult(_Model):
     kind: Literal["ac"] = "ac"
     source: str
-    strategy: str
+    found: _Found
     recording: int
 
 
@@ -127,7 +141,7 @@ class _SensitivityResult(_Model):
 class _StabilityResult(_Model):
     kind: Literal["stability"] = "stability"
     probe: str
-    strategy: str
+    found: _Found
     recording: int
 
 
@@ -143,7 +157,7 @@ class _NoiseResult(_Model):
     nature: results.Nature
     sources: tuple[tuple[str, str], ...]
     input: _NoiseInput | None
-    strategy: str
+    found: _Found
     recording: int
 
 
@@ -152,7 +166,7 @@ class _PoleZeroResult(_Model):
     source: str | None
     output: str | None
     reference: str | None
-    strategy: str
+    found: _Found
     recording: int
 
 
@@ -162,7 +176,7 @@ class _TransferFunctionResult(_Model):
     input: results.Nature
     output: str
     reference: str | None
-    strategy: str
+    found: _Found
     recording: int
 
 
@@ -380,7 +394,7 @@ class Provenance(BaseModel):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[15] = 15
+    version: Literal[16] = 16
     provenance: Provenance
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
@@ -670,7 +684,7 @@ def _save(
         case results.OperatingPointResult():
             arrays.update(_point_arrays(name, result))
             recording = _indexed(recordings, result.recording)
-            return _OperatingPointResult(strategy=result.strategy, recording=recording)
+            return _OperatingPointResult(found=_Found.of(result), recording=recording)
         case results.DcSweepResult():
             arrays[f"{name}.swept"] = result.swept
             arrays[f"{name}.values"] = result.values
@@ -680,6 +694,8 @@ def _save(
                 source=result.source,
                 nature=result.nature,
                 parameter=result.parameter,
+                strategies=result.strategies,
+                iterations=result.iterations,
                 recording=_indexed(recordings, result.recording),
             )
         case results.AcResult():
@@ -690,7 +706,7 @@ def _save(
             arrays.update(_point_arrays(f"{name}.operating_point", point))
             return _AcResult(
                 source=result.source,
-                strategy=point.strategy,
+                found=_Found.of(point),
                 recording=_indexed(recordings, result.recording),
             )
         case results.TransientResult():
@@ -715,7 +731,7 @@ def _save(
             for index, point in enumerate(result.points):
                 arrays.update(_point_arrays(f"{name}.{index}", point))
             return _OperatingPointsResult(
-                strategies=tuple(point.strategy for point in result.points),
+                found=tuple(_Found.of(point) for point in result.points),
                 recording=_indexed(recordings, result.points[0].recording),
             )
         case _:
@@ -752,7 +768,7 @@ def _save_linear(
                 input=result.input,
                 output=result.output,
                 reference=result.reference,
-                strategy=point.strategy,
+                found=_Found.of(point),
                 recording=_indexed(recordings, point.recording),
             )
         case results.SensitivityResult():
@@ -775,7 +791,7 @@ def _save_linear(
             arrays.update(_point_arrays(f"{name}.operating_point", point))
             return _StabilityResult(
                 probe=result.probe,
-                strategy=point.strategy,
+                found=_Found.of(point),
                 recording=_indexed(recordings, point.recording),
             )
         case results.NoiseResult():
@@ -798,7 +814,7 @@ def _save_linear(
                     (source.instance, source.name) for source in result.sources
                 ),
                 input=found,
-                strategy=point.strategy,
+                found=_Found.of(point),
                 recording=_indexed(recordings, point.recording),
             )
         case results.PoleZeroResult():
@@ -811,7 +827,7 @@ def _save_linear(
                 source=result.source,
                 output=result.output,
                 reference=result.reference,
-                strategy=point.strategy,
+                found=_Found.of(point),
                 recording=_indexed(recordings, point.recording),
             )
 
@@ -829,12 +845,12 @@ def _load(
     """
     unknowns, nets = header.unknowns, header.nets
     match entry:
-        case _OperatingPointResult(strategy=strategy, recording=recording):
-            return _point(data, name, strategy, header, recordings[recording])
-        case _OperatingPointsResult(strategies=strategies, recording=recording):
+        case _OperatingPointResult(found=found, recording=recording):
+            return _point(data, name, found, header, recordings[recording])
+        case _OperatingPointsResult(found=found, recording=recording):
             points = tuple(
-                _point(data, f"{name}.{index}", strategy, header, recordings[recording])
-                for index, strategy in enumerate(strategies)
+                _point(data, f"{name}.{index}", each, header, recordings[recording])
+                for index, each in enumerate(found)
             )
             return results.OperatingPointsResult(unknowns, points)
         case _DcSweepResult(source=source, nature=nature, recording=recording):
@@ -848,15 +864,17 @@ def _load(
                 data[f"{name}.logic"],
                 **_observed(data, name, recordings[recording]),
                 parameter=entry.parameter,
+                strategies=entry.strategies,
+                iterations=entry.iterations,
             )
-        case _AcResult(source=source, strategy=strategy, recording=recording):
+        case _AcResult(source=source, found=found, recording=recording):
             point = f"{name}.operating_point"
             return results.AcResult(
                 unknowns,
                 source,
                 data[f"{name}.frequencies"],
                 data[f"{name}.values"],
-                _point(data, point, strategy, header, recordings[recording]),
+                _point(data, point, found, header, recordings[recording]),
                 recording=recordings[recording],
                 currents=data[f"{name}.currents"],
             )
@@ -904,7 +922,7 @@ def _load_linear(
                 _point(
                     data,
                     f"{name}.operating_point",
-                    entry.strategy,
+                    entry.found,
                     header,
                     recordings[entry.recording],
                 ),
@@ -936,14 +954,14 @@ def _load_linear(
             return results.SensitivityResult(
                 unknowns, outputs, parameters, data[f"{name}.derivatives"], found
             )
-        case _StabilityResult(probe=probe, strategy=strategy, recording=recording):
+        case _StabilityResult(probe=probe, found=found, recording=recording):
             point = f"{name}.operating_point"
             return results.StabilityResult(
                 unknowns,
                 probe,
                 data[f"{name}.frequencies"],
                 data[f"{name}.gains"],
-                _point(data, point, strategy, header, recordings[recording]),
+                _point(data, point, found, header, recordings[recording]),
             )
         case _NoiseResult():
             found_input = None
@@ -967,7 +985,7 @@ def _load_linear(
                 _point(
                     data,
                     f"{name}.operating_point",
-                    entry.strategy,
+                    entry.found,
                     header,
                     recordings[entry.recording],
                 ),
@@ -976,7 +994,7 @@ def _load_linear(
             source=source,
             output=output,
             reference=reference,
-            strategy=strategy,
+            found=found,
             recording=recording,
         ):
             point = f"{name}.operating_point"
@@ -987,7 +1005,7 @@ def _load_linear(
                 source,
                 output,
                 reference,
-                _point(data, point, strategy, header, recordings[recording]),
+                _point(data, point, found, header, recordings[recording]),
             )
 
 
@@ -1051,15 +1069,19 @@ def _observed(
 def _point(
     data: Mapping[str, np.ndarray],
     name: str,
-    strategy: str,
+    found: _Found,
     header: _Header,
     recording: results.Recording,
 ) -> results.OperatingPointResult:
-    """The operating point stored under `name` in `data`, which recorded `recording`."""
+    """The operating point stored under `name` in `data`, found as `found` says.
+
+    It recorded `recording`.
+    """
     return results.OperatingPointResult(
         header.unknowns,
         data[f"{name}.values"],
-        strategy,
+        found.strategy,
+        found.iterations,
         header.nets,
         data[f"{name}.logic"],
         **_observed(data, name, recording),

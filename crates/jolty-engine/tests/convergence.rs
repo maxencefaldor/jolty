@@ -50,6 +50,14 @@ fn gmin_stepping_across_the_junctions_saturates_a_transistor_into_a_negative_loa
         .operating_point(&Options::default())
         .expect("an operating point");
     assert_eq!(point.strategy, Strategy::JunctionGminStepping);
+    // Its iterations count those of the strategies that failed before it: Newton
+    // iteration's alone run to their limit, or to a matrix the solver cannot factor.
+    let options = Options::default();
+    assert!(
+        point.iterations > options.max_dc_iterations,
+        "{} iterations",
+        point.iterations
+    );
     let voltage = |name: &str| point.values[simulator.unknown(name).expect("a node").index()];
     let (base, emitter, collector) = (voltage("base"), voltage("emitter"), voltage("collector"));
     // ngspice's operating point, to its printed digits.

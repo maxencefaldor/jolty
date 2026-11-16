@@ -128,6 +128,9 @@ fn a_divider_halves_its_input_and_its_source_delivers_current() {
     let mut simulator = simulator(&circuit);
     let solution = simulator.operating_point(&Options::default()).unwrap();
     assert_eq!(solution.strategy, Strategy::Direct);
+    // Newton iteration steps to a linear circuit's solution in one iteration, and a
+    // second, whose step lies within tolerance, confirms it.
+    assert_eq!(solution.iterations, 2);
     assert_close(solution.values[index(&simulator, "out")], 2.5, 1e-12);
     assert_close(
         solution.values[index(&simulator, "V1:current")],
@@ -368,6 +371,10 @@ fn a_dc_sweep_steps_any_number_of_a_device() {
         (result.parameter.as_deref(), result.nature),
         (Some("resistance"), None)
     );
+    // Each level, from zero or from the level before, takes a linear divider's one
+    // Newton step to its solution and a second that confirms it.
+    assert_eq!(result.strategies, [Strategy::Direct; 20]);
+    assert_eq!(result.iterations, [2; 20]);
     let out = index(&simulator, "out");
     // The tolerance is a few roundings of a linear divider's one Newton step.
     for (level, values) in levels.iter().zip(&result.values) {

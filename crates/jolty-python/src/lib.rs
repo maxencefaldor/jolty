@@ -15,8 +15,9 @@ mod measure;
 use std::sync::{Arc, Mutex};
 
 use jolty_engine::{
-    Analysis, AnalysisResult, Derivatives, Location, NoiseResult, OperatingPointResult, Options,
-    PoleZeroResult, Record, RecordedSeries, RecordedValues, Statistics,
+    Analysis, AnalysisResult, DcSweepResult, Derivatives, Location, NoiseResult,
+    OperatingPointResult, Options, PoleZeroResult, Record, RecordedSeries, RecordedValues,
+    Statistics,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Library, LogicLevel, Model, Nature, ParameterError};
@@ -560,14 +561,7 @@ pub(crate) fn outcome_to_python(
         }
         AnalysisResult::DcSweep(sweep) => {
             result.set_item("kind", "dc_sweep")?;
-            result.set_item("source", sweep.source)?;
-            result.set_item("parameter", sweep.parameter)?;
-            result.set_item("nature", sweep.nature.map(quantity_name))?;
-            result.set_item("swept", PyArray1::from_vec(py, sweep.swept))?;
-            result.set_item("values", stacked(py, sweep.values)?)?;
-            add_observations(&result, sweep.observations)?;
-            let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();
-            result.set_item("logic", matrix(py, &logic)?)?;
+            add_dc_sweep(&result, sweep)?;
         }
         AnalysisResult::Ac(response) => {
             result.set_item("kind", "ac")?;
@@ -652,6 +646,22 @@ pub(crate) fn outcome_to_python(
         }
     }
     Ok(result)
+}
+
+/// The operating points of a DC sweep, one row per level, and how each was found.
+fn add_dc_sweep(result: &Bound<'_, PyDict>, sweep: DcSweepResult) -> PyResult<()> {
+    let py = result.py();
+    result.set_item("source", sweep.source)?;
+    result.set_item("parameter", sweep.parameter)?;
+    result.set_item("nature", sweep.nature.map(quantity_name))?;
+    result.set_item("swept", PyArray1::from_vec(py, sweep.swept))?;
+    result.set_item("values", stacked(py, sweep.values)?)?;
+    add_observations(result, sweep.observations)?;
+    let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();
+    result.set_item("logic", matrix(py, &logic)?)?;
+    let strategies: Vec<&str> = sweep.strategies.iter().map(|found| found.name()).collect();
+    result.set_item("strategies", strategies)?;
+    result.set_item("iterations", sweep.iterations)
 }
 
 /// The noise at an output, at each frequency, with each device noise source's share: the
@@ -753,7 +763,8 @@ fn add_operating_point(
     result.set_item("conductances", PyArray1::from_vec(py, conductances))?;
     result.set_item("capacitances", PyArray1::from_vec(py, capacitances))?;
     result.set_item("variables", PyArray1::from_vec(py, variables))?;
-    result.set_item("strategy", operating_point.strategy.name())
+    result.set_item("strategy", operating_point.strategy.name())?;
+    result.set_item("iterations", operating_point.iterations)
 }
 
 /// Adds what the recorded devices did at each point to `result`: the terminals' `currents`

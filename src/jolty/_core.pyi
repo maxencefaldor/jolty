@@ -41,6 +41,7 @@ class SolvedPoint(RecordedValues):
     values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
     strategy: str
+    iterations: int
 
 class OperatingPointResult(SolvedPoint):
     kind: Literal["operating_point"]
@@ -57,6 +58,8 @@ class DcSweepResult(RecordedValues):
     swept: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
     logic: npt.NDArray[np.float64]
+    strategies: list[str]
+    iterations: list[int]
 
 class AcResult(TypedDict):
     kind: Literal["ac"]

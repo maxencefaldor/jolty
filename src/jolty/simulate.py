@@ -924,6 +924,8 @@ class Simulation:
                     outcome["logic"],
                     **_observed(outcome, recording),
                     parameter=outcome["parameter"],
+                    strategies=tuple(outcome["strategies"]),
+                    iterations=tuple(outcome["iterations"]),
                 )
             case "ac":
                 return results.AcResult(
@@ -1248,6 +1250,7 @@ class Simulation:
             self.unknowns,
             solved["values"],
             solved["strategy"],
+            solved["iterations"],
             self.nets,
             solved["logic"],
             **_observed(solved, recording),
