@@ -248,10 +248,11 @@ class Elaborated:
     """A circuit elaborated once, which simulations of it at any parameters share.
 
     Its devices run at one temperature, 27 °C unless given, with the models of
-    `substitutes` standing in for component instances. A
-    [`Simulation.of`][jolty.simulate.Simulation.of] it replaces some of its devices'
-    numbers, as a Monte Carlo sample does, and makes its devices again from them, as
-    elaborating the circuit with them would, bit for bit, without elaborating it anew.
+    `substitutes` standing in for component instances. A simulation made from it by
+    [`Simulation.from_elaborated`][jolty.simulate.Simulation.from_elaborated] replaces
+    some of its devices' numbers, as a Monte Carlo sample does, and makes its devices
+    again from them, as elaborating the circuit with them would, bit for bit, without
+    elaborating it anew.
     Numbers that give a device another structure, as a resistance below 1 Ω carries its
     current as an unknown of its own, run on the circuit elaborated once for that
     structure, which every simulation whose numbers give it shares.
