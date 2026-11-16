@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{Temperatures, below_one, critical_voltage, limit_junction};
-use crate::kernel::parts::{self, Nodes, Oriented, Pair, Series};
+use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Series};
 use crate::kernel::region::Bipolar;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
@@ -1901,11 +1901,14 @@ impl Kernel for Vbic {
             qbep,
             qbcp,
         } = branches;
-        added.current(stamp, (BI, EI), ibe);
-        added.current(stamp, (BX, EI), ibex);
+        // Every derivative among the stamped nodes is summed here, and written once.
+        let mut derivatives = Derivatives::new();
+        let sums = &mut derivatives;
+        added.add_current(stamp, sums, (BI, EI), ibe);
+        added.add_current(stamp, sums, (BX, EI), ibex);
         match &shape.excess {
             Some(excess) => {
-                added.current(stamp, (CI, EI), -itzr);
+                added.add_current(stamp, sums, (CI, EI), -itzr);
                 excess.add(
                     (&shape.stamp, &bias),
                     (itzf, prepared.delay, sign),
@@ -1913,21 +1916,22 @@ impl Kernel for Vbic {
                     stamp,
                 );
             }
-            None => added.current(stamp, (CI, EI), itzf - itzr),
+            None => added.add_current(stamp, sums, (CI, EI), itzf - itzr),
         }
-        added.current(stamp, (BI, CI), ibc);
-        added.current(stamp, (BX, BP), ibep);
-        added.current(stamp, (CX, CI), irci);
-        added.current(stamp, (BX, BI), irbi);
-        added.current(stamp, (BP, CX), irbp);
-        added.current(stamp, (SI, BP), ibcp);
-        added.current(stamp, (BX, SI), iccp);
-        added.charge(stamp, (BI, EI), qbe);
-        added.charge(stamp, (BX, EI), qbex);
-        added.charge(stamp, (BI, CI), qbc);
-        added.charge(stamp, (BI, CX), qbcx);
-        added.charge(stamp, (BX, BP), qbep);
-        added.charge(stamp, (SI, BP), qbcp);
+        added.add_current(stamp, sums, (BI, CI), ibc);
+        added.add_current(stamp, sums, (BX, BP), ibep);
+        added.add_current(stamp, sums, (CX, CI), irci);
+        added.add_current(stamp, sums, (BX, BI), irbi);
+        added.add_current(stamp, sums, (BP, CX), irbp);
+        added.add_current(stamp, sums, (SI, BP), ibcp);
+        added.add_current(stamp, sums, (BX, SI), iccp);
+        added.add_charge(stamp, sums, (BI, EI), qbe);
+        added.add_charge(stamp, sums, (BX, EI), qbex);
+        added.add_charge(stamp, sums, (BI, CI), qbc);
+        added.add_charge(stamp, sums, (BI, CX), qbcx);
+        added.add_charge(stamp, sums, (BX, BP), qbep);
+        added.add_charge(stamp, sums, (SI, BP), qbcp);
+        derivatives.stamp(&shape.stamp, stamp);
     }
 
     fn variable_names() -> &'static [&'static str] {

@@ -477,47 +477,7 @@ pub(crate) struct Oriented<'a, const M: usize, const N: usize> {
 
 impl<const M: usize, const N: usize> Oriented<'_, M, N> {
     /// Adds `current`, oriented as an n-channel's, from the stamped node `from` to `to`,
-    /// with its derivatives.
-    pub(crate) fn current<R: Real>(
-        &self,
-        stamp: &mut Stamp<'_, R>,
-        (from, to): (usize, usize),
-        current: Dual<R, N>,
-    ) {
-        let nodes = self.nodes;
-        nodes.current(
-            stamp,
-            from,
-            to,
-            current.extend(self.bias.beyond) * self.sign,
-        );
-        for (variable, derivative) in self.variables.into_iter().zip(current.gradient) {
-            nodes.conductance(stamp, (from, to), variable, derivative);
-        }
-    }
-
-    /// Adds `charge`, oriented as an n-channel's, on the stamped node `on` against
-    /// `against`, with its derivatives.
-    pub(crate) fn charge<R: Real>(
-        &self,
-        stamp: &mut Stamp<'_, R>,
-        (on, against): (usize, usize),
-        charge: Dual<R, N>,
-    ) {
-        let nodes = self.nodes;
-        nodes.charge(
-            stamp,
-            on,
-            against,
-            charge.extend(self.bias.beyond) * self.sign,
-        );
-        for (variable, derivative) in self.variables.into_iter().zip(charge.gradient) {
-            nodes.capacitance(stamp, (on, against), variable, derivative);
-        }
-    }
-
-    /// As [`Oriented::current`], its derivatives summed into `derivatives` rather than
-    /// written to `stamp`.
+    /// and sums its derivatives into `derivatives`, which writes them to `stamp`.
     #[expect(
         clippy::inline_always,
         reason = "inlined where its nodes are constants, its sums stay in registers"
@@ -542,8 +502,9 @@ impl<const M: usize, const N: usize> Oriented<'_, M, N> {
         }
     }
 
-    /// As [`Oriented::charge`], its derivatives summed into `derivatives` rather than
-    /// written to `stamp`.
+    /// Adds `charge`, oriented as an n-channel's, on the stamped node `on` against
+    /// `against`, and sums its derivatives into `derivatives`, which writes them to
+    /// `stamp`.
     #[expect(
         clippy::inline_always,
         reason = "inlined where its nodes are constants, its sums stay in registers"
@@ -574,10 +535,10 @@ impl<const M: usize, const N: usize> Oriented<'_, M, N> {
 /// [`Oriented::add_charge`] add at its pair of them, so that [`Derivatives::stamp`] writes
 /// each local entry among them once.
 ///
-/// Each is the sum [`Oriented::current`] and [`Oriented::charge`] make in the stamp one
-/// write at a time, of the same terms in the same order, and so the same bits at an entry
-/// that held nothing before; at one that held a value, as a series resistance leaves at
-/// the node behind it, the sum adds to the value at once.
+/// Each is the sum that [`Nodes::conductance`] and [`Nodes::capacitance`] would make in the
+/// stamp one write at a time, of the same terms in the same order, and so the same bits at
+/// an entry that held nothing before; at one that held a value, as a series resistance
+/// leaves at the node behind it, the sum adds to the value at once.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Derivatives<R: Real, const M: usize> {
     conductance: Entries<R, M>,
@@ -688,11 +649,19 @@ mod tests {
                 })
                 .collect();
             let written = stamped(|stamp| {
-                for &(charge, pair, term) in &terms {
+                for &(charge, (from, to), term) in &terms {
+                    let value = term.extend(bias.beyond) * added.sign;
+                    let derivatives = added.variables.into_iter().zip(term.gradient);
                     if charge {
-                        added.charge(stamp, pair, term);
+                        nodes.charge(stamp, from, to, value);
+                        for (variable, derivative) in derivatives {
+                            nodes.capacitance(stamp, (from, to), variable, derivative);
+                        }
                     } else {
-                        added.current(stamp, pair, term);
+                        nodes.current(stamp, from, to, value);
+                        for (variable, derivative) in derivatives {
+                            nodes.conductance(stamp, (from, to), variable, derivative);
+                        }
                     }
                 }
             });
