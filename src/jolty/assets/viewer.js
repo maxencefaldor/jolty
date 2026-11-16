@@ -231,7 +231,7 @@ const TWO = {
 function makePart(instance) {
   const group = new THREE.Group();
   const name = instance.name;
-  const model = instance.device ?? instance.component;
+  const model = instance.model ?? instance.component;
   const pins = Object.fromEntries(Object.entries(instance.pins).map(([name, point]) => [name, toWorld(point)]));
   const partLeads = [];
   const bodies = [];
@@ -757,7 +757,7 @@ function renderInspector() {
   const instance = part.instance;
   inspector.append(
     h("h2", {}, part.name),
-    h("div", { class: "kind" }, `${instance.device ? instance.device : `component ${instance.component}`} · ${path}`),
+    h("div", { class: "kind" }, `${instance.model ? instance.model : `component ${instance.component}`} · ${path}`),
   );
   if (instance.component) inspector.append(h("p", {}, h("button", { onclick: () => open(path) }, "Open this component")));
   const unitV = at?.kind === "ac" ? "V/V" : "V";
@@ -831,7 +831,7 @@ canvas.addEventListener("pointermove", (event) => {
   if (target.kind === "net") text = `${target.local}  ${si(voltage(globalNet(target.local)), at?.kind === "ac" ? "V/V" : "V")}`;
   else {
     const part = parts.find((candidate) => candidate.name === target.name);
-    text = `${target.name}  ${part?.instance.device ?? part?.instance.component ?? ""}`;
+    text = `${target.name}  ${part?.instance.model ?? part?.instance.component ?? ""}`;
   }
   tooltip.textContent = text;
   tooltip.style.display = "block";

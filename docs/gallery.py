@@ -609,7 +609,7 @@ def build(entry: Entry) -> Built:
     script_specs = stated() if callable(stated) else None
     logic = any(
         isinstance(instance.of, ir.DeviceOf)
-        and instance.of.device in {"logic_cell", "logic_source"}
+        and instance.of.model in {"logic_cell", "logic_source"}
         for component in circuit.components.values()
         for instance in component.instances
     ) or bool(plan.fidelity)

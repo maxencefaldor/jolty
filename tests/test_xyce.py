@@ -136,9 +136,9 @@ def _allowance(simulation: Simulation, values: np.ndarray, temperature: float) -
     allowed = 0.0
     for instance in top.instances:
         match instance.of:
-            case ir.DeviceOf(device="bipolar_transistor"):
+            case ir.DeviceOf(model="bipolar_transistor"):
                 allowed += 2 * GMIN * largest
-            case ir.DeviceOf(device="mosfet"):
+            case ir.DeviceOf(model="mosfet"):
                 given = json.loads(
                     _core.defaulted("mosfet", json.dumps(instance.parameters))
                 )

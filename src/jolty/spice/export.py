@@ -614,7 +614,7 @@ def element(instance: ir.Instance, dialect: Dialect = NGSPICE) -> str:
     if not isinstance(instance.of, ir.DeviceOf):
         message = f"{instance.name} is a component instance, not a device"
         raise _unwritable(message)
-    device = instance.of.device
+    device = instance.of.model
     if device not in ELEMENTS:
         message = f"a {device} has no SPICE element"
         raise _unwritable(message)
@@ -731,7 +731,7 @@ def netlist(
     top = circuit.components[circuit.top]
     ground = next(port.name for port in top.ports if port.role is Role.GROUND)
     placed = {
-        instance.of.device
+        instance.of.model
         for instance in top.instances
         if isinstance(instance.of, ir.DeviceOf)
     }
@@ -746,13 +746,13 @@ def netlist(
         match instance.of:
             case ir.ComponentOf():
                 lines.append(_subcircuit(circuit, instance, ground))
-            case ir.DeviceOf(device="coupled_inductors"):
+            case ir.DeviceOf(model="coupled_inductors"):
                 own = _own_temperature(instance, "coupled_inductors", dialect)
                 coupled = _coupled(instance, ground, dialect)
                 lines.extend(
                     f"{line}{own}" if line.startswith("L") else line for line in coupled
                 )
-            case ir.DeviceOf(device=model):
+            case ir.DeviceOf(model=model):
                 lines.extend(
                     _device(
                         instance, model, (ground, excited), dialect, transient=transient
@@ -1381,7 +1381,7 @@ def vector(
         )
         raise _unwritable(message)
     (instance,) = found
-    if instance.of == ir.DeviceOf(device="coupled_inductors"):
+    if instance.of == ir.DeviceOf(model="coupled_inductors"):
         return f"i(l{id.lower()}_{label.removeprefix('current')})"
     source = _sense(instance) if label == "control" else element(instance, dialect)
     return f"i({source.lower()})"

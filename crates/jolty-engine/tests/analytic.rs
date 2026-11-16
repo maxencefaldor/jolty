@@ -29,14 +29,14 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
                 .collect();
             json!({
                 "name": id,
-                "of": {"device": model},
+                "of": {"model": model},
                 "parameters": parameters,
                 "terminals": terminals,
             })
         })
         .collect();
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "test",
+        "format": "jolty-circuit", "version": 4, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit file")
@@ -1204,10 +1204,10 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
 #[test]
 fn hierarchy_gives_the_flat_answer() {
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "top",
+        "format": "jolty-circuit", "version": 4, "top": "top",
         "components": {
             "top": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-                {"name": "V1", "of": {"device": "voltage_source"}, "parameters": dc(3.0),
+                {"name": "V1", "of": {"model": "voltage_source"}, "parameters": dc(3.0),
                  "terminals": {"positive": "in", "negative": "0"}},
                 {"name": "X1", "of": {"component": "half"},
                  "terminals": {"input": "in", "output": "mid", "ground": "0"}},
@@ -1219,11 +1219,11 @@ fn hierarchy_gives_the_flat_answer() {
                 {"name": "output", "role": "signal"},
                 {"name": "ground", "role": "ground"}
             ], "instances": [
-                {"name": "E1", "of": {"device": "voltage_controlled_voltage_source"},
+                {"name": "E1", "of": {"model": "voltage_controlled_voltage_source"},
                  "parameters": {"gain": 0.5},
                  "terminals": {"positive": "buffered", "negative": "ground",
                                "control_positive": "input", "control_negative": "ground"}},
-                {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+                {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
                  "terminals": {"a": "buffered", "b": "output"}}
             ]}
         }

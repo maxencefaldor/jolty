@@ -21,11 +21,11 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
                 .iter()
                 .map(|(terminal, net)| ((*terminal).to_owned(), json!(net)))
                 .collect();
-            json!({"name": id, "of": {"device": model}, "parameters": parameters, "terminals": terminals})
+            json!({"name": id, "of": {"model": model}, "parameters": parameters, "terminals": terminals})
         })
         .collect();
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "test",
+        "format": "jolty-circuit", "version": 4, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit file")

@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 /// A circuit of `instances` whose ground is `0`.
 fn circuit(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "test",
+        "format": "jolty-circuit", "version": 4, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
@@ -19,13 +19,13 @@ fn circuit(instances: &Value) -> Circuit {
 }
 
 fn source(id: &str, positive: &str, level: f64) -> Value {
-    json!({"name": id, "of": {"device": "voltage_source"},
+    json!({"name": id, "of": {"model": "voltage_source"},
            "parameters": {"waveform": {"dc": level}},
            "terminals": {"positive": positive, "negative": "0"}})
 }
 
 fn resistor(id: &str, resistance: f64, a: &str, b: &str) -> Value {
-    json!({"name": id, "of": {"device": "resistor"}, "parameters": {"resistance": resistance},
+    json!({"name": id, "of": {"model": "resistor"}, "parameters": {"resistance": resistance},
            "terminals": {"a": a, "b": b}})
 }
 
@@ -68,7 +68,7 @@ fn an_n_shaped_load_line_crosses_three_times() {
     let cubic = circuit(&json!([
         source("V1", "in", 1.0),
         resistor("R1", 1e4, "in", "x"),
-        {"name": "B1", "of": {"device": "behavioral_current_source"},
+        {"name": "B1", "of": {"model": "behavioral_current_source"},
          "parameters": {"expression": "1e-3 * v(x) * (v(x) - 1) * (v(x) - 2)"},
          "terminals": {"positive": "x", "negative": "0", "x": "x"}},
     ]));
@@ -94,7 +94,7 @@ fn a_latch_has_two_states_and_a_balance_between_them() {
     let inverter = |suffix: &str, input: &str, output: &str| {
         let channel = |id: String, kind: &str, drain: &str, source: &str| {
             let threshold = if kind == "n" { 0.7 } else { -0.7 };
-            json!({"name": id, "of": {"device": "mosfet"},
+            json!({"name": id, "of": {"model": "mosfet"},
                    "parameters": {"channel": kind, "threshold_voltage": threshold,
                                   "transconductance_parameter": 1e-4,
                                   "channel_length_modulation": 0.02,

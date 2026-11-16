@@ -119,10 +119,10 @@ def _models(circuit: object) -> set[str]:
     components = circuit["components"]
     assert isinstance(components, dict)
     return {
-        instance["of"]["device"]
+        instance["of"]["model"]
         for component in components.values()
         for instance in component["instances"]
-        if "device" in instance["of"]
+        if "model" in instance["of"]
     }
 
 

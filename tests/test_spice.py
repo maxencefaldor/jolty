@@ -429,7 +429,7 @@ def test_mutual_inductances_couple_their_inductors_into_one_device() -> None:
     )
     resistor, coupled, alone = parts.component("a").definition.instances
     assert (resistor.name, coupled.name, alone.name) == ("R1", "K1", "L4")
-    assert coupled.of == ir.DeviceOf(device="coupled_inductors")
+    assert coupled.of == ir.DeviceOf(model="coupled_inductors")
     assert coupled.parameters == {
         "windings": [
             {"inductance": 1e-3},
@@ -493,7 +493,7 @@ def test_a_current_controlled_switch_senses_its_source_in_series() -> None:
         ".subckt a x y\nV1 x 0 1\nW1 y 0 V1 SW OFF\n.ends"
     )
     source, switch = parts.component("a").definition.instances
-    assert switch.of == ir.DeviceOf(device="current_controlled_switch")
+    assert switch.of == ir.DeviceOf(model="current_controlled_switch")
     assert switch.parameters == {
         "on_current": 2e-3,
         "off_current": 1e-3,
@@ -526,7 +526,7 @@ def test_a_vdmos_card_reads_as_ngspice_reads_it() -> None:
     )
     first, second, third = parts.component("a").definition.instances
     assert [instance.of for instance in (first, second, third)] == [
-        ir.DeviceOf(device="vdmos")
+        ir.DeviceOf(model="vdmos")
     ] * 3
     assert first.parameters == {
         "gate_resistance": 3.0,
@@ -600,7 +600,7 @@ def test_a_vbic_card_reads_as_ngspice_reads_it() -> None:
     )
     first, second, third = parts.component("a").definition.instances
     assert [instance.of for instance in (first, second, third)] == [
-        ir.DeviceOf(device="vbic")
+        ir.DeviceOf(model="vbic")
     ] * 3
     assert first.parameters == {
         "extrinsic_collector_resistance": 10.0,
@@ -638,7 +638,7 @@ def test_a_vbic_whose_card_heats_reads_with_its_thermal_network() -> None:
         for instance in parts.component("a").definition.instances
     }
     joined = {"collector": "c", "base": "b", "emitter": "e", "substrate": "s"}
-    vbic, resistance = ir.DeviceOf(device="vbic"), "thermal_resistance"
+    vbic, resistance = ir.DeviceOf(model="vbic"), "thermal_resistance"
     capacitance = "thermal_capacitance"
     # The area times the copies multiplies the currents the card leaves out at their
     # defaults too, and divides the resistances, as ngspice multiplies every current of
@@ -659,12 +659,12 @@ def test_a_vbic_whose_card_heats_reads_with_its_thermal_network() -> None:
             {**joined, "thermal": "t"},
         ),
         "Q1.rth": (
-            ir.DeviceOf(device=resistance),
+            ir.DeviceOf(model=resistance),
             {"resistance": 50.0},
             {"a": "t", "b": "ground"},
         ),
         "Q1.cth": (
-            ir.DeviceOf(device=capacitance),
+            ir.DeviceOf(model=capacitance),
             {"capacitance": 4e-9},
             {"a": "t", "b": "ground"},
         ),
@@ -674,12 +674,12 @@ def test_a_vbic_whose_card_heats_reads_with_its_thermal_network() -> None:
             {**joined, "thermal": "u"},
         ),
         "Q2.rth": (
-            ir.DeviceOf(device=resistance),
+            ir.DeviceOf(model=resistance),
             {"resistance": 200.0},
             {"a": "u", "b": "ground"},
         ),
         "Q2.cth": (
-            ir.DeviceOf(device=capacitance),
+            ir.DeviceOf(model=capacitance),
             {"capacitance": 1e-12},
             {"a": "u", "b": "ground"},
         ),
@@ -739,7 +739,7 @@ def test_a_bsim3_card_reads_in_si_units_as_ngspice_reads_it() -> None:
         "M2 d g 0 0 P1 L=1u off\n.ends"
     )
     first, second = parts.component("a").definition.instances
-    assert first.of == second.of == ir.DeviceOf(device="bsim3")
+    assert first.of == second.of == ir.DeviceOf(model="bsim3")
     assert first.parameters == pytest.approx(
         {
             "channel": "n",

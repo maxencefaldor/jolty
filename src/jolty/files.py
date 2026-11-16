@@ -261,7 +261,7 @@ def circuit_hash(circuit: ir.Circuit) -> str:
         >>> def placed(file: str, resistance: float) -> Circuit:
         ...     resistor = Instance(
         ...         name="R1",
-        ...         of=DeviceOf(device="resistor"),
+        ...         of=DeviceOf(model="resistor"),
         ...         parameters={"resistance": resistance},
         ...         terminals={"a": "in", "b": "out"},
         ...         source_location=SourceLocation(file=file, line=3),

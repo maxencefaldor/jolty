@@ -279,7 +279,7 @@ class Catalog(_Model):
         if instance.part is not None:
             return _numbered(self, instance, instance.part)
         model = (
-            instance.of.device
+            instance.of.model
             if isinstance(instance.of, ir.DeviceOf)
             else instance.of.component
         )
@@ -458,7 +458,7 @@ def _fits(part: Part, instance: ir.Instance) -> bool:
     """Whether `part`, numbered as `instance` is, builds it as a device would."""
     if part.device is None or part.value is None or part.tolerance is None:
         return True
-    if instance.of != ir.DeviceOf(device=part.device):
+    if instance.of != ir.DeviceOf(model=part.device):
         return False
     found = _valued(instance, part.device)
     if isinstance(found, tuple):

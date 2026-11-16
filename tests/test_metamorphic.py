@@ -63,7 +63,7 @@ def _source(circuit: ir.Circuit) -> str:
     return next(
         instance.name
         for instance in _instances(circuit)
-        if instance.of == ir.DeviceOf(device="voltage_source")
+        if instance.of == ir.DeviceOf(model="voltage_source")
     )
 
 
@@ -115,7 +115,7 @@ def _settled(circuit: ir.Circuit, simulated: Simulated) -> bool:
 
 def _rounded_up(instance: ir.Instance) -> ir.Instance:
     """The instance, a resistor's resistance the next floating-point number up."""
-    resistor = instance.of == ir.DeviceOf(device="resistor")
+    resistor = instance.of == ir.DeviceOf(model="resistor")
     resistance = instance.parameters.get("resistance")
     if not resistor or not isinstance(resistance, float):
         return instance
@@ -244,7 +244,7 @@ def test_a_resistor_split_in_two_simulates_the_same(
             [
                 index
                 for index, instance in enumerate(instances)
-                if instance.of == ir.DeviceOf(device="resistor")
+                if instance.of == ir.DeviceOf(model="resistor")
             ]
         )
     )
@@ -290,7 +290,7 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
     net = probed.terminals[terminal]
     ammeter = ir.Instance(
         name="ammeter",
-        of=ir.DeviceOf(device="voltage_source"),
+        of=ir.DeviceOf(model="voltage_source"),
         parameters=devices.voltage_source(0 * V).parameters,
         terminals={"positive": net, "negative": "probe"},
     )

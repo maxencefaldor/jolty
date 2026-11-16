@@ -419,9 +419,9 @@ def _draw_instance(axes: Axes, placed: Placed, *, marked: bool) -> None:
     label = f"! {placed.name}" if marked else placed.name
     x, y = placed.origin
     match placed.instance.of:
-        case ir.DeviceOf(device=model) if model in _SYMBOLS:
+        case ir.DeviceOf(model=model) if model in _SYMBOLS:
             _SYMBOLS[model](_Pen(axes, placed, color))
-        case ir.DeviceOf(device=name) | ir.ComponentOf(component=name):
+        case ir.DeviceOf(model=name) | ir.ComponentOf(component=name):
             _draw_box(axes, placed, name, color)
             (left, _), (_, top) = placed.body()
             _write(
@@ -501,7 +501,7 @@ def _value(instance: ir.Instance) -> str:
     """The instance's value as a schematic writes it, such as ``4.7 kΩ``."""
     if not isinstance(instance.of, ir.DeviceOf):
         return ""
-    model, parameters = instance.of.device, instance.parameters
+    model, parameters = instance.of.model, instance.parameters
     if model in _QUANTITIES:
         name, unit = _QUANTITIES[model]
         value = parameters.get(name)

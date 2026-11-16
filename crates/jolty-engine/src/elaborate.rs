@@ -1265,7 +1265,7 @@ mod tests {
     use crate::elaborated::Placed;
 
     fn elaborate_json(components: &str) -> Result<Elaborated, ElaborationError> {
-        let header = r#""format": "jolty-circuit", "version": 3, "top": "top""#;
+        let header = r#""format": "jolty-circuit", "version": 4, "top": "top""#;
         let text = format!(r#"{{{header}, "components": {components}}}"#);
         let none = (&BTreeMap::new(), &BTreeMap::new());
         let circuit = Circuit::from_json(&text).unwrap();
@@ -1278,7 +1278,7 @@ mod tests {
         let system = elaborate_json(
             r#"{
                 "top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
-                    {"name": "V1", "of": {"device": "voltage_source"},
+                    {"name": "V1", "of": {"model": "voltage_source"},
                      "parameters": {"waveform": {"dc": 1}},
                      "terminals": {"positive": "in", "negative": "gnd"}},
                     {"name": "X1", "of": {"component": "cell"}, "terminals": {"a": "in", "b": "gnd"}}
@@ -1286,9 +1286,9 @@ mod tests {
                 "cell": {
                     "ports": [{"name": "a", "role": "signal"}, {"name": "b", "role": "signal"}],
                     "instances": [
-                        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1},
                          "terminals": {"a": "a", "b": "mid"}},
-                        {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                        {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 1},
                          "terminals": {"a": "mid", "b": "b"}}
                     ]}
             }"#,
@@ -1311,13 +1311,13 @@ mod tests {
                 "top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
                     {"name": "X1", "of": {"component": "cell"}, "terminals": {"a": "gnd"}},
                     {"name": "X2", "of": {"component": "cell"}, "terminals": {"a": "mid"}},
-                    {"name": "R0", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                    {"name": "R0", "of": {"model": "resistor"}, "parameters": {"resistance": 1},
                      "terminals": {"a": "mid", "b": "gnd"}}
                 ]},
                 "cell": {"ports": [{"name": "a", "role": "signal"}], "instances": [
-                    {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                    {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1},
                      "terminals": {"a": "a", "b": "mid"}},
-                    {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                    {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 1},
                      "terminals": {"a": "mid", "b": "a"}}
                 ]}
             }"#,
@@ -1345,13 +1345,13 @@ mod tests {
 
     #[test]
     fn overrides_replace_parameters_by_path() {
-        let text = r#"{"format": "jolty-circuit", "version": 3, "top": "top", "components": {
+        let text = r#"{"format": "jolty-circuit", "version": 4, "top": "top", "components": {
             "top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
                 {"name": "X1", "of": {"component": "cell"}, "terminals": {"a": "gnd"}},
                 {"name": "X2", "of": {"component": "cell"}, "terminals": {"a": "gnd"}}
             ]},
             "cell": {"ports": [{"name": "a", "role": "signal"}], "instances": [
-                {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1},
                  "terminals": {"a": "x", "b": "a"}}
             ]}
         }}"#;
@@ -1392,10 +1392,10 @@ mod tests {
     fn reports_every_instance_problem_with_its_source_line() {
         let error = elaborate_json(
             r#"{"top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
-                {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": -1},
+                {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": -1},
                  "terminals": {"a": "x", "b": "gnd"}, "source_location": {"file": "amp.py", "line": 9}},
-                {"name": "Q1", "of": {"device": "transistor"}, "terminals": {}},
-                {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1},
+                {"name": "Q1", "of": {"model": "transistor"}, "terminals": {}},
+                {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1},
                  "terminals": {"a": "x", "c": "gnd"}}
             ]}}"#,
         )
@@ -1434,7 +1434,7 @@ mod tests {
     fn reports_the_instances_problems_without_a_reference() {
         let error = elaborate_json(
             r#"{"top": {"instances": [
-                {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": -1},
+                {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": -1},
                  "terminals": {"a": "x", "b": "y"}}
             ]}}"#,
         )

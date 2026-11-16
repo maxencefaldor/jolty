@@ -126,7 +126,7 @@ def test_frequency_responses_agree(circuit: ir.Circuit) -> None:
     source = next(
         instance.name
         for instance in circuit.components[circuit.top].instances
-        if instance.of == ir.DeviceOf(device="voltage_source")
+        if instance.of == ir.DeviceOf(model="voltage_source")
     )
     response = simulation.run(Ac(source, decade(1 * Hz, 1 * GHz, 5)), TIGHT)
     raw = ngspice.run(netlist(circuit, excited=source), "ac dec 5 1 1g")

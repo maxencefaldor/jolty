@@ -40,7 +40,7 @@ def toleranced(stage: Component, tolerances: object) -> Component:
     resistors = {
         instance.name.casefold()
         for instance in stage.definition.instances
-        if instance.of == ir.DeviceOf(device="resistor")
+        if instance.of == ir.DeviceOf(model="resistor")
     }
     stray = sorted(set(given) - resistors)
     if stray:

@@ -47,7 +47,7 @@ def test_a_component_declares_ports_and_connects_terminals_to_nets() -> None:
         ("ground", Role.GROUND),
     ]
     resistor, capacitor = definition.instances
-    assert resistor.of == ir.DeviceOf(device="resistor")
+    assert resistor.of == ir.DeviceOf(model="resistor")
     assert resistor.parameters == {"resistance": 1000.0}
     assert resistor.terminals == {"a": "input", "b": "output"}
     assert capacitor.terminals == {"a": "output", "b": "ground"}

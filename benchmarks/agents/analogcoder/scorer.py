@@ -242,7 +242,7 @@ def walk(
         match instance.of:
             case ir.ComponentOf(component=inner):
                 yield from walk(built, inner, f"{prefix}{instance.name}/", nets)
-            case ir.DeviceOf(device=model):
+            case ir.DeviceOf(model=model):
                 yield Part(f"{prefix}{instance.name}", model, instance.parameters, nets)
 
 

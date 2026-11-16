@@ -283,7 +283,7 @@ fn network() -> impl Strategy<Value = Network> {
 impl Network {
     fn circuit(&self) -> Circuit {
         let device = |id: String, model: &str, parameters: Value, terminals: Value| {
-            json!({"name": id, "of": {"device": model}, "parameters": parameters,
+            json!({"name": id, "of": {"model": model}, "parameters": parameters,
                    "terminals": terminals})
         };
         let mut instances = vec![
@@ -342,7 +342,7 @@ impl Network {
             ));
         }
         let document = json!({
-            "format": "jolty-circuit", "version": 3, "top": "network",
+            "format": "jolty-circuit", "version": 4, "top": "network",
             "components": {"network": {
                 "ports": [{"name": "0", "role": "ground"}], "instances": instances,
             }}
@@ -503,23 +503,23 @@ proptest! {
 #[test]
 fn frequencies_whose_pivots_change_find_the_same_in_any_spread() {
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "ladder",
+        "format": "jolty-circuit", "version": 4, "top": "ladder",
         "components": {"ladder": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 0.0}},
+            {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 0.0}},
              "terminals": {"positive": "in", "negative": "0"}},
-            {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 50.0},
+            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 50.0},
              "terminals": {"a": "in", "b": "a"}},
-            {"name": "L1", "of": {"device": "inductor"}, "parameters": {"inductance": 1e-3},
+            {"name": "L1", "of": {"model": "inductor"}, "parameters": {"inductance": 1e-3},
              "terminals": {"a": "a", "b": "b"}},
-            {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-9},
+            {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-9},
              "terminals": {"a": "b", "b": "0"}},
-            {"name": "L2", "of": {"device": "inductor"}, "parameters": {"inductance": 1e-6},
+            {"name": "L2", "of": {"model": "inductor"}, "parameters": {"inductance": 1e-6},
              "terminals": {"a": "b", "b": "c"}},
-            {"name": "C2", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-12},
+            {"name": "C2", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-12},
              "terminals": {"a": "c", "b": "0"}},
-            {"name": "L3", "of": {"device": "inductor"}, "parameters": {"inductance": 1e-5},
+            {"name": "L3", "of": {"model": "inductor"}, "parameters": {"inductance": 1e-5},
              "terminals": {"a": "c", "b": "0"}},
-            {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+            {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
              "terminals": {"a": "c", "b": "0"}}
         ]}}
     });
@@ -691,15 +691,15 @@ fn a_part_added_leaves_every_other_draw_alone() {
 /// A divider whose upper resistance each run of `upper` replaces.
 fn divider() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "divider",
+        "format": "jolty-circuit", "version": 4, "top": "divider",
         "components": {"divider": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
+            {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
              "terminals": {"positive": "top", "negative": "0"}},
-            {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
              "terminals": {"a": "top", "b": "out"}},
-            {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+            {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
              "terminals": {"a": "out", "b": "0"}},
-            {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-9},
+            {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-9},
              "terminals": {"a": "out", "b": "0"}}
         ]}}
     });
@@ -845,13 +845,13 @@ fn runs_that_alternate_between_structures_share_each_structure() {
 /// comes before the source's among the unknowns.
 fn shunted() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "shunted",
+        "format": "jolty-circuit", "version": 4, "top": "shunted",
         "components": {"shunted": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 2.0},
+            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 2.0},
              "terminals": {"a": "out", "b": "0"}},
-            {"name": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
+            {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
              "terminals": {"positive": "top", "negative": "0"}},
-            {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+            {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
              "terminals": {"a": "top", "b": "out"}}
         ]}}
     });
@@ -1035,13 +1035,13 @@ fn a_product_runs_every_sample_at_every_corner() {
 /// A diode forward from a 1 V source through 1 kΩ, its saturation current 10 fA.
 fn forward_diode() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "forward",
+        "format": "jolty-circuit", "version": 4, "top": "forward",
         "components": {"forward": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
+            {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
              "terminals": {"positive": "top", "negative": "0"}},
-            {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
              "terminals": {"a": "top", "b": "anode"}},
-            {"name": "D1", "of": {"device": "diode"}, "parameters": {"saturation_current": 1e-14},
+            {"name": "D1", "of": {"model": "diode"}, "parameters": {"saturation_current": 1e-14},
              "terminals": {"anode": "anode", "cathode": "0"}}
         ]}}
     });
@@ -1240,7 +1240,7 @@ fn a_transient_judged_over_many_chunks_finds_what_it_finds_on_one_thread() {
 fn latch() -> Circuit {
     let channel = |id: &str, kind: &str, (drain, gate, source): (&str, &str, &str)| {
         let threshold = if kind == "n" { 0.7 } else { -0.7 };
-        json!({"name": id, "of": {"device": "mosfet"},
+        json!({"name": id, "of": {"model": "mosfet"},
                "parameters": {"channel": kind, "threshold_voltage": threshold,
                               "transconductance_parameter": 1e-4,
                               "channel_length_modulation": 0.02,
@@ -1248,9 +1248,9 @@ fn latch() -> Circuit {
                "terminals": {"drain": drain, "gate": gate, "source": source, "bulk": source}})
     };
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "latch",
+        "format": "jolty-circuit", "version": 4, "top": "latch",
         "components": {"latch": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "VDD", "of": {"device": "voltage_source"},
+            {"name": "VDD", "of": {"model": "voltage_source"},
              "parameters": {"waveform": {"dc": 3.3}},
              "terminals": {"positive": "vdd", "negative": "0"}},
             channel("MP1", "p", ("b", "a", "vdd")),

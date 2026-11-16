@@ -604,18 +604,18 @@ mod tests {
 
     /// A source driving a resistor into a MOSFET, inside a component instance `X1`.
     fn amplifier() -> Simulator {
-        let resistor = json!({"name": "R1", "of": {"device": "resistor"},
+        let resistor = json!({"name": "R1", "of": {"model": "resistor"},
                               "parameters": {"resistance": 1e3},
                               "terminals": {"a": "vdd", "b": "d"}});
-        let mosfet = json!({"name": "M1", "of": {"device": "mosfet"},
+        let mosfet = json!({"name": "M1", "of": {"model": "mosfet"},
                             "parameters": {"width": 2e-6, "length": 1e-6},
                             "terminals": {"drain": "d", "gate": "vdd", "source": "gnd",
                                           "bulk": "gnd"}});
         let document = json!({
-            "format": "jolty-circuit", "version": 3, "top": "test",
+            "format": "jolty-circuit", "version": 4, "top": "test",
             "components": {
                 "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-                    {"name": "V1", "of": {"device": "voltage_source"},
+                    {"name": "V1", "of": {"model": "voltage_source"},
                      "parameters": {"waveform": {"dc": 3.0}},
                      "terminals": {"positive": "in", "negative": "0"}},
                     {"name": "X1", "of": {"component": "stage"},

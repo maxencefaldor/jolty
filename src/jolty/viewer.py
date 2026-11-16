@@ -88,7 +88,7 @@ def _layout(circuit: ir.Circuit, name: str) -> dict[str, JsonValue]:
     for placed in drawn.instances:
         instance = placed.instance
         kind = (
-            {"device": instance.of.device}
+            {"model": instance.of.model}
             if isinstance(instance.of, ir.DeviceOf)
             else {"component": instance.of.component}
         )

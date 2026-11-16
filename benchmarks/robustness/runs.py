@@ -194,7 +194,7 @@ def _level(built: Built, source: str) -> Quantity:
     top = built.circuit.components[built.circuit.top]
     instance = top.instance(source)
     model = (
-        instance.of.device
+        instance.of.model
         if instance is not None and isinstance(instance.of, ir.DeviceOf)
         else None
     )

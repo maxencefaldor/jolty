@@ -84,7 +84,7 @@ def _simulated(built: ir.Circuit, options: Options) -> list[object]:
     source = next(
         instance.name
         for instance in top.instances
-        if instance.of == ir.DeviceOf(device="voltage_source")
+        if instance.of == ir.DeviceOf(model="voltage_source")
     )
     output = next(
         unknown.name for unknown in simulation.unknowns if unknown.nature == "voltage"

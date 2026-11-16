@@ -172,7 +172,7 @@ class _Cell:
         def source(id: str, waveform: JsonValue, net: str) -> ir.Instance:
             return ir.Instance(
                 name=id,
-                of=ir.DeviceOf(device="voltage_source"),
+                of=ir.DeviceOf(model="voltage_source"),
                 parameters={"waveform": waveform},
                 terminals={"positive": net, "negative": "ground"},
             )
@@ -197,7 +197,7 @@ class _Cell:
             instances.append(
                 ir.Instance(
                     name=f"CL{index}",
-                    of=ir.DeviceOf(device="capacitor"),
+                    of=ir.DeviceOf(model="capacitor"),
                     parameters={"capacitance": loads[index] if loads else 0.0},
                     terminals={"a": f"output_{index}", "b": "ground"},
                 )

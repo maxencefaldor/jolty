@@ -177,7 +177,7 @@ def netlist(circuit: ir.Circuit, parts: catalog.Catalog, instance: str = "") -> 
             problems.extend(f"{path}: {problem}" for problem in found)
             continue
         prefix = (
-            PREFIXES.get(placed.of.device, "U")
+            PREFIXES.get(placed.of.model, "U")
             if isinstance(placed.of, ir.DeviceOf)
             else "U"
         )
@@ -269,7 +269,7 @@ def _pins(placed: ir.Instance, part: catalog.Part) -> catalog.Pins | None:
     """The pins of `part`, or two pads for a resistor, capacitor or inductor's."""
     if part.pins is not None:
         return part.pins
-    if isinstance(placed.of, ir.DeviceOf) and placed.of.device in catalog.VALUED:
+    if isinstance(placed.of, ir.DeviceOf) and placed.of.model in catalog.VALUED:
         return dict(TWO_PADS)
     return None
 

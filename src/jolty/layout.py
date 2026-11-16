@@ -105,10 +105,10 @@ _SOURCES: Final = frozenset({"voltage_source", "current_source"})
 def _shape(instance: ir.Instance, circuit: ir.Circuit) -> Shape:
     """The shape of the symbol that draws `instance`."""
     match instance.of:
-        case ir.DeviceOf(device=model) if model in _TWO_TERMINAL:
+        case ir.DeviceOf(model=model) if model in _TWO_TERMINAL:
             top, bottom = _TWO_TERMINAL[model]
             return Shape({top: (0, 2), bottom: (0, -2)}, ((-1, -1), (1, 1)))
-        case ir.DeviceOf(device=model) if model in _CONTROLLED:
+        case ir.DeviceOf(model=model) if model in _CONTROLLED:
             pins = {
                 "positive": (0, 2),
                 "negative": (0, -2),
@@ -119,7 +119,7 @@ def _shape(instance: ir.Instance, circuit: ir.Circuit) -> Shape:
         case ir.ComponentOf(component=name) if name in circuit.components:
             ports = [(port.name, port.role) for port in circuit.components[name].ports]
             return _box(ports, name, instance.name)
-        case ir.DeviceOf(device=name) | ir.ComponentOf(component=name):
+        case ir.DeviceOf(model=name) | ir.ComponentOf(component=name):
             signals = [(terminal, ir.Role.SIGNAL) for terminal in instance.terminals]
             return _box(signals, name, instance.name)
 
@@ -345,7 +345,7 @@ def _columns(component: ir.Component, roles: Mapping[str, ir.Role]) -> dict[str,
     sources = [
         instance.name
         for instance in instances
-        if isinstance(instance.of, ir.DeviceOf) and instance.of.device in _SOURCES
+        if isinstance(instance.of, ir.DeviceOf) and instance.of.model in _SOURCES
     ]
     signals = [
         port.name for port in component.ports if roles[port.name] is ir.Role.SIGNAL
@@ -529,10 +529,10 @@ def _hanging(instance: ir.Instance, roles: Mapping[str, ir.Role]) -> str | None:
     """The signal net a two-terminal device hangs from to a rail, if it does."""
     if (
         not isinstance(instance.of, ir.DeviceOf)
-        or instance.of.device not in _TWO_TERMINAL
+        or instance.of.model not in _TWO_TERMINAL
     ):
         return None
-    nets = [instance.terminals[name] for name in _TWO_TERMINAL[instance.of.device]]
+    nets = [instance.terminals[name] for name in _TWO_TERMINAL[instance.of.model]]
     signals = [net for net in nets if roles[net] is ir.Role.SIGNAL]
     rails = [net for net in nets if roles[net] is not ir.Role.SIGNAL]
     return signals[0] if len(signals) == 1 and len(rails) == 1 else None
@@ -564,7 +564,7 @@ def _orientation(
     """
     if not isinstance(instance.of, ir.DeviceOf):
         return Orientation()
-    model = instance.of.device
+    model = instance.of.model
     if model in _CONTROLLED:
         top, bottom = instance.terminals["positive"], instance.terminals["negative"]
         return Orientation(flipped=_inverted(roles[top], roles[bottom]))

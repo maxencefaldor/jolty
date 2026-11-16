@@ -224,7 +224,7 @@ def modeled(task: Path, model: str) -> devices.Device:
     if not isinstance(instance.of, ir.DeviceOf):
         message = f"`{model}` is no device's model"
         raise KeyError(message)
-    return devices.device(instance.of.device, dict(instance.parameters))
+    return devices.device(instance.of.model, dict(instance.parameters))
 
 
 def given(task: Path, arm: Arm, *names: str) -> list[devices.Device]:
@@ -501,7 +501,7 @@ def disallowed(
         for instance in made.instances:
             if not isinstance(instance.of, ir.DeviceOf):
                 continue
-            kind = instance.of.device
+            kind = instance.of.model
             if kind in models:
                 if (kind, instance.parameters) not in parts:
                     found.append(unmet("parts", f"{instance.name} is not a given part"))
@@ -517,7 +517,7 @@ def parts(instance: ir.Instance) -> dict[str, ir.Tolerance]:
     Any other device stays exact.
     """
     match instance.of:
-        case ir.DeviceOf(device=model) if model in PARTS:
+        case ir.DeviceOf(model=model) if model in PARTS:
             parameter, tolerance = PARTS[model]
             return {parameter: tolerance}
         case _:
@@ -531,7 +531,7 @@ def discrete(instance: ir.Instance) -> dict[str, ir.Tolerance]:
     with its reel, as [`REELS`][] has it.
     """
     match instance.of:
-        case ir.DeviceOf(device="bipolar_transistor"):
+        case ir.DeviceOf(model="bipolar_transistor"):
             polarity = instance.parameters.get("polarity", "npn")
             return dict(REELS[str(polarity)])
         case _:
@@ -546,7 +546,7 @@ def integrated(instance: ir.Instance) -> dict[str, ir.Tolerance]:
     errors a design's are judged against.
     """
     match instance.of:
-        case ir.DeviceOf(device="resistor"):
+        case ir.DeviceOf(model="resistor"):
             return {"resistance": MATCHED}
         case _:
             return parts(instance)

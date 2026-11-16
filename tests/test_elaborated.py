@@ -75,7 +75,7 @@ def _source(circuit: ir.Circuit) -> str:
     return next(
         instance.name
         for instance in circuit.components[circuit.top].instances
-        if instance.of == ir.DeviceOf(device="voltage_source")
+        if instance.of == ir.DeviceOf(model="voltage_source")
     )
 
 

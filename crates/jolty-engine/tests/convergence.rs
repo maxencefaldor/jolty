@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 /// A circuit of `instances` whose ground is `0`.
 fn circuit(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "test",
+        "format": "jolty-circuit", "version": 4, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
@@ -23,23 +23,23 @@ fn gmin_stepping_across_the_junctions_saturates_a_transistor_into_a_negative_loa
     // ground. Newton iteration fails, and so does a shunt stepped down at every node, as
     // in ngspice, whose true gmin stepping finds the same point.
     let circuit = circuit(&json!([
-        {"name": "V1", "of": {"device": "voltage_source"},
+        {"name": "V1", "of": {"model": "voltage_source"},
          "parameters": {"waveform": {"dc": 4.8}},
          "terminals": {"positive": "base", "negative": "0"}},
-        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 230e3},
+        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 230e3},
          "terminals": {"a": "low", "b": "base"}},
-        {"name": "I1", "of": {"device": "current_source"},
+        {"name": "I1", "of": {"model": "current_source"},
          "parameters": {"waveform": {"dc": 0.2e-3}},
          "terminals": {"positive": "low", "negative": "0"}},
-        {"name": "G1", "of": {"device": "voltage_controlled_current_source"},
+        {"name": "G1", "of": {"model": "voltage_controlled_current_source"},
          "parameters": {"transconductance": 1.75e-6},
          "terminals": {"positive": "0", "negative": "emitter",
                        "control_positive": "collector", "control_negative": "low"}},
-        {"name": "D1", "of": {"device": "diode"}, "parameters": {},
+        {"name": "D1", "of": {"model": "diode"}, "parameters": {},
          "terminals": {"anode": "0", "cathode": "emitter"}},
-        {"name": "Q1", "of": {"device": "bipolar_transistor"}, "parameters": {"polarity": "pnp"},
+        {"name": "Q1", "of": {"model": "bipolar_transistor"}, "parameters": {"polarity": "pnp"},
          "terminals": {"collector": "collector", "base": "base", "emitter": "emitter"}},
-        {"name": "G2", "of": {"device": "voltage_controlled_current_source"},
+        {"name": "G2", "of": {"model": "voltage_controlled_current_source"},
          "parameters": {"transconductance": 97e-6},
          "terminals": {"positive": "0", "negative": "emitter",
                        "control_positive": "emitter", "control_negative": "0"}},

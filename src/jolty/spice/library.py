@@ -399,7 +399,7 @@ class _Translation:
                 statement.line,
                 ir.Instance(
                     name=identifier or statement.text.split()[0],
-                    of=ir.DeviceOf(device=model),
+                    of=ir.DeviceOf(model=model),
                     parameters=made.parameters,
                     terminals={
                         terminal: terminals[terminal] for terminal in made.terminals
@@ -480,7 +480,7 @@ class _Translation:
         inductors = {
             instance.name.casefold(): (line, instance)
             for line, instance in self.instances
-            if instance.of == ir.DeviceOf(device="inductor")
+            if instance.of == ir.DeviceOf(model="inductor")
         }
         for coupling in self.couplings:
             for name in coupling.inductors:
@@ -599,7 +599,7 @@ def _coupled(
     }
     instance = ir.Instance(
         name=first.text.split()[0],
-        of=ir.DeviceOf(device="coupled_inductors"),
+        of=ir.DeviceOf(model="coupled_inductors"),
         parameters=device("coupled_inductors", parameters).parameters,
         terminals={
             f"{end}{number}": winding.terminals[end]

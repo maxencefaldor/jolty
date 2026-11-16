@@ -620,30 +620,30 @@ mod tests {
     fn ladder(stages: usize, waveform: &Value, clamped: bool) -> Simulator {
         let node = |index: usize| format!("n{index}");
         let mut instances = vec![json!({
-            "name": "V1", "of": {"device": "voltage_source"},
+            "name": "V1", "of": {"model": "voltage_source"},
             "parameters": {"waveform": waveform},
             "terminals": {"positive": node(0), "negative": "ground"}
         })];
         for stage in 0..stages {
             instances.push(json!({
-                "name": format!("R{stage}"), "of": {"device": "resistor"},
+                "name": format!("R{stage}"), "of": {"model": "resistor"},
                 "parameters": {"resistance": 1e3},
                 "terminals": {"a": node(stage), "b": node(stage + 1)}
             }));
             instances.push(json!({
-                "name": format!("C{stage}"), "of": {"device": "capacitor"},
+                "name": format!("C{stage}"), "of": {"model": "capacitor"},
                 "parameters": {"capacitance": 1e-9},
                 "terminals": {"a": node(stage + 1), "b": "ground"}
             }));
         }
         if clamped {
             instances.push(json!({
-                "name": "D1", "of": {"device": "diode"}, "parameters": {},
+                "name": "D1", "of": {"model": "diode"}, "parameters": {},
                 "terminals": {"anode": node(stages), "cathode": "ground"}
             }));
         }
         let document = json!({
-            "format": "jolty-circuit", "version": 3, "top": "ladder",
+            "format": "jolty-circuit", "version": 4, "top": "ladder",
             "components": {"ladder": {
                 "ports": [{"name": "ground", "role": "ground"}],
                 "instances": instances

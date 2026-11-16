@@ -589,12 +589,12 @@ mod tests {
                     .iter()
                     .map(|&(terminal, net)| (terminal.to_owned(), json!(net)))
                     .collect();
-                json!({"name": device.name, "of": {"device": device.model},
+                json!({"name": device.name, "of": {"model": device.model},
                        "parameters": device.parameters, "terminals": terminals})
             })
             .collect();
         let document = json!({
-            "format": "jolty-circuit", "version": 3, "top": "test",
+            "format": "jolty-circuit", "version": 4, "top": "test",
             "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                     "instances": instances}}
         });

@@ -889,9 +889,9 @@ class Simulation:
         if sweep.parameter is not None:
             return sweep.levels[0].dimension if sweep.levels else DIMENSIONLESS
         match self.circuit.find(sweep.source):
-            case ir.Instance(of=ir.DeviceOf(device="current_source")):
+            case ir.Instance(of=ir.DeviceOf(model="current_source")):
                 return CURRENT
-            case ir.Instance(of=ir.DeviceOf(device="voltage_source")):
+            case ir.Instance(of=ir.DeviceOf(model="voltage_source")):
                 return VOLTAGE
         if not sweep.levels:
             return VOLTAGE
@@ -1214,9 +1214,9 @@ class Simulation:
     def _source(self, path: str) -> Dimension | None:
         """The dimension of the level of the independent source at `path`, if any."""
         match self.circuit.find(path):
-            case ir.Instance(of=ir.DeviceOf(device="current_source")):
+            case ir.Instance(of=ir.DeviceOf(model="current_source")):
                 return CURRENT
-            case ir.Instance(of=ir.DeviceOf(device="voltage_source")):
+            case ir.Instance(of=ir.DeviceOf(model="voltage_source")):
                 return VOLTAGE
         return None
 

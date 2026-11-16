@@ -395,7 +395,7 @@ def _devices(flat: ir.Circuit, paths: Mapping[str, str]) -> dict[str, str]:
         element = export.element(instance).lower()
         match instance:
             case ir.Instance(
-                of=ir.DeviceOf(device="foundry_mosfet"),
+                of=ir.DeviceOf(model="foundry_mosfet"),
                 parameters={"model": str(model)},
             ):
                 named[sky130.inner(element, model)] = paths[instance.name]
@@ -464,9 +464,9 @@ def _source(flat: ir.Circuit, path: str) -> tuple[ir.Instance, results.Nature]:
     """
     found = flat.components[flat.top].instance(path.replace("/", "_"))
     match found:
-        case ir.Instance(of=ir.DeviceOf(device="voltage_source")):
+        case ir.Instance(of=ir.DeviceOf(model="voltage_source")):
             return found, "voltage"
-        case ir.Instance(of=ir.DeviceOf(device="current_source")):
+        case ir.Instance(of=ir.DeviceOf(model="current_source")):
             return found, "current"
     message = f"`{path}` is not an independent source"
     raise SimulationError(message)
@@ -532,8 +532,8 @@ def _referred(flat: ir.Circuit, noise: Noise) -> ir.Instance:
             for instance in flat.components[flat.top].instances
             if instance.of
             in (
-                ir.DeviceOf(device="voltage_source"),
-                ir.DeviceOf(device="current_source"),
+                ir.DeviceOf(model="voltage_source"),
+                ir.DeviceOf(model="current_source"),
             )
         ),
         None,

@@ -48,7 +48,7 @@ class Port(_Model):
 class DeviceOf(_Model):
     """What a device instance is: a device of the named model."""
 
-    device: str
+    model: str
 
 
 class ComponentOf(_Model):
@@ -249,7 +249,7 @@ class Circuit(_Model):
     """A circuit: every component, and the one at the top of the hierarchy."""
 
     format: Literal["jolty-circuit"] = "jolty-circuit"
-    version: Literal[3] = 3
+    version: Literal[4] = 4
     top: str
     components: dict[str, Component]
 

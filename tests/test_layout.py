@@ -53,7 +53,7 @@ def circuits(draw: st.DrawFn) -> ir.Circuit:
             of: ir.DeviceOf | ir.ComponentOf = ir.ComponentOf(component="stage")
             terminals = [port.name for port in STAGE.ports]
         else:
-            of = ir.DeviceOf(device=model)
+            of = ir.DeviceOf(model=model)
             terminals = list(TERMINALS[model])
         joined = {terminal: draw(st.sampled_from(nets)) for terminal in terminals}
         instances.append(ir.Instance(name=f"X{index}", of=of, terminals=joined))
@@ -251,7 +251,7 @@ def test_an_unknown_model_or_component_draws_as_a_box() -> None:
         instances=(
             ir.Instance(
                 name="U1",
-                of=ir.DeviceOf(device="transistor"),
+                of=ir.DeviceOf(model="transistor"),
                 terminals={"base": "in", "collector": "out", "emitter": "ground"},
             ),
             ir.Instance(
@@ -278,14 +278,14 @@ def test_a_net_of_many_pins_is_wired_whole() -> None:
     loads = tuple(
         ir.Instance(
             name=f"R{index}",
-            of=ir.DeviceOf(device="resistor"),
+            of=ir.DeviceOf(model="resistor"),
             terminals={"a": "bus", "b": f"n{index}"},
         )
         for index in range(24)
     )
     source = ir.Instance(
         name="V1",
-        of=ir.DeviceOf(device="voltage_source"),
+        of=ir.DeviceOf(model="voltage_source"),
         terminals={"positive": "bus", "negative": "ground"},
     )
     top = ir.Component(

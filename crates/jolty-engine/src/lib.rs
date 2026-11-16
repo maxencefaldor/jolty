@@ -35,16 +35,16 @@
 //! use jolty_models::Library;
 //!
 //! let circuit = Circuit::from_json(r#"{
-//!     "format": "jolty-circuit", "version": 3, "top": "divider",
+//!     "format": "jolty-circuit", "version": 4, "top": "divider",
 //!     "components": {"divider": {
 //!         "ports": [{"name": "ground", "role": "ground"}],
 //!         "instances": [
-//!             {"name": "V1", "of": {"device": "voltage_source"},
+//!             {"name": "V1", "of": {"model": "voltage_source"},
 //!              "parameters": {"waveform": {"dc": 5.0}},
 //!              "terminals": {"positive": "top", "negative": "ground"}},
-//!             {"name": "R1", "of": {"device": "resistor"},
+//!             {"name": "R1", "of": {"model": "resistor"},
 //!              "parameters": {"resistance": 1000.0}, "terminals": {"a": "top", "b": "out"}},
-//!             {"name": "R2", "of": {"device": "resistor"},
+//!             {"name": "R2", "of": {"model": "resistor"},
 //!              "parameters": {"resistance": 1000.0}, "terminals": {"a": "out", "b": "ground"}}
 //!         ]
 //!     }}

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 /// A circuit of `instances` whose ground is `0`.
 fn circuit(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "test",
+        "format": "jolty-circuit", "version": 4, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
@@ -31,7 +31,7 @@ fn simulator(instances: &Value) -> Simulator {
 }
 
 fn sine(id: &str, positive: &str, (offset, amplitude, frequency): (f64, f64, f64)) -> Value {
-    json!({"name": id, "of": {"device": "voltage_source"},
+    json!({"name": id, "of": {"model": "voltage_source"},
            "parameters": {"waveform": {"sine": {"offset": offset, "amplitude": amplitude,
                                                 "frequency": frequency}}},
            "terminals": {"positive": positive, "negative": "0"}})
@@ -39,7 +39,7 @@ fn sine(id: &str, positive: &str, (offset, amplitude, frequency): (f64, f64, f64
 
 /// A two-terminal device whose one parameter `name` is `value`.
 fn two_terminal(id: &str, (device, name, value): (&str, &str, f64), a: &str, b: &str) -> Value {
-    json!({"name": id, "of": {"device": device}, "parameters": {name: value},
+    json!({"name": id, "of": {"model": device}, "parameters": {name: value},
            "terminals": {"a": a, "b": b}})
 }
 
@@ -129,7 +129,7 @@ fn a_rectifier_repeats_the_last_period_of_a_long_transient() {
     let instances = json!([
         sine("V1", "in", (0.2, 1.0, frequency)),
         two_terminal("R1", ("resistor", "resistance", 1e3), "in", "a"),
-        {"name": "D1", "of": {"device": "diode"},
+        {"name": "D1", "of": {"model": "diode"},
          "parameters": {"saturation_current": 1e-14, "series_resistance": 10.0,
                         "transit_time": 1e-9, "junction_capacitance": 2e-12},
          "terminals": {"anode": "a", "cathode": "out"}},
@@ -189,7 +189,7 @@ fn memristor_into_a_capacitor(memristor: (&str, Value), amplitude: f64) -> Value
     parameters["state"] = json!(0.5);
     json!([
         sine("V1", "in", (0.0, amplitude, 1e3)),
-        {"name": "M1", "of": {"device": model}, "parameters": parameters,
+        {"name": "M1", "of": {"model": model}, "parameters": parameters,
          "terminals": {"positive": "in", "negative": "out"}},
         two_terminal("C1", ("capacitor", "capacitance", 1e-7), "out", "0"),
     ])
@@ -316,7 +316,7 @@ fn a_periodic_steady_state_whose_matrices_would_fill_the_memory_fails_at_once() 
 #[test]
 fn a_circuit_with_logic_has_no_periodic_steady_state_here() {
     let mut simulator = simulator(&json!([
-        {"name": "A", "of": {"device": "logic_source"},
+        {"name": "A", "of": {"model": "logic_source"},
          "parameters": {"initial": "0", "changes": [], "transition": 1e-12},
          "terminals": {"output": "a"}},
     ]));

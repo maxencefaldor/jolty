@@ -16,18 +16,18 @@ use serde_json::{Value, json};
 /// driven at `in` by `V1`, 5 V, with `VP`, a probe of 0 V, in series with the resistor.
 fn low_pass() -> Simulator {
     let instances = json!([
-        {"name": "V1", "of": {"device": "voltage_source"},
+        {"name": "V1", "of": {"model": "voltage_source"},
          "parameters": {"waveform": {"dc": 5.0}},
          "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "VP", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 0.0}},
+        {"name": "VP", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 0.0}},
          "terminals": {"positive": "mid", "negative": "in"}},
-        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
          "terminals": {"a": "mid", "b": "out"}},
-        {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-6},
+        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-6},
          "terminals": {"a": "out", "b": "0"}}
     ]);
     let document = json!({
-        "format": "jolty-circuit", "version": 3, "top": "test",
+        "format": "jolty-circuit", "version": 4, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });

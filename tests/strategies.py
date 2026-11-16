@@ -249,7 +249,7 @@ def circuits(draw: st.DrawFn) -> ir.Circuit:
         instances.append(
             ir.Instance(
                 name=f"{prefix}{len(instances)}",
-                of=ir.DeviceOf(device=device.model),
+                of=ir.DeviceOf(model=device.model),
                 parameters=device.parameters,
                 terminals=terminals,
             )
@@ -313,7 +313,7 @@ def pulsed(circuit: ir.Circuit) -> ir.Circuit:
     index = next(
         index
         for index, instance in enumerate(instances)
-        if instance.of == ir.DeviceOf(device="voltage_source")
+        if instance.of == ir.DeviceOf(model="voltage_source")
     )
     waveform = instances[index].parameters["waveform"]
     assert isinstance(waveform, dict)
@@ -347,7 +347,7 @@ def capacitive(circuit: ir.Circuit) -> list[str]:
     joined = {
         instance.terminals["control_negative"]
         for instance in instances
-        if instance.of == ir.DeviceOf(device="current_controlled_switch")
+        if instance.of == ir.DeviceOf(model="current_controlled_switch")
     }
     nets = {net for instance in instances for net in instance.terminals.values()}
     return sorted(nets - joined - {"0"})
@@ -374,7 +374,7 @@ def parasitic(circuit: ir.Circuit, nets: Iterable[str] | None = None) -> ir.Circ
             *(
                 ir.Instance(
                     name=f"C{net}",
-                    of=ir.DeviceOf(device=capacitor.model),
+                    of=ir.DeviceOf(model=capacitor.model),
                     parameters=capacitor.parameters,
                     terminals={"a": net, "b": "0"},
                 )

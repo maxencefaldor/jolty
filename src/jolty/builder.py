@@ -249,7 +249,7 @@ class Builder:
             )
         else:
             placement = _Placement(
-                ir.DeviceOf(device=item.model),
+                ir.DeviceOf(model=item.model),
                 item.parameters,
                 item.terminals,
                 caller(),
