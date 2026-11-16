@@ -1,6 +1,6 @@
 use jolty_numerics::Pattern;
 
-use crate::{Local, Node, Real};
+use crate::{Local, Node, Past, Real};
 
 /// The state a device is evaluated at.
 #[derive(Debug, Clone, Copy)]
@@ -21,6 +21,10 @@ pub struct Input<'a> {
     /// Whether devices limit each voltage's step from their last evaluation's: false for
     /// the first evaluation of a DC solution, which starts afresh from its guess.
     pub limiting: bool,
+    /// What the unknowns a delay line reads took at the points a transient accepted, as
+    /// [`Local::delayed`] reads them: none outside a transient, where the past is the
+    /// present.
+    pub past: Option<&'a Past>,
 }
 
 impl Input<'static> {
@@ -35,6 +39,7 @@ impl Input<'static> {
         source_scale: 1.0,
         gmin: 0.0,
         limiting: false,
+        past: None,
     };
 }
 
@@ -51,6 +56,7 @@ impl<'a> Input<'a> {
             source_scale: 1.0,
             gmin,
             limiting: true,
+            past: None,
         }
     }
 

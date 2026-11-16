@@ -75,8 +75,9 @@ pub(crate) const UNSTABLE_POLE: Rule = Rule {
 /// # Errors
 ///
 /// Returns the errors of [`Simulator::gmin_dependence`], [`Simulator::operating_points`]
-/// and [`Simulator::growing_modes`], but its memory's: a circuit whose linearization would
-/// pass the options' `max_memory` is not checked for growing modes.
+/// and [`Simulator::growing_modes`], but its memory's and a delay line's: a circuit whose
+/// linearization would pass the options' `max_memory`, or with a delay line, is not
+/// checked for growing modes.
 pub fn check_operating_point(
     simulator: &mut Simulator,
     options: &Options,
@@ -91,12 +92,13 @@ pub fn check_operating_point(
             diagnostics.push(multiple_operating_points(simulator, point, other));
         }
         // Like a circuit too large to linearize, one whose linearization would pass the
-        // options' max_memory goes unchecked for growing modes, and keeps its other rules.
+        // options' max_memory goes unchecked for growing modes, and keeps its other rules;
+        // so does one with a delay line, whose modes are infinitely many.
         match simulator.growing_modes(options) {
             Ok(growing) => {
                 diagnostics.extend(growing.iter().map(|mode| unstable_pole(simulator, mode)));
             }
-            Err(SimulationError::TooMuchMemory { .. }) => {}
+            Err(SimulationError::TooMuchMemory { .. } | SimulationError::Delayed { .. }) => {}
             Err(error) => return Err(error),
         }
     }
@@ -405,5 +407,22 @@ mod tests {
             .expect("the rules but growing modes");
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].rule, "gmin-dependence");
+    }
+
+    #[test]
+    fn a_transmission_line_skips_growing_modes_alone() {
+        // Its delay gives the circuit infinitely many poles, which no pencil holds.
+        let found = diagnostics(&json!([
+            {"name": "V1", "of": {"model": "voltage_source"},
+             "parameters": {"waveform": {"dc": 1}},
+             "terminals": {"positive": "a", "negative": "0"}},
+            {"name": "T1", "of": {"model": "transmission_line"},
+             "parameters": {"characteristic_impedance": 50, "delay": 1e-9},
+             "terminals": {"positive1": "a", "negative1": "0",
+                           "positive2": "b", "negative2": "0"}},
+            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 50},
+             "terminals": {"a": "b", "b": "0"}},
+        ]));
+        assert_eq!(found, []);
     }
 }

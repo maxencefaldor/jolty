@@ -269,6 +269,10 @@ impl Simulator {
                 "a periodic steady state is found for circuits without logic".to_owned(),
             ));
         }
+        self.undelayed(
+            "periodic steady state",
+            "the state a period starts from would hold the waves on its lines, which              shooting does not carry",
+        )?;
         if analysis.period.is_none() && !analysis.breakpoints.is_empty() {
             return Err(SimulationError::InvalidAnalysis(
                 "an oscillator's period is found, not given, so its periodic steady state \

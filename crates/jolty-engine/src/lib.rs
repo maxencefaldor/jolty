@@ -621,6 +621,16 @@ pub enum SimulationError {
         /// Its returns to the hyperplane through the operating point across its kick.
         returns: usize,
     },
+    /// The analysis takes no circuit with a delay line, an instance that reads its past.
+    #[error("a {analysis} takes no delay line, as {reason}: {}", .devices.join(", "))]
+    Delayed {
+        /// The analysis, such as `pole-zero analysis`.
+        analysis: &'static str,
+        /// Why it takes none.
+        reason: &'static str,
+        /// The path of each delay line.
+        devices: Vec<String>,
+    },
     /// The options are out of range.
     #[error("invalid options: {0}")]
     InvalidOptions(String),

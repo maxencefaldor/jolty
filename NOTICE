@@ -53,7 +53,9 @@ and 3, VDMOS, and the junctions they share, in crates/jolty-models/src/kernel/, 
 The Verilog-A diode in crates/jolty-veriloga/models/diode.va, and the limited diode in
 crates/jolty-veriloga/tests/fixtures/limited_diode.va, follow the same diode and junction,
 and so do the kernels compiled from them, in crates/jolty-veriloga/src/kernels/diode.rs and
-crates/jolty-veriloga/tests/fixtures/limited_diode.rs.
+crates/jolty-veriloga/tests/fixtures/limited_diode.rs. jolty's lossless transmission line, in
+crates/jolty-models/src/kernel/transmission.rs, follows ngspice 47's in src/spicelib/devices/tra/:
+its port equations, its rest before time zero and its small-signal phase.
 
 Copyright 1985 - 2018, Regents of the University of California and others
 

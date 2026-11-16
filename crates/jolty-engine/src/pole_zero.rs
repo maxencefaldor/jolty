@@ -35,7 +35,6 @@ use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::Deserialize;
 
-use crate::ac::Linearization;
 use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// The ratio of an eigenvalue's denominator to its numerator below which it is infinite: a
@@ -75,6 +74,12 @@ const ITERATIONS: usize = 2;
 /// and, for the pencil it solves, the two it equilibrates and the two complex ones its QZ
 /// iteration works on, each the size of two real ones.
 const PENCIL_MATRICES: f64 = 8.0;
+/// The analysis's name in its messages.
+const POLE_ZERO: &str = "pole-zero analysis";
+/// Why a pole-zero analysis, and the search for growing modes, take no delay line: its
+/// `e^{−sτ}` makes the circuit's determinant transcendental in `s`, whose roots are
+/// infinitely many, where the pencil `G + sC` has as many as its unknowns at most.
+const INFINITELY_MANY_POLES: &str = "a delay gives a circuit infinitely many poles";
 
 /// A pole-zero analysis: the poles of the circuit linearized at its operating point, and,
 /// given a source and an output, the zeros of the transfer function between them.
@@ -159,6 +164,7 @@ impl Simulator {
                 }
             };
             options.check()?;
+            self.undelayed(POLE_ZERO, INFINITELY_MANY_POLES)?;
             self.pencils_fit(transfer.is_some(), options)?;
             let operating_point = self.linearized(options)?;
             let n = self.elaborated.unknowns.len();
@@ -224,6 +230,7 @@ impl Simulator {
         options.parallelism.confined(|| {
             self.solvable()?;
             options.check()?;
+            self.undelayed("search for growing modes", INFINITELY_MANY_POLES)?;
             self.pencils_fit(false, options)?;
             self.linearized(options)?;
             let n = self.elaborated.unknowns.len();
@@ -234,7 +241,7 @@ impl Simulator {
                 .filter(|pole| pole.re > GROWING * pole.norm() && pole.im >= 0.0)
                 .collect();
             growing.sort_by(|x, y| y.re.total_cmp(&x.re));
-            let mut linearization = Linearization::new(&self.state.solver);
+            let mut linearization = self.linearization();
             growing
                 .into_iter()
                 .map(|pole| {
@@ -264,7 +271,7 @@ impl Simulator {
     fn pencils_fit(&self, bordered: bool, options: &Options) -> Result<(), SimulationError> {
         let rows = self.elaborated.unknowns.len() + usize::from(bordered);
         let size = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
-        options.hold("pole-zero analysis", rows, PENCIL_MATRICES * size * size)
+        options.hold(POLE_ZERO, rows, PENCIL_MATRICES * size * size)
     }
 
     /// The matrices `G` and `C` the workspace holds, dense in column-major order.

@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use jolty_models::{Changed, Runs, Tasks, UnknownIndex};
+use jolty_models::{Changed, Past, Runs, Tasks, UnknownIndex};
 
 use crate::elaborate::ElaborationError;
 use crate::elaborated::{Devices, Elaborated, Origin, Origins};
@@ -90,6 +90,10 @@ pub(crate) struct State {
     /// How many times the run has solved for an operating point, or a DC sweep's first
     /// level, rather than taken the last one's.
     pub(crate) solves: usize,
+    /// What the unknowns its delay lines read took at the points the transient being run
+    /// accepted, which each evaluation at a time reads: made afresh as a transient starts,
+    /// none in one of a circuit without a delay line, and forgotten as one ends.
+    pub(crate) past: Option<Past>,
 }
 
 impl State {
@@ -121,6 +125,7 @@ impl State {
             forced: Vec::new(),
             warm: None,
             solves: 0,
+            past: None,
         }
     }
 
@@ -201,6 +206,7 @@ impl State {
         self.forced.clear();
         self.warm = None;
         self.solves = 0;
+        self.past = None;
         Ok(true)
     }
 
@@ -215,6 +221,7 @@ impl State {
         self.held.clear();
         self.forced.clear();
         self.warm = None;
+        self.past = None;
     }
 
     /// Prepares again, for `to`, the instances whose numbers or temperature differ from

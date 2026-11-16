@@ -465,6 +465,32 @@ def coupled_inductors(
     return replace(made, tolerances=tolerances)
 
 
+def transmission_line(characteristic_impedance: Quantity, delay: Quantity) -> Device:
+    """A lossless transmission line, SPICE's ``T``, whose waves cross it in `delay`.
+
+    Port ``k``, 1 or 2, joins ``positive{k}`` and ``negative{k}``, and its current,
+    from ``positive{k}`` into the line and out at ``negative{k}``, is the unknown
+    ``current{k}``. Each port is a voltage behind the `characteristic_impedance`, the
+    wave that left the other port a delay before: at DC a short through from port to
+    port, and in AC the delay's phase, ``e^{-jωτ}``. A transient steps onto each corner
+    of its waveforms as it arrives at the other port.
+
+    Examples:
+        >>> from jolty.units import ns, ohm
+        >>> line = transmission_line(50 * ohm, 1 * ns)
+        >>> line.terminals
+        ('positive1', 'negative1', 'positive2', 'negative2')
+    """
+    parameters = _parameters(
+        {
+            "characteristic_impedance": (characteristic_impedance, RESISTANCE),
+            "delay": (delay, TIME),
+        },
+        {},
+    )
+    return device("transmission_line", parameters)
+
+
 def _drift(
     linear: Quantity | None, quadratic: Quantity | None, nominal: Quantity | None
 ) -> dict[str, JsonValue]:

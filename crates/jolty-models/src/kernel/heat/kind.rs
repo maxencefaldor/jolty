@@ -15,7 +15,7 @@ use super::{Heating, LOWEST_TEMPERATURE, MOST_TEMPERATURE_STEP};
 use crate::device::lift;
 use crate::group::Kind;
 use crate::{
-    Choice, Gradient, Hyper, Kernel, Layout, Local, LogicLevel, Nature, NoiseSource,
+    Choice, Delayed, Gradient, Hyper, Kernel, Layout, Local, LogicLevel, Nature, NoiseSource,
     ParameterError, Regions, Stamp,
 };
 
@@ -459,6 +459,20 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
 
     fn breakpoints(prepared: &Self::Prepared, span: (f64, f64), times: &mut Vec<f64>) {
         K::breakpoints(&prepared.at_ambient, span, times);
+    }
+
+    fn delayed(shape: &Self::Shape, prepared: &Self::Prepared, found: &mut Vec<Delayed>) {
+        let start = found.len();
+        K::delayed(&shape.inner, &prepared.at_ambient, found);
+        for part in found.iter_mut().skip(start) {
+            if let Some(&(.., outer)) = shape
+                .entries
+                .iter()
+                .find(|&&(_, _, inner, _)| inner == part.entry)
+            {
+                part.entry = outer;
+            }
+        }
     }
 
     fn choices(

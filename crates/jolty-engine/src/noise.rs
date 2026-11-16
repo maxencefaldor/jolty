@@ -13,7 +13,7 @@ use jolty_models::{Input, Nature, Node, NoiseSource};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
-use crate::ac::{Linearization, over_frequencies};
+use crate::ac::over_frequencies;
 use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 
 /// A noise analysis: the noise density at an output, at each frequency, and how much each
@@ -166,7 +166,7 @@ impl Simulator {
             let (sources, mut contributions) = self.noise_sources(&state, noise.frequencies.len());
             let referred = input.is_some();
             let found = over_frequencies(
-                Linearization::new(&self.state.solver),
+                self.linearization(),
                 &self.state.workspace.contributions,
                 &noise.frequencies,
                 &options.parallelism,

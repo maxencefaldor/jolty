@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use jolty_models::{Input, LogicLevel};
+use jolty_models::{Input, LogicLevel, Past};
 use jolty_numerics::integration::{
     CONSTANT_STEP, ErrorBound, Formula, Method, divided_difference, longest_at,
 };
@@ -700,19 +700,20 @@ impl Simulator {
         let mut held = width;
         let mut observations = transient.breakpoints.clone();
         observations.sort_by(f64::total_cmp);
-        let (initial, strategy) = match start {
-            Some(start) => start,
-            None => self.initial_state(transient, options)?,
-        };
+        let (initial, strategy) =
+            start.map_or_else(|| self.initial_state(transient, options), Ok)?;
         self.start_carried(&mut carried, &initial, options)?;
+        let delays = self.start_past(&initial, transient.method);
         self.evaluate(&initial, Some(0.0), (1.0, options.gmin), true);
         let start = self.read_recorded();
         self.state
             .events
             .start(&self.elaborated.logic, transient.stop);
         let unknowns = initial.len();
-        let mut breakpoints =
-            Breakpoints::new(&self.breakpoints(transient.stop, shortest), shortest);
+        let mut breakpoints = Breakpoints::new(
+            &self.breakpoints(transient.stop, shortest, &delays),
+            shortest,
+        );
         let first = RESTART_FRACTION * longest.min(breakpoints.first());
         let mut stepper = Stepper {
             method: transient.method,
@@ -760,6 +761,7 @@ impl Simulator {
                                 max_memory: options.max_memory,
                             });
                         }
+                        self.passed(&mut breakpoints, (point.time, point.restarted), &delays);
                         times.push(point.time);
                         values.push(point.x);
                         observed.push(&point.found);
@@ -772,6 +774,7 @@ impl Simulator {
                 Step::Land(time) => breakpoints.insert(time),
             }
         }
+        self.state.past = None;
         let mut statistics = stepper.statistics;
         (statistics.work, statistics.profile) = self.metered_since(&reading);
         Ok(TransientResult {
@@ -781,6 +784,48 @@ impl Simulator {
             logic: self.state.events.traces().to_vec(),
             statistics,
         })
+    }
+
+    /// Starts the past the circuit's delay lines read from the state `x` at time zero,
+    /// a corner, read by interpolation of `method`'s order, keeping the unknowns they
+    /// read; none for a circuit without one. Returns each distinct delay, in increasing
+    /// order.
+    fn start_past(&mut self, x: &[f64], method: Method) -> Vec<f64> {
+        let delayed = self.state.runs.delayed(&self.elaborated.groups);
+        let mut delays: Vec<f64> = delayed.iter().map(|part| part.delay).collect();
+        delays.sort_by(f64::total_cmp);
+        delays.dedup();
+        self.state.past = (!delayed.is_empty()).then(|| {
+            let kept: Vec<usize> = delayed.iter().map(|part| part.column as usize).collect();
+            let mut past = Past::new(x.len(), &kept, method.order());
+            past.push(0.0, x, true);
+            past
+        });
+        delays
+    }
+
+    /// Moves the past the delay lines read on past the point accepted at `time`, and
+    /// adds the breakpoint each corner makes, where `restarted` says the integration
+    /// restarts: each of `delays` after it, where the corner arrives at a line's other
+    /// port.
+    ///
+    /// The past keeps the points of the longest delay before `time`, which an
+    /// interpolation at any later time reads.
+    fn passed(
+        &mut self,
+        breakpoints: &mut Breakpoints,
+        (time, restarted): (f64, bool),
+        delays: &[f64],
+    ) {
+        let (Some(past), Some(&longest)) = (&mut self.state.past, delays.last()) else {
+            return;
+        };
+        past.forget_before(time - longest);
+        if restarted {
+            for &delay in delays {
+                breakpoints.insert(time + delay);
+            }
+        }
     }
 
     /// What `read` reads of the recorded devices, its time counted as recording.
@@ -1030,6 +1075,9 @@ impl Simulator {
         }
         stepper.previous = length;
         stepper.time = end;
+        if let Some(past) = &mut self.state.past {
+            past.push(end, &stepper.x, restart.is_some());
+        }
         if let Some(after_corner) = restart {
             stepper.before = None;
             stepper.history.restart(end, charge, derivative);
@@ -1085,6 +1133,9 @@ impl Simulator {
     ) -> Result<Step, SimulationError> {
         if let Some(Pending { corner, .. }) = stepper.pending.take() {
             self.state.events.restore(corner.logic);
+            if let Some(past) = &mut self.state.past {
+                past.back_to(corner.time);
+            }
             stepper.time = corner.time;
             stepper.x = corner.x;
             stepper.before = None;
@@ -1246,12 +1297,15 @@ impl Simulator {
         settles
     }
 
-    /// The breakpoints of every device in `(0, stop]`, sorted, merged when closer than
-    /// `minimum`, and ending at `stop`, so never empty; their time is counted as preparing.
-    fn breakpoints(&mut self, stop: f64, minimum: f64) -> Vec<f64> {
+    /// The breakpoints of every device in `(0, stop]`, and each of `delays`, where the
+    /// start, a corner where the waveforms leave the operating point, arrives at a delay
+    /// line's other port; sorted, merged when closer than `minimum`, and ending at `stop`,
+    /// so never empty; their time is counted as preparing.
+    fn breakpoints(&mut self, stop: f64, minimum: f64, delays: &[f64]) -> Vec<f64> {
         let previous = self.state.workspace.meter.enter(Activity::Preparing);
         let mut times = vec![stop];
         self.state.runs.breakpoints((0.0, stop), &mut times);
+        times.extend(delays.iter().filter(|&&delay| delay < stop));
         times.retain(|&time| time > minimum);
         times.sort_by(f64::total_cmp);
         times.dedup_by(|later, earlier| *later - *earlier < minimum);

@@ -27,6 +27,7 @@ mod group;
 mod kernel;
 mod logic;
 mod noise;
+mod past;
 mod surroundings;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -86,6 +87,7 @@ pub use kernel::thermal::{
     HeatSource, HeatSourceParameters, ThermalCapacitance, ThermalCapacitanceParameters,
     ThermalResistance, ThermalResistanceParameters,
 };
+pub use kernel::transmission::{TransmissionLine, TransmissionLineParameters};
 pub use kernel::vbic::{BaseCharge, Vbic, VbicParameters};
 pub use kernel::vdmos::{Vdmos, VdmosParameters};
 pub use kernel::{Kernel, Layout, Local, Stamp};
@@ -95,6 +97,7 @@ pub use logic::{
     NativeLogic, NativeLogicModel, OutputParameters, Pins, Stimulus, Timing, TimingParameters,
 };
 pub use noise::NoiseSource;
+pub use past::{Delayed, DelayedEntry, Past};
 pub use schemars::Schema;
 pub use surroundings::Surrounded;
 pub use topology::{Branch, BranchKind, Interface};
@@ -143,6 +146,7 @@ impl Library {
         library.add(Differentiable::<ThermalResistance>::new());
         library.add(Differentiable::<ThermalCapacitance>::new());
         library.add(Differentiable::<HeatSource>::new());
+        library.add(Differentiable::<TransmissionLine>::new());
         library.add_logic(NativeLogicModel::<LogicCell>::new());
         library.add_logic(NativeLogicModel::<LogicSource>::new());
         library
@@ -296,6 +300,10 @@ mod tests {
             ),
             ("thermal_capacitance", json!({"capacitance": 2})),
             ("thermal_resistance", json!({"resistance": 10})),
+            (
+                "transmission_line",
+                json!({"characteristic_impedance": 50, "delay": 1e-9}),
+            ),
             ("vbic", json!({"base_charge": "gummel_poon"})),
             ("vdmos", vdmos),
             (
@@ -491,6 +499,7 @@ mod tests {
                 "resistor",
                 "thermal_capacitance",
                 "thermal_resistance",
+                "transmission_line",
                 "vbic",
                 "vdmos",
                 "voltage_controlled_current_source",

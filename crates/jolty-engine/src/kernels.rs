@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use jolty_ir::{Circuit, Parameters};
-use jolty_models::{Contributions, Input, Library, Runs, Tasks};
+use jolty_models::{Contributions, Input, Library, Past, Runs, Tasks};
 use serde::Deserialize;
 
 use crate::elaborated::Elaborated;
@@ -38,11 +38,11 @@ impl Check {
     /// alone, from what it remembers, at the state of the last evaluation, its steps not
     /// limited, as the observer once evaluated a copy of each device: the residual and
     /// the charge of each local unknown, the conductance and the capacitance of each local
-    /// entry, and the variables, bit for bit.
+    /// entry, and the variables, bit for bit. A transient's evaluations read `past`.
     pub(crate) fn compare_read(
         &mut self,
         elaborated: &Elaborated,
-        runs: &Runs,
+        (runs, past): (&Runs, Option<&Past>),
         devices: impl Iterator<Item = usize>,
     ) {
         let Some((x, time, scale, gmin)) = &self.last else {
@@ -51,6 +51,9 @@ impl Check {
         let mut input = Input::new(x, *time, *gmin);
         input.source_scale = *scale;
         input.limiting = false;
+        if time.is_some() {
+            input.past = past;
+        }
         let groups = &elaborated.groups;
         for device in devices {
             let (Some(block), Some(alone)) = (

@@ -314,6 +314,9 @@ impl Simulator {
         let mut input = Input::new(x, time, gmin);
         input.source_scale = source_scale;
         input.limiting = limiting;
+        if time.is_some() {
+            input.past = state.past.as_ref();
+        }
         // The check evaluates each instance alone, from what it remembered before.
         #[cfg(test)]
         if let Some(check) = &mut state.check {

@@ -50,6 +50,7 @@ pub(crate) mod region;
 pub(crate) mod sources;
 pub(crate) mod switch;
 pub(crate) mod thermal;
+pub(crate) mod transmission;
 pub(crate) mod vbic;
 pub(crate) mod vdmos;
 
@@ -60,7 +61,10 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::{Choice, Interface, LogicLevel, Nature, NoiseSource, ParameterError, Real, Regions};
+use crate::{
+    Choice, Delayed, Interface, LogicLevel, Nature, NoiseSource, ParameterError, Past, Real,
+    Regions,
+};
 
 /// A device model computed one instance at a time, as a pure function of the instance's
 /// prepared parameters, its memory and its local unknowns.
@@ -214,6 +218,23 @@ pub trait Kernel: Send + Sync + 'static {
         times: &mut Vec<f64>,
     ) {
         let _ = (prepared, start, stop, times);
+    }
+
+    /// Appends to `found` each part of the conductance of an instance of `shape`, with the
+    /// numbers `prepared`, that reads a local unknown in the past, through
+    /// [`Local::delayed`]: none, unless it is a delay line.
+    ///
+    /// Each part is a constant its parameters set, which its evaluation adds, times the
+    /// weight [`Local::delayed`] gives: the whole at DC, where the past is the present. A
+    /// small-signal analysis at the complex frequency `s` multiplies it by `e^{−s·delay}`
+    /// instead, a transient keeps the past of each column, and steps onto each corner of
+    /// its waveforms the delay after the integration restarts.
+    fn delayed<R: Real>(
+        shape: &Self::Shape,
+        prepared: &Self::Prepared<R>,
+        found: &mut Vec<Delayed>,
+    ) {
+        let _ = (shape, prepared, found);
     }
 
     /// Appends to `found` the choices an instance's behavior turns on at `at`, where its
@@ -419,6 +440,7 @@ pub struct Local<'a> {
     pub gmin: f64,
     /// Whether the instance limits each voltage's step from its last evaluation's.
     pub limiting: bool,
+    past: Option<&'a Past>,
 }
 
 impl<'a> Local<'a> {
@@ -426,7 +448,7 @@ impl<'a> Local<'a> {
     /// that `map` gives there, or the reference, whose value is zero, where it gives
     /// [`jolty_numerics::UNMAPPED`], at `time` and the rest of `like`'s.
     #[must_use]
-    pub(crate) const fn new(x: &'a [f64], map: &'a [u32], like: &crate::Input<'_>) -> Self {
+    pub(crate) const fn new(x: &'a [f64], map: &'a [u32], like: &crate::Input<'a>) -> Self {
         Self {
             x,
             map,
@@ -435,6 +457,7 @@ impl<'a> Local<'a> {
             source_scale: like.source_scale,
             gmin: like.gmin,
             limiting: like.limiting,
+            past: like.past,
         }
     }
 
@@ -469,7 +492,30 @@ impl<'a> Local<'a> {
             source_scale: self.source_scale,
             gmin: self.gmin,
             limiting: self.limiting,
+            past: self.past,
         }
+    }
+
+    /// The value the local unknown at `local` took `delay` seconds before the time, and
+    /// its derivative with respect to the local unknown's present value: the present
+    /// value, and 1, outside a transient, where the past is the present; in a transient,
+    /// as [`Past::at`] interpolates the points it accepted, and the present when the
+    /// time `delay` before lies within the step being solved. Zero, and 0, for one on the
+    /// reference.
+    ///
+    /// The past keeps the unknowns of the columns [`Kernel::delayed`] states; any other
+    /// reads its present value, as at DC.
+    #[must_use]
+    pub fn delayed(&self, local: usize, delay: f64) -> (f64, f64) {
+        let Some(&unknown) = self.map.get(local) else {
+            return (0.0, 0.0);
+        };
+        let Some(&present) = self.x.get(unknown as usize) else {
+            return (0.0, 0.0);
+        };
+        self.past
+            .and_then(|past| past.at(unknown as usize, self.time - delay, (self.time, present)))
+            .unwrap_or((present, 1.0))
     }
 }
 

@@ -250,7 +250,8 @@ impl Simulator {
         if let Some(check) = &mut self.state.check {
             let devices = self.state.observer.selection.evaluated.iter();
             let devices = devices.map(|&(device, _, _)| device);
-            check.compare_read(&self.elaborated, &self.state.runs, devices);
+            let at = (&self.state.runs, self.state.past.as_ref());
+            check.compare_read(&self.elaborated, at, devices);
         }
         self.state
             .observer

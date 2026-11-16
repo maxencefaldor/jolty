@@ -41,8 +41,8 @@ use rayon::prelude::*;
 use crate::device::lift;
 use crate::surroundings::Own;
 use crate::{
-    Binding, Choice, Contributions, Gradient, Input, Kernel, Layout, Local, LogicLevel, Node,
-    NoiseSource, ParameterError, Real, Regions, Stamp, UnknownIndex,
+    Binding, Choice, Contributions, Delayed, DelayedEntry, Gradient, Input, Kernel, Layout, Local,
+    LogicLevel, Node, NoiseSource, ParameterError, Real, Regions, Stamp, UnknownIndex,
 };
 
 /// The parameters of an instance of some kernel, read, as an [`Instance`] holds them.
@@ -214,6 +214,9 @@ pub(crate) trait Kind: Send + Sync + 'static {
     /// As [`Kernel::breakpoints`].
     fn breakpoints(prepared: &Self::Prepared, span: (f64, f64), times: &mut Vec<f64>);
 
+    /// As [`Kernel::delayed`].
+    fn delayed(shape: &Self::Shape, prepared: &Self::Prepared, found: &mut Vec<Delayed>);
+
     /// As [`Kernel::choices`].
     fn choices(
         shape: &Self::Shape,
@@ -328,6 +331,10 @@ impl<K: Kernel> Kind for K {
 
     fn breakpoints(prepared: &K::Prepared<f64>, span: (f64, f64), times: &mut Vec<f64>) {
         K::breakpoints(prepared, span, times);
+    }
+
+    fn delayed(shape: &K::Shape, prepared: &K::Prepared<f64>, found: &mut Vec<Delayed>) {
+        K::delayed(shape, prepared, found);
     }
 
     fn choices(
@@ -1292,6 +1299,19 @@ impl Runs {
         }
     }
 
+    /// Each part of the circuit's conductance that an instance of `groups` reads in the
+    /// past, as [`Kernel::delayed`] states it, placed among the circuit's equations, in
+    /// the order of the groups and their instances: none in a circuit without a delay
+    /// line. A part whose row or column is the reference's is not among them.
+    #[must_use]
+    pub fn delayed(&self, groups: &Groups) -> Vec<DelayedEntry> {
+        let mut found = Vec::new();
+        for (group, run) in groups.kernels.iter().zip(&self.groups) {
+            run.delayed(group, &mut found);
+        }
+        found
+    }
+
     /// The earliest fraction of the way from `before` to `after`, the states at the two
     /// ends of a step, at which an instance's contribution jumps, as a choice its behavior
     /// turns on changes, located by linear interpolation; `None` when none changes.
@@ -1710,6 +1730,10 @@ trait GroupRun: fmt::Debug + Send {
     /// Appends the times in `span` where an instance is not smooth to `times`.
     fn breakpoints(&self, span: (f64, f64), times: &mut Vec<f64>);
 
+    /// Appends each part of the conductance of an instance of `group` that reads the
+    /// past to `found`, placed among the circuit's equations.
+    fn delayed(&self, group: &Group, found: &mut Vec<DelayedEntry>);
+
     /// The earliest fraction of the way from `before` to `after` at which a choice of an
     /// instance of `group` changes, as [`Choice::first_jump`] finds it, its choices found
     /// in `found`.
@@ -1902,6 +1926,41 @@ impl<K: Kind> GroupRun for KernelRun<K> {
     fn breakpoints(&self, span: (f64, f64), times: &mut Vec<f64>) {
         for prepared in self.prepared.iter().flatten() {
             K::breakpoints(prepared, span, times);
+        }
+    }
+
+    fn delayed(&self, group: &Group, found: &mut Vec<DelayedEntry>) {
+        let mut local = Vec::new();
+        for (member, prepared) in self.prepared.iter().enumerate() {
+            let (Some(prepared), Some(map), Some(slots), Some(&device)) = (
+                prepared,
+                group.map_of(member),
+                group.slots_of(member),
+                group.members.get(member),
+            ) else {
+                continue;
+            };
+            local.clear();
+            K::delayed(&self.shape, prepared, &mut local);
+            for part in &local {
+                let column = group
+                    .layout
+                    .entries()
+                    .get(part.entry)
+                    .and_then(|&(_, column)| map.get(column));
+                if let (Some(&position), Some(&column)) = (slots.get(part.entry), column)
+                    && position != UNMAPPED
+                    && column != UNMAPPED
+                {
+                    found.push(DelayedEntry {
+                        device,
+                        position,
+                        column,
+                        delay: part.delay,
+                        conductance: part.conductance,
+                    });
+                }
+            }
         }
     }
 
