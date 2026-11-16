@@ -2,12 +2,13 @@
 """A circuit elaborated once simulates at any numbers as one elaborated with them.
 
 A Monte Carlo sample, or a worst case's run, replaces some of a circuit's numbers. A
-[`Simulation.of`][jolty.simulate.Simulation.of] the circuit
-[`Elaborated`][jolty.simulate.Elaborated] once makes its devices again from them, where
-a `Simulation` elaborates the circuit with them. On the random circuits of `strategies`,
-pulsed and holding capacitance at their nets, at random numbers and temperatures, both
-find the same operating point, frequency response and transient, bit for bit, their
-transients' work alike, or the same problems.
+simulation made by
+[`Simulation.from_elaborated`][jolty.simulate.Simulation.from_elaborated] from the
+circuit [`Elaborated`][jolty.simulate.Elaborated] once makes its devices again from
+them, where a `Simulation` elaborates the circuit with them. On the random circuits of
+`strategies`, pulsed and holding capacitance at their nets, at random numbers and
+temperatures, both find the same operating point, frequency response and transient, bit
+for bit, their transients' work alike, or the same problems.
 
 The numbers replaced are those the circuits write as real numbers: an integer, such as a
 MOSFET's level, keeps the circuit's own form when a sample replaces it with a whole
