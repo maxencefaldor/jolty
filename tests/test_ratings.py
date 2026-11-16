@@ -213,7 +213,7 @@ def test_a_component_s_rating_reads_its_ports_without_its_devices() -> None:
     simulation = Simulation(bench())
     point = simulation.run(OperatingPoint())
     assert point.recording.devices == ()
-    assert point.recording.composites == ("X1.top", "X1.bottom")
+    assert point.recording.summed_terminals == ("X1.top", "X1.bottom")
     ((rule, message),) = [
         (d.rule, d.message) for d in simulation.check_results({"op": point})
     ]

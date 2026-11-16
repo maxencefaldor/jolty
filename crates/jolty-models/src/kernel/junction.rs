@@ -186,7 +186,8 @@ pub(crate) fn critical_voltage(saturation: f64, slope: f64) -> f64 {
 /// backward falls to the critical voltage, as in SPICE3. A step deep into reverse bias is
 /// bounded, as in ngspice. Returns the limited voltage, or `None` when `new` needs no
 /// limiting.
-pub(crate) fn limit_junction(new: f64, old: f64, slope: f64, critical: f64) -> Option<f64> {
+#[must_use]
+pub fn limit_junction(new: f64, old: f64, slope: f64, critical: f64) -> Option<f64> {
     if new > critical && (new - old).abs() > 2.0 * slope {
         Some(if old > 0.0 {
             let argument = 1.0 + (new - old) / slope;
@@ -214,7 +215,8 @@ pub(crate) fn limit_junction(new: f64, old: f64, slope: f64, critical: f64) -> O
 /// around its `threshold`: steps are bounded relative to the distance from the threshold,
 /// so the drain current's square law cannot overshoot. Returns the limited voltage, or
 /// `None` when `new` needs no limiting.
-pub(crate) fn limit_gate(new: f64, old: f64, threshold: f64) -> Option<f64> {
+#[must_use]
+pub fn limit_gate(new: f64, old: f64, threshold: f64) -> Option<f64> {
     let high = (2.0 * (old - threshold)).abs() + 2.0;
     let low = (old - threshold).abs() + 1.0;
     let on = threshold + 3.5;
@@ -344,8 +346,12 @@ impl<R: Real> Depletion<R> {
     pub(crate) fn evaluate<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
         let threshold = self.threshold;
         if voltage.value.value() < threshold.value() {
-            let remaining = -(voltage.scale(self.inverse_potential) - 1.0);
-            (-(remaining * remaining.pow(self.exponent) - 1.0)).scale(self.scale)
+            // `1 − (1 − v/φ)^{1 − m}` as `−expm1((1 − m) ln1p(−v/φ))`, which keeps its
+            // digits near zero volts, where the difference from 1 loses them: an absolute
+            // error of `ε·C·φ/(1 − m)`, 3.5e-25 C at 1 nF, is 5e-12 A through a time step's
+            // weight of 1.5e13 /s, above a node's 1e-12 A of tolerance.
+            let logarithm = (-voltage.scale(self.inverse_potential)).ln_1p();
+            (-logarithm.scale(self.exponent + 1.0).exp_m1()).scale(self.scale)
         } else {
             let above = voltage.plus(-threshold);
             let square = (voltage * voltage).plus(-(threshold * threshold));

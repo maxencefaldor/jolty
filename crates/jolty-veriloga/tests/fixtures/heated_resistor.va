@@ -1,0 +1,27 @@
+// A resistor whose resistance rises with the temperature of its thermal terminal, which
+// its power heats: a thermal node read alone, as `Temp(t)`, its rise above the ambient,
+// and written through a branch declared on it alone, to the ground.
+
+`include "disciplines.vams"
+
+module heated_resistor(a, b, t);
+    inout a, b, t;
+    electrical a, b;
+    thermal t;
+    branch (t) heat;
+
+    (* desc = "The resistance at the ambient temperature", units = "ohms" *)
+    parameter real resistance = 100 from (0:inf);
+    (* desc = "The linear temperature coefficient", units = "1/K" *)
+    parameter real temperature_coefficient = 1e-3;
+
+    real current;
+
+    analog begin
+        current = V(a, b) / (resistance * (1 + temperature_coefficient * Temp(t)));
+        I(a, b) <+ current;
+        // The power it dissipates flows into the thermal net, against its heat flow.
+        if ($port_connected(t))
+            Pwr(heat) <+ -V(a, b) * current;
+    end
+endmodule

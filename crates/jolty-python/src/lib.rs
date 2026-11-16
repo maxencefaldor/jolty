@@ -374,9 +374,12 @@ impl Simulator {
             .iter()
             .map(|device| device.path().to_owned())
             .collect();
-        for composite in simulator.composites() {
-            if paths.last().is_none_or(|last| last != composite.owner()) {
-                paths.push(composite.owner().to_owned());
+        for summed_terminal in simulator.summed_terminals() {
+            if paths
+                .last()
+                .is_none_or(|last| last != summed_terminal.owner())
+            {
+                paths.push(summed_terminal.owner().to_owned());
             }
         }
         paths
@@ -433,15 +436,15 @@ impl Simulator {
             )
         });
         let devices = in_full.chain(regions_alone).collect();
-        let composites = recorded
-            .composites
+        let summed_terminals = recorded
+            .summed_terminals
             .iter()
             .map(|&index| {
-                let composite = &simulator.composites()[index];
-                (composite.name().to_owned(), composite.thermal())
+                let summed_terminal = &simulator.summed_terminals()[index];
+                (summed_terminal.name().to_owned(), summed_terminal.thermal())
             })
             .collect();
-        Ok((devices, composites))
+        Ok((devices, summed_terminals))
     }
 
     /// Where the terminal `terminal` of the device, component instance or logic device at

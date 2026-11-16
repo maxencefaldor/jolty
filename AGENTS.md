@@ -50,6 +50,7 @@ Each crate depends only on the crates listed before it:
 1. `jolty-models`: the kernels that compute each device model one instance at a time, the groups that evaluate a kernel's instances together, serially or across threads, into a slab, and the twins that differentiate one instance with respect to one of its parameters, and the standard library of devices.
 1. `jolty-engine`: elaboration of a hierarchy, once per structure, into a circuit that every run of it shares, each run preparing its devices' instances again for the numbers it replaces; Newton iteration with SPICE's convergence aids, which for a large circuit spreads its work on each unknown across threads; the analyses, which count their work and, when asked, time it, and spread their frequencies across threads; the measures specs read of their results; and the batch executor, which runs many runs of one circuit across threads, each a pure function of its index.
 1. `jolty-checks`: the rules: structural ones, which read the elaborated circuit through the branches each device declares, and those on the circuit linearized at its operating point.
+1. `jolty-veriloga`: the compiler of Verilog-A into kernels, which writes the same plain Rust a person writes, and the kernels it compiled, checked in and never edited.
 1. `jolty-python`: the Python extension module `jolty._core`, which adapts the engine and nothing more.
 
 The Python package, `src/jolty`, is ordered too.
@@ -128,7 +129,7 @@ Where the code does not meet a convention yet, a change that touches that code b
   Names are uniform, consistent and symmetric: the same word for the same thing in every layer, the same shape for the same kind of name, and an operation and its inverse, or a bound and its opposite, named as a pair, as `save_results` and `load_results`, `min_` and `max_`.
   They are formal, strict and principled: a name says what the thing is, in the domain's established terms, never how it happens to be computed, stored or used.
   A name that breaks this is renamed everywhere in the change that finds it, as one way to do one job requires.
-- **Feedback is facts:** jolty tells the agent what is true about its circuit and never fixes it or says how to.
+- **Feedback is facts:** jolty tells the agent what is true about its circuit and its own use, and never fixes either or says how to: a call jolty cannot take states what is true, such as the devices a result recorded, and the guide says how to call it.
   A problem names the instance by its path and the script line that placed it.
   The engine reports every problem it finds, not only the first.
   A number in a message is exact, or says how it was estimated, such as to first order.

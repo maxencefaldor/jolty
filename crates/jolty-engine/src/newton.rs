@@ -289,8 +289,7 @@ pub(crate) enum Failure {
     /// The solver could not factor the Jacobian, or solve for its step: the error says
     /// whether it was singular, naming the unknowns it leaves undetermined, or too large.
     Solver(SimulationError),
-    /// The iteration limit was reached, and for a time step's iteration its steps stopped
-    /// shrinking.
+    /// The iteration took every step its limit allows without converging.
     Diverged,
 }
 
@@ -344,14 +343,18 @@ impl Simulator {
     /// every residual is within tolerance of the terms it sums, and no device limited its
     /// voltage.
     ///
-    /// It fails after `limit` iterations, but for a time step's, which goes on past them as
-    /// long as each step is shorter than the one before, as its largest move of an unknown
-    /// against its tolerance: an iteration that contracts is converging, however slowly,
-    /// as Newton's does at a double root, halving its distance each time, and stops once a
-    /// step no longer shrinks. As it contracts by `θ` from one step to the next, a time
-    /// step's last step is within tolerance only once `θ/(1 − θ)` times it is too, the
-    /// distance such an iteration leaves to the solution (Deuflhard, "Newton Methods for
-    /// Nonlinear Problems", 2004, section 2.1).
+    /// It takes at most `limit` steps, the iterate after the last judged as any other. A
+    /// step's size is its largest move of an unknown against that unknown's tolerance. A
+    /// DC solution's step is within tolerance when its size is at most 1, as SPICE judges
+    /// it. A time step's iteration measures its contraction `θ`, each step's size over the
+    /// one before it, between steps from evaluations no device limited, as a limited step
+    /// is the limiter's rather than Newton's: as an iteration that contracts by `θ` lies
+    /// within `θ/(1 − θ)` times its last step of the solution (Deuflhard, "Newton Methods
+    /// for Nonlinear Problems", 2004, section 2.1), its step is within tolerance once that
+    /// distance is, as Hairer and Wanner stop the Newton iteration of an implicit step
+    /// ("Solving Ordinary Differential Equations II", 2nd edition, 1996, section IV.8);
+    /// its first step, one from a limited evaluation or after one, and one no shorter
+    /// than the one before, are judged as a DC solution's.
     pub(crate) fn newton(
         &mut self,
         x: &mut [f64],
@@ -371,14 +374,13 @@ impl Simulator {
         // A DC solution starts afresh from its guess; a time step goes on from the last.
         let afresh = matches!(mode, Mode::Dc { .. });
         let mut stepped_within_tolerance = false;
-        // The largest move of the last step, as a multiple of its tolerance, and whether it
-        // was shorter than the step before.
-        let (mut moved, mut contracting) = (f64::INFINITY, true);
+        // The size of the last step that moved, which a time step's contraction is
+        // measured against.
+        let mut moved: Option<f64> = None;
         let mut iteration = 0;
         loop {
-            // A DC solution, which other strategies take up where it fails, stops at its
-            // limit.
-            if iteration >= limit && (afresh || !contracting) {
+            // The iterate after the last step allowed is evaluated only to be judged.
+            if iteration == limit && !stepped_within_tolerance {
                 return Err(Failure::Diverged);
             }
             let limiting = iteration > 0 || !afresh;
@@ -388,6 +390,9 @@ impl Simulator {
             let judged = (stepped_within_tolerance && !limited).then_some(options);
             if self.combine(x, mode, judged, inside) {
                 return Ok(iteration);
+            }
+            if iteration == limit {
+                return Err(Failure::Diverged);
             }
             // The solver keeps the factors of a Jacobian bitwise unchanged since the last, as
             // a linear circuit's is from one iteration to the next, and refactors a changed
@@ -410,19 +415,21 @@ impl Simulator {
                 self.deflate(x, deflated, inside);
             }
             let largest = self.take_step(x, options, inside);
-            // An iteration that contracts by `θ` a step lies about `θ/(1 − θ)` times its
-            // last step from the solution, more than the step itself once `θ` passes ½: a
-            // time step's step is within tolerance only once that distance is.
-            let ratio = largest / moved;
-            contracting = ratio < 1.0;
-            let distance = if afresh || !contracting {
-                largest
-            } else {
-                largest * (ratio / (1.0 - ratio)).max(1.0)
+            iteration += 1;
+            // An iteration that contracts by `rate` from one step to the next lies within
+            // `rate/(1 − rate)` times its last step of the solution. A DC solution's steps,
+            // a time step's first, a step from a limited evaluation or after one, and a
+            // step no shorter than the one before are judged alone, as SPICE judges them.
+            let rate = moved
+                .filter(|_| !afresh && !limited)
+                .map(|before| largest / before);
+            let distance = match rate {
+                Some(rate) if rate < 1.0 => rate / (1.0 - rate) * largest,
+                _ => largest,
             };
             stepped_within_tolerance = distance <= 1.0;
-            moved = largest;
-            iteration += 1;
+            // A step that did not move gives no contraction to measure the next by.
+            moved = (largest > 0.0 && !limited).then_some(largest);
         }
     }
 
@@ -619,6 +626,7 @@ mod tests {
     use jolty_numerics::Work;
     use serde_json::{Value, json};
 
+    use super::{Failure, Mode};
     use crate::{Conditions, Method, Options, Simulator, Transient};
 
     /// A simulator of a voltage source of `waveform` driving `stages` sections of 1 kΩ in
@@ -658,6 +666,69 @@ mod tests {
         let circuit = Circuit::from_json(&document.to_string()).expect("a circuit");
         Simulator::new(&circuit, &Library::standard(), &Conditions::default())
             .expect("an elaborated circuit")
+    }
+
+    /// A simulator of a behavioral current source of `expression` from `a` to the ground,
+    /// which reads `v(a)` and the voltage of `c`, which a voltage source holds at 0 V.
+    fn root(expression: &str) -> Simulator {
+        let document = json!({
+            "format": "jolty-circuit", "version": 4, "top": "root",
+            "components": {"root": {
+                "ports": [{"name": "ground", "role": "ground"}],
+                "instances": [
+                    {"name": "V1", "of": {"model": "voltage_source"},
+                     "parameters": {"waveform": {"dc": 0.0}},
+                     "terminals": {"positive": "c", "negative": "ground"}},
+                    {"name": "B1", "of": {"model": "behavioral_current_source"},
+                     "parameters": {"expression": expression},
+                     "terminals": {"positive": "a", "negative": "ground", "a": "a", "c": "c"}}
+                ]
+            }}
+        });
+        let circuit = Circuit::from_json(&document.to_string()).expect("a circuit");
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("an elaborated circuit")
+    }
+
+    /// A time step's Newton iteration on the circuit of `simulator`, from `a` at 1 V,
+    /// allowed `limit` steps: what it returned, and where it left `a`.
+    fn stepped(simulator: &mut Simulator, limit: usize) -> (Result<usize, Failure>, f64) {
+        let a = simulator.unknown("a").expect("a node").index();
+        let unknowns = simulator.elaborated.unknowns.len();
+        let mut x = vec![0.0; unknowns];
+        x[a] = 1.0;
+        // Nothing holds a charge, so the formula's weight and history change nothing.
+        let history = vec![0.0; unknowns];
+        let mode = Mode::Step {
+            time: 0.0,
+            alpha: 1.0,
+            history: &history,
+        };
+        let found = simulator.newton(&mut x, mode, &Options::default(), limit);
+        (found, x[a])
+    }
+
+    #[test]
+    fn a_time_step_takes_no_more_steps_than_its_limit() {
+        // At the double root of 1e-3·v(a)², Newton's iteration halves `a` at each step,
+        // from 1 V, and its step falls within its tolerance, 1e-6 V and a thousandth of
+        // `a`, after 20 steps: a limit of 10 stops it, though it contracts throughout.
+        let mut simulator = root("1e-3 * v(a)^2 - v(c)");
+        assert_eq!(stepped(&mut simulator, 10).0, Err(Failure::Diverged));
+        assert_eq!(stepped(&mut simulator, 20).0, Ok(20));
+    }
+
+    #[test]
+    fn a_time_step_converges_within_its_tolerance_of_a_slowly_contracting_root() {
+        // At the triple root of 1e-3·v(a)³, Newton's iteration contracts by two thirds at
+        // each step, so a step within tolerance leaves twice as much to go: SPICE's test
+        // on the step alone would stop with `a` twice its tolerance from the root, 0 V.
+        let mut simulator = root("1e-3 * v(a)^3 - v(c)");
+        let (found, a) = stepped(&mut simulator, 100);
+        assert!(found.is_ok(), "{found:?}");
+        let options = Options::default();
+        let tolerance = options.voltage_tolerance + options.relative_tolerance * a.abs();
+        assert!(a.abs() <= tolerance, "{a} V from the root");
     }
 
     /// The factorizations that searched for pivots, from the first or from a pivot too

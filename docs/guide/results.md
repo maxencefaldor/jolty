@@ -89,8 +89,8 @@ KeyError: "the result recorded no terminal named 'R1.a'; close names: R2.a; reco
 
 A name mistaken for one of a recorded instance's says so, and suggests the closest names alone, such as `'R1', which the result recorded, has no terminal named 'R1.aa'; close names: R1.a`.
 
-A result's `recording` says what it holds: `devices`, each with its `path`, `terminals`, `internals` and `variables`, and `composites`, such as `X1.vdd`.
-`terminals` names the columns of `currents` and `charges`: each device's terminals, then each composite.
+A result's `recording` says what it holds: `devices`, each with its `path`, `terminals`, `internals` and `variables`, and `summed_terminals`, such as `X1.vdd`.
+`terminals` names the columns of `currents` and `charges`: each device's terminals, then each summed terminal.
 
 ## Terminals
 
@@ -224,6 +224,6 @@ With the `profile` option, its `profile` says where its time went, in seconds: p
 Each finds its column by name in a dictionary, so a read costs the same however large the circuit.
 A name that is not an unknown, a recorded terminal, derivative or variable, or a logic net raises a `KeyError` that suggests the closest names.
 
-The file is a NumPy archive: a JSON header names the unknowns and the logic nets, lists each recording the analyses made once, however many share it, as each recorded device's path, terminals, internal unknowns, variables, regions and margins, and the composites, and says what each analysis is and which recording it made, then each analysis's arrays follow under keys such as `step.times`.
+The file is a NumPy archive: a JSON header names the unknowns and the logic nets, lists each recording the analyses made once, however many share it, as each recorded device's path, terminals, internal unknowns, variables, regions and margins, and the summed terminals, and says what each analysis is and which recording it made, then each analysis's arrays follow under keys such as `step.times`.
 Any program that reads NumPy files reads it.
-The header is in version 16 of the format; a file of an earlier version is not read, and simulating again writes it anew.
+The header is in version 17 of the format; a file of an earlier version is not read, and simulating again writes it anew.

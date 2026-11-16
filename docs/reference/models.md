@@ -735,7 +735,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `oxide_thickness` |  | The gate oxide's thickness, `tox`, in meters; default none at level 1, which leaves the gate without Meyer's capacitances, and 0.1 µm at level 3 and for flicker noise. |
 | `saturation_current` | `1e-14` | The bulk junctions' saturation current, in amperes; default 1e-14. |
 | `saturation_current_density` | `0` | The bulk junctions' saturation current per area, in amperes per square meter, which replaces the saturation current when it and both areas are nonzero; default 0. |
-| `saturation_field_factor` |  | Level 3: the saturation field factor, `kappa`; default 0.2. |
+| `saturation_field_factor` |  | Level 3: the saturation field factor, `kappa`; default 0.2, and 0 for no channel shortening, as ngspice reads it. |
 | `sheet_resistance` | `0` | The drain and source diffusions' sheet resistance, in ohms per square; default 0. |
 | `sidewall_capacitance` | `0` | The bulk junctions' zero-bias sidewall capacitance per length of perimeter, `cjsw`, in farads per meter; default 0. |
 | `sidewall_grading` |  | The sidewall capacitance's grading coefficient, `mjsw`, below 1; default 0.5 at level 1 and 0.33 at level 3. |

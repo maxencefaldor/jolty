@@ -1,0 +1,46 @@
+// A conductance that saturates, written to exercise the constructs of the CMC's models:
+// an analog function called inline, a named block with variables of its own, tanh and
+// atan, a $warning, output variables, one of them a ddx, an aliasparam, a range bounded
+// by another parameter, a default jolty's $simparam leaves to the source, and $mfactor.
+
+`include "disciplines.vams"
+
+module constructs(a, b);
+    inout a, b;
+    electrical a, b;
+
+    (* desc = "The conductance at zero volts", units = "S" *)
+    parameter real conductance = 1e-3 from (0:inf);
+    (* desc = "The voltage the current saturates at", units = "V" *)
+    parameter real saturation = 1 from (0:inf);
+    (* desc = "The weight of the bend, a share of the conductance" *)
+    parameter real bend = 1e-3;
+    (* desc = "The largest saturation voltage the device allows", units = "V" *)
+    parameter real saturation_max = 100 from [saturation:inf);
+    (* desc = "The scale of the conductance, the simulator's own unless given" *)
+    parameter real scale = $simparam("scale", 1.0) from (0:inf);
+    aliasparam g = conductance;
+
+    (* desc = "The current from a to b", units = "A" *)
+    real current;
+    (* desc = "The small-signal conductance, the current's derivative by the voltage of a", units = "S" *)
+    real small_signal;
+
+    // The current of a conductance `g` that saturates smoothly at `vs`.
+    analog function real saturated;
+        input v, g, vs;
+        real v, g, vs;
+        saturated = g * vs * tanh(v / vs);
+    endfunction
+
+    analog begin : device
+        real v, bent;
+        if (saturation > 10)
+            $warning("a saturation of %g V lies beyond the device's range", saturation);
+        v = V(a, b);
+        bent = bend * conductance * saturation * atan(v / saturation);
+        current = (saturated(v, conductance, saturation) + bent) * $mfactor;
+        I(a, b) <+ current;
+        small_signal = ddx(current, V(a));
+    end
+endmodule

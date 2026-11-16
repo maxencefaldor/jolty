@@ -20,6 +20,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+[features]
+# The bench that evaluates one device alone, for the tests of crates whose kernels
+# implement this crate's.
+testing = []
+
 [dev-dependencies]
 allocation-counter.workspace = true
 proptest.workspace = true

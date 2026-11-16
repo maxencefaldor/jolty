@@ -1,0 +1,180 @@
+// The junction diode of jolty's library, written in Verilog-A after its hand-written
+// kernel in `crates/jolty-models/src/kernel/diode.rs` and `junction.rs`, operation
+// for operation. Those derive from ngspice 47's implementation of the diode, in
+// `src/spicelib/devices/dio/`, and its limiting, in `devsup.c`:
+// Copyright 1985 - 2018, Regents of the University of California and others. Used under
+// ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
+
+`include "disciplines.vams"
+`include "constants.vams"
+
+// SPICE's reference temperature, 27 C, in kelvins.
+`define REFERENCE (`P_CELSIUS0 + 27)
+// Silicon's band gap at the temperature t, in electronvolts, as SPICE models it.
+`define BAND_GAP(t) (-((t) * 7.02e-4 * (t) / ((t) + 1108) - 1.16))
+// How far a junction's built-in potential at the temperature t lies from the reference
+// temperature's, through silicon's band gap and intrinsic concentration: SPICE's pbfact.
+`define POTENTIAL_SHIFT(t) ((t) * `P_K / `P_Q * -2 * (ln((t) / `REFERENCE) * 1.5 + (-`BAND_GAP(t) / ((t) * (2 * `P_K)) + 1.1150877 / (2 * `P_K * `REFERENCE)) * `P_Q))
+
+module diode(anode, cathode);
+    inout anode, cathode;
+    electrical anode, cathode, junction;
+    // The series resistance's current, an unknown of its own below jolty's small
+    // resistance.
+    branch (anode, junction) junction_current;
+
+    (* desc = "The saturation current", units = "A" *)
+    parameter real saturation_current = 1e-14 from (0:inf);
+    (* desc = "The emission coefficient" *)
+    parameter real emission_coefficient = 1 from (0:inf);
+    (* desc = "The series resistance", units = "ohms" *)
+    parameter real series_resistance = 0 from [0:inf);
+    (* desc = "The zero-bias junction capacitance", units = "F" *)
+    parameter real junction_capacitance = 0 from [0:inf);
+    (* desc = "The junction potential", units = "V" *)
+    parameter real junction_potential = 1 from (0:inf);
+    (* desc = "The grading coefficient of the junction" *)
+    parameter real grading_coefficient = 0.5 from [0:1);
+    (* desc = "The fraction of the junction potential above which the depletion capacitance is extended linearly" *)
+    parameter real depletion_coefficient = 0.5 from [0:1);
+    (* desc = "The transit time", units = "s" *)
+    parameter real transit_time = 0 from [0:inf);
+    (* desc = "The reverse breakdown voltage; without it, the junction never breaks down", units = "V" *)
+    parameter real breakdown_voltage = 1 from (0:inf);
+    (* desc = "The current at the breakdown voltage", units = "A" *)
+    parameter real breakdown_current = 1e-3 from (0:inf);
+    (* desc = "The breakdown emission coefficient, the emission coefficient by default" *)
+    parameter real breakdown_emission_coefficient = emission_coefficient from (0:inf);
+    (* desc = "How fast the breakdown voltage falls with temperature", units = "V/K" *)
+    parameter real breakdown_temperature_coefficient = 0;
+    (* desc = "The energy gap that scales the saturation current with temperature, silicon's by default", units = "V" *)
+    parameter real energy_gap = 1.11 from [0:inf);
+    (* desc = "The exponent of the temperature ratio in the saturation current's scaling" *)
+    parameter real saturation_current_temperature_exponent = 3;
+    (* desc = "The temperature the parameters were measured at, 27 C by default", units = "K" *)
+    parameter real nominal_temperature = `P_CELSIUS0 + 27 from (0:inf);
+    (* desc = "The flicker noise coefficient KF" *)
+    parameter real flicker_coefficient = 0 from [0:inf);
+    (* desc = "The power of the current in the flicker noise, AF" *)
+    parameter real flicker_exponent = 1 from (0:inf);
+
+    real vt, saturation, slope, critical, intrinsic, potential, capacitance;
+    real threshold, charge_at_threshold, divisor, offset;
+    real breakdown_slope, unmatched, matched;
+    integer breakdown, iteration, settled;
+    real vd, id, e, ratio, qd;
+
+    // SPICE's limiting of a junction voltage's step from old to new, about the breakdown
+    // voltage when the junction nears it: the new voltage itself when it needs none.
+    analog function real junction_limit;
+        input new, old, slope, critical, breaks, matched, breakdown_slope;
+        real new, old, slope, critical, breaks, matched, breakdown_slope;
+        real reflected, last, step, limited, floor;
+        integer reverse;
+        begin
+            reverse = breaks != 0 && new < min(10 * breakdown_slope - matched, 0);
+            if (reverse != 0) begin
+                reflected = -(new + matched);
+                last = -(old + matched);
+                step = breakdown_slope;
+            end else begin
+                reflected = new;
+                last = old;
+                step = slope;
+            end
+            limited = reflected;
+            if (reflected > critical && abs(reflected - last) > 2 * step) begin
+                if (last > 0) begin
+                    if (1 + (reflected - last) / step > 0)
+                        limited = last + step * ln(1 + (reflected - last) / step);
+                    else
+                        limited = critical;
+                end else
+                    limited = step * ln(reflected / step);
+            end else if (reflected < 0) begin
+                if (last > 0)
+                    floor = -last - 1;
+                else
+                    floor = 2 * last - 1;
+                if (reflected < floor)
+                    limited = floor;
+            end
+            if (limited == reflected)
+                junction_limit = new;
+            else if (reverse != 0)
+                junction_limit = -(limited + matched);
+            else
+                junction_limit = limited;
+        end
+    endfunction
+
+    analog begin
+        if ($temperature <= 0)
+            $error("a junction's temperature lies above 0 K, not at %g K", $temperature);
+        vt = $temperature * `P_K / `P_Q;
+        saturation = saturation_current * exp((($temperature / nominal_temperature - 1) * energy_gap / vt + saturation_current_temperature_exponent * ln($temperature / nominal_temperature)) / emission_coefficient);
+        intrinsic = (junction_potential - `POTENTIAL_SHIFT(nominal_temperature)) / (nominal_temperature / `REFERENCE);
+        potential = intrinsic * ($temperature / `REFERENCE) + `POTENTIAL_SHIFT($temperature);
+        capacitance = junction_capacitance * (grading_coefficient * (($temperature - `REFERENCE) * 4e-4 - (potential - intrinsic) / intrinsic) + 1) / (grading_coefficient * ((nominal_temperature - `REFERENCE) * 4e-4 - (junction_potential - intrinsic) / intrinsic) + 1);
+        // ngspice holds the depletion threshold at or below the junction potential.
+        potential = min(potential, 1 / depletion_coefficient);
+        slope = emission_coefficient * vt;
+        critical = slope * ln(slope / (`M_SQRT2 * saturation));
+        threshold = depletion_coefficient * potential;
+        charge_at_threshold = potential * (1 - pow(1 - depletion_coefficient, 1 - grading_coefficient)) / (1 - grading_coefficient);
+        divisor = pow(1 - depletion_coefficient, grading_coefficient + 1);
+        offset = 1 - depletion_coefficient * (grading_coefficient + 1);
+
+        // ngspice moves the breakdown voltage so that the current there is the breakdown
+        // current, and leaves it where a breakdown current too small for the saturation
+        // current cannot be met.
+        breakdown = $param_given(breakdown_voltage);
+        breakdown_slope = breakdown_emission_coefficient * vt;
+        matched = breakdown_voltage - breakdown_temperature_coefficient * ($temperature - nominal_temperature);
+        if (breakdown != 0 && breakdown_current >= saturation * matched / vt) begin
+            unmatched = matched;
+            matched = unmatched - breakdown_slope * ln(breakdown_current / saturation + 1);
+            iteration = 0;
+            settled = 0;
+            while (iteration < 25 && settled == 0) begin
+                matched = unmatched - breakdown_slope * ln(breakdown_current / saturation + 1 - matched / vt);
+                settled = abs(saturation * (exp((unmatched - matched) / breakdown_slope) - 1 + matched / vt) - breakdown_current) <= 1e-12 * breakdown_current;
+                iteration = iteration + 1;
+            end
+        end
+
+        if (series_resistance == 0)
+            V(anode, junction) <+ 0;
+        else if (series_resistance < $simparam("small_resistance")) begin
+            V(junction_current) <+ series_resistance * I(junction_current);
+            V(junction_current) <+ white_noise(4 * `P_K * $temperature * abs(series_resistance), "series thermal");
+        end else begin
+            I(anode, junction) <+ 1 / series_resistance * V(anode, junction);
+            I(anode, junction) <+ white_noise(4 * `P_K * $temperature * abs(1 / series_resistance), "series thermal");
+        end
+
+        vd = $limit(V(junction, cathode), junction_limit, slope, critical, breakdown, matched, breakdown_slope);
+        if (breakdown != 0 && vd < -3 * slope && vd < -matched) begin
+            e = exp(-(matched + vd) / breakdown_slope);
+            id = -saturation * e;
+        end else if (vd >= -(slope * 3))
+            id = saturation * (exp(vd / slope) - 1);
+        else begin
+            ratio = slope * 3 / (vd * `M_E);
+            id = -saturation * (ratio * ratio * ratio + 1);
+        end
+        if (capacitance > 0) begin
+            if (vd < threshold) begin
+                // 1 − (1 − v/φ)^(1−m) through jolty's `expm1` and `ln1p`, which keep its
+                // digits near zero volts, where the difference from 1 loses them.
+                qd = capacitance * potential * -expm1((1 - grading_coefficient) * ln1p(-(vd / potential))) / (1 - grading_coefficient);
+            end else
+                qd = capacitance * (charge_at_threshold + (offset * (vd - threshold) + grading_coefficient / (potential * 2) * (vd * vd - threshold * threshold)) / divisor);
+        end
+        I(junction, cathode) <+ id + $simparam("gmin") * vd;
+        I(junction, cathode) <+ ddt(qd + transit_time * id);
+        I(junction, cathode) <+ white_noise(2 * `P_Q * abs(id), "shot");
+        if (flicker_coefficient > 0)
+            I(junction, cathode) <+ flicker_noise(flicker_coefficient * pow(abs(id), flicker_exponent), 1, "flicker");
+    end
+endmodule

@@ -98,12 +98,21 @@ fn a_million<R: Real>() -> R {
 impl<R: Real> PreparedPhotocell<R> {
     /// The response `(E/E₀)^γ` the light `light` settles the cell to, and its derivative
     /// with respect to the light.
+    ///
+    /// The light is held above zero as `(E + √(E² + d²)) / 2`, `d` the darkness, whose
+    /// slope is itself over `√(E² + d²)`. Below zero it is written `d² / (2 · (√(E² + d²) −
+    /// E))`, the same number without the cancellation that rounds it to zero past `d /
+    /// √(2u)`, 67 lux below, `u` half of `f64::EPSILON`, where the response's slope would
+    /// divide zero by zero.
     fn settled(&self, light: f64) -> (R, R) {
         let root = light.hypot(DARKNESS);
-        let lit = f64::midpoint(light, root);
-        let rounding = f64::midpoint(1.0, light / root);
+        let lit = if light >= 0.0 {
+            f64::midpoint(light, root)
+        } else {
+            DARKNESS * DARKNESS / (2.0 * (root - light))
+        };
         let response = (R::constant(lit) / self.reference).pow(self.gamma);
-        (response, response * self.gamma / lit * rounding)
+        (response, response * self.gamma / root)
     }
 }
 
@@ -257,6 +266,22 @@ mod tests {
         check(100.0, 1e-6 + 1e-4 * 10f64.powf(0.8));
         check(0.0, 1e-6);
         check(-5.0, 1e-6);
+    }
+
+    /// Far below zero, past 67 lux below, where the smoothed light once rounded to zero
+    /// and its response's slope divided zero by zero, the slope is finite.
+    #[test]
+    fn its_slope_is_finite_however_dark() {
+        let lagging = r#"{"resistance": 1e4, "response_time": 0.01}"#;
+        let mut bench = Bench::new::<Photocell>(lagging);
+        for light in [-100.0, -1e3, -1e300] {
+            let evaluation = bench.evaluate(&[1.0, 0.0, light, 0.0, 0.5]);
+            let slopes = &evaluation.conductance[4];
+            assert!(
+                slopes.iter().all(|slope| slope.is_finite()),
+                "at {light} lux"
+            );
+        }
     }
 
     #[test]

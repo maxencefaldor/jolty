@@ -662,7 +662,9 @@ _NMOS = devices.mosfet(
 )
 
 
-def _level_three(max_drift_velocity: Quantity | None) -> devices.Device:
+def _level_three(
+    max_drift_velocity: Quantity | None, saturation_field_factor: float = 0.4
+) -> devices.Device:
     """A level 3 n-channel with every effect of its law, and velocity saturation."""
     return devices.mosfet(
         level=3,
@@ -684,7 +686,7 @@ def _level_three(max_drift_velocity: Quantity | None) -> devices.Device:
         static_feedback=0.3,
         narrow_width_factor=0.5,
         mobility_modulation=0.08 / V,
-        saturation_field_factor=0.4,
+        saturation_field_factor=saturation_field_factor,
         max_drift_velocity=max_drift_velocity,
         fast_surface_state_density=5e15 / m**2,
         drain_resistance=15 * ohm,
@@ -722,12 +724,18 @@ def level_three_stage(c: Builder) -> None:
 
 
 @component
-def level_three_curves(c: Builder) -> None:
+def level_three_curves(
+    c: Builder,
+    max_drift_velocity: Quantity | None = None,
+    saturation_field_factor: float = 0.4,
+) -> None:
     ground = c.port("ground", Role.GROUND)
     bias = c.place(devices.voltage_source(1.5 * V), name="V1")
     drain = c.place(devices.voltage_source(0 * V), name="V2")
     body = c.place(devices.voltage_source(-1 * V), name="V3")
-    transistor = c.place(_level_three(None), name="M1")
+    transistor = c.place(
+        _level_three(max_drift_velocity, saturation_field_factor), name="M1"
+    )
     c.connect(bias.positive, transistor.gate, name="gate")
     c.connect(drain.positive, transistor.drain, name="drain")
     c.connect(body.positive, transistor.bulk, name="body")
@@ -1744,6 +1752,14 @@ def test_loop_gains_agree() -> None:
         (level_three_stage, "V1", linear(0 * V, 3 * V, 61)),
         (level_three_curves, "V2", linear(-3 * V, 5 * V, 81)),
         (level_three_curves, "V1", linear(-0.5 * V, 3 * V, 71)),
+        # `KAPPA=0`, read by ngspice as no channel shortening, with and without
+        # velocity saturation.
+        (lambda: level_three_curves(None, 0.0), "V2", linear(-3 * V, 5 * V, 81)),
+        (
+            lambda: level_three_curves(1.5e5 * m / s, 0.0),
+            "V2",
+            linear(-3 * V, 5 * V, 81),
+        ),
         (cmos_inverter, "V1", linear(0 * V, 3.3 * V, 67)),
         (n_power_curves, "V2", linear(-1 * V, 101 * V, 103)),
         (n_power_curves, "V1", linear(0 * V, 8 * V, 81)),
