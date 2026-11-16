@@ -285,7 +285,7 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
             stop: 2e-6,
             max_step: Some(2e-8),
             method,
-            times: vec![1.234_567e-7, 1.5e-6],
+            breakpoints: vec![1.234_567e-7, 1.5e-6],
             periodic: false,
         };
         let waveforms = simulator.transient(&transient, &tight()).unwrap();
@@ -334,7 +334,7 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
             assert!(found.currents[resistor] <= 3.0 / 1e3);
         }
         assert!(charging > 1e-4, "the capacitor charges: {charging}");
-        for time in transient.times {
+        for time in transient.breakpoints {
             assert!(
                 waveforms.times.contains(&time),
                 "{method:?} steps onto {time}"
@@ -583,7 +583,7 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         stop: 1e-8,
         max_step: Some(1e-10),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let waveforms = simulator.transient(&transient, &tight()).unwrap();
@@ -621,7 +621,7 @@ fn pulse() -> Transient {
         stop: 1e-6,
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
-        times: vec![2.5e-7],
+        breakpoints: vec![2.5e-7],
         periodic: false,
     }
 }

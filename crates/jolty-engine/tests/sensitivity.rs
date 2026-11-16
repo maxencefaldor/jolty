@@ -304,7 +304,7 @@ fn sensitivities_over_time_match_finite_differences() {
         stop: 2e-6,
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     });
     assert_matches(&rectifier(), &["a", "out"], &transient, 1e-4);
@@ -312,7 +312,7 @@ fn sensitivities_over_time_match_finite_differences() {
         stop: 2e-6,
         max_step: Some(1e-8),
         method: Method::Gear2,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     });
     assert_matches(&rectifier(), &["out"], &gear, 1e-4);
@@ -344,7 +344,7 @@ fn a_sensitivity_differentiates_no_periodic_steady_state() {
             stop: 1e-6,
             max_step: None,
             method: Method::Trapezoidal,
-            times: Vec::new(),
+            breakpoints: Vec::new(),
             periodic: true,
         }),
     };

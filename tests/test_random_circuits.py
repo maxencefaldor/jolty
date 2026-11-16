@@ -148,7 +148,7 @@ SHORTENED: Final = (4, 16, 64)
 def _jolty(simulation: Simulation, step: float, times: Real) -> Waveforms:
     """The waveforms jolty finds with `step` the longest, read at `times`."""
     plan = Transient(
-        stop=STOP * s, max_step=step * s, times=[time * s for time in times[1:]]
+        stop=STOP * s, max_step=step * s, breakpoints=[time * s for time in times[1:]]
     )
     waveforms = simulation.run(plan, TIGHT)
     taken = nearest(waveforms.times, times)

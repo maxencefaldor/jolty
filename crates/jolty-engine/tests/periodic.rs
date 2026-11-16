@@ -59,7 +59,7 @@ fn run_with(
         stop,
         max_step: Some(longest),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic,
     };
     match simulator.run(&Analysis::Transient(transient), options) {
@@ -286,7 +286,7 @@ fn a_periodic_steady_state_whose_matrices_would_fill_the_memory_fails_at_once() 
         stop: 1e-3,
         max_step: None,
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: true,
     };
     let options = Options {
@@ -324,7 +324,7 @@ fn a_circuit_with_logic_has_no_periodic_steady_state_here() {
         stop: 1e-6,
         max_step: None,
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: true,
     };
     let error = simulator

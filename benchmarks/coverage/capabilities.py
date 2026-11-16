@@ -441,7 +441,7 @@ def transient_fixture(key: str, name: str, method: Method) -> Fixture:
         for name, time in zip(names, STEP_TIMES, strict=True)
     }
     analysis = Transient(
-        6 * us, max_step=10 * ns, method=method, times=[t * s for t in STEP_TIMES]
+        6 * us, max_step=10 * ns, method=method, breakpoints=[t * s for t in STEP_TIMES]
     )
 
     def run() -> Values:
@@ -981,7 +981,9 @@ def sensitivities() -> list[Fixture]:
 
     def over_time() -> Values:
         built = circuit(rc_step())
-        analysis = Transient(6 * us, max_step=10 * ns, times=[t * s for t in times])
+        analysis = Transient(
+            6 * us, max_step=10 * ns, breakpoints=[t * s for t in times]
+        )
         found = simulation(built).run(Sensitivity(["out"], of=analysis), TIGHT)
         derivative = np.asarray(found.derivative("out", "R1", "resistance"))
         if not isinstance(found.result, results.TransientResult):
@@ -1049,7 +1051,7 @@ def transients() -> list[Fixture]:
     def periodic() -> Values:
         built = circuit(driven())
         analysis = Transient(
-            1 * us, max_step=1 * ns, times=[t * s for t in quarter], periodic=True
+            1 * us, max_step=1 * ns, breakpoints=[t * s for t in quarter], periodic=True
         )
         found = simulation(built).run(analysis, TIGHT)
         start = float(found.times[0])

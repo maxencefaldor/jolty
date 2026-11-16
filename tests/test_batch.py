@@ -82,7 +82,7 @@ TIMES = [step * 2.5 * us for step in range(1, 17)]
 """The times the transient steps onto, which the batch traces it at."""
 
 BODE = Ac("V1", decade(1 * Hz, 10 * MHz, 4))
-STEP = Transient(stop=40 * us, times=TIMES)
+STEP = Transient(stop=40 * us, breakpoints=TIMES)
 ANALYSES = {"op": OperatingPoint(), "bode": BODE, "step": STEP}
 
 MEASUREMENTS = (

@@ -177,15 +177,15 @@ class Ac(Recorded):
 class Transient(Recorded):
     """The response over time, from the operating point at zero until `stop`.
 
-    The analysis steps onto each of `times` exactly, besides the times it chooses. A
-    `periodic` transient simulates instead one period of the periodic steady state,
+    The analysis steps onto each of `breakpoints` exactly, besides the times it chooses.
+    A `periodic` transient simulates instead one period of the periodic steady state,
     `stop` the period of every source, found by shooting from the operating point.
     """
 
     stop: Quantity
     max_step: Quantity | None = None
     method: Method = "trapezoidal"
-    times: Sequence[Quantity] = ()
+    breakpoints: Sequence[Quantity] = ()
     periodic: bool = False
 
     def to_json(self) -> JsonValue:
@@ -194,9 +194,9 @@ class Transient(Recorded):
             "stop": self.stop.to(TIME, "a transient's stop time"),
             "method": self.method,
         }
-        if self.times:
-            transient["times"] = [
-                time.to(TIME, "a time to step onto") for time in self.times
+        if self.breakpoints:
+            transient["breakpoints"] = [
+                time.to(TIME, "a time to step onto") for time in self.breakpoints
             ]
         if self.max_step is not None:
             transient["max_step"] = self.max_step.to(TIME, "a transient's longest step")

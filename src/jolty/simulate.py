@@ -1363,7 +1363,7 @@ class _Planned:
             and name in planned.engine
             and (
                 isinstance(analysis, OperatingPoint | DcSweep | Ac)
-                or (isinstance(analysis, Transient) and analysis.times)
+                or (isinstance(analysis, Transient) and analysis.breakpoints)
             )
         ]
         return planned
@@ -1793,7 +1793,7 @@ def _points(analysis: Analysis) -> int:
             return len(levels)
         case Ac(frequencies=frequencies):
             return len(frequencies)
-        case Transient(times=times):
+        case Transient(breakpoints=times):
             return len(times)
     return 1
 
@@ -1808,7 +1808,7 @@ def _axis(analysis: Analysis, simulation: Simulation) -> results.Real:
             )
         case Ac(frequencies=frequencies):
             return np.array([each.to(FREQUENCY, "a frequency") for each in frequencies])
-        case Transient(times=times):
+        case Transient(breakpoints=times):
             return np.array([each.to(TIME, "a time to step onto") for each in times])
     return np.empty(0)
 
@@ -1836,7 +1836,9 @@ def _at(
         case results.DcSweepResult():
             _picked(result.values, result.unknowns, unknowns, found)
         case results.TransientResult() if isinstance(analysis, Transient):
-            times = [time.to(TIME, "a time to step onto") for time in analysis.times]
+            times = [
+                time.to(TIME, "a time to step onto") for time in analysis.breakpoints
+            ]
             rows = np.array(
                 [
                     [

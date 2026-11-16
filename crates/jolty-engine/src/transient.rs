@@ -57,7 +57,7 @@ pub struct Transient {
     /// Times, in seconds, the analysis steps onto exactly besides its own, without
     /// restarting its integration there; none by default.
     #[serde(default)]
-    pub times: Vec<f64>,
+    pub breakpoints: Vec<f64>,
     /// Whether to find the periodic steady state instead, `stop` the period of every
     /// source: one period from the state the circuit repeats, which shooting finds.
     #[serde(default)]
@@ -557,7 +557,7 @@ impl Simulator {
             )));
         }
         if let Some(time) = transient
-            .times
+            .breakpoints
             .iter()
             .find(|&&time| !(time > 0.0 && time <= transient.stop))
         {
@@ -634,7 +634,7 @@ impl Simulator {
             });
         }
         let mut held = width;
-        let mut observations = transient.times.clone();
+        let mut observations = transient.breakpoints.clone();
         observations.sort_by(f64::total_cmp);
         let (initial, strategy) = if let Some(start) = start {
             start

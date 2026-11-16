@@ -545,7 +545,7 @@ fn a_parallel_evaluation_of_a_star_of_linear_arms_is_the_serial_one_bit_for_bit(
         stop: 2e-6,
         max_step: None,
         method: crate::Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     })];
     let (waveforms, _) = outcomes(&circuit, &transient, &Options::default(), |_| {});

@@ -145,7 +145,7 @@ fn analyses() -> Vec<Analysis> {
         stop: 2e-3,
         max_step: Some(2e-5),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     vec![
@@ -362,7 +362,7 @@ fn what_an_analysis_records_changes_none_of_its_numbers() {
         stop: 2e-5,
         max_step: None,
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     });
     let plans = [
@@ -426,7 +426,7 @@ fn an_analysis_after_the_operating_point_again_factors_as_after_it_first() {
         stop: 2e-5,
         max_step: None,
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     });
     let circuit = buck();

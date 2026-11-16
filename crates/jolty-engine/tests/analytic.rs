@@ -597,7 +597,7 @@ fn rc_step_error(ramped: &Ramped, method: Method, options: &Options) -> (f64, us
         stop,
         max_step: None,
         method,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let waveforms = simulator
@@ -728,7 +728,7 @@ fn a_charge_settling_in_picoseconds_is_resolved_to_its_tolerance() {
         stop: 2e-3,
         max_step: None,
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let options = Options {
@@ -792,7 +792,7 @@ fn no_step_is_longer_than_the_longest_allowed() {
             stop: 2e-5,
             max_step: Some(longest),
             method: Method::Trapezoidal,
-            times: times.clone(),
+            breakpoints: times.clone(),
             periodic: false,
         };
         let waveforms = simulator(&circuit)
@@ -842,7 +842,7 @@ fn stepped(circuit: &Circuit, method: Method, step: f64, end: f64) -> (Vec<f64>,
         stop: end,
         max_step: Some(step),
         method,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let waveforms = simulator
@@ -981,7 +981,7 @@ fn an_lc_tank_rings_at_its_resonant_frequency() {
         stop: 5.0 * period,
         max_step: Some(period / 200.0),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let waveforms = simulator
@@ -1034,7 +1034,7 @@ fn a_sine_through_an_rc_settles_to_the_ac_amplitude() {
         stop: 20e-3,
         max_step: Some(1e-5),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let outcome = simulator
@@ -1086,7 +1086,7 @@ fn the_trapezoidal_formula_stops_ringing_after_a_corner() {
         stop: 5e-3,
         max_step: Some(1e-5),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let outcome = simulator
@@ -1176,7 +1176,7 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
             stop: 2e-3,
             max_step: None,
             method: Method::Trapezoidal,
-            times: Vec::new(),
+            breakpoints: Vec::new(),
             periodic: false,
         };
         let outcome = simulator
@@ -1345,7 +1345,7 @@ fn transient(
         stop,
         max_step: Some(stop / 100.0),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     simulator(circuit).run(&Analysis::Transient(transient), options)
@@ -1456,7 +1456,7 @@ fn a_transient_whose_results_would_fill_the_memory_fails_at_once() {
         stop: 1.0,
         max_step: Some(1e-12),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let error = simulator(&circuit)
@@ -1514,7 +1514,7 @@ fn a_transient_follows_a_source_that_only_its_transistor_holds() {
         stop: 2e-6,
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let outcome = simulator
@@ -1581,7 +1581,7 @@ fn a_transient_couples_an_edge_beside_a_node_at_a_hundred_megavolts() {
         stop: 2e-6,
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let outcome = simulator
@@ -1690,7 +1690,7 @@ fn a_gate_converges_as_its_supply_powers_up() {
         stop: 1e-6,
         max_step: Some(1e-9),
         method: Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     };
     let outcome = simulator(&circuit).run(&Analysis::Transient(transient), &Options::default());

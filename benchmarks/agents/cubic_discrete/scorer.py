@@ -116,7 +116,7 @@ def measure(made: Component, board: Board) -> dict[str, float]:
             Transient(
                 stop=duration * s,
                 max_step=duration / (10 * (TIMES - 1)) * s,
-                times=[time * s for time in times[1:]],
+                breakpoints=[time * s for time in times[1:]],
             )
         )
         output = TRANSRESISTANCE * np.interp(

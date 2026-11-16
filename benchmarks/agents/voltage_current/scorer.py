@@ -168,7 +168,7 @@ def measure(made: Component, board: Board) -> dict[str, float]:
             Transient(
                 stop=1 * s,
                 max_step=(1 / (10 * (TIMES - 1))) * s,
-                times=[time * s for time in times[1:]],
+                breakpoints=[time * s for time in times[1:]],
                 record=LOAD,
             ),
         )

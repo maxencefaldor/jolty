@@ -86,7 +86,7 @@ def plan():
         {
             "op": OperatingPoint(),
             "ac": Ac("V1", decade(1 * Hz, 10 * MHz, 3)),
-            "step": Transient(stop=5 * us, times=[1 * us, 4 * us]),
+            "step": Transient(stop=5 * us, breakpoints=[1 * us, 4 * us]),
         },
         corners={"hot": Corner(temperature=celsius(85)), "low": Corner(supply=4.5 * V)},
         monte_carlo=MonteCarlo(SAMPLES, seed=SEED),

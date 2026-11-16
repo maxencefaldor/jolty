@@ -377,7 +377,7 @@ impl Points {
             Analysis::OperatingPoint => Self::Point,
             Analysis::DcSweep(sweep) => Self::Levels(sweep.levels.len()),
             Analysis::Ac(response) => Self::Frequencies(response.frequencies.len()),
-            Analysis::Transient(transient) => Self::Times(transient.times.clone()),
+            Analysis::Transient(transient) => Self::Times(transient.breakpoints.clone()),
             _ => {
                 return Err(PyValueError::new_err(
                     "a batch traces unknowns along an operating point, a DC sweep, a \

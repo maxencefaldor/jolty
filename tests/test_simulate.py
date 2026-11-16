@@ -689,7 +689,9 @@ def test_a_simulation_finds_where_each_terminal_joins() -> None:
 def test_a_transient_steps_onto_the_times_it_is_given() -> None:
     simulation = Simulation(low_pass())
     times = [1.2345 * us, 3 * us]
-    waveforms = simulation.run(Transient(stop=5 * us, times=times, record=["C1", "R1"]))
+    waveforms = simulation.run(
+        Transient(stop=5 * us, breakpoints=times, record=["C1", "R1"])
+    )
     for time in times:
         assert time.value in waveforms.times
     capacitor = waveforms.current("C1", "a")
@@ -699,7 +701,7 @@ def test_a_transient_steps_onto_the_times_it_is_given() -> None:
         waveforms.charge("C1", "a"), 1e-9 * waveforms.voltage("out")
     )
     with pytest.raises(SimulationError, match="after 0 and at most the stop time"):
-        simulation.run(Transient(stop=5 * us, times=[6 * us]))
+        simulation.run(Transient(stop=5 * us, breakpoints=[6 * us]))
 
 
 @component

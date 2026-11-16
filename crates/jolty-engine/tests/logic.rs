@@ -75,7 +75,7 @@ fn transient(stop: f64) -> Transient {
         stop,
         max_step: None,
         method: jolty_engine::Method::Trapezoidal,
-        times: Vec::new(),
+        breakpoints: Vec::new(),
         periodic: false,
     }
 }

@@ -70,7 +70,7 @@ def _source(circuit: ir.Circuit) -> str:
 def _transient(simulation: Simulation, step: float) -> dict[str, Values]:
     """The waveform of every unknown with `step` the longest, read at `TIMES`."""
     plan = Transient(
-        stop=STOP * s, max_step=step * s, times=[time * s for time in TIMES[1:]]
+        stop=STOP * s, max_step=step * s, breakpoints=[time * s for time in TIMES[1:]]
     )
     waveforms = simulation.run(plan, TIGHT)
     taken = nearest(waveforms.times, TIMES)
