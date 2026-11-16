@@ -6,6 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kernel::dual::Dual;
 use crate::kernel::junction::{
     Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
     limit_junction,
@@ -258,7 +259,8 @@ impl Kernel for Diode {
     ) {
         let thermal = ("series thermal", prepared.temperature);
         shape.series.noise(prepared.series, thermal, sources);
-        let (current, _) = prepared.junction.current(shape.junction.voltage(at));
+        let voltage = Dual::<R, 0>::number(shape.junction.voltage(at));
+        let current = prepared.junction.current(voltage).value;
         let nodes = shape.junction.equations();
         sources.push(NoiseSource::shot("shot", nodes, current.value()));
         prepared.flicker.add(nodes, current.value(), sources);
@@ -381,20 +383,18 @@ impl<R: Real> Junction<R> {
 
         // Evaluate at the limited voltage and extend linearly to the applied one, so the
         // Newton step that follows solves the circuit linearized at the limited voltage.
-        let (current, conductance) = self.current(voltage);
-        let total_conductance = conductance + at.gmin;
-        let total_current = current + at.gmin * voltage;
-        pair.add_current(
-            stamp,
-            total_current + total_conductance * (applied - voltage),
-        );
-        pair.add_conductance(stamp, total_conductance);
+        let beyond = [applied - voltage];
+        let [voltage] = Dual::variables([voltage]);
+        let current = self.current(voltage);
+        let total = current + voltage * at.gmin;
+        let [conductance] = total.gradient;
+        pair.add_current(stamp, total.extend(beyond));
+        pair.add_conductance(stamp, conductance);
 
-        let (depletion_charge, depletion_capacitance) =
-            depletion_charge(self.depletion.as_ref(), voltage);
-        let charge = depletion_charge + transit_time * current;
-        let capacitance = depletion_capacitance + transit_time * conductance;
-        pair.add_charge(stamp, charge + capacitance * (applied - voltage));
+        let charge =
+            depletion_charge(self.depletion.as_ref(), voltage) + current.scale(transit_time);
+        let [capacitance] = charge.gradient;
+        pair.add_charge(stamp, charge.extend(beyond));
         pair.add_capacitance(stamp, capacitance);
         capacitance
     }
@@ -420,17 +420,17 @@ impl<R: Real> Junction<R> {
         }
     }
 
-    /// The junction's current at `voltage`, and its derivative.
-    pub(crate) fn current(&self, voltage: f64) -> (R, R) {
+    /// The junction's current, with its derivatives, at `voltage`.
+    pub(crate) fn current<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
+        let at = voltage.value.value();
         match self.breakdown {
             Some(breakdown)
-                if voltage < -3.0 * self.slope.value() && voltage < -breakdown.voltage.value() =>
+                if at < -3.0 * self.slope.value() && at < -breakdown.voltage.value() =>
             {
-                let exponential = (-(breakdown.voltage + voltage) / breakdown.slope).exp();
-                (
-                    -self.saturation_current * exponential,
-                    self.saturation_current * exponential / breakdown.slope,
-                )
+                -(-voltage.plus(breakdown.voltage))
+                    .divide(breakdown.slope)
+                    .exp()
+                    .scale(self.saturation_current)
             }
             _ => junction_current(voltage, self.saturation_current, self.slope),
         }

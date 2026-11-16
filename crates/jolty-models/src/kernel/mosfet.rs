@@ -648,14 +648,10 @@ impl<R: Real> BulkJunction<R> {
     /// The junction's current, with `gmin` across it, and its charge, at `voltage`, the
     /// voltage across it.
     fn evaluate(&self, voltage: Dual<R, 1>, gmin: f64) -> (Dual<R, 1>, Dual<R, 1>) {
-        let at = voltage.value.value();
-        let current = voltage.chain(junction_current(
-            at,
-            self.saturation_current,
-            self.thermal_voltage,
-        )) + voltage * gmin;
-        let charge = voltage.chain(depletion_charge(self.bottom.as_ref(), at))
-            + voltage.chain(depletion_charge(self.sidewall.as_ref(), at));
+        let current = junction_current(voltage, self.saturation_current, self.thermal_voltage)
+            + voltage * gmin;
+        let charge = depletion_charge(self.bottom.as_ref(), voltage)
+            + depletion_charge(self.sidewall.as_ref(), voltage);
         (current, charge)
     }
 }

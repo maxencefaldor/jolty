@@ -10,6 +10,7 @@
 //! Copyright 1985 - 2018, Regents of the University of California and others. Used under
 //! ngspice's Modified BSD license, which the repository's `NOTICE` reproduces.
 
+use crate::kernel::dual::Dual;
 use crate::{ParameterError, Real};
 
 /// The Boltzmann constant, in joules per kelvin.
@@ -137,27 +138,40 @@ fn potential_shift<R: Real>(temperature: R) -> R {
         * ((temperature / REFERENCE_TEMPERATURE).ln() * 1.5 + gap * ELEMENTARY_CHARGE)
 }
 
-/// The current through a junction at `voltage`, and its derivative, with `saturation`
+/// The current through a junction at `voltage`, with its derivatives, of `saturation`
 /// current and exponential `slope` (the emission coefficient times the thermal voltage).
 ///
 /// Forward and slightly reversed, the current is `Is · (e^{v / slope} − 1)`. Below three
 /// slopes of reverse bias it follows SPICE's form, `−Is · (1 + (3·slope / (e·v))³)`, which
 /// joins the exponential with its slope and settles on `−Is`.
-pub(crate) fn junction_current<R: Real>(voltage: f64, saturation: R, slope: R) -> (R, R) {
-    if voltage >= -(slope.value() * 3.0) {
-        let exponential = (R::constant(voltage) / slope).exp();
-        (
-            saturation * (exponential - 1.0),
-            saturation * exponential / slope,
-        )
+pub(crate) fn junction_current<R: Real, const N: usize>(
+    voltage: Dual<R, N>,
+    saturation: R,
+    slope: R,
+) -> Dual<R, N> {
+    if voltage.value.value() >= -(slope.value() * 3.0) {
+        (voltage.divide(slope).exp() - 1.0).scale(saturation)
     } else {
-        let ratio = slope * 3.0 / (voltage * std::f64::consts::E);
+        let ratio = Dual::constant(slope * 3.0) / (voltage * std::f64::consts::E);
         let cube = ratio * ratio * ratio;
-        (
-            -saturation * (cube + 1.0),
-            saturation * 3.0 * cube / voltage,
-        )
+        -(cube + 1.0).scale(saturation)
     }
+}
+
+/// The current through a junction at `voltage` and its derivative, as [`junction_current`]
+/// computes them, for the kernels that still write their own derivatives by hand, the
+/// JFET's and the bipolar transistor's.
+pub(crate) fn junction_current_with_slope<R: Real>(
+    voltage: f64,
+    saturation: R,
+    slope: R,
+) -> (R, R) {
+    let [voltage] = Dual::variables([voltage]);
+    let Dual {
+        value,
+        gradient: [derivative],
+    } = junction_current(voltage, saturation, slope);
+    (value, derivative)
 }
 
 /// The voltage above which a junction's steps are limited: where its current's curvature
@@ -281,18 +295,28 @@ pub(crate) fn limit_drain(new: f64, old: f64) -> Option<f64> {
 
 /// The depletion charge of a junction: the classic power law below `threshold`, extended
 /// linearly in capacitance above it, where the power law would diverge.
+///
+/// With zero-bias capacitance `C`, built-in potential `φ`, grading coefficient `m` and
+/// depletion coefficient `fc`, the charge is `C · φ · (1 − (1 − v / φ)^{1 − m}) / (1 − m)`
+/// below `fc · φ`, and above it the charge there plus
+/// `C · ((1 − fc · (1 + m)) · (v − fc · φ) + m / (2φ) · (v² − (fc · φ)²)) / (1 − fc)^{1 + m}`.
+/// The factors that do not depend on `v` are prepared once.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Depletion<R: Real = f64> {
-    capacitance: R,
-    potential: R,
-    grading: R,
+    /// `1 / φ`.
+    inverse_potential: R,
+    /// `−m`.
+    exponent: R,
+    /// `C · φ / (1 − m)`.
+    scale: R,
+    /// `fc · φ`.
     threshold: R,
-    /// The charge at the threshold, divided by the zero-bias capacitance.
-    charge_at_threshold: R,
-    /// `(1 − fc)^{1 + m}`.
-    divisor: R,
-    /// `1 − fc · (1 + m)`.
-    offset: R,
+    /// The charge at the threshold.
+    at_threshold: R,
+    /// `C · (1 − fc · (1 + m)) / (1 − fc)^{1 + m}`.
+    linear: R,
+    /// `C · m / (2φ · (1 − fc)^{1 + m})`.
+    quadratic: R,
 }
 
 impl<R: Real> Depletion<R> {
@@ -300,42 +324,32 @@ impl<R: Real> Depletion<R> {
     /// `grading` coefficient and depletion `coefficient`, the fraction of the potential
     /// above which the capacitance is extended linearly; `None` without capacitance.
     pub(crate) fn new(capacitance: R, potential: R, grading: R, coefficient: R) -> Option<Self> {
-        (capacitance.value() > 0.0).then(|| Self {
-            capacitance,
-            potential,
-            grading,
-            threshold: coefficient * potential,
-            charge_at_threshold: potential * -((-(coefficient - 1.0)).pow(-(grading - 1.0)) - 1.0)
-                / -(grading - 1.0),
-            divisor: (-(coefficient - 1.0)).pow(grading + 1.0),
-            offset: -(coefficient * (grading + 1.0) - 1.0),
+        (capacitance.value() > 0.0).then(|| {
+            let remaining = -(coefficient - 1.0);
+            let scale = capacitance * potential / -(grading - 1.0);
+            let divisor = remaining.pow(grading + 1.0);
+            Self {
+                inverse_potential: potential.recip(),
+                exponent: -grading,
+                scale,
+                threshold: coefficient * potential,
+                at_threshold: scale * -(remaining.pow(-(grading - 1.0)) - 1.0),
+                linear: capacitance * -(coefficient * (grading + 1.0) - 1.0) / divisor,
+                quadratic: capacitance * grading / (potential * 2.0 * divisor),
+            }
         })
     }
 
-    /// The charge and capacitance at junction voltage `voltage`.
-    pub(crate) fn evaluate(&self, voltage: f64) -> (R, R) {
-        let Self {
-            capacitance,
-            potential,
-            grading,
-            threshold,
-            ..
-        } = *self;
-        if voltage < threshold.value() {
-            let remaining = -(R::constant(voltage) / potential - 1.0);
-            let factor = remaining.pow(-grading);
-            let charge = capacitance * potential * -(remaining * factor - 1.0) / -(grading - 1.0);
-            (charge, capacitance * factor)
+    /// The charge, with its derivatives, at junction voltage `voltage`.
+    pub(crate) fn evaluate<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
+        let threshold = self.threshold;
+        if voltage.value.value() < threshold.value() {
+            let remaining = -(voltage.scale(self.inverse_potential) - 1.0);
+            (-(remaining * remaining.pow(self.exponent) - 1.0)).scale(self.scale)
         } else {
-            let above = -(threshold - voltage);
-            let square = -(threshold * threshold - voltage * voltage);
-            let charge = capacitance
-                * (self.charge_at_threshold
-                    + (self.offset * above + grading / (potential * 2.0) * square) / self.divisor);
-            (
-                charge,
-                capacitance / self.divisor * (self.offset + grading * voltage / potential),
-            )
+            let above = voltage.plus(-threshold);
+            let square = (voltage * voltage).plus(-(threshold * threshold));
+            (above.scale(self.linear) + square.scale(self.quadratic)).plus(self.at_threshold)
         }
     }
 }
@@ -356,10 +370,28 @@ pub(crate) fn below_one<R: Real>(parameter: &str, value: R) -> Result<R, Paramet
     }
 }
 
-/// The charge and capacitance of an optional depletion at `voltage`, zero without one.
-pub(crate) fn depletion_charge<R: Real>(depletion: Option<&Depletion<R>>, voltage: f64) -> (R, R) {
-    let zero = R::constant(0.0);
-    depletion.map_or((zero, zero), |depletion| depletion.evaluate(voltage))
+/// The charge, with its derivatives, of an optional depletion at `voltage`, zero without
+/// one.
+pub(crate) fn depletion_charge<R: Real, const N: usize>(
+    depletion: Option<&Depletion<R>>,
+    voltage: Dual<R, N>,
+) -> Dual<R, N> {
+    depletion.map_or(Dual::number(0.0), |depletion| depletion.evaluate(voltage))
+}
+
+/// The charge of an optional depletion at `voltage` and its capacitance, as
+/// [`depletion_charge`] computes them, for the kernels that still write their own
+/// derivatives by hand, the JFET's and the bipolar transistor's.
+pub(crate) fn depletion_charge_with_capacitance<R: Real>(
+    depletion: Option<&Depletion<R>>,
+    voltage: f64,
+) -> (R, R) {
+    let [voltage] = Dual::variables([voltage]);
+    let Dual {
+        value,
+        gradient: [capacitance],
+    } = depletion_charge(depletion, voltage);
+    (value, capacitance)
 }
 
 #[cfg(test)]
@@ -375,13 +407,14 @@ mod tests {
             voltage in -10.0..0.8f64,
         ) {
             let slope = 1.5 * thermal_voltage(REFERENCE_TEMPERATURE);
-            let (current, conductance) = junction_current(voltage, 1e-12, slope);
+            let current = |voltage| junction_current(Dual::<f64, 1>::number(voltage), 1e-12, slope);
+            let [at] = Dual::variables([voltage]);
+            let Dual { value, gradient: [conductance] } = junction_current(at, 1e-12, slope);
             let step = 1e-7;
-            let above = junction_current(voltage + step, 1e-12, slope).0;
-            let below = junction_current(voltage - step, 1e-12, slope).0;
-            let numeric = (above - below) / (2.0 * step);
+            let numeric = (current(voltage + step).value - current(voltage - step).value)
+                / (2.0 * step);
             prop_assert!((numeric - conductance).abs() <= 1e-6 * conductance.abs() + 1e-18);
-            prop_assert!(current >= -1e-12 * (1.0 + 1e-9));
+            prop_assert!(value >= -1e-12 * (1.0 + 1e-9));
         }
 
         /// A limited step is finite, and a forward junction step, any gate step, and any
@@ -413,8 +446,16 @@ mod tests {
     fn the_reverse_form_meets_the_exponential_at_three_slopes() {
         let slope = thermal_voltage(REFERENCE_TEMPERATURE);
         let boundary = -3.0 * slope;
-        let (exponential, exponential_slope) = junction_current(boundary, 1e-14, slope);
-        let (cubic, cubic_slope) = junction_current(boundary - 1e-15, 1e-14, slope);
+        let current = |voltage| {
+            let [voltage] = Dual::<f64, 1>::variables([voltage]);
+            let Dual {
+                value,
+                gradient: [slope],
+            } = junction_current(voltage, 1e-14, slope);
+            (value, slope)
+        };
+        let (exponential, exponential_slope) = current(boundary);
+        let (cubic, cubic_slope) = current(boundary - 1e-15);
         assert!((exponential - cubic).abs() < 1e-24);
         assert!((exponential_slope / cubic_slope - 1.0).abs() < 1e-9);
     }
