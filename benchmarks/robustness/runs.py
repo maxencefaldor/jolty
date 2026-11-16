@@ -313,7 +313,7 @@ def _judged(
     fixture: Fixture,
     vectors: Mapping[str, str],
     printed: str,
-    plots: tuple[ngspice.Raw, ...],
+    plots: tuple[ngspice.Result, ...],
     seconds: float,
 ) -> FixtureRun:
     """What ngspice found of `fixture`, from what it `printed` and its `plots`."""

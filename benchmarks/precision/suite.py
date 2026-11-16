@@ -305,7 +305,7 @@ def run_ngspice(
 
 
 def _spice_found(
-    raw: ngspice.Raw, analysis: object, vectors: Mapping[str, str]
+    raw: ngspice.Result, analysis: object, vectors: Mapping[str, str]
 ) -> Found:
     """What ngspice's plot holds of the vectors a fixture reads, at its points."""
     match analysis:

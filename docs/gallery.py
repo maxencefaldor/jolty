@@ -288,17 +288,17 @@ def _commands(
 
 def _run(
     lines: list[str], commands: list[str], option: str, kelvins: float
-) -> tuple[ngspice.Raw | None, bool]:
+) -> tuple[ngspice.Result | None, bool]:
     """What ngspice finds of `commands`, merged along their axis, and if it loosened.
 
     A transient that stops before its end, or a run that fails, runs again with
     ngspice's default tolerances, and loosened says so; none when that fails too.
     """
-    raws: list[ngspice.Raw] = []
+    raws: list[ngspice.Result] = []
     loosened = False
     tight = f"{ngspice.OPTIONS}\n{option}" if option else ngspice.OPTIONS
     for command in commands:
-        raw: ngspice.Raw | None
+        raw: ngspice.Result | None
         try:
             raw = ngspice.run(lines, command, options=tight, temperature=kelvins)
         except JoltyError:
@@ -321,7 +321,7 @@ def _run(
     }
     order = np.argsort(merged[axis].real)
     return (
-        ngspice.Raw(
+        ngspice.Result(
             raws[0].plot,
             {name: values[order] for name, values in merged.items()},
             "".join(raw.printed for raw in raws),
@@ -341,7 +341,7 @@ def _element(circuit: ir.Circuit, path: str) -> str:
 
 
 def _from_raw(
-    raw: ngspice.Raw, circuit: ir.Circuit, unknowns: tuple[results.Unknown, ...]
+    raw: ngspice.Result, circuit: ir.Circuit, unknowns: tuple[results.Unknown, ...]
 ) -> tuple[np.ndarray, list[int]]:
     """Each jolty unknown's ngspice vector, and the columns both engines report.
 
@@ -361,7 +361,7 @@ def _from_raw(
     return table, shared
 
 
-def _stopped_early(raw: ngspice.Raw, command: str) -> bool:
+def _stopped_early(raw: ngspice.Result, command: str) -> bool:
     """Whether a transient stopped before the end its `command` asks for."""
     if not command.startswith("tran"):
         return False
@@ -448,7 +448,7 @@ def _replicate(
 
 
 def _result(
-    jolty: results.AnalysisResult, raw: ngspice.Raw, table: np.ndarray
+    jolty: results.AnalysisResult, raw: ngspice.Result, table: np.ndarray
 ) -> results.AnalysisResult:
     """The results ngspice found, as jolty's, on the same unknowns."""
     match jolty:

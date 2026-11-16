@@ -148,7 +148,7 @@ class Ngspice:
         lines: list[str],
         analyses: Sequence[str],
         **running: Unpack[ngspice.Running],
-    ) -> tuple[ngspice.Raw, ...]:
+    ) -> tuple[ngspice.Result, ...]:
         """The plot of each of `analyses`, run in turn in one ngspice.
 
         They run by `jolty.spice.ngspice.runs`, its solver's options after the options

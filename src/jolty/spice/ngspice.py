@@ -80,7 +80,7 @@ def same_kelvins(temperature: float) -> float:
 
 
 @dataclass(frozen=True)
-class Raw:
+class Result:
     """The vectors of one ngspice analysis, by lowercase name.
 
     It keeps what ngspice printed while it ran the deck the analysis is of.
@@ -233,7 +233,7 @@ def run(
     lines: list[str],
     analysis: str,
     **running: Unpack[Running],
-) -> Raw:
+) -> Result:
     """Runs one analysis command in ngspice and reads the raw file it writes.
 
     ngspice runs as [`runs`][jolty.spice.ngspice.runs] says.
@@ -249,7 +249,7 @@ def runs(
     lines: list[str],
     analyses: Sequence[str],
     **running: Unpack[Running],
-) -> tuple[Raw, ...]:
+) -> tuple[Result, ...]:
     """Runs analysis commands in turn in one ngspice, and reads the plot each writes.
 
     ngspice includes the `libraries`, reads the `sections` of others, and reads them
@@ -313,7 +313,7 @@ def runs(
     return found
 
 
-def read(text: str, printed: str = "") -> tuple[Raw, ...]:
+def read(text: str, printed: str = "") -> tuple[Result, ...]:
     """Each plot of the ASCII raw file `text`, with what ngspice `printed` as it ran.
 
     A plot begins at its title; ngspice writes one per ``write`` of a deck whose
@@ -323,7 +323,7 @@ def read(text: str, printed: str = "") -> tuple[Raw, ...]:
     return tuple(_read_raw(plot, printed) for plot in plots if plot.strip())
 
 
-def _read_raw(text: str, printed: str) -> Raw:
+def _read_raw(text: str, printed: str) -> Result:
     header, values = text.split("Values:\n")
     names = []
     plot = ""
@@ -342,7 +342,7 @@ def _read_raw(text: str, printed: str) -> Raw:
         if not token.isdigit()
     ]
     table = np.array(numbers).reshape(-1, len(names))
-    return Raw(
+    return Result(
         plot,
         {name: table[:, column] for column, name in enumerate(names)},
         printed,

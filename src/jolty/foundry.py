@@ -144,7 +144,7 @@ class _Deck:
             running,
         )
 
-    def runs(self, commands: Sequence[str]) -> tuple[ngspice.Raw, ...]:
+    def runs(self, commands: Sequence[str]) -> tuple[ngspice.Result, ...]:
         """The plot of each of `commands`, run in turn in one ngspice."""
         return ngspice.runs(self.lines, commands, **self.running)
 
@@ -184,7 +184,7 @@ class _Deck:
         )
         raise SimulationError(message)
 
-    def operating_point(self, raw: ngspice.Raw) -> results.OperatingPointResult:
+    def operating_point(self, raw: ngspice.Result) -> results.OperatingPointResult:
         return results.OperatingPointResult(
             unknowns=self.unknowns(),
             values=_table(raw, self.read)[0],
@@ -305,7 +305,7 @@ class _Deck:
         return f"v({','.join(vector[2:-1] for vector in vectors)})"
 
     def contributions(
-        self, spectra: Sequence[ngspice.Raw]
+        self, spectra: Sequence[ngspice.Result]
     ) -> tuple[tuple[results.NoiseSource, ...], results.Real]:
         """Each device's sources of noise that add any, and what each adds.
 
@@ -446,7 +446,7 @@ def _options(options: Options, analysis: Analysis) -> str:
 
 
 def _table(
-    raw: ngspice.Raw, read: Sequence[tuple[results.Unknown, str]]
+    raw: ngspice.Result, read: Sequence[tuple[results.Unknown, str]]
 ) -> results.Real:
     """The real values of each of `read`'s vectors, a column each."""
     return np.column_stack([raw.real(vector) for _, vector in read]).reshape(
