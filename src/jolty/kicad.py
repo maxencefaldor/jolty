@@ -91,7 +91,7 @@ class Footprint(_Model):
         part = self.part
         if part.kind is not None and part.value is not None:
             return format_si(part.value, catalog.SYMBOLS[part.kind])
-        return part.number or ""
+        return part.part_number or ""
 
 
 class Netlist(_Model):
@@ -350,7 +350,7 @@ def _field(name: str, value: str) -> _List:
 
 
 def _component(footprint: Footprint) -> _List:
-    number = footprint.part.number
+    number = footprint.part.part_number
     fields = (_field("MPN", number),) if number is not None else ()
     return _List(
         "comp",

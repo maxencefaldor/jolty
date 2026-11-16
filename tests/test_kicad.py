@@ -48,28 +48,28 @@ PARTS = Catalog(
             footprint="Capacitor_SMD:C_0603_1608Metric",
         ),
         Part(
-            number="2N3904",
+            part_number="2N3904",
             price=0.12,
             package="TO-92",
             footprint="Package_TO_SOT_THT:TO-92_Inline",
             pins={"emitter": ("1",), "base": ("2",), "collector": ("3",)},
         ),
         Part(
-            number="1N4148",
+            part_number="1N4148",
             price=0.02,
             package="DO-35",
             footprint="Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal",
             pins={"cathode": ("1",), "anode": ("2",)},
         ),
         Part(
-            number="IRF511",
+            part_number="IRF511",
             price=1.1,
             package="TO-220AB",
             footprint="Package_TO_SOT_THT:TO-220-3_Vertical",
             pins={"gate": ("1",), "drain": ("2",), "source": ("3",)},
         ),
         Part(
-            number="2N7000",
+            part_number="2N7000",
             price=0.1,
             package="TO-92",
             footprint="Package_TO_SOT_THT:TO-92_Inline",
@@ -247,7 +247,7 @@ def flawed(c: Builder) -> None:
 
 
 def test_every_problem_keeping_an_instance_off_the_board_is_named() -> None:
-    flawless = {part.number: part for part in PARTS.parts}
+    flawless = {part.part_number: part for part in PARTS.parts}
     catalog = Catalog(
         currency="USD",
         parts=(
@@ -298,12 +298,12 @@ def test_a_component_is_written_from_a_ground_port_and_by_its_path() -> None:
 
 def test_a_part_states_its_footprint_and_its_pins() -> None:
     with pytest.raises(ValueError, match="should match pattern"):
-        Part(number="2N3904", price=0.1, footprint="TO-92_Inline")
+        Part(part_number="2N3904", price=0.1, footprint="TO-92_Inline")
     with pytest.raises(ValueError, match="give collector a pad twice"):
-        Part(number="2N3904", price=0.1, pins={"collector": ("3", "3")})
+        Part(part_number="2N3904", price=0.1, pins={"collector": ("3", "3")})
     with pytest.raises(ValueError, match="at least 1 character"):
-        Part(number="2N3904", price=0.1, pins={"collector": ("",)})
-    padless = Part(number="LDR1", price=0.1, pins={"a": ("1",), "light": ()})
+        Part(part_number="2N3904", price=0.1, pins={"collector": ("",)})
+    padless = Part(part_number="LDR1", price=0.1, pins={"a": ("1",), "light": ()})
     assert padless.pins == {"a": ("1",), "light": ()}
     assert json.loads(PARTS.parts[3].model_dump_json())["pins"] == {
         "emitter": ["1"],

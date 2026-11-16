@@ -154,9 +154,9 @@ class Part(_Model):
         description="Its relative tolerance, such as 0.01 for 1 %.",
     )
     price: float = Field(ge=0, description="Its unit price, in the catalog's currency.")
-    number: ir.PartNumber | None = Field(
+    part_number: ir.PartNumber | None = Field(
         default=None,
-        exclude_if=lambda number: number is None,
+        exclude_if=lambda part_number: part_number is None,
         description="Its maker's part number.",
     )
     package: str | None = Field(
@@ -190,8 +190,8 @@ class Part(_Model):
         ):
             message = "a part states its kind, value and tolerance together"
             raise ValueError(message)
-        if self.kind is None and self.number is None:
-            message = "a part states a kind, value and tolerance, or a number"
+        if self.kind is None and self.part_number is None:
+            message = "a part states a kind, value and tolerance, or a part number"
             raise ValueError(message)
         for terminal, pads in (self.pins or {}).items():
             if len(set(pads)) < len(pads):
@@ -212,8 +212,8 @@ class Part(_Model):
                 f"{self.kind} of {format_si(self.value, SYMBOLS[self.kind])} "
                 f"within {self.tolerance:.6g}"
             )
-        if self.number is not None:
-            said.append(self.number)
+        if self.part_number is not None:
+            said.append(self.part_number)
         if self.package is not None:
             said.append(f"in {self.package}")
         if self.lifecycle == "not-recommended":
@@ -225,7 +225,7 @@ class Catalog(_Model):
     """The parts a circuit can be built from, priced in one currency."""
 
     format: Literal["jolty-catalog"] = "jolty-catalog"
-    version: Literal[2] = 2
+    version: Literal[3] = 3
     currency: str = Field(description="The currency of every price, such as USD.")
     parts: tuple[Part, ...]
 
@@ -437,7 +437,7 @@ def _numbered(catalog: Catalog, instance: ir.Instance, number: str) -> Part | st
     A part that states a device builds only an instance of that device, of its value,
     and within the instance's tolerance if it states one.
     """
-    numbered = [part for part in catalog.parts if part.number == number]
+    numbered = [part for part in catalog.parts if part.part_number == number]
     if not numbered:
         return f"no part numbered {number} is in the catalog"
     fitting = [part for part in numbered if _fits(part, instance)]

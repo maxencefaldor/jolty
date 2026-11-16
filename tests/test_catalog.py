@@ -18,7 +18,9 @@ CATALOG = Catalog(
         Part(kind="resistor", value=1e3, tolerance=0.001, price=0.08),
         Part(kind="resistor", value=1e3, tolerance=0.05, price=0.005),
         Part(kind="resistor", value=4.7e3, tolerance=0.01, price=0.01),
-        Part(kind="capacitor", value=1e-9, tolerance=0.1, price=0.02, number="C1N"),
+        Part(
+            kind="capacitor", value=1e-9, tolerance=0.1, price=0.02, part_number="C1N"
+        ),
     ),
 )
 
@@ -132,16 +134,16 @@ def test_a_part_from_a_lot_stays_unpriced() -> None:
 NUMBERED = Catalog(
     currency="USD",
     parts=(
-        Part(number="2N3904", price=0.12, package="TO-92"),
-        Part(number="2N3904", price=0.02, package="TO-92", lifecycle="obsolete"),
-        Part(number="IRF511", price=1.1, package="TO-220AB"),
-        Part(number="1N4148", price=0.01, lifecycle="obsolete"),
+        Part(part_number="2N3904", price=0.12, package="TO-92"),
+        Part(part_number="2N3904", price=0.02, package="TO-92", lifecycle="obsolete"),
+        Part(part_number="IRF511", price=1.1, package="TO-220AB"),
+        Part(part_number="1N4148", price=0.01, lifecycle="obsolete"),
         Part(
             kind="resistor",
             value=1e3,
             tolerance=0.01,
             price=0.003,
-            number="RC0603FR-071KL",
+            part_number="RC0603FR-071KL",
             package="0603",
             lifecycle="not-recommended",
         ),
@@ -238,13 +240,13 @@ def test_an_obsolete_part_of_a_value_is_no_part_of_it() -> None:
 def test_a_part_states_a_value_or_a_number() -> None:
     with pytest.raises(ValueError, match="kind, value and tolerance together"):
         Part(kind="resistor", value=1e3, price=0.01)
-    with pytest.raises(ValueError, match="or a number"):
+    with pytest.raises(ValueError, match="or a part number"):
         Part(price=0.01)
     with pytest.raises(ValueError, match="neither empty nor spaced"):
-        Part(number=" 2N3904", price=0.01)
+        Part(part_number=" 2N3904", price=0.01)
     assert json.loads(NUMBERED.parts[0].model_dump_json()) == {
         "price": 0.12,
-        "number": "2N3904",
+        "part_number": "2N3904",
         "package": "TO-92",
     }
 

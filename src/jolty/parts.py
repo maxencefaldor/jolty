@@ -193,7 +193,7 @@ class Datasheet:
     25 °C, and the junction's temperature.
     """
 
-    number: str
+    part_number: str
     """The maker's part number."""
     channel: Literal["n", "p"]
     threshold: float
@@ -233,7 +233,7 @@ class Datasheet:
 
 
 IRF511: Final = Datasheet(
-    number="IRF511",
+    part_number="IRF511",
     channel="n",
     threshold=3.0,
     on_resistance=0.4,
@@ -256,7 +256,7 @@ IRF511: Final = Datasheet(
 """80 V, 5.6 A, n-channel: Harris's IRF510-IRF513 datasheet, gfs Vishay's IRF510's."""
 
 IRF9230: Final = Datasheet(
-    number="IRF9230",
+    part_number="IRF9230",
     channel="p",
     threshold=3.0,
     on_resistance=0.5,
@@ -279,7 +279,7 @@ IRF9230: Final = Datasheet(
 """200 V, 6.5 A, p-channel: Intersil's IRF9230-IRF9233 datasheet; diode drop its max."""
 
 IRFZ44: Final = Datasheet(
-    number="IRFZ44",
+    part_number="IRFZ44",
     channel="n",
     threshold=3.0,
     on_resistance=0.028,
@@ -302,7 +302,7 @@ IRFZ44: Final = Datasheet(
 """60 V, 50 A, n-channel: Vishay's IRFZ44 datasheet; on-resistance and drop its max."""
 
 MTP50P03HDL: Final = Datasheet(
-    number="MTP50P03HDL",
+    part_number="MTP50P03HDL",
     channel="p",
     threshold=1.5,
     on_resistance=0.020,
@@ -384,7 +384,7 @@ def power_mosfet(sheet: Datasheet, *, heated: bool = False) -> Component:
     gate_source = sheet.gate_source_voltage * V
     return (
         fitted_mosfet(sheet, heated=heated)
-        .numbered(sheet.number)
+        .numbered(sheet.part_number)
         .rated(
             "voltage",
             drain_source if n else None,
