@@ -307,7 +307,6 @@ fn sensitivities_over_time_match_finite_differences() {
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     });
@@ -317,7 +316,6 @@ fn sensitivities_over_time_match_finite_differences() {
         max_step: Some(1e-8),
         method: Method::Gear2,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     });
@@ -337,30 +335,4 @@ fn a_sensitivity_names_unknowns_that_exist() {
         .sensitivity(&sensitivity, &Options::default())
         .unwrap_err();
     assert_eq!(error, SimulationError::UnknownOutput("nowhere".to_owned()));
-}
-
-#[test]
-fn a_sensitivity_differentiates_no_periodic_steady_state() {
-    let circuit = circuit_of(&rectifier());
-    let mut simulator =
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default()).unwrap();
-    let sensitivity = Sensitivity {
-        outputs: vec!["out".to_owned()],
-        of: Differentiated::Transient(Transient {
-            stop: 1e-6,
-            max_step: None,
-            method: Method::Trapezoidal,
-            breakpoints: Vec::new(),
-            periodic: true,
-            initial_conditions: BTreeMap::new(),
-            operating_point: true,
-        }),
-    };
-    let error = simulator
-        .sensitivity(&sensitivity, &Options::default())
-        .unwrap_err();
-    assert!(
-        matches!(error, SimulationError::InvalidAnalysis(_)),
-        "{error}"
-    );
 }

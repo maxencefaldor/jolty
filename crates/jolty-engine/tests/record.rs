@@ -287,7 +287,6 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
             max_step: Some(2e-8),
             method,
             breakpoints: vec![1.234_567e-7, 1.5e-6],
-            periodic: false,
             initial_conditions: BTreeMap::new(),
             operating_point: true,
         };
@@ -594,7 +593,6 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         max_step: Some(1e-10),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -634,7 +632,6 @@ fn pulse() -> Transient {
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
         breakpoints: vec![2.5e-7],
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     }

@@ -20,7 +20,10 @@
 //! A pole with a positive real part is a natural mode that grows away from the operating
 //! point: an oscillation that builds up, or a latch that tips. Its shape, the amplitude of
 //! each unknown in it, solves `(G + sC) x = 0` at the pole, found by inverse iteration
-//! with the sparse factorization of `G + sC` just beside it.
+//! with the sparse factorization of `G + sC` just beside it, from pseudo-random
+//! amplitudes, as LAPACK's inverse iteration starts (`xLARNV` in `xSTEIN`): a start of
+//! equal amplitudes has no part along a mode of a circuit that a permutation of its
+//! unknowns leaves as it is, such as a ring oscillator's, whose stages swing in turn.
 //!
 //! The dense pencils take memory as the square of the unknowns, so an analysis checks
 //! them against its options' `max_memory` before it makes them, and fails if they pass it.
@@ -28,6 +31,8 @@
 use std::cmp::Ordering;
 
 use jolty_numerics::{Complex64, Eigenvalue, PencilError, generalized_eigenvalues};
+use rand::{RngExt, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 use serde::Deserialize;
 
 use crate::ac::Linearization;
@@ -236,7 +241,11 @@ impl Simulator {
                     let beside = pole * Complex64::new(1.0, BESIDE);
                     let mut factors =
                         linearization.factor_at(&self.state.workspace.contributions, beside)?;
-                    let mut shape = vec![Complex64::new(1.0, 0.0); n];
+                    // Any seed serves: a draw has a part along every mode.
+                    let mut draws = ChaCha20Rng::seed_from_u64(0);
+                    let mut shape: Vec<Complex64> = (0..n)
+                        .map(|_| Complex64::new(draws.random_range(-1.0..1.0), 0.0))
+                        .collect();
                     for _ in 0..ITERATIONS {
                         factors.solve(&mut shape)?;
                         let largest = shape.iter().map(|value| value.norm()).fold(0.0, f64::max);

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use jolty_engine::{
     Analysis, AnalysisResult, DcSweepResult, Derivatives, Location, NoiseResult,
     OperatingPointResult, Options, PoleZeroResult, Record, RecordedSeries, RecordedValues,
-    Statistics, Strategy,
+    Statistics, Strategy, TransientResult,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Library, LogicLevel, Model, Nature, ParameterError};
@@ -608,22 +608,13 @@ pub(crate) fn outcome_to_python(
         }
         AnalysisResult::Transient(waveforms) => {
             result.set_item("kind", "transient")?;
-            result.set_item("times", PyArray1::from_vec(py, waveforms.times))?;
-            result.set_item("values", stacked(py, waveforms.values)?)?;
-            add_observations(&result, waveforms.observations)?;
-            let traces = PyList::empty(py);
-            for trace in waveforms.logic {
-                let (times, levels): (Vec<f64>, Vec<LogicLevel>) = trace.into_iter().unzip();
-                traces.append((
-                    PyArray1::from_vec(py, times),
-                    PyArray1::from_vec(py, numbers(&levels)),
-                ))?;
-            }
-            result.set_item("logic", traces)?;
-            result.set_item(
-                "statistics",
-                statistics_to_python(py, waveforms.statistics)?,
-            )?;
+            add_waveforms(&result, waveforms)?;
+        }
+        AnalysisResult::PeriodicSteadyState(found) => {
+            result.set_item("kind", "periodic_steady_state")?;
+            result.set_item("period", found.period)?;
+            result.set_item("periods", found.periods)?;
+            add_waveforms(&result, found.waveforms)?;
         }
         AnalysisResult::Sensitivity(sensitivities) => {
             result.set_item("kind", "sensitivity")?;
@@ -679,6 +670,28 @@ pub(crate) fn outcome_to_python(
         }
     }
     Ok(result)
+}
+
+/// The waveforms of a transient, or of a periodic steady state's period: the times, the
+/// values one row per time, what it recorded, each logic net's changes and how it went.
+fn add_waveforms(result: &Bound<'_, PyDict>, waveforms: TransientResult) -> PyResult<()> {
+    let py = result.py();
+    result.set_item("times", PyArray1::from_vec(py, waveforms.times))?;
+    result.set_item("values", stacked(py, waveforms.values)?)?;
+    add_observations(result, waveforms.observations)?;
+    let traces = PyList::empty(py);
+    for trace in waveforms.logic {
+        let (times, levels): (Vec<f64>, Vec<LogicLevel>) = trace.into_iter().unzip();
+        traces.append((
+            PyArray1::from_vec(py, times),
+            PyArray1::from_vec(py, numbers(&levels)),
+        ))?;
+    }
+    result.set_item("logic", traces)?;
+    result.set_item(
+        "statistics",
+        statistics_to_python(py, waveforms.statistics)?,
+    )
 }
 
 /// The operating points of a DC sweep, one row per level, and how each was found.
@@ -932,7 +945,6 @@ fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Boun
     result.set_item("rejected", statistics.rejected)?;
     result.set_item("landed", statistics.landed)?;
     result.set_item("iterations", statistics.iterations)?;
-    result.set_item("periods", statistics.periods)?;
     let work = statistics.work;
     let counts = PyDict::new(py);
     counts.set_item("iterations", work.iterations)?;

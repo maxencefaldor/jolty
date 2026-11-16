@@ -41,6 +41,7 @@ from jolty.plan import (
     Noise,
     OperatingPoint,
     OperatingPoints,
+    PeriodicSteadyState,
     PoleZero,
     Sensitivity,
     Stability,
@@ -208,7 +209,7 @@ XYCE_COMMANDS: Final = (
 
 JOLTY_ANALYSES: Final = (
     "jolty.plan.Analysis: OperatingPoint, OperatingPoints, DcSweep, Ac, Transient, "
-    "Sensitivity, Stability, Noise, PoleZero, TransferFunction"
+    "PeriodicSteadyState, Sensitivity, Stability, Noise, PoleZero, TransferFunction"
 )
 """jolty's analyses, as `jolty.plan.Analysis` lists them (`Analysis` is checked
 against this list by the tests)."""
@@ -1050,8 +1051,8 @@ def transients() -> list[Fixture]:
 
     def periodic() -> Values:
         built = circuit(driven())
-        analysis = Transient(
-            1 * us, max_step=1 * ns, breakpoints=[t * s for t in quarter], periodic=True
+        analysis = PeriodicSteadyState(
+            1 * us, max_step=1 * ns, breakpoints=[t * s for t in quarter]
         )
         found = simulation(built).run(analysis, TIGHT)
         start = float(found.times[0])

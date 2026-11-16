@@ -809,9 +809,6 @@ class Statistics:
     a logic driver's change or a device's jump."""
     iterations: int
     """The Newton iterations of the accepted steps."""
-    periods: int | None = None
-    """For a periodic steady state, the periods simulated to find it, the last the one
-    returned."""
     work: Work | None = None
     """The work the engine did, its operating point's included, and for a periodic
     steady state every period's; None for ngspice's, which it does not count. Unlike
@@ -854,6 +851,22 @@ class TransientResult(_Devices[Real], _Watched):
     @override
     def _read(self, values: Real) -> Real:
         return values
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodicSteadyStateResult(TransientResult):
+    """One period of a periodic steady state, from the state the circuit repeats.
+
+    Its times run from zero to the period. Its statistics count the period's own steps,
+    and the work of every period shooting simulated, of the operating point and of an
+    oscillator's settling.
+    """
+
+    period: float = field(kw_only=True)
+    """The period, in seconds: the analysis's, or an oscillator's, which it found."""
+    periods: int = field(kw_only=True)
+    """The periods shooting simulated to find the steady state, the last the one
+    returned."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1232,6 +1245,7 @@ type AnalysisResult = (
     | DcSweepResult
     | AcResult
     | TransientResult
+    | PeriodicSteadyStateResult
     | SensitivityResult
     | StabilityResult
     | NoiseResult

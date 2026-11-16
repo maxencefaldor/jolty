@@ -1080,6 +1080,7 @@ _KINDS: Final[dict[type, str]] = {
     results.DcSweepResult: "a DC sweep",
     results.AcResult: "a small-signal response",
     results.TransientResult: "a transient",
+    results.PeriodicSteadyStateResult: "a periodic steady state",
     results.SensitivityResult: "sensitivities",
     results.StabilityResult: "a loop gain",
     results.NoiseResult: "a noise spectrum",

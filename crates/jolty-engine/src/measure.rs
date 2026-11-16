@@ -309,7 +309,8 @@ pub enum AnalysisResult<'a> {
         /// The values, one row per level.
         values: &'a dyn Table<f64>,
     },
-    /// A transient: its times, and the unknowns' values at each.
+    /// A transient, or one period of a periodic steady state: its times, and the unknowns'
+    /// values at each.
     Transient {
         /// The times.
         times: &'a [f64],
@@ -354,6 +355,7 @@ impl<'a> AnalysisResult<'a> {
             crate::AnalysisResult::DcSweep(sweep) => sweep.into(),
             crate::AnalysisResult::Ac(response) => response.into(),
             crate::AnalysisResult::Transient(waveforms) => waveforms.into(),
+            crate::AnalysisResult::PeriodicSteadyState(found) => (&found.waveforms).into(),
             crate::AnalysisResult::Sensitivity(_) | crate::AnalysisResult::TransferFunction(_) => {
                 return None;
             }

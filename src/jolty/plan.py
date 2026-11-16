@@ -181,15 +181,12 @@ class Transient(Recorded):
     """The response over time, from the operating point at zero until `stop`.
 
     The analysis steps onto each of `breakpoints` exactly, besides the times it chooses.
-    A `periodic` transient simulates instead one period of the periodic steady state,
-    `stop` the period of every source, found by shooting from the operating point.
     """
 
     stop: Quantity
     max_step: Quantity | None = None
     method: Method = "trapezoidal"
     breakpoints: Sequence[Quantity] = ()
-    periodic: bool = False
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
@@ -203,9 +200,45 @@ class Transient(Recorded):
             ]
         if self.max_step is not None:
             transient["max_step"] = self.max_step.to(TIME, "a transient's longest step")
-        if self.periodic:
-            transient["periodic"] = True
         return {"transient": transient}
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodicSteadyState(Recorded):
+    """One period of the steady state a circuit repeats, found by shooting.
+
+    Given a `period`, that of every source, shooting starts from the operating point;
+    without one, the circuit is an oscillator whose sources hold steady, and shooting
+    finds its period too, starting where a transient from its operating point, kicked
+    along its fastest-growing natural mode, settles onto its orbit. The period's steps
+    are at most `max_step`, by default a fiftieth of the period, and land on each of
+    `breakpoints`, times within a given period.
+
+    Examples:
+        >>> from jolty.units import us
+        >>> PeriodicSteadyState(period=1 * us).to_json()
+        {'periodic_steady_state': {'method': 'trapezoidal', 'period': 1e-06}}
+        >>> PeriodicSteadyState().to_json()
+        {'periodic_steady_state': {'method': 'trapezoidal'}}
+    """
+
+    period: Quantity | None = None
+    max_step: Quantity | None = None
+    method: Method = "trapezoidal"
+    breakpoints: Sequence[Quantity] = ()
+
+    def to_json(self) -> JsonValue:
+        """The analysis in the engine's format."""
+        steady: dict[str, JsonValue] = {"method": self.method}
+        if self.period is not None:
+            steady["period"] = self.period.to(TIME, "a periodic steady state's period")
+        if self.breakpoints:
+            steady["breakpoints"] = [
+                time.to(TIME, "a time to step onto") for time in self.breakpoints
+            ]
+        if self.max_step is not None:
+            steady["max_step"] = self.max_step.to(TIME, "a period's longest step")
+        return {"periodic_steady_state": steady}
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,6 +388,7 @@ type Analysis = (
     | DcSweep
     | Ac
     | Transient
+    | PeriodicSteadyState
     | Sensitivity
     | Stability
     | Noise

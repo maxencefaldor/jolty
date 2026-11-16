@@ -1,6 +1,8 @@
 //! Poles and zeros against closed forms.
 #![cfg(test)]
 
+use std::f64::consts::TAU;
+
 use jolty_engine::{Conditions, Options, PoleZero, PoleZeroResult, SimulationError, Simulator};
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -326,4 +328,39 @@ fn a_pencil_that_would_fill_the_memory_fails_at_once() {
     assert_eq!(simulator.operating_point_solves(), 0);
     // A gibibyte holds it.
     assert!(simulator.pole_zero(&analysis, &Options::default()).is_ok());
+}
+
+#[test]
+fn a_symmetric_rings_growing_mode_has_its_stages_swing_in_turn() {
+    // Three stages, each drawing 3 mS times the last's voltage out of 1 kΩ and 1 nF, a
+    // gain of −3 round a ring that a rotation of its stages leaves as it is. The mode
+    // whose stages swing a third of a turn apart grows: C s = −1/R + 3 mS e^(±2πi/3),
+    // 5e5 ± 2.6e6i per second; equal amplitudes have no part along it, being the mode
+    // of the stages swinging together, which decays at −4e6 per second.
+    let stages = ["a", "b", "c"];
+    let mut instances = Vec::new();
+    for (index, node) in stages.iter().enumerate() {
+        let before = stages[(index + 2) % 3];
+        instances.push(resistor(&format!("R{index}"), 1e3, node, "0"));
+        instances.push(capacitor(&format!("C{index}"), 1e-9, node, "0"));
+        instances.push(json!({"name": format!("G{index}"),
+                              "of": {"model": "voltage_controlled_current_source"},
+                              "parameters": {"transconductance": 3e-3},
+                              "terminals": {"positive": node, "negative": "0",
+                                            "control_positive": before,
+                                            "control_negative": "0"}}));
+    }
+    let modes = growing_modes(&Value::Array(instances));
+    assert_eq!(modes.len(), 1, "{modes:?}");
+    assert_roots(
+        &[modes[0].pole],
+        &[Complex64::new(5e5, 1.5e-3 * 3_f64.sqrt() / 1e-9)],
+    );
+    let shape = &modes[0].shape;
+    for (index, amplitude) in shape.iter().enumerate() {
+        let turn = (amplitude / shape[(index + 2) % 3]).arg();
+        // The inverse iteration leaves the next pole's mode a millionth squared behind.
+        assert!((amplitude.norm() - 1.0).abs() < 1e-9, "{shape:?}");
+        assert!((turn.abs() - TAU / 3.0).abs() < 1e-9, "{shape:?}");
+    }
 }

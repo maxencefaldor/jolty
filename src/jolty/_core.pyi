@@ -92,16 +92,22 @@ class Statistics(TypedDict):
     rejected: int
     landed: int
     iterations: int
-    periods: int | None
     work: Work
     profile: Profile | None
 
-class TransientResult(RecordedValues):
-    kind: Literal["transient"]
+class Waveforms(RecordedValues):
     times: npt.NDArray[np.float64]
     values: npt.NDArray[np.float64]
     logic: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
     statistics: Statistics
+
+class TransientResult(Waveforms):
+    kind: Literal["transient"]
+
+class PeriodicSteadyStateResult(Waveforms):
+    kind: Literal["periodic_steady_state"]
+    period: float
+    periods: int
 
 class SensitivityResult(TypedDict):
     kind: Literal["sensitivity"]
@@ -160,6 +166,7 @@ type AnalysisResult = (
     | DcSweepResult
     | AcResult
     | TransientResult
+    | PeriodicSteadyStateResult
     | SensitivityResult
     | StabilityResult
     | NoiseResult

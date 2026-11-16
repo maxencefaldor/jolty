@@ -198,7 +198,9 @@ def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | 
             unit = "A" if result.nature == "current" else "V"
             return "dc_sweep", result.swept, f"{result.source} level", unit
         case results.TransientResult():
-            return "transient", result.times, "time", "s"
+            periodic = isinstance(result, results.PeriodicSteadyStateResult)
+            kind = "periodic_steady_state" if periodic else "transient"
+            return kind, result.times, "time", "s"
         case results.AcResult():
             return "ac", result.frequencies, "frequency", "Hz"
     return None

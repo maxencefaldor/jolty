@@ -668,7 +668,6 @@ fn rc_step_error(ramped: &Ramped, method: Method, options: &Options) -> (f64, us
         max_step: None,
         method,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -801,7 +800,6 @@ fn a_charge_settling_in_picoseconds_is_resolved_to_its_tolerance() {
         max_step: None,
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -867,7 +865,6 @@ fn no_step_is_longer_than_the_longest_allowed() {
             max_step: Some(longest),
             method: Method::Trapezoidal,
             breakpoints: times.clone(),
-            periodic: false,
             initial_conditions: BTreeMap::new(),
             operating_point: true,
         };
@@ -919,7 +916,6 @@ fn stepped(circuit: &Circuit, method: Method, step: f64, end: f64) -> (Vec<f64>,
         max_step: Some(step),
         method,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -1060,7 +1056,6 @@ fn an_lc_tank_rings_at_its_resonant_frequency() {
         max_step: Some(period / 200.0),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -1115,7 +1110,6 @@ fn a_sine_through_an_rc_settles_to_the_ac_amplitude() {
         max_step: Some(1e-5),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -1169,7 +1163,6 @@ fn the_trapezoidal_formula_stops_ringing_after_a_corner() {
         max_step: Some(1e-5),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -1261,7 +1254,6 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
             max_step: None,
             method: Method::Trapezoidal,
             breakpoints: Vec::new(),
-            periodic: false,
             initial_conditions: BTreeMap::new(),
             operating_point: true,
         };
@@ -1432,7 +1424,6 @@ fn transient(
         max_step: Some(stop / 100.0),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -1545,7 +1536,6 @@ fn a_transient_whose_results_would_fill_the_memory_fails_at_once() {
         max_step: Some(1e-12),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -1605,7 +1595,6 @@ fn a_transient_follows_a_source_that_only_its_transistor_holds() {
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -1674,7 +1663,6 @@ fn a_transient_couples_an_edge_beside_a_node_at_a_hundred_megavolts() {
         max_step: Some(1e-8),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -1785,7 +1773,6 @@ fn a_gate_converges_as_its_supply_powers_up() {
         max_step: Some(1e-9),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -1949,7 +1936,6 @@ fn an_initial_condition_starts_an_rc_from_its_voltage() {
             max_step: None,
             method: Method::Trapezoidal,
             breakpoints: Vec::new(),
-            periodic: false,
             initial_conditions: initial.clone(),
             operating_point,
         };
@@ -1985,7 +1971,6 @@ fn an_initial_condition_a_source_holds_must_agree_with_it() {
             max_step: None,
             method: Method::Trapezoidal,
             breakpoints: Vec::new(),
-            periodic: false,
             initial_conditions: BTreeMap::from([("in".to_owned(), voltage)]),
             operating_point: true,
         };
@@ -2004,7 +1989,6 @@ fn an_initial_condition_a_source_holds_must_agree_with_it() {
         max_step: None,
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::from([("V1:current".to_owned(), 0.0)]),
         operating_point: true,
     };

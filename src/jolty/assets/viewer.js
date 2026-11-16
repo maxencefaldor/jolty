@@ -872,7 +872,7 @@ function setPlaying(on) {
 }
 
 data.analyses.forEach((at, index) => {
-  const kinds = { operating_point: "operating point", dc_sweep: "DC sweep", ac: "frequency response", transient: "transient" };
+  const kinds = { operating_point: "operating point", dc_sweep: "DC sweep", ac: "frequency response", transient: "transient", periodic_steady_state: "periodic steady state" };
   analysisSelect.append(h("option", { value: String(index) }, `${at.name} · ${kinds[at.kind] ?? at.kind}`));
 });
 analysisSelect.addEventListener("change", () => setAnalysis(Number(analysisSelect.value)));
@@ -953,9 +953,10 @@ window.addEventListener("resize", resize);
 resize();
 build();
 const named = data.analyses.findIndex((at) => at.name === wanted.get("analysis"));
-setAnalysis(named >= 0 ? named : Math.max(0, data.analyses.findIndex((at) => at.kind === "transient")));
+const timed = (at) => at?.kind === "transient" || at?.kind === "periodic_steady_state";
+setAnalysis(named >= 0 ? named : Math.max(0, data.analyses.findIndex(timed)));
 analysisSelect.value = String(analysisIndex);
 if (wanted.has("point")) setFrame(Number(wanted.get("point")));
-setPlaying(analysis()?.kind === "transient" && !wanted.has("paused"));
+setPlaying(timed(analysis()) && !wanted.has("paused"));
 root.dataset.state = "ready";
 loop();

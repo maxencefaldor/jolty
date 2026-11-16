@@ -819,7 +819,6 @@ mod tests {
             max_step: Some(1e-6),
             method: Method::Trapezoidal,
             breakpoints: Vec::new(),
-            periodic: false,
             initial_conditions: BTreeMap::new(),
             operating_point: true,
         };
@@ -862,7 +861,6 @@ mod tests {
             max_step: Some(1e-5),
             method: Method::Trapezoidal,
             breakpoints: Vec::new(),
-            periodic: false,
             initial_conditions: BTreeMap::new(),
             operating_point: true,
         };

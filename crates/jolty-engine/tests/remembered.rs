@@ -8,10 +8,10 @@ use std::path::Path;
 
 use jolty_engine::{
     Ac, AcResult, Analysis, AnalysisResult, Conditions, DcSweep, DcSweepResult, Differentiated,
-    Method, Noise, NoiseResult, OperatingPointResult, OperatingPoints, Options, PoleZero,
-    PoleZeroResult, Record, RecordedSeries, RecordedValues, Sensitivity, SensitivityResult,
-    Simulator, StabilityResult, TransferFunction, TransferFunctionResult, Transient,
-    TransientResult, Work,
+    Method, Noise, NoiseResult, OperatingPointResult, OperatingPoints, Options,
+    PeriodicSteadyState, PeriodicSteadyStateResult, PoleZero, PoleZeroResult, Record,
+    RecordedSeries, RecordedValues, Sensitivity, SensitivityResult, Simulator, StabilityResult,
+    TransferFunction, TransferFunctionResult, Transient, TransientResult, Work,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -74,6 +74,10 @@ fn apart_from_work(outcome: AnalysisResult) -> AnalysisResult {
             waveforms.statistics.work = Work::default();
             AnalysisResult::Transient(waveforms)
         }
+        AnalysisResult::PeriodicSteadyState(mut found) => {
+            found.waveforms.statistics.work = Work::default();
+            AnalysisResult::PeriodicSteadyState(found)
+        }
         AnalysisResult::Sensitivity(sensitivities) => {
             AnalysisResult::Sensitivity(SensitivityResult {
                 result: Box::new(apart_from_work(*sensitivities.result)),
@@ -108,6 +112,15 @@ fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
             observations: RecordedSeries::default(),
             ..waveforms
         }),
+        AnalysisResult::PeriodicSteadyState(found) => {
+            AnalysisResult::PeriodicSteadyState(PeriodicSteadyStateResult {
+                waveforms: TransientResult {
+                    observations: RecordedSeries::default(),
+                    ..found.waveforms
+                },
+                ..found
+            })
+        }
         AnalysisResult::Sensitivity(found) => AnalysisResult::Sensitivity(SensitivityResult {
             result: Box::new(unrecorded(*found.result)),
             ..found
@@ -133,10 +146,13 @@ fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
     }
 }
 
-/// The Newton iterations of the transient `outcome`, if it is one.
+/// The Newton iterations of the transient or periodic steady state `outcome`, if it is one.
 fn iterations(outcome: &AnalysisResult) -> Option<usize> {
     match outcome {
         AnalysisResult::Transient(waveforms) => Some(waveforms.statistics.work.iterations),
+        AnalysisResult::PeriodicSteadyState(found) => {
+            Some(found.waveforms.statistics.work.iterations)
+        }
         _ => None,
     }
 }
@@ -148,7 +164,6 @@ fn analyses() -> Vec<Analysis> {
         max_step: Some(2e-5),
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     };
@@ -175,12 +190,11 @@ fn analyses() -> Vec<Analysis> {
             output: Some("out".to_owned()),
             reference: None,
         }),
-        Analysis::Transient(Transient {
-            periodic: true,
-            initial_conditions: BTreeMap::new(),
-            operating_point: true,
-            stop: 1e-3,
-            ..transient.clone()
+        Analysis::PeriodicSteadyState(PeriodicSteadyState {
+            period: Some(1e-3),
+            max_step: transient.max_step,
+            method: transient.method,
+            breakpoints: Vec::new(),
         }),
         Analysis::Sensitivity(Sensitivity {
             outputs: vec!["out".to_owned()],
@@ -369,7 +383,6 @@ fn what_an_analysis_records_changes_none_of_its_numbers() {
         max_step: None,
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     });
@@ -435,7 +448,6 @@ fn an_analysis_after_the_operating_point_again_factors_as_after_it_first() {
         max_step: None,
         method: Method::Trapezoidal,
         breakpoints: Vec::new(),
-        periodic: false,
         initial_conditions: BTreeMap::new(),
         operating_point: true,
     });

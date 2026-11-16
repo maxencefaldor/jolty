@@ -354,8 +354,9 @@ enum Points {
     Swept(usize),
     /// A small-signal response's frequencies, of which there are so many.
     Frequencies(usize),
-    /// The times of a transient, its values interpolated linearly between the times it
-    /// accepted, and so exact at a time it stepped onto.
+    /// The times of a transient or of a periodic steady state's period, its values
+    /// interpolated linearly between the times it accepted, and so exact at a time it
+    /// stepped onto.
     Times(Vec<f64>),
 }
 
@@ -369,10 +370,11 @@ impl Points {
             Analysis::DcSweep(sweep) => Self::Swept(sweep.values.len()),
             Analysis::Ac(response) => Self::Frequencies(response.frequencies.len()),
             Analysis::Transient(transient) => Self::Times(transient.breakpoints.clone()),
+            Analysis::PeriodicSteadyState(steady) => Self::Times(steady.breakpoints.clone()),
             _ => {
                 return Err(PyValueError::new_err(
                     "a batch traces unknowns along an operating point, a DC sweep, a \
-                     small-signal response or a transient's times",
+                     small-signal response, or a transient's or a periodic steady state's times",
                 ));
             }
         })
@@ -645,7 +647,13 @@ fn trace(outcome: &Run, traces: &Traced) -> Vec<Complex64> {
                 put(frequency, &|column| values.get(column).copied());
             }
         }
-        (jolty_engine::AnalysisResult::Transient(waveforms), Points::Times(times)) => {
+        (
+            jolty_engine::AnalysisResult::Transient(waveforms)
+            | jolty_engine::AnalysisResult::PeriodicSteadyState(
+                jolty_engine::PeriodicSteadyStateResult { waveforms, .. },
+            ),
+            Points::Times(times),
+        ) => {
             for (point, &time) in times.iter().enumerate() {
                 put(point, &|column| {
                     at(&waveforms.times, &waveforms.values, column, time).map(Complex64::from)

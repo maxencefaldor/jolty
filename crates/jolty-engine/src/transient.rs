@@ -59,10 +59,6 @@ pub struct Transient {
     /// restarting its integration there; none by default.
     #[serde(default)]
     pub breakpoints: Vec<f64>,
-    /// Whether to find the periodic steady state instead, `stop` the period of every
-    /// source: one period from the state the circuit repeats, which shooting finds.
-    #[serde(default)]
-    pub periodic: bool,
     /// The voltage, in volts, each net named, such as `amplifier/mid`, starts from, as
     /// SPICE's `.ic`: forced there while the operating point the transient starts from is
     /// solved, then left free; or, without that operating point, set there. A net that
@@ -118,9 +114,6 @@ pub struct Statistics {
     pub landed: usize,
     /// The Newton iterations of the accepted steps.
     pub iterations: usize,
-    /// For a periodic steady state, the periods shooting simulated to find it, the last
-    /// the one returned.
-    pub periods: Option<usize>,
     /// The work the analysis did, its operating point's included, and for a periodic
     /// steady state every period's. Unlike the results, it depends on what the simulator
     /// did before: on an operating point it remembers, and on the pivots its sparse
@@ -140,7 +133,6 @@ impl Statistics {
             rejected: 0,
             landed: 0,
             iterations: 0,
-            periods: None,
             work: Work::default(),
             profile: None,
         }
@@ -153,7 +145,8 @@ pub(crate) enum Carried<'a> {
     Nothing,
     /// Each parameter's derivatives, for a sensitivity analysis.
     Forward(&'a mut Forward),
-    /// The derivatives with respect to the initial state, for a periodic steady state.
+    /// The derivatives with respect to the initial state, and an oscillator's with respect
+    /// to its period, for a periodic steady state.
     Monodromy(&'a mut Monodromy),
 }
 
@@ -178,6 +171,21 @@ impl Tangent {
             before: None,
             rate,
         }
+    }
+
+    /// Of the charges themselves, carried as their own tangent, the part of `formula`'s
+    /// `dq/dt` at the point where they are `charge` that the steps' lengths divide:
+    /// `α q_{n+1} + β₀ q_n + β₁ q_{n-1}`, without the earlier derivative's `γ q̇_n`.
+    pub(crate) fn divided(&self, charge: &[f64], formula: &Formula) -> Vec<f64> {
+        let before = self.before.as_ref().unwrap_or(&self.last);
+        charge
+            .iter()
+            .zip(&self.last)
+            .zip(before)
+            .map(|((&new, &last), &before)| {
+                formula.alpha * new + formula.history([last, before], 0.0)
+            })
+            .collect()
     }
 
     /// The derivative of the part of `formula`'s `dq/dt` that the earlier points
@@ -538,17 +546,13 @@ impl Simulator {
     /// Each step is solved by Newton iteration and accepted when its estimated truncation error
     /// is within tolerance, and the next step grows or shrinks to keep it so. Steps land on
     /// every breakpoint of the sources, and restart with backward Euler after each, as a
-    /// corner in a waveform would make the trapezoidal formula ring. A periodic transient
-    /// simulates instead one period of the periodic steady state, found by shooting from
-    /// the operating point.
+    /// corner in a waveform would make the trapezoidal formula ring.
     ///
     /// # Errors
     ///
     /// Returns [`SimulationError::InvalidAnalysis`] for a stop time or longest step that is
-    /// not positive, or a periodic transient of a circuit with logic,
-    /// [`SimulationError::StepTooSmall`] when no step short enough converges,
-    /// [`SimulationError::NoSteadyState`] when shooting does not converge, and the errors of
-    /// [`Simulator::operating_point`].
+    /// not positive, [`SimulationError::StepTooSmall`] when no step short enough converges,
+    /// and the errors of [`Simulator::operating_point`].
     pub fn transient(
         &mut self,
         transient: &Transient,
@@ -556,9 +560,6 @@ impl Simulator {
     ) -> Result<TransientResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
-            if transient.periodic {
-                return self.periodic_steady_state(transient, options);
-            }
             self.transient_with(transient, options, None, Carried::Nothing)
         })
     }

@@ -208,6 +208,7 @@ results["step"].voltage("out", reference="in")  # an array, one value per time
 | `DcSweepResult` | `swept`, and the operating point's arrays | one per level |
 | `AcResult` | `frequencies`, `values`, `currents`, and the `operating_point` | a complex phasor, one per frequency |
 | `TransientResult` | `times`, the operating point's arrays, and the step `statistics` | one per accepted time point |
+| `PeriodicSteadyStateResult` | a `TransientResult`'s over one period, its `period` and the `periods` shooting took | one per accepted time point of the period |
 | `OperatingPointsResult` | `points`, an `OperatingPointResult` per DC solution | read with `voltages(net)`, one per solution |
 | `SensitivityResult` | `parameters`, `derivatives`, and the `result` differentiated | one per output and parameter, at each point |
 | `StabilityResult` | `frequencies`, `gains`, and the `operating_point` | a complex loop gain, one per frequency |

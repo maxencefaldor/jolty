@@ -106,8 +106,11 @@ read with current(instance, terminal) and charge(instance, terminal), such as
 current("X1/R1", "a"), a component instance's terminals summing the devices' behind
 them, and each device's conductances and variables. An operating point and a transient
 also record the instances rated for a current or a power. Transient(stop,
-breakpoints=[...]) steps onto the given times exactly, and Transient(period,
-periodic=True) simulates one period of the periodic steady state, found by shooting.
+breakpoints=[...]) steps onto the given times exactly.
+PeriodicSteadyState(period=None, max_step=None, method, breakpoints) simulates one
+period of the steady state a circuit repeats, found by shooting: of every source's
+period, or without one of an oscillator whose sources hold steady, whose period it
+finds, read as its result's period; ngspice runs none.
 """
 
 READS_FILES: Final = ToolAnnotations(read_only_hint=True, open_world_hint=False)

@@ -41,6 +41,7 @@ from matplotlib.ticker import EngFormatter
 
 from jolty import files, results
 from jolty.errors import JoltyError
+from jolty.units import format_si
 
 COLORS: Final = (
     "#2a78d6",
@@ -563,7 +564,11 @@ def save(figure: Figure, path: Path) -> None:
 def _describe(result: Plotted) -> str:
     match result:
         case results.TransientResult():
-            return "transient"
+            return (
+                f"periodic steady state of period {format_si(result.period, 's')}"
+                if isinstance(result, results.PeriodicSteadyStateResult)
+                else "transient"
+            )
         case results.DcSweepResult():
             swept = "" if result.parameter is None else f"'s {result.parameter}"
             return f"DC sweep of {result.source}{swept}"

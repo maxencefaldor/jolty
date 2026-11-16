@@ -139,6 +139,20 @@ def every_kind() -> dict[str, results.AnalysisResult]:
             variables=np.ones((2, 3)),
             excursions=(EXCURSION,),
         ),
+        "steady": results.PeriodicSteadyStateResult(
+            UNKNOWNS,
+            np.array([0.0, 5e-7, 1e-6]),
+            np.ones((3, 2)),
+            STATISTICS,
+            recording=RECORDING,
+            currents=np.ones((3, 4)),
+            charges=np.ones((3, 4)),
+            conductances=np.zeros((3, 8)),
+            capacitances=np.ones((3, 8)),
+            variables=np.ones((3, 3)),
+            period=1e-6,
+            periods=3,
+        ),
         "sensitivity": results.SensitivityResult(
             UNKNOWNS,
             ("out",),
@@ -325,7 +339,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
     save_results(path, every_kind())
     with np.load(path) as data:
         header = json.loads(str(data["header"]))
-    assert header["version"] == 17
+    assert header["version"] == 18
     # Every result recorded RECORDING but the transient a sensitivity differentiates.
     assert len(header["recordings"]) == 2
     assert header["recordings"][0]["devices"][1] == {
