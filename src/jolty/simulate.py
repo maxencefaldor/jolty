@@ -218,7 +218,7 @@ class Joined:
     current the heat flowing into it."""
 
 
-def _stand_ins(substitutes: Mapping[str, Device] | None) -> str:
+def _substitutes(substitutes: Mapping[str, Device] | None) -> str:
     """The models of `substitutes` as the engine reads them, by path, in JSON."""
     stand_ins = {
         path: {"model": device.model, "parameters": device.parameters}
@@ -305,7 +305,7 @@ class Elaborated:
         self._kelvins = kelvins(temperature)
         with _elaborating():
             self._core = _core.Elaborated(
-                self.circuit.model_dump_json(), _stand_ins(substitutes)
+                self.circuit.model_dump_json(), _substitutes(substitutes)
             )
         self._structures: dict[_core.StructureKey, _core.Elaborated] = {}
 
@@ -407,7 +407,7 @@ class Simulation:
                 built.model_dump_json(),
                 kelvins(temperature),
                 json.dumps(overrides or {}, allow_nan=False),
-                _stand_ins(substitutes),
+                _substitutes(substitutes),
             )
         self._start(
             built,
