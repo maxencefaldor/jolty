@@ -574,6 +574,13 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `waveform.sine.phase` | `0` | The phase at the delay, in radians. |
 | `waveform.piecewise` |  | Straight lines between points, holding the first and last levels outside them. |
 | `waveform.piecewise.points` | required | Each point's time and level, in strictly increasing time; at least one. |
+| `waveform.exponential` |  | A rise toward a level and a fall back, each exponential, as SPICE's `EXP`. |
+| `waveform.exponential.fall_delay` | required | The time the fall starts, in seconds; at or after the rise delay. |
+| `waveform.exponential.fall_time_constant` | required | The fall's time constant, in seconds; positive. |
+| `waveform.exponential.initial` | required | The level before the rise delay. |
+| `waveform.exponential.pulsed` | required | The level the rise tends to. |
+| `waveform.exponential.rise_delay` | `0` | The time the rise starts, in seconds. |
+| `waveform.exponential.rise_time_constant` | required | The rise's time constant, in seconds; positive. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
 
@@ -1039,5 +1046,12 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `waveform.sine.phase` | `0` | The phase at the delay, in radians. |
 | `waveform.piecewise` |  | Straight lines between points, holding the first and last levels outside them. |
 | `waveform.piecewise.points` | required | Each point's time and level, in strictly increasing time; at least one. |
+| `waveform.exponential` |  | A rise toward a level and a fall back, each exponential, as SPICE's `EXP`. |
+| `waveform.exponential.fall_delay` | required | The time the fall starts, in seconds; at or after the rise delay. |
+| `waveform.exponential.fall_time_constant` | required | The fall's time constant, in seconds; positive. |
+| `waveform.exponential.initial` | required | The level before the rise delay. |
+| `waveform.exponential.pulsed` | required | The level the rise tends to. |
+| `waveform.exponential.rise_delay` | `0` | The time the rise starts, in seconds. |
+| `waveform.exponential.rise_time_constant` | required | The rise's time constant, in seconds; positive. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |

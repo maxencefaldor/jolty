@@ -86,7 +86,7 @@ from jolty.units import (
     uS,
     us,
 )
-from jolty.waveforms import Piecewise, Pulse, Sine
+from jolty.waveforms import Exponential, Piecewise, Pulse, Sine
 
 pytestmark = SKIP
 
@@ -109,6 +109,26 @@ def low_pass(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(1 * us, 0 * V), (1 * us + 10 * ns, 1 * V)])
     source = c.place(devices.voltage_source(step), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
+    c.connect(source.positive, resistor.a, name="in")
+    c.connect(resistor.b, capacitor.a, name="out")
+    c.connect(capacitor.b, source.negative, ground)
+
+
+@component
+def exponential(c: Builder) -> None:
+    """An RC driven by SPICE's ``EXP``: a rise at 1 µs and a fall back from 5 µs."""
+    ground = c.port("ground", Role.GROUND)
+    rise_and_fall = Exponential(
+        initial=0.5 * V,
+        pulsed=2 * V,
+        rise_delay=1 * us,
+        rise_time_constant=0.5 * us,
+        fall_delay=5 * us,
+        fall_time_constant=1 * us,
+    )
+    source = c.place(devices.voltage_source(rise_and_fall), name="V1")
     resistor = c.place(devices.resistor(1 * kohm), name="R1")
     capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
@@ -1938,6 +1958,7 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
     ("top", "stop", "step"),
     [
         (low_pass, 8 * us, 10 * ns),
+        (exponential, 12 * us, 10 * ns),
         (resonator, 60 * us, 50 * ns),
         (triangle, 60 * us, 50 * ns),
         (rectifier, 3 * ms, 1 * us),

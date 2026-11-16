@@ -57,7 +57,8 @@ class Dialect:
     """What joins an instance of a subcircuit and a node within it, in the simulator's
     names of nodes."""
     instant: float
-    """The width, in seconds, a pulse of no width is written with."""
+    """The time, in seconds, a pulse of no width and an exponential's delay of zero are
+    written with, which the simulator reads as given."""
     zero_level: bool
     """Whether a source that varies states its level at time zero as its DC level, as
     the simulator takes a level of 0 where none is stated, rather than jolty's, its
@@ -83,8 +84,9 @@ NGSPICE: Final = Dialect(
     simulator="ngspice",
     option_temperature=ngspice.option_temperature,
     separator=".",
-    # ngspice reads a width of 0 as the transient's stop time, while 1e-40 s vanishes
-    # beside any rise longer than 1e-24 s.
+    # ngspice reads a pulse's width of 0 as the transient's stop time and an
+    # exponential's delays of 0 as its step (both measured on ngspice 47), while 1e-40 s
+    # vanishes beside any rise or time constant longer than 1e-24 s.
     instant=1e-40,
     zero_level=False,
     flicker_over_oxide=True,
@@ -1402,7 +1404,10 @@ def _waveform(spec: JsonValue, dialect: Dialect) -> str:
 
 
 def _shape(spec: JsonValue, instant: float) -> str:
-    """A source's waveform in SPICE, a pulse of no width at the width `instant`."""
+    """A source's waveform in SPICE, a time of 0 SPICE reads otherwise at `instant`.
+
+    Those times are a pulse's width and an exponential's delays.
+    """
     match spec:
         case {"dc": float(level)}:
             return f"DC {level!r}"
@@ -1431,6 +1436,21 @@ def _shape(spec: JsonValue, instant: float) -> str:
             return _function(
                 "PWL", [number for point in points for number in _pair(point)]
             )
+        case {"exponential": dict(exponential)}:
+            order = (
+                "initial",
+                "pulsed",
+                "rise_delay",
+                "rise_time_constant",
+                "fall_delay",
+                "fall_time_constant",
+            )
+            delays = {"rise_delay", "fall_delay"}
+            numbers = [
+                instant if key in delays and exponential[key] == 0 else exponential[key]
+                for key in order
+            ]
+            return _function("EXP", numbers)
     message = f"no SPICE waveform for {spec}"
     raise _unwritable(message)
 

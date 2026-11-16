@@ -16,6 +16,7 @@ temperature the library reads at.
 """
 
 import itertools
+import json
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -1562,9 +1563,9 @@ _SINE_OPTIONS: Final = ("delay", "damping", "phase")
 def _independent(model: str) -> Callable[[_Translation, Statement], None]:
     """The translation of an independent source of `model`.
 
-    Its level is its DC level, or its waveform over time, SPICE's `PULSE`, `SIN` or
-    `PWL`, whose level at time zero every other analysis reads, as ngspice reads it for
-    a source with no DC level.
+    Its level is its DC level, or its waveform over time, SPICE's `PULSE`, `SIN`, `PWL`
+    or `EXP`, whose level at time zero every other analysis reads, as ngspice reads it
+    for a source with no DC level.
     """
 
     def translated(translation: _Translation, statement: Statement) -> None:
@@ -1585,16 +1586,18 @@ def _independent(model: str) -> Callable[[_Translation, Statement], None]:
             ]
         if after:
             message = (
-                "jolty reads a source's DC level and its PULSE, SIN or PWL waveform "
-                f"only, not `{' '.join(after)}`"
+                "jolty reads a source's DC level and its PULSE, SIN, PWL or EXP "
+                f"waveform only, not `{' '.join(after)}`"
             )
             raise statement.fail(message)
         if waveform is None:
             waveform = {"dc": 0.0 if level is None else level}
-        elif level is not None and level != _at_zero(waveform):
+        elif level is not None and level != (
+            at_zero := _core.level(json.dumps(waveform), 0.0)
+        ):
             message = (
-                f"a DC level of {level!r} beside a waveform at {_at_zero(waveform)!r} "
-                "at time zero: jolty's source has one level at zero for every analysis"
+                f"a DC level of {level!r} beside a waveform at {at_zero!r} at time "
+                "zero: jolty's source has one level at zero for every analysis"
             )
             raise statement.fail(message)
         parameters: dict[str, JsonValue] = {"waveform": waveform}
@@ -1617,11 +1620,11 @@ def _transient_function(
     """`words` without a waveform over time, and that waveform, if they hold one.
 
     The waveform is written ``PULSE(...)`` or ``PULSE (...)``, or as SPICE2 wrote it,
-    ``PULSE`` followed by its arguments to the statement's end, and likewise ``SIN``
-    and ``PWL``.
+    ``PULSE`` followed by its arguments to the statement's end, and likewise ``SIN``,
+    ``PWL`` and ``EXP``.
 
     Raises:
-        SpiceError: When the waveform is one jolty has not, such as `EXP`, or leaves
+        SpiceError: When the waveform is one jolty has not, such as `SFFM`, or leaves
             out what SPICE takes from the transient analysis.
     """
     for index, word in enumerate(words):
@@ -1647,8 +1650,9 @@ def _waveform(
 
     Raises:
         SpiceError: When jolty has no such waveform, or the function leaves out what
-            SPICE takes from the transient analysis: a pulse's rise, fall or width, or
-            a sine's frequency.
+            SPICE takes from the transient analysis: a pulse's rise, fall or width, a
+            sine's frequency, or an exponential's delays and time constants, which
+            ngspice 47 takes from the transient's step wherever they are 0.
     """
     match name, arguments:
         case "pulse", [initial, pulsed, delay, rise, fall, width, *period] if (
@@ -1692,6 +1696,27 @@ def _waveform(
                 "transient analysis's stop, and jolty's circuit from no analysis"
             )
             raise statement.fail(message)
+        case "exp", [initial, pulsed, rise_delay, rise, fall_delay, fall] if (
+            min(rise_delay, rise, fall_delay, fall) > 0
+        ):
+            return {
+                "exponential": {
+                    "initial": initial,
+                    "pulsed": pulsed,
+                    "rise_delay": rise_delay,
+                    "rise_time_constant": rise,
+                    "fall_delay": fall_delay,
+                    "fall_time_constant": fall,
+                }
+            }
+        case "exp", _:
+            message = (
+                "an EXP without a positive rise delay, rise time constant, fall delay "
+                "and fall time constant, each of which ngspice 47 takes from the "
+                "transient analysis's step where it is 0 or left out, and jolty's "
+                "circuit from no analysis"
+            )
+            raise statement.fail(message)
         case "pwl", [*pairs] if pairs and len(pairs) % 2 == 0:
             points: list[JsonValue] = [
                 [pairs[index], pairs[index + 1]] for index in range(0, len(pairs), 2)
@@ -1699,31 +1724,6 @@ def _waveform(
             return {"piecewise": {"points": points}}
     message = f"jolty has no `{name.upper()}` waveform of these arguments"
     raise statement.fail(message)
-
-
-def _at_zero(waveform: Mapping[str, JsonValue]) -> float:
-    """The level of a waveform at time zero, as every analysis but a transient reads it.
-
-    Raises:
-        ValueError: When the waveform is not one `_waveform` writes.
-    """
-    match waveform:
-        case {"pulse": {"initial": float(initial)}}:
-            return initial
-        case {
-            "sine": {
-                "offset": float(offset),
-                "amplitude": float(amplitude),
-                "phase": float(phase),
-            }
-        }:
-            return offset + amplitude * math.sin(phase)
-        case {"piecewise": {"points": [[_, float(first)], *_]}}:
-            return first
-        case {"dc": float(level)}:
-            return level
-    message = f"no level at zero of {waveform}"
-    raise ValueError(message)
 
 
 def _semiconductor(

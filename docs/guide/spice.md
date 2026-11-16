@@ -35,7 +35,7 @@ Each instance records the file and the line of the statement that placed it, so 
 jolty reads a file as PSpice and ngspice read it:
 
 - resistors, capacitors and inductors, with their model cards' scales, and mutual inductances, `K`, which couple inductors;
-- independent sources at their DC level, or with their `PULSE`, `SIN` or `PWL` waveform over time, its arguments in parentheses or, as SPICE2 wrote them, to the statement's end, whose level at zero every other analysis reads;
+- independent sources at their DC level, or with their `PULSE`, `SIN`, `PWL` or `EXP` waveform over time, its arguments in parentheses or, as SPICE2 wrote them, to the statement's end, whose level at zero every other analysis reads;
 - diodes of level 1, JFETs, bipolar transistors and level 1 and 3 MOSFETs, with their model cards, positive areas and multipliers, and models that inherit from one another through `AKO:`;
 - linear controlled sources, and `POLY`, `VALUE` and `TABLE` ones;
 - `B` sources, `V=` or `I=` an expression, which may read the current of any source of a voltage, their own included;
@@ -46,7 +46,7 @@ jolty reads a file as PSpice and ngspice read it:
 Parameters may read one another in any order, and expressions know PSpice's `TEMP`, `VT` and `GMIN`.
 Expressions are read with PSpice's functions and ngspice's meanings, written in [jolty's expression language](../reference/expressions.md): `PWR(x, y)` is `|x|^y`, a `TABLE` within an expression extends beyond its ends, and a `TABLE` source holds beyond its ends with its corners rounded, as ngspice's XSPICE `pwl` model rounds them.
 A switch follows ngspice's log-cubic law between its on and off voltages or currents.
-A waveform must give what SPICE would take from the transient analysis: a `PULSE` its rise, fall and width, positive, and a `SIN` its frequency, since a circuit is read apart from any analysis; a source's DC level beside its waveform must be the waveform's level at zero, as jolty's source has one level there for every analysis; and `EXP`, `SFFM` and `AM` waveforms, which jolty has not, are errors.
+A waveform must give what SPICE would take from the transient analysis: a `PULSE` its rise, fall and width, positive, a `SIN` its frequency, and an `EXP` its two delays and two time constants, positive, since ngspice 47 takes each that is 0 from the transient's step (measured: `EXP(0 1 0 1n 6n 2n)` holds 0 V until the step, 0.5 ns, under `tran 0.5n 12n`), and a circuit is read apart from any analysis; a source's DC level beside its waveform must be the waveform's level at zero, as jolty's source has one level there for every analysis; and `SFFM` and `AM` waveforms, which jolty has not, are errors.
 A bipolar transistor has a substrate, as in SPICE: the ground unless its instance names a fourth node, at its collector for an NPN and at its base for a PNP unless `SUBS` builds it otherwise.
 
 An element that reads the current through a voltage source reads it through a port placed in series with the source, as the nets `V1.sense1`, `V1.sense2` and so on for a source `V1`.
