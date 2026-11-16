@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use jolty_numerics::{
-    Complex64, Condensation, Entry, LinearError, Ordering, Pattern, PatternBuilder, Scalar,
-    SparseLu, Work, Workspace,
+    Complex64, Condensation, Dissecting, Entry, LinearError, Ordering, Pattern, PatternBuilder,
+    Scalar, SparseLu, Work, Workspace,
 };
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -548,7 +548,8 @@ fn condensing<T: Scalar>(
 ) -> SparseLu<T> {
     let (pattern, _) = matrix.pattern();
     let condensation = Arc::new(Condensation::new(pattern, &circuit.displaced()));
-    let ordering = Ordering::condensed(condensation, interiors).expect("fits");
+    let ordering =
+        Ordering::condensed(condensation, interiors.map(Dissecting::Every)).expect("fits");
     SparseLu::new(Arc::new(ordering))
 }
 
@@ -975,7 +976,7 @@ fn a_supply_joining_every_node_fills_nothing() {
 /// `interiors` positions, and the pattern's entries.
 fn dissected<T: Scalar>(matrix: &Matrix<T>, interiors: usize) -> (SparseLu<T>, Vec<Entry>) {
     let (pattern, entries) = matrix.pattern();
-    let ordering = Ordering::dissected(pattern, interiors).expect("fits");
+    let ordering = Ordering::dissected(pattern, Dissecting::Every(interiors)).expect("fits");
     (SparseLu::new(Arc::new(ordering)), entries)
 }
 

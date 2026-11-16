@@ -21,7 +21,7 @@ use jolty_models::{
     Nature, Node, ParameterError, REFERENCE_TEMPERATURE, Regions, Runs, Specification,
     ThresholdDetector, ThresholdDetectorParameters, Unknown, UnknownIndex,
 };
-use jolty_numerics::{Condensation, Entry, Ordering, Pattern, PatternBuilder};
+use jolty_numerics::{Condensation, Dissecting, Entry, Ordering, Pattern, PatternBuilder};
 use serde_json::Value;
 
 use crate::elaborate::{self, Composite, ElaborationError, ElaborationProblem, Location};
@@ -547,7 +547,8 @@ impl Elaborated {
         if let Some(ordering) = kept().get(&interiors) {
             return Ok(Arc::clone(ordering));
         }
-        let made = Ordering::condensed(Arc::clone(&self.condensation), Some(interiors))
+        let dissecting = Dissecting::Every(interiors);
+        let made = Ordering::condensed(Arc::clone(&self.condensation), Some(dissecting))
             .map_err(|_| SimulationError::TooLarge)?;
         Ok(Arc::clone(
             kept().entry(interiors).or_insert_with(|| Arc::new(made)),

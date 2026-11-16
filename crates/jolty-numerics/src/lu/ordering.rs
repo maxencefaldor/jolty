@@ -39,7 +39,9 @@ const NONE: usize = usize::MAX;
 ///
 /// An ordering [dissected](Ordering::dissected) for interiors of some size orders each
 /// block larger than them by nested dissection instead, into interiors, each ordered by
-/// the minimum degree, and the separators that border them, which factor in parallel.
+/// the minimum degree, and the separators that border them, which factor in parallel:
+/// every such block, or only those whose elimination that makes cheaper, as its
+/// [`Dissecting`] says.
 ///
 /// An ordering of a [`Condensation`] orders the pattern of the unknowns it keeps: a solver
 /// of it condenses each matrix it is given before it factors it, and recovers the unknowns
@@ -70,14 +72,40 @@ pub struct Ordering {
     above: Entries,
     /// The same entries by row, for each block those above it.
     across: Across,
-    /// The most positions of an interior of a dissected block, when the ordering dissects
-    /// the blocks larger.
-    interiors: Option<usize>,
+    /// Which blocks the ordering dissects, if any.
+    dissecting: Option<Dissecting>,
     /// The nested dissections of the blocks it dissects, in the order of the blocks.
     dissections: Vec<Dissection>,
     /// The index among the dissections of each block's, or `NONE` for a block not
     /// dissected.
     dissected: Vec<usize>,
+}
+
+/// Which diagonal blocks an [`Ordering`] orders by nested dissection, each into interiors
+/// of at most a number of positions, rather than by the minimum degree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Dissecting {
+    /// Every block of more positions than an interior may hold.
+    Every(usize),
+    /// Every block of more positions than an interior may hold whose elimination nested
+    /// dissection costs fewer multiply-adds than the minimum degree, both counted on the
+    /// symbolic factor of the block's pattern plus its transpose, each column's update of
+    /// the rest a product for each entry of its column of `L` and of its row of `U`.
+    /// On a square grid, nested dissection into interiors of at most 157 positions costs
+    /// 1.06 times the minimum degree's multiply-adds at 60 positions a side and 0.96 times
+    /// at 70; on a path, which the minimum degree eliminates with no fill, 3.9 times at
+    /// 5,000 positions.
+    Cheaper(usize),
+}
+
+impl Dissecting {
+    /// The most positions of an interior, one at least.
+    #[must_use]
+    pub fn interiors(self) -> usize {
+        match self {
+            Self::Every(most) | Self::Cheaper(most) => most.max(1),
+        }
+    }
 }
 
 /// Some entries of each of some columns, by column: each a row's index and the slot of its
@@ -243,26 +271,26 @@ impl Ordering {
         Self::analyze(pattern, None)
     }
 
-    /// Analyzes `pattern` as [`Ordering::new`] does, but orders each diagonal block of more
-    /// than `interiors` positions by nested dissection: into interiors of at most
-    /// `interiors` positions, unless one cannot be split further, each ordered by the
-    /// minimum degree, after them the separators between them, each after the parts it
-    /// separates. The factorization of such a block factors its interiors in parallel,
-    /// each pivoting within itself, and then each separator once the parts below it are
-    /// factored, the last the whole block's; its order of operations is a pure function of
-    /// the pattern and `interiors`, so its factors are the same bits on any number of
-    /// threads.
+    /// Analyzes `pattern` as [`Ordering::new`] does, but orders the diagonal blocks
+    /// `dissecting` names by nested dissection: into interiors of at most its
+    /// [`Dissecting::interiors`] positions, unless one cannot be split further, each
+    /// ordered by the minimum degree, after them the separators between them, each after
+    /// the parts it separates. The factorization of such a block factors its interiors in
+    /// parallel, each pivoting within itself, and then each separator once the parts below
+    /// it are factored, the last the whole block's; its order of operations is a pure
+    /// function of the pattern and `dissecting`, so its factors are the same bits on any
+    /// number of threads.
     ///
     /// # Errors
     ///
     /// Returns [`LinearError::TooLarge`] when the minimum degree ordering's workspace does
     /// not fit in memory or its indices overflow.
-    pub fn dissected(pattern: Arc<Pattern>, interiors: usize) -> Result<Self, LinearError> {
-        Self::analyze(pattern, Some(interiors.max(1)))
+    pub fn dissected(pattern: Arc<Pattern>, dissecting: Dissecting) -> Result<Self, LinearError> {
+        Self::analyze(pattern, Some(dissecting))
     }
 
     /// Analyzes the pattern of the unknowns `condensation` keeps, as [`Ordering::new`]
-    /// does, or as [`Ordering::dissected`] does for `interiors`, if given: its solvers
+    /// does, or as [`Ordering::dissected`] does for `dissecting`, if given: its solvers
     /// factor the matrices of the condensation's full pattern, each condensed first.
     ///
     /// # Errors
@@ -271,13 +299,12 @@ impl Ordering {
     /// not fit in memory or its indices overflow.
     pub fn condensed(
         condensation: Arc<Condensation>,
-        interiors: Option<usize>,
+        dissecting: Option<Dissecting>,
     ) -> Result<Self, LinearError> {
-        let interiors = interiors.map(|most| most.max(1));
         if condensation.eliminated() == 0 {
-            return Self::analyze(Arc::clone(condensation.full()), interiors);
+            return Self::analyze(Arc::clone(condensation.full()), dissecting);
         }
-        let mut ordering = Self::analyze(Arc::clone(condensation.kept()), interiors)?;
+        let mut ordering = Self::analyze(Arc::clone(condensation.kept()), dissecting)?;
         for column in &mut ordering.undetermined {
             *column = condensation.unknown(*column);
         }
@@ -285,8 +312,8 @@ impl Ordering {
         Ok(ordering)
     }
 
-    /// Analyzes `pattern`, dissecting the blocks larger than `interiors`, if given.
-    fn analyze(pattern: Arc<Pattern>, interiors: Option<usize>) -> Result<Self, LinearError> {
+    /// Analyzes `pattern`, dissecting the blocks `dissecting` names, if given.
+    fn analyze(pattern: Arc<Pattern>, dissecting: Option<Dissecting>) -> Result<Self, LinearError> {
         let dimension = pattern.dimension();
         let structure = pattern.structure();
         let (starts, rows) = (structure.col_ptr(), structure.row_idx());
@@ -306,7 +333,7 @@ impl Ordering {
                     within: Entries::empty(dimension),
                     above: Entries::empty(dimension),
                     across: Across::empty(1),
-                    interiors,
+                    dissecting,
                     dissections: Vec::new(),
                     dissected: vec![NONE],
                 });
@@ -322,15 +349,14 @@ impl Ordering {
         let mut trees = Vec::new();
         for (index, block) in blocks.windows(2).enumerate() {
             let range = &mut columns[block[0]..block[1]];
-            let found = match interiors {
-                Some(most) if range.len() > most => {
-                    dissect(range, &mut local, (starts, rows), &column_of_row, most)?
-                }
-                _ => None,
-            };
-            match found {
-                Some(found) => trees.push((index, found)),
-                None => reduce_fill(range, &mut local, (starts, rows), &column_of_row)?,
+            let found = order_block(
+                range,
+                &mut local,
+                ((starts, rows), &column_of_row),
+                dissecting,
+            )?;
+            if let Some(found) = found {
+                trees.push((index, found));
             }
         }
         let ordered_rows: Vec<usize> = columns.iter().map(|&column| matched[column]).collect();
@@ -382,7 +408,7 @@ impl Ordering {
             within,
             above,
             across,
-            interiors,
+            dissecting,
             dissections,
             dissected,
         })
@@ -482,11 +508,11 @@ impl Ordering {
         self.above.entries.len()
     }
 
-    /// The most positions of an interior of a dissected block, if the ordering dissects
-    /// the blocks larger: the `interiors` it was [dissected](Ordering::dissected) for.
+    /// The most positions of an interior of a dissected block, if the ordering was
+    /// [dissected](Ordering::dissected) for any: its [`Dissecting::interiors`].
     #[must_use]
     pub fn interiors(&self) -> Option<usize> {
-        self.interiors
+        self.dissecting.map(Dissecting::interiors)
     }
 
     /// The nested dissections of the blocks it dissects, in the order of the blocks.
@@ -511,7 +537,7 @@ impl fmt::Debug for Ordering {
             .field("dimension", &self.pattern.dimension())
             .field("blocks", &self.blocks())
             .field("undetermined", &self.undetermined)
-            .field("interiors", &self.interiors)
+            .field("dissecting", &self.dissecting)
             .field("dissected", &self.dissections.len())
             .finish_non_exhaustive()
     }
@@ -719,6 +745,123 @@ fn dissect(
     Ok(Some(found))
 }
 
+/// Orders the columns of one diagonal `block`, as `dissecting` says, if given, and else by
+/// the minimum degree, and returns the nodes of its tree if it dissects it. `local` is a
+/// workspace as for [`reduce_fill`].
+fn order_block(
+    block: &mut [usize],
+    local: &mut [usize],
+    (pattern, column_of_row): ((&[usize], &[usize]), &[usize]),
+    dissecting: Option<Dissecting>,
+) -> Result<Option<Vec<dissection::Found>>, LinearError> {
+    let found = match dissecting.filter(|each| block.len() > each.interiors()) {
+        Some(each @ Dissecting::Every(_)) => {
+            dissect(block, local, pattern, column_of_row, each.interiors())?
+        }
+        Some(each @ Dissecting::Cheaper(_)) => {
+            return cheaper(block, local, pattern, column_of_row, each.interiors());
+        }
+        None => None,
+    };
+    if found.is_none() {
+        reduce_fill(block, local, pattern, column_of_row)?;
+    }
+    Ok(found)
+}
+
+/// Orders the columns of one diagonal `block` by whichever of two orderings costs its
+/// elimination fewer multiply-adds, each counted by [`multiply_adds`]: by nested
+/// dissection into interiors of at most `most` columns, as [`dissect`] does, returning
+/// the nodes of its tree, or by the minimum degree, as [`reduce_fill`] does, returning
+/// `None`, which it does too for a block that does not split. A tie keeps the minimum
+/// degree, whose factorization a single task does. `local` is a workspace as for
+/// [`reduce_fill`].
+fn cheaper(
+    block: &mut [usize],
+    local: &mut [usize],
+    pattern: (&[usize], &[usize]),
+    column_of_row: &[usize],
+    most: usize,
+) -> Result<Option<Vec<dissection::Found>>, LinearError> {
+    let mut fewest = block.to_vec();
+    reduce_fill(&mut fewest, local, pattern, column_of_row)?;
+    if let Some(found) = dissect(block, local, pattern, column_of_row, most)?
+        && multiply_adds(block, local, pattern, column_of_row)
+            < multiply_adds(&fewest, local, pattern, column_of_row)
+    {
+        return Ok(Some(found));
+    }
+    block.copy_from_slice(&fewest);
+    Ok(None)
+}
+
+/// The multiply-adds of eliminating the columns of one diagonal `block` in their order,
+/// each pivoting on the row matched with it: the sum over its columns of the square of
+/// the entries below the diagonal of its column of the symbolic factor of the block's
+/// pattern plus its transpose, its rows the columns matched with them, each column's
+/// update of the rest one product for each entry of its column of `L` and of its row of
+/// `U`. The symbolic factor is found by the elimination tree (Liu, "The role of
+/// elimination trees in sparse factorization", SIAM Journal on Matrix Analysis and
+/// Applications 11(1), 1990) and each row's subtree of it, in time of the order of the
+/// factor's entries. `local` is a workspace as for [`reduce_fill`].
+fn multiply_adds(
+    block: &[usize],
+    local: &mut [usize],
+    (starts, rows): (&[usize], &[usize]),
+    column_of_row: &[usize],
+) -> u128 {
+    let size = block.len();
+    for (index, &column) in block.iter().enumerate() {
+        local[column] = index;
+    }
+    // Each position's neighbours before it, in the pattern plus its transpose.
+    let mut earlier: Vec<Vec<usize>> = vec![Vec::new(); size];
+    for (position, &column) in block.iter().enumerate() {
+        for &row in &rows[starts[column]..starts[column + 1]] {
+            let matched = column_of_row[row];
+            if block.get(local[matched]) != Some(&matched) {
+                continue;
+            }
+            let other = local[matched];
+            match other.cmp(&position) {
+                std::cmp::Ordering::Less => earlier[position].push(other),
+                std::cmp::Ordering::Greater => earlier[other].push(position),
+                std::cmp::Ordering::Equal => {}
+            }
+        }
+    }
+    // The elimination tree, by Liu's algorithm with path compression.
+    let (mut parent, mut ancestor) = (vec![NONE; size], vec![NONE; size]);
+    for (position, before) in earlier.iter().enumerate() {
+        for &first in before {
+            let mut at = first;
+            while at != NONE && at != position {
+                let next = ancestor[at];
+                ancestor[at] = position;
+                if next == NONE {
+                    parent[at] = position;
+                }
+                at = next;
+            }
+        }
+    }
+    // Each row's entries of `L` are the nodes of its subtree: the paths up the tree from
+    // its neighbours before it.
+    let (mut below, mut mark) = (vec![0_u128; size], vec![NONE; size]);
+    for (position, before) in earlier.iter().enumerate() {
+        mark[position] = position;
+        for &first in before {
+            let mut at = first;
+            while at != NONE && mark[at] != position {
+                below[at] += 1;
+                mark[at] = position;
+                at = parent[at];
+            }
+        }
+    }
+    below.iter().map(|entries| entries * entries).sum()
+}
+
 /// Reorders the columns of one diagonal `block` by the approximate minimum degree
 /// ordering of the block's pattern plus its transpose, its rows the columns matched with
 /// them. `local` is a workspace of one index per column of the pattern, whose `starts` and
@@ -778,6 +921,73 @@ mod tests {
 
     use super::*;
     use crate::PatternBuilder;
+
+    /// The pattern of the nodes of a square grid of `side` nodes a side, each joined to
+    /// the nodes beside it, as a mesh's resistors join them.
+    fn grid(side: usize) -> Arc<Pattern> {
+        let at = |row: usize, column: usize| row * side + column;
+        let mut positions = Vec::new();
+        for row in 0..side {
+            for column in 0..side {
+                positions.push((at(row, column), at(row, column)));
+                for (other, inside) in [
+                    (at(row, column) + side, row + 1 < side),
+                    (at(row, column) + 1, column + 1 < side),
+                ] {
+                    if inside {
+                        positions.extend([(at(row, column), other), (other, at(row, column))]);
+                    }
+                }
+            }
+        }
+        pattern(side * side, &positions)
+    }
+
+    /// The pattern of the nodes of a path of `length` nodes, each joined to the next, as
+    /// a chain's inverters join their nodes.
+    fn path(length: usize) -> Arc<Pattern> {
+        let mut positions: Vec<(usize, usize)> = (0..length).map(|node| (node, node)).collect();
+        for node in 1..length {
+            positions.extend([(node - 1, node), (node, node - 1)]);
+        }
+        pattern(length, &positions)
+    }
+
+    #[test]
+    fn dissects_a_block_only_where_it_costs_fewer_multiply_adds() {
+        // `Dissecting::Cheaper`'s measures of the two orderings.
+        let dissections = |pattern| {
+            Ordering::dissected(pattern, Dissecting::Cheaper(157))
+                .expect("an ordering")
+                .dissections()
+                .len()
+        };
+        assert_eq!(dissections(grid(60)), 0);
+        assert_eq!(dissections(grid(70)), 1);
+        assert_eq!(dissections(path(5_000)), 0);
+    }
+
+    #[test]
+    fn counts_the_multiply_adds_of_an_elimination() {
+        // A path in its order fills nothing: each column but the last holds one entry
+        // below its diagonal, one multiply-add. Its middle node first holds its two
+        // neighbours, four, and joins them, so that each later column but the last holds
+        // one entry again.
+        let pattern = path(5);
+        let structure = pattern.structure();
+        let identity: Vec<usize> = (0..5).collect();
+        let mut local = vec![NONE; 5];
+        let count = |order: &[usize], local: &mut [usize]| {
+            multiply_adds(
+                order,
+                local,
+                (structure.col_ptr(), structure.row_idx()),
+                &identity,
+            )
+        };
+        assert_eq!(count(&identity, &mut local), 4);
+        assert_eq!(count(&[2, 0, 1, 3, 4], &mut local), 4 + 1 + 1 + 1);
+    }
 
     /// The pattern of a `dimension` × `dimension` matrix with an entry at each of
     /// `positions`.

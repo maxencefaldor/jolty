@@ -41,7 +41,7 @@ use num_complex::Complex64;
 pub use self::condensation::Condensation;
 use self::condensation::Saved;
 use self::numeric::{Factorization, Numeric};
-pub use self::ordering::Ordering;
+pub use self::ordering::{Dissecting, Ordering};
 use self::tree::Scratch;
 use crate::Pattern;
 use crate::reduce::CHUNK;
