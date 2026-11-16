@@ -26,7 +26,7 @@ THRESHOLD = (SUPPLY - 0.7 + 0.7 * RATIO) / (1 + RATIO)
 def bench(c: Builder) -> None:
     """The inverter on 3.3 V, driven by a pulse, loading 20 fF."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY * V), id="VDD")
+    supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     edges = Pulse(
         initial=0 * V,
         pulsed=SUPPLY * V,
@@ -36,9 +36,9 @@ def bench(c: Builder) -> None:
         width=4 * ns,
         period=10 * ns,
     )
-    source = c.place(devices.voltage_source(edges), id="VIN")
-    gate = c.place(inverter(), id="X1")
-    load = c.place(devices.capacitor(20 * fF), id="CL")
+    source = c.place(devices.voltage_source(edges), name="VIN")
+    gate = c.place(inverter(), name="X1")
+    load = c.place(devices.capacitor(20 * fF), name="CL")
     c.connect(supply.positive, gate.vdd, name="vdd")
     c.connect(source.positive, gate.a, name="in")
     c.connect(gate.y, load.a, name="out")

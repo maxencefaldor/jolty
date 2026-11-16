@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 /// The thermal voltage at 27 °C.
 const THERMAL_VOLTAGE: f64 = 1.380_649e-23 * 300.15 / 1.602_176_634e-19;
 
-/// A device instance: its id, model, parameters, and the net of each terminal.
+/// A device instance: its name, model, parameters, and the net of each terminal.
 type Device<'a> = (&'a str, &'a str, Value, &'a [(&'a str, &'a str)]);
 
 /// A circuit whose top component has a ground port `0` and places `devices`.
@@ -28,7 +28,7 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
                 .map(|(terminal, net)| ((*terminal).to_owned(), json!(net)))
                 .collect();
             json!({
-                "id": id,
+                "name": id,
                 "of": {"device": model},
                 "parameters": parameters,
                 "terminals": terminals,
@@ -36,7 +36,7 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
         })
         .collect();
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit file")
@@ -1204,14 +1204,14 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
 #[test]
 fn hierarchy_gives_the_flat_answer() {
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "top",
+        "format": "jolty-circuit", "version": 3, "top": "top",
         "components": {
             "top": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-                {"id": "V1", "of": {"device": "voltage_source"}, "parameters": dc(3.0),
+                {"name": "V1", "of": {"device": "voltage_source"}, "parameters": dc(3.0),
                  "terminals": {"positive": "in", "negative": "0"}},
-                {"id": "X1", "of": {"component": "half"},
+                {"name": "X1", "of": {"component": "half"},
                  "terminals": {"input": "in", "output": "mid", "ground": "0"}},
-                {"id": "X2", "of": {"component": "half"},
+                {"name": "X2", "of": {"component": "half"},
                  "terminals": {"input": "mid", "output": "out", "ground": "0"}}
             ]},
             "half": {"ports": [
@@ -1219,11 +1219,11 @@ fn hierarchy_gives_the_flat_answer() {
                 {"name": "output", "role": "signal"},
                 {"name": "ground", "role": "ground"}
             ], "instances": [
-                {"id": "E1", "of": {"device": "voltage_controlled_voltage_source"},
+                {"name": "E1", "of": {"device": "voltage_controlled_voltage_source"},
                  "parameters": {"gain": 0.5},
                  "terminals": {"positive": "buffered", "negative": "ground",
                                "control_positive": "input", "control_negative": "ground"}},
-                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+                {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
                  "terminals": {"a": "buffered", "b": "output"}}
             ]}
         }

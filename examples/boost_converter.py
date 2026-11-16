@@ -22,7 +22,7 @@ def boost(c: Builder) -> None:
     """The inductor from the input, the switch to ground, the diode to the output."""
     source, output, gate = c.port("input"), c.port("output"), c.port("gate", Role.INPUT)
     ground = c.port("ground", Role.GROUND)
-    inductor = c.place(devices.inductor(100 * uH), id="L1")
+    inductor = c.place(devices.inductor(100 * uH), name="L1")
     switch = c.place(
         devices.voltage_controlled_switch(
             on_resistance=0.05 * ohm,
@@ -30,13 +30,13 @@ def boost(c: Builder) -> None:
             on_voltage=4 * V,
             off_voltage=1 * V,
         ),
-        id="S1",
+        name="S1",
     )
     rectifier = c.place(
         devices.diode(saturation_current=30 * nA, series_resistance=0.05 * ohm),
-        id="D1",
+        name="D1",
     )
-    smoothing = c.place(devices.capacitor(100 * uF), id="C1")
+    smoothing = c.place(devices.capacitor(100 * uF), name="C1")
     c.connect(source, inductor.a)
     c.connect(inductor.b, switch.positive, rectifier.anode, name="switched")
     c.connect(gate, switch.control_positive)
@@ -48,7 +48,7 @@ def boost(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The converter, switched at 100 kHz and 60 %, into 100 Ω."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="VIN")
+    supply = c.place(devices.voltage_source(5 * V), name="VIN")
     drive = Pulse(
         initial=0 * V,
         pulsed=5 * V,
@@ -58,9 +58,9 @@ def bench(c: Builder) -> None:
         width=(DUTY * PERIOD - 20e-9) * 1e6 * us,
         period=PERIOD * 1e6 * us,
     )
-    clock = c.place(devices.voltage_source(drive), id="VG")
-    converter = c.place(boost(), id="X1")
-    load = c.place(devices.resistor(100 * ohm), id="RL")
+    clock = c.place(devices.voltage_source(drive), name="VG")
+    converter = c.place(boost(), name="X1")
+    load = c.place(devices.resistor(100 * ohm), name="RL")
     c.connect(supply.positive, converter.input, name="in")
     c.connect(clock.positive, converter.gate, name="gate")
     c.connect(converter.output, load.a, name="out")

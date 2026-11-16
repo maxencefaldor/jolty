@@ -61,7 +61,7 @@ def _instances(circuit: ir.Circuit) -> tuple[ir.Instance, ...]:
 def _source(circuit: ir.Circuit) -> str:
     """The pulsed source, the first voltage source the circuit places."""
     return next(
-        instance.id
+        instance.name
         for instance in _instances(circuit)
         if instance.of == ir.DeviceOf(device="voltage_source")
     )
@@ -254,7 +254,7 @@ def test_a_resistor_split_in_two_simulates_the_same(
     half = devices.resistor(resistance / 2 * ohm)
     first, second = (
         ir.Instance(
-            id=f"{resistor.id}{part}",
+            name=f"{resistor.name}{part}",
             of=resistor.of,
             parameters=half.parameters,
             terminals=terminals,
@@ -289,7 +289,7 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
     probed = instances[index]
     net = probed.terminals[terminal]
     ammeter = ir.Instance(
-        id="ammeter",
+        name="ammeter",
         of=ir.DeviceOf(device="voltage_source"),
         parameters=devices.voltage_source(0 * V).parameters,
         terminals={"positive": net, "negative": "probe"},
@@ -305,7 +305,7 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
         return
     point = Simulation(written).run(OperatingPoint(record=["**"]), TIGHT)
     reading = point.current("ammeter")
-    into = point.current(probed.id, terminal)
+    into = point.current(probed.name, terminal)
     scale = max(abs(current) for current in _currents(point)) or 1.0
     assert abs(reading - into) <= 1e-6 * scale + 2 * CURRENT_TOLERANCE, (
         f"the ammeter reads {reading} A, the terminal takes {into} A"

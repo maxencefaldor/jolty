@@ -477,7 +477,7 @@ def fitted_mosfet(c: Builder, sheet: Datasheet, *, heated: bool = False) -> None
             ),
             heated=heated,
         ),
-        id="M1",
+        name="M1",
     )
     drain_source = sheet.output_capacitance - sheet.reverse_capacitance
     zero_bias = (
@@ -494,7 +494,7 @@ def fitted_mosfet(c: Builder, sheet: Datasheet, *, heated: bool = False) -> None
             ),
             heated=heated,
         ),
-        id="D1",
+        name="D1",
     )
     anode, cathode = (source, drain) if sheet.channel == "n" else (drain, source)
     c.connect(channel.drain, drain)

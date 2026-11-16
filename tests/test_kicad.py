@@ -88,13 +88,13 @@ def driver(c: Builder) -> None:
     supply = c.port("supply", Role.SUPPLY)
     control = c.port("control", Role.INPUT)
     ground = c.port("ground", Role.GROUND)
-    load = c.place(devices.resistor(4.7 * kohm, tolerance=0.01), id="R1")
-    drive = c.place(devices.resistor(10 * kohm, tolerance=0.01), id="R2")
-    snubber = c.place(devices.capacitor(1 * nF, tolerance=0.1), id="C1")
-    switch = c.place(parts.q2n3904(heated=True), id="Q1")
-    clamp = c.place(parts.d1n4148(), id="D1")
-    power = c.place(parts.irf511(), id="Q2")
-    sink = c.place(devices.thermal_resistance(50 * K / W), id="RT")
+    load = c.place(devices.resistor(4.7 * kohm, tolerance=0.01), name="R1")
+    drive = c.place(devices.resistor(10 * kohm, tolerance=0.01), name="R2")
+    snubber = c.place(devices.capacitor(1 * nF, tolerance=0.1), name="C1")
+    switch = c.place(parts.q2n3904(heated=True), name="Q1")
+    clamp = c.place(parts.d1n4148(), name="D1")
+    power = c.place(parts.irf511(), name="Q2")
+    sink = c.place(devices.thermal_resistance(50 * K / W), name="RT")
     c.connect(supply, load.a, clamp.cathode)
     c.connect(load.b, switch.collector, clamp.anode, snubber.a, power.drain, name="out")
     c.connect(control, drive.a, power.gate)
@@ -107,8 +107,8 @@ def driver(c: Builder) -> None:
 @component
 def bench(c: Builder) -> None:
     ground = c.port("0", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="V1")
-    placed = c.place(driver(), id="X1")
+    supply = c.place(devices.voltage_source(5 * V), name="V1")
+    placed = c.place(driver(), name="X1")
     c.connect(supply.positive, placed.supply)
     c.connect(supply.negative, placed.ground, placed.control, ground)
 
@@ -209,7 +209,7 @@ def pair(c: Builder, bulk: str) -> None:
     gate = c.port("gate", Role.INPUT)
     drain = c.port("drain")
     transistor = c.place(
-        devices.mosfet(width=1 * m, length=1 * m).numbered("2N7000"), id="M1"
+        devices.mosfet(width=1 * m, length=1 * m).numbered("2N7000"), name="M1"
     )
     c.connect(transistor.drain, drain)
     c.connect(transistor.gate, gate)
@@ -235,11 +235,11 @@ def flawed(c: Builder) -> None:
     """Every way an instance can stay off a board."""
     ground = c.port("ground", Role.GROUND)
     node = c.port("node")
-    ideal = c.place(devices.resistor(1 * kohm), id="R1")
-    switch = c.place(parts.q2n3904(), id="Q1")
-    clamp = c.place(parts.d1n4148(), id="D1")
-    power = c.place(parts.irf511(heated=True), id="Q2")
-    sink = c.place(devices.thermal_resistance(50 * K / W), id="RT")
+    ideal = c.place(devices.resistor(1 * kohm), name="R1")
+    switch = c.place(parts.q2n3904(), name="Q1")
+    clamp = c.place(parts.d1n4148(), name="D1")
+    power = c.place(parts.irf511(heated=True), name="Q2")
+    sink = c.place(devices.thermal_resistance(50 * K / W), name="RT")
     c.connect(node, ideal.a, switch.collector, switch.base, clamp.anode, power.drain)
     c.connect(ideal.b, switch.emitter, clamp.cathode, power.gate, power.source, ground)
     c.connect(power.thermal, sink.a)
@@ -275,7 +275,7 @@ def test_every_problem_keeping_an_instance_off_the_board_is_named() -> None:
 @component
 def floating(c: Builder) -> None:
     """A resistor between two ports, neither the ground."""
-    resistor = c.place(devices.resistor(4.7 * kohm, tolerance=0.01), id="R1")
+    resistor = c.place(devices.resistor(4.7 * kohm, tolerance=0.01), name="R1")
     c.connect(c.port("a"), resistor.a)
     c.connect(c.port("b"), resistor.b)
 
@@ -284,7 +284,7 @@ def test_a_component_is_written_from_a_ground_port_and_by_its_path() -> None:
     @component
     def holder(c: Builder) -> None:
         ground = c.port("0", Role.GROUND)
-        placed = c.place(floating(), id="X1")
+        placed = c.place(floating(), name="X1")
         c.connect(placed.a, placed.b, ground)
 
     built = circuit(holder())

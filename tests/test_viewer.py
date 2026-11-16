@@ -26,8 +26,8 @@ from jolty.waveforms import Piecewise
 def stage(c: Builder) -> None:
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source, resistor.a)
     c.connect(resistor.b, capacitor.a, output)
     c.connect(capacitor.b, ground)
@@ -37,8 +37,8 @@ def stage(c: Builder) -> None:
 def bench(c: Builder) -> None:
     ground = c.port("gnd", Role.GROUND)
     step = Piecewise([(0 * us, 0 * V), (1 * us, 1 * V)])
-    source = c.place(devices.voltage_source(step), id="V1")
-    filter_ = c.place(stage(), id="X1")
+    source = c.place(devices.voltage_source(step), name="V1")
+    filter_ = c.place(stage(), name="X1")
     c.connect(source.positive, filter_.input, name="in")
     c.connect(filter_.output, name="out")
     c.connect(source.negative, filter_.ground, ground)

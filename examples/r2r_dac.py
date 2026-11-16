@@ -25,16 +25,16 @@ def ladder(c: Builder) -> None:
     legs = [c.port(f"d{bit}", Role.INPUT) for bit in range(BITS)]
     output = c.port("output", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
-    end = c.place(devices.resistor(20 * kohm), id="RT")
+    end = c.place(devices.resistor(20 * kohm), name="RT")
     node = c.net("n0")
     c.connect(end.a, node)
     c.connect(end.b, ground)
     for bit in range(BITS):
-        leg = c.place(devices.resistor(20 * kohm), id=f"R2_{bit}")
+        leg = c.place(devices.resistor(20 * kohm), name=f"R2_{bit}")
         c.connect(leg.a, legs[bit])
         c.connect(leg.b, node)
         if bit < BITS - 1:
-            rung = c.place(devices.resistor(10 * kohm), id=f"R1_{bit}")
+            rung = c.place(devices.resistor(10 * kohm), name=f"R1_{bit}")
             following = output if bit == BITS - 2 else c.net(f"n{bit + 1}")
             c.connect(rung.a, node)
             c.connect(rung.b, following)
@@ -45,8 +45,8 @@ def ladder(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The ladder, driven by buffers from a counter of logic sources."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY * V), id="VDD")
-    converter = c.place(ladder(), id="X1")
+    supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
+    converter = c.place(ladder(), name="X1")
     vdd = c.net("vdd")
     c.connect(supply.positive, vdd)
     for bit in range(BITS):
@@ -55,13 +55,13 @@ def bench(c: Builder) -> None:
             for code in range(1, 2**BITS)
         ]
         count = c.place(
-            devices.logic_source(0, changes, transition=100 * ps), id=f"V{bit}"
+            devices.logic_source(0, changes, transition=100 * ps), name=f"V{bit}"
         )
         buffer = c.place(
             devices.logic_gate(
                 "buffer", rise=200 * ps, transition=100 * ps, electrical=True
             ),
-            id=f"U{bit}",
+            name=f"U{bit}",
         )
         c.connect(count.output, buffer.a, name=f"code{bit}")
         c.connect(buffer.y, converter[f"d{bit}"], name=f"d{bit}")

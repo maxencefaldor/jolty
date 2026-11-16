@@ -20,10 +20,10 @@ def widlar(c: Builder) -> None:
     """The diode-connected reference, and the output transistor over its resistor."""
     output = c.port("output", Role.OUTPUT)
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
-    reference = c.place(q2n3904(), id="Q1")
-    mirror = c.place(q2n3904(), id="Q2")
-    feed = c.place(devices.resistor(11.3 * kohm), id="R1")
-    emitter = c.place(devices.resistor(1.55 * kohm), id="RE")
+    reference = c.place(q2n3904(), name="Q1")
+    mirror = c.place(q2n3904(), name="Q2")
+    feed = c.place(devices.resistor(11.3 * kohm), name="R1")
+    emitter = c.place(devices.resistor(1.55 * kohm), name="RE")
     c.connect(supply, feed.a)
     c.connect(feed.b, reference.collector, reference.base, mirror.base, name="bias")
     c.connect(mirror.emitter, emitter.a, name="emitter")
@@ -35,9 +35,9 @@ def widlar(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The source on 12 V, its output held by a swept voltage."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(12 * V), id="VCC")
-    compliance = c.place(devices.voltage_source(5 * V), id="VOUT")
-    source = c.place(widlar(), id="X1")
+    supply = c.place(devices.voltage_source(12 * V), name="VCC")
+    compliance = c.place(devices.voltage_source(5 * V), name="VOUT")
+    source = c.place(widlar(), name="X1")
     c.connect(supply.positive, source.vcc, name="vcc")
     c.connect(compliance.positive, source.output, name="out")
     c.connect(supply.negative, compliance.negative, source.ground, ground)

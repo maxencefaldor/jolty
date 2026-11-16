@@ -16,9 +16,9 @@ from jolty.units import V, um
 @component
 def inverter(c: Builder) -> None:
     ground = c.port("0", Role.GROUND)
-    supply = c.place(devices.voltage_source(1.8 * V), id="VDD")
-    lower = c.place(sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um), id="MN")
-    upper = c.place(sky130.mosfet("pfet_01v8", 2 * um, 0.15 * um, fingers=2), id="MP")
+    supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
+    lower = c.place(sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um), name="MN")
+    upper = c.place(sky130.mosfet("pfet_01v8", 2 * um, 0.15 * um, fingers=2), name="MP")
     c.connect(supply.positive, upper.source, upper.bulk, name="vdd")
     c.connect(lower.gate, upper.gate, name="in")
     c.connect(lower.drain, upper.drain, name="out")

@@ -9,7 +9,7 @@ use jolty_ir::Circuit;
 use jolty_models::Library;
 use serde_json::{Value, json};
 
-/// A device instance: its id, model, parameters, and the net of each terminal.
+/// A device instance: its name, model, parameters, and the net of each terminal.
 type Device<'a> = (&'a str, &'a str, Value, &'a [(&'a str, &'a str)]);
 
 /// A circuit whose top component has a ground port `0` and places `devices`.
@@ -21,11 +21,11 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
                 .iter()
                 .map(|(terminal, net)| ((*terminal).to_owned(), json!(net)))
                 .collect();
-            json!({"id": id, "of": {"device": model}, "parameters": parameters, "terminals": terminals})
+            json!({"name": id, "of": {"device": model}, "parameters": parameters, "terminals": terminals})
         })
         .collect();
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit file")

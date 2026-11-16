@@ -65,8 +65,8 @@ def driven(part: Component, level: float, pins: tuple[str, str]) -> Component:
     """`part` driven at its first pin by `level` volts, its second pin `out`."""
     c = Builder("bench")
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(level * V), id="V1")
-    placed = c.place(part, id="U1")
+    source = c.place(devices.voltage_source(level * V), name="V1")
+    placed = c.place(part, name="U1")
     c.connect(source.positive, placed[pins[0]], name="in")
     c.connect(placed[pins[1]], name="out")
     joined = [source.negative, ground]
@@ -215,9 +215,9 @@ def waveforms(text: str) -> dict[str, JsonValue]:
     read = library(text)
     (name,) = read.subcircuits
     return {
-        instance.id: instance.parameters["waveform"]
+        instance.name: instance.parameters["waveform"]
         for instance in read.component(name).definition.instances
-        if instance.id[0] in "VI"
+        if instance.name[0] in "VI"
     }
 
 
@@ -277,8 +277,8 @@ def test_waveforms_read_back_as_the_exporter_writes_them() -> None:
     def sources(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
         for name, waveform in written.items():
-            placed = c.place(devices.voltage_source(waveform), id=name)
-            load = c.place(devices.resistor(1 * kohm), id=f"R{name}")
+            placed = c.place(devices.voltage_source(waveform), name=name)
+            load = c.place(devices.resistor(1 * kohm), name=f"R{name}")
             c.connect(placed.positive, load.a, name=f"n{name}")
             c.connect(placed.negative, load.b, ground)
 
@@ -316,7 +316,7 @@ def test_an_area_scales_the_defaults_a_card_leaves_out() -> None:
         ".ends"
     )
     read = {
-        instance.id: instance.parameters
+        instance.name: instance.parameters
         for instance in parts.component("parts").definition.instances
     }
     # ngspice multiplies the saturation current, 1e-16 A unless the card gives one,
@@ -428,7 +428,7 @@ def test_mutual_inductances_couple_their_inductors_into_one_device() -> None:
         "L3 0 t 250u\nK2 l3 ls -0.5\nL4 t 0 1u\n.ends"
     )
     resistor, coupled, alone = parts.component("a").definition.instances
-    assert (resistor.id, coupled.id, alone.id) == ("R1", "K1", "L4")
+    assert (resistor.name, coupled.name, alone.name) == ("R1", "K1", "L4")
     assert coupled.of == ir.DeviceOf(device="coupled_inductors")
     assert coupled.parameters == {
         "windings": [
@@ -555,7 +555,7 @@ def test_a_vdmos_is_written_for_ngspice_as_its_card_reads_back() -> None:
     @component
     def bench(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(-5 * V), id="V1")
+        supply = c.place(devices.voltage_source(-5 * V), name="V1")
         transistor = c.place(
             devices.vdmos(
                 channel="p",
@@ -564,7 +564,7 @@ def test_a_vdmos_is_written_for_ngspice_as_its_card_reads_back() -> None:
                 multiplier=2,
                 junction_capacitance=1e-9 * C / V,
             ).warmer_by(10 * K),
-            id="M1",
+            name="M1",
         )
         c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
         c.connect(supply.negative, transistor.source, ground)
@@ -634,7 +634,7 @@ def test_a_vbic_whose_card_heats_reads_with_its_thermal_network() -> None:
         ".ends"
     )
     placed = {
-        instance.id: (instance.of, instance.parameters, instance.terminals)
+        instance.name: (instance.of, instance.parameters, instance.terminals)
         for instance in parts.component("a").definition.instances
     }
     joined = {"collector": "c", "base": "b", "emitter": "e", "substrate": "s"}
@@ -707,8 +707,8 @@ def test_a_vbic_is_written_for_ngspice_as_its_card_reads_back() -> None:
     @component
     def bench(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(-5 * V), id="V1")
-        placed = c.place(transistor, id="Q1")
+        supply = c.place(devices.voltage_source(-5 * V), name="V1")
+        placed = c.place(transistor, name="Q1")
         c.connect(supply.positive, placed.collector, placed.base, name="c")
         c.connect(supply.negative, placed.emitter, placed.substrate, ground)
 
@@ -820,7 +820,7 @@ def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:
     @component
     def bench(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(3 * V), id="V1")
+        supply = c.place(devices.voltage_source(3 * V), name="V1")
         transistor = c.place(
             devices.bsim3(
                 channel="p",
@@ -838,7 +838,7 @@ def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:
                     "k2": -0.02,
                 },
             ),
-            id="M1",
+            name="M1",
         )
         c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
         c.connect(supply.negative, transistor.source, transistor.bulk, ground)
@@ -879,8 +879,8 @@ def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:
 def bench_held(c: Builder) -> None:
     """A BSIM3 held at 85 °C, which ngspice's has no temperature of its own for."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(3 * V), id="V1")
-    transistor = c.place(devices.bsim3().held_at(celsius(85)), id="M1")
+    supply = c.place(devices.voltage_source(3 * V), name="V1")
+    transistor = c.place(devices.bsim3().held_at(celsius(85)), name="M1")
     c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
     c.connect(supply.negative, transistor.source, transistor.bulk, ground)
 
@@ -976,10 +976,10 @@ def test_a_netlist_writes_each_devices_own_temperature() -> None:
     @component
     def apart(c: Builder, switch: devices.Device) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V).warmer_by(5 * K), id="V1")
-        load = c.place(devices.resistor(1 * kohm).held_at(celsius(85)), id="R1")
-        diode = c.place(devices.diode().warmer_by(10 * K), id="D1")
-        placed = c.place(switch, id="S1")
+        source = c.place(devices.voltage_source(1 * V).warmer_by(5 * K), name="V1")
+        load = c.place(devices.resistor(1 * kohm).held_at(celsius(85)), name="R1")
+        diode = c.place(devices.diode().warmer_by(10 * K), name="D1")
+        placed = c.place(switch, name="S1")
         c.connect(source.positive, load.a, placed.control_positive, name="in")
         c.connect(load.b, diode.anode, placed.positive, name="out")
         c.connect(
@@ -1012,7 +1012,7 @@ def test_a_behavioral_expression_is_written_as_jolty_computes_it() -> None:
     def shaped(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
         expression = "limit(v(a) ^ 3, 2 ^ 3 ^ 2, -1) + table(v(a), 0, 1, 1, 3)"
-        source = c.place(devices.behavioral_voltage_source(expression), id="B1")
+        source = c.place(devices.behavioral_voltage_source(expression), name="B1")
         c.connect(source.a, name="a")
         c.connect(source.positive, name="out")
         c.connect(source.negative, ground)

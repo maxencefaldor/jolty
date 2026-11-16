@@ -85,10 +85,12 @@ def supply(c: Builder, *, rated_power: float, rated_voltage: float) -> None:
         fall=1 * us,
         width=2 * us,
     )
-    source = c.place(devices.voltage_source(pulse), id="V1")
-    load = c.place(devices.resistor(100 * ohm).rated("power", rated_power * W), id="R1")
+    source = c.place(devices.voltage_source(pulse), name="V1")
+    load = c.place(
+        devices.resistor(100 * ohm).rated("power", rated_power * W), name="R1"
+    )
     store = c.place(
-        devices.capacitor(1 * uF).rated("voltage", rated_voltage * V), id="C1"
+        devices.capacitor(1 * uF).rated("voltage", rated_voltage * V), name="C1"
     )
     c.connect(source.positive, load.a, store.a, name="top")
     c.connect(source.negative, load.b, store.b, ground)
@@ -149,10 +151,11 @@ def test_a_stress_below_a_minimum_and_at_rest() -> None:
     @component
     def reversed_store(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(-2 * V), id="V1")
-        load = c.place(devices.resistor(100 * ohm), id="R1")
+        source = c.place(devices.voltage_source(-2 * V), name="V1")
+        load = c.place(devices.resistor(100 * ohm), name="R1")
         store = c.place(
-            devices.capacitor(1 * uF).rated("voltage", 16 * V, minimum=-1 * V), id="C1"
+            devices.capacitor(1 * uF).rated("voltage", 16 * V, minimum=-1 * V),
+            name="C1",
         )
         c.connect(source.positive, load.a, store.a, name="top")
         c.connect(source.negative, load.b, store.b, ground)
@@ -191,8 +194,8 @@ def test_by_default_results_record_the_instances_rated_for_a_current_or_power() 
 def divided(c: Builder) -> None:
     """Two resistors of 100 Ω in series, a component rated for 0.5 W."""
     top, bottom = c.port("top"), c.port("bottom")
-    upper = c.place(devices.resistor(100 * ohm), id="R1")
-    lower = c.place(devices.resistor(100 * ohm), id="R2")
+    upper = c.place(devices.resistor(100 * ohm), name="R1")
+    lower = c.place(devices.resistor(100 * ohm), name="R2")
     c.connect(top, upper.a)
     c.connect(upper.b, lower.a)
     c.connect(lower.b, bottom)
@@ -202,8 +205,8 @@ def test_a_component_s_rating_reads_its_ports_without_its_devices() -> None:
     @component
     def bench(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(20 * V), id="V1")
-        load = c.place(divided().rated("power", 1.5 * W), id="X1")
+        source = c.place(devices.voltage_source(20 * V), name="V1")
+        load = c.place(divided().rated("power", 1.5 * W), name="X1")
         c.connect(source.positive, load.top)
         c.connect(source.negative, load.bottom, ground)
 

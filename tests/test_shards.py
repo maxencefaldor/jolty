@@ -58,10 +58,10 @@ SEED = 3
 @component
 def divider(c: Builder, supply=5 * V) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(supply), id="V1")
-    upper = c.place(devices.resistor(1 * kohm, tolerance=0.05), id="R1")
-    lower = c.place(devices.resistor(1 * kohm, tolerance=0.05), id="R2")
-    held = c.place(devices.capacitor(1 * nF, tolerance=0.1), id="C1")
+    source = c.place(devices.voltage_source(supply), name="V1")
+    upper = c.place(devices.resistor(1 * kohm, tolerance=0.05), name="R1")
+    lower = c.place(devices.resistor(1 * kohm, tolerance=0.05), name="R2")
+    held = c.place(devices.capacitor(1 * nF, tolerance=0.1), name="C1")
     c.connect(source.positive, upper.a, name="in")
     c.connect(upper.b, lower.a, held.a, name="out")
     c.connect(lower.b, held.b, source.negative, ground)

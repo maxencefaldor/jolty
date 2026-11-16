@@ -28,7 +28,7 @@ from jolty.variation import Varied, extreme, moved, sample, toleranced
 def cell(c: Builder) -> None:
     a = c.port("a")
     ground = c.port("ground", Role.GROUND)
-    resistor = c.place(devices.resistor(1 * kohm, tolerance=0.05), id="R1")
+    resistor = c.place(devices.resistor(1 * kohm, tolerance=0.05), name="R1")
     c.connect(a, resistor.a)
     c.connect(resistor.b, ground)
 
@@ -36,9 +36,9 @@ def cell(c: Builder) -> None:
 @component
 def pair(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
     for id in ("X1", "X2"):
-        placed = c.place(cell(), id=id)
+        placed = c.place(cell(), name=id)
         c.connect(source.positive, placed.a)
         c.connect(placed.ground, ground)
     c.connect(source.negative, ground)
@@ -108,10 +108,10 @@ from jolty.units import V, kohm
 @component
 def divider(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(5 * V), id="V1")
-    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), id="R1")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), name="R1")
     lower = c.place(
-        devices.resistor(1 * kohm).toleranced("resistance", 0.01, "normal"), id="R2"
+        devices.resistor(1 * kohm).toleranced("resistance", 0.01, "normal"), name="R2"
     )
     c.connect(source.positive, upper.a)
     c.connect(upper.b, lower.a, name="out")
@@ -173,7 +173,7 @@ def _alone(device: devices.Device) -> ir.Circuit:
     @component
     def alone(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        placed = c.place(device, id="R1")
+        placed = c.place(device, name="R1")
         c.connect(placed.a, placed.b, ground)
 
     return circuit(alone())
@@ -190,9 +190,9 @@ def test_a_supply_takes_a_tolerance_by_its_path() -> None:
     @component
     def divider(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(supply, id="V1")
-        upper = c.place(devices.resistor(1 * kohm), id="R1")
-        lower = c.place(devices.resistor(1 * kohm), id="R2")
+        source = c.place(supply, name="V1")
+        upper = c.place(devices.resistor(1 * kohm), name="R1")
+        lower = c.place(devices.resistor(1 * kohm), name="R2")
         c.connect(source.positive, upper.a)
         c.connect(upper.b, lower.a, name="out")
         c.connect(lower.b, source.negative, ground)
@@ -221,10 +221,10 @@ def test_the_parts_of_a_lot_share_its_factor() -> None:
             matched = devices.resistor(1 * kohm).toleranced(
                 "resistance", 0.001, lot=lot
             )
-            placed = c.place(matched, id=id)
+            placed = c.place(matched, name=id)
             c.connect(placed.a, placed.b, ground)
         held = devices.capacitor(1 * nF).toleranced("capacitance", 0.001, lot=lot)
-        capacitor = c.place(held, id="C1")
+        capacitor = c.place(held, name="C1")
         c.connect(capacitor.a, capacitor.b, ground)
 
     varied = toleranced(circuit(integrated()))
@@ -242,7 +242,7 @@ def test_the_parts_of_a_lot_share_its_factor() -> None:
     def mixed(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
         for id, lot in (("X1", die), ("X2", wider)):
-            placed = c.place(integrated(lot), id=id)
+            placed = c.place(integrated(lot), name=id)
             c.connect(placed.ground, ground)
 
     with pytest.raises(ElaborationError, match="spread `resistance` of lot `die`"):
@@ -259,7 +259,7 @@ def test_an_exponentials_argument_spreads_in_its_logarithm() -> None:
     def pair(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
         for id in ("Q1", "Q2"):
-            placed = c.place(transistor, id=id)
+            placed = c.place(transistor, name=id)
             c.connect(placed.collector, placed.base, placed.emitter, ground)
 
     varied = toleranced(circuit(pair()))
@@ -288,9 +288,9 @@ from jolty.units import V, kohm
 @component
 def divider(c: Builder, supply) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(supply), id="V1")
-    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), id="R1")
-    lower = c.place(devices.resistor(1 * kohm, tolerance=0.01), id="R2")
+    source = c.place(devices.voltage_source(supply), name="V1")
+    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), name="R1")
+    lower = c.place(devices.resistor(1 * kohm, tolerance=0.01), name="R2")
     c.connect(source.positive, upper.a)
     c.connect(upper.b, lower.a, name="out")
     c.connect(lower.b, source.negative, ground)
@@ -355,20 +355,20 @@ DIE = ir.Lot(name="die", relative=0.2)
 @component
 def divider(c: Builder, supply) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(supply), id="V1")
-    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), id="R1")
+    source = c.place(devices.voltage_source(supply), name="V1")
+    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), name="R1")
     lower = c.place(
-        devices.resistor(1 * kohm).toleranced("resistance", 0.01, "normal"), id="R2"
+        devices.resistor(1 * kohm).toleranced("resistance", 0.01, "normal"), name="R2"
     )
     c.connect(source.positive, upper.a)
     c.connect(upper.b, lower.a, name="out")
     c.connect(lower.b, source.negative, ground)
     # A matched pair on one die, whose shared spread cancels in their ratio.
     top = c.place(
-        devices.resistor(1 * kohm).toleranced("resistance", 0.001, lot=DIE), id="R3"
+        devices.resistor(1 * kohm).toleranced("resistance", 0.001, lot=DIE), name="R3"
     )
     bottom = c.place(
-        devices.resistor(1 * kohm).toleranced("resistance", 0.001, lot=DIE), id="R4"
+        devices.resistor(1 * kohm).toleranced("resistance", 0.001, lot=DIE), name="R4"
     )
     c.connect(source.positive, top.a)
     c.connect(top.b, bottom.a, name="matched")
@@ -455,10 +455,10 @@ from jolty.units import K, V, celsius, kohm
 @component
 def divider(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(5 * V), id="V1")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
     heated = devices.resistor(1 * kohm, temperature_coefficient=1e-3 / K)
-    upper = c.place(heated, id="R1")
-    lower = c.place(devices.resistor(1 * kohm), id="R2")
+    upper = c.place(heated, name="R1")
+    lower = c.place(devices.resistor(1 * kohm), name="R2")
     c.connect(source.positive, upper.a)
     c.connect(upper.b, lower.a, name="out")
     c.connect(lower.b, source.negative, ground)

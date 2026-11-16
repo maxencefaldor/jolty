@@ -18,7 +18,7 @@ const FREQUENCIES: [f64; 4] = [1.0, 1e3, 1e5, 1e7];
 /// A circuit of `instances` whose ground is `0`.
 fn circuit(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
@@ -26,18 +26,18 @@ fn circuit(instances: &Value) -> Circuit {
 }
 
 fn resistor(id: &str, resistance: f64, a: &str, b: &str) -> Value {
-    json!({"id": id, "of": {"device": "resistor"}, "parameters": {"resistance": resistance},
+    json!({"name": id, "of": {"device": "resistor"}, "parameters": {"resistance": resistance},
            "terminals": {"a": a, "b": b}})
 }
 
 fn voltage_source(id: &str, positive: &str) -> Value {
-    json!({"id": id, "of": {"device": "voltage_source"},
+    json!({"name": id, "of": {"device": "voltage_source"},
            "parameters": {"waveform": {"dc": 5.0}},
            "terminals": {"positive": positive, "negative": "0"}})
 }
 
 fn current_source(id: &str, into: &str, current: f64) -> Value {
-    json!({"id": id, "of": {"device": "current_source"},
+    json!({"name": id, "of": {"device": "current_source"},
            "parameters": {"waveform": {"dc": current}},
            "terminals": {"positive": "0", "negative": into}})
 }
@@ -117,7 +117,7 @@ fn a_capacitor_filters_its_resistors_noise() {
     let filter = circuit(&json!([
         voltage_source("V1", "in"),
         resistor("R1", resistance, "in", "out"),
-        {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": capacitance},
+        {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": capacitance},
          "terminals": {"a": "out", "b": "0"}},
     ]));
     let spectrum = noise(&filter, "out", None, None).unwrap();
@@ -169,7 +169,7 @@ fn outputs_can_be_differential_or_currents() {
 fn a_diodes_shot_noise_reaches_the_output_through_its_impedance() {
     let biased = circuit(&json!([
         current_source("I1", "out", 1e-3),
-        {"id": "D1", "of": {"device": "diode"},
+        {"name": "D1", "of": {"device": "diode"},
          "parameters": {"saturation_current": 1e-14, "flicker_coefficient": 1e-16},
          "terminals": {"anode": "out", "cathode": "0"}},
     ]));

@@ -22,9 +22,9 @@ THREADS = 8
 def low_pass(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(0 * us, 0 * V), (1e-3 * us, 1 * V)])
-    source = c.place(devices.voltage_source(step), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(step), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)

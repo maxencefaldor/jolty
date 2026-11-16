@@ -68,11 +68,11 @@ def clipper(c: Builder) -> None:
             period=50 * us,
         )
     )
-    source = c.place(pulse.toleranced("waveform.pulse.pulsed", 0.05), id="V1")
-    upper = c.place(devices.resistor(1 * kohm, tolerance=0.05), id="R1")
-    lower = c.place(devices.resistor(2 * kohm, tolerance=0.05), id="R2")
-    diode = c.place(devices.diode(), id="D1")
-    held = c.place(devices.capacitor(1 * nF, tolerance=0.1), id="C1")
+    source = c.place(pulse.toleranced("waveform.pulse.pulsed", 0.05), name="V1")
+    upper = c.place(devices.resistor(1 * kohm, tolerance=0.05), name="R1")
+    lower = c.place(devices.resistor(2 * kohm, tolerance=0.05), name="R2")
+    diode = c.place(devices.diode(), name="D1")
+    held = c.place(devices.capacitor(1 * nF, tolerance=0.1), name="C1")
     c.connect(source.positive, upper.a, name="in")
     c.connect(upper.b, lower.a, diode.anode, held.a, name="out")
     c.connect(lower.b, diode.cathode, held.b, source.negative, ground)
@@ -352,9 +352,9 @@ def shunted(c: Builder) -> None:
     Below 1 Ω, the shunt's current is an unknown, which comes before the source's.
     """
     ground = c.port("ground", Role.GROUND)
-    shunt = c.place(devices.resistor(2 * ohm), id="R1")
-    source = c.place(devices.voltage_source(5 * V), id="V1")
-    load = c.place(devices.resistor(1 * kohm), id="R2")
+    shunt = c.place(devices.resistor(2 * ohm), name="R1")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    load = c.place(devices.resistor(1 * kohm), name="R2")
     c.connect(source.positive, load.a, name="top")
     c.connect(load.b, shunt.a, name="out")
     c.connect(shunt.b, source.negative, ground)
@@ -410,9 +410,9 @@ def test_a_sweep_of_a_parameter_names_it() -> None:
     @component
     def divider(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(5 * V), id="V1")
-        upper = c.place(devices.resistor(1 * kohm), id="R1")
-        lower = c.place(devices.resistor(1 * kohm), id="R2")
+        source = c.place(devices.voltage_source(5 * V), name="V1")
+        upper = c.place(devices.resistor(1 * kohm), name="R1")
+        lower = c.place(devices.resistor(1 * kohm), name="R2")
         c.connect(source.positive, upper.a)
         c.connect(upper.b, lower.a, name="out")
         c.connect(lower.b, source.negative, ground)

@@ -241,9 +241,9 @@ def walk(
         }
         match instance.of:
             case ir.ComponentOf(component=inner):
-                yield from walk(built, inner, f"{prefix}{instance.id}/", nets)
+                yield from walk(built, inner, f"{prefix}{instance.name}/", nets)
             case ir.DeviceOf(device=model):
-                yield Part(f"{prefix}{instance.id}", model, instance.parameters, nets)
+                yield Part(f"{prefix}{instance.name}", model, instance.parameters, nets)
 
 
 def designed(built: ir.Circuit) -> list[Part]:
@@ -332,14 +332,14 @@ def bench(
     """
     ground = c.port("ground", Role.GROUND)
     vdd = c.net("vdd")
-    power = c.place(drives.get("vdd", devices.voltage_source(SUPPLY * V)), id="VDD")
-    placed = c.place(made, id="X1")
+    power = c.place(drives.get("vdd", devices.voltage_source(SUPPLY * V)), name="VDD")
+    placed = c.place(made, name="X1")
     c.connect(power.positive, placed.vdd, vdd)
     c.connect(power.negative, placed.ground, ground)
     for port, source in drives.items():
         if port == "vdd":
             continue
-        driver = c.place(source, id=port.upper())
+        driver = c.place(source, name=port.upper())
         if source.model == "current_source":
             c.connect(driver.positive, vdd)
             c.connect(driver.negative, placed[port], name=port)
@@ -349,7 +349,7 @@ def bench(
     for port in problem.outputs:
         c.connect(placed[port], name=port)
     if load is not None:
-        resistor = c.place(devices.resistor(load * ohm), id="RLOAD")
+        resistor = c.place(devices.resistor(load * ohm), name="RLOAD")
         c.connect(resistor.a, vdd)
         c.connect(resistor.b, placed[problem.outputs[0]])
 

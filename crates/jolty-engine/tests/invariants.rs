@@ -57,7 +57,7 @@ fn circuit(network: &Network, reversed: bool) -> Circuit {
         .enumerate()
         .map(|(index, &(a, b, resistance))| {
             json!({
-                "id": format!("R{index}"),
+                "name": format!("R{index}"),
                 "of": {"device": "resistor"},
                 "parameters": {"resistance": resistance},
                 "terminals": {"a": net(a), "b": net(b)},
@@ -70,7 +70,7 @@ fn circuit(network: &Network, reversed: bool) -> Circuit {
                 .enumerate()
                 .map(|(index, &(node, current))| {
                     json!({
-                        "id": format!("I{index}"),
+                        "name": format!("I{index}"),
                         "of": {"device": "current_source"},
                         "parameters": {"waveform": {"dc": current}},
                         "terminals": {"positive": "0", "negative": net(node)},
@@ -82,7 +82,7 @@ fn circuit(network: &Network, reversed: bool) -> Circuit {
         instances.reverse();
     }
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "network",
+        "format": "jolty-circuit", "version": 3, "top": "network",
         "components": {"network": {
             "ports": [{"name": "0", "role": "ground"}],
             "instances": instances,

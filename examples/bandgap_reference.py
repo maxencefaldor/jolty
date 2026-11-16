@@ -27,13 +27,13 @@ def bandgap(c: Builder) -> None:
     """The op-amp, its two branches of resistors and transistors, and the start-up."""
     output = c.port("output", Role.OUTPUT)
     supply, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
-    amplifier = c.place(opamp(), id="U1")
-    single = c.place(q2n3904(), id="Q1")
-    wide = [c.place(q2n3904(), id=f"Q{index}") for index in range(2, 10)]
-    left = c.place(devices.resistor(RATIO * kohm), id="R1")
-    right = c.place(devices.resistor(RATIO * kohm), id="R2")
-    ptat = c.place(devices.resistor(1 * kohm), id="R3")
-    start = c.place(devices.resistor(10 * Mohm), id="RS")
+    amplifier = c.place(opamp(), name="U1")
+    single = c.place(q2n3904(), name="Q1")
+    wide = [c.place(q2n3904(), name=f"Q{index}") for index in range(2, 10)]
+    left = c.place(devices.resistor(RATIO * kohm), name="R1")
+    right = c.place(devices.resistor(RATIO * kohm), name="R2")
+    ptat = c.place(devices.resistor(1 * kohm), name="R3")
+    start = c.place(devices.resistor(10 * Mohm), name="RS")
     c.connect(amplifier.out, left.a, right.a, output)
     c.connect(left.b, single.collector, single.base, amplifier.inp, start.b, name="a")
     c.connect(right.b, ptat.a, amplifier.inn, name="b")
@@ -46,8 +46,8 @@ def bandgap(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The reference on a 5 V supply."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="VCC")
-    reference = c.place(bandgap(), id="X1")
+    supply = c.place(devices.voltage_source(5 * V), name="VCC")
+    reference = c.place(bandgap(), name="X1")
     c.connect(supply.positive, reference.vcc, name="vcc")
     c.connect(reference.output, name="vref")
     c.connect(supply.negative, reference.ground, ground)

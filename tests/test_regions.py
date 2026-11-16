@@ -79,12 +79,12 @@ def biased(
     c = Builder("biased")
     ground = c.port("ground", Role.GROUND)
     device = devices.device(model, parameters)
-    transistor = c.place(device, id="T1")
+    transistor = c.place(device, name="T1")
     for terminal in device.terminals:
         if terminal not in voltages:
             c.connect(transistor[terminal], ground)
             continue
-        source = c.place(devices.voltage_source(voltages[terminal] * V), id=terminal)
+        source = c.place(devices.voltage_source(voltages[terminal] * V), name=terminal)
         c.connect(source.positive, transistor[terminal], name=terminal)
         c.connect(source.negative, ground)
     return c.finish()
@@ -121,11 +121,11 @@ def test_a_region_is_read_only_of_a_transistor_recorded() -> None:
 def test_the_report_lists_each_transistor_nearest_a_boundary_first() -> None:
     c = Builder("pair")
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="VDD")
-    high = c.place(devices.voltage_source(3 * V), id="VH")
-    low = c.place(devices.voltage_source(2 * V), id="VL")
-    far = c.place(devices.device("mosfet", LEVEL_1), id="M1")
-    near = c.place(devices.device("mosfet", LEVEL_1), id="M2")
+    supply = c.place(devices.voltage_source(5 * V), name="VDD")
+    high = c.place(devices.voltage_source(3 * V), name="VH")
+    low = c.place(devices.voltage_source(2 * V), name="VL")
+    far = c.place(devices.device("mosfet", LEVEL_1), name="M1")
+    near = c.place(devices.device("mosfet", LEVEL_1), name="M2")
     c.connect(supply.positive, far.drain, name="vdd")
     c.connect(high.positive, far.gate, name="high")
     c.connect(low.positive, near.gate, near.drain, name="low")

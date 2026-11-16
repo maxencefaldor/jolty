@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 /// A circuit of `instances` whose ground is `0`.
 fn circuit(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
@@ -30,15 +30,15 @@ fn circuit(instances: &Value) -> Circuit {
 /// run.
 fn rectifier() -> Circuit {
     circuit(&json!([
-        {"id": "V1", "of": {"device": "voltage_source"},
+        {"name": "V1", "of": {"device": "voltage_source"},
          "parameters": {"waveform": {"sine": {"offset": 1.0, "amplitude": 1.0,
                                               "frequency": 1e3}}},
          "terminals": {"positive": "in", "negative": "0"}},
-        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
          "terminals": {"a": "in", "b": "out"}},
-        {"id": "D1", "of": {"device": "diode"}, "parameters": {},
+        {"name": "D1", "of": {"device": "diode"}, "parameters": {},
          "terminals": {"anode": "out", "cathode": "0"}},
-        {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-6},
+        {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-6},
          "terminals": {"a": "out", "b": "0"}},
     ]))
 }

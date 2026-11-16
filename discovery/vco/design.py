@@ -50,9 +50,9 @@ def stepped(c: Builder) -> None:
         if points:
             points.append((begin * s, points[-1][1]))
         points.append(((begin + 1e-6) * s, volts * V))
-    source = c.place(devices.voltage_source(Piecewise(points)), id="VC")
+    source = c.place(devices.voltage_source(Piecewise(points)), name="VC")
     oscillator = candidates.mosfet_switched(compensation=2e3, speedup=2.2e-9)
-    placed = c.place(oscillator, id="X1")
+    placed = c.place(oscillator, name="X1")
     c.connect(source.positive, placed.control, name="control")
     c.connect(placed.output, name="out")
     c.connect(source.negative, placed.ground, ground)

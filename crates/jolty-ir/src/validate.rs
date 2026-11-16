@@ -245,7 +245,7 @@ fn check_lots(components: &BTreeMap<Name, Component>, problems: &mut Vec<Problem
                 let Some(lot) = &tolerance.lot else {
                     continue;
                 };
-                let at = format!("{name}/{}", instance.id);
+                let at = format!("{name}/{}", instance.name);
                 match first.get(&(&lot.name, parameter.as_str())) {
                     None => {
                         first.insert((&lot.name, parameter), (lot, at));
@@ -305,7 +305,7 @@ fn check_ratings(name: &Name, instance: &crate::Instance, problems: &mut Vec<Pro
             };
             problems.push(Problem::InvalidRating {
                 component: name.clone(),
-                id: instance.id.clone(),
+                id: instance.name.clone(),
                 stress: format!("{:?}", rating.stress).to_lowercase(),
                 at,
                 minimum: rating
@@ -341,10 +341,10 @@ fn check_component(
     }
     let mut ids = BTreeSet::new();
     for instance in &component.instances {
-        if !ids.insert(&instance.id) {
+        if !ids.insert(&instance.name) {
             problems.push(Problem::DuplicateInstance {
                 component: name.clone(),
-                id: instance.id.clone(),
+                id: instance.name.clone(),
             });
         }
         for (parameter, tolerance) in &instance.tolerances {
@@ -353,7 +353,7 @@ fn check_component(
             if !numeric || !tolerance.distribution.takes(tolerance.relative) {
                 problems.push(Problem::InvalidTolerance {
                     component: name.clone(),
-                    id: instance.id.clone(),
+                    id: instance.name.clone(),
                     parameter: parameter.clone(),
                     relative: format!("{:?}", tolerance.relative),
                 });
@@ -363,7 +363,7 @@ fn check_component(
             {
                 problems.push(Problem::InvalidLot {
                     component: name.clone(),
-                    id: instance.id.clone(),
+                    id: instance.name.clone(),
                     parameter: parameter.clone(),
                     lot: lot.name.clone(),
                     relative: format!("{:?}", lot.relative),
@@ -376,7 +376,7 @@ fn check_component(
         {
             problems.push(Problem::InvalidPart {
                 component: name.clone(),
-                id: instance.id.clone(),
+                id: instance.name.clone(),
                 part: part.clone(),
             });
         }
@@ -386,13 +386,13 @@ fn check_component(
         if !instance.parameters.is_empty() {
             problems.push(Problem::ComponentParameters {
                 component: name.clone(),
-                id: instance.id.clone(),
+                id: instance.name.clone(),
             });
         }
         let Some(definition) = components.get(target) else {
             problems.push(Problem::UndefinedComponent {
                 component: name.clone(),
-                id: instance.id.clone(),
+                id: instance.name.clone(),
                 target: target.clone(),
             });
             continue;
@@ -401,7 +401,7 @@ fn check_component(
             if !instance.terminals.contains_key(&port.name) {
                 problems.push(Problem::UnconnectedPort {
                     component: name.clone(),
-                    id: instance.id.clone(),
+                    id: instance.name.clone(),
                     target: target.clone(),
                     port: port.name.clone(),
                 });
@@ -411,7 +411,7 @@ fn check_component(
             if !definition.ports.iter().any(|port| &port.name == terminal) {
                 problems.push(Problem::UnknownPort {
                     component: name.clone(),
-                    id: instance.id.clone(),
+                    id: instance.name.clone(),
                     target: target.clone(),
                     terminal: terminal.clone(),
                 });
@@ -480,7 +480,7 @@ mod tests {
 
     fn instance_of(id: &str, target: &str, terminals: &[(&str, &str)]) -> Instance {
         Instance {
-            id: name(id),
+            name: name(id),
             of: Of::Component(name(target)),
             parameters: crate::Parameters::new(),
             terminals: terminals.iter().map(|&(t, n)| (name(t), name(n))).collect(),
@@ -649,7 +649,7 @@ mod tests {
             lot: None,
         };
         let resistor = Instance {
-            id: name("R1"),
+            name: name("R1"),
             of: Of::Device(name("resistor")),
             parameters: serde_json::json!({"resistance": 1e3, "label": "a", "level": {"dc": 5.0}})
                 .as_object()
@@ -704,7 +704,7 @@ mod tests {
                 lot: Some(lot),
             };
             Instance {
-                id: name(id),
+                name: name(id),
                 of: Of::Device(name("resistor")),
                 parameters: serde_json::json!({"resistance": 1e3})
                     .as_object()

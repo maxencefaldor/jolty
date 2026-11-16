@@ -21,9 +21,9 @@ from jolty.units import J, K, V, W, ms, ohm
 def heated(c: Builder) -> None:
     """1 W into 50 K/W to the ambient, beside 2 mJ/K."""
     ground = c.port("ground", Role.GROUND)
-    heat = c.place(devices.heat_source(1 * W), id="P1")
-    sink = c.place(devices.thermal_resistance(50 * K / W), id="RTH")
-    store = c.place(devices.thermal_capacitance(2e-3 * J / K), id="CTH")
+    heat = c.place(devices.heat_source(1 * W), name="P1")
+    sink = c.place(devices.thermal_resistance(50 * K / W), name="RTH")
+    store = c.place(devices.thermal_capacitance(2e-3 * J / K), name="CTH")
     c.connect(heat.b, sink.a, store.a, name="hot")
     c.connect(heat.a, sink.b, store.b, ground)
 
@@ -46,9 +46,9 @@ def test_a_thermal_terminal_joins_no_electrical_net() -> None:
     @component
     def mixed(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
-        load = c.place(devices.resistor(1 * ohm), id="R1")
-        sink = c.place(devices.thermal_resistance(50 * K / W), id="RTH")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        load = c.place(devices.resistor(1 * ohm), name="R1")
+        sink = c.place(devices.thermal_resistance(50 * K / W), name="RTH")
         c.connect(source.positive, load.a, sink.a, name="out")
         c.connect(source.negative, load.b, sink.b, ground)
 

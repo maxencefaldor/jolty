@@ -38,10 +38,10 @@ def jfet() -> devices.Device:
 
 def bridge(c: Builder, output: Point, plus: Point, ground: Point) -> None:
     """The Wien network: R and C in series from the output, R and C in parallel."""
-    series_r = c.place(devices.resistor(RESISTANCE * ohm), id="R1")
-    series_c = c.place(devices.capacitor(CAPACITANCE * F), id="C1")
-    shunt_r = c.place(devices.resistor(RESISTANCE * ohm), id="R2")
-    shunt_c = c.place(devices.capacitor(CAPACITANCE * F), id="C2")
+    series_r = c.place(devices.resistor(RESISTANCE * ohm), name="R1")
+    series_c = c.place(devices.capacitor(CAPACITANCE * F), name="C1")
+    shunt_r = c.place(devices.resistor(RESISTANCE * ohm), name="R2")
+    shunt_c = c.place(devices.capacitor(CAPACITANCE * F), name="C2")
     kick = Pulse(
         initial=0 * uA,
         pulsed=1 * uA,
@@ -50,7 +50,7 @@ def bridge(c: Builder, output: Point, plus: Point, ground: Point) -> None:
         fall=1 * us,
         width=10 * us,
     )
-    start = c.place(devices.current_source(kick), id="I1")
+    start = c.place(devices.current_source(kick), name="I1")
     c.connect(output, series_r.a)
     c.connect(series_r.b, series_c.a, name="arm")
     c.connect(series_c.b, shunt_r.a, shunt_c.a, start.negative, plus)
@@ -61,15 +61,15 @@ def bridge(c: Builder, output: Point, plus: Point, ground: Point) -> None:
 def diodes(c: Builder, fixed: float = 12e3, limited: float = 10e3) -> None:
     """Gain 1 + (fixed + limited)/10 kΩ, two diodes across `limited` holding it."""
     output, ground = c.port("output", Role.OUTPUT), c.port("ground", Role.GROUND)
-    amplifier = c.place(opamp(), id="U1")
+    amplifier = c.place(opamp(), name="U1")
     plus, minus = c.net("plus"), c.net("minus")
     bridge(c, output, plus, ground)
-    feedback = c.place(devices.resistor(fixed * ohm), id="R3")
-    across = c.place(devices.resistor(limited * ohm), id="R4")
-    gain = c.place(devices.resistor(10e3 * ohm), id="R5")
+    feedback = c.place(devices.resistor(fixed * ohm), name="R3")
+    across = c.place(devices.resistor(limited * ohm), name="R4")
+    gain = c.place(devices.resistor(10e3 * ohm), name="R5")
     forward, backward = (
-        c.place(d1n4148(), id="D1"),
-        c.place(d1n4148(), id="D2"),
+        c.place(d1n4148(), name="D1"),
+        c.place(d1n4148(), name="D2"),
     )
     c.connect(amplifier.out, feedback.a, output)
     c.connect(feedback.b, across.a, forward.anode, backward.cathode, name="tap")
@@ -94,16 +94,16 @@ def agc(
     law's even distortion.
     """
     output, ground = c.port("output", Role.OUTPUT), c.port("ground", Role.GROUND)
-    amplifier = c.place(opamp(), id="U1")
+    amplifier = c.place(opamp(), name="U1")
     plus, minus = c.net("plus"), c.net("minus")
     bridge(c, output, plus, ground)
-    feedback = c.place(devices.resistor(20e3 * ohm), id="RF")
-    series = c.place(devices.resistor(fixed * ohm), id="RG")
-    channel = c.place(jfet(), id="J1")
-    detector = c.place(d1n4148(), id="D1")
-    hold = c.place(devices.capacitor(1e-6 * F), id="CH")
-    upper = c.place(devices.resistor(1e6 * (1 - divider) / divider * ohm), id="RD1")
-    lower = c.place(devices.resistor(1e6 * ohm), id="RD2")
+    feedback = c.place(devices.resistor(20e3 * ohm), name="RF")
+    series = c.place(devices.resistor(fixed * ohm), name="RG")
+    channel = c.place(jfet(), name="J1")
+    detector = c.place(d1n4148(), name="D1")
+    hold = c.place(devices.capacitor(1e-6 * F), name="CH")
+    upper = c.place(devices.resistor(1e6 * (1 - divider) / divider * ohm), name="RD1")
+    lower = c.place(devices.resistor(1e6 * ohm), name="RD2")
     drain, peak, control = c.net("drain"), c.net("peak"), c.net("control")
     c.connect(amplifier.out, feedback.a, detector.cathode, output)
     c.connect(feedback.b, series.a, amplifier.inn, minus)
@@ -111,8 +111,8 @@ def agc(
     c.connect(detector.anode, hold.a, upper.a, peak)
     c.connect(upper.b, lower.a, control)
     if linearized:
-        top = c.place(devices.resistor(100e3 * ohm), id="RL1")
-        bottom = c.place(devices.resistor(100e3 * ohm), id="RL2")
+        top = c.place(devices.resistor(100e3 * ohm), name="RL1")
+        bottom = c.place(devices.resistor(100e3 * ohm), name="RL2")
         c.connect(top.a, drain)
         c.connect(top.b, bottom.a, channel.gate, name="gate")
         c.connect(bottom.b, control)
@@ -126,7 +126,7 @@ def agc(
 def bench(c: Builder, oscillator: Component) -> None:
     """The oscillator alone."""
     ground = c.port("ground", Role.GROUND)
-    placed = c.place(oscillator, id="X1")
+    placed = c.place(oscillator, name="X1")
     c.connect(placed.output, name="out")
     c.connect(placed.ground, ground)
 
@@ -143,17 +143,17 @@ def sensed_agc(
     the loop settles, and how much ripple reaches the gate.
     """
     output, ground = c.port("output", Role.OUTPUT), c.port("ground", Role.GROUND)
-    amplifier = c.place(opamp(), id="U1")
+    amplifier = c.place(opamp(), name="U1")
     plus, minus = c.net("plus"), c.net("minus")
     bridge(c, output, plus, ground)
-    feedback = c.place(devices.resistor(20e3 * ohm), id="RF")
-    series = c.place(devices.resistor(fixed * ohm), id="RG")
-    channel = c.place(jfet(), id="J1")
-    upper = c.place(devices.resistor(10e3 * (1 - sense) / sense * ohm), id="RS1")
-    lower = c.place(devices.resistor(10e3 * ohm), id="RS2")
-    detector = c.place(d1n4148(), id="D1")
-    capacitor = c.place(devices.capacitor(hold * F), id="CH")
-    leak = c.place(devices.resistor(1e6 * ohm), id="RH")
+    feedback = c.place(devices.resistor(20e3 * ohm), name="RF")
+    series = c.place(devices.resistor(fixed * ohm), name="RG")
+    channel = c.place(jfet(), name="J1")
+    upper = c.place(devices.resistor(10e3 * (1 - sense) / sense * ohm), name="RS1")
+    lower = c.place(devices.resistor(10e3 * ohm), name="RS2")
+    detector = c.place(d1n4148(), name="D1")
+    capacitor = c.place(devices.capacitor(hold * F), name="CH")
+    leak = c.place(devices.resistor(1e6 * ohm), name="RH")
     c.connect(amplifier.out, feedback.a, upper.a, output)
     c.connect(upper.b, lower.a, detector.cathode, name="sensed")
     c.connect(feedback.b, series.a, amplifier.inn, minus)

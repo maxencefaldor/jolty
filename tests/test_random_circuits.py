@@ -124,7 +124,7 @@ def test_frequency_responses_agree(circuit: ir.Circuit) -> None:
     if _resting(simulation) is None:
         return
     source = next(
-        instance.id
+        instance.name
         for instance in circuit.components[circuit.top].instances
         if instance.of == ir.DeviceOf(device="voltage_source")
     )

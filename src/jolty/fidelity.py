@@ -167,11 +167,11 @@ class _Cell:
         def instance(
             id: str, of: ir.DeviceOf | ir.ComponentOf, terminals: dict[str, str]
         ) -> ir.Instance:
-            return ir.Instance(id=id, of=of, terminals=terminals)
+            return ir.Instance(name=id, of=of, terminals=terminals)
 
         def source(id: str, waveform: JsonValue, net: str) -> ir.Instance:
             return ir.Instance(
-                id=id,
+                name=id,
                 of=ir.DeviceOf(device="voltage_source"),
                 parameters={"waveform": waveform},
                 terminals={"positive": net, "negative": "ground"},
@@ -196,7 +196,7 @@ class _Cell:
                 continue
             instances.append(
                 ir.Instance(
-                    id=f"CL{index}",
+                    name=f"CL{index}",
                     of=ir.DeviceOf(device="capacitor"),
                     parameters={"capacitance": loads[index] if loads else 0.0},
                     terminals={"a": f"output_{index}", "b": "ground"},
@@ -593,7 +593,7 @@ def instances(built: ir.Circuit) -> list[tuple[str, str]]:
         prefix, name = pending.pop(0)
         for instance in built.components[name].instances:
             if isinstance(instance.of, ir.ComponentOf):
-                path = f"{prefix}{instance.id}"
+                path = f"{prefix}{instance.name}"
                 found.append((path, instance.of.component))
                 pending.append((f"{path}/", instance.of.component))
     return found
@@ -1021,7 +1021,7 @@ def _component(instance: ir.Instance) -> str:
     """
     if isinstance(instance.of, ir.ComponentOf):
         return instance.of.component
-    message = f"{instance.id} is a device, not a component instance"
+    message = f"{instance.name} is a device, not a component instance"
     raise JoltyError(message)
 
 
@@ -1030,7 +1030,7 @@ def _placed(built: ir.Circuit, component: str, id: str) -> ir.Instance:
     return next(
         instance
         for instance in built.components[component].instances
-        if instance.id == id
+        if instance.name == id
     )
 
 

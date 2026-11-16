@@ -570,9 +570,9 @@ mod tests {
     use super::*;
     use crate::check;
 
-    /// A device instance: its id, its model, its parameters and the net of each terminal.
+    /// A device instance: its name, its model, its parameters and the net of each terminal.
     struct Device {
-        id: &'static str,
+        name: &'static str,
         model: &'static str,
         parameters: Value,
         terminals: Vec<(&'static str, &'static str)>,
@@ -589,12 +589,12 @@ mod tests {
                     .iter()
                     .map(|&(terminal, net)| (terminal.to_owned(), json!(net)))
                     .collect();
-                json!({"id": device.id, "of": {"device": device.model},
+                json!({"name": device.name, "of": {"device": device.model},
                        "parameters": device.parameters, "terminals": terminals})
             })
             .collect();
         let document = json!({
-            "format": "jolty-circuit", "version": 2, "top": "test",
+            "format": "jolty-circuit", "version": 3, "top": "test",
             "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                     "instances": instances}}
         });
@@ -605,7 +605,7 @@ mod tests {
     }
 
     fn device(
-        id: &'static str,
+        name: &'static str,
         model: &'static str,
         parameters: Value,
         [first, second]: [&'static str; 2],
@@ -615,7 +615,7 @@ mod tests {
             _ => ["a", "b"],
         };
         Device {
-            id,
+            name,
             model,
             parameters,
             terminals: vec![(a, first), (b, second)],
@@ -623,13 +623,13 @@ mod tests {
     }
 
     fn transistor(
-        id: &'static str,
+        name: &'static str,
         collector: &'static str,
         base: &'static str,
         emitter: &'static str,
     ) -> Device {
         Device {
-            id,
+            name,
             model: "bipolar_transistor",
             parameters: json!({}),
             terminals: vec![
@@ -641,12 +641,12 @@ mod tests {
     }
 
     fn current_controlled(
-        id: &'static str,
+        name: &'static str,
         [positive, negative]: [&'static str; 2],
         [control_positive, control_negative]: [&'static str; 2],
     ) -> Device {
         Device {
-            id,
+            name,
             model: "current_controlled_current_source",
             parameters: json!({"gain": 10.0}),
             terminals: vec![
@@ -658,26 +658,26 @@ mod tests {
         }
     }
 
-    fn resistor(id: &'static str, a: &'static str, b: &'static str) -> Device {
-        device(id, "resistor", json!({"resistance": 1e3}), [a, b])
+    fn resistor(name: &'static str, a: &'static str, b: &'static str) -> Device {
+        device(name, "resistor", json!({"resistance": 1e3}), [a, b])
     }
 
-    fn capacitor(id: &'static str, a: &'static str, b: &'static str) -> Device {
-        device(id, "capacitor", json!({"capacitance": 1e-9}), [a, b])
+    fn capacitor(name: &'static str, a: &'static str, b: &'static str) -> Device {
+        device(name, "capacitor", json!({"capacitance": 1e-9}), [a, b])
     }
 
-    fn inductor(id: &'static str, a: &'static str, b: &'static str) -> Device {
-        device(id, "inductor", json!({"inductance": 1e-3}), [a, b])
+    fn inductor(name: &'static str, a: &'static str, b: &'static str) -> Device {
+        device(name, "inductor", json!({"inductance": 1e-3}), [a, b])
     }
 
-    fn voltage(id: &'static str, positive: &'static str, negative: &'static str) -> Device {
+    fn voltage(name: &'static str, positive: &'static str, negative: &'static str) -> Device {
         let level = json!({"waveform": {"dc": 1.0}});
-        device(id, "voltage_source", level, [positive, negative])
+        device(name, "voltage_source", level, [positive, negative])
     }
 
-    fn current(id: &'static str, positive: &'static str, negative: &'static str) -> Device {
+    fn current(name: &'static str, positive: &'static str, negative: &'static str) -> Device {
         let level = json!({"waveform": {"dc": 1e-3}});
-        device(id, "current_source", level, [positive, negative])
+        device(name, "current_source", level, [positive, negative])
     }
 
     fn rules(diagnostics: &[Diagnostic]) -> Vec<&'static str> {
@@ -904,7 +904,7 @@ mod tests {
         );
     }
 
-    fn gate(id: &'static str, terminals: Vec<(&'static str, &'static str)>) -> Device {
+    fn gate(name: &'static str, terminals: Vec<(&'static str, &'static str)>) -> Device {
         let inputs: Vec<&str> = terminals
             .iter()
             .map(|&(terminal, _)| terminal)
@@ -920,16 +920,16 @@ mod tests {
             parameters["electrical"] = json!({"input_capacitances": vec![0.0; inputs.len()]});
         }
         Device {
-            id,
+            name,
             model: "logic_cell",
             parameters,
             terminals,
         }
     }
 
-    fn logic_source(id: &'static str, output: &'static str) -> Device {
+    fn logic_source(name: &'static str, output: &'static str) -> Device {
         Device {
-            id,
+            name,
             model: "logic_source",
             parameters: json!({"initial": "0", "transition": 1e-10}),
             terminals: vec![("output", output)],

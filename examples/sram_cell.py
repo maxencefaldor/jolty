@@ -24,9 +24,9 @@ def cell(c: Builder) -> None:
     word = c.port("word", Role.INPUT)
     bit, bit_bar = c.port("bit"), c.port("bit_bar")
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
-    left, right = c.place(inverter(), id="X1"), c.place(inverter(), id="X2")
-    access = c.place(mos("n", width=2), id="M5")
-    access_bar = c.place(mos("n", width=2), id="M6")
+    left, right = c.place(inverter(), name="X1"), c.place(inverter(), name="X2")
+    access = c.place(mos("n", width=2), name="M5")
+    access_bar = c.place(mos("n", width=2), name="M6")
     c.connect(left.vdd, right.vdd, vdd)
     c.connect(left.gnd, right.gnd, access.bulk, access_bar.bulk, gnd)
     c.connect(left.y, right.a, access.source, name="q")
@@ -50,18 +50,20 @@ def steps(*levels: tuple[float, float]) -> Piecewise:
 def bench(c: Builder) -> None:
     """The cell, written 0 at the start, 1 at 2 ns and 0 at 12 ns."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY * V), id="VDD")
+    supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     word = c.place(
         devices.voltage_source(
             steps((0, SUPPLY), (0.5, 0), (2, SUPPLY), (5, 0), (12, SUPPLY), (15, 0))
         ),
-        id="VWL",
+        name="VWL",
     )
-    bit = c.place(devices.voltage_source(steps((0, 0), (1, SUPPLY), (10, 0))), id="VBL")
+    bit = c.place(
+        devices.voltage_source(steps((0, 0), (1, SUPPLY), (10, 0))), name="VBL"
+    )
     bit_bar = c.place(
-        devices.voltage_source(steps((0, SUPPLY), (1, 0), (10, SUPPLY))), id="VBLB"
+        devices.voltage_source(steps((0, SUPPLY), (1, 0), (10, SUPPLY))), name="VBLB"
     )
-    memory = c.place(cell(), id="X1")
+    memory = c.place(cell(), name="X1")
     c.connect(supply.positive, memory.vdd, name="vdd")
     c.connect(word.positive, memory.word, name="wl")
     c.connect(bit.positive, memory.bit, name="bl")

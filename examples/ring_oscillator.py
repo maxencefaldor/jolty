@@ -24,10 +24,10 @@ def ring(c: Builder) -> None:
     """Five inverters, each output the next one's input, the last the first's."""
     output = c.port("output", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
-    gates = [c.place(inverter(), id=f"X{index}") for index in range(1, STAGES + 1)]
+    gates = [c.place(inverter(), name=f"X{index}") for index in range(1, STAGES + 1)]
     nets = [output, *(c.net(f"n{index}") for index in range(1, STAGES))]
     for index, gate in enumerate(gates):
-        load = c.place(devices.capacitor(10 * fF), id=f"C{index + 1}")
+        load = c.place(devices.capacitor(10 * fF), name=f"C{index + 1}")
         c.connect(gate.vdd, vdd)
         c.connect(gate.gnd, load.b, gnd)
         c.connect(gate.a, nets[index - 1])
@@ -38,7 +38,7 @@ def ring(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The ring on 3.3 V, kicked by a short current pulse."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY * V), id="VDD")
+    supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     kick = Pulse(
         initial=0 * uA,
         pulsed=200 * uA,
@@ -47,8 +47,8 @@ def bench(c: Builder) -> None:
         fall=10 * ps,
         width=50 * ps,
     )
-    start = c.place(devices.current_source(kick), id="I1")
-    oscillator = c.place(ring(), id="X1")
+    start = c.place(devices.current_source(kick), name="I1")
+    oscillator = c.place(ring(), name="X1")
     c.connect(supply.positive, oscillator.vdd, name="vdd")
     c.connect(oscillator.output, start.negative, name="out")
     c.connect(supply.negative, start.positive, oscillator.gnd, ground)

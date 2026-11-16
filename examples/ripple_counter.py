@@ -34,7 +34,7 @@ def flip_flop(c: Builder) -> None:
     preset, clear = c.port("preset", Role.INPUT), c.port("clear", Role.INPUT)
     q, q_bar = c.port("q", Role.OUTPUT), c.port("q_bar", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
-    gates = [c.place(nand(), id=f"U{index}") for index in range(1, 7)]
+    gates = [c.place(nand(), name=f"U{index}") for index in range(1, 7)]
     for gate in gates:
         c.connect(gate.supply, vdd)
         c.connect(gate.ground, gnd)
@@ -60,7 +60,7 @@ def counter(c: Builder) -> None:
     clock, clear = c.port("clock", Role.INPUT), c.port("clear", Role.INPUT)
     low, high = c.port("q0", Role.OUTPUT), c.port("q1", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
-    first, second = c.place(flip_flop(), id="FF0"), c.place(flip_flop(), id="FF1")
+    first, second = c.place(flip_flop(), name="FF0"), c.place(flip_flop(), name="FF1")
     for stage in (first, second):
         c.connect(stage.vdd, stage.preset, vdd)
         c.connect(stage.gnd, gnd)
@@ -76,21 +76,21 @@ def counter(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The counter on 3.3 V, its clock at 100 MHz, cleared for the first 3 ns."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY * V), id="VDD")
+    supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     ticks: list[tuple[Quantity, LogicLevel]] = [
         ((index + 1) / 2 * PERIOD * 1e9 * ns, 1 if index % 2 == 0 else 0)
         for index in range(15)
     ]
-    clock = c.place(devices.logic_source(0, ticks, transition=100 * ps), id="CLK")
+    clock = c.place(devices.logic_source(0, ticks, transition=100 * ps), name="CLK")
     clear = c.place(
-        devices.logic_source(0, [(3 * ns, 1)], transition=100 * ps), id="CLR"
+        devices.logic_source(0, [(3 * ns, 1)], transition=100 * ps), name="CLR"
     )
-    count = c.place(counter(), id="X1")
+    count = c.place(counter(), name="X1")
     c.connect(supply.positive, count.vdd, name="vdd")
     c.connect(clock.output, count.clock, name="clock")
     c.connect(clear.output, count.clear, name="clear")
     for bit in ("q0", "q1"):
-        load = c.place(devices.capacitor(10 * fF), id=f"C{bit}")
+        load = c.place(devices.capacitor(10 * fF), name=f"C{bit}")
         c.connect(count[bit], load.a, name=bit)
         c.connect(load.b, ground)
     c.connect(supply.negative, count.gnd, ground)

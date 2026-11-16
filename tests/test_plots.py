@@ -200,9 +200,9 @@ def test_a_batch_draws_a_histogram_per_measurement_and_an_envelope_per_analysis(
     @component
     def filtered(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
-        resistor = c.place(devices.resistor(1 * kohm, tolerance=0.05), id="R1")
-        capacitor = c.place(devices.capacitor(1 * nF, tolerance=0.1), id="C1")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        resistor = c.place(devices.resistor(1 * kohm, tolerance=0.05), name="R1")
+        capacitor = c.place(devices.capacitor(1 * nF, tolerance=0.1), name="C1")
         c.connect(source.positive, resistor.a, name="in")
         c.connect(resistor.b, capacitor.a, name="out")
         c.connect(capacitor.b, source.negative, ground)

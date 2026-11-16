@@ -114,7 +114,7 @@ def test_the_given_transistor_is_excused_by_what_it_is_not_its_name(
     design(tmp_path, "0.01")
     script = (tmp_path / "design.py").read_text(encoding="utf-8")
     (tmp_path / "design.py").write_text(
-        script.replace('id="Q1"', 'id="QB"'), encoding="utf-8"
+        script.replace('name="Q1"', 'name="QB"'), encoding="utf-8"
     )
     verdict = score(COST_DOWN, tmp_path)
     assert verdict.met, verdict.reasons
@@ -185,10 +185,10 @@ def test_the_cubic_scorer_names_a_forbidden_part(tmp_path: Path) -> None:
         "def cubic(c: Builder) -> None:\n"
         "    ground = c.port('ground')\n"
         "    for name in ('supply', 'reference', 'input'):\n"
-        "        load = c.place(devices.resistor(1 * kohm), id=f'R_{name}')\n"
+        "        load = c.place(devices.resistor(1 * kohm), name=f'R_{name}')\n"
         "        c.connect(c.port(name), load.a)\n"
         "        c.connect(load.b, ground)\n"
-        "    clamp = c.place(devices.diode(saturation_current=1e-14 * A), id='D9')\n"
+        "    clamp = c.place(devices.diode(saturation_current=1e-14 * A), name='D9')\n"
         "    c.connect(c.port('output'), clamp.anode)\n"
         "    c.connect(clamp.cathode, ground)\n"
         "build = cubic\n",
@@ -239,7 +239,7 @@ def test_the_analogcoder_scorer_says_why_designs_fail(tmp_path: Path) -> None:
         "    ground = c.port('ground', Role.GROUND)\n"
         "    c.port('vdd', Role.SUPPLY)\n"
         "    amplifier = c.place(devices.voltage_controlled_voltage_source(-1.0), "
-        "id='E1')\n"
+        "name='E1')\n"
         "    c.connect(amplifier.positive, c.port('vout'))\n"
         "    c.connect(amplifier.control_positive, c.port('vin'))\n"
         "    c.connect(amplifier.negative, amplifier.control_negative, ground)\n"
@@ -254,9 +254,9 @@ def test_the_analogcoder_scorer_says_why_designs_fail(tmp_path: Path) -> None:
         "def passive(c: Builder) -> None:\n"
         "    ground = c.port('ground', Role.GROUND)\n"
         "    c.port('vdd', Role.SUPPLY)\n"
-        "    resistor = c.place(devices.resistor(10 * kohm), id='R1')\n"
-        "    capacitor = c.place(devices.capacitor(3 * uF), id='CF')\n"
-        "    rest = c.place(devices.voltage_source(2.5 * V), id='VR')\n"
+        "    resistor = c.place(devices.resistor(10 * kohm), name='R1')\n"
+        "    capacitor = c.place(devices.capacitor(3 * uF), name='CF')\n"
+        "    rest = c.place(devices.voltage_source(2.5 * V), name='VR')\n"
         "    c.connect(resistor.a, c.port('vin'))\n"
         "    c.connect(resistor.b, capacitor.a, c.port('vout'))\n"
         "    c.connect(capacitor.b, rest.positive)\n"
@@ -310,7 +310,7 @@ def test_an_ideal_converter_has_no_error_but_is_forbidden(tmp_path: Path) -> Non
     converter(
         tmp_path,
         "    source = c.place(devices.voltage_controlled_current_source(1e-3 * A / V), "
-        "id='G1')\n"
+        "name='G1')\n"
         "    c.connect(source.control_positive, plus)\n"
         "    c.connect(source.control_negative, minus)\n"
         "    c.connect(source.positive, ground)\n"
@@ -328,7 +328,7 @@ def test_a_converter_blind_to_one_input_falls_short(tmp_path: Path) -> None:
 
     converter(
         tmp_path,
-        "    resistor = c.place(devices.resistor(1 * kohm), id='R1')\n"
+        "    resistor = c.place(devices.resistor(1 * kohm), name='R1')\n"
         "    c.connect(resistor.a, plus)\n"
         "    c.connect(resistor.b, output)\n",
     )
@@ -372,13 +372,13 @@ def test_an_ideal_balun_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
 
     balun(
         tmp_path,
-        "    bias = c.place(devices.resistor(1000 * Mohm), id='R1')\n"
+        "    bias = c.place(devices.resistor(1000 * Mohm), name='R1')\n"
         "    c.connect(bias.a, source)\n"
         "    c.connect(bias.b, ground)\n"
         "    gains = (('E0', in_phase, 0.5), ('E1', out_of_phase, -0.5))\n"
         "    for name, port, gain in gains:\n"
         "        amplifier = c.place(devices.voltage_controlled_voltage_source(gain), "
-        "id=name)\n"
+        "name=name)\n"
         "        c.connect(amplifier.positive, port)\n"
         "        c.connect(amplifier.control_positive, source)\n"
         "        c.connect(amplifier.negative, amplifier.control_negative, ground)\n",
@@ -398,7 +398,7 @@ def test_a_balun_without_an_inverted_output_falls_short(tmp_path: Path) -> None:
 
     balun(
         tmp_path,
-        "    series = c.place(devices.resistor(75 * ohm), id='R1')\n"
+        "    series = c.place(devices.resistor(75 * ohm), name='R1')\n"
         "    c.connect(series.a, source)\n"
         "    c.connect(series.b, in_phase)\n",
     )
@@ -413,7 +413,7 @@ def test_a_balun_whose_input_floats_fails_to_simulate(tmp_path: Path) -> None:
 
     balun(
         tmp_path,
-        "    series = c.place(devices.resistor(75 * ohm), id='R1')\n"
+        "    series = c.place(devices.resistor(75 * ohm), name='R1')\n"
         "    c.connect(series.a, source)\n",
     )
     verdict = score(BALUN, tmp_path)
@@ -444,10 +444,10 @@ def test_a_shortfall_s_kind_is_where_the_scorer_found_it(tmp_path: Path) -> None
     # A design the engine cannot elaborate, in every corner.
     converter(
         tmp_path,
-        "    load = c.place(devices.resistor(-1 * kohm), id='R1')\n"
+        "    load = c.place(devices.resistor(-1 * kohm), name='R1')\n"
         "    c.connect(load.a, plus)\n"
         "    c.connect(load.b, output)\n"
-        "    bias = c.place(devices.resistor(1 * kohm), id='R2')\n"
+        "    bias = c.place(devices.resistor(1 * kohm), name='R2')\n"
         "    c.connect(bias.a, minus)\n"
         "    c.connect(bias.b, vee)\n"
         "    c.connect(ground)\n",
@@ -471,11 +471,11 @@ def test_an_ideal_discrete_cubic_has_no_error_but_is_forbidden(tmp_path: Path) -
         "    ground = c.port('ground', Role.GROUND)\n"
         "    c.port('vcc', Role.SUPPLY)\n"
         "    signal, output = c.port('input'), c.port('output')\n"
-        "    sense = c.place(devices.resistor(1 * kohm), id='R1')\n"
+        "    sense = c.place(devices.resistor(1 * kohm), name='R1')\n"
         "    c.connect(sense.a, signal)\n"
         "    c.connect(sense.b, ground)\n"
         "    expression = '(v(s) / 0.1) ^ 3 / 10500'\n"
-        "    cube = c.place(devices.behavioral_current_source(expression), id='B1')\n"
+        "    cube = c.place(devices.behavioral_current_source(expression), name='B1')\n"
         "    c.connect(cube.positive, output)\n"
         "    c.connect(cube.negative, ground)\n"
         "    c.connect(cube.s, signal)\n"
@@ -501,16 +501,16 @@ def test_a_converter_that_oscillates_does_not_settle(tmp_path: Path) -> None:
         "    from runpy import run_path\n"
         "    from jolty.units import pF\n"
         f"    npn = run_path({str(parts)!r})['npn']\n"
-        "    stages = [c.place(npn(), id=f'Q{index}') for index in range(3)]\n"
+        "    stages = [c.place(npn(), name=f'Q{index}') for index in range(3)]\n"
         "    for index, stage in enumerate(stages):\n"
-        "        load = c.place(devices.resistor(10 * kohm), id=f'RC{index}')\n"
-        "        drive = c.place(devices.resistor(100 * kohm), id=f'RB{index}')\n"
-        "        slow = c.place(devices.capacitor(100 * pF), id=f'C{index}')\n"
+        "        load = c.place(devices.resistor(10 * kohm), name=f'RC{index}')\n"
+        "        drive = c.place(devices.resistor(100 * kohm), name=f'RB{index}')\n"
+        "        slow = c.place(devices.capacitor(100 * pF), name=f'C{index}')\n"
         "        c.connect(load.a, minus)\n"
         "        c.connect(load.b, stage.collector, drive.a, slow.a)\n"
         "        c.connect(drive.b, stages[(index + 1) % 3].base)\n"
         "        c.connect(slow.b, stage.emitter, vee)\n"
-        "    out = c.place(devices.resistor(1 * kohm), id='RO')\n"
+        "    out = c.place(devices.resistor(1 * kohm), name='RO')\n"
         "    c.connect(out.a, stages[0].collector)\n"
         "    c.connect(out.b, output)\n",
     )
@@ -522,8 +522,8 @@ def test_a_converter_that_oscillates_does_not_settle(tmp_path: Path) -> None:
 def parallel(c: Builder) -> None:
     """A design of a resistor beside a capacitor, which gives the resistor 20 %."""
     a, b = c.port("a"), c.port("b")
-    resistor = c.place(devices.resistor(1 * kohm, tolerance=0.2), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    resistor = c.place(devices.resistor(1 * kohm, tolerance=0.2), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(resistor.a, capacitor.a, a)
     c.connect(resistor.b, capacitor.b, b)
 
@@ -532,8 +532,8 @@ def parallel(c: Builder) -> None:
 def loaded(c: Builder) -> None:
     """`parallel` on a bench that loads it with an exact resistor."""
     ground = c.port("ground", Role.GROUND)
-    placed = c.place(parallel(), id="X1")
-    load = c.place(devices.resistor(1 * kohm), id="RLOAD")
+    placed = c.place(parallel(), name="X1")
+    load = c.place(devices.resistor(1 * kohm), name="RLOAD")
     c.connect(placed.a, load.a, name="a")
     c.connect(placed.b, load.b, ground)
 
@@ -561,14 +561,14 @@ def test_an_integrated_designs_resistors_stray_together() -> None:
     def pair(c: Builder) -> None:
         a, b = c.port("a"), c.port("b")
         for id, value in (("R1", 1 * kohm), ("R2", 3 * kohm)):
-            placed = c.place(devices.resistor(value), id=id)
+            placed = c.place(devices.resistor(value), name=id)
             c.connect(placed.a, a)
             c.connect(placed.b, b)
 
     @component
     def die(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        placed = c.place(pair(), id="X1")
+        placed = c.place(pair(), name="X1")
         c.connect(placed.a, placed.b, ground)
 
     drawn = boards(circuit(die()), integrated)
@@ -632,9 +632,9 @@ def _saturation_voltage(transistor: devices.Device, sign: float) -> float:
     @component
     def fixture(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        placed = c.place(transistor, id="Q1")
-        collector = c.place(devices.current_source(sign * 10 * mA), id="IC")
-        base = c.place(devices.current_source(sign * 1 * mA), id="IB")
+        placed = c.place(transistor, name="Q1")
+        collector = c.place(devices.current_source(sign * 10 * mA), name="IC")
+        base = c.place(devices.current_source(sign * 1 * mA), name="IB")
         c.connect(collector.negative, placed.collector)
         c.connect(base.negative, placed.base, name="base")
         c.connect(collector.positive, base.positive, placed.emitter, ground)
@@ -648,9 +648,9 @@ def _gain_at_10_milliamperes(transistor: devices.Device, sign: float) -> float:
     @component
     def fixture(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        placed = c.place(transistor, id="Q1")
-        collector = c.place(devices.voltage_source(sign * 1 * V), id="VC")
-        base = c.place(devices.voltage_source(0 * V), id="VB")
+        placed = c.place(transistor, name="Q1")
+        collector = c.place(devices.voltage_source(sign * 1 * V), name="VC")
+        base = c.place(devices.voltage_source(0 * V), name="VB")
         c.connect(collector.positive, placed.collector)
         c.connect(base.positive, placed.base)
         c.connect(collector.negative, base.negative, placed.emitter, ground)
@@ -669,9 +669,9 @@ def test_a_board_sets_its_corner_on_the_bench() -> None:
     @component
     def divider(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(2 * V), id="VCC")
-        upper = c.place(devices.resistor(1 * kohm), id="R1")
-        lower = c.place(devices.resistor(1 * kohm), id="R2")
+        supply = c.place(devices.voltage_source(2 * V), name="VCC")
+        upper = c.place(devices.resistor(1 * kohm), name="R1")
+        lower = c.place(devices.resistor(1 * kohm), name="R2")
         c.connect(supply.positive, upper.a)
         c.connect(upper.b, lower.a, name="out")
         c.connect(lower.b, supply.negative, ground)
@@ -801,10 +801,10 @@ def test_the_given_stage_netlist_is_the_given_scripts_stage() -> None:
     assert [port.name for port in read.definition.ports] == [
         port.name for port in script.definition.ports
     ]
-    found = {each.id: each for each in read.definition.instances}
-    assert set(found) == {each.id for each in script.definition.instances}
+    found = {each.name: each for each in read.definition.instances}
+    assert set(found) == {each.name for each in script.definition.instances}
     for instance in script.definition.instances:
-        twin = found[instance.id]
+        twin = found[instance.name]
         assert twin.of == instance.of
         assert twin.parameters == _spice_defaults(instance.parameters)
         assert {

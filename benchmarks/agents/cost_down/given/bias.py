@@ -35,12 +35,12 @@ def stage(
             forward_beta=416.4,
             forward_early_voltage=74.03 * V,
         ),
-        id="Q1",
+        name="Q1",
     )
-    top = c.place(devices.resistor(upper, tolerance=TOLERANCE), id="R1")
-    bottom = c.place(devices.resistor(lower, tolerance=TOLERANCE), id="R2")
-    degeneration = c.place(devices.resistor(emitter, tolerance=TOLERANCE), id="RE")
-    load = c.place(devices.resistor(collector, tolerance=TOLERANCE), id="RC")
+    top = c.place(devices.resistor(upper, tolerance=TOLERANCE), name="R1")
+    bottom = c.place(devices.resistor(lower, tolerance=TOLERANCE), name="R2")
+    degeneration = c.place(devices.resistor(emitter, tolerance=TOLERANCE), name="RE")
+    load = c.place(devices.resistor(collector, tolerance=TOLERANCE), name="RC")
     c.connect(supply, top.a, load.a)
     c.connect(top.b, bottom.a, transistor.base, name="base")
     c.connect(load.b, transistor.collector, output)
@@ -52,8 +52,8 @@ def stage(
 def bench(c: Builder) -> None:
     """The stage, from a 5 V supply."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(5 * V), id="V1")
-    biased = c.place(stage(33.2 * kohm, 16.5 * kohm, 1 * kohm, 2.49 * kohm), id="X1")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    biased = c.place(stage(33.2 * kohm, 16.5 * kohm, 1 * kohm, 2.49 * kohm), name="X1")
     c.connect(source.positive, biased.supply)
     c.connect(biased.output, name="out")
     c.connect(source.negative, biased.ground, ground)

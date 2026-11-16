@@ -13,7 +13,7 @@ from jolty.units import V, kohm, ohm
 def resistor_only(c: Builder, resistance: float = 12e3) -> None:
     """A resistor: the baseline, its current Ohm's law."""
     a, b = c.port("a"), c.port("b")
-    load = c.place(devices.resistor(resistance * ohm), id="R1")
+    load = c.place(devices.resistor(resistance * ohm), name="R1")
     c.connect(a, load.a)
     c.connect(load.b, b)
 
@@ -22,9 +22,9 @@ def resistor_only(c: Builder, resistance: float = 12e3) -> None:
 def limiter(c: Builder, sense: float = 650.0, bias: float = 100e3) -> None:
     """The two-transistor limiter: Q2 steals Q1's base drive once Rs holds a Vbe."""
     a, b = c.port("a"), c.port("b")
-    first, second = c.place(q2n3904(), id="Q1"), c.place(q2n3904(), id="Q2")
-    feed = c.place(devices.resistor(bias * ohm), id="RB")
-    resistor = c.place(devices.resistor(sense * ohm), id="RS")
+    first, second = c.place(q2n3904(), name="Q1"), c.place(q2n3904(), name="Q2")
+    feed = c.place(devices.resistor(bias * ohm), name="RB")
+    resistor = c.place(devices.resistor(sense * ohm), name="RS")
     c.connect(a, feed.a, first.collector)
     c.connect(feed.b, first.base, second.collector, name="drive")
     c.connect(first.emitter, second.base, resistor.a, name="sensed")
@@ -39,11 +39,11 @@ def ptat(c: Builder, resistance: float = 1.9e3, ratio: int = 4) -> None:
     the current is Vt·ln(ratio)/R. A megohm starts it.
     """
     a, b = c.port("a"), c.port("b")
-    left, right = c.place(q2n3906(), id="QP1"), c.place(q2n3906(), id="QP2")
-    single = c.place(q2n3904(), id="QN1")
-    wide = [c.place(q2n3904(), id=f"QN{index}") for index in range(2, 2 + ratio)]
-    degeneration = c.place(devices.resistor(resistance * ohm), id="R1")
-    start = c.place(devices.resistor(1e6 * ohm), id="RS")
+    left, right = c.place(q2n3906(), name="QP1"), c.place(q2n3906(), name="QP2")
+    single = c.place(q2n3904(), name="QN1")
+    wide = [c.place(q2n3904(), name=f"QN{index}") for index in range(2, 2 + ratio)]
+    degeneration = c.place(devices.resistor(resistance * ohm), name="R1")
+    start = c.place(devices.resistor(1e6 * ohm), name="RS")
     c.connect(a, left.emitter, right.emitter, start.a)
     c.connect(
         left.base,
@@ -68,8 +68,8 @@ def ptat(c: Builder, resistance: float = 1.9e3, ratio: int = 4) -> None:
 def bench(c: Builder, candidate: Component, volts: float = 12.0) -> None:
     """The candidate across a source of `volts`, a to its positive end."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(volts * V), id="V1")
-    placed = c.place(candidate, id="X1")
+    source = c.place(devices.voltage_source(volts * V), name="V1")
+    placed = c.place(candidate, name="X1")
     c.connect(source.positive, placed.a, name="a")
     c.connect(placed.b, source.negative, ground)
 
@@ -86,12 +86,12 @@ def mirrored_limiter(
     megohm starts it.
     """
     a, b = c.port("a"), c.port("b")
-    main, tap = c.place(q2n3906(), id="QP1"), c.place(q2n3906(), id="QP2")
-    upper = c.place(devices.resistor(top * ohm), id="RE1")
-    lower = c.place(devices.resistor(top * share * ohm), id="RE2")
-    first, second = c.place(q2n3904(), id="Q1"), c.place(q2n3904(), id="Q2")
-    resistor = c.place(devices.resistor(sense * ohm), id="RS")
-    start = c.place(devices.resistor(1 * kohm * 1000), id="RST")
+    main, tap = c.place(q2n3906(), name="QP1"), c.place(q2n3906(), name="QP2")
+    upper = c.place(devices.resistor(top * ohm), name="RE1")
+    lower = c.place(devices.resistor(top * share * ohm), name="RE2")
+    first, second = c.place(q2n3904(), name="Q1"), c.place(q2n3904(), name="Q2")
+    resistor = c.place(devices.resistor(sense * ohm), name="RS")
+    start = c.place(devices.resistor(1 * kohm * 1000), name="RST")
     c.connect(a, upper.a, lower.a, start.a)
     c.connect(upper.b, main.emitter, name="top")
     c.connect(lower.b, tap.emitter, name="tap")
@@ -110,7 +110,7 @@ def compensated(
     About half the current falls with temperature and half rises.
     """
     a, b = c.port("a"), c.port("b")
-    falling = c.place(limiter(sense, bias), id="XCTAT")
-    rising = c.place(ptat(resistance, 4), id="XPTAT")
+    falling = c.place(limiter(sense, bias), name="XCTAT")
+    rising = c.place(ptat(resistance, 4), name="XPTAT")
     c.connect(a, falling.a, rising.a)
     c.connect(b, falling.b, rising.b)

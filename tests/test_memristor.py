@@ -64,8 +64,8 @@ def _driven(memristor: devices.Device, frequency: float = FREQUENCY) -> Componen
     def driven(c: Builder, memristor: devices.Device, frequency: float) -> None:
         ground = c.port("ground", Role.GROUND)
         sine = Sine(0 * V, AMPLITUDE * V, frequency * Hz)
-        source = c.place(devices.voltage_source(sine), id="V1")
-        cell = c.place(memristor, id="M1")
+        source = c.place(devices.voltage_source(sine), name="V1")
+        cell = c.place(memristor, name="M1")
         c.connect(source.positive, cell.positive, name="in")
         c.connect(source.negative, cell.negative, ground)
 
@@ -220,9 +220,9 @@ def test_a_periodic_steady_state_keeps_a_state_its_drive_leaves_alone() -> None:
     def filtered(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
         sine = Sine(0 * V, AMPLITUDE * V, FREQUENCY * Hz)
-        source = c.place(devices.voltage_source(sine), id="V1")
-        cell = c.place(quiet, id="M1")
-        capacitor = c.place(devices.capacitor(100 * nF), id="C1")
+        source = c.place(devices.voltage_source(sine), name="V1")
+        cell = c.place(quiet, name="M1")
+        capacitor = c.place(devices.capacitor(100 * nF), name="C1")
         c.connect(source.positive, cell.positive, name="in")
         c.connect(cell.negative, capacitor.a, name="out")
         c.connect(capacitor.b, source.negative, ground)
@@ -342,9 +342,9 @@ def _fed(level: float, memristor: devices.Device | None = None) -> Component:
     @component
     def fed(c: Builder, level: float, memristor: devices.Device) -> None:
         ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(level * V), id="V1")
-        feed = c.place(devices.resistor(1 * kohm), id="R1")
-        cell = c.place(memristor, id="M1")
+        supply = c.place(devices.voltage_source(level * V), name="V1")
+        feed = c.place(devices.resistor(1 * kohm), name="R1")
+        cell = c.place(memristor, name="M1")
         c.connect(supply.positive, feed.a, name="in")
         c.connect(feed.b, cell.positive, name="cell")
         c.connect(supply.negative, cell.negative, ground)
@@ -388,9 +388,9 @@ def test_its_small_signal_resistance_is_the_one_its_state_sets() -> None:
     @component
     def divider(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(0 * V), id="V1")
-        feed = c.place(devices.resistor(ON * ohm), id="R1")
-        cell = c.place(_vteam(), id="M1")
+        supply = c.place(devices.voltage_source(0 * V), name="V1")
+        feed = c.place(devices.resistor(ON * ohm), name="R1")
+        cell = c.place(_vteam(), name="M1")
         c.connect(supply.positive, feed.a, name="in")
         c.connect(feed.b, cell.positive, name="out")
         c.connect(supply.negative, cell.negative, ground)

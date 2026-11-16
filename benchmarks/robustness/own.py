@@ -139,13 +139,15 @@ def emitter_coupled(c: Builder) -> None:
     """
     vcc, ground = c.port("vcc", Role.SUPPLY), c.port("ground", Role.GROUND)
     source, output = c.port("input", Role.INPUT), c.port("output", Role.OUTPUT)
-    first, second = c.place(npn(), id="Q1"), c.place(npn(), id="Q2")
-    load = c.place(devices.resistor(1e3 * ohm), id="RC1")
-    upper = c.place(devices.resistor(1e3 * ohm), id="R1")
-    lower = c.place(devices.resistor(4e3 * ohm), id="R2")
-    pull = c.place(devices.resistor(470 * ohm), id="RC2")
-    shared = c.place(devices.resistor(1e3 * ohm), id="RE")
-    stray = [c.place(devices.capacitor(1 * pF), id=f"C{index}") for index in (1, 2, 3)]
+    first, second = c.place(npn(), name="Q1"), c.place(npn(), name="Q2")
+    load = c.place(devices.resistor(1e3 * ohm), name="RC1")
+    upper = c.place(devices.resistor(1e3 * ohm), name="R1")
+    lower = c.place(devices.resistor(4e3 * ohm), name="R2")
+    pull = c.place(devices.resistor(470 * ohm), name="RC2")
+    shared = c.place(devices.resistor(1e3 * ohm), name="RE")
+    stray = [
+        c.place(devices.capacitor(1 * pF), name=f"C{index}") for index in (1, 2, 3)
+    ]
     c.connect(vcc, load.a, pull.a)
     c.connect(source, first.base)
     c.connect(first.collector, load.b, upper.a, stray[0].a, name="c1")
@@ -162,9 +164,9 @@ def schmitt_bjt(drive: Waveform | float) -> Component:
     @component
     def bench(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(SCHMITT_SUPPLY * V), id="VCC")
-        given = c.place(devices.voltage_source(level), id="VIN")
-        trigger = c.place(emitter_coupled(), id="X1")
+        supply = c.place(devices.voltage_source(SCHMITT_SUPPLY * V), name="VCC")
+        given = c.place(devices.voltage_source(level), name="VIN")
+        trigger = c.place(emitter_coupled(), name="X1")
         c.connect(supply.positive, trigger.vcc, name="vcc")
         c.connect(given.positive, trigger.input, name="in")
         c.connect(trigger.output, name="out")
@@ -183,9 +185,9 @@ def cmos_schmitt(c: Builder) -> None:
     """
     vdd, ground = c.port("vdd", Role.SUPPLY), c.port("ground", Role.GROUND)
     source, output = c.port("input", Role.INPUT), c.port("output", Role.OUTPUT)
-    n1, n2, n3 = (c.place(mos("n"), id=name) for name in ("MN1", "MN2", "MN3"))
-    p1, p2, p3 = (c.place(mos("p"), id=name) for name in ("MP1", "MP2", "MP3"))
-    load = c.place(devices.capacitor(10 * fF), id="CL")
+    n1, n2, n3 = (c.place(mos("n"), name=name) for name in ("MN1", "MN2", "MN3"))
+    p1, p2, p3 = (c.place(mos("p"), name=name) for name in ("MP1", "MP2", "MP3"))
+    load = c.place(devices.capacitor(10 * fF), name="CL")
     c.connect(source, n1.gate, n2.gate, p1.gate, p2.gate)
     c.connect(n1.drain, n2.source, n3.source, name="xn")
     c.connect(p1.drain, p2.source, p3.source, name="xp")
@@ -201,9 +203,9 @@ def schmitt_cmos(drive: Waveform | float) -> Component:
     @component
     def bench(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(SUPPLY * V), id="VDD")
-        given = c.place(devices.voltage_source(level), id="VIN")
-        trigger = c.place(cmos_schmitt(), id="X1")
+        supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
+        given = c.place(devices.voltage_source(level), name="VIN")
+        trigger = c.place(cmos_schmitt(), name="X1")
         c.connect(supply.positive, trigger.vdd, name="vdd")
         c.connect(given.positive, trigger.input, name="in")
         c.connect(trigger.output, name="out")
@@ -257,9 +259,9 @@ def lowest(net: str) -> Callable[[Solution, Sequence[Solution]], bool]:
 def latch(c: Builder) -> None:
     """Two CMOS inverters, each the other's input, `q` loaded twice as much as `qb`."""
     vdd, ground = c.port("vdd", Role.SUPPLY), c.port("ground", Role.GROUND)
-    left, right = c.place(inverter(), id="X1"), c.place(inverter(), id="X2")
-    heavy = c.place(devices.capacitor(20 * fF), id="CQ")
-    light = c.place(devices.capacitor(10 * fF), id="CQB")
+    left, right = c.place(inverter(), name="X1"), c.place(inverter(), name="X2")
+    heavy = c.place(devices.capacitor(20 * fF), name="CQ")
+    light = c.place(devices.capacitor(10 * fF), name="CQB")
     c.connect(left.vdd, right.vdd, vdd)
     c.connect(left.y, right.a, heavy.a, name="q")
     c.connect(right.y, left.a, light.a, name="qb")
@@ -273,8 +275,8 @@ def powered(supply: Waveform | float, part: Callable[[], Component]) -> Componen
     @component
     def bench(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(level), id="VDD")
-        placed = c.place(part(), id="X1")
+        source = c.place(devices.voltage_source(level), name="VDD")
+        placed = c.place(part(), name="X1")
         c.connect(source.positive, placed.vdd, name="vdd")
         c.connect(source.negative, placed.ground, ground)
 
@@ -298,11 +300,11 @@ def ring(c: Builder) -> None:
     the balanced state, where every stage sits at its threshold, which is unstable.
     """
     vdd, ground = c.port("vdd", Role.SUPPLY), c.port("ground", Role.GROUND)
-    gates = [c.place(inverter(), id=f"X{index}") for index in range(1, 6)]
+    gates = [c.place(inverter(), name=f"X{index}") for index in range(1, 6)]
     nets = [c.net(f"n{index}") for index in range(5)]
     for index, gate in enumerate(gates):
         load = c.place(
-            devices.capacitor((20 if index == 0 else 10) * fF), id=f"C{index}"
+            devices.capacitor((20 if index == 0 else 10) * fF), name=f"C{index}"
         )
         c.connect(gate.vdd, vdd)
         c.connect(gate.gnd, load.b, ground)
@@ -314,11 +316,11 @@ def ring(c: Builder) -> None:
 def sram(c: Builder) -> None:
     """The example's SRAM cell, its word line low and its bit lines at rest."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY * V), id="VDD")
-    word = c.place(devices.voltage_source(0 * V), id="VWL")
-    bit = c.place(devices.voltage_source(0 * V), id="VBL")
-    bit_bar = c.place(devices.voltage_source(SUPPLY * V), id="VBLB")
-    memory = c.place(sram_cell.cell(), id="X1")
+    supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
+    word = c.place(devices.voltage_source(0 * V), name="VWL")
+    bit = c.place(devices.voltage_source(0 * V), name="VBL")
+    bit_bar = c.place(devices.voltage_source(SUPPLY * V), name="VBLB")
+    memory = c.place(sram_cell.cell(), name="X1")
     c.connect(supply.positive, memory.vdd, name="vdd")
     c.connect(word.positive, memory.word, name="wl")
     c.connect(bit.positive, memory.bit, name="bl")
@@ -360,13 +362,13 @@ def chain(drive: Waveform | float) -> Component:
     @component
     def bench(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(SUPPLY * V), id="VDD")
-        given = c.place(devices.voltage_source(level), id="VIN")
+        supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
+        given = c.place(devices.voltage_source(level), name="VIN")
         vdd = c.net("vdd")
         nets = [c.net(name) for name in ("in", "n1", "n2", "out")]
         for index in range(3):
-            up = c.place(bare("p"), id=f"MP{index + 1}")
-            down = c.place(bare("n"), id=f"MN{index + 1}")
+            up = c.place(bare("p"), name=f"MP{index + 1}")
+            down = c.place(bare("n"), name=f"MN{index + 1}")
             c.connect(up.gate, down.gate, nets[index])
             c.connect(up.drain, down.drain, nets[index + 1])
             c.connect(up.source, up.bulk, vdd)
@@ -416,11 +418,11 @@ def impasse_circuit(c: Builder) -> None:
         fall=1 * ns,
         width=1 * us,
     )
-    source = c.place(devices.current_source(charge), id="I1")
-    held = c.place(devices.capacitor(IMPASSE_CAPACITANCE * 1e9 * nF), id="C1")
-    series = c.place(devices.resistor(IMPASSE_RESISTANCE * ohm), id="R1")
+    source = c.place(devices.current_source(charge), name="I1")
+    held = c.place(devices.capacitor(IMPASSE_CAPACITANCE * 1e9 * nF), name="C1")
+    series = c.place(devices.resistor(IMPASSE_RESISTANCE * ohm), name="R1")
     expression = f"{IMPASSE_SCALE!r} * v(u) * (v(u) - 1) * (v(u) - 2)"
-    conductance = c.place(devices.behavioral_current_source(expression), id="B1")
+    conductance = c.place(devices.behavioral_current_source(expression), name="B1")
     c.connect(source.negative, held.a, series.a, name="v")
     c.connect(series.b, conductance.positive, conductance.u, name="u")
     c.connect(source.positive, held.b, conductance.negative, ground)

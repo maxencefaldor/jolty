@@ -71,9 +71,9 @@ from jolty.waveforms import Piecewise, Sine
 @component
 def divider(c: Builder, level: Quantity, upper: Quantity, lower: Quantity) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(level), id="V1")
-    top = c.place(devices.resistor(upper), id="R1")
-    bottom = c.place(devices.resistor(lower), id="R2")
+    source = c.place(devices.voltage_source(level), name="V1")
+    top = c.place(devices.resistor(upper), name="R1")
+    bottom = c.place(devices.resistor(lower), name="R2")
     c.connect(source.positive, top.a, name="in")
     c.connect(top.b, bottom.a, name="out")
     c.connect(bottom.b, source.negative, ground)
@@ -83,9 +83,9 @@ def divider(c: Builder, level: Quantity, upper: Quantity, lower: Quantity) -> No
 def low_pass(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(0 * us, 0 * V), (1e-3 * us, 1 * V)])
-    source = c.place(devices.voltage_source(step), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(step), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)
@@ -94,9 +94,9 @@ def low_pass(c: Builder) -> None:
 @component
 def diode_load(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(0 * V), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    diode = c.place(devices.diode(), id="D1")
+    source = c.place(devices.voltage_source(0 * V), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    diode = c.place(devices.diode(), name="D1")
     c.connect(source.positive, resistor.a)
     c.connect(resistor.b, diode.anode, name="anode")
     c.connect(diode.cathode, source.negative, ground)
@@ -175,27 +175,27 @@ def follower(c: Builder) -> None:
     Three stages of 1 mS each drive a load and a capacitor, then a buffer the output.
     """
     ground = c.port("ground", Role.GROUND)
-    level = c.place(devices.voltage_source(1 * V), id="VIN")
+    level = c.place(devices.voltage_source(1 * V), name="VIN")
     c.connect(level.negative, ground)
     stages = [
-        c.place(devices.voltage_controlled_current_source(1 * mA / V), id=f"G{index}")
+        c.place(devices.voltage_controlled_current_source(1 * mA / V), name=f"G{index}")
         for index in range(1, len(STAGES) + 1)
     ]
     driving = level.positive
     for index, (stage, (load, pole)) in enumerate(zip(stages, STAGES, strict=True), 1):
-        resistor = c.place(devices.resistor(load), id=f"R{index}")
+        resistor = c.place(devices.resistor(load), name=f"R{index}")
         capacitance = 1 / (2 * math.pi * pole * load.value) * F
-        capacitor = c.place(devices.capacitor(capacitance), id=f"C{index}")
+        capacitor = c.place(devices.capacitor(capacitance), name=f"C{index}")
         c.connect(stage.control_positive, driving)
         c.connect(stage.positive, resistor.b, capacitor.b, ground)
         c.connect(stage.negative, resistor.a, capacitor.a, name=f"n{index}")
         driving = stage.negative
     for stage in stages[1:]:
         c.connect(stage.control_negative, ground)
-    buffer = c.place(devices.voltage_controlled_voltage_source(1.0), id="E1")
+    buffer = c.place(devices.voltage_controlled_voltage_source(1.0), name="E1")
     c.connect(buffer.control_positive, driving)
     c.connect(buffer.control_negative, buffer.negative, ground)
-    probe = c.place(devices.voltage_source(0 * V), id="VP")
+    probe = c.place(devices.voltage_source(0 * V), name="VP")
     c.connect(buffer.positive, probe.negative, name="out")
     c.connect(probe.positive, stages[0].control_negative, name="fb")
 
@@ -305,7 +305,7 @@ def test_a_noise_analysis_rejects_what_it_cannot_measure() -> None:
 def latch(c: Builder) -> None:
     """Two CMOS inverters, each driving the other's input."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(3.3 * V), id="VDD")
+    supply = c.place(devices.voltage_source(3.3 * V), name="VDD")
     c.connect(supply.negative, ground)
     nets: dict[str, list[Terminal]] = {"a": [], "b": []}
     for index, (input_net, output_net) in enumerate((("a", "b"), ("b", "a")), 1):
@@ -322,7 +322,7 @@ def latch(c: Builder) -> None:
                     width=10 * um,
                     length=1 * um,
                 ),
-                id=f"M{channel.upper()}{index}",
+                name=f"M{channel.upper()}{index}",
             )
             c.connect(transistor.source, transistor.bulk, rail)
             nets[input_net].append(transistor.gate)
@@ -386,15 +386,15 @@ def test_an_excess_phase_delays_the_collector_current_through_two_poles() -> Non
     @component
     def held(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        base = c.place(devices.voltage_source(0.7 * V), id="VB")
-        collector = c.place(devices.voltage_source(3 * V), id="VC")
+        base = c.place(devices.voltage_source(0.7 * V), name="VB")
+        collector = c.place(devices.voltage_source(3 * V), name="VC")
         transistor = c.place(
             devices.bipolar_transistor(
                 saturation_current=1 * fA,
                 forward_transit_time=0.4 * ns,
                 excess_phase=30.0,
             ),
-            id="Q1",
+            name="Q1",
         )
         c.connect(base.positive, transistor.base, name="base")
         c.connect(collector.positive, transistor.collector, name="collector")
@@ -496,9 +496,9 @@ def test_results_read_the_current_into_every_terminal() -> None:
 @component
 def common_source(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(3 * V), id="VDD")
-    gate = c.place(devices.voltage_source(1 * V), id="VG")
-    load = c.place(devices.resistor(10 * kohm), id="RD")
+    supply = c.place(devices.voltage_source(3 * V), name="VDD")
+    gate = c.place(devices.voltage_source(1 * V), name="VG")
+    load = c.place(devices.resistor(10 * kohm), name="RD")
     transistor = c.place(
         devices.mosfet(
             threshold_voltage=0.4 * V,
@@ -506,7 +506,7 @@ def common_source(c: Builder) -> None:
             width=4 * um,
             length=2 * um,
         ),
-        id="M1",
+        name="M1",
     )
     c.connect(supply.positive, load.a, name="vdd")
     c.connect(load.b, transistor.drain, name="out")
@@ -553,9 +553,9 @@ def test_results_read_each_device_s_small_signal_model_and_variables() -> None:
 @component
 def two_dividers(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(4 * V), id="V1")
-    first = c.place(divider_cell(), id="X1")
-    second = c.place(divider_cell(), id="X2")
+    source = c.place(devices.voltage_source(4 * V), name="V1")
+    first = c.place(divider_cell(), name="X1")
+    second = c.place(divider_cell(), name="X2")
     c.connect(source.positive, first.top, second.top, name="in")
     c.connect(source.negative, first.bottom, second.bottom, ground)
 
@@ -564,8 +564,8 @@ def two_dividers(c: Builder) -> None:
 def divider_cell(c: Builder) -> None:
     top = c.port("top")
     bottom = c.port("bottom")
-    upper = c.place(devices.resistor(1 * kohm), id="R1")
-    lower = c.place(devices.resistor(1 * kohm), id="R2")
+    upper = c.place(devices.resistor(1 * kohm), name="R1")
+    lower = c.place(devices.resistor(1 * kohm), name="R2")
     c.connect(top, upper.a)
     c.connect(upper.b, lower.a, name="mid")
     c.connect(lower.b, bottom)
@@ -706,9 +706,9 @@ def test_a_transient_steps_onto_the_times_it_is_given() -> None:
 def slow_rc(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     sine = Sine(0 * V, 1 * V, 1 * kHz)
-    source = c.place(devices.voltage_source(sine), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(10 * uF), id="C1")
+    source = c.place(devices.voltage_source(sine), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(10 * uF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)
@@ -758,7 +758,7 @@ def test_a_resistance_drifts_with_its_temperature_coefficients() -> None:
     @component
     def drifting(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
         load = c.place(
             devices.resistor(
                 1 * kohm,
@@ -766,7 +766,7 @@ def test_a_resistance_drifts_with_its_temperature_coefficients() -> None:
                 quadratic_temperature_coefficient=1e-6 / K**2,
                 nominal_temperature=celsius(25),
             ),
-            id="R1",
+            name="R1",
         )
         c.connect(source.positive, load.a)
         c.connect(source.negative, load.b, ground)
@@ -779,9 +779,9 @@ def test_a_device_drifts_to_a_temperature_of_its_own() -> None:
     @component
     def apart(c: Builder, held: devices.Device, quiet: devices.Device) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
-        load = c.place(held, id="R1")
-        bleed = c.place(quiet, id="R2")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        load = c.place(held, name="R1")
+        bleed = c.place(quiet, name="R2")
         c.connect(source.positive, load.a, name="top")
         c.connect(load.b, bleed.a, name="out")
         c.connect(source.negative, bleed.b, ground)
@@ -820,16 +820,16 @@ def test_the_ac_response_of_a_low_pass_filter() -> None:
 def stepped(c: Builder, primary: float, secondary: float, coupling: float) -> None:
     """A transformer of `primary` and `secondary` henries, fed by 50 Ω, into 1 kΩ."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(0 * V), id="V1")
+    source = c.place(devices.voltage_source(0 * V), name="V1")
     windings = c.place(
         devices.coupled_inductors(
             [devices.inductor(primary * H), devices.inductor(secondary * H)],
             {(1, 2): coupling},
         ),
-        id="T1",
+        name="T1",
     )
-    feed = c.place(devices.resistor(50 * ohm), id="R1")
-    resistor = c.place(devices.resistor(1 * kohm), id="RL")
+    feed = c.place(devices.resistor(50 * ohm), name="R1")
+    resistor = c.place(devices.resistor(1 * kohm), name="RL")
     c.connect(source.positive, feed.a, name="in")
     c.connect(feed.b, windings.a1, name="primary")
     c.connect(windings.a2, resistor.a, name="out")
@@ -908,11 +908,11 @@ def test_the_step_response_of_a_low_pass_filter() -> None:
 @component
 def common_emitter(c: Builder, transistor: devices.Device) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="V2")
-    source = c.place(devices.voltage_source(0.75 * V), id="V1")
-    base = c.place(devices.resistor(2 * kohm), id="RB")
-    amplifier = c.place(transistor, id="Q1")
-    load = c.place(devices.resistor(1 * kohm), id="RC")
+    supply = c.place(devices.voltage_source(5 * V), name="V2")
+    source = c.place(devices.voltage_source(0.75 * V), name="V1")
+    base = c.place(devices.resistor(2 * kohm), name="RB")
+    amplifier = c.place(transistor, name="Q1")
+    load = c.place(devices.resistor(1 * kohm), name="RC")
     c.connect(source.positive, base.a, name="in")
     c.connect(base.b, amplifier.base, name="base")
     c.connect(supply.positive, load.a, name="supply")
@@ -994,12 +994,12 @@ def test_problems_name_the_instance_and_the_script_line() -> None:
     @component
     def floating(c: Builder) -> None:
         c.port("ground", Role.GROUND)
-        resistor = c.place(devices.resistor(1 * kohm), id="R1")
+        resistor = c.place(devices.resistor(1 * kohm), name="R1")
         c.connect(resistor.a, resistor.b)
 
     @component
     def ungrounded(c: Builder) -> None:
-        c.place(devices.resistor(-1 * kohm), id="R1")
+        c.place(devices.resistor(-1 * kohm), name="R1")
 
     Simulation(floating())
     with pytest.raises(ElaborationError) as raised:
@@ -1026,8 +1026,8 @@ def test_a_current_source_sweeps_in_amperes() -> None:
     @component
     def biased(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.current_source(1 * mA), id="I1")
-        resistor = c.place(devices.resistor(1 * kohm), id="R1")
+        source = c.place(devices.current_source(1 * mA), name="I1")
+        resistor = c.place(devices.resistor(1 * kohm), name="R1")
         c.connect(source.negative, resistor.a, name="top")
         c.connect(source.positive, resistor.b, ground)
 

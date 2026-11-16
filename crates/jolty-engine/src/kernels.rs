@@ -475,27 +475,27 @@ fn a_parallel_evaluation_of_a_thousand_transistors_is_the_serial_one_bit_for_bit
 fn star(arms: usize) -> Circuit {
     use serde_json::json;
     let mut instances = vec![
-        json!({"id": "V1", "of": {"device": "voltage_source"},
+        json!({"name": "V1", "of": {"device": "voltage_source"},
             "parameters": {"waveform": {"dc": 1.0}},
             "terminals": {"positive": "supply", "negative": "ground"}}),
-        json!({"id": "R0", "of": {"device": "resistor"}, "parameters": {"resistance": 1.0},
+        json!({"name": "R0", "of": {"device": "resistor"}, "parameters": {"resistance": 1.0},
             "terminals": {"a": "supply", "b": "hub"}}),
-        json!({"id": "D1", "of": {"device": "diode"}, "parameters": {},
+        json!({"name": "D1", "of": {"device": "diode"}, "parameters": {},
             "terminals": {"anode": "hub", "cathode": "ground"}}),
     ];
     for arm in 1..=arms {
         let node = format!("n{arm}");
         instances.push(
-            json!({"id": format!("R{arm}"), "of": {"device": "resistor"},
+            json!({"name": format!("R{arm}"), "of": {"device": "resistor"},
             "parameters": {"resistance": 1e3}, "terminals": {"a": "hub", "b": node}}),
         );
         instances.push(
-            json!({"id": format!("C{arm}"), "of": {"device": "capacitor"},
+            json!({"name": format!("C{arm}"), "of": {"device": "capacitor"},
             "parameters": {"capacitance": 1e-9}, "terminals": {"a": node, "b": "ground"}}),
         );
     }
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "star",
+        "format": "jolty-circuit", "version": 3, "top": "star",
         "components": {"star": {
             "ports": [{"name": "ground", "role": "ground"}],
             "instances": instances

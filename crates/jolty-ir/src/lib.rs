@@ -15,19 +15,19 @@
 //!
 //! let circuit = Circuit::from_json(r#"{
 //!     "format": "jolty-circuit",
-//!     "version": 2,
+//!     "version": 3,
 //!     "top": "divider",
 //!     "components": {
 //!         "divider": {
 //!             "ports": [{"name": "ground", "role": "ground"}],
 //!             "instances": [
-//!                 {"id": "V1", "of": {"device": "voltage_source"},
+//!                 {"name": "V1", "of": {"device": "voltage_source"},
 //!                  "parameters": {"waveform": {"dc": 5.0}},
 //!                  "terminals": {"p": "top", "n": "ground"}},
-//!                 {"id": "R1", "of": {"device": "resistor"},
+//!                 {"name": "R1", "of": {"device": "resistor"},
 //!                  "parameters": {"resistance": 1000.0},
 //!                  "terminals": {"a": "top", "b": "out"}},
-//!                 {"id": "R2", "of": {"device": "resistor"},
+//!                 {"name": "R2", "of": {"device": "resistor"},
 //!                  "parameters": {"resistance": 1000.0},
 //!                  "terminals": {"a": "out", "b": "ground"}}
 //!             ]
@@ -55,7 +55,7 @@ pub use validate::{Problem, Problems};
 pub const FORMAT: &str = "jolty-circuit";
 
 /// The version of the circuit format this crate reads and writes.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// The parameters of a device instance, by name, as JSON values in SI base units.
 pub type Parameters = serde_json::Map<String, serde_json::Value>;
@@ -112,7 +112,7 @@ pub enum Role {
 #[serde(deny_unknown_fields)]
 pub struct Instance {
     /// The instance's name, unique within its component.
-    pub id: Name,
+    pub name: Name,
     /// What the instance is.
     pub of: Of,
     /// The device parameters; component instances take none.
@@ -358,11 +358,11 @@ mod tests {
 
     fn divider() -> &'static str {
         r#"{
-            "format": "jolty-circuit", "version": 2, "top": "divider",
+            "format": "jolty-circuit", "version": 3, "top": "divider",
             "components": {"divider": {
                 "ports": [{"name": "ground", "role": "ground"}],
                 "instances": [
-                    {"id": "R1", "of": {"device": "resistor"},
+                    {"name": "R1", "of": {"device": "resistor"},
                      "parameters": {"resistance": 1000.0},
                      "terminals": {"a": "top", "b": "ground"},
                      "source_location": {"file": "divider.py", "line": 7, "function": "divider"}}

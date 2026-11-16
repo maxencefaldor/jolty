@@ -46,7 +46,7 @@ def timer(c: Builder) -> None:
     output, discharge = c.port("output", Role.OUTPUT), c.port("discharge")
     vcc, gnd = c.port("vcc", Role.SUPPLY), c.port("gnd", Role.GROUND)
     divider = [
-        c.place(devices.resistor(5 * kohm), id=f"R{index}") for index in (1, 2, 3)
+        c.place(devices.resistor(5 * kohm), name=f"R{index}") for index in (1, 2, 3)
     ]
     upper, lower = c.net("two_thirds"), c.net("one_third")
     for resistor, (a, b) in zip(
@@ -54,14 +54,14 @@ def timer(c: Builder) -> None:
     ):
         c.connect(resistor.a, a)
         c.connect(resistor.b, b)
-    high = c.place(comparator(), id="B1")
-    low = c.place(comparator(), id="B2")
+    high = c.place(comparator(), name="B1")
+    low = c.place(comparator(), name="B2")
     c.connect(high["in"], threshold)
     c.connect(high.ref, upper)
     c.connect(low["in"], lower)
     c.connect(low.ref, trigger)
-    reset, set_ = c.place(gate("nor"), id="U1"), c.place(gate("nor"), id="U2")
-    drive, sink = c.place(gate("buffer"), id="U3"), c.place(gate("buffer"), id="U4")
+    reset, set_ = c.place(gate("nor"), name="U1"), c.place(gate("nor"), name="U2")
+    drive, sink = c.place(gate("buffer"), name="U3"), c.place(gate("buffer"), name="U4")
     for placed in (reset, set_, drive, sink):
         c.connect(placed.supply, vcc)
         c.connect(placed.ground, gnd)
@@ -70,8 +70,8 @@ def timer(c: Builder) -> None:
     c.connect(reset.y, set_.b, drive.a, name="q")
     c.connect(set_.y, reset.b, sink.a, name="q_bar")
     c.connect(drive.y, output)
-    base = c.place(devices.resistor(10 * kohm), id="RB")
-    switch = c.place(q2n3904(), id="Q1")
+    base = c.place(devices.resistor(10 * kohm), name="RB")
+    switch = c.place(q2n3904(), name="Q1")
     c.connect(sink.y, base.a, name="discharging")
     c.connect(base.b, switch.base, name="base")
     c.connect(switch.collector, discharge)
@@ -82,12 +82,12 @@ def timer(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The timer astable on 9 V: Ra, Rb and the timing capacitor, the output loaded."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY * V), id="VCC")
-    chip = c.place(timer(), id="X1")
-    charge = c.place(devices.resistor(1 * kohm), id="RA")
-    timing = c.place(devices.resistor(10 * kohm), id="RB")
-    capacitor = c.place(devices.capacitor(10 * nF), id="C1")
-    load = c.place(devices.capacitor(100 * fF), id="CL")
+    supply = c.place(devices.voltage_source(SUPPLY * V), name="VCC")
+    chip = c.place(timer(), name="X1")
+    charge = c.place(devices.resistor(1 * kohm), name="RA")
+    timing = c.place(devices.resistor(10 * kohm), name="RB")
+    capacitor = c.place(devices.capacitor(10 * nF), name="C1")
+    load = c.place(devices.capacitor(100 * fF), name="CL")
     c.connect(supply.positive, chip.vcc, charge.a, name="vcc")
     c.connect(charge.b, timing.a, chip.discharge, name="discharge")
     c.connect(timing.b, capacitor.a, chip.threshold, chip.trigger, name="timing")

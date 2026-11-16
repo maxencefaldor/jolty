@@ -57,16 +57,16 @@ PORTS = ("supply", "reference", "input", "output", "ground")
 def bench(c: Builder, made: Component, frequency: float = 0.0) -> None:
     """`made` from 2 V, its input a sine at `frequency`, or 0 A to sweep when 0."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(2 * V), id="VS")
+    supply = c.place(devices.voltage_source(2 * V), name="VS")
     level = (
         Sine(offset=100 * uA, amplitude=90 * uA, frequency=frequency * Hz)
         if frequency
         else 0 * A
     )
-    signal = c.place(devices.current_source(level), id="IIN")
-    reference = c.place(devices.current_source(REFERENCE * A), id="IREF")
-    meter = c.place(devices.voltage_source(0 * V), id="VM")
-    placed = c.place(made, id="X1")
+    signal = c.place(devices.current_source(level), name="IIN")
+    reference = c.place(devices.current_source(REFERENCE * A), name="IREF")
+    meter = c.place(devices.voltage_source(0 * V), name="VM")
+    placed = c.place(made, name="X1")
     c.connect(
         supply.positive,
         signal.positive,

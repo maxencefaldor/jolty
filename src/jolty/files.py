@@ -260,7 +260,7 @@ def circuit_hash(circuit: ir.Circuit) -> str:
         >>> from jolty.ir import Circuit, Component, DeviceOf, Instance, SourceLocation
         >>> def placed(file: str, resistance: float) -> Circuit:
         ...     resistor = Instance(
-        ...         id="R1",
+        ...         name="R1",
         ...         of=DeviceOf(device="resistor"),
         ...         parameters={"resistance": resistance},
         ...         terminals={"a": "in", "b": "out"},

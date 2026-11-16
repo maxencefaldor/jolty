@@ -63,7 +63,7 @@ def _numbers(circuit: ir.Circuit) -> list[Number]:
                 pass
 
     return [
-        (instance.id, name, number)
+        (instance.name, name, number)
         for instance in circuit.components[circuit.top].instances
         for key, value in instance.parameters.items()
         for name, number in within(key, value)
@@ -73,7 +73,7 @@ def _numbers(circuit: ir.Circuit) -> list[Number]:
 def _source(circuit: ir.Circuit) -> str:
     """The pulsed source, the first voltage source the circuit places."""
     return next(
-        instance.id
+        instance.name
         for instance in circuit.components[circuit.top].instances
         if instance.of == ir.DeviceOf(device="voltage_source")
     )
@@ -145,9 +145,9 @@ def test_one_elaboration_serves_each_structure() -> None:
     @component
     def divider(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
-        upper = c.place(devices.resistor(2 * ohm), id="R1")
-        lower = c.place(devices.resistor(3 * ohm), id="R2")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        upper = c.place(devices.resistor(2 * ohm), name="R1")
+        lower = c.place(devices.resistor(3 * ohm), name="R2")
         c.connect(source.positive, upper.a)
         c.connect(upper.b, lower.a, name="out")
         c.connect(lower.b, source.negative, ground)

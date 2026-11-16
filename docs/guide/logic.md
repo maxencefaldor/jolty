@@ -55,7 +55,7 @@ Each such pin joins the net through a connect element of its own:
 gate = devices.logic_gate(
     "not", rise=40 * ps, transition=20 * ps, electrical=True, input_capacitance=2 * fF
 )
-inverter = c.place(gate, id="U1")
+inverter = c.place(gate, name="U1")
 c.connect(inverter.supply, vdd)
 c.connect(inverter.ground, ground)
 c.connect(inverter.a, analog_input)  # an electrical net: a threshold detector reads it

@@ -85,24 +85,24 @@ def cases() -> list[tuple[Piecewise | Sine | Quantity, float]]:
 def bench(c: Builder, made: Component, case: int) -> None:
     """`made` on Koza's fixture, its input driven as in `case`."""
     ground = c.port("ground", Role.GROUND)
-    placed = c.place(made, id="X1")
-    supply = c.place(devices.voltage_source(2 * V), id="VCC")
+    placed = c.place(made, name="X1")
+    supply = c.place(devices.voltage_source(2 * V), name="VCC")
     c.connect(supply.positive, placed.vcc, name="vcc")
     c.connect(supply.negative, placed.ground, ground)
     level, _ = cases()[case]
-    command = c.place(devices.voltage_source(level), id="VIN")
+    command = c.place(devices.voltage_source(level), name="VIN")
     c.connect(command.negative, ground)
     convert = c.place(
         devices.voltage_controlled_current_source(TRANSCONDUCTANCE * A / V),
-        id="GIN",
+        name="GIN",
     )
     c.connect(convert.control_positive, command.positive, name="command")
     c.connect(convert.control_negative, ground)
     c.connect(convert.positive, supply.positive)
-    meter = c.place(devices.voltage_source(0 * V), id="VMETER")
+    meter = c.place(devices.voltage_source(0 * V), name="VMETER")
     c.connect(meter.positive, supply.positive)
     for port, driving in (("input", convert.negative), ("output", meter.negative)):
-        series = c.place(devices.resistor(1e-6 * ohm), id=f"R{port.upper()}")
+        series = c.place(devices.resistor(1e-6 * ohm), name=f"R{port.upper()}")
         c.connect(driving, series.a)
         c.connect(series.b, placed[port], name=port)
 

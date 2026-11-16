@@ -57,7 +57,7 @@ its value whose tolerance is within its own.
 
 Components: decorate a function taking a jolty.Builder with @jolty.component. Inside,
 c.port(name, role) declares a port (Role.SIGNAL, SUPPLY or GROUND), c.place(device or
-component, id=...) places an instance whose terminals are its attributes, and
+component, name=...) places an instance whose terminals are its attributes, and
 c.connect(*points, name=...) joins terminals and nets into one net, named if given.
 Calling the decorated function with its parameters returns a component that another
 component places. The top component has a ground port, the reference of every voltage.

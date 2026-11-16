@@ -169,10 +169,10 @@ def _keys(value: object, typed: object, where: str) -> list[str]:
 def _probed(c: Builder) -> None:
     """A source, a probe and an RC low-pass."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    probe = c.place(devices.voltage_source(0 * V), id="VP")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    probe = c.place(devices.voltage_source(0 * V), name="VP")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, probe.positive)
     c.connect(probe.negative, resistor.a)
     c.connect(resistor.b, capacitor.a, c.net("out"))

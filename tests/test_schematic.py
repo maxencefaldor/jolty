@@ -32,8 +32,8 @@ def divider(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     top = c.port("top")
     middle = c.port("middle")
-    upper = c.place(devices.resistor(1 * kohm), id="RU")
-    lower = c.place(devices.resistor(1 * kohm), id="RL")
+    upper = c.place(devices.resistor(1 * kohm), name="RU")
+    lower = c.place(devices.resistor(1 * kohm), name="RL")
     c.connect(top, upper.a)
     c.connect(upper.b, lower.a, middle)
     c.connect(lower.b, ground)
@@ -43,9 +43,9 @@ def divider(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """A divider fed from a source, loaded by a capacitor."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(4 * V), id="V1")
-    halves = c.place(divider(), id="X1")
-    load = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(4 * V), name="V1")
+    halves = c.place(divider(), name="X1")
+    load = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, halves.top, name="in")
     c.connect(halves.middle, load.a, name="out")
     c.connect(source.negative, halves.ground, load.b, ground)
@@ -101,9 +101,9 @@ from jolty.units import V, kohm, nF
 @component
 def shorted(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, source.negative, ground)
     c.connect(capacitor.a, capacitor.b, ground)

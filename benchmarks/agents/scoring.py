@@ -504,9 +504,9 @@ def disallowed(
             kind = instance.of.device
             if kind in models:
                 if (kind, instance.parameters) not in parts:
-                    found.append(unmet("parts", f"{instance.id} is not a given part"))
+                    found.append(unmet("parts", f"{instance.name} is not a given part"))
             elif kind not in permitted:
-                reason = f"{instance.id} is a {kind}, which the task forbids"
+                reason = f"{instance.name} is a {kind}, which the task forbids"
                 found.append(unmet("parts", reason))
     return found
 

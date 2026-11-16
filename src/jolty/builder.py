@@ -14,9 +14,9 @@ Examples:
     >>> @component
     ... def divider(c: Builder) -> None:
     ...     ground = c.port("ground", Role.GROUND)
-    ...     source = c.place(devices.voltage_source(5 * V), id="V1")
-    ...     upper = c.place(devices.resistor(1 * kohm), id="R1")
-    ...     lower = c.place(devices.resistor(1 * kohm), id="R2")
+    ...     source = c.place(devices.voltage_source(5 * V), name="V1")
+    ...     upper = c.place(devices.resistor(1 * kohm), name="R1")
+    ...     lower = c.place(devices.resistor(1 * kohm), name="R2")
     ...     c.connect(source.positive, upper.a)
     ...     c.connect(upper.b, lower.a, name="out")
     ...     c.connect(lower.b, source.negative, ground)
@@ -86,24 +86,25 @@ class Placed:
         Terminal(instance='R1', name='a')
     """
 
-    __slots__ = ("_id", "_terminals")
+    __slots__ = ("_name", "_terminals")
 
-    def __init__(self, id: str, terminals: tuple[str, ...]) -> None:
-        """Holds the instance's `id` and the names of its `terminals`."""
-        self._id = id
+    def __init__(self, name: str, terminals: tuple[str, ...]) -> None:
+        """Holds the instance's `name` and the names of its `terminals`."""
+        self._name = name
         self._terminals = terminals
 
     @property
-    def id(self) -> str:
-        """The instance's id."""
-        return self._id
+    def name(self) -> str:
+        """The instance's name."""
+        return self._name
 
     def __getattr__(self, name: str) -> Terminal:
         """The terminal called `name`."""
         if name in self._terminals:
-            return Terminal(self._id, name)
+            return Terminal(self._name, name)
         message = (
-            f"{self._id} has no terminal {name!r}; it has {', '.join(self._terminals)}"
+            f"{self._name} has no terminal {name!r}; "
+            f"it has {', '.join(self._terminals)}"
         )
         raise AttributeError(message)
 
@@ -221,18 +222,18 @@ class Builder:
         self._declare(name, "net")
         return Net(name)
 
-    def place(self, item: Device | Component, *, id: str) -> Placed:
-        """Places a device or a component as the instance `id`.
+    def place(self, item: Device | Component, *, name: str) -> Placed:
+        """Places a device or a component as the instance `name`.
 
         The instance records the line of the build script that placed it.
 
         Raises:
-            BuildError: When the id is invalid or already taken in this component, or
+            BuildError: When the name is invalid or already taken in this component, or
                 another component of the same name is placed in it.
         """
-        _check_name(id, "an instance id")
-        if id in self._placements:
-            message = f"{self._name} already places an instance named {id!r}"
+        _check_name(name, "an instance name")
+        if name in self._placements:
+            message = f"{self._name} already places an instance named {name!r}"
             raise BuildError(message)
         if isinstance(item, Component):
             if not self._children.setdefault(item.name, item).built_as(item):
@@ -256,8 +257,8 @@ class Builder:
                 item.ratings,
                 item.part,
             )
-        self._placements[id] = placement
-        return Placed(id, placement.terminals)
+        self._placements[name] = placement
+        return Placed(name, placement.terminals)
 
     def connect(self, *points: Point, name: str | None = None) -> None:
         """Joins `points` into one net, and declares it as the net `name` if given.
@@ -289,7 +290,7 @@ class Builder:
                 terminals[terminal] = net
             instances.append(
                 ir.Instance(
-                    id=id,
+                    name=id,
                     of=placement.of,
                     parameters=placement.parameters,
                     terminals=terminals,

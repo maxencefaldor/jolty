@@ -18,9 +18,9 @@ from jolty.units import V, kohm, nF, us
 @component
 def low_pass(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)
@@ -171,12 +171,12 @@ def plan():
 def test_failing_scripts_exit_with_2_and_say_why(
     script: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    script.write_text(FILTER.replace('id="R1"', 'id="R 1"'), encoding="utf-8")
+    script.write_text(FILTER.replace('name="R1"', 'name="R 1"'), encoding="utf-8")
     assert run("build", "low_pass.py") == 2
     err = capsys.readouterr().err
     assert err.startswith(
         "error: the script failed: low_pass.py:10 in low_pass(): BuildError: "
-        "an instance id uses letters"
+        "an instance name uses letters"
     )
     assert "called from low_pass.py:19 in build()" in err
     assert not script.with_name("low_pass.jolty.json").exists()

@@ -42,14 +42,14 @@ def nor(c: Builder, a: int, b: int, shunt: float | None = None) -> None:
     """MAGIC's NOR of the bits `a` and `b`, its inputs shunted by `shunt` ohms."""
     drive = c.port("drive")
     ground = c.port("ground", Role.GROUND)
-    first = c.place(memristor(a), id="MA")
-    second = c.place(memristor(b), id="MB")
-    output = c.place(memristor(1), id="MO")
+    first = c.place(memristor(a), name="MA")
+    second = c.place(memristor(b), name="MB")
+    output = c.place(memristor(1), name="MO")
     c.connect(drive, first.negative, second.negative)
     c.connect(first.positive, second.positive, output.positive, name="joint")
     c.connect(output.negative, ground)
     if shunt is not None:
-        resistor = c.place(devices.resistor(shunt * ohm), id="RS")
+        resistor = c.place(devices.resistor(shunt * ohm), name="RS")
         c.connect(drive, resistor.a)
         c.connect(resistor.b, output.positive)
 
@@ -72,9 +72,9 @@ def bench(
         fall=0.1 * ns,
         width=width * ns,
     )
-    source = c.place(devices.voltage_source(pulse), id="V1")
+    source = c.place(devices.voltage_source(pulse), name="V1")
     gates = [
-        c.place(nor(a, b, shunt), id=f"X{index}")
+        c.place(nor(a, b, shunt), name=f"X{index}")
         for index, (a, b) in enumerate(CASES, start=1)
     ]
     c.connect(source.positive, *(gate.drive for gate in gates), name="drive")

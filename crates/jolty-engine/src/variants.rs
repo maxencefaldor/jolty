@@ -310,7 +310,7 @@ fn walk(
         return Ok(());
     };
     for instance in &placed.instances {
-        let path = format!("{prefix}{}", instance.id.as_str());
+        let path = format!("{prefix}{}", instance.name.as_str());
         match &instance.of {
             Of::Component(inner) => walk(circuit, inner.as_str(), &format!("{path}/"), found)?,
             Of::Device(_) => {

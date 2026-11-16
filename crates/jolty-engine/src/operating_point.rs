@@ -963,21 +963,21 @@ mod tests {
     /// source ramps, and the operating point lies on D1's side, past the fold.
     fn folded() -> Simulator {
         let document = json!({
-            "format": "jolty-circuit", "version": 2, "top": "test",
+            "format": "jolty-circuit", "version": 3, "top": "test",
             "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                     "instances": [
-                {"id": "V1", "of": {"device": "voltage_source"},
+                {"name": "V1", "of": {"device": "voltage_source"},
                  "parameters": {"waveform": {"dc": 3.0}},
                  "terminals": {"positive": "in", "negative": "0"}},
-                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+                {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
                  "terminals": {"a": "in", "b": "x"}},
-                {"id": "G1", "of": {"device": "voltage_controlled_current_source"},
+                {"name": "G1", "of": {"device": "voltage_controlled_current_source"},
                  "parameters": {"transconductance": 2e-3},
                  "terminals": {"positive": "0", "negative": "x",
                                "control_positive": "x", "control_negative": "0"}},
-                {"id": "D1", "of": {"device": "diode"}, "parameters": {},
+                {"name": "D1", "of": {"device": "diode"}, "parameters": {},
                  "terminals": {"anode": "x", "cathode": "0"}},
-                {"id": "D2", "of": {"device": "diode"}, "parameters": {},
+                {"name": "D2", "of": {"device": "diode"}, "parameters": {},
                  "terminals": {"anode": "0", "cathode": "x"}},
             ]}}
         });

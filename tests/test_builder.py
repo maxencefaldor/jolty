@@ -13,8 +13,8 @@ def low_pass(c: Builder, resistance: Quantity, capacitance: Quantity) -> None:
     source = c.port("input")
     output = c.port("output")
     ground = c.port("ground", Role.GROUND)
-    resistor = c.place(devices.resistor(resistance), id="R")
-    capacitor = c.place(devices.capacitor(capacitance), id="C")
+    resistor = c.place(devices.resistor(resistance), name="R")
+    capacitor = c.place(devices.capacitor(capacitance), name="C")
     c.connect(source, resistor.a)
     c.connect(resistor.b, capacitor.a, output)
     c.connect(capacitor.b, ground)
@@ -29,9 +29,9 @@ def line_of(text: str) -> int:
 @component
 def two_stages(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    first = c.place(low_pass(1 * kohm, 1 * nF), id="X1")
-    second = c.place(low_pass(1 * kohm, 1 * nF), id="X2")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    first = c.place(low_pass(1 * kohm, 1 * nF), name="X1")
+    second = c.place(low_pass(1 * kohm, 1 * nF), name="X2")
     c.connect(source.positive, first.input)
     c.connect(first.output, second.input, name="mid")
     c.connect(source.negative, first.ground, second.ground, ground)
@@ -56,10 +56,10 @@ def test_a_component_declares_ports_and_connects_terminals_to_nets() -> None:
 def test_each_instance_records_the_line_that_placed_it() -> None:
     resistor, capacitor = low_pass(1 * kohm, 1 * nF).definition.instances
     assert resistor.source_location == ir.SourceLocation(
-        file="tests/test_builder.py", line=line_of('id="R")'), function="low_pass"
+        file="tests/test_builder.py", line=line_of('name="R")'), function="low_pass"
     )
     assert capacitor.source_location is not None
-    assert capacitor.source_location.line == line_of('id="C")')
+    assert capacitor.source_location.line == line_of('name="C")')
 
 
 def test_the_same_arguments_build_the_same_component_once() -> None:
@@ -70,7 +70,7 @@ def test_the_same_arguments_build_the_same_component_once() -> None:
 @component
 def amplifier(c: Builder, transistor: devices.Device) -> None:
     c.port("ground", Role.GROUND)
-    c.place(transistor, id="Q1")
+    c.place(transistor, name="Q1")
 
 
 def test_arguments_name_components_exactly_and_without_whitespace() -> None:
@@ -93,7 +93,7 @@ def test_a_circuit_holds_each_component_once() -> None:
         "two_stages",
     ]
     top = built.components["two_stages"]
-    assert [instance.id for instance in top.instances] == ["V1", "X1", "X2"]
+    assert [instance.name for instance in top.instances] == ["V1", "X1", "X2"]
     assert top.instances[1].terminals == {
         "input": "V1.positive",
         "output": "mid",
@@ -105,8 +105,8 @@ def test_unnamed_nets_take_the_name_of_their_first_terminal() -> None:
     @component
     def chain(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        first = c.place(devices.resistor(1 * kohm), id="R1")
-        second = c.place(devices.resistor(1 * kohm), id="R2")
+        first = c.place(devices.resistor(1 * kohm), name="R1")
+        second = c.place(devices.resistor(1 * kohm), name="R2")
         c.connect(first.b, second.a)
         c.connect(first.a, second.b, ground)
 
@@ -120,7 +120,7 @@ def test_joining_two_named_nets_is_a_build_error() -> None:
     def shorted(c: Builder) -> None:
         supply = c.port("supply", Role.SUPPLY)
         ground = c.port("ground", Role.GROUND)
-        resistor = c.place(devices.resistor(1 * kohm), id="R1")
+        resistor = c.place(devices.resistor(1 * kohm), name="R1")
         c.connect(resistor.a, supply)
         c.connect(resistor.a, ground)
 
@@ -130,17 +130,17 @@ def test_joining_two_named_nets_is_a_build_error() -> None:
 
 def test_names_ids_and_terminals_are_checked() -> None:
     builder = Builder("checked")
-    resistor = builder.place(devices.resistor(1 * kohm), id="R1")
+    resistor = builder.place(devices.resistor(1 * kohm), name="R1")
     with pytest.raises(BuildError, match="already places an instance named 'R1'"):
-        builder.place(devices.resistor(1 * kohm), id="R1")
-    with pytest.raises(BuildError, match="an instance id uses letters"):
-        builder.place(devices.resistor(1 * kohm), id="R/2")
+        builder.place(devices.resistor(1 * kohm), name="R1")
+    with pytest.raises(BuildError, match="an instance name uses letters"):
+        builder.place(devices.resistor(1 * kohm), name="R/2")
     builder.net("mid")
     with pytest.raises(BuildError, match="already declares a net or port named 'mid'"):
         builder.port("mid")
     with pytest.raises(AttributeError, match="R1 has no terminal 'c'; it has a, b"):
         _ = resistor.c
-    other = Builder("other").place(devices.resistor(1 * kohm), id="R9")
+    other = Builder("other").place(devices.resistor(1 * kohm), name="R9")
     with pytest.raises(BuildError, match=r"R9\.a does not belong to checked"):
         builder.connect(resistor.a, other.a)
 
@@ -151,15 +151,15 @@ def test_two_different_components_cannot_share_a_name() -> None:
     built.port("p")
     second = built.finish()
     parent = Builder("parent")
-    parent.place(first, id="A")
+    parent.place(first, name="A")
     with pytest.raises(BuildError, match="two different components are named 'twin'"):
-        parent.place(second, id="B")
+        parent.place(second, name="B")
     left, right = Builder("left"), Builder("right")
-    left.place(first, id="A")
-    right.place(second, id="B")
+    left.place(first, name="A")
+    right.place(second, name="B")
     top = Builder("top")
-    top.place(left.finish(), id="L")
-    top.place(right.finish(), id="R")
+    top.place(left.finish(), name="L")
+    top.place(right.finish(), name="R")
     with pytest.raises(BuildError, match="two different components are named 'twin'"):
         circuit(top.finish())
 
@@ -173,8 +173,8 @@ def test_a_component_states_ratings_and_a_part_number_each_instance_carries() ->
     assert rated.built_as(plain)
     assert plain.ports == ("p", "n")
     top = Builder("top")
-    top.place(plain, id="A")
-    top.place(rated, id="B")
+    top.place(plain, name="A")
+    top.place(rated, name="B")
     found = circuit(top.finish())
     assert sorted(found.components) == ["pair", "top"]
     first, second = found.components["top"].instances

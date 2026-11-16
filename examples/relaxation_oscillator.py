@@ -40,12 +40,12 @@ def astable(c: Builder) -> None:
         fall=0.1 * us,
         width=1 * us,
     )
-    start = c.place(devices.current_source(kick), id="I1")
-    amplifier = c.place(opamp(), id="U1")
-    timing_r = c.place(devices.resistor(10 * kohm), id="R1")
-    timing_c = c.place(devices.capacitor(10 * nF), id="C1")
-    upper = c.place(devices.resistor(10 * kohm), id="R2")
-    lower = c.place(devices.resistor(10 * kohm), id="R3")
+    start = c.place(devices.current_source(kick), name="I1")
+    amplifier = c.place(opamp(), name="U1")
+    timing_r = c.place(devices.resistor(10 * kohm), name="R1")
+    timing_c = c.place(devices.capacitor(10 * nF), name="C1")
+    upper = c.place(devices.resistor(10 * kohm), name="R2")
+    lower = c.place(devices.resistor(10 * kohm), name="R3")
     c.connect(amplifier.out, timing_r.a, upper.a, output)
     c.connect(timing_r.b, timing_c.a, amplifier.inn, name="timing")
     c.connect(upper.b, lower.a, amplifier.inp, start.negative, name="threshold")
@@ -56,7 +56,7 @@ def astable(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The oscillator alone."""
     ground = c.port("ground", Role.GROUND)
-    stage = c.place(astable(), id="X1")
+    stage = c.place(astable(), name="X1")
     c.connect(stage.output, name="out")
     c.connect(stage.ground, ground)
 

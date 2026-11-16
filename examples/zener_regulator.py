@@ -21,8 +21,8 @@ def regulator(c: Builder) -> None:
     """The series resistor, and the zener across the output."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
-    series = c.place(devices.resistor(220 * ohm), id="R1")
-    diode = c.place(zener(5.1), id="D1")
+    series = c.place(devices.resistor(220 * ohm), name="R1")
+    diode = c.place(zener(5.1), name="D1")
     c.connect(source, series.a)
     c.connect(series.b, diode.cathode, output)
     c.connect(diode.anode, ground)
@@ -33,9 +33,9 @@ def bench(c: Builder) -> None:
     """The regulator loaded by 1 kΩ, fed 12 V with 1 V of ripple at 100 Hz."""
     ground = c.port("ground", Role.GROUND)
     rippled = Sine(offset=12 * V, amplitude=1 * V, frequency=100 * Hz)
-    source = c.place(devices.voltage_source(rippled), id="V1")
-    stage = c.place(regulator(), id="X1")
-    load = c.place(devices.resistor(1 * kohm), id="RL")
+    source = c.place(devices.voltage_source(rippled), name="V1")
+    stage = c.place(regulator(), name="X1")
+    load = c.place(devices.resistor(1 * kohm), name="RL")
     c.connect(source.positive, stage.input, name="in")
     c.connect(stage.output, load.a, name="out")
     c.connect(source.negative, stage.ground, load.b, ground)

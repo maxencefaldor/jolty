@@ -23,8 +23,8 @@ The temperature ratings bound each junction's.
 ```python
 from jolty import parts
 
-amplifier = c.place(parts.q2n3904(), id="Q1")
-switch = c.place(parts.irf511(), id="X1")
+amplifier = c.place(parts.q2n3904(), name="Q1")
+switch = c.place(parts.irf511(), name="X1")
 ```
 
 A simulation holds each part to its ratings, as the [checks](checks.md#on-analyses-results) describe.
@@ -33,8 +33,8 @@ Each part takes `heated=True` to [heat](devices.md#self-heating) by what it diss
 A power MOSFET's channel and body diode share its junction.
 
 ```python
-amplifier = c.place(parts.q2n3904(heated=True), id="Q1")
-mount = c.place(devices.thermal_resistance(200 * K / W), id="RTH")
+amplifier = c.place(parts.q2n3904(heated=True), name="Q1")
+mount = c.place(devices.thermal_resistance(200 * K / W), name="RTH")
 c.connect(amplifier.thermal, mount.a, name="junction")
 c.connect(mount.b, ground)
 ```

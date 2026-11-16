@@ -98,29 +98,29 @@ fn ladder() -> Circuit {
         _ => format!("n{rung}"),
     };
     let mut instances = vec![json!(
-        {"id": "V1", "of": {"device": "voltage_source"},
+        {"name": "V1", "of": {"device": "voltage_source"},
          "parameters": {"waveform": {"sine": {"offset": 1.0, "amplitude": 1.0,
                                               "frequency": 1e3}}},
          "terminals": {"positive": "in", "negative": "0"}}
     )];
     for rung in 0..SPIES {
         instances.push(json!(
-            {"id": format!("S{rung}"), "of": {"device": "spy"},
+            {"name": format!("S{rung}"), "of": {"device": "spy"},
              "parameters": {"resistance": 100.0},
              "terminals": {"a": node(rung), "b": node(rung + 1)}}
         ));
     }
     let middle = node(SPIES / 2);
     instances.push(json!(
-        {"id": "D1", "of": {"device": "diode"}, "parameters": {},
+        {"name": "D1", "of": {"device": "diode"}, "parameters": {},
          "terminals": {"anode": middle, "cathode": "0"}}
     ));
     instances.push(json!(
-        {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-6},
+        {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-6},
          "terminals": {"a": middle, "b": "0"}}
     ));
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "ladder",
+        "format": "jolty-circuit", "version": 3, "top": "ladder",
         "components": {"ladder": {"ports": [{"name": "0", "role": "ground"}],
                                   "instances": instances}}
     });

@@ -24,13 +24,13 @@ def instrumentation(c: Builder) -> None:
     plus, minus = c.port("plus", Role.INPUT), c.port("minus", Role.INPUT)
     output = c.port("output", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
-    first, second, third = (c.place(opamp(), id=f"U{index}") for index in (1, 2, 3))
-    feedback_a = c.place(devices.resistor(10 * kohm), id="R1")
-    feedback_b = c.place(devices.resistor(10 * kohm), id="R2")
-    gain = c.place(devices.resistor(2.2 * kohm), id="RG")
-    ins = [c.place(devices.resistor(10 * kohm), id=f"R{index}") for index in (3, 4)]
-    feedback = c.place(devices.resistor(10 * kohm), id="R5")
-    shunt = c.place(devices.resistor(10 * kohm), id="R6")
+    first, second, third = (c.place(opamp(), name=f"U{index}") for index in (1, 2, 3))
+    feedback_a = c.place(devices.resistor(10 * kohm), name="R1")
+    feedback_b = c.place(devices.resistor(10 * kohm), name="R2")
+    gain = c.place(devices.resistor(2.2 * kohm), name="RG")
+    ins = [c.place(devices.resistor(10 * kohm), name=f"R{index}") for index in (3, 4)]
+    feedback = c.place(devices.resistor(10 * kohm), name="R5")
+    shunt = c.place(devices.resistor(10 * kohm), name="R6")
     c.connect(plus, first.inp)
     c.connect(minus, second.inp)
     c.connect(first.inn, feedback_a.a, gain.a, name="top")
@@ -47,9 +47,9 @@ def instrumentation(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The amplifier reading a 10 mV difference on 2 V of common mode."""
     ground = c.port("ground", Role.GROUND)
-    common = c.place(devices.voltage_source(2 * V), id="VCM")
-    difference = c.place(devices.voltage_source(10 * mV), id="VD")
-    amplifier = c.place(instrumentation(), id="X1")
+    common = c.place(devices.voltage_source(2 * V), name="VCM")
+    difference = c.place(devices.voltage_source(10 * mV), name="VD")
+    amplifier = c.place(instrumentation(), name="X1")
     c.connect(common.positive, difference.negative, amplifier.minus, name="minus")
     c.connect(difference.positive, amplifier.plus, name="plus")
     c.connect(amplifier.output, name="out")

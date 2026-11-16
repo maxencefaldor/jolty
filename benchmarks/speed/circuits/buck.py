@@ -63,13 +63,13 @@ def converter(c: Builder) -> None:
     """The two switches, each driven from its own source, and the LC filter."""
     source, output = c.port("input", Role.SUPPLY), c.port("output", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
-    upper, lower = c.place(switch(), id="M1"), c.place(switch(), id="M2")
+    upper, lower = c.place(switch(), name="M1"), c.place(switch(), name="M2")
     on = DUTY * PERIOD
-    high = c.place(devices.voltage_source(drive(0, on)), id="VH")
+    high = c.place(devices.voltage_source(drive(0, on)), name="VH")
     low_width = PERIOD - on - 2 * DEAD
-    low = c.place(devices.voltage_source(drive(on + DEAD, low_width)), id="VL")
-    inductor = c.place(devices.inductor(10 * uH), id="L1")
-    smoothing = c.place(devices.capacitor(47 * uF), id="C1")
+    low = c.place(devices.voltage_source(drive(on + DEAD, low_width)), name="VL")
+    inductor = c.place(devices.inductor(10 * uH), name="L1")
+    smoothing = c.place(devices.capacitor(47 * uF), name="C1")
     c.connect(source, upper.drain)
     c.connect(high.positive, upper.gate, name="high")
     c.connect(low.positive, lower.gate, name="low")
@@ -89,9 +89,9 @@ def converter(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The converter from 12 V into 5 Ω."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(12 * V), id="VIN")
-    stage = c.place(converter(), id="X1")
-    load = c.place(devices.resistor(5 * ohm), id="RL")
+    supply = c.place(devices.voltage_source(12 * V), name="VIN")
+    stage = c.place(converter(), name="X1")
+    load = c.place(devices.resistor(5 * ohm), name="RL")
     c.connect(supply.positive, stage.input, name="in")
     c.connect(stage.output, load.a, name="out")
     c.connect(supply.negative, stage.ground, load.b, ground)

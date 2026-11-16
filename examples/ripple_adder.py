@@ -35,9 +35,9 @@ def full_adder(c: Builder) -> None:
     carry_in = c.port("carry_in", Role.INPUT)
     total, carry_out = c.port("sum", Role.OUTPUT), c.port("carry_out", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
-    half, whole = c.place(gate("xor"), id="U1"), c.place(gate("xor"), id="U2")
-    both, through = c.place(gate("and"), id="U3"), c.place(gate("and"), id="U4")
-    either = c.place(gate("or"), id="U5")
+    half, whole = c.place(gate("xor"), name="U1"), c.place(gate("xor"), name="U2")
+    both, through = c.place(gate("and"), name="U3"), c.place(gate("and"), name="U4")
+    either = c.place(gate("or"), name="U5")
     for placed in (half, whole, both, through, either):
         c.connect(placed.supply, vdd)
         c.connect(placed.ground, gnd)
@@ -62,7 +62,7 @@ def adder(c: Builder) -> None:
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
     carry = carry_in
     for bit in range(BITS):
-        stage = c.place(full_adder(), id=f"FA{bit}")
+        stage = c.place(full_adder(), name=f"FA{bit}")
         c.connect(stage.vdd, vdd)
         c.connect(stage.gnd, gnd)
         c.connect(stage.a, a[bit])
@@ -85,11 +85,11 @@ def bits(numbers: list[int], bit: int) -> list[tuple[float, LogicLevel]]:
 def bench(c: Builder) -> None:
     """The adder on 3.3 V, its inputs stepping through the pairs, its outputs loaded."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY * V), id="VDD")
-    total = c.place(adder(), id="X1")
+    supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
+    total = c.place(adder(), name="X1")
     c.connect(supply.positive, total.vdd, name="vdd")
     c.connect(supply.negative, total.gnd, ground)
-    zero = c.place(devices.logic_source(0, transition=20 * ps), id="CIN")
+    zero = c.place(devices.logic_source(0, transition=20 * ps), name="CIN")
     c.connect(zero.output, total.carry_in, name="carry_in")
     for operand, numbers in (
         ("a", [a for a, _ in PAIRS]),
@@ -103,11 +103,11 @@ def bench(c: Builder) -> None:
                     [(time * 1e9 * ns, level) for time, level in levels[1:]],
                     transition=20 * ps,
                 ),
-                id=f"V{operand}{bit}",
+                name=f"V{operand}{bit}",
             )
             c.connect(source.output, total[f"{operand}{bit}"], name=f"{operand}{bit}")
     for output in [*(f"s{bit}" for bit in range(BITS)), "carry_out"]:
-        load = c.place(devices.capacitor(10 * fF), id=f"C{output}")
+        load = c.place(devices.capacitor(10 * fF), name=f"C{output}")
         c.connect(total[output], load.a, name=output)
         c.connect(load.b, ground)
 

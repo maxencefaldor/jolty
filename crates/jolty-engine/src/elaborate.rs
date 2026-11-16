@@ -968,7 +968,7 @@ impl<'a> Walk<'a> {
     ) {
         for instance in &component.instances {
             let at = Location {
-                path: format!("{}{}", scope.prefix, instance.id),
+                path: format!("{}{}", scope.prefix, instance.name),
                 source_location: instance.source_location.clone(),
             };
             match &instance.of {
@@ -1265,7 +1265,7 @@ mod tests {
     use crate::elaborated::Placed;
 
     fn elaborate_json(components: &str) -> Result<Elaborated, ElaborationError> {
-        let header = r#""format": "jolty-circuit", "version": 2, "top": "top""#;
+        let header = r#""format": "jolty-circuit", "version": 3, "top": "top""#;
         let text = format!(r#"{{{header}, "components": {components}}}"#);
         let none = (&BTreeMap::new(), &BTreeMap::new());
         let circuit = Circuit::from_json(&text).unwrap();
@@ -1278,17 +1278,17 @@ mod tests {
         let system = elaborate_json(
             r#"{
                 "top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
-                    {"id": "V1", "of": {"device": "voltage_source"},
+                    {"name": "V1", "of": {"device": "voltage_source"},
                      "parameters": {"waveform": {"dc": 1}},
                      "terminals": {"positive": "in", "negative": "gnd"}},
-                    {"id": "X1", "of": {"component": "cell"}, "terminals": {"a": "in", "b": "gnd"}}
+                    {"name": "X1", "of": {"component": "cell"}, "terminals": {"a": "in", "b": "gnd"}}
                 ]},
                 "cell": {
                     "ports": [{"name": "a", "role": "signal"}, {"name": "b", "role": "signal"}],
                     "instances": [
-                        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
                          "terminals": {"a": "a", "b": "mid"}},
-                        {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                        {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
                          "terminals": {"a": "mid", "b": "b"}}
                     ]}
             }"#,
@@ -1309,15 +1309,15 @@ mod tests {
         let system = elaborate_json(
             r#"{
                 "top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
-                    {"id": "X1", "of": {"component": "cell"}, "terminals": {"a": "gnd"}},
-                    {"id": "X2", "of": {"component": "cell"}, "terminals": {"a": "mid"}},
-                    {"id": "R0", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                    {"name": "X1", "of": {"component": "cell"}, "terminals": {"a": "gnd"}},
+                    {"name": "X2", "of": {"component": "cell"}, "terminals": {"a": "mid"}},
+                    {"name": "R0", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
                      "terminals": {"a": "mid", "b": "gnd"}}
                 ]},
                 "cell": {"ports": [{"name": "a", "role": "signal"}], "instances": [
-                    {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                    {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
                      "terminals": {"a": "a", "b": "mid"}},
-                    {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                    {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
                      "terminals": {"a": "mid", "b": "a"}}
                 ]}
             }"#,
@@ -1345,13 +1345,13 @@ mod tests {
 
     #[test]
     fn overrides_replace_parameters_by_path() {
-        let text = r#"{"format": "jolty-circuit", "version": 2, "top": "top", "components": {
+        let text = r#"{"format": "jolty-circuit", "version": 3, "top": "top", "components": {
             "top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
-                {"id": "X1", "of": {"component": "cell"}, "terminals": {"a": "gnd"}},
-                {"id": "X2", "of": {"component": "cell"}, "terminals": {"a": "gnd"}}
+                {"name": "X1", "of": {"component": "cell"}, "terminals": {"a": "gnd"}},
+                {"name": "X2", "of": {"component": "cell"}, "terminals": {"a": "gnd"}}
             ]},
             "cell": {"ports": [{"name": "a", "role": "signal"}], "instances": [
-                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
+                {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1},
                  "terminals": {"a": "x", "b": "a"}}
             ]}
         }}"#;
@@ -1392,10 +1392,10 @@ mod tests {
     fn reports_every_instance_problem_with_its_source_line() {
         let error = elaborate_json(
             r#"{"top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
-                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": -1},
+                {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": -1},
                  "terminals": {"a": "x", "b": "gnd"}, "source_location": {"file": "amp.py", "line": 9}},
-                {"id": "Q1", "of": {"device": "transistor"}, "terminals": {}},
-                {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1},
+                {"name": "Q1", "of": {"device": "transistor"}, "terminals": {}},
+                {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1},
                  "terminals": {"a": "x", "c": "gnd"}}
             ]}}"#,
         )
@@ -1434,7 +1434,7 @@ mod tests {
     fn reports_the_instances_problems_without_a_reference() {
         let error = elaborate_json(
             r#"{"top": {"instances": [
-                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": -1},
+                {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": -1},
                  "terminals": {"a": "x", "b": "y"}}
             ]}}"#,
         )

@@ -15,14 +15,14 @@
 //! use jolty_models::Library;
 //!
 //! let circuit = Circuit::from_json(r#"{
-//!     "format": "jolty-circuit", "version": 2, "top": "top",
+//!     "format": "jolty-circuit", "version": 3, "top": "top",
 //!     "components": {"top": {
 //!         "ports": [{"name": "ground", "role": "ground"}],
 //!         "instances": [
-//!             {"id": "I1", "of": {"device": "current_source"},
+//!             {"name": "I1", "of": {"device": "current_source"},
 //!              "parameters": {"waveform": {"dc": 1e-3}},
 //!              "terminals": {"positive": "ground", "negative": "top"}},
-//!             {"id": "C1", "of": {"device": "capacitor"},
+//!             {"name": "C1", "of": {"device": "capacitor"},
 //!              "parameters": {"capacitance": 1e-9},
 //!              "terminals": {"a": "top", "b": "ground"}}
 //!         ]

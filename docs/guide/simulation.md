@@ -115,7 +115,7 @@ A stability analysis finds a feedback loop's gain, from which its phase and gain
 The loop runs through a probe: a voltage source, usually of 0 V, placed in series with the loop where it carries the loop's signal on, its `positive` terminal toward the side the signal enters, as between an amplifier's output and its feedback network:
 
 ```python
-probe = c.place(devices.voltage_source(0 * V), id="VP")
+probe = c.place(devices.voltage_source(0 * V), name="VP")
 c.connect(amplifier.output, probe.negative)
 c.connect(probe.positive, feedback.a)
 ```

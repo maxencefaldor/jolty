@@ -21,14 +21,14 @@ Examples:
     >>> @component
     ... def rc(c: Builder) -> None:
     ...     ground = c.port("ground", Role.GROUND)
-    ...     source = c.place(devices.voltage_source(1 * V), id="V1")
-    ...     resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    ...     capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    ...     source = c.place(devices.voltage_source(1 * V), name="V1")
+    ...     resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    ...     capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     ...     c.connect(source.positive, resistor.a, name="in")
     ...     c.connect(resistor.b, capacitor.a, name="out")
     ...     c.connect(capacitor.b, source.negative, ground)
     >>> drawn = layout(circuit(rc()), "rc")
-    >>> [(item.id, item.column) for item in drawn.instances]
+    >>> [(item.name, item.column) for item in drawn.instances]
     [('V1', 0), ('R1', 1), ('C1', 2)]
     >>> drawn.instances[1].orientation
     Orientation(turns=1, flipped=False)
@@ -118,10 +118,10 @@ def _shape(instance: ir.Instance, circuit: ir.Circuit) -> Shape:
             return Shape(pins, ((-3, -1), (1, 1)))
         case ir.ComponentOf(component=name) if name in circuit.components:
             ports = [(port.name, port.role) for port in circuit.components[name].ports]
-            return _box(ports, name, instance.id)
+            return _box(ports, name, instance.name)
         case ir.DeviceOf(device=name) | ir.ComponentOf(component=name):
             signals = [(terminal, ir.Role.SIGNAL) for terminal in instance.terminals]
-            return _box(signals, name, instance.id)
+            return _box(signals, name, instance.name)
 
 
 _CHARACTER: Final = 0.2
@@ -205,7 +205,7 @@ class Orientation:
 class Placed:
     """An instance placed on the sheet."""
 
-    id: str
+    name: str
     instance: ir.Instance
     shape: Shape
     origin: Point
@@ -340,10 +340,10 @@ def _columns(component: ir.Component, roles: Mapping[str, ir.Role]) -> dict[str,
     on_net: dict[str, list[str]] = {}
     for instance in instances:
         for net in _signal_nets(instance, roles):
-            on_net.setdefault(net, []).append(instance.id)
-    by_id = {instance.id: instance for instance in instances}
+            on_net.setdefault(net, []).append(instance.name)
+    by_id = {instance.name: instance for instance in instances}
     sources = [
-        instance.id
+        instance.name
         for instance in instances
         if isinstance(instance.of, ir.DeviceOf) and instance.of.device in _SOURCES
     ]
@@ -360,7 +360,7 @@ def _columns(component: ir.Component, roles: Mapping[str, ir.Role]) -> dict[str,
         on_net.get(signals[0], []) if signals else []
     )
     columns: dict[str, int] = {}
-    starts = sources or inputs or [instance.id for instance in instances[:1]]
+    starts = sources or inputs or [instance.name for instance in instances[:1]]
     while starts:
         offset = max(columns.values(), default=-1) + 1
         columns.update(dict.fromkeys(starts, offset))
@@ -373,7 +373,7 @@ def _columns(component: ir.Component, roles: Mapping[str, ir.Role]) -> dict[str,
                         columns[neighbor] = columns[current] + 1
                         queue.append(neighbor)
         unreached = [
-            instance.id for instance in instances if instance.id not in columns
+            instance.name for instance in instances if instance.name not in columns
         ]
         starts = unreached[:1]
     return columns
@@ -393,10 +393,10 @@ def _rows(
     keeps the sum of its instances' rows, so a sweep reads each pin a bounded number of
     times beside sorting each column.
     """
-    nets = {instance.id: _signal_nets(instance, roles) for instance in instances}
+    nets = {instance.name: _signal_nets(instance, roles) for instance in instances}
     stacks: dict[int, list[str]] = {}
     for instance in instances:
-        stacks.setdefault(columns[instance.id], []).append(instance.id)
+        stacks.setdefault(columns[instance.name], []).append(instance.name)
     rows = {id: index for stack in stacks.values() for index, id in enumerate(stack)}
     sums: dict[str, int] = {}
     counts: dict[str, int] = {}
@@ -440,12 +440,12 @@ def _place(
     earliest: dict[str, int] = {}
     for instance in instances:
         for net in instance.terminals.values():
-            column = columns[instance.id]
+            column = columns[instance.name]
             earliest[net] = min(earliest.get(net, column), column)
-    by_id = {instance.id: instance for instance in instances}
-    shapes = {instance.id: _shape(instance, circuit) for instance in instances}
+    by_id = {instance.name: instance for instance in instances}
+    shapes = {instance.name: _shape(instance, circuit) for instance in instances}
     orientations = {
-        instance.id: _orientation(instance, roles, earliest) for instance in instances
+        instance.name: _orientation(instance, roles, earliest) for instance in instances
     }
     extents = {id: _extent(shapes[id], orientations[id]) for id in by_id}
     anchors = {
@@ -478,8 +478,8 @@ def _place(
                     Placed(id, by_id[id], shapes[id], origin, orientations[id], column)
                 )
         x += (max(map(len, stack)) - 1) * pitch + width + _COLUMN_GAP
-    order = {instance.id: index for index, instance in enumerate(instances)}
-    return tuple(sorted(placed, key=lambda item: order[item.id]))
+    order = {instance.name: index for index, instance in enumerate(instances)}
+    return tuple(sorted(placed, key=lambda item: order[item.name]))
 
 
 def _lines(

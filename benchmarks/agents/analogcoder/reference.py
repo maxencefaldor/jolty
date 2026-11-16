@@ -44,7 +44,7 @@ def mosfet(
 ) -> None:
     """Places `made` as `id` on its drain, gate and source, its bulk on its source."""
     drain, gate, source = terminals
-    placed = c.place(made, id=id)
+    placed = c.place(made, name=id)
     c.connect(placed.drain, drain)
     c.connect(placed.gate, gate)
     c.connect(placed.source, placed.bulk, source)
@@ -52,7 +52,7 @@ def mosfet(
 
 def two_terminal(c: Builder, id: str, made: devices.Device, a: Net, b: Net) -> None:
     """Places the two-terminal `made` as `id`, from `a` to `b`."""
-    placed = c.place(made, id=id)
+    placed = c.place(made, name=id)
     terminals = [getattr(placed, name) for name in made.terminals]
     c.connect(terminals[0], a)
     c.connect(terminals[1], b)
@@ -239,7 +239,7 @@ def opamp(c: Builder) -> None:
 
 def amplified(c: Builder, p: dict[str, Net], inp: Net, inn: Net, out: Net) -> None:
     """Places the op-amp on the supply of the ports `p`."""
-    placed = c.place(opamp(), id="A1")
+    placed = c.place(opamp(), name="A1")
     c.connect(placed.vdd, p["vdd"])
     c.connect(placed.ground, p["ground"])
     c.connect(placed.inp, inp)
@@ -391,7 +391,7 @@ def placed_ring(
     c: Builder, p: dict[str, Net], capacitance: float, control: Net, out: Net
 ) -> None:
     """Places a ring of `capacitance` on the supply of the ports `p`."""
-    placed = c.place(ring(capacitance), id="VCO")
+    placed = c.place(ring(capacitance), name="VCO")
     c.connect(placed.vdd, p["vdd"])
     c.connect(placed.ground, p["ground"])
     c.connect(placed.control, control)

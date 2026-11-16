@@ -462,9 +462,9 @@ from jolty.units import V, kohm
 @component
 def divider(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(5 * V), id="V1")
-    upper = c.place(devices.resistor(1 * kohm), id="R1")
-    lower = c.place(devices.resistor(1 * kohm), id="R2")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    upper = c.place(devices.resistor(1 * kohm), name="R1")
+    lower = c.place(devices.resistor(1 * kohm), name="R2")
     c.connect(source.positive, upper.a)
     c.connect(upper.b, lower.a, name="out")
     c.connect(lower.b, source.negative, ground)
@@ -525,11 +525,11 @@ from jolty.units import K, MHz, V, celsius, kHz, kohm, nF
 @component
 def low_pass(c: Builder, resistance) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(0 * V), id="V1")
+    source = c.place(devices.voltage_source(0 * V), name="V1")
     resistor = c.place(
-        devices.resistor(resistance, temperature_coefficient=4e-3 / K), id="R1"
+        devices.resistor(resistance, temperature_coefficient=4e-3 / K), name="R1"
     )
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)

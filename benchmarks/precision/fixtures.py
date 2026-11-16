@@ -154,9 +154,9 @@ def rc(
 ) -> None:
     """A source of a piecewise-linear level through a resistor into a capacitor."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(_level(points)), id="V1")
-    resistor = c.place(devices.resistor(resistance * ohm), id="R1")
-    capacitor = c.place(devices.capacitor(capacitance * F), id="C1")
+    source = c.place(devices.voltage_source(_level(points)), name="V1")
+    resistor = c.place(devices.resistor(resistance * ohm), name="R1")
+    capacitor = c.place(devices.capacitor(capacitance * F), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)
@@ -172,10 +172,10 @@ def rlc(
 ) -> None:
     """A source through a resistor and an inductor in series into a capacitor."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(_level(points)), id="V1")
-    resistor = c.place(devices.resistor(resistance * ohm), id="R1")
-    inductor = c.place(devices.inductor(inductance * H), id="L1")
-    capacitor = c.place(devices.capacitor(capacitance * F), id="C1")
+    source = c.place(devices.voltage_source(_level(points)), name="V1")
+    resistor = c.place(devices.resistor(resistance * ohm), name="R1")
+    inductor = c.place(devices.inductor(inductance * H), name="L1")
+    capacitor = c.place(devices.capacitor(capacitance * F), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, inductor.a, name="mid")
     c.connect(inductor.b, capacitor.a, name="out")
@@ -192,9 +192,9 @@ def tank(
     """A current source of a piecewise-linear level into an inductor and a capacitor."""
     ground = c.port("ground", Role.GROUND)
     level = Piecewise([(time * s, value * A) for time, value in points])
-    source = c.place(devices.current_source(level), id="I1")
-    inductor = c.place(devices.inductor(inductance * H), id="L1")
-    capacitor = c.place(devices.capacitor(capacitance * F), id="C1")
+    source = c.place(devices.current_source(level), name="I1")
+    inductor = c.place(devices.inductor(inductance * H), name="L1")
+    capacitor = c.place(devices.capacitor(capacitance * F), name="C1")
     c.connect(source.negative, inductor.a, capacitor.a, name="top")
     c.connect(source.positive, inductor.b, capacitor.b, ground)
 
@@ -203,11 +203,11 @@ def tank(
 def diode_load(c: Builder, resistance: float, saturation: float) -> None:
     """A source through a resistor into a diode, its saturation current given."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(0 * V), id="V1")
-    resistor = c.place(devices.resistor(resistance * ohm), id="R1")
+    source = c.place(devices.voltage_source(0 * V), name="V1")
+    resistor = c.place(devices.resistor(resistance * ohm), name="R1")
     diode = c.place(
         devices.diode(saturation_current=saturation * A, emission_coefficient=1.0),
-        id="D1",
+        name="D1",
     )
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, diode.anode, name="anode")
@@ -221,9 +221,9 @@ def driven_rc(
     """A sine of 1 V at `frequency` through a resistor into a capacitor."""
     ground = c.port("ground", Role.GROUND)
     sine = Sine(0 * V, 1 * V, frequency * Hz)
-    source = c.place(devices.voltage_source(sine), id="V1")
-    resistor = c.place(devices.resistor(resistance * ohm), id="R1")
-    capacitor = c.place(devices.capacitor(capacitance * F), id="C1")
+    source = c.place(devices.voltage_source(sine), name="V1")
+    resistor = c.place(devices.resistor(resistance * ohm), name="R1")
+    capacitor = c.place(devices.capacitor(capacitance * F), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)
@@ -236,8 +236,8 @@ def ladder_filter(c: Builder, terminations: float, values: Sequence[float]) -> N
     Its first capacitor is at ``n1``, its last at ``out``.
     """
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(0 * V), id="V1")
-    feed = c.place(devices.resistor(terminations * ohm), id="RS")
+    source = c.place(devices.voltage_source(0 * V), name="V1")
+    feed = c.place(devices.resistor(terminations * ohm), name="RS")
     c.connect(source.positive, feed.a, name="in")
     c.connect(source.negative, ground)
     shunts = (len(values) + 1) // 2
@@ -245,14 +245,14 @@ def ladder_filter(c: Builder, terminations: float, values: Sequence[float]) -> N
     c.connect(feed.b, nodes[0])
     for index, value in enumerate(values):
         if index % 2 == 0:
-            shunt = c.place(devices.capacitor(value * F), id=f"C{index + 1}")
+            shunt = c.place(devices.capacitor(value * F), name=f"C{index + 1}")
             c.connect(nodes[index // 2], shunt.a)
             c.connect(shunt.b, ground)
         else:
-            series = c.place(devices.inductor(value * H), id=f"L{index + 1}")
+            series = c.place(devices.inductor(value * H), name=f"L{index + 1}")
             c.connect(nodes[index // 2], series.a)
             c.connect(series.b, nodes[index // 2 + 1])
-    load = c.place(devices.resistor(terminations * ohm), id="RL")
+    load = c.place(devices.resistor(terminations * ohm), name="RL")
     c.connect(nodes[-1], load.a)
     c.connect(load.b, ground)
 
@@ -267,20 +267,20 @@ def network(
     """
     ground = c.port("ground", Role.GROUND)
     level = Piecewise([(time * s, value * V) for time, value in points])
-    source = c.place(devices.voltage_source(level), id="V1")
+    source = c.place(devices.voltage_source(level), name="V1")
     c.connect(source.negative, ground)
     nodes = [c.net(f"n{index}") for index in range(len(shape.capacitances))]
-    feed = c.place(devices.resistor(1 / shape.source * ohm), id="R0")
+    feed = c.place(devices.resistor(1 / shape.source * ohm), name="R0")
     c.connect(source.positive, feed.a, name="src")
     c.connect(feed.b, nodes[0])
     for index, capacitance in enumerate(shape.capacitances):
-        load = c.place(devices.capacitor(capacitance * F), id=f"C{index}")
+        load = c.place(devices.capacitor(capacitance * F), name=f"C{index}")
         c.connect(nodes[index], load.a)
         c.connect(load.b, ground)
         if index:
             parent = shape.parents[index]
             branch = c.place(
-                devices.resistor(1 / shape.branches[index] * ohm), id=f"R{index}"
+                devices.resistor(1 / shape.branches[index] * ohm), name=f"R{index}"
             )
             c.connect(nodes[parent], branch.a)
             c.connect(branch.b, nodes[index])

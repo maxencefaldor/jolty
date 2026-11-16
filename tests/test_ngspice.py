@@ -96,9 +96,9 @@ pytestmark = SKIP
 @component
 def divider(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(5 * V), id="V1")
-    upper = c.place(devices.resistor(1 * kohm), id="R1")
-    lower = c.place(devices.resistor(3 * kohm), id="R2")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    upper = c.place(devices.resistor(1 * kohm), name="R1")
+    lower = c.place(devices.resistor(3 * kohm), name="R2")
     c.connect(source.positive, upper.a, name="in")
     c.connect(upper.b, lower.a, name="out")
     c.connect(lower.b, source.negative, ground)
@@ -108,9 +108,9 @@ def divider(c: Builder) -> None:
 def low_pass(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(1 * us, 0 * V), (1 * us + 10 * ns, 1 * V)])
-    source = c.place(devices.voltage_source(step), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(step), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)
@@ -127,10 +127,10 @@ def resonator(c: Builder) -> None:
         fall=10 * ns,
         width=20 * us,
     )
-    source = c.place(devices.voltage_source(pulse), id="V1")
-    resistor = c.place(devices.resistor(20 * ohm), id="R1")
-    inductor = c.place(devices.inductor(1 * mH), id="L1")
-    capacitor = c.place(devices.capacitor(10 * nF), id="C1")
+    source = c.place(devices.voltage_source(pulse), name="V1")
+    resistor = c.place(devices.resistor(20 * ohm), name="R1")
+    inductor = c.place(devices.inductor(1 * mH), name="L1")
+    capacitor = c.place(devices.capacitor(10 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, inductor.a, name="mid")
     c.connect(inductor.b, capacitor.a, name="out")
@@ -149,9 +149,9 @@ def triangle(c: Builder) -> None:
         width=0 * us,
         period=20 * us,
     )
-    source = c.place(devices.voltage_source(pulse), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(pulse), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)
@@ -160,11 +160,11 @@ def triangle(c: Builder) -> None:
 @component
 def clipper(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(0 * V), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
+    source = c.place(devices.voltage_source(0 * V), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
     diode = c.place(
         devices.diode(saturation_current=2.52 * nA, emission_coefficient=1.752),
-        id="D1",
+        name="D1",
     )
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, diode.anode, name="out")
@@ -174,8 +174,8 @@ def clipper(c: Builder) -> None:
 @component
 def zener_clamp(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(0 * V), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
+    source = c.place(devices.voltage_source(0 * V), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
     zener = c.place(
         devices.diode(
             saturation_current=2 * nA,
@@ -186,7 +186,7 @@ def zener_clamp(c: Builder) -> None:
             breakdown_current=5 * mA,
             breakdown_emission_coefficient=1.2,
         ),
-        id="D1",
+        name="D1",
     )
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, zener.anode, name="out")
@@ -197,7 +197,7 @@ def zener_clamp(c: Builder) -> None:
 def rectifier(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     mains = Sine(offset=0 * V, amplitude=5 * V, frequency=1 * kHz, phase=0.3)
-    source = c.place(devices.voltage_source(mains), id="V1")
+    source = c.place(devices.voltage_source(mains), name="V1")
     diode = c.place(
         devices.diode(
             saturation_current=2.52 * nA,
@@ -209,10 +209,10 @@ def rectifier(c: Builder) -> None:
             depletion_coefficient=0.5,
             transit_time=20 * ns,
         ),
-        id="D1",
+        name="D1",
     )
-    smoothing = c.place(devices.capacitor(1 * uF), id="C1")
-    load = c.place(devices.resistor(1 * kohm), id="R1")
+    smoothing = c.place(devices.capacitor(1 * uF), name="C1")
+    load = c.place(devices.resistor(1 * kohm), name="R1")
     c.connect(source.positive, diode.anode, name="in")
     c.connect(diode.cathode, smoothing.a, load.a, name="out")
     c.connect(smoothing.b, load.b, source.negative, ground)
@@ -221,12 +221,12 @@ def rectifier(c: Builder) -> None:
 @component
 def amplifier(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(0.1 * V), id="V1")
-    gain = c.place(devices.voltage_controlled_voltage_source(10.0), id="E1")
-    coupling = c.place(devices.resistor(1 * kohm), id="R1")
-    stage = c.place(devices.voltage_controlled_current_source(500 * uS), id="G1")
-    load = c.place(devices.resistor(2 * kohm), id="R2")
-    bypass = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(0.1 * V), name="V1")
+    gain = c.place(devices.voltage_controlled_voltage_source(10.0), name="E1")
+    coupling = c.place(devices.resistor(1 * kohm), name="R1")
+    stage = c.place(devices.voltage_controlled_current_source(500 * uS), name="G1")
+    load = c.place(devices.resistor(2 * kohm), name="R2")
+    bypass = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, gain.control_positive, name="in")
     c.connect(gain.positive, coupling.a, name="gained")
     c.connect(coupling.b, stage.control_positive, name="coupled")
@@ -255,10 +255,10 @@ def driven_tank(c: Builder) -> None:
         width=3 * us,
         period=10 * us,
     )
-    source = c.place(devices.current_source(drive), id="I1")
-    inductor = c.place(devices.inductor(10 * mH), id="L1")
-    damping = c.place(devices.resistor(5 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.current_source(drive), name="I1")
+    inductor = c.place(devices.inductor(10 * mH), name="L1")
+    damping = c.place(devices.resistor(5 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.negative, inductor.a, damping.a, capacitor.a, name="out")
     c.connect(source.positive, inductor.b, damping.b, capacitor.b, ground)
 
@@ -276,8 +276,8 @@ def transformer(c: Builder) -> None:
         width=20 * us,
         period=50 * us,
     )
-    source = c.place(devices.voltage_source(drive), id="V1")
-    feed = c.place(devices.resistor(50 * ohm), id="R1")
+    source = c.place(devices.voltage_source(drive), name="V1")
+    feed = c.place(devices.resistor(50 * ohm), name="R1")
     windings = c.place(
         devices.coupled_inductors(
             [
@@ -287,11 +287,11 @@ def transformer(c: Builder) -> None:
             ],
             {(1, 2): 0.95, (1, 3): 0.9, (2, 3): 0.85},
         ),
-        id="K1",
+        name="K1",
     )
-    load = c.place(devices.resistor(1 * kohm), id="RL")
-    hold = c.place(devices.capacitor(10 * nF), id="C1")
-    tertiary = c.place(devices.resistor(100 * ohm), id="RT")
+    load = c.place(devices.resistor(1 * kohm), name="RL")
+    hold = c.place(devices.capacitor(10 * nF), name="C1")
+    tertiary = c.place(devices.resistor(100 * ohm), name="RT")
     c.connect(source.positive, feed.a, name="in")
     c.connect(feed.b, windings.a1, name="primary")
     c.connect(windings.a2, load.a, hold.a, name="out")
@@ -325,17 +325,17 @@ _JFET = devices.jfet(
 @component
 def jfet_stage(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(12 * V), id="V2")
+    supply = c.place(devices.voltage_source(12 * V), name="V2")
     # Starting at its peak, the sine's slope is zero, so the operating point at zero
     # time is also the transient's start, with no capacitive current to jump.
     signal = Sine(
         offset=-0.8 * V, amplitude=0.6 * V, frequency=200 * kHz, phase=math.pi / 2
     )
-    source = c.place(devices.voltage_source(signal), id="V1")
-    gate = c.place(devices.resistor(1 * kohm), id="RG")
-    transistor = c.place(_JFET, id="J1")
-    drain = c.place(devices.resistor(2.2 * kohm), id="RD")
-    degeneration = c.place(devices.resistor(470 * ohm), id="RS")
+    source = c.place(devices.voltage_source(signal), name="V1")
+    gate = c.place(devices.resistor(1 * kohm), name="RG")
+    transistor = c.place(_JFET, name="J1")
+    drain = c.place(devices.resistor(2.2 * kohm), name="RD")
+    degeneration = c.place(devices.resistor(470 * ohm), name="RS")
     c.connect(source.positive, gate.a, name="in")
     c.connect(gate.b, transistor.gate, name="gate")
     c.connect(supply.positive, drain.a, name="supply")
@@ -347,9 +347,9 @@ def jfet_stage(c: Builder) -> None:
 @component
 def jfet_curves(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    bias = c.place(devices.voltage_source(-0.5 * V), id="V1")
-    drain = c.place(devices.voltage_source(0 * V), id="V2")
-    transistor = c.place(_JFET, id="J1")
+    bias = c.place(devices.voltage_source(-0.5 * V), name="V1")
+    drain = c.place(devices.voltage_source(0 * V), name="V2")
+    transistor = c.place(_JFET, name="J1")
     c.connect(bias.positive, transistor.gate, name="gate")
     c.connect(drain.positive, transistor.drain, name="drain")
     c.connect(bias.negative, drain.negative, transistor.source, ground)
@@ -358,8 +358,8 @@ def jfet_curves(c: Builder) -> None:
 @component
 def p_jfet_follower(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(-9 * V), id="V2")
-    source = c.place(devices.voltage_source(-1 * V), id="V1")
+    supply = c.place(devices.voltage_source(-9 * V), name="V2")
+    source = c.place(devices.voltage_source(-1 * V), name="V1")
     transistor = c.place(
         devices.jfet(
             channel="p",
@@ -369,9 +369,9 @@ def p_jfet_follower(c: Builder) -> None:
             gate_source_capacitance=3 * pF,
             gate_drain_capacitance=1 * pF,
         ),
-        id="J1",
+        name="J1",
     )
-    load = c.place(devices.resistor(3.3 * kohm), id="RL")
+    load = c.place(devices.resistor(3.3 * kohm), name="RL")
     c.connect(source.positive, transistor.gate, name="in")
     c.connect(supply.positive, transistor.drain, name="supply")
     c.connect(transistor.source, load.a, name="out")
@@ -436,11 +436,11 @@ def _bipolar(
 @component
 def bjt_stage(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="V2")
-    source = c.place(devices.voltage_source(0.7 * V), id="V1")
-    base = c.place(devices.resistor(10 * kohm), id="RB")
-    transistor = c.place(_bipolar("npn", "current"), id="Q1")
-    load = c.place(devices.resistor(1 * kohm), id="RC")
+    supply = c.place(devices.voltage_source(5 * V), name="V2")
+    source = c.place(devices.voltage_source(0.7 * V), name="V1")
+    base = c.place(devices.resistor(10 * kohm), name="RB")
+    transistor = c.place(_bipolar("npn", "current"), name="Q1")
+    load = c.place(devices.resistor(1 * kohm), name="RC")
     c.connect(source.positive, base.a, name="in")
     c.connect(base.b, transistor.base, name="base")
     c.connect(supply.positive, load.a, name="supply")
@@ -451,16 +451,16 @@ def bjt_stage(c: Builder) -> None:
 @component
 def bjt_amplifier(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(12 * V), id="V2")
+    supply = c.place(devices.voltage_source(12 * V), name="V2")
     signal = Sine(offset=0 * V, amplitude=20 * mV, frequency=1 * MHz, phase=math.pi / 2)
-    source = c.place(devices.voltage_source(signal), id="V1")
-    coupling = c.place(devices.capacitor(100 * nF), id="CIN")
-    upper = c.place(devices.resistor(47 * kohm), id="R1")
-    lower = c.place(devices.resistor(10 * kohm), id="R2")
-    transistor = c.place(_bipolar("npn", "fixed"), id="Q1")
-    load = c.place(devices.resistor(3.3 * kohm), id="RC")
-    degeneration = c.place(devices.resistor(1 * kohm), id="RE")
-    bypass = c.place(devices.capacitor(1 * nF), id="CE")
+    source = c.place(devices.voltage_source(signal), name="V1")
+    coupling = c.place(devices.capacitor(100 * nF), name="CIN")
+    upper = c.place(devices.resistor(47 * kohm), name="R1")
+    lower = c.place(devices.resistor(10 * kohm), name="R2")
+    transistor = c.place(_bipolar("npn", "fixed"), name="Q1")
+    load = c.place(devices.resistor(3.3 * kohm), name="RC")
+    degeneration = c.place(devices.resistor(1 * kohm), name="RE")
+    bypass = c.place(devices.capacitor(1 * nF), name="CE")
     c.connect(source.positive, coupling.a, name="in")
     c.connect(coupling.b, upper.b, lower.a, transistor.base, name="base")
     c.connect(supply.positive, upper.a, load.a, name="supply")
@@ -479,7 +479,7 @@ def delayed_stage(c: Builder) -> None:
     the Bessel filter ngspice integrates in a transient, and edges of 1 ns show it.
     """
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    supply = c.place(devices.voltage_source(5 * V), name="V2")
     edges = Pulse(
         initial=0.68 * V,
         pulsed=0.74 * V,
@@ -489,9 +489,9 @@ def delayed_stage(c: Builder) -> None:
         width=5 * ns,
         period=12 * ns,
     )
-    source = c.place(devices.voltage_source(edges), id="V1")
-    transistor = c.place(_bipolar("npn", "fixed", excess_phase=60.0), id="Q1")
-    load = c.place(devices.resistor(1 * kohm), id="RC")
+    source = c.place(devices.voltage_source(edges), name="V1")
+    transistor = c.place(_bipolar("npn", "fixed", excess_phase=60.0), name="Q1")
+    load = c.place(devices.resistor(1 * kohm), name="RC")
     c.connect(source.positive, transistor.base, name="base")
     c.connect(supply.positive, load.a, name="supply")
     c.connect(load.b, transistor.collector, name="out")
@@ -507,17 +507,17 @@ def feedback_pair(c: Builder) -> None:
     ground where the loop enters the feedback network.
     """
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(12 * V), id="V1")
-    stage = c.place(_bipolar("npn", "fixed"), id="Q1")
-    follower = c.place(_bipolar("npn", "fixed"), id="Q2")
-    collector = c.place(devices.resistor(10 * kohm), id="RC")
-    emitter = c.place(devices.resistor(470 * ohm), id="RE")
-    load = c.place(devices.resistor(2.2 * kohm), id="RL")
-    lower = c.place(devices.resistor(10 * kohm), id="R2")
-    feedback = c.place(devices.resistor(47 * kohm), id="RF")
-    across = c.place(devices.capacitor(2 * pF), id="CF")
-    probe = c.place(devices.voltage_source(0 * V), id="VP")
-    injection = c.place(devices.current_source(0 * A), id="IP")
+    supply = c.place(devices.voltage_source(12 * V), name="V1")
+    stage = c.place(_bipolar("npn", "fixed"), name="Q1")
+    follower = c.place(_bipolar("npn", "fixed"), name="Q2")
+    collector = c.place(devices.resistor(10 * kohm), name="RC")
+    emitter = c.place(devices.resistor(470 * ohm), name="RE")
+    load = c.place(devices.resistor(2.2 * kohm), name="RL")
+    lower = c.place(devices.resistor(10 * kohm), name="R2")
+    feedback = c.place(devices.resistor(47 * kohm), name="RF")
+    across = c.place(devices.capacitor(2 * pF), name="CF")
+    probe = c.place(devices.voltage_source(0 * V), name="VP")
+    injection = c.place(devices.current_source(0 * A), name="IP")
     c.connect(supply.positive, collector.a, follower.collector, name="supply")
     c.connect(collector.b, stage.collector, follower.base, name="drive")
     c.connect(follower.emitter, load.a, probe.negative, name="out")
@@ -534,16 +534,16 @@ def integrated_stage(c: Builder) -> None:
     The source feeding the substrate drives the transistors' junctions to it forward.
     """
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    supply = c.place(devices.voltage_source(5 * V), name="V2")
     signal = Sine(
         offset=0.7 * V, amplitude=10 * mV, frequency=1 * MHz, phase=math.pi / 2
     )
-    source = c.place(devices.voltage_source(signal), id="V1")
-    bias = c.place(devices.voltage_source(-1 * V), id="V3")
-    base = c.place(devices.resistor(10 * kohm), id="RB")
-    amplifier = c.place(_bipolar("npn", "fixed", "vertical"), id="Q1")
-    load = c.place(_bipolar("pnp", "fixed", "lateral"), id="Q2")
-    feed = c.place(devices.resistor(10 * kohm), id="RS")
+    source = c.place(devices.voltage_source(signal), name="V1")
+    bias = c.place(devices.voltage_source(-1 * V), name="V3")
+    base = c.place(devices.resistor(10 * kohm), name="RB")
+    amplifier = c.place(_bipolar("npn", "fixed", "vertical"), name="Q1")
+    load = c.place(_bipolar("pnp", "fixed", "lateral"), name="Q2")
+    feed = c.place(devices.resistor(10 * kohm), name="RS")
     c.connect(source.positive, base.a, name="in")
     c.connect(base.b, amplifier.base, name="base")
     c.connect(supply.positive, load.emitter, name="supply")
@@ -558,11 +558,11 @@ def integrated_stage(c: Builder) -> None:
 @component
 def pnp_mirror(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(10 * V), id="V1")
-    reference = c.place(devices.resistor(10 * kohm), id="RR")
-    left = c.place(_bipolar("pnp", "charge"), id="Q1")
-    right = c.place(_bipolar("pnp", "charge"), id="Q2")
-    load = c.place(devices.resistor(4.7 * kohm), id="RL")
+    supply = c.place(devices.voltage_source(10 * V), name="V1")
+    reference = c.place(devices.resistor(10 * kohm), name="RR")
+    left = c.place(_bipolar("pnp", "charge"), name="Q1")
+    right = c.place(_bipolar("pnp", "charge"), name="Q2")
+    load = c.place(devices.resistor(4.7 * kohm), name="RL")
     c.connect(supply.positive, left.emitter, right.emitter, name="supply")
     c.connect(left.base, left.collector, right.base, reference.a, name="mirror")
     c.connect(right.collector, load.a, name="out")
@@ -572,12 +572,14 @@ def pnp_mirror(c: Builder) -> None:
 @component
 def current_controlled(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(2 * V), id="V1")
-    feed = c.place(devices.resistor(1 * kohm), id="R1")
-    amplifier = c.place(devices.current_controlled_current_source(3.0), id="F1")
-    load = c.place(devices.resistor(2 * kohm), id="R2")
-    transducer = c.place(devices.current_controlled_voltage_source(500 * ohm), id="H1")
-    output = c.place(devices.resistor(4.7 * kohm), id="R3")
+    source = c.place(devices.voltage_source(2 * V), name="V1")
+    feed = c.place(devices.resistor(1 * kohm), name="R1")
+    amplifier = c.place(devices.current_controlled_current_source(3.0), name="F1")
+    load = c.place(devices.resistor(2 * kohm), name="R2")
+    transducer = c.place(
+        devices.current_controlled_voltage_source(500 * ohm), name="H1"
+    )
+    output = c.place(devices.resistor(4.7 * kohm), name="R3")
     c.connect(source.positive, feed.a, name="in")
     c.connect(feed.b, amplifier.control_positive, name="sensed")
     c.connect(amplifier.negative, transducer.control_positive, name="mid")
@@ -604,13 +606,13 @@ def negative_load(c: Builder) -> None:
     jolty, and gmin stepping across the junctions finds it.
     """
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(4.8 * V), id="V1")
-    bias = c.place(devices.resistor(230 * kohm), id="R1")
-    sink = c.place(devices.current_source(0.2 * mA), id="I1")
-    feedback = c.place(devices.voltage_controlled_current_source(1.75 * uS), id="G1")
-    clamp = c.place(devices.diode(), id="D1")
-    transistor = c.place(devices.bipolar_transistor(polarity="pnp"), id="Q1")
-    negative = c.place(devices.voltage_controlled_current_source(97 * uS), id="G2")
+    supply = c.place(devices.voltage_source(4.8 * V), name="V1")
+    bias = c.place(devices.resistor(230 * kohm), name="R1")
+    sink = c.place(devices.current_source(0.2 * mA), name="I1")
+    feedback = c.place(devices.voltage_controlled_current_source(1.75 * uS), name="G1")
+    clamp = c.place(devices.diode(), name="D1")
+    transistor = c.place(devices.bipolar_transistor(polarity="pnp"), name="Q1")
+    negative = c.place(devices.voltage_controlled_current_source(97 * uS), name="G2")
     c.connect(supply.positive, bias.b, transistor.base, name="base")
     c.connect(bias.a, sink.positive, feedback.control_negative, name="low")
     c.connect(transistor.collector, feedback.control_positive, name="collector")
@@ -702,14 +704,14 @@ def _level_three(max_drift_velocity: Quantity | None) -> devices.Device:
 @component
 def level_three_stage(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="V2")
+    supply = c.place(devices.voltage_source(5 * V), name="V2")
     signal = Sine(
         offset=1.4 * V, amplitude=0.4 * V, frequency=2 * MHz, phase=math.pi / 2
     )
-    source = c.place(devices.voltage_source(signal), id="V1")
-    gate = c.place(devices.resistor(100 * kohm), id="RG")
-    transistor = c.place(_level_three(1.5e5 * m / s), id="M1")
-    drain = c.place(devices.resistor(4.7 * kohm), id="RD")
+    source = c.place(devices.voltage_source(signal), name="V1")
+    gate = c.place(devices.resistor(100 * kohm), name="RG")
+    transistor = c.place(_level_three(1.5e5 * m / s), name="M1")
+    drain = c.place(devices.resistor(4.7 * kohm), name="RD")
     c.connect(source.positive, gate.a, name="in")
     c.connect(gate.b, transistor.gate, name="gate")
     c.connect(supply.positive, drain.a, name="supply")
@@ -722,10 +724,10 @@ def level_three_stage(c: Builder) -> None:
 @component
 def level_three_curves(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    bias = c.place(devices.voltage_source(1.5 * V), id="V1")
-    drain = c.place(devices.voltage_source(0 * V), id="V2")
-    body = c.place(devices.voltage_source(-1 * V), id="V3")
-    transistor = c.place(_level_three(None), id="M1")
+    bias = c.place(devices.voltage_source(1.5 * V), name="V1")
+    drain = c.place(devices.voltage_source(0 * V), name="V2")
+    body = c.place(devices.voltage_source(-1 * V), name="V3")
+    transistor = c.place(_level_three(None), name="M1")
     c.connect(bias.positive, transistor.gate, name="gate")
     c.connect(drain.positive, transistor.drain, name="drain")
     c.connect(body.positive, transistor.bulk, name="body")
@@ -747,7 +749,7 @@ def drifting(c: Builder, *, apart: bool = False) -> None:
         return device.warmer_by(kelvins * K) if apart else device
 
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(12 * V), id="V1")
+    supply = c.place(devices.voltage_source(12 * V), name="V1")
     feed = c.place(
         held(
             devices.resistor(
@@ -757,7 +759,7 @@ def drifting(c: Builder, *, apart: bool = False) -> None:
             ),
             celsius(85),
         ),
-        id="R1",
+        name="R1",
     )
     zener = c.place(
         offset(
@@ -774,13 +776,13 @@ def drifting(c: Builder, *, apart: bool = False) -> None:
             ),
             30,
         ),
-        id="D1",
+        name="D1",
     )
     hold = c.place(
         offset(devices.capacitor(100 * pF, temperature_coefficient=-1e-3 / K), -20),
-        id="C1",
+        name="C1",
     )
-    base = c.place(devices.resistor(47 * kohm), id="RB")
+    base = c.place(devices.resistor(47 * kohm), name="RB")
     bipolar = c.place(
         held(
             devices.bipolar_transistor(
@@ -801,15 +803,15 @@ def drifting(c: Builder, *, apart: bool = False) -> None:
             ),
             celsius(-10),
         ),
-        id="Q1",
+        name="Q1",
     )
     collector = c.place(
         offset(
             devices.resistor(4.7 * kohm, exponential_temperature_coefficient=0.3), 15
         ),
-        id="RC",
+        name="RC",
     )
-    emitter = c.place(devices.resistor(1 * kohm), id="RE")
+    emitter = c.place(devices.resistor(1 * kohm), name="RE")
     unipolar = c.place(
         held(
             devices.jfet(
@@ -825,9 +827,9 @@ def drifting(c: Builder, *, apart: bool = False) -> None:
             ),
             celsius(60),
         ),
-        id="J1",
+        name="J1",
     )
-    sense = c.place(devices.resistor(1 * kohm), id="RS")
+    sense = c.place(devices.resistor(1 * kohm), name="RS")
     channel = c.place(
         offset(
             devices.mosfet(
@@ -842,9 +844,9 @@ def drifting(c: Builder, *, apart: bool = False) -> None:
             ),
             25,
         ),
-        id="M1",
+        name="M1",
     )
-    drain = c.place(devices.resistor(10 * kohm), id="RD")
+    drain = c.place(devices.resistor(10 * kohm), name="RD")
     c.connect(
         supply.positive, feed.a, collector.a, unipolar.drain, drain.a, name="supply"
     )
@@ -876,15 +878,15 @@ def drifting_apart() -> Component:
 @component
 def nmos_stage(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(9 * V), id="V2")
+    supply = c.place(devices.voltage_source(9 * V), name="V2")
     signal = Sine(
         offset=1.6 * V, amplitude=0.3 * V, frequency=2 * MHz, phase=math.pi / 2
     )
-    source = c.place(devices.voltage_source(signal), id="V1")
-    gate = c.place(devices.resistor(100 * kohm), id="RG")
-    transistor = c.place(_NMOS, id="M1")
-    drain = c.place(devices.resistor(4.7 * kohm), id="RD")
-    degeneration = c.place(devices.resistor(1 * kohm), id="RS")
+    source = c.place(devices.voltage_source(signal), name="V1")
+    gate = c.place(devices.resistor(100 * kohm), name="RG")
+    transistor = c.place(_NMOS, name="M1")
+    drain = c.place(devices.resistor(4.7 * kohm), name="RD")
+    degeneration = c.place(devices.resistor(1 * kohm), name="RS")
     c.connect(source.positive, gate.a, name="in")
     c.connect(gate.b, transistor.gate, name="gate")
     c.connect(supply.positive, drain.a, name="supply")
@@ -896,10 +898,10 @@ def nmos_stage(c: Builder) -> None:
 @component
 def mosfet_curves(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    bias = c.place(devices.voltage_source(2 * V), id="V1")
-    drain = c.place(devices.voltage_source(0 * V), id="V2")
-    body = c.place(devices.voltage_source(-3 * V), id="V3")
-    transistor = c.place(_NMOS, id="M1")
+    bias = c.place(devices.voltage_source(2 * V), name="V1")
+    drain = c.place(devices.voltage_source(0 * V), name="V2")
+    body = c.place(devices.voltage_source(-3 * V), name="V3")
+    transistor = c.place(_NMOS, name="M1")
     c.connect(bias.positive, transistor.gate, name="gate")
     c.connect(drain.positive, transistor.drain, name="drain")
     c.connect(body.positive, transistor.bulk, name="body")
@@ -909,7 +911,7 @@ def mosfet_curves(c: Builder) -> None:
 @component
 def cmos_inverter(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(3.3 * V), id="V2")
+    supply = c.place(devices.voltage_source(3.3 * V), name="V2")
     pulse = Pulse(
         initial=0 * V,
         pulsed=3.3 * V,
@@ -919,9 +921,9 @@ def cmos_inverter(c: Builder) -> None:
         width=60 * ns,
         period=160 * ns,
     )
-    source = c.place(devices.voltage_source(pulse), id="V1")
+    source = c.place(devices.voltage_source(pulse), name="V1")
     # A driver's resistance, so the gates' charging current flows without jumps.
-    driver = c.place(devices.resistor(10 * kohm), id="RIN")
+    driver = c.place(devices.resistor(10 * kohm), name="RIN")
     lower = c.place(
         devices.mosfet(
             width=10 * um,
@@ -941,7 +943,7 @@ def cmos_inverter(c: Builder) -> None:
             gate_source_overlap=2e-10 * F / m,
             gate_drain_overlap=2e-10 * F / m,
         ),
-        id="M1",
+        name="M1",
     )
     upper = c.place(
         devices.mosfet(
@@ -963,9 +965,9 @@ def cmos_inverter(c: Builder) -> None:
             gate_drain_overlap=2e-10 * F / m,
             gate_bulk_overlap=1e-10 * F / m,
         ),
-        id="M2",
+        name="M2",
     )
-    load = c.place(devices.capacitor(200 * fF), id="CL")
+    load = c.place(devices.capacitor(200 * fF), name="CL")
     c.connect(source.positive, driver.a, name="in")
     c.connect(driver.b, lower.gate, upper.gate, name="gate")
     c.connect(supply.positive, upper.source, upper.bulk, name="supply")
@@ -981,26 +983,26 @@ def behavioral(c: Builder) -> None:
     signal = Sine(
         offset=0.2 * V, amplitude=1 * V, frequency=10 * kHz, phase=math.pi / 2
     )
-    source = c.place(devices.voltage_source(signal), id="V1")
-    upper = c.place(devices.resistor(1 * kohm), id="R1")
-    lower = c.place(devices.resistor(1 * kohm), id="R2")
+    source = c.place(devices.voltage_source(signal), name="V1")
+    upper = c.place(devices.resistor(1 * kohm), name="R1")
+    lower = c.place(devices.resistor(1 * kohm), name="R2")
     shaper = c.place(
         devices.behavioral_voltage_source(
             "2 * tanh(v(x) / 0.5) + 0.1 * v(x) ^ 2 + 0.05 * sin(2 * pi * 1e4 * time)"
         ),
-        id="B1",
+        name="B1",
     )
-    series = c.place(devices.resistor(1 * kohm), id="R3")
+    series = c.place(devices.resistor(1 * kohm), name="R3")
     load = c.place(
         devices.behavioral_current_source("v(y) > 0 ? 2e-3 * v(y) : 1e-4 * v(y)"),
-        id="B2",
+        name="B2",
     )
-    smoothing = c.place(devices.capacitor(100 * nF), id="C1")
-    sink = c.place(devices.resistor(2 * kohm), id="R4")
+    smoothing = c.place(devices.capacitor(100 * nF), name="C1")
+    sink = c.place(devices.resistor(2 * kohm), name="R4")
     mirror = c.place(
-        devices.behavioral_current_source("0.5 * i(s) + v(y) * i(s)"), id="B3"
+        devices.behavioral_current_source("0.5 * i(s) + v(y) * i(s)"), name="B3"
     )
-    output = c.place(devices.resistor(1 * kohm), id="R5")
+    output = c.place(devices.resistor(1 * kohm), name="R5")
     c.connect(source.positive, upper.a, name="in")
     c.connect(upper.b, lower.a, shaper.x, name="x")
     c.connect(shaper.positive, series.a, name="shaped")
@@ -1033,7 +1035,7 @@ def curved(c: Builder) -> None:
     """Resistors and a capacitor whose values change with their voltages, either way."""
     ground = c.port("ground", Role.GROUND)
     sine = Sine(offset=0 * V, amplitude=2 * V, frequency=1 * kHz)
-    source = c.place(devices.voltage_source(sine), id="V1")
+    source = c.place(devices.voltage_source(sine), name="V1")
     feed = c.place(
         devices.resistor(
             1 * kohm,
@@ -1041,16 +1043,16 @@ def curved(c: Builder) -> None:
             voltage_coefficient=0.05 / V,
             quadratic_voltage_coefficient=0.02 / V**2,
         ),
-        id="R1",
+        name="R1",
     )
-    load = c.place(devices.resistor(2 * kohm, voltage_coefficient=-0.03 / V), id="R2")
+    load = c.place(devices.resistor(2 * kohm, voltage_coefficient=-0.03 / V), name="R2")
     hold = c.place(
         devices.capacitor(
             1 * uF,
             voltage_coefficient=0.1 / V,
             quadratic_voltage_coefficient=0.05 / V**2,
         ),
-        id="C1",
+        name="C1",
     )
     c.connect(source.positive, feed.a, name="in")
     c.connect(feed.b, load.a, hold.a, name="out")
@@ -1061,7 +1063,7 @@ def curved(c: Builder) -> None:
 def lit(c: Builder) -> None:
     """A photocell under a divider, its light a pulse, its response lagging it."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="V1")
+    supply = c.place(devices.voltage_source(5 * V), name="V1")
     pulse = Pulse(
         initial=1 * V,
         pulsed=100 * V,
@@ -1070,10 +1072,10 @@ def lit(c: Builder) -> None:
         fall=1 * ms,
         width=10 * ms,
     )
-    light = c.place(devices.voltage_source(pulse), id="V2")
-    upper = c.place(devices.resistor(10 * kohm), id="R1")
+    light = c.place(devices.voltage_source(pulse), name="V2")
+    upper = c.place(devices.resistor(10 * kohm), name="R1")
     cell = c.place(
-        devices.photocell(10 * kohm, gamma=0.8, response_time=3 * ms), id="P1"
+        devices.photocell(10 * kohm, gamma=0.8, response_time=3 * ms), name="P1"
     )
     c.connect(supply.positive, upper.a, name="in")
     c.connect(upper.b, cell.a, name="out")
@@ -1102,13 +1104,15 @@ to `u(0)`, `limit` and the tables."""
 def expressions(c: Builder) -> None:
     """Each of `EXPRESSIONS` of the voltage `x` and of a constant 2 V, through 1 kΩ."""
     ground = c.port("ground", Role.GROUND)
-    swept = c.place(devices.voltage_source(0.3 * V), id="V1")
-    two = c.place(devices.voltage_source(2 * V), id="V2")
+    swept = c.place(devices.voltage_source(0.3 * V), name="V1")
+    two = c.place(devices.voltage_source(2 * V), name="V2")
     c.connect(swept.positive, name="x")
     c.connect(two.positive, name="two")
     for index, expression in enumerate(EXPRESSIONS, start=1):
-        source = c.place(devices.behavioral_voltage_source(expression), id=f"B{index}")
-        load = c.place(devices.resistor(1 * kohm), id=f"R{index}")
+        source = c.place(
+            devices.behavioral_voltage_source(expression), name=f"B{index}"
+        )
+        load = c.place(devices.resistor(1 * kohm), name=f"R{index}")
         c.connect(source.positive, load.a, name=f"e{index}")
         c.connect(source.x, swept.positive)
         if "two" in expression:
@@ -1126,8 +1130,8 @@ def memristive(c: Builder) -> None:
     """
     ground = c.port("ground", Role.GROUND)
     sine = Sine(0 * V, 2 * V, 1 * kHz)
-    source = c.place(devices.voltage_source(sine), id="V1")
-    feed = c.place(devices.resistor(1 * kohm), id="R1")
+    source = c.place(devices.voltage_source(sine), name="V1")
+    feed = c.place(devices.resistor(1 * kohm), name="R1")
     cell = c.place(
         devices.voltage_controlled_memristor(
             on_resistance=1 * kohm,
@@ -1141,7 +1145,7 @@ def memristive(c: Builder) -> None:
             law="exponential",
             state=0.6,
         ),
-        id="M1",
+        name="M1",
     )
     c.connect(source.positive, feed.a, name="in")
     c.connect(feed.b, cell.positive, name="cell")
@@ -1153,8 +1157,8 @@ def ion_drift(c: Builder) -> None:
     """HP's memristor under a sine, fed through a resistor, driven into its window."""
     ground = c.port("ground", Role.GROUND)
     sine = Sine(0 * V, 1.5 * V, 1 * Hz)
-    source = c.place(devices.voltage_source(sine), id="V1")
-    feed = c.place(devices.resistor(1 * kohm), id="R1")
+    source = c.place(devices.voltage_source(sine), name="V1")
+    feed = c.place(devices.resistor(1 * kohm), name="R1")
     cell = c.place(
         devices.current_controlled_memristor(
             on_resistance=100 * ohm,
@@ -1163,7 +1167,7 @@ def ion_drift(c: Builder) -> None:
             state=0.5,
             window=0.05,
         ),
-        id="M1",
+        name="M1",
     )
     c.connect(source.positive, feed.a, name="in")
     c.connect(feed.b, cell.positive, name="cell")
@@ -1182,9 +1186,9 @@ def switched(c: Builder) -> None:
         width=30 * us,
         period=100 * us,
     )
-    control = c.place(devices.voltage_source(pulse), id="V1")
-    supply = c.place(devices.voltage_source(5 * V), id="V2")
-    feed = c.place(devices.resistor(1 * kohm), id="R1")
+    control = c.place(devices.voltage_source(pulse), name="V1")
+    supply = c.place(devices.voltage_source(5 * V), name="V2")
+    feed = c.place(devices.resistor(1 * kohm), name="R1")
     switch = c.place(
         devices.voltage_controlled_switch(
             on_resistance=10 * ohm,
@@ -1192,9 +1196,9 @@ def switched(c: Builder) -> None:
             on_voltage=2 * V,
             off_voltage=1 * V,
         ),
-        id="S1",
+        name="S1",
     )
-    hold = c.place(devices.capacitor(10 * nF), id="C1")
+    hold = c.place(devices.capacitor(10 * nF), name="C1")
     c.connect(control.positive, switch.control_positive, name="control")
     c.connect(supply.positive, feed.a, name="supply")
     c.connect(feed.b, switch.positive, hold.a, name="out")
@@ -1221,17 +1225,17 @@ def current_switched(c: Builder) -> None:
         width=30 * us,
         period=100 * us,
     )
-    control = c.place(devices.voltage_source(pulse), id="V1")
-    limit = c.place(devices.resistor(1 * kohm), id="R2")
-    supply = c.place(devices.voltage_source(5 * V), id="V2")
-    feed = c.place(devices.resistor(1 * kohm), id="R1")
+    control = c.place(devices.voltage_source(pulse), name="V1")
+    limit = c.place(devices.resistor(1 * kohm), name="R2")
+    supply = c.place(devices.voltage_source(5 * V), name="V2")
+    feed = c.place(devices.resistor(1 * kohm), name="R1")
     switch = c.place(
         devices.current_controlled_switch(
             on_resistance=10 * ohm, on_current=2 * mA, off_current=1 * mA
         ),
-        id="W1",
+        name="W1",
     )
-    hold = c.place(devices.capacitor(10 * nF), id="C1")
+    hold = c.place(devices.capacitor(10 * nF), name="C1")
     c.connect(control.positive, limit.a, name="control")
     c.connect(limit.b, switch.control_positive, name="sensed")
     c.connect(supply.positive, feed.a, name="supply")
@@ -1350,9 +1354,9 @@ def power_curves(
     """
     drain, gate, source = pins
     ground = c.port("ground", Role.GROUND)
-    bias = c.place(devices.voltage_source(sign * 6 * V), id="V1")
-    supply = c.place(devices.voltage_source(sign * 10 * V), id="V2")
-    placed = c.place(transistor, id="M1")
+    bias = c.place(devices.voltage_source(sign * 6 * V), name="V1")
+    supply = c.place(devices.voltage_source(sign * 10 * V), name="V2")
+    placed = c.place(transistor, name="M1")
     c.connect(bias.positive, placed[gate], name="gate")
     c.connect(supply.positive, placed[drain], name="drain")
     c.connect(bias.negative, supply.negative, placed[source], ground)
@@ -1372,18 +1376,18 @@ def p_power_curves() -> Component:
 def power_stage(c: Builder) -> None:
     """A VDMOS amplifier: about an ampere through 10 Ω, its gate fed through 1 kΩ."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(24 * V), id="V2")
+    supply = c.place(devices.voltage_source(24 * V), name="V2")
     signal = Sine(
         offset=5.3 * V, amplitude=0.05 * V, frequency=200 * kHz, phase=math.pi / 2
     )
-    source = c.place(devices.voltage_source(signal), id="V1")
-    feed = c.place(devices.resistor(1 * kohm), id="RG")
+    source = c.place(devices.voltage_source(signal), name="V1")
+    feed = c.place(devices.resistor(1 * kohm), name="RG")
     transistor = c.place(
         _power(flicker_coefficient=1e-25, flicker_exponent=1.2),
-        id="M1",
+        name="M1",
     )
-    load = c.place(devices.resistor(10 * ohm), id="RD")
-    degeneration = c.place(devices.resistor(1 * ohm), id="RS")
+    load = c.place(devices.resistor(10 * ohm), name="RD")
+    degeneration = c.place(devices.resistor(1 * ohm), name="RS")
     c.connect(source.positive, feed.a, name="in")
     c.connect(feed.b, transistor.gate, name="gate")
     c.connect(supply.positive, load.a, name="supply")
@@ -1411,16 +1415,16 @@ def synchronous_buck(
     """
     drain, gate, source = pins
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(12 * V), id="V1")
+    supply = c.place(devices.voltage_source(12 * V), name="V1")
     high_drive = Sine(offset=9 * V, amplitude=-7 * V, frequency=250 * kHz)
     low_drive = Sine(offset=3 * V, amplitude=-7 * V, frequency=250 * kHz)
-    high_gate = c.place(devices.voltage_source(high_drive), id="VH")
-    low_gate = c.place(devices.voltage_source(low_drive), id="VL")
-    upper = c.place(high, id="MH")
-    lower = c.place(low, id="ML")
-    inductor = c.place(devices.inductor(10 * uH), id="L1")
-    capacitor = c.place(devices.capacitor(10 * uF), id="C1")
-    load = c.place(devices.resistor(5 * ohm), id="RL")
+    high_gate = c.place(devices.voltage_source(high_drive), name="VH")
+    low_gate = c.place(devices.voltage_source(low_drive), name="VL")
+    upper = c.place(high, name="MH")
+    lower = c.place(low, name="ML")
+    inductor = c.place(devices.inductor(10 * uH), name="L1")
+    capacitor = c.place(devices.capacitor(10 * uF), name="C1")
+    load = c.place(devices.resistor(5 * ohm), name="RL")
     c.connect(supply.positive, upper[source], name="supply")
     c.connect(high_gate.positive, upper[gate], name="high_gate")
     c.connect(low_gate.positive, lower[gate], name="low_gate")
@@ -1450,9 +1454,9 @@ def flickering(c: Builder) -> None:
     resistor.
     """
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(15 * V), id="V2")
-    source = c.place(devices.voltage_source(1.5 * V), id="V1")
-    load = c.place(devices.resistor(1 * kohm), id="RD")
+    supply = c.place(devices.voltage_source(15 * V), name="V2")
+    source = c.place(devices.voltage_source(1.5 * V), name="V1")
+    load = c.place(devices.resistor(1 * kohm), name="RD")
     unipolar = c.place(
         devices.mosfet(
             width=10 * um,
@@ -1465,9 +1469,9 @@ def flickering(c: Builder) -> None:
             flicker_coefficient=1e-24,
             flicker_exponent=1.3,
         ),
-        id="M1",
+        name="M1",
     )
-    degeneration = c.place(devices.resistor(1 * kohm), id="RS")
+    degeneration = c.place(devices.resistor(1 * kohm), name="RS")
     bipolar = c.place(
         devices.bipolar_transistor(
             saturation_current=1e-15 * A,
@@ -1475,18 +1479,18 @@ def flickering(c: Builder) -> None:
             flicker_coefficient=1e-14,
             flicker_exponent=1.2,
         ),
-        id="Q1",
+        name="Q1",
     )
-    base = c.place(devices.resistor(470 * kohm), id="RB")
+    base = c.place(devices.resistor(470 * kohm), name="RB")
     channel = c.place(
         devices.jfet(
             threshold_voltage=-2 * V,
             transconductance_parameter=1 * mA / V**2,
             flicker_coefficient=1e-15,
         ),
-        id="J1",
+        name="J1",
     )
-    tail = c.place(devices.resistor(2 * kohm), id="RJ")
+    tail = c.place(devices.resistor(2 * kohm), name="RJ")
     diode = c.place(
         devices.diode(
             saturation_current=1e-14 * A,
@@ -1494,11 +1498,11 @@ def flickering(c: Builder) -> None:
             flicker_coefficient=1e-16,
             flicker_exponent=1.1,
         ),
-        id="D1",
+        name="D1",
     )
     bleed = c.place(
         devices.resistor(47 * kohm, flicker_coefficient=1e-10, flicker_exponent=1.4),
-        id="RL",
+        name="RL",
     )
     c.connect(source.positive, unipolar.gate, name="in")
     c.connect(supply.positive, load.a, base.a, name="supply")
@@ -1578,12 +1582,12 @@ def bare_transistor(c: Builder, polarity: Literal["npn", "pnp"]) -> None:
     """
     ground = c.port("ground", Role.GROUND)
     level = 1 * V if polarity == "pnp" else -1 * V
-    supply = c.place(devices.voltage_source(level), id="V1")
-    base = c.place(devices.resistor(100 * kohm), id="RB")
-    load = c.place(devices.resistor(1 * kohm), id="RC")
+    supply = c.place(devices.voltage_source(level), name="V1")
+    base = c.place(devices.resistor(100 * kohm), name="RB")
+    load = c.place(devices.resistor(1 * kohm), name="RC")
     transistor = c.place(
         devices.bipolar_transistor(polarity=polarity, saturation_current=8.7 * fA),
-        id="Q1",
+        name="Q1",
     )
     c.connect(supply.positive, transistor.emitter, name="emitter")
     c.connect(base.a, transistor.base, name="base")
@@ -2167,10 +2171,10 @@ def bsim3_curves(c: Builder, transistor: devices.Device) -> None:
     """
     ground = c.port("ground", Role.GROUND)
     sign = 1 if transistor.parameters.get("channel", "n") == "n" else -1
-    bias = c.place(devices.voltage_source(sign * 2 * V), id="V1")
-    drain = c.place(devices.voltage_source(sign * 2 * V), id="V2")
-    body = c.place(devices.voltage_source(sign * -0.5 * V), id="V3")
-    placed = c.place(transistor, id="M1")
+    bias = c.place(devices.voltage_source(sign * 2 * V), name="V1")
+    drain = c.place(devices.voltage_source(sign * 2 * V), name="V2")
+    body = c.place(devices.voltage_source(sign * -0.5 * V), name="V3")
+    placed = c.place(transistor, name="M1")
     c.connect(bias.positive, placed.gate, name="gate")
     c.connect(drain.positive, placed.drain, name="drain")
     c.connect(body.positive, placed.bulk, name="body")
@@ -2186,12 +2190,12 @@ def bsim3_stage(c: Builder, transistor: devices.Device) -> None:
     """
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(1 * us, 1.2 * V), (1 * us + 5 * ns, 1.4 * V)])
-    source = c.place(devices.voltage_source(step), id="V1")
-    supply = c.place(devices.voltage_source(3.3 * V), id="V2")
-    gate = c.place(devices.resistor(100 * kohm), id="RG")
-    load = c.place(devices.resistor(2 * kohm), id="RD")
-    capacitance = c.place(devices.capacitor(0.5 * pF), id="CL")
-    placed = c.place(transistor, id="M1")
+    source = c.place(devices.voltage_source(step), name="V1")
+    supply = c.place(devices.voltage_source(3.3 * V), name="V2")
+    gate = c.place(devices.resistor(100 * kohm), name="RG")
+    load = c.place(devices.resistor(2 * kohm), name="RD")
+    capacitance = c.place(devices.capacitor(0.5 * pF), name="CL")
+    placed = c.place(transistor, name="M1")
     c.connect(source.positive, gate.a, name="in")
     c.connect(gate.b, placed.gate, name="gate")
     c.connect(supply.positive, load.a, name="supply")
@@ -2213,7 +2217,7 @@ def bsim3_inverter(c: Builder, lower: devices.Device, upper: devices.Device) -> 
     A pulse drives its gates through 10 kΩ.
     """
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(3.3 * V), id="V2")
+    supply = c.place(devices.voltage_source(3.3 * V), name="V2")
     pulse = Pulse(
         initial=0 * V,
         pulsed=3.3 * V,
@@ -2223,11 +2227,11 @@ def bsim3_inverter(c: Builder, lower: devices.Device, upper: devices.Device) -> 
         width=8 * ns,
         period=20 * ns,
     )
-    source = c.place(devices.voltage_source(pulse), id="V1")
-    driver = c.place(devices.resistor(10 * kohm), id="RIN")
-    load = c.place(devices.capacitor(20 * fF), id="CL")
-    n = c.place(lower, id="MN")
-    p = c.place(upper, id="MP")
+    source = c.place(devices.voltage_source(pulse), name="V1")
+    driver = c.place(devices.resistor(10 * kohm), name="RIN")
+    load = c.place(devices.capacitor(20 * fF), name="CL")
+    n = c.place(lower, name="MN")
+    p = c.place(upper, name="MP")
     c.connect(source.positive, driver.a, name="in")
     c.connect(driver.b, n.gate, p.gate, name="gate")
     c.connect(supply.positive, p.source, p.bulk, name="supply")
@@ -2493,10 +2497,10 @@ def part_curves(c: Builder, part: Component, sign: Literal[1, -1]) -> None:
     Its bulk, at `V3`, lies 0.5 V behind its source in reverse.
     """
     ground = c.port("ground", Role.GROUND)
-    bias = c.place(devices.voltage_source(sign * 2 * V), id="V1")
-    drain = c.place(devices.voltage_source(sign * 2 * V), id="V2")
-    body = c.place(devices.voltage_source(sign * -0.5 * V), id="V3")
-    placed = c.place(part, id="X1")
+    bias = c.place(devices.voltage_source(sign * 2 * V), name="V1")
+    drain = c.place(devices.voltage_source(sign * 2 * V), name="V2")
+    body = c.place(devices.voltage_source(sign * -0.5 * V), name="V3")
+    placed = c.place(part, name="X1")
     c.connect(bias.positive, placed["g"], name="gate")
     c.connect(drain.positive, placed["d"], name="drain")
     c.connect(body.positive, placed["b"], name="body")
@@ -2698,10 +2702,10 @@ def vbic_curves(c: Builder, transistor: devices.Device) -> None:
     """
     ground = c.port("ground", Role.GROUND)
     sign = 1 if transistor.parameters.get("polarity", "npn") == "npn" else -1
-    base = c.place(devices.voltage_source(sign * 0.8 * V), id="V1")
-    collector = c.place(devices.voltage_source(sign * 2 * V), id="V2")
-    substrate = c.place(devices.voltage_source(sign * -1 * V), id="V3")
-    placed = c.place(transistor, id="Q1")
+    base = c.place(devices.voltage_source(sign * 0.8 * V), name="V1")
+    collector = c.place(devices.voltage_source(sign * 2 * V), name="V2")
+    substrate = c.place(devices.voltage_source(sign * -1 * V), name="V3")
+    placed = c.place(transistor, name="Q1")
     c.connect(base.positive, placed.base, name="base")
     c.connect(collector.positive, placed.collector, name="collector")
     c.connect(substrate.positive, placed.substrate, name="substrate")
@@ -2719,12 +2723,12 @@ def vbic_stage(c: Builder, transistor: devices.Device) -> None:
     """
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(1 * us, 0.8 * V), (1 * us + 5 * ns, 0.85 * V)])
-    source = c.place(devices.voltage_source(step), id="V1")
-    supply = c.place(devices.voltage_source(5 * V), id="V2")
-    base = c.place(devices.resistor(10 * kohm), id="RB")
-    load = c.place(devices.resistor(1 * kohm), id="RC")
-    capacitance = c.place(devices.capacitor(1 * pF), id="CL")
-    placed = c.place(transistor, id="Q1")
+    source = c.place(devices.voltage_source(step), name="V1")
+    supply = c.place(devices.voltage_source(5 * V), name="V2")
+    base = c.place(devices.resistor(10 * kohm), name="RB")
+    load = c.place(devices.resistor(1 * kohm), name="RC")
+    capacitance = c.place(devices.capacitor(1 * pF), name="CL")
+    placed = c.place(transistor, name="Q1")
     c.connect(source.positive, base.a, name="in")
     c.connect(base.b, placed.base, name="base")
     c.connect(supply.positive, load.a, name="supply")
@@ -2899,11 +2903,11 @@ def heated_stage(c: Builder, part: Component) -> None:
     Its base is fed through 10 kΩ from `V1`, its collector loaded by 100 Ω from 5 V.
     """
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(0 * V), id="V1")
-    supply = c.place(devices.voltage_source(5 * V), id="V2")
-    base = c.place(devices.resistor(10 * kohm), id="RB")
-    load = c.place(devices.resistor(100 * ohm), id="RC")
-    placed = c.place(part, id="X1")
+    source = c.place(devices.voltage_source(0 * V), name="V1")
+    supply = c.place(devices.voltage_source(5 * V), name="V2")
+    base = c.place(devices.resistor(10 * kohm), name="RB")
+    load = c.place(devices.resistor(100 * ohm), name="RC")
+    placed = c.place(part, name="X1")
     c.connect(source.positive, base.a, name="in")
     c.connect(base.b, placed["b"], name="base")
     c.connect(supply.positive, load.a, name="supply")

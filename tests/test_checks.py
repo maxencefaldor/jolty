@@ -39,9 +39,9 @@ def divider(
 ) -> None:
     """A source across two resistors, the lower one's end left floating if asked."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    upper = c.place(devices.resistor(upper_resistance), id="R1")
-    lower = c.place(devices.resistor(1 * kohm), id="R2")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    upper = c.place(devices.resistor(upper_resistance), name="R1")
+    lower = c.place(devices.resistor(1 * kohm), name="R2")
     c.connect(source.positive, upper.a)
     c.connect(upper.b, lower.a, name="out")
     if floating:
@@ -54,9 +54,9 @@ def divider(
 def shorted(c: Builder, model: str) -> None:
     """A source, a resistor and a capacitor in parallel; `model` names one to short."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, capacitor.a, name="in")
     c.connect(resistor.b, ground)
     match model:
@@ -74,10 +74,10 @@ def shorted(c: Builder, model: str) -> None:
 def parallel_sources(c: Builder, *, inductor: bool) -> None:
     """A source in parallel with a second source, or with an inductor."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
     other = devices.inductor(1 * mH) if inductor else devices.voltage_source(2 * V)
-    second = c.place(other, id="X")
-    load = c.place(devices.resistor(1 * kohm), id="R1")
+    second = c.place(other, name="X")
+    load = c.place(devices.resistor(1 * kohm), name="R1")
     first, last = ("a", "b") if inductor else ("positive", "negative")
     c.connect(source.positive, second[first], load.a, name="in")
     c.connect(source.negative, second[last], load.b, ground)
@@ -87,16 +87,16 @@ def parallel_sources(c: Builder, *, inductor: bool) -> None:
 def coupled(c: Builder, *, grounded: bool) -> None:
     """A source coupled into a resistor, grounded or through a second capacitor."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    coupling = c.place(devices.capacitor(1 * nF), id="C1")
-    load = c.place(devices.resistor(1 * kohm), id="R1")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    coupling = c.place(devices.capacitor(1 * nF), name="C1")
+    load = c.place(devices.resistor(1 * kohm), name="R1")
     c.connect(source.positive, coupling.a, name="in")
     c.connect(coupling.b, load.a, name="mid")
     c.connect(source.negative, ground)
     if grounded:
         c.connect(load.b, ground)
     else:
-        other = c.place(devices.capacitor(1 * nF), id="C2")
+        other = c.place(devices.capacitor(1 * nF), name="C2")
         c.connect(load.b, other.a, name="out")
         c.connect(other.b, ground)
 
@@ -105,12 +105,12 @@ def coupled(c: Builder, *, grounded: bool) -> None:
 def charged(c: Builder, *, load: bool) -> None:
     """A current source into a capacitor, loaded by a resistor if asked."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.current_source(1 * mA), id="I1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.current_source(1 * mA), name="I1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.negative, capacitor.a, name="top")
     c.connect(source.positive, capacitor.b, ground)
     if load:
-        resistor = c.place(devices.resistor(1 * kohm), id="R1")
+        resistor = c.place(devices.resistor(1 * kohm), name="R1")
         c.connect(resistor.a, capacitor.a)
         c.connect(resistor.b, ground)
 
@@ -124,14 +124,16 @@ def latch(c: Builder, *, sources: int) -> None:
     c.port("ground", Role.GROUND)
     a = c.net("a")
     for index in range(sources):
-        source = c.place(devices.logic_source(0, transition=100 * ps), id=f"A{index}")
+        source = c.place(devices.logic_source(0, transition=100 * ps), name=f"A{index}")
         c.connect(source.output, a)
     for index in range(1 if sources else 2):
         nand = c.place(
-            devices.logic_gate("nand", rise=1 * ns, transition=100 * ps), id=f"U{index}"
+            devices.logic_gate("nand", rise=1 * ns, transition=100 * ps),
+            name=f"U{index}",
         )
         inverter = c.place(
-            devices.logic_gate("not", rise=1 * ns, transition=100 * ps), id=f"I{index}"
+            devices.logic_gate("not", rise=1 * ns, transition=100 * ps),
+            name=f"I{index}",
         )
         c.connect(a, nand.a)
         c.connect(nand.y, inverter.a)
@@ -227,10 +229,10 @@ def test_every_rule_has_a_case_that_raises_it() -> None:
 def burning(c: Builder) -> None:
     """10 V across two 100 Ω resistors, one rated 0.5 W and the other 1.2 W."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(10 * V), id="V1")
+    source = c.place(devices.voltage_source(10 * V), name="V1")
     for id, rating in (("R1", 0.5), ("R2", 1.2)):
         resistor = c.place(
-            devices.resistor(100 * ohm).rated("power", rating * W), id=id
+            devices.resistor(100 * ohm).rated("power", rating * W), name=id
         )
         c.connect(source.positive, resistor.a)
         c.connect(source.negative, resistor.b, ground)
@@ -342,10 +344,10 @@ def test_explain_states_each_rule_and_its_level(
 def tank(c: Builder, feedback: Quantity) -> None:
     """1 nF and 1 mH losing 0.1 mS through 10 kΩ, and `feedback` fed back as current."""
     ground = c.port("ground", Role.GROUND)
-    resistor = c.place(devices.resistor(10 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
-    inductor = c.place(devices.inductor(1 * mH), id="L1")
-    source = c.place(devices.voltage_controlled_current_source(feedback), id="G1")
+    resistor = c.place(devices.resistor(10 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
+    inductor = c.place(devices.inductor(1 * mH), name="L1")
+    source = c.place(devices.voltage_controlled_current_source(feedback), name="G1")
     c.connect(
         resistor.a,
         capacitor.a,
@@ -381,12 +383,12 @@ def test_unstable_pole() -> None:
 def leaking(c: Builder, load: Quantity | None) -> None:
     """1 nA into `n` across a reverse-biased diode; `load` to the ground, if any."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.current_source(1 * nA), id="I1")
-    diode = c.place(devices.diode(), id="D1")
+    source = c.place(devices.current_source(1 * nA), name="I1")
+    diode = c.place(devices.diode(), name="D1")
     c.connect(source.negative, diode.cathode, name="n")
     c.connect(source.positive, diode.anode, ground)
     if load is not None:
-        resistor = c.place(devices.resistor(load), id="R1")
+        resistor = c.place(devices.resistor(load), name="R1")
         c.connect(resistor.a, diode.cathode)
         c.connect(resistor.b, ground)
 
@@ -411,11 +413,11 @@ def cubic(c: Builder) -> None:
     Its load line crosses three times: at 1 V and at 1 ± √0.9 V.
     """
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(1 * V), id="V1")
-    resistor = c.place(devices.resistor(10 * kohm), id="R1")
+    supply = c.place(devices.voltage_source(1 * V), name="V1")
+    resistor = c.place(devices.resistor(10 * kohm), name="R1")
     load = c.place(
         devices.behavioral_current_source("1e-3 * v(c) * (v(c) - 1) * (v(c) - 2)"),
-        id="B1",
+        name="B1",
     )
     c.connect(supply.positive, resistor.a)
     c.connect(resistor.b, load.positive, load.c, name="x")
@@ -443,9 +445,9 @@ from jolty.units import S, kohm, nF
 @component
 def tipping(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
-    gain = c.place(devices.voltage_controlled_current_source(GAIN * S), id="G1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
+    gain = c.place(devices.voltage_controlled_current_source(GAIN * S), name="G1")
     c.connect(resistor.a, capacitor.a, gain.negative, gain.control_positive, name="n")
     c.connect(resistor.b, capacitor.b, gain.positive, gain.control_negative, ground)
 

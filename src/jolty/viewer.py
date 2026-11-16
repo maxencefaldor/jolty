@@ -22,9 +22,9 @@ Examples:
     >>> @component
     ... def divider(c: Builder) -> None:
     ...     ground = c.port("ground", Role.GROUND)
-    ...     source = c.place(devices.voltage_source(5 * V), id="V1")
-    ...     top = c.place(devices.resistor(1 * kohm), id="R1")
-    ...     bottom = c.place(devices.resistor(1 * kohm), id="R2")
+    ...     source = c.place(devices.voltage_source(5 * V), name="V1")
+    ...     top = c.place(devices.resistor(1 * kohm), name="R1")
+    ...     bottom = c.place(devices.resistor(1 * kohm), name="R2")
     ...     c.connect(source.positive, top.a, name="in")
     ...     c.connect(top.b, bottom.a, name="out")
     ...     c.connect(bottom.b, source.negative, ground)
@@ -95,7 +95,7 @@ def _layout(circuit: ir.Circuit, name: str) -> dict[str, JsonValue]:
         (left, bottom), (right, top) = placed.body()
         instances.append(
             {
-                "id": placed.id,
+                "name": placed.name,
                 **kind,
                 "pins": {
                     terminal: list(placed.pin(terminal))
@@ -160,7 +160,7 @@ def _views(circuit: ir.Circuit) -> dict[str, JsonValue]:
         for instance in component.instances:
             if isinstance(instance.of, ir.ComponentOf):
                 inner = {port: named[net] for port, net in instance.terminals.items()}
-                walk(instance.of.component, f"{prefix}{instance.id}/", inner)
+                walk(instance.of.component, f"{prefix}{instance.name}/", inner)
 
     top = circuit.components[circuit.top]
     walk(circuit.top, "", {port.name: port.name for port in top.ports})

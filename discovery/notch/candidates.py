@@ -35,14 +35,14 @@ def twin_t(c: Builder) -> None:
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     r1, r2, c3 = (
-        c.place(r(RESISTANCE), id="R1"),
-        c.place(r(RESISTANCE), id="R2"),
-        c.place(cap(2 * CAPACITANCE), id="C3"),
+        c.place(r(RESISTANCE), name="R1"),
+        c.place(r(RESISTANCE), name="R2"),
+        c.place(cap(2 * CAPACITANCE), name="C3"),
     )
     c1, c2, r3 = (
-        c.place(cap(CAPACITANCE), id="C1"),
-        c.place(cap(CAPACITANCE), id="C2"),
-        c.place(r(RESISTANCE / 2), id="R3"),
+        c.place(cap(CAPACITANCE), name="C1"),
+        c.place(cap(CAPACITANCE), name="C2"),
+        c.place(r(RESISTANCE / 2), name="R3"),
     )
     c.connect(source, r1.a, c1.a)
     c.connect(r1.b, r2.a, c3.a, name="resistive")
@@ -65,19 +65,19 @@ def summed(c: Builder, quality: float = 1.0) -> None:
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     lossy, integrator, inverter, summer = (
-        c.place(opamp(), id=f"U{n}") for n in (1, 2, 3, 4)
+        c.place(opamp(), name=f"U{n}") for n in (1, 2, 3, 4)
     )
     r_in, r_q = (
-        c.place(r(RESISTANCE), id="RIN"),
-        c.place(r(quality * RESISTANCE), id="RQ"),
+        c.place(r(RESISTANCE), name="RIN"),
+        c.place(r(quality * RESISTANCE), name="RQ"),
     )
-    r2, r4 = c.place(r(RESISTANCE), id="R2"), c.place(r(RESISTANCE), id="R4")
-    r3a, r3b = c.place(r(10e3), id="R3A"), c.place(r(10e3), id="R3B")
-    r_n, r_f = c.place(r(RESISTANCE), id="RN"), c.place(r(RESISTANCE), id="RF")
+    r2, r4 = c.place(r(RESISTANCE), name="R2"), c.place(r(RESISTANCE), name="R4")
+    r3a, r3b = c.place(r(10e3), name="R3A"), c.place(r(10e3), name="R3B")
+    r_n, r_f = c.place(r(RESISTANCE), name="RN"), c.place(r(RESISTANCE), name="RF")
     c1, c2, c_n = (
-        c.place(cap(CAPACITANCE), id="C1"),
-        c.place(cap(CAPACITANCE), id="C2"),
-        c.place(cap(CAPACITANCE), id="CN"),
+        c.place(cap(CAPACITANCE), name="C1"),
+        c.place(cap(CAPACITANCE), name="C2"),
+        c.place(cap(CAPACITANCE), name="CN"),
     )
     c.connect(source, r_in.a)
     c.connect(r_in.b, r_q.a, c1.a, r4.b, lossy.inn, name="sum1")
@@ -105,9 +105,9 @@ def summed(c: Builder, quality: float = 1.0) -> None:
 def bench(c: Builder, notch: Component) -> None:
     """The notch fed by a source, its output loaded by 1 MΩ."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(0 * V), id="V1")
-    placed = c.place(notch, id="X1")
-    load = c.place(devices.resistor(1e6 * ohm), id="RL")
+    source = c.place(devices.voltage_source(0 * V), name="V1")
+    placed = c.place(notch, name="X1")
+    load = c.place(devices.resistor(1e6 * ohm), name="RL")
     c.connect(source.positive, placed.input, name="in")
     c.connect(placed.output, load.a, name="out")
     c.connect(source.negative, placed.ground, load.b, ground)
@@ -124,19 +124,19 @@ def bootstrapped(c: Builder, feedback: float = 0.75) -> None:
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     r1, r2, c3 = (
-        c.place(r(RESISTANCE), id="R1"),
-        c.place(r(RESISTANCE), id="R2"),
-        c.place(cap(2 * CAPACITANCE), id="C3"),
+        c.place(r(RESISTANCE), name="R1"),
+        c.place(r(RESISTANCE), name="R2"),
+        c.place(cap(2 * CAPACITANCE), name="C3"),
     )
     c1, c2, r3 = (
-        c.place(cap(CAPACITANCE), id="C1"),
-        c.place(cap(CAPACITANCE), id="C2"),
-        c.place(r(RESISTANCE / 2), id="R3"),
+        c.place(cap(CAPACITANCE), name="C1"),
+        c.place(cap(CAPACITANCE), name="C2"),
+        c.place(r(RESISTANCE / 2), name="R3"),
     )
-    buffer, bootstrap = c.place(opamp(), id="U1"), c.place(opamp(), id="U2")
+    buffer, bootstrap = c.place(opamp(), name="U1"), c.place(opamp(), name="U2")
     upper, lower = (
-        c.place(r(10e3 * (1 - feedback)), id="RK1"),
-        c.place(r(10e3 * feedback), id="RK2"),
+        c.place(r(10e3 * (1 - feedback)), name="RK1"),
+        c.place(r(10e3 * feedback), name="RK2"),
     )
     c.connect(source, r1.a, c1.a)
     c.connect(r1.b, r2.a, c3.a, name="resistive")

@@ -90,8 +90,8 @@ HARMONICS = 9
 def bench(c: Builder, made: Component, *, distorting: bool = False) -> None:
     """`made` on Koza's fixture, its source a 10 MHz sine when `distorting`."""
     ground = c.port("ground", Role.GROUND)
-    placed = c.place(made, id="X1")
-    supply = c.place(devices.voltage_source(1 * V), id="VCC")
+    placed = c.place(made, name="X1")
+    supply = c.place(devices.voltage_source(1 * V), name="VCC")
     c.connect(supply.positive, placed.vcc, name="vcc")
     c.connect(supply.negative, placed.ground, ground)
     level = (
@@ -99,15 +99,15 @@ def bench(c: Builder, made: Component, *, distorting: bool = False) -> None:
         if distorting
         else 0 * V
     )
-    source = c.place(devices.voltage_source(level), id="VIN")
-    block = c.place(devices.capacitor(BLOCKING * F), id="CIN")
-    series = c.place(devices.resistor(75 * ohm), id="RSRC")
+    source = c.place(devices.voltage_source(level), name="VIN")
+    block = c.place(devices.capacitor(BLOCKING * F), name="CIN")
+    series = c.place(devices.resistor(75 * ohm), name="RSRC")
     c.connect(source.positive, block.a, name="source")
     c.connect(block.b, series.a, name="coupled")
     c.connect(series.b, placed.input, name="input")
     c.connect(source.negative, ground)
     for output in ("in_phase", "out_of_phase"):
-        load = c.place(devices.resistor(150 * ohm), id=f"RLOAD_{output.upper()}")
+        load = c.place(devices.resistor(150 * ohm), name=f"RLOAD_{output.upper()}")
         c.connect(placed[output], load.a, name=output)
         c.connect(load.b, supply.positive)
 

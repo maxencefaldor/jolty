@@ -301,38 +301,38 @@ fn network() -> impl Strategy<Value = Network> {
 impl Network {
     fn circuit(&self) -> Circuit {
         let mut instances = vec![json!({
-            "id": "V1", "of": {"device": "voltage_source"},
+            "name": "V1", "of": {"device": "voltage_source"},
             "parameters": {"waveform": {"pulse": {"initial": 0.0, "pulsed": 1.0, "delay": 1e-9,
                 "rise": 1e-9, "fall": 1e-9, "width": 5e-9, "period": 20e-9}}},
             "terminals": {"positive": "drive", "negative": "0"},
         })];
         instances.push(json!({
-            "id": "RD", "of": {"device": "resistor"}, "parameters": {"resistance": 50.0},
+            "name": "RD", "of": {"device": "resistor"}, "parameters": {"resistance": 50.0},
             "terminals": {"a": "drive", "b": node(1)},
         }));
         for (index, &(a, b, resistance)) in self.resistors.iter().enumerate() {
             instances.push(json!({
-                "id": format!("R{index}"), "of": {"device": "resistor"},
+                "name": format!("R{index}"), "of": {"device": "resistor"},
                 "parameters": {"resistance": resistance},
                 "terminals": {"a": node(a), "b": node(b)},
             }));
         }
         for &(at, capacitance) in &self.capacitors {
             instances.push(json!({
-                "id": format!("C{at}"), "of": {"device": "capacitor"},
+                "name": format!("C{at}"), "of": {"device": "capacitor"},
                 "parameters": {"capacitance": capacitance},
                 "terminals": {"a": node(at), "b": "0"},
             }));
         }
         for (index, &(at, current)) in self.sources.iter().enumerate() {
             instances.push(json!({
-                "id": format!("I{index}"), "of": {"device": "current_source"},
+                "name": format!("I{index}"), "of": {"device": "current_source"},
                 "parameters": {"waveform": {"dc": current}},
                 "terminals": {"positive": "0", "negative": node(at)},
             }));
         }
         let document = json!({
-            "format": "jolty-circuit", "version": 2, "top": "network",
+            "format": "jolty-circuit", "version": 3, "top": "network",
             "components": {"network": {
                 "ports": [{"name": "0", "role": "ground"}], "instances": instances,
             }}
@@ -505,7 +505,7 @@ fn a_run_reset_to_other_values_equals_one_made_for_them() {
 #[test]
 fn a_reset_forgets_the_logic() {
     let device = |id: &str, model: &str, parameters: Value, terminals: Value| {
-        json!({"id": id, "of": {"device": model}, "parameters": parameters,
+        json!({"name": id, "of": {"device": model}, "parameters": parameters,
                "terminals": terminals})
     };
     let instances = vec![
@@ -550,7 +550,7 @@ fn a_reset_forgets_the_logic() {
         ),
     ];
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "ring",
+        "format": "jolty-circuit", "version": 3, "top": "ring",
         "components": {"ring": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
@@ -583,14 +583,14 @@ fn a_reset_forgets_the_logic() {
 /// unknown of its own.
 fn divider() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "divider",
+        "format": "jolty-circuit", "version": 3, "top": "divider",
         "components": {"divider": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"id": "V1", "of": {"device": "voltage_source"},
+            {"name": "V1", "of": {"device": "voltage_source"},
              "parameters": {"waveform": {"dc": 1.0}},
              "terminals": {"positive": "in", "negative": "0"}},
-            {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 2.0},
+            {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 2.0},
              "terminals": {"a": "in", "b": "out"}},
-            {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 3.0},
+            {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 3.0},
              "terminals": {"a": "out", "b": "0"}}
         ]}}
     });
@@ -674,14 +674,14 @@ fn a_resistor_overridden_across_one_ohm_changes_the_structure() {
 #[test]
 fn values_report_every_number_they_cannot_replace() {
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "top",
+        "format": "jolty-circuit", "version": 3, "top": "top",
         "components": {"top": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"id": "V1", "of": {"device": "voltage_source"},
+            {"name": "V1", "of": {"device": "voltage_source"},
              "parameters": {"waveform": {"dc": 1.0}},
              "terminals": {"positive": "in", "negative": "0"}},
-            {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 2.0},
+            {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 2.0},
              "terminals": {"a": "in", "b": "0"}},
-            {"id": "U1", "of": {"device": "logic_source"},
+            {"name": "U1", "of": {"device": "logic_source"},
              "parameters": {"initial": "0", "changes": [[1e-9, "1"]], "transition": 1e-12},
              "terminals": {"output": "y"}}
         ]}}

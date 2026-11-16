@@ -39,16 +39,16 @@ def oscillator(c: Builder) -> None:
         fall=1 * us,
         width=10 * us,
     )
-    start = c.place(devices.current_source(kick), id="I1")
-    amplifier = c.place(opamp(), id="U1")
-    series_r = c.place(devices.resistor(10 * kohm), id="R1")
-    series_c = c.place(devices.capacitor(10 * nF), id="C1")
-    shunt_r = c.place(devices.resistor(10 * kohm), id="R2")
-    shunt_c = c.place(devices.capacitor(10 * nF), id="C2")
-    feedback = c.place(devices.resistor(12 * kohm), id="R3")
-    limited = c.place(devices.resistor(10 * kohm), id="R4")
-    gain = c.place(devices.resistor(10 * kohm), id="R5")
-    forward, backward = (c.place(d1n4148(), id=name) for name in ("D1", "D2"))
+    start = c.place(devices.current_source(kick), name="I1")
+    amplifier = c.place(opamp(), name="U1")
+    series_r = c.place(devices.resistor(10 * kohm), name="R1")
+    series_c = c.place(devices.capacitor(10 * nF), name="C1")
+    shunt_r = c.place(devices.resistor(10 * kohm), name="R2")
+    shunt_c = c.place(devices.capacitor(10 * nF), name="C2")
+    feedback = c.place(devices.resistor(12 * kohm), name="R3")
+    limited = c.place(devices.resistor(10 * kohm), name="R4")
+    gain = c.place(devices.resistor(10 * kohm), name="R5")
+    forward, backward = (c.place(d1n4148(), name=name) for name in ("D1", "D2"))
     c.connect(amplifier.out, series_r.a, feedback.a, output)
     c.connect(series_r.b, series_c.a, name="arm")
     c.connect(
@@ -65,7 +65,7 @@ def oscillator(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The oscillator alone."""
     ground = c.port("ground", Role.GROUND)
-    stage = c.place(oscillator(), id="X1")
+    stage = c.place(oscillator(), name="X1")
     c.connect(stage.output, name="out")
     c.connect(stage.ground, ground)
 

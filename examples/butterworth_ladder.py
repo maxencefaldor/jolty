@@ -39,13 +39,13 @@ def ladder(c: Builder) -> None:
     for index, element in enumerate(PROTOTYPE, start=1):
         if index % 2:
             shunt = c.place(
-                devices.capacitor(element / (omega * IMPEDANCE) * F), id=f"C{index}"
+                devices.capacitor(element / (omega * IMPEDANCE) * F), name=f"C{index}"
             )
             c.connect(shunt.a, node)
             c.connect(shunt.b, ground)
         else:
             series = c.place(
-                devices.inductor(element * IMPEDANCE / omega * H), id=f"L{index}"
+                devices.inductor(element * IMPEDANCE / omega * H), name=f"L{index}"
             )
             c.connect(series.a, node)
             node = c.net(f"n{index}") if index < len(PROTOTYPE) - 1 else output
@@ -65,10 +65,10 @@ def bench(c: Builder) -> None:
         fall=1 * ns,
         width=10 * us,
     )
-    source = c.place(devices.voltage_source(step), id="V1")
-    inside = c.place(devices.resistor(IMPEDANCE * ohm), id="RS")
-    filter_ = c.place(ladder(), id="X1")
-    load = c.place(devices.resistor(IMPEDANCE * ohm), id="RL")
+    source = c.place(devices.voltage_source(step), name="V1")
+    inside = c.place(devices.resistor(IMPEDANCE * ohm), name="RS")
+    filter_ = c.place(ladder(), name="X1")
+    load = c.place(devices.resistor(IMPEDANCE * ohm), name="RL")
     c.connect(source.positive, inside.a, name="in")
     c.connect(inside.b, filter_.input, name="driven")
     c.connect(filter_.output, load.a, name="out")

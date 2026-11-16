@@ -398,7 +398,7 @@ class _Translation:
             (
                 statement.line,
                 ir.Instance(
-                    id=identifier or statement.text.split()[0],
+                    name=identifier or statement.text.split()[0],
                     of=ir.DeviceOf(device=model),
                     parameters=made.parameters,
                     terminals={
@@ -456,11 +456,11 @@ class _Translation:
                     update={
                         "terminals": {
                             **instance.terminals,
-                            "positive": moved[instance.id],
+                            "positive": moved[instance.name],
                         }
                     }
                 )
-                if instance.id in moved
+                if instance.name in moved
                 else instance,
             )
             for line, instance in self.instances
@@ -478,7 +478,7 @@ class _Translation:
                 with itself, or couples a pair twice.
         """
         inductors = {
-            instance.id.casefold(): (line, instance)
+            instance.name.casefold(): (line, instance)
             for line, instance in self.instances
             if instance.of == ir.DeviceOf(device="inductor")
         }
@@ -499,7 +499,7 @@ class _Translation:
         self.instances = [
             (line, instance)
             for line, instance in self.instances
-            if instance.id.casefold() not in coupled
+            if instance.name.casefold() not in coupled
         ]
 
     def _source(self, statement: Statement) -> None:
@@ -598,7 +598,7 @@ def _coupled(
         **owns[0],
     }
     instance = ir.Instance(
-        id=first.text.split()[0],
+        name=first.text.split()[0],
         of=ir.DeviceOf(device="coupled_inductors"),
         parameters=device("coupled_inductors", parameters).parameters,
         terminals={
@@ -1535,7 +1535,7 @@ def _instance(translation: _Translation, statement: Statement) -> None:
         (
             statement.line,
             ir.Instance(
-                id=name,
+                name=name,
                 of=ir.ComponentOf(component=child.name),
                 terminals=terminals,
                 source_location=ir.SourceLocation(

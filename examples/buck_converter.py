@@ -30,7 +30,7 @@ def buck(c: Builder) -> None:
             on_voltage=4 * V,
             off_voltage=1 * V,
         ),
-        id="S1",
+        name="S1",
     )
     catch = c.place(
         devices.diode(
@@ -38,10 +38,10 @@ def buck(c: Builder) -> None:
             series_resistance=0.05 * ohm,
             emission_coefficient=1.0,
         ),
-        id="D1",
+        name="D1",
     )
-    inductor = c.place(devices.inductor(100 * uH), id="L1")
-    smoothing = c.place(devices.capacitor(100 * uF), id="C1")
+    inductor = c.place(devices.inductor(100 * uH), name="L1")
+    smoothing = c.place(devices.capacitor(100 * uF), name="C1")
     c.connect(source, switch.positive)
     c.connect(gate, switch.control_positive)
     c.connect(switch.negative, catch.cathode, inductor.a, name="switched")
@@ -53,7 +53,7 @@ def buck(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The converter, switched at 100 kHz and 50 %, into 10 Ω."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(12 * V), id="VIN")
+    supply = c.place(devices.voltage_source(12 * V), name="VIN")
     width = DUTY * PERIOD - 20e-9
     drive = Pulse(
         initial=0 * V,
@@ -64,9 +64,9 @@ def bench(c: Builder) -> None:
         width=width * 1e6 * us,
         period=PERIOD * 1e6 * us,
     )
-    clock = c.place(devices.voltage_source(drive), id="VG")
-    converter = c.place(buck(), id="X1")
-    load = c.place(devices.resistor(10 * ohm), id="RL")
+    clock = c.place(devices.voltage_source(drive), name="VG")
+    converter = c.place(buck(), name="X1")
+    load = c.place(devices.resistor(10 * ohm), name="RL")
     c.connect(supply.positive, converter.input, name="in")
     c.connect(clock.positive, converter.gate, name="gate")
     c.connect(converter.output, load.a, name="out")

@@ -44,17 +44,17 @@ def opamp(c: Builder) -> None:
     output = c.port("out", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
     stage = c.place(
-        devices.behavioral_current_source("130e-6 * tanh(v(p, n) / 2.07)"), id="G1"
+        devices.behavioral_current_source("130e-6 * tanh(v(p, n) / 2.07)"), name="G1"
     )
-    load = c.place(devices.resistor(1.59e9 * ohm), id="R1")
-    pole = c.place(devices.capacitor(10 * pF), id="C1")
+    load = c.place(devices.resistor(1.59e9 * ohm), name="R1")
+    pole = c.place(devices.capacitor(10 * pF), name="C1")
     clamp = c.place(
         devices.behavioral_current_source(
             f"1e-3 * (uramp(v(x) - {SWING}) - uramp(-v(x) - {SWING}))"
         ),
-        id="G2",
+        name="G2",
     )
-    buffer = c.place(devices.voltage_controlled_voltage_source(1.0), id="E1")
+    buffer = c.place(devices.voltage_controlled_voltage_source(1.0), name="E1")
     c.connect(stage.p, noninverting)
     c.connect(stage.n, inverting)
     c.connect(
@@ -104,8 +104,8 @@ def inverter(c: Builder) -> None:
     """A CMOS inverter: a p-channel transistor up to the supply, an n-channel down."""
     a, y = c.port("a", Role.INPUT), c.port("y", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
-    up = c.place(mos("p"), id="P1")
-    down = c.place(mos("n"), id="N1")
+    up = c.place(mos("p"), name="P1")
+    down = c.place(mos("n"), name="N1")
     c.connect(up.source, up.bulk, vdd)
     c.connect(up.gate, down.gate, a)
     c.connect(up.drain, down.drain, y)

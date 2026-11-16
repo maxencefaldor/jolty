@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 /// A circuit of `instances` whose ground is `0`.
 fn circuit(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                 "instances": instances}}
     });
@@ -18,7 +18,7 @@ fn circuit(instances: &Value) -> Circuit {
 }
 
 fn two_terminal(device: &str, id: &str, parameter: &str, value: f64, a: &str, b: &str) -> Value {
-    json!({"id": id, "of": {"device": device}, "parameters": {parameter: value},
+    json!({"name": id, "of": {"device": device}, "parameters": {parameter: value},
            "terminals": {"a": a, "b": b}})
 }
 
@@ -35,7 +35,7 @@ fn inductor(id: &str, inductance: f64, a: &str, b: &str) -> Value {
 }
 
 fn source(id: &str, positive: &str) -> Value {
-    json!({"id": id, "of": {"device": "voltage_source"},
+    json!({"name": id, "of": {"device": "voltage_source"},
            "parameters": {"waveform": {"dc": 1.0}},
            "terminals": {"positive": positive, "negative": "0"}})
 }
@@ -169,7 +169,7 @@ fn a_long_rc_ladder_has_every_pole_its_closed_form_gives() {
 /// A transconductance that feeds `node`'s own voltage back into it as current: a negative
 /// conductance of `transconductance`.
 fn negative_conductance(id: &str, transconductance: f64, node: &str) -> Value {
-    json!({"id": id, "of": {"device": "voltage_controlled_current_source"},
+    json!({"name": id, "of": {"device": "voltage_controlled_current_source"},
            "parameters": {"transconductance": transconductance},
            "terminals": {"positive": "0", "negative": node,
                          "control_positive": node, "control_negative": "0"}})

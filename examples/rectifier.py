@@ -26,10 +26,10 @@ def rectifier(c: Builder, capacitance: Quantity, load: Quantity) -> None:
             grading_coefficient=0.4,
             transit_time=20 * ns,
         ),
-        id="D",
+        name="D",
     )
-    smoothing = c.place(devices.capacitor(capacitance), id="C")
-    resistor = c.place(devices.resistor(load), id="R")
+    smoothing = c.place(devices.capacitor(capacitance), name="C")
+    resistor = c.place(devices.resistor(load), name="R")
     c.connect(source, diode.anode)
     c.connect(diode.cathode, smoothing.a, resistor.a, output)
     c.connect(smoothing.b, resistor.b, ground)
@@ -40,8 +40,8 @@ def bench(c: Builder) -> None:
     """The rectifier, fed a 10 V sine at 50 Hz."""
     ground = c.port("ground", Role.GROUND)
     mains = Sine(offset=0 * V, amplitude=10 * V, frequency=50 * Hz)
-    source = c.place(devices.voltage_source(mains), id="V1")
-    stage = c.place(rectifier(100 * uF, 1 * kohm), id="X1")
+    source = c.place(devices.voltage_source(mains), name="V1")
+    stage = c.place(rectifier(100 * uF, 1 * kohm), name="X1")
     c.connect(source.positive, stage.input, name="in")
     c.connect(stage.output, name="out")
     c.connect(source.negative, stage.ground, ground)

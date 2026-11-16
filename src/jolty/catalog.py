@@ -376,7 +376,11 @@ def bill(circuit: ir.Circuit, catalog: Catalog, instance: str = "") -> Bill:
     component = circuit.top
     for id in filter(None, instance.split("/")):
         placed = next(
-            (each for each in circuit.components[component].instances if each.id == id),
+            (
+                each
+                for each in circuit.components[component].instances
+                if each.name == id
+            ),
             None,
         )
         if placed is None or not isinstance(placed.of, ir.ComponentOf):
@@ -404,7 +408,7 @@ def built(
     instances outside them, in the order the components place them.
     """
     for instance in circuit.components[component].instances:
-        path = f"{prefix}{instance.id}"
+        path = f"{prefix}{instance.name}"
         match instance:
             case ir.Instance(part=None, of=ir.ComponentOf(component=inner)):
                 yield from built(circuit, inner, f"{path}/")

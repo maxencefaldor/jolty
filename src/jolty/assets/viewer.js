@@ -230,7 +230,7 @@ const TWO = {
 // A part: its body between or above its pins, its leads, and what clicking it picks.
 function makePart(instance) {
   const group = new THREE.Group();
-  const id = instance.id;
+  const name = instance.name;
   const model = instance.device ?? instance.component;
   const pins = Object.fromEntries(Object.entries(instance.pins).map(([name, point]) => [name, toWorld(point)]));
   const partLeads = [];
@@ -321,8 +321,8 @@ function makePart(instance) {
       material = bodyMaterial(instance.component ? "#202124" : "#2b2d31");
       body = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
       body.position.copy(center).setY(height / 2 + 0.3);
-      const name = instance.component ? `${id} · ${instance.component.split("[")[0]}` : `${id} · ${model}`;
-      const { texture, aspect } = textTexture(name, { color: "#e8e8e8" });
+      const caption = instance.component ? `${name} · ${instance.component.split("[")[0]}` : `${name} · ${model}`;
+      const { texture, aspect } = textTexture(caption, { color: "#e8e8e8" });
       const face = new THREE.Mesh(new THREE.PlaneGeometry(Math.min(width * 0.9, depth * 0.6 * aspect), Math.min(width * 0.9, depth * 0.6 * aspect) / aspect), new THREE.MeshBasicMaterial({ map: texture, transparent: true }));
       face.rotation.x = -Math.PI / 2;
       face.position.copy(body.position).setY(body.position.y + height / 2 + 0.002);
@@ -343,14 +343,14 @@ function makePart(instance) {
       addLead(terminal, pin.clone().setY(top3), edge);
     }
   }
-  const label = sprite(id);
+  const label = sprite(name);
   const highest = Math.max(...bodies.map((body) => body.position.y)) + 0.9;
   const at = new THREE.Box3().setFromObject(group).getCenter(new THREE.Vector3());
   label.position.set(at.x, highest, at.z);
   group.add(label);
   labels.push(label);
-  for (const body of bodies) body.userData = { kind: "instance", id };
-  return { id, model, instance, group, bodies, leads: partLeads };
+  for (const body of bodies) body.userData = { kind: "instance", name };
+  return { name, model, instance, group, bodies, leads: partLeads };
 }
 
 function railPost(point, role, name) {
@@ -459,7 +459,7 @@ function build() {
     board.add(part.group);
     parts.push(part);
     for (const lead of part.leads) {
-      const path = pathOf(instance.id);
+      const path = pathOf(instance.name);
       const terminal = `${path}.${lead.terminal}`;
       const sparks = [];
       for (let index = 0; index < 3; index += 1) {
@@ -509,7 +509,7 @@ function colorOf(value) {
 }
 
 function power(part, at = frame) {
-  const path = pathOf(part.id);
+  const path = pathOf(part.name);
   let total = 0;
   for (const [terminal, local] of Object.entries(part.instance.terminals)) {
     const flow = current(`${path}.${terminal}`, at);
@@ -751,12 +751,12 @@ function renderInspector() {
     }
     return;
   }
-  const part = parts.find((candidate) => candidate.id === selection.id);
+  const part = parts.find((candidate) => candidate.name === selection.name);
   if (!part) return;
-  const path = pathOf(part.id);
+  const path = pathOf(part.name);
   const instance = part.instance;
   inspector.append(
-    h("h2", {}, part.id),
+    h("h2", {}, part.name),
     h("div", { class: "kind" }, `${instance.device ? instance.device : `component ${instance.component}`} · ${path}`),
   );
   if (instance.component) inspector.append(h("p", {}, h("button", { onclick: () => open(path) }, "Open this component")));
@@ -818,8 +818,8 @@ canvas.addEventListener("pointerup", (event) => {
 canvas.addEventListener("dblclick", (event) => {
   const target = pick(event);
   if (target?.kind === "instance") {
-    const part = parts.find((candidate) => candidate.id === target.id);
-    if (part?.instance.component) open(pathOf(target.id));
+    const part = parts.find((candidate) => candidate.name === target.name);
+    if (part?.instance.component) open(pathOf(target.name));
   }
 });
 canvas.addEventListener("pointermove", (event) => {
@@ -830,8 +830,8 @@ canvas.addEventListener("pointermove", (event) => {
   let text;
   if (target.kind === "net") text = `${target.local}  ${si(voltage(globalNet(target.local)), at?.kind === "ac" ? "V/V" : "V")}`;
   else {
-    const part = parts.find((candidate) => candidate.id === target.id);
-    text = `${target.id}  ${part?.instance.device ?? part?.instance.component ?? ""}`;
+    const part = parts.find((candidate) => candidate.name === target.name);
+    text = `${target.name}  ${part?.instance.device ?? part?.instance.component ?? ""}`;
   }
   tooltip.textContent = text;
   tooltip.style.display = "block";

@@ -30,13 +30,13 @@ def row(c: Builder, columns: int) -> None:
     own = [c.port(f"n{column}") for column in range(columns)]
     below = [c.port(f"b{column}") for column in range(columns)]
     for column in range(columns):
-        load = c.place(devices.capacitor(1 * pF), id=f"C{column}")
-        down = c.place(devices.resistor(1 * kohm), id=f"RV{column}")
+        load = c.place(devices.capacitor(1 * pF), name=f"C{column}")
+        down = c.place(devices.resistor(1 * kohm), name=f"RV{column}")
         c.connect(own[column], load.a, down.a)
         c.connect(below[column], down.b)
         c.connect(ground, load.b)
         if column + 1 < columns:
-            across = c.place(devices.resistor(1 * kohm), id=f"RH{column}")
+            across = c.place(devices.resistor(1 * kohm), name=f"RH{column}")
             c.connect(own[column], across.a)
             c.connect(own[column + 1], across.b)
 
@@ -54,7 +54,7 @@ def block(c: Builder, decades: int, columns: int) -> None:
     bottom = [c.port(f"b{column}") for column in range(columns)]
     above = top
     for index in range(10):
-        part = c.place(rows(decades - 1, columns), id=f"X{index}")
+        part = c.place(rows(decades - 1, columns), name=f"X{index}")
         c.connect(ground, part.gnd)
         below = (
             [c.net(f"r{index}c{column}") for column in range(columns)]
@@ -88,12 +88,12 @@ def bench(c: Builder, side: int) -> None:
         fall=1 * ns,
         width=1 * us,
     )
-    source = c.place(devices.voltage_source(pulse), id="V1")
+    source = c.place(devices.voltage_source(pulse), name="V1")
     above = [c.net(f"r0c{column}") for column in range(side)]
     c.connect(source.positive, above[0])
     c.connect(source.negative, ground)
     for index in range(count):
-        part = c.place(rows(decades, side), id=f"X{index}")
+        part = c.place(rows(decades, side), name=f"X{index}")
         c.connect(ground, part.gnd)
         below = (
             [c.net(f"r{index + 1}c{column}") for column in range(side)]

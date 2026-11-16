@@ -43,7 +43,7 @@ def inverter(c: Builder) -> None:
     """A CMOS inverter."""
     a, y = c.port("a", Role.INPUT), c.port("y", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
-    up, down = c.place(transistor("p"), id="P"), c.place(transistor("n"), id="N")
+    up, down = c.place(transistor("p"), name="P"), c.place(transistor("n"), name="N")
     c.connect(up.source, up.bulk, vdd)
     c.connect(down.source, down.bulk, gnd)
     c.connect(up.gate, down.gate, a)
@@ -54,7 +54,7 @@ def inverter(c: Builder) -> None:
 def chain(c: Builder, *, load: float = 0.0) -> None:
     """A pulse through two inverters, the first loaded by `load` femtofarads."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY), id="VDD")
+    supply = c.place(devices.voltage_source(SUPPLY), name="VDD")
     pulse = Pulse(
         initial=0 * V,
         pulsed=SUPPLY,
@@ -63,9 +63,9 @@ def chain(c: Builder, *, load: float = 0.0) -> None:
         fall=100 * ps,
         width=3 * ns,
     )
-    source = c.place(devices.voltage_source(pulse), id="V1")
-    first, second = c.place(inverter(), id="X1"), c.place(inverter(), id="X2")
-    capacitor = c.place(devices.capacitor(load * fF), id="C1")
+    source = c.place(devices.voltage_source(pulse), name="V1")
+    first, second = c.place(inverter(), name="X1"), c.place(inverter(), name="X2")
+    capacitor = c.place(devices.capacitor(load * fF), name="C1")
     c.connect(supply.positive, first.vdd, second.vdd, name="vdd")
     c.connect(supply.negative, source.negative, first.gnd, second.gnd, ground)
     c.connect(source.positive, first.a, name="in")

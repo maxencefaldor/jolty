@@ -25,10 +25,10 @@ def multiplier(c: Builder) -> None:
     pushed = source
     held = ground
     for stage in range(1, STAGES + 1):
-        push = c.place(devices.capacitor(1 * uF), id=f"C{2 * stage - 1}")
-        hold = c.place(devices.capacitor(1 * uF), id=f"C{2 * stage}")
-        up = c.place(d1n4148(), id=f"D{2 * stage - 1}")
-        over = c.place(d1n4148(), id=f"D{2 * stage}")
+        push = c.place(devices.capacitor(1 * uF), name=f"C{2 * stage - 1}")
+        hold = c.place(devices.capacitor(1 * uF), name=f"C{2 * stage}")
+        up = c.place(d1n4148(), name=f"D{2 * stage - 1}")
+        over = c.place(d1n4148(), name=f"D{2 * stage}")
         swing = c.net(f"swing{stage}")
         level = output if stage == STAGES else c.net(f"level{stage}")
         c.connect(push.a, pushed)
@@ -44,9 +44,9 @@ def bench(c: Builder) -> None:
     """The multiplier, fed a 10 V sine at 1 kHz, loaded by 10 MΩ."""
     ground = c.port("ground", Role.GROUND)
     tone = Sine(offset=0 * V, amplitude=10 * V, frequency=1 * kHz)
-    source = c.place(devices.voltage_source(tone), id="V1")
-    ladder = c.place(multiplier(), id="X1")
-    load = c.place(devices.resistor(10 * Mohm), id="RL")
+    source = c.place(devices.voltage_source(tone), name="V1")
+    ladder = c.place(multiplier(), name="X1")
+    load = c.place(devices.resistor(10 * Mohm), name="RL")
     c.connect(source.positive, ladder.input, name="in")
     c.connect(ladder.output, load.a, name="out")
     c.connect(source.negative, ladder.ground, load.b, ground)

@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 fn simulator(instances: &Value) -> Simulator {
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
@@ -28,18 +28,18 @@ fn simulator(instances: &Value) -> Simulator {
 /// MOSFET whose gate and drain share a net and whose source and bulk join the reference.
 fn bench() -> Value {
     json!([
-        {"id": "V1", "of": {"device": "voltage_source"},
+        {"name": "V1", "of": {"device": "voltage_source"},
          "parameters": {"waveform": {"pulse": {"initial": 0, "pulsed": 3, "delay": 1e-7,
                                                "rise": 1e-8, "fall": 1e-8, "width": 1e-6}}},
          "terminals": {"positive": "in", "negative": "0"}},
-        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
          "terminals": {"a": "in", "b": "out"}},
-        {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-10},
+        {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-10},
          "terminals": {"a": "out", "b": "0"}},
-        {"id": "D1", "of": {"device": "diode"},
+        {"name": "D1", "of": {"device": "diode"},
          "parameters": {"saturation_current": 1e-14, "junction_capacitance": 1e-12},
          "terminals": {"anode": "out", "cathode": "0"}},
-        {"id": "M1", "of": {"device": "mosfet"},
+        {"name": "M1", "of": {"device": "mosfet"},
          "parameters": {"width": 2e-6, "length": 1e-6, "threshold_voltage": 0.3,
                         "transconductance_parameter": 1e-4},
          "terminals": {"drain": "out", "gate": "out", "source": "0", "bulk": "0"}}
@@ -220,13 +220,13 @@ fn every_terminal_is_named_by_its_device_and_its_own_name() {
 #[test]
 fn currents_at_an_operating_point_obey_ohm_and_kirchhoff() {
     let mut simulator = simulator(&json!([
-        {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
+        {"name": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
          "terminals": {"positive": "in", "negative": "0"}},
-        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
          "terminals": {"a": "in", "b": "out"}},
-        {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 4e3},
+        {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 4e3},
          "terminals": {"a": "out", "b": "0"}},
-        {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-9},
+        {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-9},
          "terminals": {"a": "out", "b": "0"}}
     ]));
     let point = simulator.operating_point(&everything()).unwrap();
@@ -376,15 +376,15 @@ fn small_signal_currents_are_the_admittances_times_the_phasors() {
 #[test]
 fn each_device_reports_its_own_small_signal_model_and_variables() {
     let mut simulator = simulator(&json!([
-        {"id": "VG", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
+        {"name": "VG", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
          "terminals": {"positive": "g", "negative": "0"}},
-        {"id": "VD", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 2.0}},
+        {"name": "VD", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 2.0}},
          "terminals": {"positive": "d", "negative": "0"}},
-        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 4e3},
+        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 4e3},
          "terminals": {"a": "d", "b": "0"}},
-        {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 3e-12},
+        {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 3e-12},
          "terminals": {"a": "g", "b": "d"}},
-        {"id": "M1", "of": {"device": "mosfet"},
+        {"name": "M1", "of": {"device": "mosfet"},
          "parameters": {"width": 2e-6, "length": 1e-6, "threshold_voltage": 0.3,
                         "transconductance_parameter": 1e-4},
          "terminals": {"drain": "d", "gate": "g", "source": "0", "bulk": "0"}}
@@ -438,23 +438,23 @@ fn each_device_reports_its_own_small_signal_model_and_variables() {
 /// pair whose ports `p` and `q` are the cell's, with `in` driven by `V1`.
 fn nested(outside: (&str, &str)) -> Simulator {
     let resistor = |id: &str, a: &str, b: &str| {
-        json!({"id": id, "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+        json!({"name": id, "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
                "terminals": {"a": a, "b": b}})
     };
     let signal = |name: &str| json!({"name": name, "role": "signal"});
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {
             "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-                {"id": "V1", "of": {"device": "voltage_source"},
+                {"name": "V1", "of": {"device": "voltage_source"},
                  "parameters": {"waveform": {"dc": 3.0}},
                  "terminals": {"positive": "in", "negative": "0"}},
-                {"id": "X1", "of": {"component": "pair"},
+                {"name": "X1", "of": {"component": "pair"},
                  "terminals": {"p": outside.0, "q": outside.1}},
                 resistor("R3", "in", "0")
             ]},
             "pair": {"ports": [signal("p"), signal("q")], "instances": [
-                {"id": "X2", "of": {"component": "cell"}, "terminals": {"a": "p", "b": "q"}},
+                {"name": "X2", "of": {"component": "cell"}, "terminals": {"a": "p", "b": "q"}},
                 resistor("R4", "p", "q")
             ]},
             "cell": {"ports": [signal("a"), signal("b")], "instances": [
@@ -566,15 +566,15 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         "electrical": {"input_capacitances": [2e-15]},
     });
     let mut simulator = simulator(&json!([
-        {"id": "VDD", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
+        {"name": "VDD", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
          "terminals": {"positive": "vdd", "negative": "0"}},
-        {"id": "VA", "of": {"device": "voltage_source"},
+        {"name": "VA", "of": {"device": "voltage_source"},
          "parameters": {"waveform": {"pulse": {"initial": 0, "pulsed": 1, "delay": 2e-9,
                                                "rise": 1e-10, "fall": 1e-10, "width": 1e-8}}},
          "terminals": {"positive": "a", "negative": "0"}},
-        {"id": "U1", "of": {"device": "logic_cell"}, "parameters": cell,
+        {"name": "U1", "of": {"device": "logic_cell"}, "parameters": cell,
          "terminals": {"a": "a", "y": "y", "supply": "vdd", "ground": "0"}},
-        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
          "terminals": {"a": "y", "b": "0"}}
     ]));
     let named: Vec<&str> = simulator.composites().iter().map(Composite::name).collect();

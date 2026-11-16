@@ -16,8 +16,8 @@ amplifier = library.component("OPA171")
 
 c = Builder("follower")
 ground = c.port("ground", Role.GROUND)
-supply = c.place(devices.voltage_source(15 * V), id="VP")
-part = c.place(amplifier, id="U1")
+supply = c.place(devices.voltage_source(15 * V), name="VP")
+part = c.place(amplifier, name="U1")
 c.connect(supply.positive, part["VCC"], name="supply")
 c.connect(supply.negative, part["VEE"], part[spice.GROUND], ground)
 ```
@@ -85,7 +85,7 @@ raw = ngspice.run(lines, "ac dec 20 10 1meg")
 raw.vectors[export.vector(drawn, unknown)]  # ngspice's values of a jolty unknown
 ```
 
-The netlist flattens the hierarchy into devices whose ids and nets join their paths with underscores, as `RX1_R1` and `x1_mid`; components read from SPICE libraries stay instances of their subcircuits, named in `subcircuits`.
+The netlist flattens the hierarchy into devices whose names and nets join their paths with underscores, as `RX1_R1` and `x1_mid`; components read from SPICE libraries stay instances of their subcircuits, named in `subcircuits`.
 Behavioral sources become ngspice's `B` sources, and so do switches, each a current of its own law; coupled inductors become inductors and their `K` elements, a foundry's transistors instances of their [kit's](foundry.md) subcircuits, and each model card carries the device's parameters in SPICE's units.
 ngspice reads a pulse's width of 0 as the transient's stop time, so a pulse with no width is written with a width of 1e-40 s, which vanishes beside its rise.
 Logic devices have no SPICE element, so a circuit that holds one cannot be written.

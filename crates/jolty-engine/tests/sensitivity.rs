@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 /// A circuit whose top component has a ground port `0` and places `instances`.
 fn circuit_of(instances: &Value) -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit")
@@ -23,17 +23,17 @@ fn circuit_of(instances: &Value) -> Circuit {
 /// with an internal unknown.
 fn diode() -> Value {
     json!([
-        {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
+        {"name": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
          "terminals": {"positive": "in", "negative": "0"}},
-        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
          "terminals": {"a": "in", "b": "a"}},
-        {"id": "D1", "of": {"device": "diode"},
+        {"name": "D1", "of": {"device": "diode"},
          "parameters": {"saturation_current": 1e-14, "emission_coefficient": 1.2,
                         "series_resistance": 10.0},
          "terminals": {"anode": "a", "cathode": "0"}},
-        {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 2e3},
+        {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 2e3},
          "terminals": {"a": "a", "b": "out"}},
-        {"id": "R3", "of": {"device": "resistor"}, "parameters": {"resistance": 3e3},
+        {"name": "R3", "of": {"device": "resistor"}, "parameters": {"resistance": 3e3},
          "terminals": {"a": "out", "b": "0"}}
     ])
 }
@@ -42,13 +42,13 @@ fn diode() -> Value {
 /// a resistor.
 fn amplifier() -> Value {
     json!([
-        {"id": "VDD", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 3.3}},
+        {"name": "VDD", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 3.3}},
          "terminals": {"positive": "vdd", "negative": "0"}},
-        {"id": "VG", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.2}},
+        {"name": "VG", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.2}},
          "terminals": {"positive": "gate", "negative": "0"}},
-        {"id": "RD", "of": {"device": "resistor"}, "parameters": {"resistance": 1e4},
+        {"name": "RD", "of": {"device": "resistor"}, "parameters": {"resistance": 1e4},
          "terminals": {"a": "vdd", "b": "drain"}},
-        {"id": "M1", "of": {"device": "mosfet"},
+        {"name": "M1", "of": {"device": "mosfet"},
          "parameters": {"width": 2e-6, "length": 1e-6, "threshold_voltage": 0.7,
                         "transconductance_parameter": 1e-4, "channel_length_modulation": 0.02},
          "terminals": {"drain": "drain", "gate": "gate", "source": "0", "bulk": "0"}}
@@ -61,11 +61,11 @@ fn loaded_amplifier() -> Value {
     let mut instances = amplifier();
     let placed = instances.as_array_mut().expect("instances");
     placed[1]["terminals"]["positive"] = json!("source");
-    placed.push(json!({"id": "RG", "of": {"device": "resistor"},
+    placed.push(json!({"name": "RG", "of": {"device": "resistor"},
         "parameters": {"resistance": 1e4}, "terminals": {"a": "source", "b": "gate"}}));
-    placed.push(json!({"id": "CL", "of": {"device": "capacitor"},
+    placed.push(json!({"name": "CL", "of": {"device": "capacitor"},
         "parameters": {"capacitance": 1e-12}, "terminals": {"a": "drain", "b": "0"}}));
-    placed.push(json!({"id": "CG", "of": {"device": "capacitor"},
+    placed.push(json!({"name": "CG", "of": {"device": "capacitor"},
         "parameters": {"capacitance": 2e-13}, "terminals": {"a": "gate", "b": "drain"}}));
     instances
 }
@@ -74,19 +74,19 @@ fn loaded_amplifier() -> Value {
 /// waveforms bend where the diode conducts.
 fn rectifier() -> Value {
     json!([
-        {"id": "V1", "of": {"device": "voltage_source"},
+        {"name": "V1", "of": {"device": "voltage_source"},
          "parameters": {"waveform": {"sine": {"offset": 0.2, "amplitude": 1.0,
                                               "frequency": 1e6}}},
          "terminals": {"positive": "in", "negative": "0"}},
-        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
          "terminals": {"a": "in", "b": "a"}},
-        {"id": "D1", "of": {"device": "diode"},
+        {"name": "D1", "of": {"device": "diode"},
          "parameters": {"saturation_current": 1e-14, "series_resistance": 10.0,
                         "transit_time": 1e-9, "junction_capacitance": 2e-12},
          "terminals": {"anode": "a", "cathode": "out"}},
-        {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-10},
+        {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-10},
          "terminals": {"a": "out", "b": "0"}},
-        {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1e4},
+        {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1e4},
          "terminals": {"a": "out", "b": "0"}}
     ])
 }
@@ -118,7 +118,7 @@ fn options(of: &Differentiated) -> Options {
 fn moved(instances: &Value, device: &str, name: &str, value: f64) -> Simulator {
     let mut parameters = instances
         .as_array()
-        .and_then(|placed| placed.iter().find(|instance| instance["id"] == device))
+        .and_then(|placed| placed.iter().find(|instance| instance["name"] == device))
         .expect("the device is placed")["parameters"]
         .clone();
     let slot = name

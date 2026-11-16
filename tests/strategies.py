@@ -248,7 +248,7 @@ def circuits(draw: st.DrawFn) -> ir.Circuit:
         terminals = dict(zip(device.terminals, nets, strict=False))
         instances.append(
             ir.Instance(
-                id=f"{prefix}{len(instances)}",
+                name=f"{prefix}{len(instances)}",
                 of=ir.DeviceOf(device=device.model),
                 parameters=device.parameters,
                 terminals=terminals,
@@ -373,7 +373,7 @@ def parasitic(circuit: ir.Circuit, nets: Iterable[str] | None = None) -> ir.Circ
             *instances,
             *(
                 ir.Instance(
-                    id=f"C{net}",
+                    name=f"C{net}",
                     of=ir.DeviceOf(device=capacitor.model),
                     parameters=capacitor.parameters,
                     terminals={"a": net, "b": "0"},

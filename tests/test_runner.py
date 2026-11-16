@@ -18,9 +18,9 @@ from jolty.units import V, kohm, us
 @component
 def divider(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(LEVEL), id="V1")
-    upper = c.place(devices.resistor(1 * kohm), id="R1")
-    lower = c.place(devices.resistor(1 * kohm), id="R2")
+    source = c.place(devices.voltage_source(LEVEL), name="V1")
+    upper = c.place(devices.resistor(1 * kohm), name="R1")
+    lower = c.place(devices.resistor(1 * kohm), name="R2")
     c.connect(source.positive, upper.a)
     c.connect(upper.b, lower.a, name="out")
     c.connect(lower.b, source.negative, ground)
@@ -98,10 +98,10 @@ from jolty.units import V, kohm
 @component
 def amplifier(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(5 * V), id="V1")
-    load = c.place(devices.resistor(1 * kohm), id="R1")
-    bias = c.place(devices.resistor(470 * kohm), id="R2")
-    transistor = c.place(devices.bipolar_transistor(), id="Q1")
+    supply = c.place(devices.voltage_source(5 * V), name="V1")
+    load = c.place(devices.resistor(1 * kohm), name="R1")
+    bias = c.place(devices.resistor(470 * kohm), name="R2")
+    transistor = c.place(devices.bipolar_transistor(), name="Q1")
     c.connect(supply.positive, load.a, bias.a, name="vcc")
     c.connect(load.b, transistor.collector, name="out")
     c.connect(bias.b, transistor.base, name="base")
@@ -195,8 +195,8 @@ def test_a_job_s_thresholds_replace_the_plan_s(
 
 def test_a_plan_runs_at_its_temperature(tmp_path: Path) -> None:
     drifting = DIVIDER.replace(
-        'devices.resistor(1 * kohm), id="R2"',
-        'devices.resistor(1 * kohm, temperature_coefficient=1e-2 / K), id="R2"',
+        'devices.resistor(1 * kohm), name="R2"',
+        'devices.resistor(1 * kohm, temperature_coefficient=1e-2 / K), name="R2"',
     ).replace("import V, kohm, us", "import K, V, kohm, us")
     hot = "def plan():\n    return Plan({'op': OperatingPoint()}, temperature=400 * K)"
     script = write(tmp_path, f"{drifting}\n\n{hot}\n")
@@ -220,7 +220,7 @@ def test_a_plan_may_live_in_its_own_script(tmp_path: Path) -> None:
 
 def test_problems_come_back_with_the_circuit(tmp_path: Path) -> None:
     script = write(
-        tmp_path, DIVIDER.replace('1 * kohm), id="R2"', '-1 * kohm), id="R2"')
+        tmp_path, DIVIDER.replace('1 * kohm), name="R2"', '-1 * kohm), name="R2"')
     )
     outcome = built(run(Job(script=script, plan=script, max_unknowns=10), tmp_path))
     assert outcome.devices is None

@@ -20,15 +20,15 @@ from jolty.waveforms import Pulse
 def chain(c: Builder) -> None:
     """A source into a NAND with a 1, into an inverter."""
     c.port("ground", Role.GROUND)
-    a = c.place(devices.logic_source(0, [(1 * ns, 1)], transition=10 * ps), id="A")
-    b = c.place(devices.logic_source(1, transition=10 * ps), id="B")
+    a = c.place(devices.logic_source(0, [(1 * ns, 1)], transition=10 * ps), name="A")
+    b = c.place(devices.logic_source(1, transition=10 * ps), name="B")
     nand = c.place(
         devices.logic_gate("nand", rise=2 * ns, fall=1 * ns, transition=10 * ps),
-        id="U1",
+        name="U1",
     )
     inverter = c.place(
         devices.logic_gate("not", rise=2 * ns, fall=1 * ns, transition=10 * ps),
-        id="U2",
+        name="U2",
     )
     c.connect(a.output, nand.a, name="a")
     c.connect(b.output, nand.b, name="b")
@@ -40,7 +40,7 @@ def chain(c: Builder) -> None:
 def inverter(c: Builder) -> None:
     """An electrical inverter between an analog edge and a capacitor."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(1.8 * V), id="VDD")
+    supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
     edge = Pulse(
         initial=0 * V,
         pulsed=1.8 * V,
@@ -49,7 +49,7 @@ def inverter(c: Builder) -> None:
         fall=1 * ns,
         width=10 * ns,
     )
-    stimulus = c.place(devices.voltage_source(edge), id="V1")
+    stimulus = c.place(devices.voltage_source(edge), name="V1")
     gate = c.place(
         devices.logic_gate(
             "not",
@@ -58,9 +58,9 @@ def inverter(c: Builder) -> None:
             electrical=True,
             input_capacitance=2 * fF,
         ),
-        id="U1",
+        name="U1",
     )
-    load = c.place(devices.capacitor(5 * fF), id="C1")
+    load = c.place(devices.capacitor(5 * fF), name="C1")
     c.connect(supply.positive, gate.supply, name="vdd")
     c.connect(stimulus.positive, gate.a, name="in")
     c.connect(gate.y, load.a, name="out")
@@ -101,9 +101,9 @@ def test_unknown_levels_read_as_nan() -> None:
     def floating(c: Builder) -> None:
         c.port("ground", Role.GROUND)
         gate = c.place(
-            devices.logic_gate("and", rise=1 * ns, transition=10 * ps), id="U1"
+            devices.logic_gate("and", rise=1 * ns, transition=10 * ps), name="U1"
         )
-        source = c.place(devices.logic_source(None, transition=10 * ps), id="A")
+        source = c.place(devices.logic_source(None, transition=10 * ps), name="A")
         c.connect(source.output, gate.a, gate.b, name="a")
         c.connect(gate.y, name="y")
 

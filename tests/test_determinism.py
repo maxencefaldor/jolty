@@ -82,7 +82,7 @@ def _simulated(built: ir.Circuit, options: Options) -> list[object]:
     simulation = Simulation(built)
     top = built.components[built.top]
     source = next(
-        instance.id
+        instance.name
         for instance in top.instances
         if instance.of == ir.DeviceOf(device="voltage_source")
     )
@@ -144,10 +144,10 @@ def test_a_threshold_is_a_count_of_one_or_more() -> None:
 @component
 def _divider(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(5 * V), id="V1")
-    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), id="R1")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), name="R1")
     lower = c.place(
-        devices.resistor(1 * kohm).toleranced("resistance", 0.01, "normal"), id="R2"
+        devices.resistor(1 * kohm).toleranced("resistance", 0.01, "normal"), name="R2"
     )
     c.connect(source.positive, upper.a)
     c.connect(upper.b, lower.a, name="out")

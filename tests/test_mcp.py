@@ -23,9 +23,9 @@ from jolty.units import V, kohm
 @component
 def divider(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(5 * V), id="V1")
-    upper = c.place(devices.resistor(1 * kohm), id="R1")
-    lower = c.place(devices.resistor(1 * kohm), id="R2")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    upper = c.place(devices.resistor(1 * kohm), name="R1")
+    lower = c.place(devices.resistor(1 * kohm), name="R2")
     c.connect(source.positive, upper.a)
     c.connect(upper.b, lower.a, name="out")
     c.connect(lower.b, source.negative, ground)

@@ -95,17 +95,17 @@ def test_a_netlist_estimates_the_diffusions_as_the_kits_symbols_do() -> None:
 def inverter(c: Builder) -> None:
     """A SKY130 inverter, its p-channel transistor of two fingers, driven at `in`."""
     ground = c.port("0", Role.GROUND)
-    supply = c.place(devices.voltage_source(1.8 * V), id="VDD")
+    supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
     drive = c.place(
         devices.voltage_source(
             Pulse(
                 0 * V, 1.8 * V, delay=1 * ns, rise=0.1 * ns, fall=0.1 * ns, width=5 * ns
             )
         ),
-        id="VIN",
+        name="VIN",
     )
-    lower = c.place(sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um), id="MN")
-    upper = c.place(sky130.mosfet("pfet_01v8", 2 * um, 0.15 * um, fingers=2), id="MP")
+    lower = c.place(sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um), name="MN")
+    upper = c.place(sky130.mosfet("pfet_01v8", 2 * um, 0.15 * um, fingers=2), name="MP")
     c.connect(supply.positive, upper.source, upper.bulk, name="vdd")
     c.connect(drive.positive, lower.gate, upper.gate, name="in")
     c.connect(lower.drain, upper.drain, name="out")
@@ -132,8 +132,8 @@ def test_the_engine_checks_a_foundrys_devices_and_leaves_them_to_ngspice() -> No
 @component
 def divider(c: Builder) -> None:
     ground = c.port("0", Role.GROUND)
-    supply = c.place(devices.voltage_source(1 * V), id="V1")
-    upper = c.place(devices.resistor(1 * kohm), id="R1")
+    supply = c.place(devices.voltage_source(1 * V), name="V1")
+    upper = c.place(devices.resistor(1 * kohm), name="R1")
     c.connect(supply.positive, upper.a)
     c.connect(supply.negative, upper.b, ground)
 
@@ -142,8 +142,8 @@ def divider(c: Builder) -> None:
 def mixed(c: Builder) -> None:
     """A SKY130 transistor beside a level-1 one."""
     ground = c.port("0", Role.GROUND)
-    foundry = c.place(sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um), id="M1")
-    native = c.place(devices.mosfet(), id="M2")
+    foundry = c.place(sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um), name="M1")
+    native = c.place(devices.mosfet(), name="M2")
     for transistor in (foundry, native):
         c.connect(transistor.drain, transistor.gate, transistor.source, ground)
         c.connect(transistor.bulk, ground)
@@ -157,7 +157,7 @@ def test_a_netlist_keeps_a_kits_scale_from_a_native_mosfet() -> None:
     @component
     def warm(c: Builder) -> None:
         ground = c.port("0", Role.GROUND)
-        transistor = c.place(held, id="M1")
+        transistor = c.place(held, name="M1")
         c.connect(transistor.drain, transistor.gate, transistor.source, ground)
         c.connect(transistor.bulk, ground)
 
@@ -208,10 +208,10 @@ def test_an_inverter_switches_in_ngspice() -> None:
 def amplifier(c: Builder) -> None:
     """A common-source amplifier, its load a resistor."""
     ground = c.port("0", Role.GROUND)
-    supply = c.place(devices.voltage_source(1.8 * V), id="VDD")
-    bias = c.place(devices.voltage_source(0.7 * V), id="VIN")
-    load = c.place(devices.resistor(10 * kohm), id="RL")
-    transistor = c.place(sky130.mosfet("nfet_01v8", 2 * um, 0.5 * um), id="M1")
+    supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
+    bias = c.place(devices.voltage_source(0.7 * V), name="VIN")
+    load = c.place(devices.resistor(10 * kohm), name="RL")
+    transistor = c.place(sky130.mosfet("nfet_01v8", 2 * um, 0.5 * um), name="M1")
     c.connect(supply.positive, load.a, name="vdd")
     c.connect(bias.positive, transistor.gate, name="in")
     c.connect(load.b, transistor.drain, name="out")
@@ -276,11 +276,11 @@ def test_a_plan_runs_at_the_kits_corners(
             @component
             def amplifier(c: Builder) -> None:
                 ground = c.port("0", Role.GROUND)
-                supply = c.place(devices.voltage_source(1.8 * V), id="VDD")
-                bias = c.place(devices.voltage_source(0.7 * V), id="VIN")
-                load = c.place(devices.resistor(10 * kohm), id="RL")
+                supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
+                bias = c.place(devices.voltage_source(0.7 * V), name="VIN")
+                load = c.place(devices.resistor(10 * kohm), name="RL")
                 transistor = c.place(
-                    sky130.mosfet("nfet_01v8", 2 * um, 0.5 * um), id="M1"
+                    sky130.mosfet("nfet_01v8", 2 * um, 0.5 * um), name="M1"
                 )
                 c.connect(supply.positive, load.a, name="vdd")
                 c.connect(bias.positive, transistor.gate, name="in")
@@ -328,7 +328,7 @@ def _run(*arguments: str) -> int:
 def holder(c: Builder) -> None:
     """The amplifier within a component instance."""
     ground = c.port("0", Role.GROUND)
-    placed = c.place(amplifier(), id="X1")
+    placed = c.place(amplifier(), name="X1")
     c.connect(placed["0"], ground)
 
 
@@ -356,11 +356,11 @@ def test_a_nested_source_is_swept_and_excited_with_overrides() -> None:
 def quiet(c: Builder) -> None:
     """A divider beside a transistor that its noise does not reach."""
     ground = c.port("0", Role.GROUND)
-    supply = c.place(devices.voltage_source(1 * V), id="V1")
-    upper = c.place(devices.resistor(1 * kohm), id="R1")
-    lower = c.place(devices.resistor(2 * kohm), id="R2")
-    rail = c.place(devices.voltage_source(1.8 * V), id="VDD")
-    transistor = c.place(sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um), id="M1")
+    supply = c.place(devices.voltage_source(1 * V), name="V1")
+    upper = c.place(devices.resistor(1 * kohm), name="R1")
+    lower = c.place(devices.resistor(2 * kohm), name="R2")
+    rail = c.place(devices.voltage_source(1.8 * V), name="VDD")
+    transistor = c.place(sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um), name="M1")
     c.connect(supply.positive, upper.a, name="in")
     c.connect(upper.b, lower.a, name="out")
     c.connect(rail.positive, transistor.drain, transistor.gate, name="vdd")

@@ -18,9 +18,9 @@ Examples:
     >>> @component
     ... def divider(c: Builder) -> None:
     ...     ground = c.port("ground", Role.GROUND)
-    ...     source = c.place(devices.voltage_source(5 * V), id="V1")
-    ...     upper = c.place(devices.resistor(1 * kohm), id="R1")
-    ...     lower = c.place(devices.resistor(1 * kohm), id="R2")
+    ...     source = c.place(devices.voltage_source(5 * V), name="V1")
+    ...     upper = c.place(devices.resistor(1 * kohm), name="R1")
+    ...     lower = c.place(devices.resistor(1 * kohm), name="R2")
     ...     c.connect(source.positive, upper.a, name="in")
     ...     c.connect(upper.b, lower.a, name="out")
     ...     c.connect(lower.b, source.negative, ground)
@@ -101,7 +101,7 @@ def draw(
     for net in drawn.nets:
         _draw_net(axes, net, voltages, flagged)
     for placed in drawn.instances:
-        _draw_instance(axes, placed, marked=placed.id in marks)
+        _draw_instance(axes, placed, marked=placed.name in marks)
     for flag in drawn.flags:
         _draw_flag(axes, flag.name, flag.point, flag.side)
     return figure
@@ -416,7 +416,7 @@ _SYMBOLS: Final[Mapping[str, Callable[[_Pen], None]]] = {
 def _draw_instance(axes: Axes, placed: Placed, *, marked: bool) -> None:
     """An instance's symbol, its id and its value, or a box for a component."""
     color = _MARKED if marked else _INK
-    label = f"! {placed.id}" if marked else placed.id
+    label = f"! {placed.name}" if marked else placed.name
     x, y = placed.origin
     match placed.instance.of:
         case ir.DeviceOf(device=model) if model in _SYMBOLS:

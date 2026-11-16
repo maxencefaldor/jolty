@@ -10,7 +10,7 @@ use jolty_ir::Circuit;
 use jolty_models::{Level, Library};
 use serde_json::{Value, json};
 
-/// A device instance: its id, model, parameters, and the net of each terminal.
+/// A device instance: its name, model, parameters, and the net of each terminal.
 type Device<'a> = (&'a str, &'a str, Value, &'a [(&'a str, &'a str)]);
 
 /// A circuit whose top component has a ground port `0` and places `devices`.
@@ -22,12 +22,12 @@ fn circuit(devices: &[Device<'_>]) -> Circuit {
                 .iter()
                 .map(|(terminal, net)| ((*terminal).to_owned(), json!(net)))
                 .collect();
-            json!({"id": id, "of": {"device": model}, "parameters": parameters,
+            json!({"name": id, "of": {"device": model}, "parameters": parameters,
                    "terminals": terminals})
         })
         .collect();
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit file")
@@ -436,26 +436,26 @@ fn logic_nets_name_what_drives_and_reads_them() {
 /// its output, standing for a circuit with ports `a`, `y`, `vdd` and `gnd`.
 fn hierarchy() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {
             "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-                {"id": "VDD", "of": {"device": "voltage_source"},
+                {"name": "VDD", "of": {"device": "voltage_source"},
                  "parameters": {"waveform": {"dc": 1.0}},
                  "terminals": {"positive": "vdd", "negative": "0"}},
-                {"id": "A", "of": {"device": "logic_source"},
+                {"name": "A", "of": {"device": "logic_source"},
                  "parameters": {"initial": "1", "transition": 1e-12},
                  "terminals": {"output": "a"}},
-                {"id": "X1", "of": {"component": "cell"},
+                {"name": "X1", "of": {"component": "cell"},
                  "terminals": {"a": "a", "y": "y", "vdd": "vdd", "gnd": "0"}},
-                {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-15},
+                {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": 1e-15},
                  "terminals": {"a": "y", "b": "0"}}
             ]},
             "cell": {"ports": [{"name": "a", "role": "input"}, {"name": "y", "role": "output"},
                                {"name": "vdd", "role": "supply"}, {"name": "gnd", "role": "ground"}],
                      "instances": [
-                {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+                {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
                  "terminals": {"a": "vdd", "b": "y"}},
-                {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
+                {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": 1e3},
                  "terminals": {"a": "a", "b": "gnd"}}
             ]}
         }

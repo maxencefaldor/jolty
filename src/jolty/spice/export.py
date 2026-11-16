@@ -209,19 +209,19 @@ def flatten(circuit: ir.Circuit, subcircuits: Collection[str] = ()) -> ir.Circui
         >>> @component
         ... def cell(c: Builder) -> None:
         ...     a, b = c.port("a"), c.port("b")
-        ...     first = c.place(devices.resistor(1 * ohm), id="R1")
-        ...     second = c.place(devices.resistor(1 * ohm), id="R2")
+        ...     first = c.place(devices.resistor(1 * ohm), name="R1")
+        ...     second = c.place(devices.resistor(1 * ohm), name="R2")
         ...     c.connect(a, first.a)
         ...     c.connect(first.b, second.a, name="mid")
         ...     c.connect(second.b, b)
         >>> @component
         ... def top(c: Builder) -> None:
         ...     ground = c.port("gnd", Role.GROUND)
-        ...     inner = c.place(cell(), id="X1")
+        ...     inner = c.place(cell(), name="X1")
         ...     c.connect(inner.a, name="in")
         ...     c.connect(inner.b, ground)
         >>> flat = flatten(circuit(top()))
-        >>> [(i.id, i.terminals) for i in flat.components[flat.top].instances]
+        >>> [(i.name, i.terminals) for i in flat.components[flat.top].instances]
         [('X1_R1', {'a': 'in', 'b': 'X1_mid'}), ('X1_R2', {'a': 'X1_mid', 'b': 'gnd'})]
     """
     top = circuit.components[circuit.top]
@@ -237,13 +237,16 @@ def flatten(circuit: ir.Circuit, subcircuits: Collection[str] = ()) -> ir.Circui
                 case ir.ComponentOf(component=name) if name not in subcircuits:
                     walk(
                         circuit.components[name],
-                        f"{prefix}{instance.id}_",
+                        f"{prefix}{instance.name}_",
                         nets,
                     )
                 case _:
                     placed.append(
                         instance.model_copy(
-                            update={"id": f"{prefix}{instance.id}", "terminals": nets}
+                            update={
+                                "name": f"{prefix}{instance.name}",
+                                "terminals": nets,
+                            }
                         )
                     )
 
@@ -609,25 +612,25 @@ def element(instance: ir.Instance, dialect: Dialect = NGSPICE) -> str:
             a logic device, a heated one, or one the dialect refuses.
     """
     if not isinstance(instance.of, ir.DeviceOf):
-        message = f"{instance.id} is a component instance, not a device"
+        message = f"{instance.name} is a component instance, not a device"
         raise _unwritable(message)
     device = instance.of.device
     if device not in ELEMENTS:
         message = f"a {device} has no SPICE element"
         raise _unwritable(message)
     if device in dialect.refused:
-        message = f"{instance.id} is a {device}: {dialect.refused[device]}"
+        message = f"{instance.name} is a {device}: {dialect.refused[device]}"
         raise _unwritable(message)
     if device in _EXPRESSED and dialect.expressions is not None:
-        message = f"{instance.id} is a {device}, written as an expression: "
+        message = f"{instance.name} is a {device}, written as an expression: "
         raise _unwritable(message + dialect.expressions)
     if instance.parameters.get("thermal") is True:
         message = (
-            f"{instance.id} is a heated {device}, and {dialect.simulator} heats no "
+            f"{instance.name} is a heated {device}, and {dialect.simulator} heats no "
             "device on a thermal network"
         )
         raise _unwritable(message)
-    return ELEMENTS[device].letter + instance.id
+    return ELEMENTS[device].letter + instance.name
 
 
 _SURROUNDINGS: Final = frozenset({"thermal", "temperature", "temperature_offset"})
@@ -696,7 +699,7 @@ def _own_temperature(instance: ir.Instance, model: str, dialect: Dialect) -> str
     if model in _UNMOVED:
         return ""
     message = (
-        f"{instance.id} is a {model} at its own temperature, which "
+        f"{instance.name} is a {model} at its own temperature, which "
         f"{dialect.simulator}'s has not"
     )
     raise _unwritable(message)
@@ -781,7 +784,7 @@ def _device(
     lines: list[str] = []
     match model:
         case "voltage_source" | "current_source":
-            ac = " AC 1" if instance.id == excited else ""
+            ac = " AC 1" if instance.name == excited else ""
             value = _waveform(values["waveform"], dialect) + ac
         case "current_controlled_current_source" | "current_controlled_voltage_source":
             # ngspice senses a current through a voltage source: a zero-volt one in
@@ -802,8 +805,8 @@ def _device(
             | "vbic"
         ):
             kind, card, parameters = _model_card(model, values, dialect)
-            lines.append(f".model M{instance.id} {kind}({card})")
-            value = f"M{instance.id} {parameters}".rstrip()
+            lines.append(f".model M{instance.name} {kind}({card})")
+            value = f"M{instance.name} {parameters}".rstrip()
         case "behavioral_voltage_source" | "behavioral_current_source":
             expression, senses = _behavior(instance, ground)
             lines.extend(senses)
@@ -817,7 +820,7 @@ def _device(
             | "current_controlled_memristor"
         ):
             nodes, value, moving = _varying(
-                instance.id,
+                instance.name,
                 model,
                 values,
                 nodes.split(),
@@ -826,7 +829,7 @@ def _device(
             lines.extend(moving)
         case "resistor" | "capacitor" | "inductor":
             value = _passive(
-                model, values, nodes.split(), dialect, (instance.id, lines)
+                model, values, nodes.split(), dialect, (instance.name, lines)
             )
         case "foundry_mosfet":
             try:
@@ -991,7 +994,7 @@ def _subcircuit(circuit: ir.Circuit, instance: ir.Instance, ground: str) -> str:
     lists, as in ``divider[top=1000.0]``, are its own.
     """
     if not isinstance(instance.of, ir.ComponentOf):
-        message = f"{instance.id} is a device, not a subcircuit"
+        message = f"{instance.name} is a device, not a subcircuit"
         raise _unwritable(message)
     name = instance.of.component
     pins = [
@@ -1003,7 +1006,7 @@ def _subcircuit(circuit: ir.Circuit, instance: ir.Instance, ground: str) -> str:
     nodes = " ".join("0" if net == ground else net for net in nets)
     subcircuit, _, listed = name.removesuffix("]").partition("[")
     parameters = f" params: {listed.replace(',', ' ')}" if listed else ""
-    return f"X{instance.id} {nodes} {subcircuit}{parameters}"
+    return f"X{instance.name} {nodes} {subcircuit}{parameters}"
 
 
 _PASSIVE_DRIFT = {
@@ -1099,7 +1102,7 @@ def _coupled(instance: ir.Instance, ground: str, dialect: Dialect) -> list[str]:
     ``K{id}_{j}_{k}``.
     """
     element(instance, dialect)
-    id, terminals = instance.id, instance.terminals
+    id, terminals = instance.name, instance.terminals
     values = _cool(instance.parameters)
     lines = []
     match values:
@@ -1162,7 +1165,7 @@ def _switch(
         control = f"v({control_positive},{control_negative})"
     given = _defaulted(model, values)
     on, off, on_resistance, off_resistance = (
-        _number(instance.id, given, key)
+        _number(instance.name, given, key)
         for key in (*_SWITCHES[model], "on_resistance", "off_resistance")
     )
     mean = math.log(math.sqrt(on_resistance * off_resistance))
@@ -1182,7 +1185,7 @@ def _behavior(instance: ir.Instance, ground: str) -> tuple[str, list[str]]:
     """
     expression = instance.parameters["expression"]
     if not isinstance(expression, str):
-        message = f"{instance.id}'s expression is not text"
+        message = f"{instance.name}'s expression is not text"
         raise _unwritable(message)
 
     def net(terminal: str) -> str:
@@ -1202,14 +1205,14 @@ def _behavior(instance: ir.Instance, ground: str) -> tuple[str, list[str]]:
                 ends = (net(f"{port}_positive"), net(f"{port}_negative"))
                 senses[sense] = f"{sense} {ends[0]} {ends[1]} DC 0"
                 return f"i({sense})"
-        message = f"{instance.id}'s expression reads {variable}, which ngspice cannot"
+        message = f"{instance.name}'s expression reads {variable}, which ngspice cannot"
         raise _unwritable(message)
 
     try:
         tree = _TREE.validate_json(_core.expression_tree(expression))
         written = _written(tree, read)
     except ValueError as error:
-        message = f"{instance.id}'s expression: {error}"
+        message = f"{instance.name}'s expression: {error}"
         raise _unwritable(message) from None
     return written, list(senses.values())
 
@@ -1371,7 +1374,7 @@ def vector(
         return f"v({_node(unknown.name).lower()})"
     path, _, label = unknown.name.rpartition(":")
     id = _node(path)
-    found = [instance for instance in top.instances if instance.id == id]
+    found = [instance for instance in top.instances if instance.name == id]
     if not found:
         message = (
             f"{dialect.simulator} names the internal unknown {unknown.name} its own way"

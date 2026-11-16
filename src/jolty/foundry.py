@@ -363,7 +363,7 @@ def _flattened(
     instances = []
     for instance in top.instances:
         parameters = dict(instance.parameters)
-        for path, value in replaced.get(instance.id, {}).items():
+        for path, value in replaced.get(instance.name, {}).items():
             key, *rest = path.split(".")
             parameters[key] = _replaced(parameters.get(key), rest, value)
         instances.append(instance.model_copy(update={"parameters": parameters}))
@@ -380,7 +380,7 @@ def _devices_within(
     """Every device within `component`, by path."""
     found = []
     for instance in circuit.components[component].instances:
-        path = f"{prefix}{instance.id}"
+        path = f"{prefix}{instance.name}"
         if isinstance(instance.of, ir.ComponentOf):
             found.extend(_devices_within(circuit, instance.of.component, f"{path}/"))
         else:
@@ -398,9 +398,9 @@ def _devices(flat: ir.Circuit, paths: Mapping[str, str]) -> dict[str, str]:
                 of=ir.DeviceOf(device="foundry_mosfet"),
                 parameters={"model": str(model)},
             ):
-                named[sky130.inner(element, model)] = paths[instance.id]
+                named[sky130.inner(element, model)] = paths[instance.name]
             case _:
-                named[element] = paths[instance.id]
+                named[element] = paths[instance.name]
     return named
 
 
@@ -511,9 +511,9 @@ def _excited(flat: ir.Circuit, analysis: Analysis) -> str | None:
     """The id of the source a small-signal response or a noise analysis excites."""
     match analysis:
         case Ac():
-            return _source(flat, analysis.source)[0].id
+            return _source(flat, analysis.source)[0].name
         case Noise():
-            return _referred(flat, analysis).id
+            return _referred(flat, analysis).name
     return None
 
 

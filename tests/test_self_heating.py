@@ -42,15 +42,15 @@ def _warmed(supply: devices.Device, coefficient: float = COEFFICIENT) -> Compone
     @component
     def warmed(c: Builder, supply: devices.Device, coefficient: float) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(supply, id="V1")
+        source = c.place(supply, name="V1")
         load = c.place(
             devices.resistor(
                 RESISTANCE * ohm, temperature_coefficient=coefficient / K
             ).heated(),
-            id="R1",
+            name="R1",
         )
-        sink = c.place(devices.thermal_resistance(SINK * K / W), id="RTH")
-        store = c.place(devices.thermal_capacitance(STORE * J / K), id="CTH")
+        sink = c.place(devices.thermal_resistance(SINK * K / W), name="RTH")
+        store = c.place(devices.thermal_capacitance(STORE * J / K), name="CTH")
         c.connect(source.positive, load.a, name="top")
         c.connect(load.thermal, sink.a, store.a, name="junction")
         c.connect(source.negative, load.b, sink.b, store.b, ground)
@@ -141,16 +141,16 @@ def test_sensitivities_carry_through_the_heat() -> None:
 def follower(c: Builder, *, heated: bool, sink: float, emitter: float) -> None:
     """A 2N3904 from 12 V into `emitter` ohms, joined by `sink` K/W to the ambient."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(12 * V), id="V1")
-    base = c.place(devices.voltage_source(1.5 * V), id="V2")
-    transistor = c.place(parts.q2n3904(heated=heated), id="Q1")
-    load = c.place(devices.resistor(emitter * ohm), id="RE")
+    supply = c.place(devices.voltage_source(12 * V), name="V1")
+    base = c.place(devices.voltage_source(1.5 * V), name="V2")
+    transistor = c.place(parts.q2n3904(heated=heated), name="Q1")
+    load = c.place(devices.resistor(emitter * ohm), name="RE")
     c.connect(supply.positive, transistor.collector, name="vcc")
     c.connect(base.positive, transistor.base, name="b")
     c.connect(transistor.emitter, load.a, name="e")
     c.connect(supply.negative, base.negative, load.b, ground)
     if heated:
-        mount = c.place(devices.thermal_resistance(sink * K / W), id="RTH")
+        mount = c.place(devices.thermal_resistance(sink * K / W), name="RTH")
         c.connect(transistor.thermal, mount.a, name="junction")
         c.connect(mount.b, ground)
 
@@ -218,14 +218,14 @@ def test_a_part_at_a_temperature_of_its_own_is_held_to_its_rating_there() -> Non
     @component
     def clamp(c: Builder, diode: devices.Device) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(5 * V), id="V1")
-        feed = c.place(devices.resistor(1 * kohm), id="R1")
-        placed = c.place(diode, id="D1")
+        source = c.place(devices.voltage_source(5 * V), name="V1")
+        feed = c.place(devices.resistor(1 * kohm), name="R1")
+        placed = c.place(diode, name="D1")
         c.connect(source.positive, feed.a, name="in")
         c.connect(feed.b, placed.anode, name="out")
         c.connect(source.negative, placed.cathode, ground)
         if "thermal" in diode.terminals:
-            mount = c.place(devices.thermal_resistance(300 * K / W), id="RTH")
+            mount = c.place(devices.thermal_resistance(300 * K / W), name="RTH")
             c.connect(placed.thermal, mount.a, name="junction")
             c.connect(mount.b, ground)
 
@@ -272,11 +272,11 @@ def test_a_heated_power_mosfet_heats_its_channel_and_body_diode_together() -> No
     @component
     def switch(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(5 * V), id="V1")
-        gate = c.place(devices.voltage_source(10 * V), id="V2")
-        transistor = c.place(parts.irf511(heated=True), id="X1")
-        load = c.place(devices.resistor(1 * ohm), id="RL")
-        mount = c.place(devices.thermal_resistance(2 * K / W), id="RTH")
+        supply = c.place(devices.voltage_source(5 * V), name="V1")
+        gate = c.place(devices.voltage_source(10 * V), name="V2")
+        transistor = c.place(parts.irf511(heated=True), name="X1")
+        load = c.place(devices.resistor(1 * ohm), name="RL")
+        mount = c.place(devices.thermal_resistance(2 * K / W), name="RTH")
         c.connect(supply.positive, load.a, name="vdd")
         c.connect(load.b, transistor.drain, name="d")
         c.connect(gate.positive, transistor.gate, name="g")
@@ -298,8 +298,8 @@ def test_a_port_on_the_ground_sums_its_electrical_terminals_only() -> None:
     def cell(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
         top = c.port("top")
-        load = c.place(devices.resistor(10 * ohm).heated(), id="R1")
-        mount = c.place(devices.thermal_resistance(20 * K / W), id="RTH")
+        load = c.place(devices.resistor(10 * ohm).heated(), name="R1")
+        mount = c.place(devices.thermal_resistance(20 * K / W), name="RTH")
         c.connect(top, load.a)
         c.connect(load.thermal, mount.a, name="junction")
         c.connect(load.b, mount.b, ground)
@@ -307,8 +307,8 @@ def test_a_port_on_the_ground_sums_its_electrical_terminals_only() -> None:
     @component
     def board(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
-        inner = c.place(cell(), id="X1")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        inner = c.place(cell(), name="X1")
         c.connect(source.positive, inner.top, name="top")
         c.connect(source.negative, inner.ground, ground)
 
@@ -337,10 +337,10 @@ def test_spice_has_no_heated_device() -> None:
     @component
     def cool(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
         load = c.place(
             devices.device("resistor", {"resistance": 10.0, "thermal": False}),
-            id="R1",
+            name="R1",
         )
         c.connect(source.positive, load.a, name="top")
         c.connect(source.negative, load.b, ground)
@@ -361,9 +361,9 @@ def test_a_device_heating_a_net_the_ambient_never_cools_has_no_operating_point()
     @component
     def insulated(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
-        load = c.place(devices.resistor(10 * ohm).heated(), id="R1")
-        store = c.place(devices.thermal_capacitance(STORE * J / K), id="CTH")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        load = c.place(devices.resistor(10 * ohm).heated(), name="R1")
+        store = c.place(devices.thermal_capacitance(STORE * J / K), name="CTH")
         c.connect(source.positive, load.a, name="top")
         c.connect(load.thermal, store.a, name="junction")
         c.connect(source.negative, load.b, store.b, ground)

@@ -15,7 +15,7 @@ Each instance takes a column by its distance from the sources, or, in a componen
   Devices that hang from the same net stand side by side along it.
 - A controlled source keeps its control leads on its left, and flips upside down rather than stand on its ground.
 - A placed component is a box, its function and arguments inside, its signal ports on its sides, its supplies on top and its grounds below.
-- Each instance carries its id, and each device its value.
+- Each instance carries its name, and each device its value.
 
 Ground and supply nets draw no wires: a ground symbol, or a bar with the supply's name, marks each of their pins.
 A net is a ground or a supply when a port on it is one, of the component drawn or of a component it places.
@@ -31,7 +31,7 @@ The component's own signal ports stand at its edges as flags pointing the way si
 A schematic carries what the build and the simulation found:
 
 - `jolty simulate` writes on each net its voltage at the plan's first operating point;
-- an instance a listed diagnostic names is drawn in red, its id marked with `!`, and a box holding such an instance is marked too.
+- an instance a listed diagnostic names is drawn in red, its name marked with `!`, and a box holding such an instance is marked too.
 
 The option `--no-schematic` leaves the schematic out.
 

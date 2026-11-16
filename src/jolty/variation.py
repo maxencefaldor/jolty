@@ -22,8 +22,8 @@ Examples:
     >>> @component
     ... def divider(c: Builder) -> None:
     ...     ground = c.port("ground", Role.GROUND)
-    ...     source = c.place(devices.voltage_source(5 * V), id="V1")
-    ...     upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), id="R1")
+    ...     source = c.place(devices.voltage_source(5 * V), name="V1")
+    ...     upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), name="R1")
     ...     c.connect(source.positive, upper.a)
     ...     c.connect(upper.b, source.negative, ground)
     >>> (varied,) = toleranced(circuit(divider()))

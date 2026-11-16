@@ -86,20 +86,22 @@ def test_power_mosfets_meet_their_datasheets(name: str) -> None:
         @component
         def fixture(c: Builder) -> None:
             ground = c.port("ground", Role.GROUND)
-            placed = c.place(parts.power_mosfet(sheet), id="X1")
+            placed = c.place(parts.power_mosfet(sheet), name="X1")
             c.connect(placed.source, ground)
             if gate is None:
                 c.connect(placed.gate, placed.drain)
             else:
-                gate_source = c.place(devices.voltage_source(sign * gate * V), id="VG")
+                gate_source = c.place(
+                    devices.voltage_source(sign * gate * V), name="VG"
+                )
                 c.connect(gate_source.positive, placed.gate, name="gate")
                 c.connect(gate_source.negative, ground)
             if drain.dimension == CURRENT:
-                fed = c.place(devices.current_source(sign * drain), id="ID")
+                fed = c.place(devices.current_source(sign * drain), name="ID")
                 c.connect(fed.negative, placed.drain, name="drain")
                 c.connect(fed.positive, ground)
             else:
-                held = c.place(devices.voltage_source(sign * drain), id="VD")
+                held = c.place(devices.voltage_source(sign * drain), name="VD")
                 c.connect(held.positive, placed.drain, name="drain")
                 c.connect(held.negative, ground)
 
@@ -139,9 +141,9 @@ def test_power_mosfets_meet_their_datasheets(name: str) -> None:
 def switched(c: Builder, *, rated_power: float) -> None:
     """An IRF511 fully on, fed 6 A, beyond its 5.6, its power rated anew."""
     ground = c.port("ground", Role.GROUND)
-    switch = c.place(parts.irf511().rated("power", rated_power * W), id="X1")
-    gate = c.place(devices.voltage_source(10 * V), id="VG")
-    fed = c.place(devices.current_source(6 * A), id="ID")
+    switch = c.place(parts.irf511().rated("power", rated_power * W), name="X1")
+    gate = c.place(devices.voltage_source(10 * V), name="VG")
+    fed = c.place(devices.current_source(6 * A), name="ID")
     c.connect(gate.positive, switch.gate, name="gate")
     c.connect(fed.negative, switch.drain, name="drain")
     c.connect(switch.source, gate.negative, fed.positive, ground)
@@ -179,7 +181,7 @@ def test_a_component_is_held_to_its_ratings_at_its_ports() -> None:
 def wrapped(c: Builder) -> None:
     """A resistor of 1 Ω between two ports, rated to dissipate 0.1 W."""
     a, b = c.port("a"), c.port("b")
-    inner = c.place(devices.resistor(1 * ohm).rated("power", 0.1 * W), id="R1")
+    inner = c.place(devices.resistor(1 * ohm).rated("power", 0.1 * W), name="R1")
     c.connect(inner.a, a)
     c.connect(inner.b, b)
 
@@ -188,8 +190,8 @@ def wrapped(c: Builder) -> None:
 def across(c: Builder) -> None:
     """1 V across the wrapped resistor, rated as a whole to dissipate 2 W."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    placed = c.place(wrapped().rated("power", 2 * W), id="X1")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    placed = c.place(wrapped().rated("power", 2 * W), name="X1")
     c.connect(source.positive, placed.a, name="top")
     c.connect(source.negative, placed.b, ground)
 
@@ -212,7 +214,7 @@ def test_a_substituted_component_is_held_to_its_own_ratings_alone() -> None:
 def gated(c: Builder) -> None:
     """An electrical inverter on 1.8 V, its supply rated to 1.5 V."""
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(1.8 * V), id="VDD")
+    supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
     gate = c.place(
         devices.logic_gate(
             "not",
@@ -221,9 +223,9 @@ def gated(c: Builder) -> None:
             electrical=True,
             input_capacitance=2 * fF,
         ).rated("voltage", 1.5 * V, terminals=("supply", "ground")),
-        id="U1",
+        name="U1",
     )
-    driven = c.place(devices.voltage_source(0 * V), id="V1")
+    driven = c.place(devices.voltage_source(0 * V), name="V1")
     c.connect(supply.positive, gate.supply, name="vdd")
     c.connect(driven.positive, gate.a, name="in")
     c.connect(gate.y, name="out")

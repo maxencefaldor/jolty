@@ -18,8 +18,8 @@ def divider(c: Builder, upper: Quantity, lower: Quantity) -> None:
     top = c.port("top")
     tap = c.port("tap")
     ground = c.port("ground", Role.GROUND)
-    first = c.place(devices.resistor(upper), id="R1")
-    second = c.place(devices.resistor(lower), id="R2")
+    first = c.place(devices.resistor(upper), name="R1")
+    second = c.place(devices.resistor(lower), name="R2")
     c.connect(top, first.a)
     c.connect(first.b, second.a, tap)
     c.connect(second.b, ground)
@@ -30,7 +30,7 @@ The builder offers three methods:
 - `c.port(name, role)` declares a port: the net of that name inside the component, seen from outside.
   Its role is `Role.SIGNAL` by default, `Role.INPUT` or `Role.OUTPUT` for a signal in one direction, `Role.SUPPLY` for a supply rail, or `Role.GROUND` for the ground.
   A schematic draws inputs on a box's left and outputs on its right, and a component of inputs, outputs, one supply and one ground can be [characterized](fidelity.md) as a logic cell.
-- `c.place(item, id=...)` places a device or another component as an instance, and returns it.
+- `c.place(item, name=...)` places a device or another component as an instance, and returns it.
   The instance's terminals are its attributes, such as `first.a`, or items, such as `first["a"]`.
 - `c.connect(*points, name=None)` joins terminals, ports and nets into one net.
   Given a name, the net takes it, and later connections join it as `Net(name)`; giving the same name to a second connection declares it twice, which is an error.
@@ -56,8 +56,8 @@ A component places other components as it places devices, and their ports are it
 def bench(c: Builder) -> None:
     """The divider, fed 5 V."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(5 * V), id="V1")
-    stage = c.place(divider(10 * kohm, 10 * kohm), id="X1")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    stage = c.place(divider(10 * kohm, 10 * kohm), name="X1")
     c.connect(source.positive, stage.top)
     c.connect(stage.tap, name="out")
     c.connect(source.negative, stage.ground, ground)

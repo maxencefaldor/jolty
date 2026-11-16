@@ -25,9 +25,9 @@ def inverting(c: Builder) -> None:
     """Rin from the input to the inverting input, Rf from there to the output."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
-    series = c.place(devices.resistor(1 * kohm), id="Rin")
-    feedback = c.place(devices.resistor(10 * kohm), id="Rf")
-    amplifier = c.place(opamp(), id="U1")
+    series = c.place(devices.resistor(1 * kohm), name="Rin")
+    feedback = c.place(devices.resistor(10 * kohm), name="Rf")
+    amplifier = c.place(opamp(), name="U1")
     c.connect(source, series.a)
     c.connect(series.b, feedback.a, amplifier.inn, name="summing")
     c.connect(feedback.b, amplifier.out, output)
@@ -39,8 +39,8 @@ def bench(c: Builder) -> None:
     """The amplifier, fed 100 mV at 1 kHz."""
     ground = c.port("ground", Role.GROUND)
     tone = Sine(offset=0 * V, amplitude=100 * mV, frequency=1 * kHz)
-    source = c.place(devices.voltage_source(tone), id="V1")
-    stage = c.place(inverting(), id="X1")
+    source = c.place(devices.voltage_source(tone), name="V1")
+    stage = c.place(inverting(), name="X1")
     c.connect(source.positive, stage.input, name="in")
     c.connect(stage.output, name="out")
     c.connect(source.negative, stage.ground, ground)

@@ -397,9 +397,9 @@ def rc_step() -> Component:
     """A source stepped from 0 V to 1 V in 10 ns at 1 µs, into 1 kΩ and 1 nF."""
     c, ground = _builder("rc_step")
     step = Piecewise([(1 * us, 0 * V), (1 * us + 10 * ns, 1 * V)])
-    source = c.place(devices.voltage_source(step), id="V1")
-    resistor = c.place(devices.resistor(1 * kohm), id="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+    source = c.place(devices.voltage_source(step), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)
@@ -1032,9 +1032,9 @@ def transients() -> list[Fixture]:
     def driven() -> Component:
         c, ground = _builder("driven")
         sine = Sine(offset=0 * V, amplitude=1 * V, frequency=1e6 * Hz)
-        source = c.place(devices.voltage_source(sine), id="V1")
-        resistor = c.place(devices.resistor(1 * kohm), id="R1")
-        capacitor = c.place(devices.capacitor(1 * nF), id="C1")
+        source = c.place(devices.voltage_source(sine), name="V1")
+        resistor = c.place(devices.resistor(1 * kohm), name="R1")
+        capacitor = c.place(devices.capacitor(1 * nF), name="C1")
         c.connect(source.positive, resistor.a, name="in")
         c.connect(resistor.b, capacitor.a, name="out")
         c.connect(capacitor.b, source.negative, ground)
@@ -1369,9 +1369,9 @@ def ac_fixture(
 def forced(name: str, device: object, terminals: Mapping[str, float]) -> Component:
     """`device` with each terminal held by a source, ``V<terminal>``, at its level."""
     c, ground = _builder(name)
-    placed = c.place(device, id="X1")  # ty: ignore[invalid-argument-type] - a device
+    placed = c.place(device, name="X1")  # ty: ignore[invalid-argument-type] - a device
     for terminal, level in terminals.items():
-        source = c.place(devices.voltage_source(level * V), id=f"V{terminal.upper()}")
+        source = c.place(devices.voltage_source(level * V), name=f"V{terminal.upper()}")
         c.connect(source.positive, placed[terminal], name=terminal)
         c.connect(source.negative, ground)
     return c.finish()
@@ -1534,8 +1534,8 @@ def built_devices() -> list[Fixture]:
     )
 
     c, ground = _builder("heat")
-    heat = c.place(devices.heat_source(1 * W), id="P1")
-    sink = c.place(devices.thermal_resistance(50 * K / W), id="RTH")
+    heat = c.place(devices.heat_source(1 * W), name="P1")
+    sink = c.place(devices.thermal_resistance(50 * K / W), name="RTH")
     c.connect(heat.b, sink.a, name="hot")
     c.connect(heat.a, sink.b, ground)
     heated = circuit(c.finish())
@@ -1999,9 +1999,9 @@ def outputs() -> list[Fixture]:
 def monte_carlo() -> Fixture:
     """The row of Monte Carlo samples: each one's divider, at its own resistances."""
     c, ground = _builder("toleranced")
-    source = c.place(devices.voltage_source(5 * V), id="V1")
-    upper = c.place(devices.resistor(1 * kohm, tolerance=0.1), id="R1")
-    lower = c.place(devices.resistor(3 * kohm, tolerance=0.1), id="R2")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    upper = c.place(devices.resistor(1 * kohm, tolerance=0.1), name="R1")
+    lower = c.place(devices.resistor(3 * kohm, tolerance=0.1), name="R2")
     c.connect(source.positive, upper.a, name="in")
     c.connect(upper.b, lower.a, name="out")
     c.connect(lower.b, source.negative, ground)

@@ -228,7 +228,7 @@ mod tests {
     /// `instances`.
     fn simulator(instances: &Value) -> Simulator {
         let document = json!({
-            "format": "jolty-circuit", "version": 2, "top": "test",
+            "format": "jolty-circuit", "version": 3, "top": "test",
             "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                     "instances": instances}}
         });
@@ -260,7 +260,7 @@ mod tests {
     }
 
     fn two_terminal(id: &str, (device, parameter, value): (&str, &str, f64), a: &str) -> Value {
-        json!({"id": id, "of": {"device": device}, "parameters": {parameter: value},
+        json!({"name": id, "of": {"device": device}, "parameters": {parameter: value},
                "terminals": {"a": a, "b": "0"}})
     }
 
@@ -271,7 +271,7 @@ mod tests {
             two_terminal("R1", ("resistor", "resistance", 1e4), "n"),
             two_terminal("C1", ("capacitor", "capacitance", 1e-9), "n"),
             two_terminal("L1", ("inductor", "inductance", 1e-3), "n"),
-            {"id": "G1", "of": {"device": "voltage_controlled_current_source"},
+            {"name": "G1", "of": {"device": "voltage_controlled_current_source"},
              "parameters": {"transconductance": feedback},
              "terminals": {"positive": "0", "negative": "n",
                            "control_positive": "n", "control_negative": "0"}},
@@ -282,10 +282,10 @@ mod tests {
     /// from `n` to the ground, if any.
     fn leaking(current: f64, load: Option<f64>) -> Value {
         let mut instances = vec![
-            json!({"id": "I1", "of": {"device": "current_source"},
+            json!({"name": "I1", "of": {"device": "current_source"},
                    "parameters": {"waveform": {"dc": current}},
                    "terminals": {"positive": "0", "negative": "n"}}),
-            json!({"id": "D1", "of": {"device": "diode"}, "parameters": {},
+            json!({"name": "D1", "of": {"device": "diode"}, "parameters": {},
                    "terminals": {"anode": "0", "cathode": "n"}}),
         ];
         if let Some(resistance) = load {
@@ -322,11 +322,11 @@ mod tests {
     fn multiple_operating_points() {
         // 1 mA/V³ · v (v − 1)(v − 2) = (1 V − v) / 10 kΩ at `x`: v = 1 or 1 ± √0.9.
         let cubic = json!([
-            {"id": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
+            {"name": "V1", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
              "terminals": {"positive": "in", "negative": "0"}},
-            {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e4},
+            {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": 1e4},
              "terminals": {"a": "in", "b": "x"}},
-            {"id": "B1", "of": {"device": "behavioral_current_source"},
+            {"name": "B1", "of": {"device": "behavioral_current_source"},
              "parameters": {"expression": "1e-3 * v(x) * (v(x) - 1) * (v(x) - 2)"},
              "terminals": {"positive": "x", "negative": "0", "x": "x"}},
         ]);
@@ -378,7 +378,7 @@ mod tests {
         let raised = diagnostics(&json!([
             two_terminal("R1", ("resistor", "resistance", 1e3), "n"),
             two_terminal("C1", ("capacitor", "capacitance", 1e-9), "n"),
-            {"id": "G1", "of": {"device": "voltage_controlled_current_source"},
+            {"name": "G1", "of": {"device": "voltage_controlled_current_source"},
              "parameters": {"transconductance": 2e-3},
              "terminals": {"positive": "0", "negative": "n",
                            "control_positive": "n", "control_negative": "0"}},

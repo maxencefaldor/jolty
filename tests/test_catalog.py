@@ -27,10 +27,10 @@ CATALOG = Catalog(
 def stage(c: Builder) -> None:
     source = c.port("input")
     ground = c.port("ground", Role.GROUND)
-    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), id="R1")
-    lower = c.place(devices.resistor(4.7 * kohm, tolerance=0.001), id="R2")
-    capacitor = c.place(devices.capacitor(1 * nF, tolerance=0.1), id="C1")
-    ideal = c.place(devices.resistor(1 * kohm), id="R3")
+    upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), name="R1")
+    lower = c.place(devices.resistor(4.7 * kohm, tolerance=0.001), name="R2")
+    capacitor = c.place(devices.capacitor(1 * nF, tolerance=0.1), name="C1")
+    ideal = c.place(devices.resistor(1 * kohm), name="R3")
     c.connect(source, upper.a)
     c.connect(upper.b, lower.a, capacitor.a, ideal.a)
     c.connect(lower.b, capacitor.b, ideal.b, ground)
@@ -39,8 +39,8 @@ def stage(c: Builder) -> None:
 @component
 def bench(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(5 * V), id="V1")
-    placed = c.place(stage(), id="X1")
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    placed = c.place(stage(), name="X1")
     c.connect(source.positive, placed.input)
     c.connect(source.negative, placed.ground, ground)
 
@@ -119,7 +119,7 @@ def test_a_part_from_a_lot_stays_unpriced() -> None:
     @component
     def integrated(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        placed = c.place(matched, id="R1")
+        placed = c.place(matched, name="R1")
         c.connect(placed.a, placed.b, ground)
 
     (unpriced,) = bill(circuit(integrated()), CATALOG).unpriced
@@ -161,19 +161,19 @@ NUMBERED = Catalog(
 def switched(c: Builder) -> None:
     """Numbered parts: a transistor, a power MOSFET, a diode and resistors."""
     ground = c.port("ground", Role.GROUND)
-    transistor = c.place(parts.q2n3904(), id="Q1")
-    switch = c.place(parts.irf511(), id="X1")
-    diode = c.place(parts.d1n4148(), id="D1")
+    transistor = c.place(parts.q2n3904(), name="Q1")
+    switch = c.place(parts.irf511(), name="X1")
+    diode = c.place(parts.d1n4148(), name="D1")
     chip = c.place(
         devices.resistor(1 * kohm, tolerance=0.01).numbered("RC0603FR-071KL"),
-        id="R1",
+        name="R1",
     )
     wrong = c.place(
         devices.resistor(2 * kohm, tolerance=0.01).numbered("RC0603FR-071KL"),
-        id="R2",
+        name="R2",
     )
-    plain = c.place(devices.resistor(4.7 * kohm, tolerance=0.01), id="R3")
-    unknown = c.place(devices.diode().numbered("BAT54"), id="D2")
+    plain = c.place(devices.resistor(4.7 * kohm, tolerance=0.01), name="R3")
+    unknown = c.place(devices.diode().numbered("BAT54"), name="D2")
     c.connect(
         transistor.collector,
         transistor.base,

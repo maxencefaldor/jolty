@@ -51,7 +51,7 @@ def inverter(c: Builder) -> None:
     """A p-channel transistor up to the supply and an n-channel one down to ground."""
     a, y = c.port("a", Role.INPUT), c.port("y", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
-    up, down = c.place(mos("p"), id="MP"), c.place(mos("n"), id="MN")
+    up, down = c.place(mos("p"), name="MP"), c.place(mos("n"), name="MN")
     c.connect(a, up.gate, down.gate)
     c.connect(y, up.drain, down.drain)
     c.connect(vdd, up.source, up.bulk)
@@ -70,7 +70,7 @@ def chain(c: Builder, decades: int) -> None:
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
     previous = a
     for index in range(10):
-        part = c.place(stages(decades - 1), id=f"X{index}")
+        part = c.place(stages(decades - 1), name=f"X{index}")
         c.connect(previous, part.a)
         c.connect(vdd, part.vdd)
         c.connect(gnd, part.gnd)
@@ -91,7 +91,7 @@ def bench(c: Builder, length: int) -> None:
         message = f"a chain's length is a digit times a power of ten, not {length}"
         raise ValueError(message)
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY * V), id="VDD")
+    supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     pulse = Pulse(
         initial=0 * V,
         pulsed=SUPPLY * V,
@@ -100,13 +100,13 @@ def bench(c: Builder, length: int) -> None:
         fall=0.1 * ns,
         width=19.9 * ns,
     )
-    source = c.place(devices.voltage_source(pulse), id="V1")
+    source = c.place(devices.voltage_source(pulse), name="V1")
     vdd, previous = c.net("vdd"), c.net("in")
     c.connect(supply.positive, vdd)
     c.connect(source.positive, previous)
     c.connect(supply.negative, source.negative, ground)
     for index in range(count):
-        part = c.place(stages(decades), id=f"X{index}")
+        part = c.place(stages(decades), name=f"X{index}")
         c.connect(previous, part.a)
         c.connect(vdd, part.vdd)
         c.connect(ground, part.gnd)

@@ -38,7 +38,7 @@ def flash(c: Builder) -> None:
     taps = [c.net(f"tap{index}") for index in range(1, TAPS + 1)]
     ends = [ground, *taps, reference]
     for index in range(TAPS + 1):
-        rung = c.place(devices.resistor(1 * kohm), id=f"R{index + 1}")
+        rung = c.place(devices.resistor(1 * kohm), name=f"R{index + 1}")
         c.connect(rung.a, ends[index])
         c.connect(rung.b, ends[index + 1])
     names = [f"t{index}" for index in range(1, TAPS + 1)]
@@ -53,10 +53,10 @@ def flash(c: Builder) -> None:
             transition=50 * ps,
             electrical=True,
         ),
-        id="U1",
+        name="U1",
     )
     for index, tap in enumerate(taps, start=1):
-        compare = c.place(comparator(), id=f"B{index}")
+        compare = c.place(comparator(), name=f"B{index}")
         c.connect(compare["in"], source)
         c.connect(compare.ref, tap)
         c.connect(compare.positive, encoder[f"t{index}"], name=f"thermometer{index}")
@@ -71,14 +71,14 @@ def flash(c: Builder) -> None:
 def bench(c: Builder) -> None:
     """The converter, its reference 3.3 V, its input a ramp, its outputs loaded."""
     ground = c.port("ground", Role.GROUND)
-    reference = c.place(devices.voltage_source(SUPPLY * V), id="VREF")
+    reference = c.place(devices.voltage_source(SUPPLY * V), name="VREF")
     ramp = Piecewise([(0 * us, 0 * V), (RAMP * 1e6 * us, SUPPLY * V)])
-    source = c.place(devices.voltage_source(ramp), id="VIN")
-    converter = c.place(flash(), id="X1")
+    source = c.place(devices.voltage_source(ramp), name="VIN")
+    converter = c.place(flash(), name="X1")
     c.connect(reference.positive, converter.vref, name="vref")
     c.connect(source.positive, converter.input, name="in")
     for bit in range(BITS):
-        load = c.place(devices.capacitor(10 * fF), id=f"C{bit}")
+        load = c.place(devices.capacitor(10 * fF), name=f"C{bit}")
         c.connect(converter[f"b{bit}"], load.a, name=f"b{bit}")
         c.connect(load.b, ground)
     c.connect(reference.negative, source.negative, converter.ground, ground)

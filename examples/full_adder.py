@@ -35,10 +35,13 @@ def nand(c: Builder) -> None:
     a, b = c.port("a", Role.INPUT), c.port("b", Role.INPUT)
     y = c.port("y", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
-    up_a, up_b = c.place(transistor("p"), id="P1"), c.place(transistor("p"), id="P2")
+    up_a, up_b = (
+        c.place(transistor("p"), name="P1"),
+        c.place(transistor("p"), name="P2"),
+    )
     down_a, down_b = (
-        c.place(transistor("n"), id="N1"),
-        c.place(transistor("n"), id="N2"),
+        c.place(transistor("n"), name="N1"),
+        c.place(transistor("n"), name="N2"),
     )
     c.connect(up_a.source, up_b.source, up_a.bulk, up_b.bulk, vdd)
     c.connect(up_a.drain, up_b.drain, down_a.drain, y)
@@ -54,7 +57,7 @@ def full_adder(c: Builder) -> None:
     a, b, carry_in = (c.port(name, Role.INPUT) for name in ("a", "b", "carry_in"))
     total, carry_out = c.port("sum", Role.OUTPUT), c.port("carry_out", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
-    gates = [c.place(nand(), id=f"U{index}") for index in range(1, 10)]
+    gates = [c.place(nand(), name=f"U{index}") for index in range(1, 10)]
     for gate in gates:
         c.connect(gate.vdd, vdd)
         c.connect(gate.gnd, gnd)
@@ -89,8 +92,8 @@ def bench(c: Builder) -> None:
     One input changes every 2 ns.
     """
     ground = c.port("ground", Role.GROUND)
-    supply = c.place(devices.voltage_source(SUPPLY), id="VDD")
-    adder = c.place(full_adder(), id="adder")
+    supply = c.place(devices.voltage_source(SUPPLY), name="VDD")
+    adder = c.place(full_adder(), name="adder")
     c.connect(supply.positive, adder.vdd, name="vdd")
     c.connect(supply.negative, adder.gnd, ground)
     # Each input's first rise, how long it stays high, and how often it repeats, in
@@ -109,11 +112,11 @@ def bench(c: Builder) -> None:
             width=width * STEP - 100 * ps,
             period=period * STEP,
         )
-        source = c.place(devices.voltage_source(gray), id=f"V{port}")
+        source = c.place(devices.voltage_source(gray), name=f"V{port}")
         c.connect(source.positive, adder[port], name=port)
         c.connect(source.negative, ground)
     for port in ("sum", "carry_out"):
-        load = c.place(devices.capacitor(10 * fF), id=f"C{port}")
+        load = c.place(devices.capacitor(10 * fF), name=f"C{port}")
         c.connect(load.a, adder[port], name=port)
         c.connect(load.b, ground)
 

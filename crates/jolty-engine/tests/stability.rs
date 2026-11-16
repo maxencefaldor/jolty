@@ -27,25 +27,25 @@ fn amplifier(names: &[(&str, &str)], level: f64) -> Circuit {
             .map_or(name.to_owned(), |(_, to)| (*to).to_owned())
     };
     let instances = json!([
-        {"id": "E1", "of": {"device": "voltage_controlled_voltage_source"},
+        {"name": "E1", "of": {"device": "voltage_controlled_voltage_source"},
          "parameters": {"gain": -GAIN},
          "terminals": {"positive": net("e"), "negative": net("g"),
                        "control_positive": net("in"), "control_negative": net("g")}},
-        {"id": "RO", "of": {"device": "resistor"}, "parameters": {"resistance": OUTPUT},
+        {"name": "RO", "of": {"device": "resistor"}, "parameters": {"resistance": OUTPUT},
          "terminals": {"a": net("e"), "b": net("y")}},
-        {"id": "VP", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": level}},
+        {"name": "VP", "of": {"device": "voltage_source"}, "parameters": {"waveform": {"dc": level}},
          "terminals": {"positive": net("x"), "negative": net("y")}},
-        {"id": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": UPPER},
+        {"name": "R1", "of": {"device": "resistor"}, "parameters": {"resistance": UPPER},
          "terminals": {"a": net("x"), "b": net("in")}},
-        {"id": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": LOWER},
+        {"name": "R2", "of": {"device": "resistor"}, "parameters": {"resistance": LOWER},
          "terminals": {"a": net("in"), "b": net("g")}},
-        {"id": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": CAPACITANCE},
+        {"name": "C1", "of": {"device": "capacitor"}, "parameters": {"capacitance": CAPACITANCE},
          "terminals": {"a": net("in"), "b": net("g")}},
-        {"id": "IS", "of": {"device": "current_source"}, "parameters": {"waveform": {"dc": 0.0}},
+        {"name": "IS", "of": {"device": "current_source"}, "parameters": {"waveform": {"dc": 0.0}},
          "terminals": {"positive": net("g"), "negative": net("in")}}
     ]);
     let document = json!({
-        "format": "jolty-circuit", "version": 2, "top": "test",
+        "format": "jolty-circuit", "version": 3, "top": "test",
         "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
     });
     Circuit::from_json(&document.to_string()).expect("a valid circuit")

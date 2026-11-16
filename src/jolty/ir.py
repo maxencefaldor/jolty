@@ -211,7 +211,7 @@ class Rating(_Model):
 class Instance(_Model):
     """One placed device or component, and the net each of its terminals joins."""
 
-    id: str
+    name: str
     of: DeviceOf | ComponentOf
     parameters: dict[str, JsonValue] = Field(default_factory=dict)
     terminals: dict[str, str]
@@ -241,7 +241,7 @@ class Component(_Model):
     def instance(self, id: str) -> Instance | None:
         """The instance `id`, or None when the component places none by that id."""
         return next(
-            (instance for instance in self.instances if instance.id == id), None
+            (instance for instance in self.instances if instance.name == id), None
         )
 
 
@@ -249,7 +249,7 @@ class Circuit(_Model):
     """A circuit: every component, and the one at the top of the hierarchy."""
 
     format: Literal["jolty-circuit"] = "jolty-circuit"
-    version: Literal[2] = 2
+    version: Literal[3] = 3
     top: str
     components: dict[str, Component]
 

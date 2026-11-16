@@ -65,7 +65,7 @@ transformer = c.place(
     devices.coupled_inductors(
         [devices.inductor(1 * mH), devices.inductor(4 * mH)], {(1, 2): 0.99}
     ),
-    id="T1",
+    name="T1",
 )
 ```
 
@@ -237,8 +237,8 @@ Its devices have thermal terminals, which join thermal nets or the ground, and n
 | `heat_source(power)` | `a`, `b` | W: a constant flow from `a` into `b` |
 
 ```python
-heat = c.place(devices.heat_source(1 * W), id="P1")
-sink = c.place(devices.thermal_resistance(50 * K / W), id="RTH")
+heat = c.place(devices.heat_source(1 * W), name="P1")
+sink = c.place(devices.thermal_resistance(50 * K / W), name="RTH")
 c.connect(heat.b, sink.a, name="hot")
 c.connect(heat.a, sink.b, ground)
 ```
@@ -253,8 +253,8 @@ The device runs at the simulation's temperature raised by that net's, every para
 So a transistor whose junction a thermal resistance holds to the ambient settles where the heat it makes flows away, and a thermal capacitance beside it sets how fast it gets there:
 
 ```python
-transistor = c.place(devices.bipolar_transistor().heated(), id="Q1")
-mount = c.place(devices.thermal_resistance(200 * K / W), id="RTH")
+transistor = c.place(devices.bipolar_transistor().heated(), name="Q1")
+mount = c.place(devices.thermal_resistance(200 * K / W), name="RTH")
 c.connect(transistor.thermal, mount.a, name="junction")
 c.connect(mount.b, ground)
 ```

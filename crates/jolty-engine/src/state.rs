@@ -411,11 +411,11 @@ mod tests {
         let text = std::fs::read_to_string(speed.join("circuits/bjt_amp.json")).unwrap();
         let amplifier = Circuit::from_json(&text).unwrap();
         let device = |id: &str, model: &str, parameters, terminals| {
-            json!({"id": id, "of": {"device": model}, "parameters": parameters,
+            json!({"name": id, "of": {"device": model}, "parameters": parameters,
                    "terminals": terminals})
         };
         let ring = json!({
-            "format": "jolty-circuit", "version": 2, "top": "ring",
+            "format": "jolty-circuit", "version": 3, "top": "ring",
             "components": {"ring": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                 device("VDD", "voltage_source", json!({"waveform": {"dc": 1.0}}),
                        json!({"positive": "vdd", "negative": "0"})),

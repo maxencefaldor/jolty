@@ -26,11 +26,11 @@ def sallen_key(c: Builder) -> None:
     """The two resistors, the two capacitors and the follower."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
-    first = c.place(devices.resistor(10 * kohm), id="R1")
-    second = c.place(devices.resistor(10 * kohm), id="R2")
-    feedback = c.place(devices.capacitor(20 * nF), id="C1")
-    shunt = c.place(devices.capacitor(10 * nF), id="C2")
-    amplifier = c.place(opamp(), id="U1")
+    first = c.place(devices.resistor(10 * kohm), name="R1")
+    second = c.place(devices.resistor(10 * kohm), name="R2")
+    feedback = c.place(devices.capacitor(20 * nF), name="C1")
+    shunt = c.place(devices.capacitor(10 * nF), name="C2")
+    amplifier = c.place(opamp(), name="U1")
     c.connect(source, first.a)
     c.connect(first.b, second.a, feedback.a, name="junction")
     c.connect(second.b, shunt.a, amplifier.inp, name="plus")
@@ -50,8 +50,8 @@ def bench(c: Builder) -> None:
         fall=1 * us,
         width=4 * ms,
     )
-    source = c.place(devices.voltage_source(step), id="V1")
-    stage = c.place(sallen_key(), id="X1")
+    source = c.place(devices.voltage_source(step), name="V1")
+    stage = c.place(sallen_key(), name="X1")
     c.connect(source.positive, stage.input, name="in")
     c.connect(stage.output, name="out")
     c.connect(source.negative, stage.ground, ground)

@@ -23,9 +23,9 @@ from jolty.units import V, kohm, mA
 def divider(c: Builder) -> None:
     """1 V across 1 kΩ over 3 kΩ: 0.75 V/V, 4 kΩ in, 750 Ω out."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    upper = c.place(devices.resistor(1 * kohm), id="R1")
-    lower = c.place(devices.resistor(3 * kohm), id="R2")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    upper = c.place(devices.resistor(1 * kohm), name="R1")
+    lower = c.place(devices.resistor(3 * kohm), name="R2")
     c.connect(source.positive, upper.a, name="in")
     c.connect(upper.b, lower.a, name="out")
     c.connect(lower.b, source.negative, ground)
@@ -35,9 +35,9 @@ def divider(c: Builder) -> None:
 def driven(c: Builder) -> None:
     """A current source into 2 kΩ, beside a voltage source that drives nothing."""
     ground = c.port("ground", Role.GROUND)
-    current = c.place(devices.current_source(1 * mA), id="I1")
-    load = c.place(devices.resistor(2 * kohm), id="R1")
-    idle = c.place(devices.voltage_source(1 * V), id="V1")
+    current = c.place(devices.current_source(1 * mA), name="I1")
+    load = c.place(devices.resistor(2 * kohm), name="R1")
+    idle = c.place(devices.voltage_source(1 * V), name="V1")
     c.connect(current.negative, load.a, name="load")
     c.connect(current.positive, load.b, ground)
     c.connect(idle.positive, name="alone")

@@ -56,7 +56,7 @@ def circuits(draw: st.DrawFn) -> ir.Circuit:
             of = ir.DeviceOf(device=model)
             terminals = list(TERMINALS[model])
         joined = {terminal: draw(st.sampled_from(nets)) for terminal in terminals}
-        instances.append(ir.Instance(id=f"X{index}", of=of, terminals=joined))
+        instances.append(ir.Instance(name=f"X{index}", of=of, terminals=joined))
     ports = [ir.Port(name="ground", role=Role.GROUND)]
     if draw(st.booleans()):
         ports.append(ir.Port(name="vdd", role=Role.SUPPLY))
@@ -160,9 +160,9 @@ def stage(c: Builder) -> None:
     output = c.port("output")
     supply = c.port("vdd", Role.SUPPLY)
     ground = c.port("ground", Role.GROUND)
-    pull = c.place(devices.resistor(10 * kohm), id="RP")
-    series = c.place(devices.resistor(1 * kohm), id="R")
-    cap = c.place(devices.capacitor(1 * nF), id="C")
+    pull = c.place(devices.resistor(10 * kohm), name="RP")
+    series = c.place(devices.resistor(1 * kohm), name="R")
+    cap = c.place(devices.capacitor(1 * nF), name="C")
     c.connect(source, series.a)
     c.connect(series.b, cap.a, pull.b, output)
     c.connect(pull.a, supply)
@@ -173,10 +173,10 @@ def stage(c: Builder) -> None:
 def chain(c: Builder) -> None:
     """Two stages in a row, fed from a source, on a rail of their own."""
     ground = c.port("ground", Role.GROUND)
-    rail = c.place(devices.voltage_source(5 * V), id="VDD")
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    first = c.place(stage(), id="X1")
-    second = c.place(stage(), id="X2")
+    rail = c.place(devices.voltage_source(5 * V), name="VDD")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    first = c.place(stage(), name="X1")
+    second = c.place(stage(), name="X2")
     c.connect(rail.positive, first.vdd, second.vdd, name="vdd")
     c.connect(source.positive, first.input, name="in")
     c.connect(first.output, second.input, name="mid")
@@ -200,7 +200,7 @@ def test_a_net_plays_the_role_of_the_ports_on_it() -> None:
 
 def test_signal_flows_from_the_sources_and_rails_sink() -> None:
     drawn = layout(circuit(chain()), "chain")
-    placed = {item.id: item for item in drawn.instances}
+    placed = {item.name: item for item in drawn.instances}
     assert [placed[id].column for id in ("V1", "X1", "X2")] == [0, 1, 2]
     assert placed["VDD"].column == 0
     assert placed["VDD"].origin[1] < placed["V1"].origin[1]
@@ -209,7 +209,7 @@ def test_signal_flows_from_the_sources_and_rails_sink() -> None:
 
 def test_without_sources_signal_flows_from_the_first_port() -> None:
     drawn = layout(circuit(stage()), "stage")
-    placed = {item.id: item for item in drawn.instances}
+    placed = {item.name: item for item in drawn.instances}
     assert placed["R"].column == 0
     assert placed["R"].orientation == Orientation(turns=1)
     assert {flag.name: flag.side for flag in drawn.flags} == {
@@ -227,9 +227,9 @@ def test_without_sources_signal_flows_from_the_first_port() -> None:
 def transconductor(c: Builder) -> None:
     """A source driving a load through a transconductance from the ground."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(1 * V), id="V1")
-    gain = c.place(devices.voltage_controlled_current_source(500 * uS), id="G1")
-    load = c.place(devices.resistor(1 * kohm), id="R1")
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    gain = c.place(devices.voltage_controlled_current_source(500 * uS), name="G1")
+    load = c.place(devices.resistor(1 * kohm), name="R1")
     c.connect(source.positive, gain.control_positive, name="in")
     c.connect(gain.negative, load.a, name="out")
     c.connect(source.negative, gain.positive, gain.control_negative, load.b, ground)
@@ -237,7 +237,7 @@ def transconductor(c: Builder) -> None:
 
 def test_a_controlled_source_flips_to_keep_its_ground_below() -> None:
     drawn = layout(circuit(transconductor()), "transconductor")
-    placed = {item.id: item for item in drawn.instances}
+    placed = {item.name: item for item in drawn.instances}
     gain = placed["G1"]
     assert gain.orientation == Orientation(flipped=True)
     assert gain.pin("positive")[1] < gain.pin("negative")[1]
@@ -250,19 +250,19 @@ def test_an_unknown_model_or_component_draws_as_a_box() -> None:
         ports=(ir.Port(name="ground", role=Role.GROUND),),
         instances=(
             ir.Instance(
-                id="U1",
+                name="U1",
                 of=ir.DeviceOf(device="transistor"),
                 terminals={"base": "in", "collector": "out", "emitter": "ground"},
             ),
             ir.Instance(
-                id="X1",
+                name="X1",
                 of=ir.ComponentOf(component="missing"),
                 terminals={"a": "out", "b": "ground"},
             ),
         ),
     )
     drawn = layout(ir.Circuit(top="top", components={"top": top}), "top")
-    placed = {item.id: item for item in drawn.instances}
+    placed = {item.name: item for item in drawn.instances}
     assert set(placed["U1"].shape.pins) == {"base", "collector", "emitter"}
     assert set(placed["X1"].shape.pins) == {"a", "b"}
     assert_sound(drawn)
@@ -277,14 +277,14 @@ def test_an_empty_component_lays_out_as_nothing() -> None:
 def test_a_net_of_many_pins_is_wired_whole() -> None:
     loads = tuple(
         ir.Instance(
-            id=f"R{index}",
+            name=f"R{index}",
             of=ir.DeviceOf(device="resistor"),
             terminals={"a": "bus", "b": f"n{index}"},
         )
         for index in range(24)
     )
     source = ir.Instance(
-        id="V1",
+        name="V1",
         of=ir.DeviceOf(device="voltage_source"),
         terminals={"positive": "bus", "negative": "ground"},
     )

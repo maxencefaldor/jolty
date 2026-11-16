@@ -32,18 +32,18 @@ def integrator_schmitt(
     """
     control, output = c.port("control", Role.INPUT), c.port("output", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
-    integrator, schmitt = c.place(opamp(), id="U1"), c.place(opamp(), id="U2")
-    r1 = c.place(devices.resistor(timing * ohm), id="R1")
-    r2 = c.place(devices.resistor(50e3 * ohm), id="R2")
-    r3 = c.place(devices.resistor(50e3 * ohm), id="R3")
-    r4 = c.place(devices.resistor(timing / 2 * ohm), id="R4")
-    cap = c.place(devices.capacitor(capacitance * F), id="C1")
-    switch = c.place(q2n3904(), id="Q1")
-    base = c.place(devices.resistor(10e3 * ohm), id="RB")
-    clamp = c.place(d1n4148(), id="D1")
-    rin = c.place(devices.resistor(10e3 * threshold / (1 - threshold) * ohm), id="R5")
+    integrator, schmitt = c.place(opamp(), name="U1"), c.place(opamp(), name="U2")
+    r1 = c.place(devices.resistor(timing * ohm), name="R1")
+    r2 = c.place(devices.resistor(50e3 * ohm), name="R2")
+    r3 = c.place(devices.resistor(50e3 * ohm), name="R3")
+    r4 = c.place(devices.resistor(timing / 2 * ohm), name="R4")
+    cap = c.place(devices.capacitor(capacitance * F), name="C1")
+    switch = c.place(q2n3904(), name="Q1")
+    base = c.place(devices.resistor(10e3 * ohm), name="RB")
+    clamp = c.place(d1n4148(), name="D1")
+    rin = c.place(devices.resistor(10e3 * threshold / (1 - threshold) * ohm), name="R5")
     # R5 from the Schmitt trigger's non-inverting input to ground, R6 from its output.
-    rf = c.place(devices.resistor(10e3 * ohm), id="R6")
+    rf = c.place(devices.resistor(10e3 * ohm), name="R6")
     kick = Pulse(
         initial=0 * uA,
         pulsed=10 * uA,
@@ -52,7 +52,7 @@ def integrator_schmitt(
         fall=0.1 * us,
         width=2 * us,
     )
-    start = c.place(devices.current_source(kick), id="I1")
+    start = c.place(devices.current_source(kick), name="I1")
     c.connect(control, r1.a, r2.a)
     c.connect(r2.b, r3.a, integrator.inp, name="half")
     c.connect(r1.b, r4.a, cap.a, integrator.inn, start.negative, name="summing")
@@ -77,8 +77,8 @@ def integrator_schmitt(
 def bench(c: Builder, oscillator: Component, volts: float = 1.0) -> None:
     """The oscillator with a control of `volts`."""
     ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(volts * V), id="VC")
-    placed = c.place(oscillator, id="X1")
+    source = c.place(devices.voltage_source(volts * V), name="VC")
+    placed = c.place(oscillator, name="X1")
     c.connect(source.positive, placed.control, name="control")
     c.connect(placed.output, name="out")
     c.connect(source.negative, placed.ground, ground)
@@ -104,15 +104,15 @@ def mosfet_switched(  # noqa: PLR0913 - the timing, the threshold and two remedi
     """
     control, output = c.port("control", Role.INPUT), c.port("output", Role.OUTPUT)
     ground = c.port("ground", Role.GROUND)
-    integrator, schmitt = c.place(opamp(), id="U1"), c.place(opamp(), id="U2")
-    r1 = c.place(devices.resistor(timing * ohm), id="R1")
-    r2 = c.place(devices.resistor(50e3 * ohm), id="R2")
-    r3 = c.place(devices.resistor(50e3 * ohm), id="R3")
-    r4 = c.place(devices.resistor(timing / 2 * ohm), id="R4")
-    cap = c.place(devices.capacitor(capacitance * F), id="C1")
-    switch = c.place(mos("n", width=50), id="M1")
-    rin = c.place(devices.resistor(10e3 * threshold / (1 - threshold) * ohm), id="R5")
-    rf = c.place(devices.resistor(10e3 * ohm), id="R6")
+    integrator, schmitt = c.place(opamp(), name="U1"), c.place(opamp(), name="U2")
+    r1 = c.place(devices.resistor(timing * ohm), name="R1")
+    r2 = c.place(devices.resistor(50e3 * ohm), name="R2")
+    r3 = c.place(devices.resistor(50e3 * ohm), name="R3")
+    r4 = c.place(devices.resistor(timing / 2 * ohm), name="R4")
+    cap = c.place(devices.capacitor(capacitance * F), name="C1")
+    switch = c.place(mos("n", width=50), name="M1")
+    rin = c.place(devices.resistor(10e3 * threshold / (1 - threshold) * ohm), name="R5")
+    rf = c.place(devices.resistor(10e3 * ohm), name="R6")
     kick = Pulse(
         initial=0 * uA,
         pulsed=10 * uA,
@@ -121,20 +121,20 @@ def mosfet_switched(  # noqa: PLR0913 - the timing, the threshold and two remedi
         fall=0.1 * us,
         width=2 * us,
     )
-    start = c.place(devices.current_source(kick), id="I1")
+    start = c.place(devices.current_source(kick), name="I1")
     c.connect(control, r1.a, r2.a)
     c.connect(r2.b, r3.a, integrator.inp, name="half")
     c.connect(r1.b, r4.a, cap.a, integrator.inn, start.negative, name="summing")
     c.connect(r4.b, switch.drain, name="switched")
     if compensation:
-        series = c.place(devices.resistor(compensation * ohm), id="R7")
+        series = c.place(devices.resistor(compensation * ohm), name="R7")
         c.connect(cap.b, series.a, name="capacitor")
         c.connect(integrator.out, series.b, schmitt.inn, output)
     else:
         c.connect(integrator.out, cap.b, schmitt.inn, output)
     positive, square = [rin.b, rf.a, schmitt.inp], [schmitt.out, rf.b, switch.gate]
     if speedup:
-        hurry = c.place(devices.capacitor(speedup * F), id="C2")
+        hurry = c.place(devices.capacitor(speedup * F), name="C2")
         positive.append(hurry.a)
         square.append(hurry.b)
     c.connect(*positive, name="positive")

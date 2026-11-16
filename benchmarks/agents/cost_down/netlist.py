@@ -38,7 +38,7 @@ def toleranced(stage: Component, tolerances: object) -> Component:
             raise TypeError(message)
         given[str(name).casefold()] = ir.Tolerance(relative=relative)
     resistors = {
-        instance.id.casefold()
+        instance.name.casefold()
         for instance in stage.definition.instances
         if instance.of == ir.DeviceOf(device="resistor")
     }
@@ -48,9 +48,9 @@ def toleranced(stage: Component, tolerances: object) -> Component:
         raise ValueError(message)
     instances = tuple(
         instance.model_copy(
-            update={"tolerances": {"resistance": given[instance.id.casefold()]}}
+            update={"tolerances": {"resistance": given[instance.name.casefold()]}}
         )
-        if instance.id.casefold() in given
+        if instance.name.casefold() in given
         else instance
         for instance in stage.definition.instances
     )
@@ -85,11 +85,11 @@ def build() -> Component:
     placed = next(
         instance.of.component
         for instance in bench.definition.instances
-        if instance.id == "X1" and isinstance(instance.of, ir.ComponentOf)
+        if instance.name == "X1" and isinstance(instance.of, ir.ComponentOf)
     )
     instances = tuple(
         instance.model_copy(update={"of": ir.ComponentOf(component=stage.name)})
-        if instance.id == "X1"
+        if instance.name == "X1"
         else instance
         for instance in bench.definition.instances
     )

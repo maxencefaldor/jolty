@@ -293,8 +293,8 @@ def test_circuit_files_round_trip(tmp_path: Path) -> None:
     @component
     def load(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
-        resistor = c.place(devices.resistor(1 * kohm), id="R1")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        resistor = c.place(devices.resistor(1 * kohm), name="R1")
         c.connect(source.positive, resistor.a)
         c.connect(source.negative, resistor.b, ground)
 
@@ -335,8 +335,8 @@ def _loaded(resistance: float) -> ir.Circuit:
     @component
     def load(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
-        resistor = c.place(devices.resistor(resistance * ohm), id="R1")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        resistor = c.place(devices.resistor(resistance * ohm), name="R1")
         c.connect(source.positive, resistor.a)
         c.connect(source.negative, resistor.b, ground)
 
@@ -384,10 +384,10 @@ def test_batch_files_hold_every_column_of_a_batch(tmp_path: Path) -> None:
     @component
     def filtered(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(1 * V), id="V1")
-        resistor = c.place(devices.resistor(1 * kohm, tolerance=0.05), id="R1")
-        capacitor = c.place(devices.capacitor(1 * nF, tolerance=0.1), id="C1")
-        load = c.place(devices.resistor(10 * kohm), id="R2")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        resistor = c.place(devices.resistor(1 * kohm, tolerance=0.05), name="R1")
+        capacitor = c.place(devices.capacitor(1 * nF, tolerance=0.1), name="C1")
+        load = c.place(devices.resistor(10 * kohm), name="R2")
         c.connect(source.positive, resistor.a, name="in")
         c.connect(resistor.b, capacitor.a, load.a, name="out")
         c.connect(capacitor.b, load.b, source.negative, ground)
@@ -425,9 +425,9 @@ def test_results_files_hold_a_sweep_of_a_parameter(tmp_path: Path) -> None:
     @component
     def divider(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(5 * V), id="V1")
-        upper = c.place(devices.resistor(1 * kohm), id="R1")
-        lower = c.place(devices.resistor(1 * kohm), id="R2")
+        source = c.place(devices.voltage_source(5 * V), name="V1")
+        upper = c.place(devices.resistor(1 * kohm), name="R1")
+        lower = c.place(devices.resistor(1 * kohm), name="R2")
         c.connect(source.positive, upper.a)
         c.connect(upper.b, lower.a, name="out")
         c.connect(lower.b, source.negative, ground)
