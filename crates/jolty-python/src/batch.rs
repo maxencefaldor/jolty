@@ -205,7 +205,7 @@ impl Variants {
     }
 
     /// `samples` Monte Carlo samples of the numbers `varied`, a JSON list of objects of an
-    /// instance's `path`, a number's `parameter` path, its `nominal` value and its
+    /// `instance`, its path, a number's `parameter` path, its `nominal` value and its
     /// `tolerance`, drawn from `seed` as [`crate::sample`] draws them.
     ///
     /// Raises `ElaborationError` naming every number the circuit's devices do not write.
@@ -218,25 +218,16 @@ impl Variants {
         samples: u64,
     ) -> PyResult<Self> {
         let circuit = &elaborated.inner;
-        let varied: Vec<crate::Varied> =
+        let toleranced: Vec<Toleranced> =
             serde_json::from_str(varied).map_err(|error| unreadable(&error))?;
-        let toleranced: Vec<Toleranced> = varied
-            .into_iter()
-            .map(|varied| Toleranced {
-                path: varied.path,
-                name: varied.parameter,
-                nominal: varied.nominal,
-                tolerance: varied.tolerance,
-            })
-            .collect();
         let columns = toleranced
             .iter()
             .filter_map(|toleranced| {
-                let parameter = circuit.parameter(&toleranced.path, &toleranced.name)?;
+                let parameter = circuit.parameter(&toleranced.instance, &toleranced.parameter)?;
                 Some(Column::Parameter(
                     parameter,
-                    toleranced.path.clone(),
-                    toleranced.name.clone(),
+                    toleranced.instance.clone(),
+                    toleranced.parameter.clone(),
                 ))
             })
             .collect();

@@ -21,7 +21,7 @@ from jolty.plan import MonteCarlo, OperatingPoint, WorstCase
 from jolty.runner import BATCHES, MONTE_CARLO, Built, Job, run
 from jolty.specs import Specs, value
 from jolty.units import A, V, kohm, nF
-from jolty.variation import Varied, extreme, moved, sample, toleranced
+from jolty.variation import Toleranced, extreme, moved, sample, toleranced
 
 
 @component
@@ -46,7 +46,7 @@ def pair(c: Builder) -> None:
 
 def test_each_placement_of_a_component_varies_apart() -> None:
     varied = toleranced(circuit(pair()))
-    assert [(parameter.path, parameter.parameter) for parameter in varied] == [
+    assert [(parameter.instance, parameter.parameter) for parameter in varied] == [
         ("X1/R1", "resistance"),
         ("X2/R1", "resistance"),
     ]
@@ -199,7 +199,11 @@ def test_a_supply_takes_a_tolerance_by_its_path() -> None:
 
     built = circuit(divider())
     (varied,) = toleranced(built)
-    assert (varied.path, varied.parameter, varied.nominal) == ("V1", "waveform.dc", 5)
+    assert (varied.instance, varied.parameter, varied.nominal) == (
+        "V1",
+        "waveform.dc",
+        5,
+    )
     drawn = sample((varied,), 0, 0)
     level = drawn["V1"]["waveform.dc"]
     assert 4.75 <= level <= 5.25
@@ -331,7 +335,7 @@ def test_each_sample_runs_on_the_same_parts_at_every_corner(
     (spread,) = report.spreads
     assert spread.values is not None
     varied = [
-        Varied(path, "resistance", 1e3, ir.Tolerance(relative=0.01))
+        Toleranced(path, "resistance", 1e3, ir.Tolerance(relative=0.01))
         for path in ("R1", "R2")
     ]
     drawn = [sample(varied, 2, index) for index in range(50)]
@@ -427,8 +431,8 @@ def test_a_worst_case_moves_a_step_of_its_tolerance() -> None:
     with pytest.raises(ValueError, match="above 0 and at most 1, not 0"):
         WorstCase(step=0)
     varied = [
-        Varied("R1", "resistance", 1e3, ir.Tolerance(relative=0.1)),
-        Varied(
+        Toleranced("R1", "resistance", 1e3, ir.Tolerance(relative=0.1)),
+        Toleranced(
             "R2",
             "resistance",
             1e3,

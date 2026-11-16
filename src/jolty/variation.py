@@ -27,7 +27,7 @@ Examples:
     ...     c.connect(source.positive, upper.a)
     ...     c.connect(upper.b, source.negative, ground)
     >>> (varied,) = toleranced(circuit(divider()))
-    >>> (varied.path, varied.parameter, varied.nominal)
+    >>> (varied.instance, varied.parameter, varied.nominal)
     ('R1', 'resistance', 1000.0)
     >>> drawn = sample((varied,), seed=0, index=0)["R1"]["resistance"]
     >>> 990 <= drawn <= 1010
@@ -43,10 +43,10 @@ from jolty import _core, ir
 
 
 @dataclass(frozen=True, slots=True)
-class Varied:
+class Toleranced:
     """One parameter of one device instance that varies within its tolerance."""
 
-    path: str
+    instance: str
     """The instance's path, such as ``X1/R1``."""
     parameter: str
     """The parameter's path, such as ``resistance`` or ``waveform.dc``."""
@@ -54,7 +54,7 @@ class Varied:
     tolerance: ir.Tolerance
 
 
-def toleranced(circuit: ir.Circuit) -> tuple[Varied, ...]:
+def toleranced(circuit: ir.Circuit) -> tuple[Toleranced, ...]:
     """Every parameter of every device instance of `circuit` that has a tolerance.
 
     They come in the order of the hierarchy, each instance's parameters by path, as the
@@ -64,7 +64,9 @@ def toleranced(circuit: ir.Circuit) -> tuple[Varied, ...]:
         ValueError: When a tolerance's parameter has no number.
     """
     return tuple(
-        Varied(path, parameter, nominal, ir.Tolerance.model_validate_json(tolerance))
+        Toleranced(
+            path, parameter, nominal, ir.Tolerance.model_validate_json(tolerance)
+        )
         for path, parameter, nominal, tolerance in _core.toleranced(
             circuit.model_dump_json()
         )
@@ -72,7 +74,7 @@ def toleranced(circuit: ir.Circuit) -> tuple[Varied, ...]:
 
 
 def sample(
-    varied: Iterable[Varied], seed: int, index: int
+    varied: Iterable[Toleranced], seed: int, index: int
 ) -> dict[str, dict[str, float]]:
     """The sample `index` of `varied`, drawn from `seed` as the engine draws it.
 
@@ -88,7 +90,7 @@ def sample(
     encoded = json.dumps(
         [
             {
-                "path": parameter.path,
+                "instance": parameter.instance,
                 "parameter": parameter.parameter,
                 "nominal": parameter.nominal,
                 "tolerance": parameter.tolerance.model_dump(mode="json"),
@@ -101,7 +103,7 @@ def sample(
     for parameter, value in zip(
         chosen, _core.sample(encoded, seed, index), strict=True
     ):
-        drawn.setdefault(parameter.path, {})[parameter.parameter] = value
+        drawn.setdefault(parameter.instance, {})[parameter.parameter] = value
     return drawn
 
 
@@ -109,14 +111,14 @@ type Lot = tuple[str, str]
 """A lot's spread of one parameter: the lot's name and the parameter's path."""
 
 
-def lot(varied: Varied) -> Lot | None:
+def lot(varied: Toleranced) -> Lot | None:
     """The lot whose spread `varied` shares, by name and parameter; None for none."""
     shared = varied.tolerance.lot
     return None if shared is None else (shared.name, varied.parameter)
 
 
 def moved(
-    varied: Sequence[Varied], index: int, fraction: float
+    varied: Sequence[Toleranced], index: int, fraction: float
 ) -> dict[str, dict[str, float]]:
     """The parameter of `varied` at `index` moved `fraction` of its tolerance up.
 
@@ -124,11 +126,11 @@ def moved(
     """
     parameter = varied[index]
     value = parameter.nominal * edge(parameter.tolerance, fraction)
-    return {parameter.path: {parameter.parameter: value}}
+    return {parameter.instance: {parameter.parameter: value}}
 
 
 def extreme(
-    varied: Iterable[Varied],
+    varied: Iterable[Toleranced],
     directions: Sequence[float],
     lots: Mapping[Lot, float],
 ) -> dict[str, dict[str, float]]:
@@ -144,7 +146,7 @@ def extreme(
         if (shared := parameter.tolerance.lot) is not None:
             key = (shared.name, parameter.parameter)
             factor *= edge(shared, lots.get(key, 0.0))
-        found.setdefault(parameter.path, {})[parameter.parameter] = (
+        found.setdefault(parameter.instance, {})[parameter.parameter] = (
             parameter.nominal * factor
         )
     return found

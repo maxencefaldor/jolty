@@ -279,12 +279,12 @@ def test_a_batch_draws_the_samples_variation_draws() -> None:
     found = Simulation(built).batch({"op": OperatingPoint()}, MonteCarlo(40, seed=9))
     varied = toleranced(built)
     assert found.parameters == tuple(
-        f"{parameter.path} {parameter.parameter}" for parameter in varied
+        f"{parameter.instance} {parameter.parameter}" for parameter in varied
     )
     for index in range(40):
         drawn = sample(varied, 9, index)
         assert found.values[index].tolist() == [
-            drawn[parameter.path][parameter.parameter] for parameter in varied
+            drawn[parameter.instance][parameter.parameter] for parameter in varied
         ]
 
 

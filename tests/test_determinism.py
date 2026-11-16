@@ -39,7 +39,7 @@ from jolty import (
 from jolty.files import load_circuit
 from jolty.plan import MonteCarlo, Options, Parallelism, decade
 from jolty.units import GHz, Hz, V, kohm
-from jolty.variation import Varied, sample, toleranced
+from jolty.variation import Toleranced, sample, toleranced
 from strategies import SETTINGS, circuits
 
 THREADS = (1, 2, 3, 8)
@@ -165,7 +165,7 @@ def test_a_sample_is_the_same_drawn_alone_or_among_others() -> None:
 
 def test_a_part_added_leaves_every_other_draw_alone() -> None:
     varied = toleranced(circuit(_divider()))
-    added = Varied("R3", "resistance", 2e3, ir.Tolerance(relative=0.05))
+    added = Toleranced("R3", "resistance", 2e3, ir.Tolerance(relative=0.05))
     for index in range(20):
         alone = sample(varied, 3, index)
         more = sample((*varied, added), 3, index)

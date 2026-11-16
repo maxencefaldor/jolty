@@ -1081,7 +1081,7 @@ def _bounds(requirement: Requirement) -> list[float]:
 
 
 def _extreme(
-    varied: Sequence[variation.Varied], directions: Sequence[float]
+    varied: Sequence[variation.Toleranced], directions: Sequence[float]
 ) -> dict[str, dict[str, float]]:
     """Each of `varied`, and each lot's spread, at the extreme in its direction.
 

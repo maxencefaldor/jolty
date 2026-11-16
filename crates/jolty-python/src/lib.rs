@@ -25,7 +25,6 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use serde::Deserialize;
 
 /// Every allocation of the engine's runs, which many threads make at once in a batch,
 /// goes to mimalloc and its heaps of each thread: the system's allocator, shared by the
@@ -1081,17 +1080,7 @@ fn mantissas(series: &str) -> PyResult<Vec<f64>> {
         .ok_or_else(|| PyValueError::new_err(format!("no E series is named `{series}`")))
 }
 
-/// A number that varies within its tolerance, as `jolty.variation` writes it.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Varied {
-    pub(crate) path: String,
-    pub(crate) parameter: String,
-    pub(crate) nominal: f64,
-    pub(crate) tolerance: jolty_ir::Tolerance,
-}
-
-/// The value of each number of `varied`, a JSON list of objects of an instance's `path`, a
+/// The value of each number of `varied`, a JSON list of objects of an `instance`, its path, a
 /// number's `parameter` path, its `nominal` value and its `tolerance`, in the sample `index`
 /// of a Monte Carlo analysis seeded with `seed`, in order: each drawn from the seed, the
 /// index and its own name alone, as the engine draws it in a batch.
@@ -1099,18 +1088,11 @@ struct Varied {
 /// Raises `ValueError` for a list the engine cannot read.
 #[pyfunction]
 fn sample(varied: &str, seed: u64, index: u64) -> PyResult<Vec<f64>> {
-    let varied: Vec<Varied> = serde_json::from_str(varied).map_err(|error| unreadable(&error))?;
+    let varied: Vec<jolty_engine::variants::Toleranced> =
+        serde_json::from_str(varied).map_err(|error| unreadable(&error))?;
     Ok(varied
-        .into_iter()
-        .map(|varied| {
-            jolty_engine::variants::Toleranced {
-                path: varied.path,
-                name: varied.parameter,
-                nominal: varied.nominal,
-                tolerance: varied.tolerance,
-            }
-            .drawn(seed, index)
-        })
+        .iter()
+        .map(|varied| varied.drawn(seed, index))
         .collect())
 }
 
@@ -1128,7 +1110,7 @@ fn toleranced(circuit: &str) -> PyResult<Vec<(String, String, f64, String)>> {
         .map(|varied| {
             let tolerance =
                 serde_json::to_string(&varied.tolerance).map_err(|error| unreadable(&error))?;
-            Ok((varied.path, varied.name, varied.nominal, tolerance))
+            Ok((varied.instance, varied.parameter, varied.nominal, tolerance))
         })
         .collect()
 }

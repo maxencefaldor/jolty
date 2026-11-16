@@ -16,6 +16,7 @@ use jolty_ir::{Circuit, Distribution, Of, Tolerance};
 use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use rand_distr::StandardNormal;
+use serde::Deserialize;
 
 use crate::batch::Variants;
 use crate::elaborate::{ElaborationError, ElaborationProblem};
@@ -173,13 +174,14 @@ pub enum VariantsError {
 
 /// A number of a device instance that varies within its tolerance: where it is, its
 /// nominal value, and its tolerance.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Toleranced {
     /// The instance's path, such as `X1/R1`.
-    pub path: String,
+    pub instance: String,
     /// The number's path among the instance's parameters, such as `resistance` or
     /// `waveform.dc`.
-    pub name: String,
+    pub parameter: String,
     /// The number the circuit writes.
     pub nominal: f64,
     /// How far its values spread.
@@ -210,10 +212,20 @@ impl Toleranced {
     #[must_use]
     pub fn drawn(&self, seed: u64, index: u64) -> f64 {
         let tolerance = &self.tolerance;
-        let own = generator(seed, index, key(&self.path, &self.name), Drawn::Part);
+        let own = generator(
+            seed,
+            index,
+            key(&self.instance, &self.parameter),
+            Drawn::Part,
+        );
         let mut factor = factor(tolerance.distribution, tolerance.relative, own);
         if let Some(lot) = &tolerance.lot {
-            let shared = generator(seed, index, key(lot.name.as_str(), &self.name), Drawn::Lot);
+            let shared = generator(
+                seed,
+                index,
+                key(lot.name.as_str(), &self.parameter),
+                Drawn::Lot,
+            );
             factor *= self::factor(lot.distribution, lot.relative, shared);
         }
         self.nominal * factor
@@ -290,12 +302,12 @@ pub fn toleranced(circuit: &Circuit) -> Result<Vec<Toleranced>, Untoleranced> {
 
 /// The tolerance of a parameter an instance writes no number for.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{path} gives {name} a tolerance, not a number")]
+#[error("{instance} gives {parameter} a tolerance, not a number")]
 pub struct Untoleranced {
     /// The instance's path.
-    pub path: String,
+    pub instance: String,
     /// The parameter's path among its parameters.
-    pub name: String,
+    pub parameter: String,
 }
 
 /// Appends the toleranced numbers of the instances of `component`, whose paths start with
@@ -318,12 +330,12 @@ fn walk(
                     let nominal = jolty_ir::parameter(&instance.parameters, name)
                         .and_then(serde_json::Value::as_f64)
                         .ok_or_else(|| Untoleranced {
-                            path: path.clone(),
-                            name: name.clone(),
+                            instance: path.clone(),
+                            parameter: name.clone(),
                         })?;
                     found.push(Toleranced {
-                        path: path.clone(),
-                        name: name.clone(),
+                        instance: path.clone(),
+                        parameter: name.clone(),
                         nominal,
                         tolerance: tolerance.clone(),
                     });
@@ -360,14 +372,14 @@ impl MonteCarlo {
         let mut problems = Vec::new();
         let mut found = Vec::with_capacity(varied.len());
         for toleranced in varied {
-            match elaborated.parameter(&toleranced.path, &toleranced.name) {
+            match elaborated.parameter(&toleranced.instance, &toleranced.parameter) {
                 Some(parameter) => found.push((parameter, toleranced)),
-                None => problems.push(match elaborated.location(&toleranced.path) {
+                None => problems.push(match elaborated.location(&toleranced.instance) {
                     Some(at) => ElaborationProblem::UnknownParameter {
                         at,
-                        parameter: toleranced.name,
+                        parameter: toleranced.parameter,
                     },
-                    None => ElaborationProblem::UnknownOverride(toleranced.path),
+                    None => ElaborationProblem::UnknownOverride(toleranced.instance),
                 }),
             }
         }

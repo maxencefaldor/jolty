@@ -356,8 +356,8 @@ impl Network {
             .iter()
             .enumerate()
             .map(|(index, &(_, _, resistance))| Toleranced {
-                path: format!("R{index}"),
-                name: "resistance".to_owned(),
+                instance: format!("R{index}"),
+                parameter: "resistance".to_owned(),
                 nominal: resistance,
                 tolerance: Tolerance {
                     relative: 0.5,
@@ -630,8 +630,8 @@ fn amplifier_samples_find_the_same_alone_and_in_a_batch() {
 #[test]
 fn a_part_added_leaves_every_other_draw_alone() {
     let part = |path: &str, lot: Option<&str>| Toleranced {
-        path: path.to_owned(),
-        name: "resistance".to_owned(),
+        instance: path.to_owned(),
+        parameter: "resistance".to_owned(),
         nominal: 1e3,
         tolerance: Tolerance {
             relative: 0.01,

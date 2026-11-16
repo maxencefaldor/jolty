@@ -1092,7 +1092,7 @@ class Simulation:
         """
         kept: list[JsonValue] = [
             {
-                "path": path,
+                "instance": path,
                 "parameter": name,
                 "nominal": nominal,
                 "tolerance": json.loads(tolerance),
