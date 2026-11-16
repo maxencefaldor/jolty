@@ -498,6 +498,47 @@ jolty keeps every derivative exact, the derivative of the current and charge it 
 
 In a [noise analysis](simulation.md#noise), the sheet resistances make thermal noise, and the channel the thermal and flicker noise of `noise_model`: SPICE2's thermal noise of `8kT·|gm + gds + gmbs|/3` A²/Hz at `noise_model` 1, 3 and, corrected below saturation, 5 and 6, and BSIM3's of the inversion charge at 2 and 4; SPICE2's flicker noise of `kf·|Id|^af/(f^ef·Leff²·Cox)` at `noise_model` 1, 4 and 5, and BSIM3's of the oxide traps `noia`, `noib` and `noic` at 2, 3 and 6, each of the `m` copies' noise added, as in ngspice.
 
+## BSIM4
+
+`bsim4(...)` is a MOSFET between `drain`, `gate`, `source` and `bulk` in BSIM4.5, the Berkeley short-channel model of the CMOS processes from 130 nm down, SPICE's level 14 and 54 of version 4.5, as ngspice 47 runs it in its `bsim4v5` model after the BSIM4.5.0 manual of Xuemei Xi, Mohan Dunga and others (UC Berkeley, 2005).
+It models the modes the version 4.5 cards of SKY130 and GF180MCU select: `mobmod` 0, `capmod` 2, `diomod` 1, `tempmod` 0, `geomod` 0, `rgeomod` 0, `rdsmod` 0, `rgatemod` 0, `igcmod` 0, `igbmod` 0, `trnqsmod` 0, `acnqsmod` 0 and `wpemod` 0, which are ngspice's defaults too, and `rbodymod` 0 or 1 and `permod` 0 or 1; a card that selects another is refused, its choice named.
+The drain current folds in the threshold's short-channel, narrow-width, pocket implant and drain-induced barrier lowering terms, the poly gate's depletion, the mobility's degradation by the gate field, Coulomb scattering and the channel's length, the carriers' velocity saturation and overshoot, the source end's velocity limit, the output resistance's channel-length modulation, barrier lowering, threshold shift and substrate current, and the source and drain resistance `rdsw`; the impact ionization's substrate current and the gate-induced drain and source leakages flow into the body.
+The charges under the gate follow `capmod` 2 with the charge's thickness, the drain's share of the channel's charge `charge_partition`, beside the overlaps' charges with their bias dependence, and two diodes, with their trap-assisted tunneling, join the body to the drain and the source, each with its depletion charge.
+The stress of the length of diffusion, from `diffusion_edge_a` and `diffusion_edge_b`, `SA` and `SB`, moves the threshold, `k2`, `eta0` and the saturation velocity; ngspice 47's `b4v5temp.c` scales the mobility too, then takes the unstressed one with `MULU0` (lines 1359 and 1420), so jolty's mobility is unstressed as ngspice's is.
+The transistor is symmetric: with the drain below the source, the two swap.
+Its noise is not modeled yet, so a [noise analysis](simulation.md#noise) refuses a circuit that holds one, naming each such transistor, rather than leave it quiet.
+jolty's BSIM4 is derived from BSIM4.5.0, developed by the UC Berkeley BSIM Research Group, Copyright 2005 Regents of the University of California, and used under the BSIM4 terms of use, which `NOTICE` reproduces.
+
+Its instance takes a MOSFET's geometry and fingers, and a card of the manual's parameters by their names, `card={"vth0": 0.5 * V, "toxe": 4.1 * nm, ...}`:
+
+| Parameter | SPICE | Unit | Default |
+| --- | --- | --- | --- |
+| `channel` | `NMOS`, `PMOS` | `"n"` or `"p"` | `"n"` |
+| `width`, `length` | `W`, `L` | m | 5 µm, 5 µm |
+| `multiplier`, `fingers` | `M`, `NF` | none | 1, 1 |
+| `drain_area`, `source_area` | `AD`, `AS` | m² | from the fingers and `dmcg` |
+| `drain_perimeter`, `source_perimeter` | `PD`, `PS` | m | from the fingers and `dmcg` |
+| `drain_squares`, `source_squares` | `NRD`, `NRS` | none | none |
+| `diffusion_edge_a`, `diffusion_edge_b`, `finger_spacing` | `SA`, `SB`, `SD` | m | 0, 0, `2·dmcg` |
+| `threshold_adjustment`, `mobility_multiplier` | `DELVTO`, `MULU0` | V, none | 0, 1 |
+| `body_resistance_model`, `perimeter_model` | `RBODYMOD`, `PERMOD` | 0 or 1 | 0, 1 |
+| `check_parameters` | `PARAMCHK = 1` | `True` or `False` | `True` |
+| `charge_partition` | `XPART` | none | 0 |
+| `nominal_temperature` | `TNOM` | K | 27 °C |
+| `card` | each by its name | SI | ngspice's |
+
+Each parameter of the card takes a quantity of its dimension in SI units, which `devices.bsim4_dimension(name)` gives, or a plain number where it has none, and a parameter whose default derives from others, such as `vth0` from `vfb`, `k1` from `gamma1` and `gamma2`, `toxp` from `toxe` and `dtox`, or a drain's junction parameter from the source's, derives as ngspice derives it.
+Each binnable parameter has its length, width and area dependences, named after it with `l`, `w` and `p` before, each a coefficient of the reciprocal of the effective length, width or their product in meters: jolty's `lvth0` is a SPICE card's in volt-micrometers times 1e-6 at `BINUNIT = 1`, ngspice's default, and as it is at `BINUNIT = 2`.
+SPICE writes `NDEP`, `NSD`, `NGATE` and `NSUB` per cubic centimeter, `NDEP` above 1e20 and `NSD` and `NGATE` above 1e24 per cubic meter, and a `U0` above 1 in cm²/(V·s); jolty takes SI units, and `rdsw` and `prt` in ohms, the resistance of a channel 1 µm wide, as a card gives them.
+`ll`, `lw`, `lwl`, `wl`, `ww`, `wwl` and their charges' counterparts are plain numbers, of meters to the powers their exponents `lln`, `lwn`, `wln` and `wwn` set, and the gate tunneling currents' and the flicker noise's coefficients are in the manual's units.
+A sheet resistance `rsh` adds an internal node behind a diffusion whose `drain_squares` or `source_squares` is given and positive, as ngspice does at `rdsmod` 0 and `rgeomod` 0, as `M1:drain` or `M1:source` for a transistor `M1`; `body_resistance_model` 1 adds three under the channel and the junctions, `M1:body`, `M1:drain_body` and `M1:source_body`, joined to the bulk and each other by `rbpb`, `rbpd`, `rbps`, `rbdb` and `rbsb`.
+
+Away from the nominal temperature, the parameters scale as `tempmod` 0 scales them in ngspice: the mobility as `(T/Tn)^ute`, `ua`, `ub`, `uc`, `ud`, `vsat` and `rdsw` by their coefficients, the threshold by `kt1`, `kt1l` and `kt2`, `voff` by `tvoff`, and the junctions' saturation currents by `xtis` and `xtid`, their tunneling by `xtss` and its kin, their capacitances and potentials by `tcj`, `tpb` and the sidewalls' counterparts.
+BSIM4 computes with constants of its own, Boltzmann's over the electron's charge among them, so a netlist written for ngspice gives its nominal temperature in the same kelvins, as for BSIM3.
+The parameters ngspice stops on are refused, and those it clamps with a warning are clamped: `pbs`, `pbsws` and `pbswgs` and the drain's below 0.1 V rise to it, `ckappas` and `ckappad` below 0.02 V too, and with `check_parameters`, `a2` outside 0.01 to 1, a negative `prwg`, `rdsw` or `rdswmin`.
+A Newton iteration in which the transistor limited its gate's, its drain's, its body's or a junction's voltage has not converged, as for the other MOSFETs.
+jolty keeps every derivative exact, the derivative of the current and charge it computes, where ngspice's capacitances of `capmod` 2 with respect to the body are not the derivatives of its own charges: for SKY130's `nfet_01v8`, 1 µm wide and 0.15 µm long at `tt`, its gate and drain at 0.9 V, ngspice's `cgb` lies 1.2e-4 from the central difference of its own gate charge with its body 0.2 V forward, and 3.4e-5 with it 0.3 V reverse, as far as jolty's lies from it, while driven at its gate or its drain the two engines agree within 1e-8, and in their body's conductances within 4e-9.
+
 The SPICE reader reads a `.model` card of type `NMOS` or `PMOS` and `LEVEL` 8 or 49 of version 3.3, or of none, which ngspice reads as 3.3; ngspice runs a card of version 3.0, 3.1 or 3.2 with other models, which jolty does not have, so it refuses one.
 An element whose model names no card takes, as ngspice's bins do, the last defined card named after it with a dot and a number, such as `nch.2`, whose `LMIN`, `LMAX`, `WMIN` and `WMAX` hold the length and width the element gives, a bound within 1 nm counted in.
 The reader reads past what changes nothing ngspice computes: the bins' ranges, the safe operating area's `VGS_MAX` and the rest, and the parameters of the non-quasi-static models and HSPICE's area calculation, `ELM`, `ACM`'s and `GEO`, which it refuses on, as jolty models neither: a card or instance with `NQSMOD`, `ACNQSMOD` or `ACM` other than 0 is refused.

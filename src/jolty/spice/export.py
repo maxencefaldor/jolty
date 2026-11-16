@@ -23,7 +23,6 @@ from typing import Final, Literal
 from pydantic import JsonValue, TypeAdapter
 
 from jolty import _core, ir
-from jolty.devices import BSIM3_CARD
 from jolty.errors import JoltyError
 from jolty.ir import Role
 from jolty.spice import models, ngspice, sky130, xyce
@@ -173,6 +172,10 @@ XYCE: Final = Dialect(
             "Xyce's BSIM3, its MOSFET of level 9, is version 3.2.2, where jolty's is "
             "3.3.0"
         ),
+        "bsim4": (
+            "Xyce's BSIM4, its MOSFET of level 54, is of other versions than jolty's, "
+            "which is 4.5"
+        ),
         "vdmos": (
             "Xyce's VDMOS, its MOSFET of level 18, is another model than jolty's, "
             "which is ngspice's"
@@ -292,6 +295,7 @@ ELEMENTS = {
     "mosfet": Element("M", ("drain", "gate", "source", "bulk")),
     "vdmos": Element("M", ("drain", "gate", "source")),
     "bsim3": Element("M", ("drain", "gate", "source", "bulk")),
+    "bsim4": Element("M", ("drain", "gate", "source", "bulk")),
     "foundry_mosfet": Element("X", ("drain", "gate", "source", "bulk")),
     "behavioral_voltage_source": Element("B", ("positive", "negative")),
     "behavioral_current_source": Element("B", ("positive", "negative")),
@@ -403,8 +407,8 @@ def _model_card(
         JoltyError: When the device has no model card, or the dialect's model lacks a
             parameter the device gives.
     """
-    if model == "bsim3":
-        return _bsim3_card(values)
+    if model in models.BSIMS:
+        return _bsim_card(model, values)
     kind, names, instance, values = _card_names(model, values)
     names["nominal_temperature"] = ("tnom", 1.0)
     given = {
@@ -491,25 +495,28 @@ def _plain(kelvins: float) -> float:
     return kelvins - ZERO_CELSIUS
 
 
-def _bsim3_card(values: dict[str, JsonValue]) -> tuple[str, str, str]:
-    """A BSIM3 transistor's SPICE type, card and instance's parameters.
+def _bsim_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str]:
+    """A BSIM3 or BSIM4 transistor's SPICE type, card and instance's parameters.
 
-    The card is of ngspice's level 8 at version 3.3.0, its bins' dependences in SI
-    units, ``binunit = 2``; its concentrations are per cubic centimeter, but where that
-    number would exceed ngspice's bound, above which it reads one per cubic meter. BSIM3
-    computes with constants of its own, Boltzmann's over the electron's charge among
-    them, so its nominal temperature is written in the same kelvins as jolty's, given
-    or not, rather than where ngspice's thermal voltage is jolty's.
+    The card is of ngspice's level 8 at version 3.3.0, or 54 at version 4.5, its bins'
+    dependences in SI units, ``binunit = 2``; its concentrations are per cubic
+    centimeter, but where that number would exceed ngspice's bound, above which it
+    reads one per cubic meter. BSIM computes with constants of its own, Boltzmann's
+    over the electron's charge among them, so its nominal temperature is written in the
+    same kelvins as jolty's, given or not, rather than where ngspice's thermal voltage
+    is jolty's.
     """
-    defaulted = _defaulted("bsim3", values)
+    bsim = models.BSIMS[model]
+    defaulted = _defaulted(model, values)
     kind = f"{defaulted['channel']}mos".upper()
-    element = _spice(models.BSIM3_INSTANCE)
+    element = _spice(bsim.instance)
     names = {
         jolty: name
-        for name, jolty in (models.BSIM3_SELECTORS | models.BSIM3_SETTINGS).items()
+        for choices in (bsim.selectors, bsim.settings)
+        for name, jolty in choices.items()
     }
-    nominal = _number("bsim3", defaulted, "nominal_temperature")
-    card = ["level=8", "version=3.3.0", "binunit=2", f"tnom={nominal - ZERO_CELSIUS!r}"]
+    nominal = _number(model, defaulted, "nominal_temperature")
+    card = [*bsim.written, "binunit=2", f"tnom={nominal - ZERO_CELSIUS!r}"]
     written: list[str] = []
     for key, value in values.items():
         match key, value:
@@ -525,21 +532,19 @@ def _bsim3_card(values: dict[str, JsonValue]) -> tuple[str, str, str]:
             case _, int():
                 card.append(f"{names.get(key, key)}={value}")
             case _, float():
-                card.append(f"{names.get(key, key)}={_bsim3_value(key, value)!r}")
+                card.append(f"{names.get(key, key)}={_bsim_value(bsim, key, value)!r}")
             case _:
                 message = f"no SPICE value for {key} = {value}"
                 raise _unwritable(message)
     return kind, " ".join(card), " ".join(written)
 
 
-def _bsim3_value(key: str, value: float) -> float:
-    """The number a BSIM3 card writes for its parameter `key`, `value` in SI units."""
-    base = key if key in BSIM3_CARD else key[1:]
-    if base in models.BSIM3_DENSITIES:
+def _bsim_value(bsim: models.Bsim, key: str, value: float) -> float:
+    """The number a BSIM card writes for its parameter `key`, `value` in SI units."""
+    base = key if key in bsim.card else key[1:]
+    if base in bsim.densities:
         per_centimeter = value * 1e-6
-        return (
-            value if per_centimeter > models.BSIM3_DENSITIES[base] else per_centimeter
-        )
+        return value if per_centimeter > bsim.densities[base] else per_centimeter
     if base == "nsub":
         return value * 1e-6
     return value
@@ -740,10 +745,10 @@ def netlist(
         for instance in top.instances
         if isinstance(instance.of, ir.DeviceOf)
     }
-    if "foundry_mosfet" in placed and placed & {"mosfet", "bsim3"}:
+    if "foundry_mosfet" in placed and placed & {"mosfet", "bsim3", "bsim4"}:
         message = (
-            "a level-1, level-3 or BSIM3 MOSFET stands beside a foundry's, whose kit "
-            "scales the sizes of every MOSFET"
+            "a level-1, level-3, BSIM3 or BSIM4 MOSFET stands beside a foundry's, "
+            "whose kit scales the sizes of every MOSFET"
         )
         raise _unwritable(message)
     lines = [f"* {circuit.top}"]
@@ -807,6 +812,7 @@ def _device(
             | "mosfet"
             | "vdmos"
             | "bsim3"
+            | "bsim4"
             | "vbic"
         ):
             kind, card, parameters = _model_card(model, values, dialect)

@@ -438,6 +438,27 @@ impl Simulator {
         }
     }
 
+    /// Checks that the engine models the noise of every device of the circuit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulationError::NoiseUnmodeled`] naming each device whose noise is not
+    /// modeled, and its model, in the order they were placed.
+    pub(crate) fn noise_modeled(&self) -> Result<(), SimulationError> {
+        let unmodeled: Vec<String> = self
+            .elaborated
+            .devices
+            .iter()
+            .filter(|placed| !placed.noise_modeled())
+            .map(|placed| format!("{} ({})", placed.path(), placed.model()))
+            .collect();
+        if unmodeled.is_empty() {
+            Ok(())
+        } else {
+            Err(SimulationError::NoiseUnmodeled(unmodeled))
+        }
+    }
+
     /// Where the last analysis used logic devices outside their domains: each device and
     /// bound once, with the value furthest outside and when it first left.
     #[must_use]
@@ -646,6 +667,13 @@ pub enum SimulationError {
         .0.join(", ")
     )]
     Foundry(Vec<String>),
+    /// The circuit holds devices whose noise the engine does not model, which a noise
+    /// analysis would otherwise leave quiet.
+    #[error(
+        "the engine models no noise of these devices, so no noise analysis runs on them: {}",
+        .0.join(", ")
+    )]
+    NoiseUnmodeled(Vec<String>),
 }
 
 /// The numbers `numbers` names, each a device's path and a number's path, as a message lists

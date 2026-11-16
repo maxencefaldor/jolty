@@ -21,9 +21,14 @@ mod prepare;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub(crate) use self::channel::{
+    above_half, above_tenth, factor_above_tenth, reciprocal_above_tenth,
+};
+pub(crate) use self::charges::{depletion, flat_band};
 pub use self::parameters::Bsim3Parameters;
 use self::prepare::PreparedBsim3;
 use self::prepare::{Junction, Junctions};
+pub(crate) use self::prepare::{check, lost};
 use crate::kernel::dual::Dual;
 use crate::kernel::jfet::Channel;
 use crate::kernel::junction::{limit_channel, limit_junction};
@@ -35,33 +40,41 @@ use crate::{
 };
 
 /// Boltzmann's constant over the elementary charge, in volts per kelvin, as `b3temp.c`
-/// takes it.
-const KBOQ: f64 = 8.617_087e-5;
+/// and `b4v5temp.c` take it.
+pub(crate) const KBOQ: f64 = 8.617_087e-5;
 /// The permittivity of silicon dioxide, in farads per meter, as BSIM3 takes it.
 const EPSOX: f64 = 3.453_133e-11;
-/// The permittivity of silicon, in farads per meter, as BSIM3 takes it.
-const EPSSI: f64 = 1.035_94e-10;
-/// The elementary charge, in coulombs, as `b3temp.c` and `b3ld.c` take it.
-const Q: f64 = 1.602_19e-19;
-/// `e^34`, where `b3ld.c` stops its exponentials.
-const MAX_EXP: f64 = 5.834_617_425e14;
+/// The permittivity of silicon, in farads per meter, as BSIM3 and BSIM4 take it.
+pub(crate) const EPSSI: f64 = 1.035_94e-10;
+/// The elementary charge, in coulombs, as `b3temp.c`, `b3ld.c`, `b4v5temp.c` and
+/// `b4v5ld.c` take it.
+pub(crate) const Q: f64 = 1.602_19e-19;
+/// `e^34`, where `b3ld.c` and `b4v5ld.c` stop their exponentials.
+pub(crate) const MAX_EXP: f64 = 5.834_617_425e14;
 /// `e^−34`.
-const MIN_EXP: f64 = 1.713_908_431e-15;
-/// The argument beyond which `b3ld.c` stops its exponentials.
-const EXP_THRESHOLD: f64 = 34.0;
-/// The smoothing of `b3ld.c`'s effective voltages of the charges, its `DELTA_1` to
-/// `DELTA_4`, in volts.
-const DELTA: f64 = 0.02;
-/// The elementary charge, in coulombs, as ngspice's `const.h` gives it to `b3noi.c`.
-const NOISE_CHARGE: f64 = 1.602_176_620_8e-19;
+pub(crate) const MIN_EXP: f64 = 1.713_908_431e-15;
+/// The argument beyond which `b3ld.c` and `b4v5ld.c` stop their exponentials.
+pub(crate) const EXP_THRESHOLD: f64 = 34.0;
+/// The smoothing of `b3ld.c`'s and `b4v5ld.c`'s effective voltages of the charges, their
+/// `DELTA_1` to `DELTA_4`, in volts.
+pub(crate) const DELTA: f64 = 0.02;
+/// The elementary charge, in coulombs, as ngspice's `const.h` gives it to `b3noi.c` and
+/// to `b4v5ld.c`'s poly gate depletion.
+pub(crate) const NOISE_CHARGE: f64 = 1.602_176_620_8e-19;
 /// Boltzmann's constant over the elementary charge, in volts per kelvin, as `b3noi.c`
 /// writes it.
 const NOISE_KBOQ: f64 = 8.62e-5;
 /// The least argument of `b3noi.c`'s logarithms, its `N_MINLOG`.
 const N_MINLOG: f64 = 1e-38;
 /// The thermal voltage at 27 °C with ngspice's constants, `CONSTvt0`, from which
-/// `b3ld.c` limits the bulk junctions' steps.
-const VT0: f64 = 1.380_648_52e-23 * 300.15 / 1.602_176_620_8e-19;
+/// `b3ld.c` and `b4v5ld.c` limit the bulk junctions' steps.
+pub(crate) const VT0: f64 = 1.380_648_52e-23 * 300.15 / 1.602_176_620_8e-19;
+
+/// The critical voltage of a junction of 10 fA at [`VT0`], `VT0 · ln(VT0 / (√2 · 10 fA))`,
+/// from which `b3ld.c` and `b4v5ld.c` limit the bulk junctions' steps, their `vcrit`.
+pub(crate) fn critical_voltage() -> f64 {
+    VT0 * (VT0 / (std::f64::consts::SQRT_2 * 1.0e-14)).ln()
+}
 
 /// A number and its derivatives with respect to a transistor's gate-source, drain-source
 /// and bulk-source voltages.
@@ -475,7 +488,7 @@ impl<R: Real> PreparedBsim3<R> {
             limit_channel([vgs, vds], [previous_gate, previous_drain], threshold);
         // `b3ld.c` limits the junction's step from ngspice's thermal voltage at 27 °C and
         // the critical voltage of 10 fA, whatever the junctions' own.
-        let critical = VT0 * (VT0 / (std::f64::consts::SQRT_2 * 1.0e-14)).ln();
+        let critical = critical_voltage();
         let (vbs, junction) = if vds_limited >= 0.0 {
             let limit = limit_junction(applied_vbs, previous_bulk, VT0, critical);
             (limit.unwrap_or(applied_vbs), limit.is_some())

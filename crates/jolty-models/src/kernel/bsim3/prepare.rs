@@ -141,7 +141,7 @@ pub struct PreparedBsim3<R: Real> {
 }
 
 /// Fails with `message` when `failed` holds, as `b3check.c` stops on a fatal error.
-fn check(failed: bool, message: impl FnOnce() -> String) -> Result<(), ParameterError> {
+pub(crate) fn check(failed: bool, message: impl FnOnce() -> String) -> Result<(), ParameterError> {
     if failed {
         Err(ParameterError(message()))
     } else {
@@ -150,7 +150,11 @@ fn check(failed: bool, message: impl FnOnce() -> String) -> Result<(), Parameter
 }
 
 /// The reciprocal-free length or width lost, `int + l / L^ln + w / W^wn + wl / (L^ln · W^wn)`.
-fn lost<R: Real>(base: R, [by_length, by_width, by_area]: [R; 3], [length, width]: [R; 2]) -> R {
+pub(crate) fn lost<R: Real>(
+    base: R,
+    [by_length, by_width, by_area]: [R; 3],
+    [length, width]: [R; 2],
+) -> R {
     base + by_length / length + by_width / width + by_area / (length * width)
 }
 

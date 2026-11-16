@@ -45,6 +45,49 @@ organization and externally, subject to the following restrictions:
    to others.
 
 -------------------------------------------------------------------------------
+BSIM4.5
+
+jolty's BSIM4 MOSFET, in crates/jolty-models/src/kernel/bsim4.rs and
+crates/jolty-models/src/kernel/bsim4/, is derived from BSIM4.5.0, developed by the UC
+Berkeley BSIM Research Group, as ngspice 47 distributes it in
+src/spicelib/devices/bsim4v5/, under the terms of its B4TERMS_OF_USE.
+
+Copyright 2005 Regents of the University of California. All rights reserved.
+
+The terms under which the software is provided  are as the following.
+
+Software is distributed as is, completely without warranty or service
+support. The University of California and its employees are not liable
+for the condition or performance of the software.
+
+The University owns the copyright but shall not be liable for any
+infringement of copyright or other proprietary rights brought by third
+parties against the users of the software.
+
+The University of California hereby disclaims all implied warranties.
+
+The University of California grants the users the right to modify, copy,
+and redistribute the software and documentation, both within the user's
+organization and externally, subject to the following restrictions:
+
+1. The users agree not to charge for the University of California code
+   itself but may charge for additions, extensions, or support.
+
+2. In any product based on the software, the users agree to acknowledge
+   the UC Berkeley BSIM Research Group that developed the software. This
+   acknowledgment shall appear in the product documentation.
+
+3. The users agree to obey all U.S. Government restrictions governing
+   redistribution or export of the software.
+
+4. The users agree to reproduce any copyright notice which appears on
+   the software on any copy or modification of such made available
+   to others.
+
+Chenming Hu, and Jane Xuemei Xi
+April. 2003
+
+-------------------------------------------------------------------------------
 ngspice
 
 jolty's diode, Gummel-Poon bipolar transistor, VBIC 1.2 transistor, JFET, MOSFETs of levels 1

@@ -48,7 +48,7 @@ impl Partition {
 
 /// `x0 − ½ · (v + √(v² ± 4δ · x0))`, the smooth minimum of `b3ld.c`'s effective
 /// flat-band voltage, with `v = x0 − x − δ`, the sign of the root's term that of `x0`.
-fn flat_band<R: Real>(vfb: R, v3: D<R>) -> D<R> {
+pub(crate) fn flat_band<R: Real>(vfb: R, v3: D<R>) -> D<R> {
     let t0 = if vfb.value() <= 0.0 {
         (v3 * v3 - D::constant(vfb * (4.0 * DELTA))).sqrt()
     } else {
@@ -59,7 +59,7 @@ fn flat_band<R: Real>(vfb: R, v3: D<R>) -> D<R> {
 
 /// The depletion charge under the gate, `CoxWL · k1ox · (√(k1ox²/4 + v) − k1ox/2)`,
 /// continued linearly below `v = 0`, with `capacitance` the gate's oxide capacitance.
-fn depletion<R: Real>(k1ox: R, v: D<R>, capacitance: D<R>) -> D<R> {
+pub(crate) fn depletion<R: Real>(k1ox: R, v: D<R>, capacitance: D<R>) -> D<R> {
     let t0 = k1ox * 0.5;
     let t1 = if k1ox.value() == 0.0 {
         D::number(0.0)

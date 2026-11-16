@@ -32,6 +32,7 @@
 pub(crate) mod behavioral;
 pub(crate) mod bjt;
 pub(crate) mod bsim3;
+pub(crate) mod bsim4;
 pub(crate) mod connect;
 pub(crate) mod controlled;
 pub(crate) mod diode;
@@ -74,6 +75,9 @@ pub trait Kernel: Send + Sync + 'static {
     /// Whether its instances are a foundry's, which ngspice simulates with the foundry's
     /// models, as [`crate::Model::foundry`] says.
     const FOUNDRY: bool = false;
+
+    /// Whether its instances' noise is modeled, as [`crate::Model::noise_modeled`] says.
+    const NOISE_MODELED: bool = true;
 
     /// The parameters an instance's parameter map deserializes into, each number an `R`,
     /// which write as they read and which a JSON schema describes.

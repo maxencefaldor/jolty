@@ -29,7 +29,7 @@ from jolty import (
     ir,
     spice,
 )
-from jolty.spice import sky130
+from jolty.spice import models, sky130
 from jolty.spice.export import netlist
 from jolty.spice.expressions import evaluate, number, parse, translate
 from jolty.spice.netlist import statements, tokens
@@ -816,6 +816,154 @@ def test_a_bsim3_card_jolty_cannot_run_as_ngspice_does_is_refused(
         parts.component("a")
 
 
+def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
+    """A level 14 or 54 card of version 4.5 makes a BSIM4, each parameter in SI units.
+
+    As ngspice reads them, `NDEP` is per cubic centimeter up to 1e20 and per cubic
+    meter above, `NSD` and `NGATE` up to 1e24, `NSUB` per cubic centimeter, a `U0`
+    above 1 in cm²/(V·s) with its dependences, `VTHO` is `VTH0`, and with `BINUNIT` 1,
+    its default, each length and width dependence per micrometer; its bins' ranges and
+    noise models, which change nothing jolty computes, are read past.
+    """
+    parts = library(
+        ".model N1 NMOS(level=54 version=4.5 tnom=25 ndep=1.7e17 lndep=1e16 nsd=1e20\n"
+        "+ ngate=3e25 nsub=6e16 u0=400 lu0=-20 vtho=0.5 lvth0=0.02 rbodymod=1\n"
+        "+ permod=0 paramchk=0 xpart=0.5 lmin=0.1u tnoimod=1 capmod=2 mobmod=0)\n"
+        ".subckt a d g\nM1 d g 0 0 N1 W=2u L=0.15u nf=2 sa=1u sb=2u sd=0.5u\n"
+        "+ nrd=2 delvto=0.1 rbpb=20\n.ends"
+    )
+    (instance,) = parts.component("a").definition.instances
+    assert instance.of == ir.DeviceOf(model="bsim4")
+    assert instance.parameters == pytest.approx(
+        {
+            "channel": "n",
+            "nominal_temperature": celsius(25).value,
+            "ndep": 1.7e23,
+            "lndep": 1e16,
+            "nsd": 1e26,
+            "ngate": 3e25,
+            "nsub": 6e22,
+            "u0": 0.04,
+            "lu0": -2e-9,
+            "vth0": 0.5,
+            "lvth0": 2e-8,
+            "body_resistance_model": 1,
+            "perimeter_model": 0,
+            "check_parameters": False,
+            "charge_partition": 0.5,
+            "width": 2e-6,
+            "length": 1.5e-7,
+            "fingers": 2.0,
+            "diffusion_edge_a": 1e-6,
+            "diffusion_edge_b": 2e-6,
+            "finger_spacing": 5e-7,
+            "drain_squares": 2.0,
+            "threshold_adjustment": 0.1,
+            "rbpb": 20.0,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("card", "error"),
+    [
+        ("level=54 version=4.6", "`N1` is a BSIM4 card of version 4.6"),
+        ("level=14", "`N1` is a BSIM4 card of version 4.8"),
+        ("level=54 version=4.5 capmod=1", "jolty models BSIM4 with `CAPMOD` 2 alone"),
+        ("level=54 version=4.5 igcmod=1", "jolty models BSIM4 with `IGCMOD` 0 alone"),
+        ("level=54 version=4.5 rdsmod=1", "jolty models BSIM4 with `RDSMOD` 0 alone"),
+        ("level=54 version=4.5 rbodymod=2", "body_resistance_model 0 or 1, not 2"),
+        ("level=54 version=4.5 vto=1", "no counterpart to `VTO` of `N1`"),
+    ],
+)
+def test_a_bsim4_card_jolty_cannot_run_as_ngspice_does_is_refused(
+    card: str, error: str
+) -> None:
+    parts = library(f".model N1 NMOS({card})\n.subckt a d\nM1 d d 0 0 N1\n.ends")
+    with pytest.raises((SpiceError, ValueError), match=re.escape(error)):
+        parts.component("a")
+
+
+def test_a_bsim4_is_written_for_ngspice_as_its_card_reads_back() -> None:
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        supply = c.place(devices.voltage_source(1.8 * V), name="V1")
+        transistor = c.place(
+            devices.bsim4(
+                channel="p",
+                width=2 * um,
+                length=0.15 * um,
+                fingers=2,
+                body_resistance_model=1,
+                nominal_temperature=celsius(50),
+                card={
+                    "vth0": -0.5 * V,
+                    "ndep": 1.7e23 / m**3,
+                    "ngate": 1e29 / m**3,
+                    "nsub": 6e22 / m**3,
+                    "lvth0": 1e-8 * m * V,
+                    "k2": -0.02,
+                },
+            ),
+            name="M1",
+        )
+        c.connect(supply.positive, transistor.drain, transistor.gate, name="d")
+        c.connect(supply.negative, transistor.source, transistor.bulk, ground)
+
+    lines = netlist(circuit(bench()))
+    card = next(line for line in lines if line.startswith(".model"))
+    assert card == (
+        ".model MM1 PMOS(level=54 version=4.5 binunit=2 tnom=50.0 rbodymod=1 "
+        "vth0=-0.5 ndep=1.7e+17 ngate=1e+23 nsub=6e+16 lvth0=1e-08 k2=-0.02)"
+    ), card
+    element = next(line for line in lines if line.startswith("MM1"))
+    assert element == "MM1 d d 0 0 MM1 w=2e-06 l=1.5e-07 nf=2.0", element
+    read = library(
+        f"{card}\n.subckt a d\n{element.replace('MM1 d d', 'M1 d d', 1)}\n.ends"
+    )
+    (instance,) = read.component("a").definition.instances
+    assert instance.parameters == pytest.approx(
+        {
+            "channel": "p",
+            "nominal_temperature": celsius(50).value,
+            "body_resistance_model": 1,
+            "vth0": -0.5,
+            "ndep": 1.7e23,
+            "ngate": 1e29,
+            "nsub": 6e22,
+            "lvth0": 1e-8,
+            "k2": -0.02,
+            "width": 2e-6,
+            "length": 1.5e-7,
+            "fingers": 2.0,
+        }
+    )
+
+
+@pytest.mark.parametrize("model", models.BSIMS)
+def test_a_bsims_tables_name_the_engines_parameters(model: str) -> None:
+    """The reader's tables of a BSIM model name the parameters the engine's model has.
+
+    Its card's, its bins' and its instance's parameters, and its choices and settings,
+    are every parameter of the engine's model but its own temperature and its heating,
+    which no card gives.
+    """
+    bsim = models.BSIMS[model]
+    named = {
+        "channel",
+        "nominal_temperature",
+        *bsim.card,
+        *(prefix + name for name in bsim.binned for prefix in "lwp"),
+        *(jolty for jolty, _ in bsim.instance.values()),
+        *bsim.selectors.values(),
+        *bsim.settings.values(),
+    }
+    schema = json.loads(_core.schema(model))
+    unread = {"temperature", "temperature_offset", "thermal"}
+    assert named == set(schema["properties"]) - unread
+
+
 def test_an_element_takes_the_bin_of_its_length_and_width() -> None:
     """As ngspice's INPgetModBin takes a bin, the last defined that holds them.
 
@@ -1109,6 +1257,11 @@ def _every_model() -> list[devices.Device]:
             channel="p",
             capacitance_model=0,
             card={"vth0": -0.6 * V, "lvth0": 1e-8 * m * V},
+        ),
+        devices.bsim4(
+            channel="p",
+            body_resistance_model=1,
+            card={"vth0": -0.5 * V, "lvth0": 1e-8 * m * V},
         ),
         devices.photocell(10 * kohm),
         devices.resistor(1 * kohm).held_at(celsius(85)),
