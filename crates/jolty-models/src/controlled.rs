@@ -89,6 +89,10 @@ impl Kernel for VoltageControlledVoltageSource {
         Ok(ControlledVoltageShape { branch, entries })
     }
 
+    fn linear(_: &ControlledVoltageShape, _: &f64) -> bool {
+        true
+    }
+
     fn evaluate<R: Real>(
         shape: &ControlledVoltageShape,
         &gain: &R,
@@ -157,6 +161,10 @@ impl Kernel for VoltageControlledCurrentSource {
             layout.entry(NEGATIVE, CONTROL_POSITIVE),
             layout.entry(NEGATIVE, CONTROL_NEGATIVE),
         ]))
+    }
+
+    fn linear(_: &ControlledCurrentShape, _: &f64) -> bool {
+        true
     }
 
     fn evaluate<R: Real>(
@@ -252,6 +260,10 @@ impl Kernel for CurrentControlledCurrentSource {
         Ok(SensedCurrentShape { sense, entries })
     }
 
+    fn linear(_: &SensedCurrentShape, _: &f64) -> bool {
+        true
+    }
+
     fn evaluate<R: Real>(
         shape: &SensedCurrentShape,
         &gain: &R,
@@ -332,6 +344,10 @@ impl Kernel for CurrentControlledVoltageSource {
             branch,
             entry,
         })
+    }
+
+    fn linear(_: &SensedVoltageShape, _: &f64) -> bool {
+        true
     }
 
     fn evaluate<R: Real>(

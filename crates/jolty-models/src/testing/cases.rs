@@ -76,6 +76,7 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
         &[1.0, 0.0, 5.0],
     ),
     ("resistor", r#"{"resistance": 0.5}"#, &[1.0, 0.0, 2.0]),
+    ("resistor", r#"{"resistance": 1e3}"#, &[1.0, 0.0]),
     ("capacitor", r#"{"capacitance": 1e-9}"#, &[1.0, 0.0]),
     (
         "coupled_inductors",

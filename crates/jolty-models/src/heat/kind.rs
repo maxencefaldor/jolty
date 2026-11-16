@@ -413,6 +413,11 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         HeatedMemory::new(shape, prepared)
     }
 
+    /// Never linear: what it dissipates heats it, and its heat changes its equations.
+    fn linear(_: &Self::Shape, _: &Self::Prepared) -> bool {
+        false
+    }
+
     fn evaluate(
         shape: &Self::Shape,
         prepared: &Self::Prepared,

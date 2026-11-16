@@ -619,7 +619,89 @@ pub(crate) fn assert_close(actual: &[f64], expected: &[f64]) {
 
 mod tests {
     use super::{Bench, REFERENCE_TEMPERATURE, assert_bench_jacobians_match, cases};
-    use crate::{Library, REGION};
+    use crate::{Input, Library, REGION};
+
+    /// Every instance whose kernel calls it linear is so, at each case of it, at 64 points
+    /// that spread each local unknown over ±10, at times, in a transient and not, with
+    /// sources scaled, gmin across junctions and steps limited: its kernel writes the
+    /// entries it writes at [`Input::ZERO`], bit for bit, limits nothing, and adds each
+    /// residual as one term, its scale its magnitude; and each residual and charge is its
+    /// entries times its local unknowns, as its group computes them, to within their
+    /// rounding. A sum of `n` products, its row's entries times their columns' unknowns,
+    /// lies within `γ(n+1) · Σ|g·x|` of the exact sum, `γ(m) = m·u/(1 − m·u)` with `u` half
+    /// of `f64::EPSILON`, by `n` products and `n − 1` additions, and the kernel's way to it
+    /// takes no more roundings (Higham, "Accuracy and Stability of Numerical Algorithms",
+    /// 2002, §3.1): the two lie within `(n + 1)·ε·Σ|g·x|` of each other, to first order.
+    #[test]
+    fn every_linear_instances_equations_are_its_entries_times_its_unknowns() {
+        let library = Library::standard();
+        let bits = |values: &[f64]| {
+            values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        let mut checked = 0;
+        for &(name, parameters, _) in cases::CASES {
+            let model = library.get(name).expect("a model of the library");
+            let mut bench = Bench::of(&**model, parameters, REFERENCE_TEMPERATURE)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            if !bench.groups.is_linear(0) {
+                continue;
+            }
+            let (groups, runs) = (&bench.groups, &mut bench.runs);
+            let stamped = runs
+                .evaluate_by_kernel(groups, 0, &Input::ZERO)
+                .expect("an instance");
+            let layout = runs.block(groups, 0).expect("a block").entries.to_vec();
+            let unknowns = u32::try_from(bench.unknowns.len()).expect("few unknowns");
+            for point in 0..64_u32 {
+                let x: Vec<f64> = (0..unknowns)
+                    .map(|index| 20.0 * f64::from((point * 7 + index * 13) % 41) / 40.0 - 10.0)
+                    .collect();
+                let time = (point % 2 == 1).then_some(1e-7 * f64::from(point));
+                let mut input = Input::new(&x, time, 1e-12 * f64::from(point % 3));
+                input.source_scale = f64::from(point % 5) / 4.0;
+                input.limiting = point % 3 == 0;
+                let kernel = runs
+                    .evaluate_by_kernel(groups, 0, &input)
+                    .expect("an instance");
+                let grouped = runs.evaluate_alone(groups, 0, &input).expect("an instance");
+                assert!(!kernel.limited, "{name} limits at {x:?}");
+                for plane in 0..2 {
+                    assert_eq!(
+                        bits(&kernel.entries[plane]),
+                        bits(&stamped.entries[plane]),
+                        "{name}'s entries at {x:?}"
+                    );
+                }
+                let [residual, scale, _] = &kernel.rows;
+                let largest: Vec<f64> = residual.iter().map(|sum| 0.0_f64.max(sum.abs())).collect();
+                assert_eq!(bits(scale), bits(&largest), "{name}'s scales at {x:?}");
+                for (plane, entries) in [(0, &grouped.entries[0]), (2, &grouped.entries[1])] {
+                    let (mut magnitudes, mut terms) = (vec![0.0; x.len()], vec![1.0; x.len()]);
+                    for (&(row, column), &entry) in layout.iter().zip(entries) {
+                        magnitudes[row] += (entry * x[column]).abs();
+                        terms[row] += 1.0;
+                    }
+                    let rows = magnitudes.iter().zip(&terms).enumerate();
+                    for (row, (magnitude, roundings)) in rows {
+                        let (by_kernel, by_entries) =
+                            (kernel.rows[plane][row], grouped.rows[plane][row]);
+                        let bound = roundings * f64::EPSILON * magnitude;
+                        assert!(
+                            (by_kernel - by_entries).abs() <= bound,
+                            "{name}'s {} {row} at {x:?}: {by_kernel:e} by its kernel, \
+                             {by_entries:e} by its entries",
+                            if plane == 0 { "residual" } else { "charge" }
+                        );
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no instance is linear");
+    }
 
     /// Every model that distinguishes regions of operation numbers them with its variable
     /// `region` and reports each of its margins among its variables, at each case of it.

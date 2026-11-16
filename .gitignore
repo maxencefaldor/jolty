@@ -1,6 +1,8 @@
 /target/
 .venv/
 .venv-free-threaded/
+# What cargo-mutants writes: a run's outcomes, and those of the run before it
+mutants.out*/
 __pycache__/
 .hypothesis/
 .pytest_cache/

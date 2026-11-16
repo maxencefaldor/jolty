@@ -23,6 +23,21 @@ pub struct Input<'a> {
     pub limiting: bool,
 }
 
+impl Input<'static> {
+    /// Every unknown zero, at time zero in an operating point, with sources at full scale,
+    /// no gmin across junctions and no step limited: the state a linear instance's entries
+    /// are evaluated at, as at any other. It holds no unknown, so it is read only through
+    /// [`Input::local`], which reads zero for each.
+    pub(crate) const ZERO: Self = Self {
+        x: &[],
+        time: 0.0,
+        transient: false,
+        source_scale: 1.0,
+        gmin: 0.0,
+        limiting: false,
+    };
+}
+
 impl<'a> Input<'a> {
     /// The state `x` at `time` in a transient analysis or, with `None`, at an operating
     /// point or about one, at time zero, with sources at full scale, `gmin` across
