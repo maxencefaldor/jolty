@@ -870,8 +870,8 @@ def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
     As ngspice reads them, `NDEP` is per cubic centimeter up to 1e20 and per cubic
     meter above, `NSD` and `NGATE` up to 1e24, `NSUB` per cubic centimeter, a `U0`
     above 1 in cm²/(V·s) with its dependences, `VTHO` is `VTH0`, and with `BINUNIT` 1,
-    its default, each length and width dependence per micrometer; its bins' ranges and
-    noise models, which change nothing jolty computes, are read past.
+    its default, each length and width dependence per micrometer; its bins' ranges,
+    which only select it, are read past.
     """
     parts = library(
         ".model N1 NMOS(level=54 version=4.5 tnom=25 ndep=1.7e17 lndep=1e16 nsd=1e20\n"
@@ -897,6 +897,7 @@ def test_a_bsim4_card_reads_in_si_units_as_ngspice_reads_it() -> None:
             "lvth0": 2e-8,
             "body_resistance_model": 1,
             "perimeter_model": 0,
+            "thermal_noise_model": 1,
             "check_parameters": False,
             "charge_partition": 0.5,
             "width": 2e-6,

@@ -247,31 +247,3 @@ fn rejects_what_it_cannot_measure() {
         ));
     }
 }
-
-#[test]
-fn a_device_whose_noise_is_not_modeled_refuses_a_noise_analysis_naming_it() {
-    // BSIM4's noise is not modeled: the analysis refuses its circuit rather than leave the
-    // transistor quiet, though the circuit's other analyses run.
-    let transistor = json!({"name": "M1", "of": {"model": "bsim4"},
-        "parameters": {"width": 1e-6, "length": 1.5e-7},
-        "terminals": {"drain": "d", "gate": "d", "source": "0", "bulk": "0"}});
-    let circuit = circuit(&json!([
-        voltage_source("V1", "vdd"),
-        resistor("R1", 1e4, "vdd", "d"),
-        transistor
-    ]));
-    assert_eq!(
-        noise(&circuit, "d", None, None),
-        Err(SimulationError::NoiseUnmodeled(vec![
-            "M1 (bsim4)".to_owned()
-        ]))
-    );
-    assert_eq!(
-        SimulationError::NoiseUnmodeled(vec!["M1 (bsim4)".to_owned()]).to_string(),
-        "the engine models no noise of these devices, so no noise analysis runs on them: \
-         M1 (bsim4)"
-    );
-    let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-        .expect("the circuit elaborates");
-    assert!(simulator.operating_point(&Options::default()).is_ok());
-}

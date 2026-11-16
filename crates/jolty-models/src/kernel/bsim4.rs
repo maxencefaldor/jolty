@@ -27,16 +27,19 @@ mod prepare;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use self::channel::Operating;
 pub use self::parameters::Bsim4Parameters;
 use self::prepare::{Junction, PreparedBsim4};
-use crate::kernel::bsim3::{EXP_THRESHOLD, MIN_EXP, VT0, critical_voltage};
+use crate::kernel::bsim3::{
+    DELTA, EXP_THRESHOLD, MIN_EXP, N_MINLOG, NGSPICE_BOLTZMANN, NOISE_CHARGE, VT0, critical_voltage,
+};
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{limit_channel, limit_junction};
 use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series};
 use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, ParameterError, REGION, Real,
-    Regions, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
+    REGION, Real, Regions, Stamp,
 };
 
 /// The permittivity of vacuum, in farads per meter, as `b4v5temp.c` takes it.
@@ -126,6 +129,73 @@ impl From<Perimeter> for u8 {
     }
 }
 
+/// The flicker noise model, `fnoimod`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(try_from = "u8", into = "u8")]
+pub enum FlickerNoise {
+    /// `fnoimod` 0: SPICE2's, `kf · |Id|^af / (f^ef · Leff² · Coxe)`.
+    Zero,
+    /// `fnoimod` 1: BSIM4's of the oxide traps `noia`, `noib` and `noic`.
+    One,
+}
+
+impl TryFrom<u8> for FlickerNoise {
+    type Error = String;
+
+    fn try_from(fnoimod: u8) -> Result<Self, String> {
+        match fnoimod {
+            0 => Ok(Self::Zero),
+            1 => Ok(Self::One),
+            _ => Err(format!(
+                "BSIM4's flicker_noise_model is 0 or 1, not {fnoimod}"
+            )),
+        }
+    }
+}
+
+impl From<FlickerNoise> for u8 {
+    fn from(fnoimod: FlickerNoise) -> Self {
+        match fnoimod {
+            FlickerNoise::Zero => 0,
+            FlickerNoise::One => 1,
+        }
+    }
+}
+
+/// The channel's thermal noise model, `tnoimod`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(try_from = "u8", into = "u8")]
+pub enum ThermalNoise {
+    /// `tnoimod` 0: the charge-based model, of the inversion charge.
+    Zero,
+    /// `tnoimod` 1: the holistic model, of the conductances, which moves part of the
+    /// channel's noise to the source side through `rnoia`, `rnoib`, `tnoia` and `tnoib`.
+    One,
+}
+
+impl TryFrom<u8> for ThermalNoise {
+    type Error = String;
+
+    fn try_from(tnoimod: u8) -> Result<Self, String> {
+        match tnoimod {
+            0 => Ok(Self::Zero),
+            1 => Ok(Self::One),
+            _ => Err(format!(
+                "BSIM4's thermal_noise_model is 0 or 1, not {tnoimod}"
+            )),
+        }
+    }
+}
+
+impl From<ThermalNoise> for u8 {
+    fn from(tnoimod: ThermalNoise) -> Self {
+        match tnoimod {
+            ThermalNoise::Zero => 0,
+            ThermalNoise::One => 1,
+        }
+    }
+}
+
 /// A MOSFET in BSIM4.5, SPICE's level 14 and 54 model of short channels, as ngspice 47
 /// implements it.
 ///
@@ -152,10 +222,11 @@ impl From<Perimeter> for u8 {
 ///
 /// The charges under the gate follow `capmod` 2, the charge-thickness model, with the
 /// drain's share of the channel's charge `xpart`, beside the overlaps' charges with their
-/// bias dependence, and each junction holds a depletion charge. Its noise is not modeled
-/// yet, so a noise analysis refuses a circuit that holds one; the gate tunneling currents,
-/// the bias-dependent drain and source resistances, the gate resistance, the
-/// non-quasi-static models and the well proximity effect are left out.
+/// bias dependence, and each junction holds a depletion charge. The channel makes the
+/// thermal noise of `tnoimod` and the flicker noise of `fnoimod`, and the drain, source
+/// and body resistances thermal noise. The gate tunneling currents, the bias-dependent
+/// drain and source resistances, the gate resistance, the non-quasi-static models and
+/// the well proximity effect are left out.
 #[derive(Debug, Clone, Copy)]
 pub struct Bsim4;
 
@@ -242,6 +313,16 @@ const BODY_RESISTANCES: [(usize, usize); 5] = [
     (BODY, BULK),
     (DRAIN_BODY, BULK),
     (SOURCE_BODY, BULK),
+];
+
+/// The names of the five body resistances' thermal noise, in the order of
+/// [`BODY_RESISTANCES`].
+const BODY_NOISE: [&str; 5] = [
+    "rbpd thermal",
+    "rbps thermal",
+    "rbpb thermal",
+    "rbdb thermal",
+    "rbsb thermal",
 ];
 
 /// The five voltages a transistor limits: gate-source, drain-source and body-source, and
@@ -488,8 +569,6 @@ impl<R: Real> PreparedBsim4<R> {
 
 impl Kernel for Bsim4 {
     const NAME: &'static str = "bsim4";
-    // Its noise, `b4v5noi.c`'s, is not modeled yet.
-    const NOISE_MODELED: bool = false;
     type Parameters<R: Real> = Bsim4Parameters<R>;
     type Shape = Bsim4Shape;
     type Prepared<R: Real> = PreparedBsim4<R>;
@@ -668,6 +747,218 @@ impl Kernel for Bsim4 {
     fn regions() -> Regions {
         REGIONS
     }
+
+    /// The thermal noise of the drain, source and body resistances, and the channel's
+    /// thermal noise of `tnoimod` and flicker noise of `fnoimod`, as `b4v5noi.c` computes
+    /// them.
+    fn noise<R: Real>(
+        shape: &Bsim4Shape,
+        prepared: &PreparedBsim4<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let temperature = prepared.temperature;
+        let nodes = &shape.stamp;
+        if let Some(conductances) = prepared.body_network {
+            let names = BODY_RESISTANCES.iter().zip(BODY_NOISE).zip(conductances);
+            for ((&(plus, minus), name), conductance) in names {
+                let equations = [nodes.equation(plus), nodes.equation(minus)];
+                sources.push(NoiseSource::thermal(
+                    name,
+                    equations,
+                    conductance.value(),
+                    temperature,
+                ));
+            }
+        }
+        let core = &prepared.core;
+        let voltages = VARIABLES
+            .map(|(plus, minus)| core.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
+        let channel = prepared.channel_noise(voltages);
+        let [mut drain, mut source] = prepared.series;
+        if let Some(added) = channel.source_side {
+            // `tnoimod` 1 adds a resistance of the channel's noise to whichever acts as
+            // the source.
+            let [drain_resistance, source_resistance] = prepared.resistances;
+            if channel.forward {
+                source = shape.source_series.value_of(source_resistance + added);
+            } else {
+                drain = shape.drain_series.value_of(drain_resistance + added);
+            }
+        }
+        shape
+            .drain_series
+            .noise(drain, ("drain thermal", temperature), sources);
+        shape
+            .source_series
+            .noise(source, ("source thermal", temperature), sources);
+        let equations = [nodes.equation(INNER_DRAIN), nodes.equation(INNER_SOURCE)];
+        sources.push(NoiseSource::thermal(
+            "channel thermal",
+            equations,
+            channel.thermal,
+            temperature,
+        ));
+        if channel.flicker > 0.0 {
+            sources.push(NoiseSource {
+                name: "flicker",
+                equations,
+                white: 0.0,
+                flicker: channel.flicker,
+                exponent: prepared.noise.ef,
+            });
+        }
+    }
+}
+
+/// What a channel's noise is at one bias, of all its copies: the conductance whose
+/// thermal noise its own is, its flicker density at 1 Hz, whether its drain lies at or
+/// above its source, and the resistance `tnoimod` 1 adds on its source side.
+struct ChannelNoise {
+    thermal: f64,
+    flicker: f64,
+    forward: bool,
+    source_side: Option<f64>,
+}
+
+impl<R: Real> PreparedBsim4<R> {
+    /// The channel's noise at the gate-source, drain-source and body-source voltages
+    /// `voltages`, as `b4v5noi.c` computes it.
+    fn channel_noise(&self, voltages: [f64; 3]) -> ChannelNoise {
+        let [gate, drain, bulk] = voltages;
+        let forward = drain >= 0.0;
+        let frame = if forward {
+            voltages
+        } else {
+            [gate - drain, -drain, bulk - drain]
+        };
+        let vds = frame[1];
+        let operating = self.core.evaluate(Dual::variables(frame));
+        let (thermal, source_side) = self.thermal_noise(&operating, vds);
+        let flicker = self.flicker_noise(&operating, vds);
+        ChannelNoise {
+            thermal,
+            flicker,
+            forward,
+            source_side,
+        }
+    }
+
+    /// The conductance whose thermal noise the channel's of all its copies is, at the
+    /// frame's drain-source voltage `vds` where the channel is `operating`, and the
+    /// resistance `tnoimod` 1 adds on its source side.
+    fn thermal_noise(&self, operating: &Operating<R>, vds: f64) -> (f64, Option<f64>) {
+        let core = &self.core;
+        let noise = &self.noise;
+        let value = |number: D<R>| number.value.value();
+        let copies = self.multiplier.value();
+        let leff = core.leff.value();
+        let ueff = value(operating.ueff);
+        let vgsteff = value(operating.vgsteff);
+        // `b4v5ld.c` keeps the current over `Vdseff` of one finger above 1 nA per volt.
+        let ids_over_vds = value(operating.ids_over_vds).max(1e-9) * core.fingers.value();
+        match noise.thermal_model {
+            ThermalNoise::Zero => {
+                let abulk = value(operating.abulk0) * core.abulk_cv_factor.value();
+                let vdsat = vgsteff / abulk;
+                let t0 = vdsat - vds - DELTA;
+                let t1 = (t0 * t0 + 4.0 * DELTA * vdsat).sqrt();
+                let vdseff = if vds == 0.0 {
+                    0.0
+                } else if t0 >= 0.0 {
+                    vdsat - f64::midpoint(t0, t1)
+                } else {
+                    vdsat * (1.0 - 2.0 * DELTA / (t1 - t0))
+                };
+                let t0 = abulk * vdseff;
+                let t1 = 12.0 * (vgsteff - 0.5 * t0 + 1.0e-20);
+                let t3 = t0 * vdseff / t1;
+                let qinv = value(operating.coxeff)
+                    * (core.weff_cv * core.leff_cv * core.fingers).value()
+                    * (vgsteff - 0.5 * t0 + abulk * t3);
+                let t0 = ueff * qinv.abs();
+                let t1 = t0 * value(operating.rds) + leff * leff;
+                (copies * t0 / t1 * noise.ntnoi, None)
+            }
+            ThermalNoise::One => {
+                let t5 = vgsteff / value(operating.esat_l);
+                let t5 = t5 * t5;
+                let beta = noise.rnoia * (1.0 + t5 * noise.tnoia * leff);
+                let theta = noise.rnoib * (1.0 + t5 * noise.tnoib * leff);
+                let [gm, gds, gmbs] = operating.ids.gradient.map(Real::value);
+                let sum = gm + gmbs + gds;
+                let induced = theta * theta * sum * sum / ids_over_vds;
+                let t1 = beta * (gm + gmbs) + gds;
+                let thermal = copies * (t1 * t1 / ids_over_vds - induced);
+                (thermal, Some(theta * theta / (copies * ids_over_vds)))
+            }
+        }
+    }
+
+    /// The flicker density at 1 Hz of the channel's copies, at the frame's drain-source
+    /// voltage `vds` where the channel is `operating`.
+    #[expect(
+        clippy::similar_names,
+        reason = "b4v5noi.c's names of the noise's terms"
+    )]
+    fn flicker_noise(&self, operating: &Operating<R>, vds: f64) -> f64 {
+        let core = &self.core;
+        let noise = &self.noise;
+        let value = |number: D<R>| number.value.value();
+        let copies = self.multiplier.value();
+        let leff = core.leff.value();
+        let coxe = core.coxe.value();
+        let ueff = value(operating.ueff);
+        let vgsteff = value(operating.vgsteff);
+        let vdseff = value(operating.vdseff);
+        let current = value(operating.ids).abs();
+        let fingers = core.fingers.value();
+        let vtm = core.vtm.value();
+        match noise.flicker_model {
+            FlickerNoise::Zero => {
+                copies * noise.kf * (noise.af * current.max(N_MINLOG).ln()).exp()
+                    / (leff * leff * coxe)
+            }
+            FlickerNoise::One => {
+                let temperature = self.temperature;
+                let nstar = value(operating.nstar);
+                let length = noise.length;
+                let leffsq = length * length;
+                let esat = 2.0 * core.vsattemp.value() / ueff;
+                let litl = core.litl.value();
+                let clm = if noise.em <= 0.0 {
+                    0.0
+                } else {
+                    let t0 = ((vds - vdseff) / litl + noise.em) / esat;
+                    (litl * t0.max(N_MINLOG).ln()).max(0.0)
+                };
+                let weff = core.weff.value() * fingers;
+                let t1 =
+                    NOISE_CHARGE * NOISE_CHARGE * NGSPICE_BOLTZMANN * current * temperature * ueff;
+                let t2 = 1.0e10 * value(operating.abulk_unscaled) * coxe * leffsq;
+                let abov_vgst2vtm = value(operating.abulk) / (vgsteff + 2.0 * vtm);
+                let n0 = coxe * vgsteff / NOISE_CHARGE;
+                let nl = coxe * vgsteff * (1.0 - abov_vgst2vtm * vdseff) / NOISE_CHARGE;
+                let t3 = noise.noia * ((n0 + nstar) / (nl + nstar)).max(N_MINLOG).ln();
+                let t4 = noise.noib * (n0 - nl);
+                let t5 = noise.noic * 0.5 * (n0 * n0 - nl * nl);
+                let t6 = NGSPICE_BOLTZMANN * temperature * current * current;
+                let t7 = 1.0e10 * leffsq * weff;
+                let t8 = noise.noia + noise.noib * nl + noise.noic * nl * nl;
+                let t9 = (nl + nstar) * (nl + nstar);
+                let strong = t1 / t2 * (t3 + t4 + t5) + t6 / t7 * clm * t8 / t9;
+                let t10 = noise.noia * NGSPICE_BOLTZMANN * temperature;
+                let t11 = weff * leff * 1.0e10 * nstar * nstar;
+                let weak = t10 / t11 * current * current;
+                let both = strong + weak;
+                if both > 0.0 {
+                    copies * strong * weak / both
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -678,7 +969,7 @@ mod tests {
     use crate::Differentiable;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_mirrors,
-        assert_parameter_gradients_match, assert_switches_where_margin_vanishes,
+        assert_parameter_gradients_match, assert_switches_where_margin_vanishes, source,
     };
 
     /// A short n-channel with every effect of the drain current and the charges switched
@@ -837,6 +1128,56 @@ mod tests {
                 .len(),
             4
         );
+    }
+
+    #[test]
+    fn its_channel_and_resistances_make_the_noise_of_its_noise_models() {
+        let x = [1.5, 1.2, 0.0, 0.0];
+        // Without the substrate current and the leakages, the drain's current is the
+        // channel's.
+        let quiet = SHORT
+            .replace(r#""alpha0": 1e-6, "#, "")
+            .replace(r#""agidl": 1e-9, "#, "")
+            .replace(r#""jtss": 1e-7, "#, "");
+        let spice2 = with(
+            &quiet,
+            r#""flicker_noise_model": 0, "thermal_noise_model": 1, "kf": 1e-26, "af": 1.2,
+                "ef": 0.9, "rnoia": 1, "rnoib": 0, "tnoia": 0, "tnoib": 0"#,
+        );
+        let mut bench = Bench::new::<Bsim4>(&spice2);
+        let current = bench.settle(&x).residual[0];
+        let sources = bench.noise(&x);
+        let leff = 0.15e-6;
+        let coxe = 3.9 * EPS0 / 4.1e-9;
+        // The holistic model's share of the source side, `rnoib`², comes off the channel's
+        // noise, which `rnoia` otherwise sets alone with `tnoia` and `tnoib` at 0.
+        let shared = with(&spice2, r#""rnoib": 0.5"#).replace(r#", "rnoib": 0"#, "");
+        let channel = |sources: &[NoiseSource]| source(sources, "channel thermal").density(1.0);
+        assert_close(
+            &[channel(&Bench::new::<Bsim4>(&shared).noise(&x))],
+            &[0.75 * channel(&sources)],
+        );
+        assert_close(
+            &[source(&sources, "flicker").density(10.0)],
+            &[1e-26 * current.powf(1.2) / (leff * leff * coxe) / 10f64.powf(0.9)],
+        );
+        let bsim4 = with(
+            &quiet,
+            r#""body_resistance_model": 1, "rsh": 10, "drain_squares": 2"#,
+        );
+        let sources = Bench::new::<Bsim4>(&bsim4).noise(&[1.5, 1.2, 0.0, 0.0, 1.4, 0.0, 0.0, 0.0]);
+        for name in [
+            "channel thermal",
+            "flicker",
+            "drain thermal",
+            "rbpd thermal",
+            "rbps thermal",
+            "rbpb thermal",
+            "rbdb thermal",
+            "rbsb thermal",
+        ] {
+            assert!(source(&sources, name).density(1.0) > 0.0, "{name}");
+        }
     }
 
     /// A transistor is in weak inversion below its threshold, linear above it with its

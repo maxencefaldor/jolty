@@ -47,7 +47,9 @@ pub use kernel::behavioral::{
 };
 pub use kernel::bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
 pub use kernel::bsim3::{Bsim3, Bsim3Parameters, Charges, Mobility, NoiseModel};
-pub use kernel::bsim4::{BodyResistance, Bsim4, Bsim4Parameters, Perimeter};
+pub use kernel::bsim4::{
+    BodyResistance, Bsim4, Bsim4Parameters, FlickerNoise, Perimeter, ThermalNoise,
+};
 pub use kernel::connect::{
     LogicDriver, LogicDriverParameters, Ramp, ThresholdDetector, ThresholdDetectorParameters,
 };

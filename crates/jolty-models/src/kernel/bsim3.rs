@@ -65,10 +65,13 @@ pub(crate) const NOISE_CHARGE: f64 = 1.602_176_620_8e-19;
 /// writes it.
 const NOISE_KBOQ: f64 = 8.62e-5;
 /// The least argument of `b3noi.c`'s logarithms, its `N_MINLOG`.
-const N_MINLOG: f64 = 1e-38;
+pub(crate) const N_MINLOG: f64 = 1e-38;
 /// The thermal voltage at 27 °C with ngspice's constants, `CONSTvt0`, from which
 /// `b3ld.c` and `b4v5ld.c` limit the bulk junctions' steps.
-pub(crate) const VT0: f64 = 1.380_648_52e-23 * 300.15 / 1.602_176_620_8e-19;
+pub(crate) const VT0: f64 = NGSPICE_BOLTZMANN * 300.15 / NOISE_CHARGE;
+/// Boltzmann's constant, in joules per kelvin, as ngspice's `const.h` gives it,
+/// `CONSTboltz`, to `b4v5noi.c` and to its thermal voltage.
+pub(crate) const NGSPICE_BOLTZMANN: f64 = 1.380_648_52e-23;
 
 /// The critical voltage of a junction of 10 fA at [`VT0`], `VT0 · ln(VT0 / (√2 · 10 fA))`,
 /// from which `b3ld.c` and `b4v5ld.c` limit the bulk junctions' steps, their `vcrit`.

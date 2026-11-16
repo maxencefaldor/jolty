@@ -2796,6 +2796,8 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
     mobility_multiplier: float | None = None,
     body_resistance_model: Literal[0, 1] | None = None,
     perimeter_model: Literal[0, 1] | None = None,
+    flicker_noise_model: Literal[0, 1] | None = None,
+    thermal_noise_model: Literal[0, 1] | None = None,
     check_parameters: bool | None = None,
     charge_partition: float | None = None,
     nominal_temperature: Quantity | None = None,
@@ -2808,12 +2810,12 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
     the modes SKY130's and GF180MCU's cards select. The keywords before `card` are the
     instance's: its drawn geometry and fingers, its diffusions, the distances that set
     the stress of its length of diffusion, a shift of its threshold and a factor of its
-    mobility, then the card's body resistance network and perimeter model, whether its
-    sizes are checked and clamped, and the drain's share of the channel's charge. Each
-    entry of `card` is a parameter of the BSIM4.5 manual by its name, such as ``vth0``,
-    ``toxe`` or ``lvth0``, in SI units: a quantity where it has a dimension, as
-    [`bsim4_dimension`][jolty.devices.bsim4_dimension] says, and a number where it has
-    none. Parameters left out take ngspice's defaults.
+    mobility, then the card's body resistance network, perimeter and noise models,
+    whether its sizes are checked and clamped, and the drain's share of the channel's
+    charge. Each entry of `card` is a parameter of the BSIM4.5 manual by its name, such
+    as ``vth0``, ``toxe`` or ``lvth0``, in SI units: a quantity where it has a
+    dimension, as [`bsim4_dimension`][jolty.devices.bsim4_dimension] says, and a number
+    where it has none. Parameters left out take ngspice's defaults.
 
     The drain current folds in the threshold's short-channel, narrow-width, pocket and
     barrier lowering terms, the poly gate's depletion, the mobility's degradation,
@@ -2827,8 +2829,11 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
     resistance ``rsh`` adds an internal node behind the drain and the source where
     ``drain_squares`` or ``source_squares`` is positive, and ``body_resistance_model``
     1 three under the channel and the junctions. The charges under the gate follow
-    ``capmod`` 2, beside the overlaps' and the junctions'. Its noise is not modeled yet,
-    so a noise analysis refuses a circuit that holds one.
+    ``capmod`` 2, beside the overlaps' and the junctions'.
+
+    Its resistances make thermal noise, and its channel the thermal noise of
+    `thermal_noise_model`, ``tnoimod``, the charge-based or the holistic one, and the
+    flicker noise of `flicker_noise_model`, ``fnoimod``, SPICE2's or BSIM4's.
 
     Examples:
         >>> from jolty.units import V, nm, um
@@ -2871,6 +2876,8 @@ def bsim4(  # noqa: PLR0913 - the instance's geometry and BSIM4's model selector
             "channel": channel,
             "body_resistance_model": body_resistance_model,
             "perimeter_model": perimeter_model,
+            "flicker_noise_model": flicker_noise_model,
+            "thermal_noise_model": thermal_noise_model,
         },
     )
     if check_parameters is not None:
