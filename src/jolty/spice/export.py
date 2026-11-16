@@ -503,6 +503,10 @@ def _bsim3_card(values: dict[str, JsonValue]) -> tuple[str, str, str]:
     defaulted = _defaulted("bsim3", values)
     kind = f"{defaulted['channel']}mos".upper()
     element = _spice(models.BSIM3_INSTANCE)
+    names = {
+        jolty: name
+        for name, jolty in (models.BSIM3_SELECTORS | models.BSIM3_SETTINGS).items()
+    }
     nominal = _number("bsim3", defaulted, "nominal_temperature")
     card = ["level=8", "version=3.3.0", "binunit=2", f"tnom={nominal - ZERO_CELSIUS!r}"]
     written: list[str] = []
@@ -516,11 +520,11 @@ def _bsim3_card(values: dict[str, JsonValue]) -> tuple[str, str, str]:
             case "nominal_temperature", _:
                 continue
             case _, bool():
-                card.append(f"{key}={int(value)}")
+                card.append(f"{names.get(key, key)}={int(value)}")
             case _, int():
-                card.append(f"{key}={value}")
+                card.append(f"{names.get(key, key)}={value}")
             case _, float():
-                card.append(f"{key}={_bsim3_value(key, value)!r}")
+                card.append(f"{names.get(key, key)}={_bsim3_value(key, value)!r}")
             case _:
                 message = f"no SPICE value for {key} = {value}"
                 raise _unwritable(message)

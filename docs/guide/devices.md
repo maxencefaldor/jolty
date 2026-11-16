@@ -458,8 +458,8 @@ A netlist written for ngspice gives it as ngspice's `nlev=1`, `KF/Cox` its coeff
 ## BSIM3
 
 `bsim3(...)` is a MOSFET between `drain`, `gate`, `source` and `bulk` in BSIM3v3.3, the Berkeley short-channel model of the CMOS processes from 0.8 µm to 0.13 µm, SPICE's level 8 and 49, as ngspice 47 implements it after the BSIM3v3.3 manual of Weidong Liu, Xuemei Xi and others (UC Berkeley, 2005).
-The drain current folds in the threshold's short-channel, narrow-width and drain-induced barrier lowering terms, the poly gate's depletion, the mobility's degradation by the gate field of `mobmod` 1 to 3, the carriers' velocity saturation, the channel-length modulation, the barrier lowering's and the substrate current's effects on the output resistance, and the source and drain resistance `rdsw`; the impact ionization's substrate current flows from the drain to the bulk.
-The charges under the gate follow `capmod` 0 to 3, the drain's share of the channel's charge `xpart`, beside the overlaps' charges, and two diodes join the bulk to the drain and the source, each with its depletion charge.
+The drain current folds in the threshold's short-channel, narrow-width and drain-induced barrier lowering terms, the poly gate's depletion, the mobility's degradation by the gate field of `mobility_model` 1 to 3, the carriers' velocity saturation, the channel-length modulation, the barrier lowering's and the substrate current's effects on the output resistance, and the source and drain resistance `rdsw`; the impact ionization's substrate current flows from the drain to the bulk.
+The charges under the gate follow `capacitance_model` 0 to 3, the drain's share of the channel's charge `charge_partition`, beside the overlaps' charges, and two diodes join the bulk to the drain and the source, each with its depletion charge.
 The transistor is symmetric: with the drain below the source, the two swap.
 jolty's BSIM3 is derived from BSIM3v3.3.0, developed by the UC Berkeley BSIM Research Group, Copyright 2004 Regents of the University of California, and used under the BSIM terms of use, which `NOTICE` reproduces.
 
@@ -473,10 +473,10 @@ Its instance takes a MOSFET's geometry, and a card of the manual's parameters by
 | `drain_area`, `source_area` | `AD`, `AS` | m² | 0 |
 | `drain_perimeter`, `source_perimeter` | `PD`, `PS` | m | 0 |
 | `drain_squares`, `source_squares` | `NRD`, `NRS` | none | 1, 1 |
-| `delvto`, `mulu0` | `DELVTO`, `MULU0` | V, none | 0, 1 |
-| `mobmod`, `capmod`, `noimod` | `MOBMOD`, `CAPMOD`, `NOIMOD` | 1 to 3, 0 to 3, 1 to 6 | 1, 3, 1 |
-| `paramchk` | `PARAMCHK = 1` | `True` or `False` | `False` |
-| `xpart` | `XPART` | none | 0 |
+| `threshold_adjustment`, `mobility_multiplier` | `DELVTO`, `MULU0` | V, none | 0, 1 |
+| `mobility_model`, `capacitance_model`, `noise_model` | `MOBMOD`, `CAPMOD`, `NOIMOD` | 1 to 3, 0 to 3, 1 to 6 | 1, 3, 1 |
+| `check_parameters` | `PARAMCHK = 1` | `True` or `False` | `False` |
+| `charge_partition` | `XPART` | none | 0 |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
 | `card` | each by its name | SI | ngspice's |
 
@@ -489,13 +489,13 @@ Away from the nominal temperature, the mobility scales as `(T/Tn)^ute`, `ua`, `u
 BSIM3 computes with constants of its own, Boltzmann's over the electron's charge among them, so a netlist written for ngspice gives its nominal temperature in the same kelvins, and ngspice's BSIM3 agrees with jolty's at the same temperature, not where ngspice's thermal voltage is jolty's as for its other devices.
 A heated BSIM3 runs at its thermal net's temperature, as any device that [heats](#self-heating) does.
 
-The parameters ngspice stops on are refused, and those it clamps with a warning are clamped: `pb`, `pbsw` and `pbswg` below 0.1 V rise to it, and with `paramchk`, `a2` outside 0.01 to 1, a negative `rdsw` and negative overlaps.
+The parameters ngspice stops on are refused, and those it clamps with a warning are clamped: `pb`, `pbsw` and `pbswg` below 0.1 V rise to it, and with `check_parameters`, `a2` outside 0.01 to 1, a negative `rdsw` and negative overlaps.
 A sheet resistance `rsh` adds an internal node to the unknowns, as `M1:drain` or `M1:source` for a transistor `M1`; one below 1 Ω adds its current too, as `M1:drain_current` or `M1:source_current`, as a small resistor does.
 A Newton iteration in which the transistor limited its gate's, its drain's or a junction's voltage has not converged, as for the other MOSFETs, where ngspice's BSIM3 holds an iteration back only for its junction limiter (`b3ld.c`, lines 187, 359 to 366 and 2437 to 2438).
 A transient judges the error of the charge at each of its nodes, as for any device, where ngspice's judges its bulk, gate and drain charges, the junctions' folded into the first and the last (`b3ld.c`, lines 2797 to 2802).
-jolty keeps every derivative exact, the derivative of the current and charge it computes: ngspice's derivative of the effective bulk voltage drops the slope of its clamp in forward bias, and its capacitances of `capmod` 0 count the poly depletion's slope of the gate voltage twice, so there its frequency response differs from jolty's while their operating points and transients agree.
+jolty keeps every derivative exact, the derivative of the current and charge it computes: ngspice's derivative of the effective bulk voltage drops the slope of its clamp in forward bias, and its capacitances of `capacitance_model` 0 count the poly depletion's slope of the gate voltage twice, so there its frequency response differs from jolty's while their operating points and transients agree.
 
-In a [noise analysis](simulation.md#noise), the sheet resistances make thermal noise, and the channel the thermal and flicker noise of `noimod`: SPICE2's thermal noise of `8kT·|gm + gds + gmbs|/3` A²/Hz at `noimod` 1, 3 and, corrected below saturation, 5 and 6, and BSIM3's of the inversion charge at 2 and 4; SPICE2's flicker noise of `kf·|Id|^af/(f^ef·Leff²·Cox)` at `noimod` 1, 4 and 5, and BSIM3's of the oxide traps `noia`, `noib` and `noic` at 2, 3 and 6, each of the `m` copies' noise added, as in ngspice.
+In a [noise analysis](simulation.md#noise), the sheet resistances make thermal noise, and the channel the thermal and flicker noise of `noise_model`: SPICE2's thermal noise of `8kT·|gm + gds + gmbs|/3` A²/Hz at `noise_model` 1, 3 and, corrected below saturation, 5 and 6, and BSIM3's of the inversion charge at 2 and 4; SPICE2's flicker noise of `kf·|Id|^af/(f^ef·Leff²·Cox)` at `noise_model` 1, 4 and 5, and BSIM3's of the oxide traps `noia`, `noib` and `noic` at 2, 3 and 6, each of the `m` copies' noise added, as in ngspice.
 
 The SPICE reader reads a `.model` card of type `NMOS` or `PMOS` and `LEVEL` 8 or 49 of version 3.3, or of none, which ngspice reads as 3.3; ngspice runs a card of version 3.0, 3.1 or 3.2 with other models, which jolty does not have, so it refuses one.
 An element whose model names no card takes, as ngspice's bins do, the last defined card named after it with a dot and a number, such as `nch.2`, whose `LMIN`, `LMAX`, `WMIN` and `WMAX` hold the length and width the element gives, a bound within 1 nm counted in.

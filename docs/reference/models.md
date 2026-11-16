@@ -89,7 +89,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `b0` | `0` | The narrow-width effect on the bulk charge, `b0`, in meters; default 0. |
 | `b1` | `0` | The width offset of the narrow-width effect on the bulk charge, `b1`, in meters; default 0. |
 | `beta0` | `30` | The second coefficient of the impact ionization's substrate current, `beta0`, in volts; default 30. |
-| `capmod` | `3` | The charge model, `capmod`, 0 to 3; default 3. |
+| `capacitance_model` | `3` | The charge model, `capmod`, 0 to 3; default 3. |
 | `cdsc` | `0.00024` | The coupling capacitance between the channel and the source and drain, `cdsc`, in farads per square meter; default 0.00024. |
 | `cdscb` | `0` | The body bias's effect on `cdsc`, `cdscb`, in farads per volt-square-meter; default 0. |
 | `cdscd` | `0` | The drain bias's effect on `cdsc`, `cdscd`, in farads per volt-square-meter; default 0. |
@@ -100,6 +100,8 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `cgsl` | `0` | The bias-dependent overlap capacitance between the gate and the lightly doped source, `cgsl`, in farads per meter; default 0. |
 | `cgso` |  | The gate-source overlap capacitance per width, beyond the bias-dependent one, `cgso`, in farads per meter; default `dlc` · Cox − `cgsl` with a positive `dlc`, else 0.6 · `xj` · Cox. |
 | `channel` | `n` | The channel; default `n`. One of `n`, `p`. |
+| `charge_partition` | `0` | The share of the channel's charge the drain takes in saturation, `xpart`: 0.4 below 0.5, 0.5 at 0.5 and none above it, and no channel charge at all below 0; default 0. |
+| `check_parameters` | `false` | Whether the size-dependent parameters are checked and clamped where they lie out of range, `paramchk = 1`; default false. |
 | `cit` | `0` | The interface traps' capacitance, `cit`, in farads per square meter; default 0. |
 | `cj` | `0.0005` | The junctions' zero-bias bottom capacitance per area, `cj`, in farads per square meter; default 0.0005. |
 | `cjsw` | `5e-10` | The junctions' zero-bias sidewall capacitance per length along the field oxide, `cjsw`, in farads per meter; default 5e-10. |
@@ -108,7 +110,6 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `clc` | `1e-07` | The first coefficient of the short-channel effect on the charges, `clc`, in meters; default 1e-7. |
 | `cle` | `0.6` | The second coefficient of the short-channel effect on the charges, `cle`; default 0.6. |
 | `delta` | `0.01` | The smoothing of the effective drain-source voltage at saturation, `delta`, in volts; default 0.01. |
-| `delvto` | `0` | A shift of the zero-bias threshold, `delvto`, in volts; default 0. |
 | `dlc` |  | The length each side of the channel loses in the charges, `dlc`, in meters; default `lint`. |
 | `drain_area` | `0` | The drain diffusion's area, `ad`, in square meters; default 0. |
 | `drain_perimeter` | `0` | The drain diffusion's perimeter, `pd`, in meters; default 0. |
@@ -238,10 +239,10 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `mj` | `0.5` | The bottom capacitance's grading coefficient, `mj`; default 0.5. |
 | `mjsw` | `0.33` | The field-oxide sidewall's grading coefficient, `mjsw`; default 0.33. |
 | `mjswg` |  | The gate sidewall's grading coefficient, `mjswg`; default `mjsw`. |
-| `mobmod` | `1` | The mobility model, `mobmod`, 1, 2 or 3; default 1. |
+| `mobility_model` | `1` | The mobility model, `mobmod`, 1, 2 or 3; default 1. |
+| `mobility_multiplier` | `1` | A factor of the low-field mobility, `mulu0`; default 1. |
 | `moin` | `15` | The gate bias's effect on the surface potential, `capmod` 3's, `moin`; default 15. |
 | `multiplier` | `1` | The number of identical transistors in parallel, `m`; default 1. |
-| `mulu0` | `1` | A factor of the low-field mobility, `mulu0`; default 1. |
 | `nch` |  | The channel's doping concentration near the surface, `nch`, per cubic meter; default 1.7e23 per cubic meter, or derived from `gamma1` where it alone is given. |
 | `nfactor` | `1` | The subthreshold swing's coefficient, `nfactor`; default 1. |
 | `ngate` | `0` | The poly gate's doping concentration, zero for no depletion of the gate, `ngate`, per cubic meter; default 0. |
@@ -251,7 +252,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `noia` |  | The first oxide trap density coefficient of the flicker noise, `noimod` 2, 3 and 6's, `noia`, in the manual's unit; default 1e20 for an n-channel, 9.9e18 for a p-channel. |
 | `noib` |  | The second oxide trap density coefficient of the flicker noise, `noib`, in the manual's unit; default 5e4 for an n-channel, 2.4e3 for a p-channel. |
 | `noic` |  | The third oxide trap density coefficient of the flicker noise, `noic`, in the manual's unit; default -1.4e-12 for an n-channel, 1.4e-12 for a p-channel. |
-| `noimod` | `1` | The noise model, `noimod`, 1 to 6; default 1. |
+| `noise_model` | `1` | The noise model, `noimod`, 1 to 6; default 1. |
 | `nominal_temperature` | `300.15` | The temperature the parameters were measured at, `tnom`, in kelvins; default 27 °C. |
 | `nsub` | `6e+22` | The substrate's doping concentration, `nsub`, per cubic meter; default 6e22. |
 | `pa0` | `0` | The area dependence of `a0`, `pa0`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `a0` times square meters; default 0. |
@@ -261,7 +262,6 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `pags` | `0` | The area dependence of `ags`, `pags`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `ags` times square meters; default 0. |
 | `palpha0` | `0` | The area dependence of `alpha0`, `palpha0`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `alpha0` times square meters; default 0. |
 | `palpha1` | `0` | The area dependence of `alpha1`, `palpha1`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `alpha1` times square meters; default 0. |
-| `paramchk` | `false` | Whether the size-dependent parameters are checked and clamped where they lie out of range, `paramchk = 1`; default false. |
 | `pat` | `0` | The area dependence of `at`, `pat`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `at` times square meters; default 0. |
 | `pb` | `1` | The bottom junction's built-in potential, at least 0.1 V, `pb`, in volts; default 1. |
 | `pb0` | `0` | The area dependence of `b0`, `pb0`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `b0` times square meters; default 0. |
@@ -361,6 +361,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
 | `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
+| `threshold_adjustment` | `0` | A shift of the zero-bias threshold, `delvto`, in volts; default 0. |
 | `tox` | `1.5e-08` | The gate oxide's thickness, `tox`, in meters; default 1.5e-8. |
 | `toxm` |  | The oxide thickness the parameters were extracted at, which scales `k1` and `k2`, `toxm`, in meters; default `tox`. |
 | `tpb` | `0` | The temperature coefficient of `pb`, `tpb`, in volts per kelvin; default 0. |
@@ -478,7 +479,6 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `wxt` | `0` | The width dependence of `xt`, `wxt`: its coefficient of the reciprocal of the effective width, in the unit of `xt` times meters; default 0. |
 | `xj` | `1.5e-07` | The source and drain junctions' depth, `xj`, in meters; default 1.5e-7. |
 | `xl` | `0` | The length the mask and etching add, `xl`, in meters; default 0. |
-| `xpart` | `0` | The share of the channel's charge the drain takes in saturation, `xpart`: 0.4 below 0.5, 0.5 at 0.5 and none above it, and no channel charge at all below 0; default 0. |
 | `xt` | `1.55e-07` | The depth of the doping near the surface, `xt`, in meters; default 1.55e-7. |
 | `xti` | `3` | The junctions' saturation current temperature exponent, `xti`; default 3. |
 | `xw` | `0` | The width the mask and etching add, `xw`, in meters; default 0. |

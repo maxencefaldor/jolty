@@ -2005,7 +2005,7 @@ BSIM3_CARD: Final[Mapping[str, Dimension | Literal["uc"] | None]] = {
 }
 """The parameters of a BSIM3 card, by the BSIM3v3.3 manual's names, and the dimension of
 each, in SI units: ``None`` for a plain number, as for ``ll``, whose unit follows
-``lln``, and ``"uc"`` for ``uc`` and ``uc1``, whose unit follows ``mobmod``."""
+``lln``, and ``"uc"`` for ``uc`` and ``uc1``, whose unit follows ``mobility_model``."""
 
 BSIM3_BINNED: Final = frozenset(
     {
@@ -2097,12 +2097,12 @@ BSIM3_BINNED: Final = frozenset(
 its name after ``l``, ``w`` and ``p``, its unit times meters or square meters."""
 
 
-def bsim3_dimension(name: str, mobmod: int | None = None) -> Dimension | None:
+def bsim3_dimension(name: str, mobility_model: int | None = None) -> Dimension | None:
     """The dimension of BSIM3's parameter `name`, ``None`` for a plain number.
 
     A binned dependence's is its parameter's times meters, or square meters for the
     area's, and ``uc``'s and ``uc1``'s per square volt times meters, or per volt at
-    `mobmod` 3.
+    `mobility_model` 3.
 
     Examples:
         >>> bsim3_dimension("lvth0") == VOLTAGE * LENGTH, bsim3_dimension("k2")
@@ -2120,7 +2120,7 @@ def bsim3_dimension(name: str, mobmod: int | None = None) -> Dimension | None:
         extent = LENGTH**2 if prefix == "p" else LENGTH
     dimension = BSIM3_CARD[base]
     if dimension == "uc":
-        dimension = PER_VOLT if mobmod == 3 else LENGTH / VOLTAGE**2  # noqa: PLR2004 - mobmod 3's body effect
+        dimension = PER_VOLT if mobility_model == 3 else LENGTH / VOLTAGE**2  # noqa: PLR2004 - mobmod 3's body effect
     if dimension is None:
         return None if extent == DIMENSIONLESS else extent
     return dimension * extent
@@ -2138,13 +2138,13 @@ def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selector
     source_perimeter: Quantity | None = None,
     drain_squares: float | None = None,
     source_squares: float | None = None,
-    delvto: Quantity | None = None,
-    mulu0: float | None = None,
-    mobmod: Literal[1, 2, 3] | None = None,
-    capmod: Literal[0, 1, 2, 3] | None = None,
-    noimod: Literal[1, 2, 3, 4, 5, 6] | None = None,
-    paramchk: bool | None = None,
-    xpart: float | None = None,
+    threshold_adjustment: Quantity | None = None,
+    mobility_multiplier: float | None = None,
+    mobility_model: Literal[1, 2, 3] | None = None,
+    capacitance_model: Literal[0, 1, 2, 3] | None = None,
+    noise_model: Literal[1, 2, 3, 4, 5, 6] | None = None,
+    check_parameters: bool | None = None,
+    charge_partition: float | None = None,
     nominal_temperature: Quantity | None = None,
     card: Mapping[str, Quantity | float] | None = None,
 ) -> Device:
@@ -2166,16 +2166,16 @@ def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selector
     degradation by the gate field, velocity saturation, the output resistance's
     channel-length modulation, barrier lowering and substrate current, and the source
     and drain resistance ``rdsw``, that of a channel 1 µm wide; the impact ionization's
-    substrate current flows into the bulk. The charges under the gate follow `capmod`,
-    the overlaps' charges beside them, and two diodes join the bulk to the drain and the
-    source. A binned card's ``l``, ``w`` and ``p`` dependences are on the reciprocal of
-    the effective length, width and their product in meters, not micrometers, and every
-    parameter scales with the temperature as ngspice scales it. A sheet resistance
-    ``rsh`` adds an internal node behind the drain and the source, the unknowns
-    ``drain`` and ``source``.
+    substrate current flows into the bulk. The charges under the gate follow
+    `capacitance_model`, the overlaps' charges beside them, and two diodes join the bulk
+    to the drain and the source. A binned card's ``l``, ``w`` and ``p`` dependences are
+    on the reciprocal of the effective length, width and their product in meters, not
+    micrometers, and every parameter scales with the temperature as ngspice scales it. A
+    sheet resistance ``rsh`` adds an internal node behind the drain and the source, the
+    unknowns ``drain`` and ``source``.
 
     Its sheet resistances make thermal noise, and its channel the thermal and flicker
-    noise of `noimod`: SPICE2's or BSIM3's.
+    noise of `noise_model`: SPICE2's or BSIM3's.
 
     Examples:
         >>> from jolty.units import V, nm, um
@@ -2200,22 +2200,27 @@ def bsim3(  # noqa: PLR0913 - the instance's geometry and BSIM3's model selector
             "source_area": (source_area, LENGTH**2),
             "drain_perimeter": (drain_perimeter, LENGTH),
             "source_perimeter": (source_perimeter, LENGTH),
-            "delvto": (delvto, VOLTAGE),
+            "threshold_adjustment": (threshold_adjustment, VOLTAGE),
             "nominal_temperature": (nominal_temperature, TEMPERATURE),
         },
         {
             "multiplier": multiplier,
             "drain_squares": drain_squares,
             "source_squares": source_squares,
-            "mulu0": mulu0,
-            "xpart": xpart,
+            "mobility_multiplier": mobility_multiplier,
+            "charge_partition": charge_partition,
         },
-        {"channel": channel, "mobmod": mobmod, "capmod": capmod, "noimod": noimod},
+        {
+            "channel": channel,
+            "mobility_model": mobility_model,
+            "capacitance_model": capacitance_model,
+            "noise_model": noise_model,
+        },
     )
-    if paramchk is not None:
-        parameters["paramchk"] = paramchk
+    if check_parameters is not None:
+        parameters["check_parameters"] = check_parameters
     for name, value in (card or {}).items():
-        dimension = bsim3_dimension(name, mobmod)
+        dimension = bsim3_dimension(name, mobility_model)
         match value:
             case Quantity() if dimension is not None:
                 parameters[name] = value.to(dimension, name)

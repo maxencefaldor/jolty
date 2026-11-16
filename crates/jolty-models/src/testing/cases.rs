@@ -38,8 +38,8 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
     ("bsim3", "{}", &[3.0, 2.0, 0.0, 0.0]),
     (
         "bsim3",
-        r#"{"channel": "p", "rsh": 20, "source_squares": 0.02, "capmod": 0,
-                "noimod": 2, "thermal": true}"#,
+        r#"{"channel": "p", "rsh": 20, "source_squares": 0.02, "capacitance_model": 0,
+                "noise_model": 2, "thermal": true}"#,
         &[-3.0, -2.0, 0.0, 0.0],
     ),
     ("vbic", "{}", &[5.0, 0.7, 0.0, 0.0, 4.9, 4.9, 0.69]),

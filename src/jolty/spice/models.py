@@ -266,14 +266,23 @@ BSIM3_LEVELS: Final = frozenset({8, 49})
 
 BSIM3_INSTANCE: Final[Table] = {
     **MOSFET_INSTANCE,
-    "delvto": ("delvto", 1.0),
-    "mulu0": ("mulu0", 1.0),
+    "delvto": ("threshold_adjustment", 1.0),
+    "mulu0": ("mobility_multiplier", 1.0),
 }
 """A BSIM3 instance's own parameters: a MOSFET's, a shift of its threshold and a factor
 of its mobility."""
 
-BSIM3_SELECTORS: Final = ("mobmod", "capmod", "noimod")
-"""A BSIM3 card's choices among its equations, each a whole number."""
+BSIM3_SELECTORS: Final = {
+    "mobmod": "mobility_model",
+    "capmod": "capacitance_model",
+    "noimod": "noise_model",
+}
+"""A BSIM3 card's choices among its equations, each a whole number, by their SPICE
+names: jolty's name of each."""
+
+BSIM3_SETTINGS: Final = {"paramchk": "check_parameters", "xpart": "charge_partition"}
+"""A BSIM3 card's check of its parameters and its drain's share of the channel's
+charge, by their SPICE names: jolty's name of each."""
 
 BSIM3_OFF: Final = ("nqsmod", "acnqsmod", "acm")
 """BSIM3's non-quasi-static models, of the transient and of the small signal, and
@@ -1081,9 +1090,10 @@ def _bsim3_card(
         if name in NOMINAL_TEMPERATURES:
             parameters["nominal_temperature"] = celsius(value).value
         elif name in BSIM3_SELECTORS:
-            parameters[name] = _whole(card, name, value, statement)
-        elif name in {"paramchk", "xpart"}:
-            parameters[name] = value == 1 if name == "paramchk" else value
+            parameters[BSIM3_SELECTORS[name]] = _whole(card, name, value, statement)
+        elif name in BSIM3_SETTINGS:
+            setting = value == 1 if name == "paramchk" else value
+            parameters[BSIM3_SETTINGS[name]] = setting
         elif name in BSIM3_CARD:
             parameters[name] = value * _bsim3_factor(name, value, centimeters)
         elif name[:1] in {"l", "w", "p"} and name[1:] in BSIM3_BINNED:

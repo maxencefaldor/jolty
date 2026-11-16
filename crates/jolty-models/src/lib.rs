@@ -256,8 +256,8 @@ mod tests {
             ),
             (
                 "bsim3",
-                json!({"channel": "p", "vth0": -0.6, "lvth0": 1e-8, "capmod": 2,
-                    "mobmod": 3, "noimod": 2, "paramchk": true, "xpart": 0.5,
+                json!({"channel": "p", "vth0": -0.6, "lvth0": 1e-8, "capacitance_model": 2,
+                    "mobility_model": 3, "noise_model": 2, "check_parameters": true, "charge_partition": 0.5,
                     "temperature": 350}),
             ),
             (

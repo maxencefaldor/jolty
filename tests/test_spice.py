@@ -752,14 +752,14 @@ def test_a_bsim3_card_reads_in_si_units_as_ngspice_reads_it() -> None:
             "vth0": 0.6,
             "lvth0": 2e-8,
             "pvth0": 3e-15,
-            "capmod": 2,
-            "mobmod": 3,
-            "paramchk": True,
-            "xpart": 0.5,
+            "capacitance_model": 2,
+            "mobility_model": 3,
+            "check_parameters": True,
+            "charge_partition": 0.5,
             "width": 2e-6,
             "length": 5e-7,
             "drain_squares": 2.0,
-            "delvto": 0.1,
+            "threshold_adjustment": 0.1,
         }
     )
     assert second.parameters == {
@@ -826,8 +826,8 @@ def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:
                 channel="p",
                 width=2 * um,
                 length=0.5 * um,
-                capmod=1,
-                paramchk=True,
+                capacitance_model=1,
+                check_parameters=True,
                 nominal_temperature=celsius(50),
                 card={
                     "vth0": -0.6 * V,
@@ -859,8 +859,8 @@ def test_a_bsim3_is_written_for_ngspice_as_its_card_reads_back() -> None:
         {
             "channel": "p",
             "nominal_temperature": celsius(50).value,
-            "capmod": 1,
-            "paramchk": True,
+            "capacitance_model": 1,
+            "check_parameters": True,
             "vth0": -0.6,
             "nch": 1.7e23,
             "lnch": 1e30,
@@ -892,7 +892,10 @@ def test_a_bsim3s_parameters_take_their_dimensions() -> None:
         devices.bsim3(card={"k2": 0.5 * V})
     with pytest.raises(ValueError, match="BSIM3 has no parameter `vto`"):
         devices.bsim3(card={"vto": 0.5 * V})
-    assert devices.bsim3(mobmod=3, card={"uc": -0.05 / V}).parameters["uc"] == -0.05
+    assert (
+        devices.bsim3(mobility_model=3, card={"uc": -0.05 / V}).parameters["uc"]
+        == -0.05
+    )
     with pytest.raises(DimensionError, match="uc takes a quantity in kg"):
         devices.bsim3(card={"uc": -0.05 / V})
 
@@ -1078,7 +1081,9 @@ def _every_model() -> list[devices.Device]:
         devices.vdmos(channel="p", breakdown_voltage=60 * V),
         devices.vbic(polarity="pnp", saturation_current=2e-17 * A),
         devices.bsim3(
-            channel="p", capmod=0, card={"vth0": -0.6 * V, "lvth0": 1e-8 * m * V}
+            channel="p",
+            capacitance_model=0,
+            card={"vth0": -0.6 * V, "lvth0": 1e-8 * m * V},
         ),
         devices.photocell(10 * kohm),
         devices.resistor(1 * kohm).held_at(celsius(85)),

@@ -125,7 +125,7 @@ impl TryFrom<u8> for Mobility {
             1 => Ok(Self::One),
             2 => Ok(Self::Two),
             3 => Ok(Self::Three),
-            _ => Err(format!("BSIM3's mobmod is 1, 2 or 3, not {mobmod}")),
+            _ => Err(format!("BSIM3's mobility_model is 1, 2 or 3, not {mobmod}")),
         }
     }
 }
@@ -163,7 +163,7 @@ impl TryFrom<u8> for Charges {
             1 => Ok(Self::One),
             2 => Ok(Self::Two),
             3 => Ok(Self::Three),
-            _ => Err(format!("BSIM3's capmod is 0 to 3, not {capmod}")),
+            _ => Err(format!("BSIM3's capacitance_model is 0 to 3, not {capmod}")),
         }
     }
 }
@@ -211,7 +211,7 @@ impl TryFrom<u8> for NoiseModel {
             4 => Ok(Self::Four),
             5 => Ok(Self::Five),
             6 => Ok(Self::Six),
-            _ => Err(format!("BSIM3's noimod is 1 to 6, not {noimod}")),
+            _ => Err(format!("BSIM3's noise_model is 1 to 6, not {noimod}")),
         }
     }
 }
@@ -819,7 +819,7 @@ mod tests {
             xpart in proptest::sample::select(vec![0.0, 0.5, 1.0]),
             p in proptest::bool::ANY,
         ) {
-            let models = format!(r#""capmod": {capmod}, "mobmod": {mobmod}, "xpart": {xpart}"#);
+            let models = format!(r#""capacitance_model": {capmod}, "mobility_model": {mobmod}, "charge_partition": {xpart}"#);
             let parameters = with(SHORT, &models);
             let parameters = if p { p_channel(&parameters) } else { parameters };
             let sign = if p { -1.0 } else { 1.0 };
@@ -859,7 +859,7 @@ mod tests {
         let substrate = with(SHORT, binned);
         let parameters = substrate.replace(r#""alpha0": 1e-6, "#, "");
         let derived = r#"{"width": 4e-6, "length": 1e-6, "nsub": 2e22, "xt": 1.2e-7,
-            "lint": 2e-8, "wint": 3e-8, "ll": 1e-13, "vfb": -2, "dlc": 3e-8, "capmod": 2, "mobmod": 2,
+            "lint": 2e-8, "wint": 3e-8, "ll": 1e-13, "vfb": -2, "dlc": 3e-8, "capacitance_model": 2, "mobility_model": 2,
             "nominal_temperature": 290, "drain_area": 4e-12, "source_area": 4e-12}"#;
         for [drain, gate, bulk] in [
             [2.0, 1.5, -0.5],
@@ -879,7 +879,7 @@ mod tests {
     #[test]
     fn a_p_channel_mirrors_an_n_channel() {
         for capmod in 0..4 {
-            let n = with(SHORT, &format!(r#""capmod": {capmod}"#));
+            let n = with(SHORT, &format!(r#""capacitance_model": {capmod}"#));
             let p = p_channel(&n);
             let (mut n, mut p) = (Bench::new::<Bsim3>(&n), Bench::new::<Bsim3>(&p));
             for x in [
@@ -967,8 +967,8 @@ mod tests {
             "vsat at the temperature must be positive, not -190599.99999999988"
         );
         assert_eq!(
-            error(r#"{"mobmod": 4}"#),
-            "BSIM3's mobmod is 1, 2 or 3, not 4"
+            error(r#"{"mobility_model": 4}"#),
+            "BSIM3's mobility_model is 1, 2 or 3, not 4"
         );
     }
 
@@ -986,7 +986,7 @@ mod tests {
         let raised = r#"{"pb": 0.1, "drain_area": 1e-11, "source_area": 1e-11}"#;
         assert_eq!(charge(low), charge(raised));
         // With `paramchk`, an `a2` above 1 is 1, and `a1` then 0.
-        let checked = r#"{"paramchk": true, "a1": 0.2, "a2": 1.5, "rdsw": -50}"#;
+        let checked = r#"{"check_parameters": true, "a1": 0.2, "a2": 1.5, "rdsw": -50}"#;
         assert_eq!(current(checked), current(r#"{"a1": 0, "a2": 1}"#));
         assert_ne!(
             current(r#"{"a1": 0.2, "a2": 1.5}"#),
@@ -1058,7 +1058,7 @@ mod tests {
             ],
         );
         for noimod in 2..=6 {
-            let parameters = with(&noisy, &format!(r#""noimod": {noimod}"#));
+            let parameters = with(&noisy, &format!(r#""noise_model": {noimod}"#));
             let sources = Bench::new::<Bsim3>(&parameters).noise(&x);
             let flicker = source(&sources, "flicker");
             assert!(

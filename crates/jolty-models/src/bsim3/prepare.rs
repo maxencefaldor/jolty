@@ -203,7 +203,7 @@ impl<R: Real> Bsim3Parameters<R> {
         let mut rds0 = (binned.rdsw + binned.prt * rise) / (weff * 1e6).pow(binned.wr);
         self.checked(&binned, [leff, weff], [u0temp, vsattemp])?;
         let (mut cgso, mut cgdo, mut cgbo) = self.overlap_defaults(cox);
-        if self.paramchk {
+        if self.check_parameters {
             // ngspice's `paramchk = 1` clamps what it warns of.
             if binned.a2.value() < 0.01 {
                 binned.a2 = R::constant(0.01);
@@ -308,11 +308,11 @@ impl<R: Real> Bsim3Parameters<R> {
         let t5 = k1ox * ((binned.nlx / leff + 1.0).sqrt() - 1.0) * sqrt_phi
             + (binned.kt1 + binned.kt1l / leff) * rise;
         let vfbzb = vth0 * sign - narrow - channel + binned.k3 * t4 + t5 - phi - k1 * sqrt_phi;
-        let delvto = self.delvto;
+        let delvto = self.threshold_adjustment;
         let core = Core {
-            mobmod: self.mobmod,
-            capmod: self.capmod,
-            xpart: self.xpart,
+            mobmod: self.mobility_model,
+            capmod: self.capacitance_model,
+            xpart: self.charge_partition,
             sign,
             tox,
             cox,
@@ -339,7 +339,7 @@ impl<R: Real> Bsim3Parameters<R> {
             theta0vb0,
             theta_rout,
             abulk_cv_factor,
-            u0temp: u0temp * self.mulu0,
+            u0temp: u0temp * self.mobility_multiplier,
             vsattemp,
             rds0,
             ua,
@@ -361,7 +361,7 @@ impl<R: Real> Bsim3Parameters<R> {
             )
         })?;
         let noise = Noise {
-            model: self.noimod,
+            model: self.noise_model,
             noia: self
                 .noia
                 .map_or(by_channel(self.channel, 1e20, 9.9e18), Real::value),

@@ -45,21 +45,21 @@ pub struct Bsim3Parameters<R: Real = f64> {
     /// The source diffusion's length in squares, `nrs`; default 1.
     pub source_squares: R,
     /// A shift of the zero-bias threshold, `delvto`, in volts; default 0.
-    pub delvto: R,
+    pub threshold_adjustment: R,
     /// A factor of the low-field mobility, `mulu0`; default 1.
-    pub mulu0: R,
+    pub mobility_multiplier: R,
     /// The mobility model, `mobmod`, 1, 2 or 3; default 1.
-    pub mobmod: Mobility,
+    pub mobility_model: Mobility,
     /// The charge model, `capmod`, 0 to 3; default 3.
-    pub capmod: Charges,
+    pub capacitance_model: Charges,
     /// The noise model, `noimod`, 1 to 6; default 1.
-    pub noimod: NoiseModel,
+    pub noise_model: NoiseModel,
     /// Whether the size-dependent parameters are checked and clamped where they lie out
     /// of range, `paramchk = 1`; default false.
-    pub paramchk: bool,
+    pub check_parameters: bool,
     /// The share of the channel's charge the drain takes in saturation, `xpart`: 0.4 below
     /// 0.5, 0.5 at 0.5 and none above it, and no channel charge at all below 0; default 0.
-    pub xpart: f64,
+    pub charge_partition: f64,
     /// The temperature the parameters were measured at, `tnom`, in kelvins; default 27 °C.
     pub nominal_temperature: R,
     /// The gate oxide's thickness, `tox`, in meters; default 1.5e-8.
@@ -1274,13 +1274,13 @@ impl<R: Real> Default for Bsim3Parameters<R> {
             source_perimeter: R::constant(0.0),
             drain_squares: R::constant(1.0),
             source_squares: R::constant(1.0),
-            delvto: R::constant(0.0),
-            mulu0: R::constant(1.0),
-            mobmod: Mobility::One,
-            capmod: Charges::Three,
-            noimod: NoiseModel::One,
-            paramchk: false,
-            xpart: 0.0,
+            threshold_adjustment: R::constant(0.0),
+            mobility_multiplier: R::constant(1.0),
+            mobility_model: Mobility::One,
+            capacitance_model: Charges::Three,
+            noise_model: NoiseModel::One,
+            check_parameters: false,
+            charge_partition: 0.0,
             nominal_temperature: R::constant(REFERENCE_TEMPERATURE),
             tox: R::constant(1.5e-8),
             toxm: None,
@@ -1906,7 +1906,7 @@ impl<R: Real> Bsim3Parameters<R> {
                 + self.r#pub * inverse_area,
             uc: self
                 .uc
-                .unwrap_or(R::constant(self.mobmod.select(-0.0465e-9, -0.0465)))
+                .unwrap_or(R::constant(self.mobility_model.select(-0.0465e-9, -0.0465)))
                 + self.luc * inverse_length
                 + self.wuc * inverse_width
                 + self.puc * inverse_area,
@@ -2064,7 +2064,7 @@ impl<R: Real> Bsim3Parameters<R> {
                 + self.pub1 * inverse_area,
             uc1: self
                 .uc1
-                .unwrap_or(R::constant(self.mobmod.select(-0.056e-9, -0.056)))
+                .unwrap_or(R::constant(self.mobility_model.select(-0.056e-9, -0.056)))
                 + self.luc1 * inverse_length
                 + self.wuc1 * inverse_width
                 + self.puc1 * inverse_area,

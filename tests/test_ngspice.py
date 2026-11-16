@@ -2080,10 +2080,10 @@ def _bsim3(  # noqa: PLR0913 - the transistor's channel, length and choices of m
     channel: Literal["n", "p"],
     length: Quantity,
     *,
-    mobmod: Literal[1, 2, 3] | None = None,
-    capmod: Literal[0, 1, 2, 3] | None = None,
-    noimod: Literal[1, 2, 3, 4, 5, 6] | None = None,
-    xpart: float | None = None,
+    mobility_model: Literal[1, 2, 3] | None = None,
+    capacitance_model: Literal[0, 1, 2, 3] | None = None,
+    noise_model: Literal[1, 2, 3, 4, 5, 6] | None = None,
+    charge_partition: float | None = None,
     more: Mapping[str, Quantity | float] | None = None,
 ) -> devices.Device:
     """A BSIM3 transistor 10 µm wide and `length` long of a 0.35 µm process.
@@ -2092,7 +2092,8 @@ def _bsim3(  # noqa: PLR0913 - the transistor's channel, length and choices of m
     resistance, non-saturation, output resistance, substrate current and bias-dependent
     overlaps are set off their defaults, and its diffusions and sheet resistance given;
     a p-channel's threshold is negative and its mobility lower. Its models are
-    `mobmod`, `capmod`, `noimod` and `xpart`, and its other parameters `more`.
+    `mobility_model`, `capacitance_model`, `noise_model` and `charge_partition`, and its
+    other parameters `more`.
     """
     sign = 1 if channel == "n" else -1
     card: dict[str, Quantity | float] = {
@@ -2131,10 +2132,10 @@ def _bsim3(  # noqa: PLR0913 - the transistor's channel, length and choices of m
         channel=channel,
         width=10 * um,
         length=length,
-        mobmod=mobmod,
-        capmod=capmod,
-        noimod=noimod,
-        xpart=xpart,
+        mobility_model=mobility_model,
+        capacitance_model=capacitance_model,
+        noise_model=noise_model,
+        charge_partition=charge_partition,
         drain_area=10 * um**2,
         source_area=10 * um**2,
         drain_perimeter=22 * um,
@@ -2145,11 +2146,11 @@ def _bsim3(  # noqa: PLR0913 - the transistor's channel, length and choices of m
 
 BSIM3_TRANSISTORS: Final = {
     "short-n": _bsim3("n", 0.35 * um),
-    "long-n": _bsim3("n", 5 * um, mobmod=2),
+    "long-n": _bsim3("n", 5 * um, mobility_model=2),
     "short-p": _bsim3(
-        "p", 0.35 * um, mobmod=3, more={"uc": -0.05 / V, "uc1": -0.06 / V}
+        "p", 0.35 * um, mobility_model=3, more={"uc": -0.05 / V, "uc1": -0.06 / V}
     ),
-    "long-p": _bsim3("p", 5 * um, capmod=1),
+    "long-p": _bsim3("p", 5 * um, capacitance_model=1),
 }
 """BSIM3 transistors of each channel, a short one and a long one, of each mobmod."""
 
@@ -2293,20 +2294,21 @@ _PARTITIONED: Final[list[tuple[Literal[0, 1, 2, 3], float]]] = [
 """Each charge model, at the partition 40/60, and with others: 50/50, 0/100 and none."""
 
 _STAGES: Final = {
-    f"capmod-{capmod}-xpart-{xpart}": _bsim3(
+    f"capmod-{capacitance_model}-xpart-{charge_partition}": _bsim3(
         "n",
         0.5 * um,
-        capmod=capmod,
-        xpart=xpart,
-        more={"ngate": 0 / m**3} if capmod == 0 else None,
+        capacitance_model=capacitance_model,
+        charge_partition=charge_partition,
+        more={"ngate": 0 / m**3} if capacitance_model == 0 else None,
     )
-    for capmod, xpart in _PARTITIONED
+    for capacitance_model, charge_partition in _PARTITIONED
 }
 """The stage's transistor in each charge model and partition.
 
-`capmod` 0's has no poly depletion: ngspice's capacitances of `capmod` 0 multiply by the
-depletion's slope of the gate voltage twice, which leaves its AC response 2.5e-4 of the
-signal from the derivative of its own charge, which jolty's is."""
+`capacitance_model` 0's has no poly depletion: ngspice's capacitances of
+`capacitance_model` 0 multiply by the depletion's slope of the gate voltage twice,
+which leaves its AC response 2.5e-4 of the signal from the derivative of its own
+charge, which jolty's is."""
 
 
 @pytest.mark.parametrize("name", _STAGES)
@@ -2342,15 +2344,15 @@ def test_bsim3_ac_responses_agree(name: str) -> None:
         )
 
 
-@pytest.mark.parametrize("noimod", [1, 2, 3, 4, 5, 6])
-def test_bsim3_noise_agrees(noimod: Literal[1, 2, 3, 4, 5, 6]) -> None:
+@pytest.mark.parametrize("noise_model", [1, 2, 3, 4, 5, 6])
+def test_bsim3_noise_agrees(noise_model: Literal[1, 2, 3, 4, 5, 6]) -> None:
     """A BSIM3 stage's noise at its output and at its input, as ngspice's.
 
     Its transistor's noise follows each noise model: SPICE2's or BSIM3's thermal and
     flicker noise.
     """
     transistor = _bsim3(
-        "n", 0.5 * um, noimod=noimod, more={"kf": 1e-26, "af": 1.2, "ef": 0.9}
+        "n", 0.5 * um, noise_model=noise_model, more={"kf": 1e-26, "af": 1.2, "ef": 0.9}
     )
     simulation = Simulation(bsim3_stage(transistor))
     spectrum = simulation.run(
