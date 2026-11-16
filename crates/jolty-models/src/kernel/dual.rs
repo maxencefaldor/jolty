@@ -70,7 +70,8 @@ impl<R: Real, const N: usize> Dual<R, N> {
 
     /// The reciprocal.
     pub(crate) fn recip(self) -> Self {
-        self.chain((self.value.recip(), -(self.value * self.value).recip()))
+        let reciprocal = self.value.recip();
+        self.chain((reciprocal, -(reciprocal * reciprocal)))
     }
 
     /// The square root.
@@ -97,11 +98,14 @@ impl<R: Real, const N: usize> Dual<R, N> {
         }
     }
 
-    /// The quotient by `divisor`, a number that the variables do not move.
+    /// The quotient by `divisor`, a number that the variables do not move: the value
+    /// divided, and the derivatives multiplied by the divisor's reciprocal, so that one
+    /// division serves them all.
     pub(crate) fn divide(self, divisor: R) -> Self {
+        let reciprocal = divisor.recip();
         Self {
             value: self.value / divisor,
-            gradient: self.gradient.map(|derivative| derivative / divisor),
+            gradient: self.gradient.map(|derivative| derivative * reciprocal),
         }
     }
 
@@ -180,16 +184,16 @@ impl<R: Real, const N: usize> Mul for Dual<R, N> {
 impl<R: Real, const N: usize> Div for Dual<R, N> {
     type Output = Self;
 
+    /// The quotient `a / b`, with the derivatives `(a′ − (a / b) · b′) / b`, each
+    /// multiplied by the reciprocal of `b`, so that one division serves them all.
     fn div(self, other: Self) -> Self {
-        let mut gradient = [R::constant(0.0); N];
-        let pairs = self.gradient.into_iter().zip(other.gradient);
-        for (derivative, (own, others)) in gradient.iter_mut().zip(pairs) {
-            *derivative = (own * other.value - self.value * others) / (other.value * other.value);
+        let value = self.value / other.value;
+        let reciprocal = other.value.recip();
+        let mut gradient = self.gradient;
+        for (derivative, others) in gradient.iter_mut().zip(other.gradient) {
+            *derivative = (*derivative - value * others) * reciprocal;
         }
-        Self {
-            value: self.value / other.value,
-            gradient,
-        }
+        Self { value, gradient }
     }
 }
 
@@ -226,10 +230,15 @@ impl<R: Real, const N: usize> Mul<f64> for Dual<R, N> {
 impl<R: Real, const N: usize> Div<f64> for Dual<R, N> {
     type Output = Self;
 
+    #[expect(
+        clippy::suspicious_arithmetic_impl,
+        reason = "the derivatives multiply by the divisor's reciprocal, one division for all"
+    )]
     fn div(self, other: f64) -> Self {
+        let reciprocal = other.recip();
         Self {
             value: self.value / other,
-            gradient: self.gradient.map(|derivative| derivative / other),
+            gradient: self.gradient.map(|derivative| derivative * reciprocal),
         }
     }
 }
