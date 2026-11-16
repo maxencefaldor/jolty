@@ -151,8 +151,8 @@ impl<'a> Instance<'a> {
 }
 
 /// What a group's instances are, as the groups evaluate them: a [`Kernel`]'s, or those of a
-/// kernel that heat, [`crate::heat::Heated`]. Its numbers are plain ones, whatever numbers
-/// the kernel computes with within.
+/// kernel that heat, [`crate::kernel::heat::HeatedKernel`]. Its numbers are plain ones,
+/// whatever numbers the kernel computes with within.
 pub(crate) trait Kind: Send + Sync + 'static {
     /// The model's name.
     const NAME: &'static str;
@@ -2015,8 +2015,7 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         for (memory, prepared) in self.memory.iter_mut().zip(&self.prepared) {
             *memory = prepared
                 .as_ref()
-                .map(|prepared| K::memory(&self.shape, prepared))
-                .unwrap_or_default();
+                .map_or_default(|prepared| K::memory(&self.shape, prepared));
         }
     }
 

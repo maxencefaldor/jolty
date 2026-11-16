@@ -17,7 +17,7 @@ Simulate it with `jolty simulate examples/instrumentation_amplifier.py`.
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
 | out in op ≥ 100.9 mV and ≤ 101 mV | 100.897 mV, passed | 100.897 mV, passed | 2.5e-14 |
-| out at 500 mV in difference ≥ 5.04 V and ≤ 5.05 V | 5.04484 V, passed | 5.04484 V, passed | 1.3e-14 |
+| out at 500 mV in difference ≥ 5.04 V and ≤ 5.05 V | 5.04484 V, passed | 5.04484 V, passed | 1.1e-14 |
 | out at -5 V in common ≥ 100.9 mV and ≤ 101 mV | 100.897 mV, passed | 100.897 mV, passed | 1.0e-13 |
 | out at 5 V in common ≥ 100.9 mV and ≤ 101 mV | 100.897 mV, passed | 100.897 mV, passed | 3.0e-14 |
 

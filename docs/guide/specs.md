@@ -72,9 +72,11 @@ Each requirement's verdict is one of four:
 A requirement holds at the plan's own conditions and at each of its [corners](simulation.md#corners), and its verdict is the worst of them: failed, then unmeasured, then marginal, then passed, and the least slack among equals.
 A verdict states the value read and the slack, how far the value lies inside its bounds, negative outside them, the corner it comes from, and the script line that stated the requirement:
 
+<!-- output of: jolty simulate hot.py --no-schematic --no-plot -->
+
 ```text
-failed: rise time of out in step ≤ 2 µs: read 2.192 µs at the corner hot, slack -192.5 ns
-  = rc_filter.py:62 in specs()
+failed: rise time of out in step ≤ 2.3 µs: read 2.406 µs at the corner hot, slack -106.1 ns
+  = hot.py:44 in specs()
 ```
 
 `jolty simulate` exits with 1 when a requirement fails or is unmeasured, as when an analysis fails at the plan's own conditions or at a corner.
@@ -86,10 +88,12 @@ The yield is the fraction of samples on which every requirement passes, if margi
 
 For a divider of a 1 % uniform resistor over a 1 % normal one, with `value("op", "out").within(2.5 * V, 15e-3 * V)` and a target of 90 %:
 
+<!-- output of: jolty simulate tolerant.py --no-schematic --no-plot -->
+
 ```text
 monte carlo: 1000 samples of 2 toleranced parameters, seed 1; 0 failed
-  out in op ≥ 2.485 V and ≤ 2.515 V: 947 of 1000 pass; read 2.477 V to 2.521 V, mean 2.5 V, standard deviation 8.277 mV
-  yield: 947 of 1000, 94.7 % (95 % interval 93.13 to 95.93 %), which reaches the target 90 %
+  out in op ≥ 2.485 V and ≤ 2.515 V: 945 of 1000 pass; read 2.479 V to 2.525 V, mean 2.5 V, standard deviation 8.393 mV
+  yield: 945 of 1000, 94.5 % (95 % interval 92.91 to 95.75 %), which reaches the target 90 %
 ```
 
 `Specs(requirements, yield_target=0.9)` sets the yield the samples, and the variants' runs, must reach; `jolty simulate` exits with 1 when an estimate falls below it.

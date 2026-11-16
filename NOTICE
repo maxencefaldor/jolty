@@ -8,9 +8,9 @@ models as well.
 -------------------------------------------------------------------------------
 BSIM3v3.3
 
-jolty's BSIM3 MOSFET, in crates/jolty-models/src/bsim3.rs and crates/jolty-models/src/bsim3/,
-is derived from BSIM3v3.3.0, developed by the UC Berkeley BSIM Research Group, as ngspice 47
-distributes it in src/spicelib/devices/bsim3/.
+jolty's BSIM3 MOSFET, in crates/jolty-models/src/kernel/bsim3.rs and
+crates/jolty-models/src/kernel/bsim3/, is derived from BSIM3v3.3.0, developed by the UC
+Berkeley BSIM Research Group, as ngspice 47 distributes it in src/spicelib/devices/bsim3/.
 
 Copyright 2004 Regents of the University of California. All rights reserved.
 
@@ -48,8 +48,8 @@ organization and externally, subject to the following restrictions:
 ngspice
 
 jolty's diode, Gummel-Poon bipolar transistor, VBIC 1.2 transistor, JFET, MOSFETs of levels 1
-and 3, VDMOS, and the junctions they share, in crates/jolty-models/src/, follow ngspice 47's
-implementations of them: their equations, constants, temperature scaling and limiting.
+and 3, VDMOS, and the junctions they share, in crates/jolty-models/src/kernel/, follow ngspice
+47's implementations of them: their equations, constants, temperature scaling and limiting.
 
 Copyright 1985 - 2018, Regents of the University of California and others
 

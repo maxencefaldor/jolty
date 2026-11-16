@@ -45,11 +45,13 @@ Each run, `spot_checks` of the instances a scope matches, drawn with its `seed`,
 Each output's changes must reach the same levels in the same order as the model's, each within the model's measured error plus `tolerance`, 0.1 unless given, times its mean delay; at an operating point and over a sweep, each output must hold the same levels.
 An output that does not violates the contract, and the report states where:
 
+<!-- output of: jolty simulate full_adder.py --plan contract.py --no-schematic --no-plot -->
+
 ```text
 fidelity:
-  nand: a logic cell of 4 arcs for adder/U1, ..., adder/U9, over transitions from 67.09 ps to 536.7 ps and loads from 0 F to 19.86 fF; interpolated within 4.092 ps of its delays and 16.18 ps of its transitions
+  nand: a logic cell of 4 arcs for adder/U1, ..., adder/U9, over transitions from 67.53 ps to 540.2 ps and loads from 0 F to 19.86 fF; interpolated within 4.125 ps of its delays and 10.84 ps of its transitions
   error[contract-violated]: adder/U6's model diverges
-    count: output y changes to 1 at 10.52 ns in its circuit and at 10.57 ns in its model
+    count: output y changes to 1 at 4.543 ns in its circuit and at 4.59 ns in its model
 ```
 
 A violated contract fails the simulation, as a failed spec does.
@@ -59,8 +61,12 @@ A violated contract fails the simulation, as a failed spec does.
 A characterized cell's timing holds where it was measured: between its least and its most input transition and load, at its supply.
 The engine watches every analysis for a cell read outside that domain, a supply further from its own than the relative tolerance included, and the report states each one at the rule `outside-validity`, a warning:
 
+<!-- output of: jolty simulate validity.py --no-schematic --no-plot -->
+
 ```text
-warn[outside-validity]: X1's load reads 500 fF in step, outside the 0 F to 19.86 fF its model was characterized over; first at 1.05 ns, once
+fidelity:
+  ...
+  warn[outside-validity]: X1's load reads 470 fF in step, outside the 0 F to 20.72 fF its model was characterized over; first at 1.05 ns, once
 ```
 
 Outside its domain, a cell holds its tables' edge, and its timing is a guess.
@@ -68,8 +74,12 @@ Outside its domain, a cell holds its tables' edge, and its timing is a guess.
 When the plan defines specs, each spot check measures them again, with its instance at its circuit's fidelity.
 A requirement whose verdict changes there depends on the model, and the report states it at the rule `fidelity-dependence`, a warning:
 
+<!-- output of: jolty simulate validity.py --no-schematic --no-plot -->
+
 ```text
-warn[fidelity-dependence]: first falling crossing of 1.65 V by mid in step ≤ 2.37 ns: passed, reading 1.198 ns, with every model, failed, reading 3.542 ns, with X1 at its circuit's fidelity
+fidelity:
+  ...
+  warn[fidelity-dependence]: first falling crossing of 1.65 V by mid in step ≤ 2.37 ns: passed, reading 1.184 ns, with every model, failed, reading 3.123 ns, with X1 at its circuit's fidelity
 ```
 
 ## Limits

@@ -159,6 +159,11 @@ impl Meter {
         self.iterations += 1;
     }
 
+    /// The Newton iterations counted since the meter was made.
+    pub(crate) fn iterations(&self) -> usize {
+        self.iterations
+    }
+
     /// Enters `activity`, and returns the activity left, to [`Meter::leave`] for it.
     pub(crate) fn enter(&mut self, activity: Activity) -> Activity {
         match &mut self.clock {

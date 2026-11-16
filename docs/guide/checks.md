@@ -13,9 +13,11 @@ The [rules reference](../reference/rules.md) gives each rule's exact condition.
 
 A check also reads each resistor's, capacitor's and inductor's value against the E series of IEC 60063, the preferred values parts are made in: a resistance in none from E3 to E192, or a capacitance or inductance in none from E3 to E24, is one no standard part has, which the rule `non-standard-value` states:
 
+<!-- output of: jolty build divider.py --no-schematic -->
+
 ```text
 warn[non-standard-value]: the resistance of `R1`, 4800.0 Ω, is in no E series from E3 to E192
-  = R1, divider.py:9 in divider()
+  = R1, divider.py:13 in divider()
 ```
 
 ## At the operating point
@@ -27,6 +29,8 @@ The engine places gmin, a conductance of 1e-12 S, across every junction, so that
 A net that little else holds, such as one between reverse-biased junctions, takes whatever voltage gmin's picoamperes set, which is the simulator's, not the circuit's.
 The rule `gmin-dependence` names every net whose voltage doubling gmin would move, to first order, by more than a hundredth of the larger of that voltage and 1 V:
 
+<!-- output of: jolty simulate leakage.py --no-schematic --no-plot -->
+
 ```text
 warn[gmin-dependence]: the operating point depends on gmin: to first order, doubling it moves `n` from 999.9899999999999 V by -999.9899999999998 V
 ```
@@ -34,15 +38,19 @@ warn[gmin-dependence]: the operating point depends on gmin: to first order, doub
 A circuit whose DC equations have more than one solution can rest in more than one state: a latch in either of its own, a bias circuit that can also rest with no current, which never starts.
 The rule `multiple-operating-points` states it when an operating-points analysis would find a solution besides the operating point, naming the nets that differ most between the two:
 
+<!-- output of: jolty simulate bistable.py --no-schematic --no-plot -->
+
 ```text
-warn[multiple-operating-points]: the circuit has another DC solution, where `x` at 1.948683389235564 V rather than 0.0513167012238326 V
+warn[multiple-operating-points]: the circuit has another DC solution, where `x` at 1.9486832970234704 V rather than 0.05131670197609366 V
 ```
 
 A pole of the linearized circuit with a positive real part is a natural mode that grows away from the operating point, so the circuit does not rest there: an amplifier whose feedback makes it oscillate, or a latch balanced between its states.
 The rule `unstable-pole` states it, with the nets where the growing mode is largest, though the plan asks for no stability or pole-zero analysis:
 
+<!-- output of: jolty simulate oscillator.py --no-schematic --no-plot -->
+
 ```text
-warn[unstable-pole]: the operating point is unstable: its poles at 49999.999999999985 ± 998749.2177719085j rad/s have a positive real part, so an oscillation near 158955.87491756308 Hz grows from it, largest at `n`
+warn[unstable-pole]: the operating point is unstable: its poles at 50000.0 ± 998749.217771909j rad/s have a positive real part, so an oscillation near 158955.87491756317 Hz grows from it, largest at `n`
 ```
 
 An oscillator raises it by design, so it is a warning, which a plan for one can ignore.
@@ -53,8 +61,10 @@ The poles are found by the QZ algorithm on the dense linearized circuit, which t
 Once its analyses end, a simulation checks their results too.
 A stability analysis's loop gain raises `low-phase-margin` when it falls through 0 dB with less than 45° of phase margin, and `low-gain-margin` when its phase falls through -180° with less than 6 dB of gain margin, each measured as the specs' `phase_margin` and `gain_margin` measure them:
 
+<!-- output of: jolty simulate loop.py --no-schematic --no-plot -->
+
 ```text
-warn[low-phase-margin]: the loop broken at `VP` has a phase margin of 41.69037114357252° at its crossover, 1039270.2892072713 Hz
+warn[low-phase-margin]: the loop broken at `VP` has a phase margin of 18.171071365739664° at its crossover, 327206.47668315953 Hz
 ```
 
 A spec on the margin states a design's own bound; the rules state the usual ones for any loop a plan measures.
@@ -64,22 +74,27 @@ A component instance's stresses are at its ports, and its power is all it dissip
 A rating of a current or a power reads the instance's terminals' currents, which an operating point and a transient [record](results.md#what-a-result-records) whatever the plan's record names.
 A temperature is the simulation's, or the device's own where it has one, raised by the thermal net that an instance's terminal `thermal` joins where it [heats](devices.md#self-heating), and stated in degrees Celsius:
 
+<!-- output of: jolty simulate supply.py --no-schematic --no-plot -->
+
 ```text
-error[over-rating]: the voltage of `C1` at `a` over `b` reaches 20.0 V at 2e-06 s in `tran`, beyond its rating of 16.0 V
-  = C1, supply.py:10 in supply()
-error[over-rating]: the temperature of `Q1` reaches 159.797947444 °C at the operating point of `op`, beyond its rating of 150.0 °C
-  = Q1, follower.py:12 in follower()
+error[over-rating]: the temperature of `Q1` reaches 157.829574664 °C at the operating point of `op`, beyond its rating of 150.0 °C
+  = Q1, supply.py:25 in supply()
+
+error[over-rating]: the voltage of `C1` at `a` over `b` reaches 19.99999999999999 V at 2e-06 s in `tran`, beyond its rating of 16.0 V
+  = C1, supply.py:20 in supply()
 ```
 
 ## Diagnostics
 
 Each diagnostic names its level and rule, states the fact, and lists the instances involved with the script line that placed each one:
 
+<!-- output of: jolty build coupled.py --no-schematic -->
+
 ```text
 error[no-dc-path]: `mid` and `out` have no DC path to `ground`
-  = C1, coupled.py:9 in coupled()
-  = R1, coupled.py:10 in coupled()
-  = C2, coupled.py:11 in coupled()
+  = C1, coupled.py:13 in coupled()
+  = R1, coupled.py:14 in coupled()
+  = C2, coupled.py:15 in coupled()
 
 1 error, 0 warnings
 ```

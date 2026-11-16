@@ -28,12 +28,14 @@ uv run jolty simulate examples/rc_filter.py    # builds the filter and runs its 
 
 This saves the circuit, its schematic, its results and their plots beside the script, and prints a report:
 
+<!-- output of: jolty simulate rc_filter.py --no-schematic --no-plot -->
+
 ```text
-step: transient to 10 µs in 67 steps, 0 rejected
+step: transient to 10 µs in 73 steps, 3 rejected
               first  min        max       last
   in          0 V    0 V        1 V       1 V
   out         0 V    0 V        999.9 mV  999.9 mV
-  V1:current  0 A    -999.5 µA  0 A       -119.6 nA
+  V1:current  0 A    -999.5 µA  0 A       -119.9 nA
 ```
 
 ## Use it with an agent

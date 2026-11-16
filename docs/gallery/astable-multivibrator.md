@@ -19,9 +19,9 @@ Simulate it with `jolty simulate examples/astable_multivibrator.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of left from 2 ms in run ≥ 1.381 kHz and ≤ 1.688 kHz | 1.48233 kHz, passed | 1.48175 kHz, passed | 3.9e-04 |
-| maximum of left from 2 ms in run ≥ 8.5 V and ≤ 9.1 V | 8.99693 V, passed | 8.99693 V, passed | 4.4e-08 |
-| minimum of left from 2 ms in run ≤ 300 mV | 50.8012 mV, passed | 50.8834 mV, passed | 0.16 % |
+| frequency of left from 2 ms in run ≥ 1.381 kHz and ≤ 1.688 kHz | 1.48236 kHz, passed | 1.48175 kHz, passed | 4.1e-04 |
+| maximum of left from 2 ms in run ≥ 8.5 V and ≤ 9.1 V | 8.99693 V, passed | 8.99693 V, passed | 4.1e-08 |
+| minimum of left from 2 ms in run ≤ 300 mV | 50.7986 mV, passed | 50.8834 mV, passed | 0.17 % |
 
 ## Replicated in ngspice
 

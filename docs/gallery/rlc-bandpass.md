@@ -27,8 +27,8 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
 | `op` | 3 | 0 | 2 | 0 |
-| `bode` | 3 | 4.3e-14 | 2 | 4.3e-14 |
-| `ring` | 3 | 5.1e-04 | 2 | 4.7e-04 |
+| `bode` | 3 | 4.2e-14 | 2 | 4.2e-14 |
+| `ring` | 3 | 5.2e-04 | 2 | 4.7e-04 |
 
 ![The replication in ngspice](../images/gallery/rlc_bandpass.bode.replication.png)
 

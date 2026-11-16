@@ -466,6 +466,9 @@ pub struct Options {
     pub max_memory: f64,
     /// What the results record of the devices beside the unknowns; by default nothing.
     pub record: Record,
+    /// Whether the results record, of every transistor `record` leaves out, its region of
+    /// operation and its margins to the regions' boundaries alone; by default not.
+    pub regions: bool,
     /// Whether a transient measures where its time goes, into its statistics' profile; by
     /// default not, as the clock adds about a tenth to a small circuit's transient. It
     /// changes no other result.
@@ -489,6 +492,7 @@ impl Default for Options {
             truncation_tolerance: 7.0,
             max_memory: 2.0,
             record: Record::default(),
+            regions: false,
             profile: false,
             parallelism: Parallelism::default(),
         }

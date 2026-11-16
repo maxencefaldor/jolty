@@ -78,10 +78,13 @@ class Recorded:
     """An analysis whose results can keep the devices' detail beside the unknowns.
 
     Its `record` names the instances whose detail its results keep, as a plan's does,
-    and replaces the plan's when given (see [`Plan`][jolty.plan.Plan]).
+    and replaces the plan's when given (see [`Plan`][jolty.plan.Plan]). With `regions`,
+    its results keep besides each other transistor's region of operation and its
+    margins to the regions' boundaries alone, which an operating point's `region` reads.
     """
 
     record: Sequence[str] | None = field(default=None, kw_only=True)
+    regions: bool = field(default=False, kw_only=True)
 
     def __post_init__(self) -> None:
         """Keeps the record as a tuple.

@@ -15,8 +15,9 @@ mod measure;
 use std::sync::{Arc, Mutex};
 
 use jolty_engine::{
-    Analysis, AnalysisResult, Derivatives, Location, NoiseResult, OperatingPointResult, Options,
-    PoleZeroResult, Record, RecordedSeries, RecordedValues, Statistics,
+    Analysis, AnalysisResult, DcSweepResult, Derivatives, Location, NoiseResult,
+    OperatingPointResult, Options, PoleZeroResult, Record, RecordedSeries, RecordedValues,
+    Statistics,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Library, LogicLevel, Model, Nature, ParameterError};
@@ -381,38 +382,57 @@ impl Simulator {
         paths
     }
 
-    /// What the record whose JSON text is `record` keeps, in the order of every result's
-    /// arrays: each recorded device, as its path, its terminals' names, whether each is
-    /// thermal, the index among the unknowns of its first internal unknown and their
-    /// number, its variables' names, and the names of its regions and of its margins, none
-    /// for a device that is no transistor; then each recorded terminal of a component
-    /// instance or a logic device, as its name, such as `X1.vdd`, and whether it is thermal.
-    fn recording(&self, record: &str) -> PyResult<Recording> {
+    /// What the record whose JSON text is `record` keeps, and every other transistor's
+    /// region when `regions`, in the order of every result's arrays: each recorded device,
+    /// as its path, its terminals' names, whether each is thermal, the index among the
+    /// unknowns of its first internal unknown and their number, its variables' names, and
+    /// the names of its regions and of its margins, none for a device that is no
+    /// transistor; then each transistor whose region alone is recorded, alike, with no
+    /// terminal, no internal unknown and its region variables alone; then each recorded
+    /// terminal of a component instance or a logic device, as its name, such as `X1.vdd`,
+    /// and whether it is thermal.
+    fn recording(&self, record: &str, regions: bool) -> PyResult<Recording> {
         let record: Record = serde_json::from_str(record).map_err(|error| unreadable(&error))?;
         let simulator = self.lock();
-        let recorded = simulator.recorded(&record);
-        let devices = recorded
-            .devices
-            .iter()
-            .map(|&index| {
-                let device = &simulator.devices()[index];
-                let thermal = (0..device.terminals().len())
-                    .map(|terminal| device.thermal().contains(&terminal))
-                    .collect();
-                let internals = device.internals();
-                let regions = device.regions();
-                (
-                    device.path().to_owned(),
-                    device.terminals().to_vec(),
-                    thermal,
-                    internals.start,
-                    internals.len(),
-                    device.variable_names().to_vec(),
-                    regions.names.to_vec(),
-                    regions.margins.to_vec(),
-                )
-            })
-            .collect();
+        let recorded = simulator.recorded(&record, regions);
+        let in_full = recorded.devices.iter().map(|&index| {
+            let device = &simulator.devices()[index];
+            let thermal = (0..device.terminals().len())
+                .map(|terminal| device.thermal().contains(&terminal))
+                .collect();
+            let internals = device.internals();
+            let regions = device.regions();
+            (
+                device.path().to_owned(),
+                device.terminals().to_vec(),
+                thermal,
+                internals.start,
+                internals.len(),
+                device.variable_names().to_vec(),
+                regions.names.to_vec(),
+                regions.margins.to_vec(),
+            )
+        });
+        let regions_alone = recorded.regions.iter().map(|&index| {
+            let device = &simulator.devices()[index];
+            let names = device.variable_names();
+            let regions = device.regions();
+            (
+                device.path().to_owned(),
+                Vec::new(),
+                Vec::new(),
+                0,
+                0,
+                simulator
+                    .region_variables(index)
+                    .into_iter()
+                    .map(|variable| names[variable])
+                    .collect(),
+                regions.names.to_vec(),
+                regions.margins.to_vec(),
+            )
+        });
+        let devices = in_full.chain(regions_alone).collect();
         let composites = recorded
             .composites
             .iter()
@@ -571,14 +591,7 @@ pub(crate) fn outcome_to_python(
         }
         AnalysisResult::DcSweep(sweep) => {
             result.set_item("kind", "dc_sweep")?;
-            result.set_item("source", sweep.source)?;
-            result.set_item("parameter", sweep.parameter)?;
-            result.set_item("nature", sweep.nature.map(quantity_name))?;
-            result.set_item("swept", PyArray1::from_vec(py, sweep.swept))?;
-            result.set_item("values", stacked(py, sweep.values)?)?;
-            add_observations(&result, sweep.observations)?;
-            let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();
-            result.set_item("logic", matrix(py, &logic)?)?;
+            add_dc_sweep(&result, sweep)?;
         }
         AnalysisResult::Ac(response) => {
             result.set_item("kind", "ac")?;
@@ -663,6 +676,22 @@ pub(crate) fn outcome_to_python(
         }
     }
     Ok(result)
+}
+
+/// The operating points of a DC sweep, one row per level, and how each was found.
+fn add_dc_sweep(result: &Bound<'_, PyDict>, sweep: DcSweepResult) -> PyResult<()> {
+    let py = result.py();
+    result.set_item("source", sweep.source)?;
+    result.set_item("parameter", sweep.parameter)?;
+    result.set_item("nature", sweep.nature.map(quantity_name))?;
+    result.set_item("swept", PyArray1::from_vec(py, sweep.swept))?;
+    result.set_item("values", stacked(py, sweep.values)?)?;
+    add_observations(result, sweep.observations)?;
+    let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();
+    result.set_item("logic", matrix(py, &logic)?)?;
+    let strategies: Vec<&str> = sweep.strategies.iter().map(|found| found.name()).collect();
+    result.set_item("strategies", strategies)?;
+    result.set_item("iterations", sweep.iterations)
 }
 
 /// The noise at an output, at each frequency, with each device noise source's share: the
@@ -764,7 +793,8 @@ fn add_operating_point(
     result.set_item("conductances", PyArray1::from_vec(py, conductances))?;
     result.set_item("capacitances", PyArray1::from_vec(py, capacitances))?;
     result.set_item("variables", PyArray1::from_vec(py, variables))?;
-    result.set_item("strategy", operating_point.strategy.name())
+    result.set_item("strategy", operating_point.strategy.name())?;
+    result.set_item("iterations", operating_point.iterations)
 }
 
 /// Adds what the recorded devices did at each point to `result`: the terminals' `currents`

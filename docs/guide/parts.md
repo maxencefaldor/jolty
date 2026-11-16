@@ -33,7 +33,7 @@ Each part takes `heated=True` to [heat](devices.md#self-heating) by what it diss
 A power MOSFET's channel and body diode share its junction.
 
 ```python
-amplifier = c.place(parts.q2n3904(heated=True), name="Q1")
+amplifier = c.place(parts.q2n3904(heated=True), name="Q2")
 mount = c.place(devices.thermal_resistance(200 * K / W), name="RTH")
 c.connect(amplifier.thermal, mount.a, name="junction")
 c.connect(mount.b, ground)
@@ -103,5 +103,7 @@ The E series of IEC 60063 space preferred values evenly on a log scale: E3 to E2
 `values(series, low, high)` lists a series' values between two bounds, and `neighbours(series, value)` the values nearest a value below and above it:
 
 ```python
+from jolty.catalog import neighbours
+
 neighbours("E96", 1234.0)  # (1210.0, 1240.0)
 ```

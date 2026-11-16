@@ -77,7 +77,9 @@ The top component has exactly one ground port, the reference node of every volta
 Every instance records the line of the script that placed it.
 Problems name the instance by its path and that line, as a compiler names the line of an error, so the agent knows what to edit:
 
+<!-- output of: jolty build filter.py --no-schematic -->
+
 ```text
 error: capacitance must be at least 0, not -1e-9
-  = X1/C1, filter.py:12 in low_pass()
+  = X1/C1, filter.py:14 in low_pass()
 ```

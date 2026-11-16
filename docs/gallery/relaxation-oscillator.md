@@ -17,9 +17,9 @@ Simulate it with `jolty simulate examples/relaxation_oscillator.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| frequency of out from 500 µs in run ≥ 4.46 kHz and ≤ 4.642 kHz | 4.48037 kHz, passed | 4.47235 kHz, passed | 0.18 % |
-| maximum of out from 500 µs in run ≥ 12.7 V and ≤ 13.3 V | 13.1863 V, passed | 13.1301 V, passed | 0.43 % |
-| minimum of out from 500 µs in run ≥ -13.3 V and ≤ -12.7 V | -13.1877 V, passed | -13.1301 V, passed | 0.44 % |
+| frequency of out from 500 µs in run ≥ 4.46 kHz and ≤ 4.642 kHz | 4.48042 kHz, passed | 4.47229 kHz, passed | 0.18 % |
+| maximum of out from 500 µs in run ≥ 12.7 V and ≤ 13.3 V | 13.1845 V, passed | 13.1301 V, passed | 0.41 % |
+| minimum of out from 500 µs in run ≥ -13.3 V and ≤ -12.7 V | -13.1801 V, passed | -13.1301 V, passed | 0.38 % |
 
 ## Replicated in ngspice
 

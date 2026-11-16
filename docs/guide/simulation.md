@@ -114,6 +114,8 @@ Its `result` holds the result of the analysis differentiated, whose levels, freq
 A stability analysis finds a feedback loop's gain, from which its phase and gain margins are read.
 The loop runs through a probe: a voltage source, usually of 0 V, placed in series with the loop where it carries the loop's signal on, its `positive` terminal toward the side the signal enters, as between an amplifier's output and its feedback network:
 
+<!-- not run: a fragment of a component that places `amplifier` and `feedback` -->
+
 ```python
 probe = c.place(devices.voltage_source(0 * V), name="VP")
 c.connect(amplifier.output, probe.negative)
@@ -273,6 +275,8 @@ The report states the runs and the numbers they vary, how many failed, and, with
 
 Every many-runs analysis runs as a batch: one call to the engine for many runs of one circuit, spread across its threads, each run a pure function of its index and of nothing else, so the same bits whatever the threads.
 `Simulation.batch` runs one from Python:
+
+<!-- not run: it batches a circuit `bench`, which the page does not build -->
 
 ```python
 simulation = Simulation(bench())

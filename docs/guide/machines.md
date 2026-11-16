@@ -8,15 +8,17 @@ The merge of the shards joins their batches in the order of their samples, and r
 `jolty simulate SCRIPT --samples START:STOP` runs the samples from `START` up to `STOP` of the plan's Monte Carlo analysis, and nothing else:
 
 ```sh
-jolty simulate amp.py --samples 0:1000000
-jolty simulate amp.py --samples 1000000:2000000
+jolty simulate amp.py --samples 0:1000
+jolty simulate amp.py --samples 1000:2000
 ```
 
 A shard runs its samples at the plan's own conditions and at every corner, as a run of every sample does, and runs none of the plan's other analyses, draws no schematic and no plot.
-It writes them to `amp.shards/shard-0-1000000.npz`, or into the directory `--shards` names, and reports its samples, how many failed, the bytes of its arrays, and its digest:
+It writes them to `amp.shards/shard-0-1000.npz`, or into the directory `--shards` names, and reports its samples, how many failed, the bytes of its arrays, and its digest:
+
+<!-- output of: jolty simulate cluster/amplifier.py --samples 0:1000 -->
 
 ```text
-shard: samples 0 up to 1000000 of 10000000; 0 failed; 75 MB of arrays, digest 29ac764e3ed3
+shard: samples 0 up to 1000 of 10000000; 0 failed; 75 kB of arrays, digest ...
 ```
 
 A shard is a command with no state of its own: the same command writes the same file, byte for byte, and a shard that fails, or whose machine stops, is simply run again.
@@ -37,9 +39,13 @@ The merge runs no script, so it needs neither the scripts nor what they import, 
 
 A merge refuses shards it cannot join, and names them, every gap and overlap at once:
 
+<!-- output of: jolty simulate cluster/amplifier.py --samples 5:20 --shards amp.shards; jolty simulate cluster/amplifier.py --samples 30:50 --shards amp.shards; jolty simulate cluster/amplifier.py --samples 40:45 --shards amp.shards; jolty merge amp.shards -->
+
 ```text
-error: no shard holds samples 20 up to 30, after shard-5-20.npz and before shard-30-50.npz
+error: no shard holds samples 0 up to 5, before shard-5-20.npz
+no shard holds samples 20 up to 30, after shard-5-20.npz and before shard-30-50.npz
 shard-30-50.npz and shard-40-45.npz both hold samples 40 up to 45
+no shard holds samples 50 up to 10000000, after shard-30-50.npz
 ```
 
 ## Fingerprints

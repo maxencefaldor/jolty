@@ -54,6 +54,28 @@ _STRATEGIES = {
 }
 
 
+def _found(strategy: str, iterations: int | None) -> str:
+    """How an operating point was found, as text: by `strategy`, in `iterations`.
+
+    Examples:
+        >>> _found("gmin_stepping", 412)
+        'found by gmin stepping in 412 iterations'
+        >>> _found("ngspice", None)
+        'found by ngspice'
+    """
+    by = f"found by {_STRATEGIES.get(strategy, strategy)}"
+    if iterations is None:
+        return by
+    return f"{by} in {iterations} {'iteration' if iterations == 1 else 'iterations'}"
+
+
+_ITERATIONS: Final = (
+    "The Newton iterations that found it: the strategy's that found it, and those of "
+    "every strategy tried before it; null for ngspice's, which it does not count."
+)
+"""What a report's iterations of an operating point are."""
+
+
 class _Model(BaseModel):
     model_config = ConfigDict(
         frozen=True, extra="forbid", validate_by_name=True, serialize_by_alias=True
@@ -119,6 +141,7 @@ class OperatingPointReport(_Model):
         description="How the engine found it: direct, gmin_stepping, "
         "junction_gmin_stepping, source_stepping or pseudo_transient."
     )
+    iterations: int | None = Field(default=None, description=_ITERATIONS)
     values: tuple[Value, ...]
     levels: tuple[NetLevel, ...] = ()
     unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
@@ -133,14 +156,13 @@ class OperatingPointReport(_Model):
 
     def describe(self) -> str:
         """The report as text."""
-        strategy = _STRATEGIES.get(self.strategy, self.strategy)
         rows = [
             [value.unknown, _shown(value.value, value.nature)] for value in self.values
         ]
         rows.extend(
             [level.net, format_logic_level(level.level)] for level in self.levels
         )
-        head = f"{self.name}: operating point, found by {strategy}"
+        head = f"{self.name}: operating point, {_found(self.strategy, self.iterations)}"
         text = _join(head, _table(rows), self.unlisted)
         if not self.transistors:
             return text
@@ -180,6 +202,11 @@ class OperatingPointsReport(_Model):
         "junction_gmin_stepping, source_stepping or pseudo_transient, on the equations "
         "deflated by those before it."
     )
+    iterations: tuple[int | None, ...] = Field(
+        default=(),
+        description="The Newton iterations that found each solution, the search's "
+        "on the equations deflated by those before it.",
+    )
     values: tuple[Solutions, ...]
     unlisted: int = Field(description="Unknowns left out of the list.")
 
@@ -188,6 +215,10 @@ class OperatingPointsReport(_Model):
         count = len(self.strategies)
         found = "solution" if count == 1 else "solutions"
         head = f"{self.name}: {count} DC {found}, the operating point first"
+        if self.iterations:
+            *each, last = (str(iterations) for iterations in self.iterations)
+            spent = f"{', '.join(each)} and {last}" if each else last
+            head += f", found in {spent} iterations"
         rows = [
             [
                 solutions.unknown,
@@ -216,6 +247,18 @@ class DcSweepReport(_Model):
     first: float = Field(description="The first level, in SI base units.")
     last: float = Field(description="The last level, in SI base units.")
     swept: int = Field(description="Values the sweep solved.")
+    iterations: int | None = Field(
+        default=None,
+        description="The Newton iterations that found the operating points at every "
+        "level, each from the level before it; null for ngspice's, which it does not "
+        "count.",
+    )
+    strategies: dict[str, int] = Field(
+        default_factory=dict,
+        description="The levels each strategy found the operating point at, by its "
+        "name, in the order the sweep first used it; empty for ngspice's, which does "
+        "not say.",
+    )
     extents: tuple[Extent, ...]
     activities: tuple[Activity, ...] = ()
     unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
@@ -233,6 +276,15 @@ class DcSweepReport(_Model):
             f"{self.name}: DC sweep of {swept} from {first} to {last} "
             f"in {self.swept} levels"
         )
+        if self.iterations is not None:
+            head += f", {self.iterations} iterations"
+        aided = [
+            f"{levels} by {_STRATEGIES.get(strategy, strategy)}"
+            for strategy, levels in self.strategies.items()
+            if strategy != "direct"
+        ]
+        if aided:
+            head += f", {', '.join(aided)}"
         lines = _extents(self.extents) + _activities(self.activities)
         return _join(head, lines, self.unlisted)
 
@@ -596,6 +648,7 @@ class SensitivityReport(_Model):
         "junction_gmin_stepping, source_stepping or pseudo_transient; null along a "
         "sweep or a transient.",
     )
+    iterations: int | None = Field(default=None, description=_ITERATIONS)
     unit: str = Field(
         default="",
         description="The unit of the points: V or A along a sweep, Hz, or s.",
@@ -609,8 +662,8 @@ class SensitivityReport(_Model):
     def describe(self) -> str:
         """The report as text."""
         if self.of == "operating_point":
-            strategy = _STRATEGIES.get(self.strategy or "", self.strategy)
-            where = f"at the operating point, found by {strategy}"
+            found = _found(self.strategy or "", self.iterations)
+            where = f"at the operating point, {found}"
         else:
             where = _ALONG[self.of].format(points=self.points)
         head = (
@@ -916,6 +969,7 @@ def report(
             return OperatingPointReport(
                 name=name,
                 strategy=result.strategy,
+                iterations=result.iterations,
                 values=values,
                 levels=levels,
                 unlisted=unlisted,
@@ -931,6 +985,11 @@ def report(
                 first=float(result.swept[0]),
                 last=float(result.swept[-1]),
                 swept=len(result.swept),
+                iterations=sum(result.iterations) if result.iterations else None,
+                strategies={
+                    strategy: result.strategies.count(strategy)
+                    for strategy in dict.fromkeys(result.strategies)
+                },
                 extents=_extents_of(unknowns, result.values[:, :max_unknowns]),
                 activities=tuple(
                     _activity(net, result.logic_level(net)) for net in nets
@@ -967,6 +1026,7 @@ def report(
             return OperatingPointsReport(
                 name=name,
                 strategies=tuple(point.strategy for point in result.points),
+                iterations=tuple(point.iterations for point in result.points),
                 values=tuple(
                     Solutions(
                         unknown=unknown.name,
@@ -1173,22 +1233,24 @@ def _sensitivities(
 ) -> SensitivityReport:
     """The report of the sensitivity `name`, its first `max_unknowns` parameters."""
     listed_parameters = min(max_unknowns, len(result.parameters))
+    point = None
     match result.result:
         case results.OperatingPointResult() as point:
-            of, points, strategy, unit = "operating_point", 1, point.strategy, ""
+            of, points, unit = "operating_point", 1, ""
         case results.DcSweepResult() as sweep:
-            of, points, strategy = "dc_sweep", len(sweep.swept), None
+            of, points = "dc_sweep", len(sweep.swept)
             unit = "" if sweep.nature is None else _SYMBOLS[sweep.nature]
         case results.AcResult() as response:
             of, points, unit = "ac", len(response.frequencies), "Hz"
-            strategy = response.operating_point.strategy
+            point = response.operating_point
         case results.TransientResult() as waveforms:
-            of, points, strategy, unit = "transient", len(waveforms.times), None, "s"
+            of, points, unit = "transient", len(waveforms.times), "s"
     return SensitivityReport(
         name=name,
         of=of,
         points=points,
-        strategy=strategy,
+        strategy=None if point is None else point.strategy,
+        iterations=None if point is None else point.iterations,
         unit=unit,
         parameters=len(result.parameters),
         outputs=tuple(

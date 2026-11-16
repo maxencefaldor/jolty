@@ -17,17 +17,20 @@
 //!
 //! An analysis records only what its options' [`Record`] names: a device's terminals,
 //! derivatives and variables, and a component instance's or a logic device's terminals,
-//! each summed from the device terminals behind it, which are read but not kept.
+//! each summed from the device terminals behind it, which are read but not kept; and, when
+//! its options ask for [`regions`](Options::regions), each other transistor's region of
+//! operation and its margins alone.
 
+use std::iter;
 use std::ops::{Add, Range};
 
-use jolty_models::{Groups, Runs};
+use jolty_models::{Groups, REGION, Runs};
 use jolty_numerics::Complex64;
 use jolty_numerics::integration::Formula;
 
 use crate::elaborated::Elaborated;
 use crate::profile::Activity;
-use crate::{Options, Record, SimulationError, Simulator};
+use crate::{Options, Placed, Record, SimulationError, Simulator};
 
 /// What the recorded devices did at one solution, laid out as [`Recording`] says.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -130,7 +133,8 @@ impl RecordedSeries {
 /// Its conductances and capacitances hold, for each recorded device, the derivative of each
 /// of its equations with respect to each of its unknowns, row by row: its terminals, each
 /// on a node of its own, then its [internal unknowns](crate::Placed::internals). Its variables
-/// hold each recorded device's [variables](crate::Placed::variable_names).
+/// hold each recorded device's [variables](crate::Placed::variable_names), then each
+/// transistor's whose region alone is recorded, its [region variables](Simulator::region_variables).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Recording {
     /// The devices whose terminals, derivatives and variables are recorded, by index among
@@ -139,28 +143,61 @@ pub struct Recording {
     /// The terminals of component instances and logic devices recorded, by index among
     /// [`Simulator::composites`], in order.
     pub composites: Vec<usize>,
+    /// The transistors whose region of operation and margins alone are recorded, by index
+    /// among [`Simulator::devices`], in order: those whose models distinguish regions and
+    /// that `devices` leaves out, when the options ask for [`regions`](Options::regions).
+    pub regions: Vec<usize>,
 }
 
 impl Recording {
-    /// What `record` keeps of `system`'s devices.
-    fn from_record(system: &Elaborated, record: &Record) -> Self {
+    /// What `record`, and the regions when `regions`, keep of `system`'s devices.
+    fn from_record(system: &Elaborated, record: &Record, regions: bool) -> Self {
+        let devices = &system.devices;
+        let recorded = |index: usize| record.names(devices[index].path());
         Self {
-            devices: (0..system.devices.len())
-                .filter(|&index| record.names(system.devices[index].path()))
+            devices: (0..devices.len())
+                .filter(|&index| recorded(index))
                 .collect(),
             composites: (0..system.composites.len())
                 .filter(|&index| record.names(&system.composites[index].owner))
+                .collect(),
+            regions: (0..devices.len())
+                .filter(|&index| {
+                    regions && !recorded(index) && !devices[index].regions().names.is_empty()
+                })
                 .collect(),
         }
     }
 }
 
+/// The variables of `device` that recording its region alone keeps, by index among its
+/// [variables](Placed::variable_names): its region, then each of its margins.
+fn region_variables(device: &Placed) -> Vec<usize> {
+    let names = device.variable_names();
+    iter::once(REGION)
+        .chain(device.regions().margins.iter().copied())
+        .filter_map(|name| names.iter().position(|&each| each == name))
+        .collect()
+}
+
 impl Simulator {
-    /// What `record` keeps of the circuit's devices, and where every [`RecordedValues`] of an
-    /// analysis run with it holds each value.
+    /// What `record`, and every other transistor's region when `regions`, keep of the
+    /// circuit's devices, and where every [`RecordedValues`] of an analysis run with them
+    /// holds each value.
     #[must_use]
-    pub fn recorded(&self, record: &Record) -> Recording {
-        Recording::from_record(&self.elaborated, record)
+    pub fn recorded(&self, record: &Record, regions: bool) -> Recording {
+        Recording::from_record(&self.elaborated, record, regions)
+    }
+
+    /// The variables of the device at `index` that recording its region alone keeps, by
+    /// index among its [variables](Placed::variable_names): its region, then each of its
+    /// margins; none for a device that is no transistor or no device at all.
+    #[must_use]
+    pub fn region_variables(&self, index: usize) -> Vec<usize> {
+        self.elaborated
+            .devices
+            .get(index)
+            .map_or_else(Vec::new, region_variables)
     }
 
     /// Checks `options`, gives the solver the ordering and the threads their parallelism
@@ -184,7 +221,7 @@ impl Simulator {
         if checked.is_ok() {
             self.state
                 .observer
-                .select(&self.elaborated, &options.record);
+                .select(&self.elaborated, &options.record, options.regions);
         }
         self.state.workspace.meter.leave(previous);
         checked
@@ -196,6 +233,12 @@ impl Simulator {
         if self.state.observer.records() {
             self.evaluate(x, None, (1.0, options.gmin), false);
         }
+        self.observe_evaluated()
+    }
+
+    /// What the recorded devices do at the DC solution every device was last evaluated
+    /// at, its steps not limited.
+    pub(crate) fn observe_evaluated(&mut self) -> RecordedValues {
         let read = self.read_recorded();
         self.state.observer.dc(&read)
     }
@@ -230,11 +273,26 @@ struct Slot {
     variables: Range<usize>,
 }
 
+/// A transistor whose region and margins alone are recorded, and where they lie.
+#[derive(Debug)]
+struct RegionSlot {
+    /// The transistor, by its index among the circuit's devices.
+    device: usize,
+    /// The variables it computes.
+    computed: usize,
+    /// Its region variables, by index among those it computes.
+    picked: Vec<usize>,
+    /// Their range among an observation's variables.
+    variables: Range<usize>,
+}
+
 /// What the analyses record, and where each value comes from.
 #[derive(Debug, Default)]
 struct Selection {
     /// The record it was made for.
     record: Record,
+    /// Whether it was made to record the other transistors' regions.
+    regions: bool,
     /// The devices read at each point, those recorded and those behind a recorded composite
     /// terminal, in order: each one's index among the circuit's devices, the index of its
     /// first terminal among the read devices' terminals, and its number of terminals.
@@ -243,6 +301,8 @@ struct Selection {
     tracked: usize,
     /// The recorded devices, in order.
     recorded: Vec<Slot>,
+    /// The transistors whose region and margins alone are recorded, in order.
+    transistors: Vec<RegionSlot>,
     /// The terminals of each recorded composite terminal, by index among the read devices'
     /// terminals.
     sums: Vec<Vec<usize>>,
@@ -317,15 +377,16 @@ impl Observer {
 
     /// Whether the observer reads any device.
     pub(crate) fn records(&self) -> bool {
-        self.selection.tracked > 0
+        self.selection.tracked > 0 || !self.selection.transistors.is_empty()
     }
 
-    /// Records what `record` names of `system` from the next point on.
-    fn select(&mut self, system: &Elaborated, record: &Record) {
-        if self.selection.record == *record {
+    /// Records what `record` names of `system`, and every other transistor's region when
+    /// `regions`, from the next point on.
+    fn select(&mut self, system: &Elaborated, record: &Record, regions: bool) {
+        if self.selection.record == *record && self.selection.regions == regions {
             return;
         }
-        let recorded = Recording::from_record(system, record);
+        let recorded = Recording::from_record(system, record, regions);
         let mut kept = vec![false; system.devices.len()];
         for &device in &recorded.devices {
             kept[device] = true;
@@ -364,6 +425,21 @@ impl Observer {
             }
             tracked += count;
         }
+        let transistors = recorded
+            .regions
+            .iter()
+            .map(|&device| {
+                let picked = region_variables(&system.devices[device]);
+                let start = variables;
+                variables += picked.len();
+                RegionSlot {
+                    device,
+                    computed: system.devices[device].variable_names().len(),
+                    picked,
+                    variables: start..variables,
+                }
+            })
+            .collect();
         let sums = recorded
             .composites
             .iter()
@@ -377,9 +453,11 @@ impl Observer {
             .collect();
         self.selection = Selection {
             record: record.clone(),
+            regions,
             evaluated,
             tracked,
             recorded: slots,
+            transistors,
             sums,
             terminals,
             derivatives,
@@ -430,6 +508,18 @@ impl Observer {
                 slot.device,
                 &mut read.variables[slot.variables.clone()],
             );
+        }
+        let widest = selection.transistors.iter().map(|slot| slot.computed).max();
+        let mut computed = vec![0.0; widest.unwrap_or(0)];
+        for slot in &selection.transistors {
+            let computed = &mut computed[..slot.computed];
+            runs.variables(groups, slot.device, computed);
+            for (kept, &picked) in read.variables[slot.variables.clone()]
+                .iter_mut()
+                .zip(&slot.picked)
+            {
+                *kept = computed[picked];
+            }
         }
         read
     }

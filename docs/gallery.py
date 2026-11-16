@@ -761,11 +761,32 @@ def _reading(verdict: specs.Verdict | None) -> str:
 
 
 def _difference(ours: specs.Verdict, theirs: specs.Verdict | None) -> str:
-    """How far two engines' readings lie apart, relative to the larger."""
+    """How far two engines' readings lie apart, relative to the larger.
+
+    Readings that are not both finite lie no relative distance apart, so the
+    difference says what each engine reads that is not a finite number.
+    """
     if theirs is None or theirs.value is None or ours.value is None:
         return "—"
+    unbounded = [
+        f"{engine} reads {_unbounded(value, unit)}"
+        for engine, value, unit in (
+            ("jolty", ours.value, ours.unit),
+            ("ngspice", theirs.value, theirs.unit),
+        )
+        if not math.isfinite(value)
+    ]
+    if unbounded:
+        return ", ".join(unbounded)
     scale = max(abs(ours.value), abs(theirs.value)) or 1.0
     return _ratio(abs(ours.value - theirs.value) / scale)
+
+
+def _unbounded(value: float, unit: str | None) -> str:
+    """A reading that is not a finite number, in words: -inf dB is an exact zero."""
+    if unit == "dB" and value == -math.inf:
+        return "an exact zero"
+    return f"{value} {unit or ''}".strip()
 
 
 def _replication_section(built: Built) -> list[str]:

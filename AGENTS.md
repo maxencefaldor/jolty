@@ -29,7 +29,8 @@ uv run python docs/illustrate.py # redraw the docs' schematics and plots from th
 uv run python docs/gallery.py    # rebuild the gallery and the discoveries, replicated in ngspice
 cargo fmt --all             # format Rust
 cargo clippy --workspace --all-targets -- -D warnings  # lint Rust
-cargo test --workspace      # Rust tests
+cargo nextest run --workspace  # Rust tests, each in a process of its own
+cargo test --workspace --doc   # Rust doctests, which nextest does not run
 ```
 
 A change is done when `scripts/check` passes; CI runs the same script, one group per job, the Rust and Python groups on Linux and on macOS and the docs group on Linux.
@@ -71,7 +72,7 @@ Each module imports only from the modules listed before it, and from those liste
 Where the code does not meet a convention yet, a change that touches that code brings it closer, never further.
 
 - **Tools:** use the standard, official, established tool in each category.
-  That means uv, ruff, ty, rumdl, pytest with Hypothesis and pytest-xdist, pydantic and pydantic-settings, numpy for arrays, the official MCP SDK, matplotlib for plots, maturin with PyO3, cargo with clippy and proptest, cargo-audit for RustSec's advisories against the crates, as uv's own audit checks the Python packages against OSV's, cargo-llvm-cov and coverage.py for the tests' coverage, cargo-mutants for the Rust tests' strength, criterion for Rust's benchmarks, faer for dense linear algebra, rayon for data parallelism, mimalloc as the Python extension's allocator, and `rand` with `rand_chacha` and `rand_distr` for random sampling.
+  That means uv, ruff, ty, rumdl, pytest with Hypothesis and pytest-xdist, pydantic and pydantic-settings, numpy for arrays, the official MCP SDK, matplotlib for plots, maturin with PyO3, cargo with clippy and proptest, cargo-nextest to run the Rust tests, cargo-audit for RustSec's advisories against the crates, as uv's own audit checks the Python packages against OSV's, cargo-llvm-cov and coverage.py for the tests' coverage, cargo-mutants for the Rust tests' strength, criterion for Rust's benchmarks, faer for dense linear algebra, rayon for data parallelism, mimalloc as the Python extension's allocator, and `rand` with `rand_chacha` and `rand_distr` for random sampling.
 - **Dependencies:** a new one is the established choice in its category, is maintained, and has a license compatible with Apache-2.0, as `tests/test_licenses.py` lists them for the Rust crates and the Python distributions alike.
   Nothing under the GPL is linked into jolty; a GPL tool runs only as a separate program.
   A process kit or a third-party fixture is pinned and fetched with its digest, never copied into the repository.

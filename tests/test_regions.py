@@ -29,6 +29,7 @@ type Bias = tuple[str, dict[str, JsonValue], dict[str, float]]
 that put it there; a terminal left out is on the ground."""
 
 LEVEL_1: dict[str, JsonValue] = {"threshold_voltage": 1}
+P_CHANNEL: dict[str, JsonValue] = {"channel": "p", "threshold_voltage": -1}
 WEAK: dict[str, JsonValue] = {
     "level": 3,
     "threshold_voltage": 1,
@@ -102,6 +103,13 @@ def test_every_transistor_reaches_each_region_its_model_distinguishes() -> None:
             assert point.region("T1") == region, (model, voltages)
             (device,) = point.recording.devices
             distinguished.update(device.regions)
+            # Its region recorded alone reads as recorded with all of its numbers.
+            alone = simulation.run(OperatingPoint(regions=True))
+            assert alone.region("T1") == region, (model, voltages)
+            for margin in device.margins:
+                found = alone.variable("T1", margin)
+                assert found == point.variable("T1", margin), (model, margin)
+            assert alone.currents.size == alone.conductances.size == 0, model
         reached = {region for region, _, _ in biases}
         assert reached == distinguished, f"{model} reaches each of its regions"
 
@@ -123,9 +131,9 @@ def test_the_report_lists_each_transistor_nearest_a_boundary_first() -> None:
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(5 * V), name="VDD")
     high = c.place(devices.voltage_source(3 * V), name="VH")
-    low = c.place(devices.voltage_source(2 * V), name="VL")
+    low = c.place(devices.voltage_source(-2 * V), name="VL")
     far = c.place(devices.device("mosfet", LEVEL_1), name="M1")
-    near = c.place(devices.device("mosfet", LEVEL_1), name="M2")
+    near = c.place(devices.device("mosfet", P_CHANNEL), name="M2")
     c.connect(supply.positive, far.drain, name="vdd")
     c.connect(high.positive, far.gate, name="high")
     c.connect(low.positive, near.gate, near.drain, name="low")
@@ -143,7 +151,8 @@ def test_the_report_lists_each_transistor_nearest_a_boundary_first() -> None:
     summary = report.report("op", point, max_unknowns=40)
     assert isinstance(summary, report.OperatingPointReport)
     # Above a threshold of 1 V, M1's gate at 3 V and drain at 5 V leave it 2 V of
-    # overdrive and 3 V past saturation; M2's gate and drain at 2 V, 1 V of each.
+    # overdrive and 3 V past saturation; M2, a p-channel of threshold -1 V, its gate and
+    # drain at -2 V, 1 V of each, positive as for every transistor on and saturated.
     assert [transistor.path for transistor in summary.transistors] == ["M2", "M1"]
     (m1_overdrive, m1_margin) = summary.transistors[1].margins
     assert (m1_overdrive.variable, m1_margin.variable) == (

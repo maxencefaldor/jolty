@@ -112,7 +112,11 @@ def _columns(same: _Same) -> dict[str, int]:
 
 @dataclass(frozen=True, slots=True)
 class RecordedDevice:
-    """A device whose terminals, derivatives and variables a result recorded."""
+    """A device whose terminals, derivatives and variables a result recorded.
+
+    A transistor whose region alone it recorded has no terminal and no internal
+    unknown, and of its variables its ``region`` and its `margins` alone.
+    """
 
     path: str
     """Its path, such as ``X1/M1``."""
@@ -129,7 +133,9 @@ class RecordedDevice:
     margins: tuple[str, ...] = ()
     """Its variables that are its margins to the regions' boundaries, in volts, such as
     ``saturation_margin``: each is zero on a boundary, where its model's equations
-    switch from one region to the next, and changes sign across it."""
+    switch from one region to the next, changes sign across it, and is positive where
+    the transistor is on, or saturated, whatever its polarity: a p-channel's or a PNP's
+    is an n-channel's or an NPN's at its voltages reversed."""
 
     @property
     def unknowns(self) -> tuple[str, ...]:
@@ -569,11 +575,20 @@ class _Devices[T](_Unknowns[T]):
 
 @dataclass(frozen=True, slots=True)
 class OperatingPointResult(_Devices[float], _Watched):
-    """A DC solution, and the strategy that found it."""
+    """A DC solution, the strategy that found it, and its Newton iterations."""
 
     unknowns: tuple[Unknown, ...]
     values: Real
     strategy: str
+    """How the engine found it: ``direct``, Newton iteration alone, or the aid that
+    found it where Newton iteration failed, ``gmin_stepping``,
+    ``junction_gmin_stepping``, ``source_stepping`` or ``pseudo_transient``, tried in
+    that order; ``ngspice`` for ngspice's."""
+    iterations: int | None = None
+    """The Newton iterations that found it: the strategy's that found it, and those of
+    every strategy tried before it and of each solve again as the logic settled with
+    it, as solving it afresh runs them, whatever the simulation remembered; None for
+    ngspice's, which it does not count."""
     nets: tuple[str, ...] = ()
     """The logic nets, in the order of `logic`."""
     logic: Real = field(default_factory=_none)
@@ -677,6 +692,13 @@ class DcSweepResult(_Devices[Real], _Watched):
     parameter: str | None = None
     """The parameter swept, by its path among the instance's, such as ``resistance``;
     None for a source's level."""
+    strategies: tuple[str, ...] = ()
+    """How the engine found the operating point at each level, as an operating point's
+    `strategy` says; empty for ngspice's, which does not say."""
+    iterations: tuple[int, ...] = ()
+    """The Newton iterations that found the operating point at each level, from the
+    level before it, as an operating point's `iterations` counts them; empty for
+    ngspice's, which it does not count."""
 
     def logic_level(self, net: str) -> Real:
         """The level of the logic net `net` at each level: 0, 1, or NaN when unknown."""

@@ -20,102 +20,80 @@
 //! as they read, with each one left out at its default, and a JSON schema describes them.
 //! A [`Library`] holds the models a circuit can use.
 
-mod behavioral;
 mod binding;
-mod bjt;
-mod bsim3;
-mod connect;
-mod controlled;
 mod device;
-mod diode;
-mod dual;
 mod evaluation;
-mod foundry;
 mod group;
-mod heat;
-mod jfet;
-mod junction;
 mod kernel;
 mod logic;
-mod memristor;
-mod mosfet;
 mod noise;
-mod passive;
-mod photocell;
-mod real;
-mod region;
-mod sources;
 mod surroundings;
-mod switch;
 #[cfg(test)]
 mod testing;
-mod thermal;
 mod topology;
-mod vbic;
-mod vdmos;
 pub mod waveform;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub use behavioral::{
+pub use binding::{Binding, Nature, Node, Unknown, UnknownIndex};
+pub use device::{Differentiable, Model, ParameterError, Specification};
+pub use evaluation::{Contributions, Input};
+pub use group::{Alone, Block, Changed, Groups, Instance, Runs, Tasks, TooLarge, Twin};
+pub use jolty_expressions::Choice;
+pub use kernel::behavioral::{
     Behavior, BehavioralCurrentSource, BehavioralParameters, BehavioralVoltageSource,
 };
-pub use binding::{Binding, Nature, Node, Unknown, UnknownIndex};
-pub use bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
-pub use bsim3::{Bsim3, Bsim3Parameters, Charges, Mobility, NoiseModel};
-pub use connect::{
+pub use kernel::bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
+pub use kernel::bsim3::{Bsim3, Bsim3Parameters, Charges, Mobility, NoiseModel};
+pub use kernel::connect::{
     LogicDriver, LogicDriverParameters, Ramp, ThresholdDetector, ThresholdDetectorParameters,
 };
-pub use controlled::{
+pub use kernel::controlled::{
     CurrentControlledCurrentSource, CurrentControlledCurrentSourceParameters,
     CurrentControlledVoltageSource, CurrentControlledVoltageSourceParameters,
     VoltageControlledCurrentSource, VoltageControlledCurrentSourceParameters,
     VoltageControlledVoltageSource, VoltageControlledVoltageSourceParameters,
 };
-pub use device::{Differentiable, Model, ParameterError, Specification};
-pub use diode::{Diode, DiodeParameters};
-pub use evaluation::{Contributions, Input};
-pub use foundry::{FoundryMosfet, FoundryMosfetParameters};
-pub use group::{Alone, Block, Changed, Groups, Instance, Runs, Tasks, TooLarge, Twin};
-pub use heat::{Heating, Thermal};
-pub use jfet::{Channel, Jfet, JfetParameters};
-pub use jolty_expressions::Choice;
-pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
+pub use kernel::diode::{Diode, DiodeParameters};
+pub use kernel::foundry::{FoundryMosfet, FoundryMosfetParameters};
+pub use kernel::heat::{Heating, Thermal};
+pub use kernel::jfet::{Channel, Jfet, JfetParameters};
+pub use kernel::junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_voltage};
+pub use kernel::memristor::{
+    CurrentControlledMemristor, CurrentControlledMemristorParameters, MemristorLaw,
+    VoltageControlledMemristor, VoltageControlledMemristorParameters,
+};
+pub use kernel::mosfet::{GateMaterial, Mosfet, MosfetParameters};
 pub use kernel::parts::SMALL_RESISTANCE;
+pub use kernel::passive::{
+    Capacitor, CapacitorParameters, CoupledInductors, CoupledInductorsParameters, Coupling,
+    Inductor, InductorParameters, Resistor, ResistorParameters,
+};
+pub use kernel::photocell::{Photocell, PhotocellParameters};
+pub use kernel::real::{Gradient, Hyper, Real};
+pub use kernel::region::{REGION, Regions};
+pub use kernel::sources::{CurrentSource, SourceParameters, VoltageSource, held_source};
+pub use kernel::switch::{
+    CurrentControlledSwitch, CurrentControlledSwitchParameters, VoltageControlledSwitch,
+    VoltageControlledSwitchParameters,
+};
+pub use kernel::thermal::{
+    HeatSource, HeatSourceParameters, ThermalCapacitance, ThermalCapacitanceParameters,
+    ThermalResistance, ThermalResistanceParameters,
+};
+pub use kernel::vbic::{BaseCharge, Vbic, VbicParameters};
+pub use kernel::vdmos::{Vdmos, VdmosParameters};
 pub use kernel::{Kernel, Layout, Local, Stamp};
 pub use logic::{
     Change, Domain, Electrical, ElectricalParameters, FixedTiming, Logic, LogicCell,
     LogicCellParameters, LogicLevel, LogicModel, LogicSource, LogicSourceParameters, MAX_INPUTS,
     NativeLogic, NativeLogicModel, OutputParameters, Pins, Stimulus, Timing, TimingParameters,
 };
-pub use memristor::{
-    CurrentControlledMemristor, CurrentControlledMemristorParameters, MemristorLaw,
-    VoltageControlledMemristor, VoltageControlledMemristorParameters,
-};
-pub use mosfet::{GateMaterial, Mosfet, MosfetParameters};
 pub use noise::NoiseSource;
-pub use passive::{
-    Capacitor, CapacitorParameters, CoupledInductors, CoupledInductorsParameters, Coupling,
-    Inductor, InductorParameters, Resistor, ResistorParameters,
-};
-pub use photocell::{Photocell, PhotocellParameters};
-pub use real::{Gradient, Hyper, Real};
-pub use region::{REGION, Regions};
 pub use schemars::Schema;
-pub use sources::{CurrentSource, SourceParameters, VoltageSource, held_source};
 pub use surroundings::Surrounded;
-pub use switch::{
-    CurrentControlledSwitch, CurrentControlledSwitchParameters, VoltageControlledSwitch,
-    VoltageControlledSwitchParameters,
-};
-pub use thermal::{
-    HeatSource, HeatSourceParameters, ThermalCapacitance, ThermalCapacitanceParameters,
-    ThermalResistance, ThermalResistanceParameters,
-};
 pub use topology::{Branch, BranchKind, Interface};
-pub use vbic::{BaseCharge, Vbic, VbicParameters};
-pub use vdmos::{Vdmos, VdmosParameters};
 
 /// The models a circuit can use, by name: analog models and logic models, no two of the
 /// same name.

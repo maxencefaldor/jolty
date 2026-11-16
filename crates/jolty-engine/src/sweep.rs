@@ -55,6 +55,11 @@ pub struct DcSweepResult {
     pub observations: RecordedSeries,
     /// The level of every logic net at each level.
     pub logic: Vec<Vec<LogicLevel>>,
+    /// The strategy that found the operating point at each level.
+    pub strategies: Vec<Strategy>,
+    /// The Newton iterations that found the operating point at each level, as
+    /// [`OperatingPointResult::iterations`] counts them, from the level before it.
+    pub iterations: Vec<usize>,
 }
 
 /// What a sweep sweeps: what it holds, the device whose instance it prepares again, and
@@ -102,10 +107,14 @@ impl Simulator {
             let mut values = Vec::with_capacity(points.len());
             let mut observations = RecordedSeries::default();
             let mut logic = Vec::with_capacity(points.len());
+            let mut strategies = Vec::with_capacity(points.len());
+            let mut iterations = Vec::with_capacity(points.len());
             for point in points {
                 values.push(point.values);
                 observations.push(&point.observation);
                 logic.push(point.logic);
+                strategies.push(point.strategy);
+                iterations.push(point.iterations);
             }
             Ok(DcSweepResult {
                 source: sweep.source.clone(),
@@ -118,6 +127,8 @@ impl Simulator {
                 values,
                 observations,
                 logic,
+                strategies,
+                iterations,
             })
         })
     }
@@ -174,16 +185,20 @@ impl Simulator {
         let mut points = Vec::with_capacity(levels.len());
         let mut previous: Option<f64> = None;
         for &level in levels {
+            let before = self.state.workspace.meter.iterations();
             let continued = previous.is_some_and(|from| {
                 let mut set =
                     |simulator: &mut Self, at: &[f64]| simulator.hold(swept, Some(at[0])).is_ok();
                 self.continue_along(&[(from, level)], &mut set, &mut values, options)
             });
+            // Continuation from the level before, which runs no iteration at the first.
+            let continuation = self.iterations_since(before);
             let solved = if continued {
                 Solved {
                     values: std::mem::take(&mut values),
                     strategy: Strategy::Direct,
-                    iterations: None,
+                    iterations: continuation,
+                    from_guess: false,
                 }
             } else {
                 self.hold(swept, Some(level))?;
@@ -193,13 +208,18 @@ impl Simulator {
                     self.solve_dc(values.clone(), options)
                 };
                 match found {
-                    Ok(solved) => solved,
+                    Ok(solved) => Solved {
+                        iterations: continuation + solved.iterations,
+                        from_guess: solved.from_guess && continuation == 0,
+                        ..solved
+                    },
                     // The first level may lie where no strategy finds the solution from
                     // scratch: there, continue to it from the circuit's own operating point.
                     Err(error) if previous.is_none() => Solved {
                         values: self.reach_first_level(swept, level, options).ok_or(error)?,
                         strategy: Strategy::Direct,
-                        iterations: None,
+                        iterations: self.iterations_since(before),
+                        from_guess: false,
                     },
                     Err(error) => return Err(error),
                 }
