@@ -731,7 +731,7 @@ def resolve(
     return Fidelity(built, temperature, matched, models, process)
 
 
-class Model(BaseModel):
+class CharacterizedModel(BaseModel):
     """A component characterized as a logic cell, as a report states it."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -864,7 +864,7 @@ class FidelityReport(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    models: tuple[Model, ...]
+    models: tuple[CharacterizedModel, ...]
     contracts: tuple[Contract, ...]
     dependences: tuple[Dependence, ...] = Field(
         default=(),
@@ -894,7 +894,7 @@ class FidelityReport(BaseModel):
         return "\n".join(lines)
 
 
-def models(fidelity: Fidelity) -> tuple[Model, ...]:
+def models(fidelity: Fidelity) -> tuple[CharacterizedModel, ...]:
     """Each characterized component, as a report states it."""
     found = []
     for component, model in fidelity.models.items():
@@ -902,7 +902,7 @@ def models(fidelity: Fidelity) -> tuple[Model, ...]:
             path for path, (_, name) in fidelity.matched.items() if name == component
         )
         found.append(
-            Model(
+            CharacterizedModel(
                 component=component,
                 instances=paths,
                 arcs=len(model.arcs),
