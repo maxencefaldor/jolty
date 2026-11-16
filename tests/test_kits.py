@@ -1110,9 +1110,10 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
     ngspice's, which reads the same libraries and places the same subcircuits, at the
     same kelvins, but for the frequency response of a device of `AC_DEPARTED`, the
     devices `DEPARTED` names, and what of a diode's departs from ngspice's,
-    `operating_point_departed` and `response_departed`; a diode's within `JUNCTION` more,
-    a Gummel-Poon transistor's within `junction_tolerance`, and a device's of `LAGGED`
-    capacitors with their currents delayed by `CAPACITANCE_LAG`, as ngspice's are.
+    `operating_point_departed` and `response_departed`; a diode's within `JUNCTION`
+    more, a Gummel-Poon transistor's within `junction_tolerance`, and a device's of
+    `LAGGED` capacitors with their currents delayed by `CAPACITANCE_LAG`, as ngspice's
+    are.
     """
     library = kits.read(kit, settings=kept)
     native = {
