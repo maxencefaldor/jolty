@@ -407,7 +407,7 @@ def _bipolar(
         base_emitter_leakage_emission_coefficient=1.6,
         base_collector_leakage_current=100 * fA,
         base_resistance=50 * ohm,
-        minimum_base_resistance=None if base_resistance == "fixed" else 10 * ohm,
+        min_base_resistance=None if base_resistance == "fixed" else 10 * ohm,
         base_resistance_current=1 * mA if base_resistance == "current" else None,
         emitter_resistance=1 * ohm,
         collector_resistance=5 * ohm,

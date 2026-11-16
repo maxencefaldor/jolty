@@ -47,10 +47,10 @@ _DIMENSIONS: Final[dict[results.Nature, Dimension]] = {
 }
 """The dimension of each quantity an unknown is."""
 
-LEAST_PHASE_MARGIN: Final = 45.0
+MIN_PHASE_MARGIN: Final = 45.0
 """The phase margin, in degrees, below which the rule phase-margin states a loop's."""
 
-LEAST_GAIN_MARGIN: Final = 6.0
+MIN_GAIN_MARGIN: Final = 6.0
 """The gain margin, in decibels, below which the rule gain-margin states a loop's."""
 
 type _Explainer = Mapping[str, Callable[[Sequence[float]], str]]
@@ -81,7 +81,7 @@ def diagnose(
         except MeasureError:
             pass
         else:
-            if phase < LEAST_PHASE_MARGIN:
+            if phase < MIN_PHASE_MARGIN:
                 message = (
                     f"{loop} has a phase margin of {phase!r}° at its crossover, "
                     f"{unity!r} Hz"
@@ -91,7 +91,7 @@ def diagnose(
             gain = gain_margin(name).read(result).value
         except MeasureError:
             continue
-        if gain < LEAST_GAIN_MARGIN:
+        if gain < MIN_GAIN_MARGIN:
             message = f"{loop} has a gain margin of {gain!r} dB"
             found.append(_diagnostic(checks.GAIN_MARGIN, message))
     return tuple(found)

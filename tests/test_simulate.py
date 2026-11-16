@@ -935,7 +935,7 @@ def test_a_small_signal_response_is_the_slope_of_the_dc_transfer(
         forward_early_voltage=50 * V,
         forward_knee_current=10 * mA,
         base_resistance=300 * ohm,
-        minimum_base_resistance=minimum,
+        min_base_resistance=minimum,
         base_resistance_current=halfway,
     )
     simulation = Simulation(common_emitter(transistor))

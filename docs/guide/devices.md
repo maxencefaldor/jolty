@@ -334,7 +334,7 @@ In a [noise analysis](simulation.md#noise), the resistances make thermal noise, 
 ## Bipolar transistor
 
 `bipolar_transistor(...)` is a bipolar junction transistor between `collector`, `base` and `emitter`, in the Gummel-Poon model of SPICE, as ngspice implements it.
-The transport current falls with the base charge, which models the Early effect and high injection, and the base resistance falls from `base_resistance` towards `minimum_base_resistance` as the base charge or the base current grows.
+The transport current falls with the base charge, which models the Early effect and high injection, and the base resistance falls from `base_resistance` towards `min_base_resistance` as the base charge or the base current grows.
 Every parameter is optional; an Early voltage, knee current or transit-time voltage left out is infinite:
 
 | Parameter | SPICE | Unit | Default |
@@ -347,7 +347,7 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 | `forward_knee_current`, `reverse_knee_current` | `IKF`, `IKR` | A | infinite |
 | `base_emitter_leakage_current`, `base_emitter_leakage_emission_coefficient` | `ISE`, `NE` | A, none | 0, 1.5 |
 | `base_collector_leakage_current`, `base_collector_leakage_emission_coefficient` | `ISC`, `NC` | A, none | 0, 2 |
-| `base_resistance`, `minimum_base_resistance` | `RB`, `RBM` | Ω | 0, the base resistance |
+| `base_resistance`, `min_base_resistance` | `RB`, `RBM` | Ω | 0, the base resistance |
 | `base_resistance_current` | `IRB` | A | none: the resistance falls with the base charge |
 | `emitter_resistance`, `collector_resistance` | `RE`, `RC` | Ω | 0 |
 | `base_emitter_capacitance`, `base_emitter_potential`, `base_emitter_grading` | `CJE`, `VJE`, `MJE` | F, V, none | 0, 0.75 V, 0.33 |

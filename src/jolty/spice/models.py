@@ -96,7 +96,7 @@ BIPOLAR: Final[Table] = {
     "isc": ("base_collector_leakage_current", 1.0),
     "nc": ("base_collector_leakage_emission_coefficient", 1.0),
     "rb": ("base_resistance", 1.0),
-    "rbm": ("minimum_base_resistance", 1.0),
+    "rbm": ("min_base_resistance", 1.0),
     "irb": ("base_resistance_current", 1.0),
     "re": ("emitter_resistance", 1.0),
     "rc": ("collector_resistance", 1.0),

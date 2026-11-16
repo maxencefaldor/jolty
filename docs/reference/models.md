@@ -50,7 +50,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `forward_knee_current` |  | The forward knee current, `IKF`, where high injection sets in, in amperes; infinite by default. |
 | `forward_transit_time` | `0` | The ideal forward transit time, `TF`, in seconds; default 0. |
 | `internal_base_fraction` | `1` | The fraction of the base-collector capacitance on the internal base, `XCJC`, the rest on the external base; default 1. |
-| `minimum_base_resistance` |  | The base resistance at high current, `RBM`, in ohms; the base resistance by default. |
+| `min_base_resistance` |  | The base resistance at high current, `RBM`, in ohms; the base resistance by default. |
 | `nominal_temperature` | `300.15` | The temperature the parameters were measured at, in kelvins; default 27 °C. |
 | `polarity` | `npn` | The doping order; default `npn`. One of `npn`, `pnp`. |
 | `reverse_beta` | `1` | The ideal maximum reverse current gain, `BR`; default 1. |

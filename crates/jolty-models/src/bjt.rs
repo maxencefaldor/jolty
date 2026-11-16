@@ -187,7 +187,7 @@ pub struct BipolarTransistorParameters<R: Real = f64> {
     /// The zero-bias base resistance, `RB`, in ohms; default 0.
     pub base_resistance: R,
     /// The base resistance at high current, `RBM`, in ohms; the base resistance by default.
-    pub minimum_base_resistance: Option<R>,
+    pub min_base_resistance: Option<R>,
     /// The base current, `IRB`, at which the base resistance falls halfway to its minimum,
     /// in amperes; without it, the base resistance falls with the base charge.
     pub base_resistance_current: Option<R>,
@@ -279,7 +279,7 @@ impl<R: Real> Default for BipolarTransistorParameters<R> {
             base_collector_leakage_current: R::constant(0.0),
             base_collector_leakage_emission_coefficient: R::constant(2.0),
             base_resistance: R::constant(0.0),
-            minimum_base_resistance: None,
+            min_base_resistance: None,
             base_resistance_current: None,
             emitter_resistance: R::constant(0.0),
             collector_resistance: R::constant(0.0),
@@ -835,8 +835,8 @@ impl<R: Real> BipolarTransistorParameters<R> {
     /// The base resistance, if the transistor has one, once its parameters are checked.
     fn base_resistance(&self) -> Result<Option<BaseResistance<R>>, ParameterError> {
         ParameterError::non_negative("base_resistance", self.base_resistance)?;
-        let minimum = self.minimum_base_resistance.unwrap_or(self.base_resistance);
-        ParameterError::non_negative("minimum_base_resistance", minimum)?;
+        let minimum = self.min_base_resistance.unwrap_or(self.base_resistance);
+        ParameterError::non_negative("min_base_resistance", minimum)?;
         if let Some(current) = self.base_resistance_current {
             ParameterError::positive("base_resistance_current", current)?;
         }
@@ -1502,7 +1502,7 @@ mod tests {
                 '{',
                 &format!(
                     r#"{{"polarity": "{polarity}", "base_resistance": 0.8,
-                    "minimum_base_resistance": 0.2, {halfway} "collector_resistance": 0.5,
+                    "min_base_resistance": 0.2, {halfway} "collector_resistance": 0.5,
                     "emitter_resistance": 0.1, "#
                 ),
             )
@@ -1758,7 +1758,7 @@ mod tests {
             full.replace(
                 '{',
                 &format!(
-                    r#"{{"base_resistance": 200, "minimum_base_resistance": 20, {halfway}
+                    r#"{{"base_resistance": 200, "min_base_resistance": 20, {halfway}
                     "collector_resistance": 10, "emitter_resistance": 2, "#
                 ),
             )
@@ -1822,11 +1822,11 @@ mod tests {
             let resistive = parameters.replace(
                 '{',
                 if halfway {
-                    r#"{"base_resistance": 200, "minimum_base_resistance": 20,
+                    r#"{"base_resistance": 200, "min_base_resistance": 20,
                         "base_resistance_current": 1e-4, "collector_resistance": 10,
                         "emitter_resistance": 2, "#
                 } else {
-                    r#"{"base_resistance": 200, "minimum_base_resistance": 20,
+                    r#"{"base_resistance": 200, "min_base_resistance": 20,
                         "collector_resistance": 10, "emitter_resistance": 2, "#
                 },
             );

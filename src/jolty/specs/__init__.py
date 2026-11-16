@@ -34,8 +34,8 @@ Examples:
 """
 
 from jolty.specs._measures import (
-    LEAST_GAIN_MARGIN,
-    LEAST_PHASE_MARGIN,
+    MIN_GAIN_MARGIN,
+    MIN_PHASE_MARGIN,
     Edge,
     average,
     bandwidth,
@@ -90,8 +90,8 @@ from jolty.specs._requirements import (
 )
 
 __all__ = [
-    "LEAST_GAIN_MARGIN",
-    "LEAST_PHASE_MARGIN",
+    "MIN_GAIN_MARGIN",
+    "MIN_PHASE_MARGIN",
     "Bound",
     "Edge",
     "ExtendedReal",

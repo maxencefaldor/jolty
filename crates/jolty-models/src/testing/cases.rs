@@ -58,7 +58,7 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
     ("bipolar_transistor", "{}", &[5.0, 0.7, 0.0]),
     (
         "bipolar_transistor",
-        r#"{"base_resistance": 50, "minimum_base_resistance": 0.5,
+        r#"{"base_resistance": 50, "min_base_resistance": 0.5,
                 "collector_resistance": 0.2, "emitter_resistance": 2,
                 "base_emitter_capacitance": 1e-12, "forward_transit_time": 1e-10,
                 "excess_phase": 10, "substrate": "vertical"}"#,
