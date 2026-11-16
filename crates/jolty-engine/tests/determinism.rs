@@ -12,7 +12,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use jolty_engine::batch::{Batch, Measured, Outcome, Sink, Summary, Variants};
+use jolty_engine::batch::{Batch, Measured, Run, Sink, Summary, Variants};
 use jolty_engine::measure::{Measure, Signal};
 use jolty_engine::variants::{Axis, Explicit, Grid, MonteCarlo, Product, Toleranced, toleranced};
 use jolty_engine::{
@@ -127,7 +127,7 @@ type OutcomeBits = (Vec<Bits>, Vec<Option<u64>>, String);
 
 /// An outcome of a batch's run as bits: each analysis's, each measure's, and the
 /// problems' text.
-fn outcome_bits(outcome: &Outcome) -> OutcomeBits {
+fn outcome_bits(outcome: &Run) -> OutcomeBits {
     (
         outcome.results.iter().map(bits).collect(),
         outcome
@@ -141,10 +141,10 @@ fn outcome_bits(outcome: &Outcome) -> OutcomeBits {
 
 /// A sink that keeps every outcome by its index, and fails a test that hands one on twice.
 #[derive(Default)]
-struct Kept(Mutex<BTreeMap<u64, Outcome>>);
+struct Kept(Mutex<BTreeMap<u64, Run>>);
 
 impl Sink for Kept {
-    fn accept(&self, index: u64, outcome: Outcome) {
+    fn accept(&self, index: u64, outcome: Run) {
         let mut kept = self.0.lock().expect("no test thread panicked");
         assert!(
             kept.insert(index, outcome).is_none(),

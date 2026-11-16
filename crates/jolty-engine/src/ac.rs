@@ -197,7 +197,7 @@ pub(crate) fn over_frequencies<R: Send>(
     found.push(at(&mut first.factor(contributions, lowest)?, 0, lowest)?);
     let tasks = parallelism.tasks(rest.len());
     if tasks == 1 {
-        return Run::from(first, (1, rest), contributions, at).finish(found);
+        return FrequencyRun::from(first, (1, rest), contributions, at).finish(found);
     }
     let size = rest.len().div_ceil(tasks);
     let parts: Vec<(usize, &[f64])> = rest
@@ -208,16 +208,19 @@ pub(crate) fn over_frequencies<R: Send>(
     // Where each run starts, none for where the first frequency left `first`, and its
     // results from there, once taken.
     let mut starts: Vec<Option<Linearization>> = (0..parts.len()).map(|_| None).collect();
-    let mut runs: Vec<Option<Run<R>>> = (0..parts.len()).map(|_| None).collect();
+    let mut runs: Vec<Option<FrequencyRun<R>>> = (0..parts.len()).map(|_| None).collect();
     let mut standing = 0;
     while standing < parts.len() {
-        let taken: Vec<(usize, Run<R>)> = (standing..parts.len())
+        let taken: Vec<(usize, FrequencyRun<R>)> = (standing..parts.len())
             .filter(|&part| runs[part].is_none())
             .collect::<Vec<usize>>()
             .into_par_iter()
             .map(|part| {
                 let start = starts[part].as_ref().unwrap_or(&first).clone();
-                (part, Run::from(start, parts[part], contributions, at))
+                (
+                    part,
+                    FrequencyRun::from(start, parts[part], contributions, at),
+                )
             })
             .collect();
         for (part, run) in taken {
@@ -263,7 +266,7 @@ pub(crate) fn over_frequencies<R: Send>(
 /// Where the run before `part` ended: where the first frequency left `first`, for the
 /// first run.
 fn end_before<'a, R>(
-    runs: &'a [Option<Run<R>>],
+    runs: &'a [Option<FrequencyRun<R>>],
     part: usize,
     first: &'a Linearization,
 ) -> &'a Linearization {
@@ -274,13 +277,13 @@ fn end_before<'a, R>(
 
 /// What `at` found at a run of frequencies, from one linearization going through them in
 /// order: each frequency's, up to the first error, and the linearization as it ended.
-struct Run<R> {
+struct FrequencyRun<R> {
     found: Vec<R>,
     error: Option<SimulationError>,
     end: Linearization,
 }
 
-impl<R> Run<R> {
+impl<R> FrequencyRun<R> {
     /// `at` at each of `frequencies` in order, the first of them the frequency at `first`
     /// among all of them, from `linearization`, up to the first error.
     fn from(

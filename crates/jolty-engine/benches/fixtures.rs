@@ -56,7 +56,7 @@ const SAMPLES: u64 = 1000;
 struct Dropped;
 
 impl Sink for Dropped {
-    fn accept(&self, _: u64, outcome: jolty_engine::batch::Outcome) {
+    fn accept(&self, _: u64, outcome: jolty_engine::batch::Run) {
         black_box(outcome);
     }
 }

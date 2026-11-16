@@ -4,7 +4,7 @@
 //! A [`Batch`] holds a circuit elaborated once, the analyses each run runs in order, each
 //! with its options, and the [measures](crate::measure) each run reads of their results. Its
 //! [`Batch::run`] takes [`Variants`], the values of each run as a pure function of the
-//! run's index, and a range of indices, and hands each run's [`Outcome`] to a [`Sink`] at
+//! run's index, and a range of indices, and hands each run's [`Run`] to a [`Sink`] at
 //! its index. Every outcome is a pure function of the circuit, the analyses, the options and
 //! the index: the same bits however many threads run the batch, however its range is split,
 //! and in whatever order its runs end.
@@ -63,7 +63,7 @@ pub trait Variants: Sync {
 pub trait Sink: Sync {
     /// Takes the outcome of the run at `index`. The runs of a batch end in any order, and
     /// each is handed on once.
-    fn accept(&self, index: u64, outcome: Outcome);
+    fn accept(&self, index: u64, outcome: Run);
 }
 
 /// A measure a batch reads of each run: of the result of the analysis at `analysis`, by
@@ -78,7 +78,7 @@ pub struct Measured {
 
 /// What one run of a batch found.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Outcome {
+pub struct Run {
     /// The values the run ran at.
     pub values: Values,
     /// The circuit the run ran on, when its values gave the batch's circuit another
@@ -94,7 +94,7 @@ pub struct Outcome {
     pub measured: Vec<Result<f64, Unmeasured>>,
 }
 
-impl Outcome {
+impl Run {
     /// The index among the run's results' values of the batch circuit's unknown at
     /// `unknown`: the same index on the batch's own structure, and that of the unknown of
     /// the same name on another; none when the run's circuit has no unknown of that name.
@@ -218,7 +218,7 @@ impl Summary {
     }
 
     /// Counts the run that found `outcome`.
-    fn add(&mut self, outcome: &Outcome) {
+    fn add(&mut self, outcome: &Run) {
         self.runs += 1;
         self.failed += u64::from(outcome.failed());
         for (extremes, measured) in self.measures.iter_mut().zip(&outcome.measured) {
@@ -430,11 +430,11 @@ impl Batch {
     /// The outcome of one run at `values`, on a state `worker` keeps; `warm` when it starts
     /// from the operating point of the run before it, in its chain. Each analysis runs
     /// with its own `options`.
-    fn one(&self, worker: &mut Worker, values: Values, warm: bool, options: &[Options]) -> Outcome {
+    fn one(&self, worker: &mut Worker, values: Values, warm: bool, options: &[Options]) -> Run {
         let (simulator, structure) = match self.ready(worker, &values, warm) {
             Ok(ready) => ready,
             Err(problems) => {
-                return Outcome {
+                return Run {
                     values,
                     structure: None,
                     problems: Some(problems),
@@ -471,7 +471,7 @@ impl Batch {
                 })
                 .collect(),
         };
-        Outcome {
+        Run {
             values,
             structure,
             problems: None,

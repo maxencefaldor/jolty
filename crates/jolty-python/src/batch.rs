@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use jolty_engine::batch::{Batch, Measured, Outcome, Sink, Unmeasured, Variants as _};
+use jolty_engine::batch::{Batch, Measured, Run, Sink, Unmeasured, Variants as _};
 use jolty_engine::measure::MeasureError;
 use jolty_engine::variants::{Axis, Explicit, Grid, MonteCarlo, Product, Toleranced};
 use jolty_engine::{Analysis, ElaborationError, Options, ParameterId, Values};
@@ -463,7 +463,7 @@ impl Columns<'_> {
 
     /// Hands `outcome`, of the run at `index`, to the Python function, if any, unless it
     /// raised already; keeps the first exception it raises.
-    fn hand(&self, index: u64, outcome: Outcome) {
+    fn hand(&self, index: u64, outcome: Run) {
         let Some(each) = &self.each else {
             return;
         };
@@ -490,7 +490,7 @@ impl Each {
     /// Calls the function with the run's index, the simulator of its structure when it is
     /// not the batch's, the problems its values made, or each analysis's outcome or why it
     /// failed.
-    fn call(&self, py: Python<'_>, index: u64, outcome: Outcome) -> PyResult<()> {
+    fn call(&self, py: Python<'_>, index: u64, outcome: Run) -> PyResult<()> {
         let structure = match &outcome.structure {
             None => None,
             Some(structure) => {
@@ -529,7 +529,7 @@ impl Each {
 }
 
 impl Sink for Columns<'_> {
-    fn accept(&self, index: u64, outcome: Outcome) {
+    fn accept(&self, index: u64, outcome: Run) {
         let Ok(row) = usize::try_from(index - self.first) else {
             return;
         };
@@ -612,7 +612,7 @@ impl Sink for Columns<'_> {
 /// The values of the unknowns `traces` names at each of its points in `outcome`, points
 /// first, as complex numbers: not a number where the run did not end its analysis or has
 /// no such unknown.
-fn trace(outcome: &Outcome, traces: &Traced) -> Vec<Complex64> {
+fn trace(outcome: &Run, traces: &Traced) -> Vec<Complex64> {
     let missing = Complex64::new(f64::NAN, f64::NAN);
     let mut found = vec![missing; traces.points.len() * traces.unknowns.len()];
     let Some(Ok(result)) = outcome.results.get(traces.analysis) else {
