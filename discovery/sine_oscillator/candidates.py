@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
 from common import opamp
 
 from jolty import Builder, Component, Role, component, devices
-from jolty.builder import Point
+from jolty.builder import Connectable
 from jolty.parts import d1n4148
 from jolty.units import A, F, K, V, ohm, pF, uA, us
 from jolty.waveforms import Pulse
@@ -36,7 +36,9 @@ def jfet() -> devices.Device:
     )
 
 
-def bridge(c: Builder, output: Point, plus: Point, ground: Point) -> None:
+def bridge(
+    c: Builder, output: Connectable, plus: Connectable, ground: Connectable
+) -> None:
     """The Wien network: R and C in series from the output, R and C in parallel."""
     series_r = c.place(devices.resistor(RESISTANCE * ohm), name="R1")
     series_c = c.place(devices.capacitor(CAPACITANCE * F), name="C1")

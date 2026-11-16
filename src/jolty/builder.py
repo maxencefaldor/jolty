@@ -71,7 +71,7 @@ class Net:
         return self.name
 
 
-type Point = Terminal | Net
+type Connectable = Terminal | Net
 """Anything a connection joins."""
 
 
@@ -200,8 +200,8 @@ class Builder:
         self._named: set[str] = set()
         self._placements: dict[str, _Placement] = {}
         self._children: dict[str, Component] = {}
-        self._parent: dict[Point, Point] = {}
-        self._root_names: dict[Point, str] = {}
+        self._parent: dict[Connectable, Connectable] = {}
+        self._root_names: dict[Connectable, str] = {}
 
     def port(self, name: str, role: Role = Role.SIGNAL) -> Net:
         """Declares the port `name`, the net of that name seen from outside.
@@ -260,7 +260,7 @@ class Builder:
         self._placements[name] = placement
         return Placed(name, placement.terminals)
 
-    def connect(self, *points: Point, name: str | None = None) -> None:
+    def connect(self, *points: Connectable, name: str | None = None) -> None:
         """Joins `points` into one net, and declares it as the net `name` if given.
 
         Later connections join a named net as ``Net(name)``.
@@ -278,7 +278,7 @@ class Builder:
 
     def finish(self) -> Component:
         """The component as built."""
-        nets: dict[Point, str] = {}
+        nets: dict[Connectable, str] = {}
         instances = []
         for id, placement in self._placements.items():
             terminals = {}
@@ -313,7 +313,7 @@ class Builder:
             raise BuildError(message)
         self._named.add(name)
 
-    def _check(self, point: Point) -> None:
+    def _check(self, point: Connectable) -> None:
         if isinstance(point, Net):
             known = point.name in self._named
         else:
@@ -323,7 +323,7 @@ class Builder:
             message = f"{point} does not belong to {self._name}"
             raise BuildError(message)
 
-    def _find(self, point: Point) -> Point:
+    def _find(self, point: Connectable) -> Connectable:
         self._parent.setdefault(point, point)
         if isinstance(point, Net):
             self._root_names.setdefault(point, point.name)
@@ -332,7 +332,7 @@ class Builder:
             point = parent
         return point
 
-    def _join(self, a: Point, b: Point) -> None:
+    def _join(self, a: Connectable, b: Connectable) -> None:
         root_a, root_b = self._find(a), self._find(b)
         if root_a == root_b:
             return
