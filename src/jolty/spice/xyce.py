@@ -177,7 +177,7 @@ class Result:
 
 
 def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
-    lines: list[str],
+    deck: list[str],
     analysis: str,
     *,
     printed: Sequence[str] | None = None,
@@ -206,8 +206,8 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
         raise JoltyError(message)
     kind, every = _PRINTED[command]
     nominal = option_temperature(_core.REFERENCE_TEMPERATURE)
-    deck = [
-        *lines,
+    whole = [
+        *deck,
         *options,
         f".options device temp={option_temperature(temperature)!r} tnom={nominal!r}",
         analysis,
@@ -215,7 +215,7 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
         + " ".join(every if printed is None else printed),
         ".end",
     ]
-    executed = execute(deck, launch=launch, timeout=timeout)
+    executed = execute(whole, launch=launch, timeout=timeout)
     if executed.code != 0 or executed.values is None:
         message = f"Xyce failed, exiting with {executed.code}:\n{executed.printed}"
         raise JoltyError(message)

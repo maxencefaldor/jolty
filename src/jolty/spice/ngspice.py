@@ -230,7 +230,7 @@ def execute(
 
 
 def run(
-    lines: list[str],
+    deck: list[str],
     analysis: str,
     **running: Unpack[Running],
 ) -> Result:
@@ -241,12 +241,12 @@ def run(
     Raises:
         JoltyError: As `runs` does.
     """
-    (result,) = runs(lines, (analysis,), **running)
+    (result,) = runs(deck, (analysis,), **running)
     return result
 
 
 def runs(
-    lines: list[str],
+    deck: list[str],
     analyses: Sequence[str],
     **running: Unpack[Running],
 ) -> tuple[Result, ...]:
@@ -265,14 +265,14 @@ def runs(
     """
     nominal = option_temperature(_core.REFERENCE_TEMPERATURE)
     temperature = running.get("temperature", _core.REFERENCE_TEMPERATURE)
-    deck = [
-        lines[0],
+    whole = [
+        deck[0],
         *(f".include {library.resolve()}" for library in running.get("libraries", ())),
         *(
             f'.lib "{library.resolve()}" {section}'
             for library, section in running.get("sections", ())
         ),
-        *lines[1:],
+        *deck[1:],
         running.get("options", OPTIONS),
         f".options temp={option_temperature(temperature)!r} tnom={nominal!r}",
         *(
@@ -288,7 +288,7 @@ def runs(
         ".endc",
         ".end",
     ]
-    executed = execute(deck, compatibility=running.get("compatibility"))
+    executed = execute(whole, compatibility=running.get("compatibility"))
     printed = executed.printed
     # What ngspice printed is read first: a transient it aborted still writes every
     # step it took, which can be hundreds of megabytes of results it has disowned.
