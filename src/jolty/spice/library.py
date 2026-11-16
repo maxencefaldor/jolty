@@ -63,6 +63,10 @@ PARAMETERS: Final = frozenset({".param", ".params"})
 OPTIONS: Final = frozenset({".option", ".options"})
 """The statements that set options, such as ``scale``."""
 
+INITIAL: Final = frozenset({".ic", ".nodeset"})
+"""The statements that give nodes' voltages to start from: a transient's initial
+conditions, ``.ic``, and an operating point's nodesets, ``.nodeset``."""
+
 CONDITIONS: Final = frozenset({".if", ".elseif", ".else", ".endif"})
 """The statements of a subcircuit's ``.if`` blocks."""
 
@@ -167,6 +171,14 @@ class Library:
         self.temperature = temperature
         self.options: dict[str, float] = {}
         """The options its files set, such as ``scale``, by case-folded name."""
+        self.initial_conditions: dict[str, float] = {}
+        """The voltage, in volts, its files' ``.ic`` statements give each node, by name
+        as they write it: where a plan's transient starts from, its
+        `initial_conditions`."""
+        self.nodesets: dict[str, float] = {}
+        """The voltage, in volts, its files' ``.nodeset`` statements give each node, by
+        name as they write it: where a plan's operating points start from, its options'
+        `nodesets`."""
         self._uses: list[Use] | None = None
 
     @property
@@ -244,9 +256,13 @@ class Library:
             self.options |= {
                 name: evaluate(value, {}) for name, value in _options(statement).items()
             }
+        elif keyword in INITIAL:
+            given = self.initial_conditions if keyword == ".ic" else self.nodesets
+            given |= _voltages(statement, self.values())
         elif keyword != ".end":
             message = (
-                "a library defines subcircuits, models, parameters and options only"
+                "a library defines subcircuits, models, parameters, options, initial "
+                "conditions and nodesets only"
             )
             raise statement.fail(message)
 
@@ -635,6 +651,40 @@ def _resolved(
     return values
 
 
+def _voltages(statement: Statement, scope: Mapping[str, float]) -> dict[str, float]:
+    """The voltage each node of an ``.ic`` or ``.nodeset`` statement is given, by name.
+
+    Each is written ``V(node)=value``, the value a number or an expression of the
+    parameters `scope` holds.
+
+    Raises:
+        SpiceError: When the statement gives anything but a node's voltage.
+    """
+    words = tokens(statement.text)[1:]
+    found: dict[str, float] = {}
+    for index in range(0, len(words), 3):
+        written = words[index : index + 3]
+        match written:
+            case [voltage, "=", value] if (node := _node_of(voltage)) is not None:
+                given = number(value)
+                found[node] = evaluate(parse(value), scope) if given is None else given
+            case _:
+                message = (
+                    f"a node's voltage is written `V(node)=value`, not "
+                    f"`{' '.join(written)}`"
+                )
+                raise statement.fail(message)
+    return found
+
+
+def _node_of(written: str) -> str | None:
+    """The node `written`, ``V(node)``, names, or None when it names no one node."""
+    if written[:2].casefold() != "v(" or not written.endswith(")"):
+        return None
+    inside = written[2:-1].strip()
+    return inside if inside and "," not in inside else None
+
+
 def _assignments(statement: Statement) -> list[tuple[str, Expression]]:
     """The parameters a ``.param`` statement assigns, in order.
 
@@ -782,6 +832,12 @@ class _Translation:
         key = node.casefold()
         if key == GROUND:
             message = f"a node named `{node}`, which jolty names the ground port"
+            raise self.subcircuit.statement.fail(message)
+        if ir.SEPARATOR in node:
+            message = (
+                f"a node named `{node}`, whose `{ir.SEPARATOR}` separates the levels "
+                "of jolty's paths"
+            )
             raise self.subcircuit.statement.fail(message)
         return self.nets.setdefault(key, node)
 
@@ -998,6 +1054,13 @@ class _Translation:
                 self.library.use(Use(path, model))
 
     def _translated(self, statement: Statement) -> None:
+        name = statement.text.split()[0]
+        if ir.SEPARATOR in name:
+            message = (
+                f"an element named `{name}`, whose `{ir.SEPARATOR}` separates the "
+                "levels of jolty's paths"
+            )
+            raise statement.fail(message)
         letter = _letter(statement)
         translate = _ELEMENTS.get(letter)
         if translate is None:

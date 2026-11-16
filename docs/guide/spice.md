@@ -41,12 +41,14 @@ jolty reads a file as PSpice and ngspice read it:
 - `B` sources, `V=` or `I=` an expression, which may read the current of any source of a voltage, their own included;
 - switches of PSpice's `VSWITCH` and `ISWITCH` models, `S` and `W`, a `W` switch reading the current of a source of a voltage as a current-controlled source does;
 - subcircuit instances, with their parameters, and `.param` statements;
-- what process design kits write, as the [foundry's guide](foundry.md#the-open-process-kits) tells: `.include` and `.lib` sections, `.option scale`, a subcircuit's `.if` blocks and its own parameters, which its instances may give, `temper`, and the statistical functions `agauss`, `gauss`, `aunif`, `unif` and two-argument `limit`, at their nominal values unless a placement is drawn in a sample.
+- what process design kits write, as the [foundry's guide](foundry.md#the-open-process-kits) tells: `.include` and `.lib` sections, `.option scale`, a subcircuit's `.if` blocks and its own parameters, which its instances may give, `temper`, and the statistical functions `agauss`, `gauss`, `aunif`, `unif` and two-argument `limit`, at their nominal values unless a placement is drawn in a sample;
+- `.ic` and `.nodeset` outside subcircuits, each node's voltage written `V(node)=value`, kept by the library as `initial_conditions` and `nodesets`, by node as written, for a plan's transient and options to take, as the [simulation guide](simulation.md#initial-conditions-and-nodesets) tells.
 
 Parameters may read one another in any order, and expressions know PSpice's `TEMP`, `VT` and `GMIN`.
 Expressions are read with PSpice's functions and ngspice's meanings, written in [jolty's expression language](../reference/expressions.md): `PWR(x, y)` is `|x|^y`, a `TABLE` within an expression extends beyond its ends, and a `TABLE` source holds beyond its ends with its corners rounded, as ngspice's XSPICE `pwl` model rounds them.
 A switch follows ngspice's log-cubic law between its on and off voltages or currents.
 A waveform must give what SPICE would take from the transient analysis: a `PULSE` its rise, fall and width, positive, a `SIN` its frequency, and an `EXP` its two delays and two time constants, positive, since ngspice 47 takes each that is 0 from the transient's step (measured: `EXP(0 1 0 1n 6n 2n)` holds 0 V until the step, 0.5 ns, under `tran 0.5n 12n`), and a circuit is read apart from any analysis; a source's DC level beside its waveform must be the waveform's level at zero, as jolty's source has one level there for every analysis; and `SFFM` and `AM` waveforms, which jolty has not, are errors.
+An element or a node whose name holds a `/`, as a flattened hierarchy writes them, is an error, as jolty's paths separate their levels with `/`.
 A bipolar transistor has a substrate, as in SPICE: the ground unless its instance names a fourth node, at its collector for an NPN and at its base for a PNP unless `SUBS` builds it otherwise.
 
 An element that reads the current through a voltage source reads it through a port placed in series with the source, as the nets `V1.sense1`, `V1.sense2` and so on for a source `V1`.

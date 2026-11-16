@@ -170,6 +170,9 @@ class Built:
     options: Options
     nets: tuple[str, ...]
     """The nets whose voltages are compared, by jolty's names."""
+    initial_conditions: Mapping[str, float] = field(default_factory=dict)
+    """The voltage, in volts, each net named starts a transient from, as SPICE's
+    ``.ic`` sets it."""
 
 
 @dataclass(frozen=True, slots=True)

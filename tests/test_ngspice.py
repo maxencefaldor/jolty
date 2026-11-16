@@ -13,6 +13,7 @@ the devices, the waveforms and the numerics against the reference simulator.
 
 import math
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Final, Literal
@@ -49,6 +50,7 @@ from jolty import (
     spice,
 )
 from jolty.plan import TIGHT, decade, linear
+from jolty.spice.export import node_voltages
 from jolty.units import (
     A,
     F,
@@ -683,14 +685,16 @@ _NMOS = devices.mosfet(
 
 
 def _level_three(
-    max_drift_velocity: Quantity | None, saturation_field_factor: float = 0.4
+    max_drift_velocity: Quantity | None,
+    saturation_field_factor: float = 0.4,
+    lateral_diffusion: Quantity = 0.2 * um,
 ) -> devices.Device:
     """A level 3 n-channel with every effect of its law, and velocity saturation."""
     return devices.mosfet(
         level=3,
         width=50 * um,
         length=2 * um,
-        lateral_diffusion=0.2 * um,
+        lateral_diffusion=lateral_diffusion,
         width_narrowing=0.1 * um,
         length_adjustment=0.05 * um,
         width_adjustment=-0.05 * um,
@@ -748,13 +752,15 @@ def level_three_curves(
     c: Builder,
     max_drift_velocity: Quantity | None = None,
     saturation_field_factor: float = 0.4,
+    lateral_diffusion: Quantity = 0.2 * um,
 ) -> None:
     ground = c.port("ground", Role.GROUND)
     bias = c.place(devices.voltage_source(1.5 * V), name="V1")
     drain = c.place(devices.voltage_source(0 * V), name="V2")
     body = c.place(devices.voltage_source(-1 * V), name="V3")
     transistor = c.place(
-        _level_three(max_drift_velocity, saturation_field_factor), name="M1"
+        _level_three(max_drift_velocity, saturation_field_factor, lateral_diffusion),
+        name="M1",
     )
     c.connect(bias.positive, transistor.gate, name="gate")
     c.connect(drain.positive, transistor.drain, name="drain")
@@ -1775,6 +1781,13 @@ def test_loop_gains_agree() -> None:
         # `KAPPA=0`, read by ngspice as no channel shortening, with and without
         # velocity saturation.
         (lambda: level_three_curves(None, 0.0), "V2", linear(-3 * V, 5 * V, 81)),
+        # A negative lateral diffusion lengthens the channel, as CircuitSim90's jge's
+        # cards have it.
+        (
+            lambda: level_three_curves(lateral_diffusion=-0.025 * um),
+            "V2",
+            linear(-3 * V, 5 * V, 81),
+        ),
         (
             lambda: level_three_curves(1.5e5 * m / s, 0.0),
             "V2",
@@ -1996,6 +2009,93 @@ def test_transients_agree(
             waveforms.times, waveforms.values[:, column], times, spice, step.value
         )
         compare(jolty, spice, unknown, scale=size(spice), tolerance=1e-3)
+
+
+@pytest.mark.parametrize("operating_point", [True, False], ids=["op", "uic"])
+@pytest.mark.parametrize(
+    ("top", "stop", "step"),
+    [(low_pass, 8 * us, 10 * ns), (resonator, 60 * us, 50 * ns)],
+)
+def test_transients_from_initial_conditions_agree(
+    top: Callable[[], Component],
+    stop: Quantity,
+    step: Quantity,
+    *,
+    operating_point: bool,
+) -> None:
+    """Each circuit's capacitor starts at 0.5 V, as ngspice's ``.ic`` sets it.
+
+    It is held there while the operating point is solved, the resonator's inductor
+    carrying the current its resistor then passes, or, as ``uic``, set there alone,
+    every other unknown at zero.
+    """
+    simulation = Simulation(top())
+    initial = {"out": 0.5 * V}
+    analysis = Transient(
+        stop=stop,
+        max_step=step,
+        initial_conditions=initial,
+        operating_point=operating_point,
+    )
+    waveforms = simulation.run(analysis, TIGHT)
+    start = "" if operating_point else " uic"
+    command = f"tran {step.value!r} {stop.value!r} 0 {step.value!r}{start}"
+    deck = [
+        *netlist(simulation.circuit, transient=True),
+        *node_voltages(".ic", simulation.circuit, {"out": 0.5}),
+    ]
+    raw = ngspice.run(deck, command)
+    times = raw.real("time")
+    assert waveforms.voltage("out")[0] == pytest.approx(0.5, abs=1e-12)
+    for column, unknown in compared(simulation):
+        spice_values = raw.real(vector(simulation.circuit, unknown))
+        jolty = closest(
+            waveforms.times,
+            waveforms.values[:, column],
+            times,
+            spice_values,
+            step.value,
+        )
+        compare(jolty, spice_values, unknown, scale=size(spice_values), tolerance=1e-3)
+
+
+@component
+def tanh_latch(c: Builder) -> None:
+    """A node fed ``2 mA·tanh(v)`` and loaded by 1 kΩ: three DC solutions.
+
+    They are the roots of ``v = 2 tanh(v)``, 0 and ±1.915 V.
+    """
+    ground = c.port("ground", Role.GROUND)
+    feedback = c.place(
+        devices.behavioral_current_source("2e-3 * tanh(v(x))"), name="B1"
+    )
+    load = c.place(devices.resistor(1 * kohm), name="R1")
+    c.connect(feedback.negative, feedback.x, load.a, name="x")
+    c.connect(feedback.positive, load.b, ground)
+
+
+@pytest.mark.parametrize("nodeset", [None, 1.5, -1.5])
+def test_nodesets_lead_both_to_one_operating_point(nodeset: float | None) -> None:
+    """Both find the latch's solution at 0 V, or with a nodeset that of its sign."""
+    simulation = Simulation(tanh_latch())
+    nodesets = {} if nodeset is None else {"x": nodeset}
+    options = replace(TIGHT, nodesets={net: v * V for net, v in nodesets.items()})
+    point = simulation.run(OperatingPoint(), options)
+    deck = [
+        *netlist(simulation.circuit),
+        *node_voltages(".nodeset", simulation.circuit, nodesets),
+    ]
+    raw = ngspice.run(deck, "op")
+    for column, unknown in compared(simulation):
+        found = raw.real(vector(simulation.circuit, unknown))[0]
+        compare(point.values[column], found, unknown, scale=abs(found), tolerance=1e-6)
+    found = point.voltage("x")
+    if nodeset is None:
+        assert abs(found) < 1e-9
+    else:
+        # The root of v = 2 tanh(v) of the nodeset's sign, 1.915 V away from zero.
+        assert found * nodeset > 0
+        assert abs(found) > 1.9
 
 
 VENDOR_CARDS: Final = """\

@@ -1343,3 +1343,27 @@ def test_a_resistor_on_a_vbics_thermal_node_is_a_thermal_resistance() -> None:
     assert found["CT"] == ("thermal_capacitance", {"capacitance": 1e-12})
     with pytest.raises(SpiceError, match="joins a thermal node to another"):
         read.component("mixed")
+
+
+def test_a_library_reads_initial_conditions_and_nodesets() -> None:
+    read = library(".param top=2\n.ic v(out)=0.5 V(In)={top}\n.nodeset v(x)=-1m")
+    assert read.initial_conditions == {"out": 0.5, "In": 2.0}
+    assert read.nodesets == {"x": -1e-3}
+    with pytest.raises(
+        SpiceError, match=re.escape("written `V(node)=value`, not `out")
+    ):
+        library(".ic out=1")
+
+
+@pytest.mark.parametrize(
+    ("element", "message"),
+    [
+        ("Rx/r1 a 0 1k", "an element named `Rx/r1`, whose `/` separates the levels"),
+        ("R1 a/b 0 1k", "a node named `a/b`, whose `/` separates the levels"),
+    ],
+)
+def test_a_name_that_holds_a_path_separator_is_refused(
+    element: str, message: str
+) -> None:
+    with pytest.raises(SpiceError, match=re.escape(message)):
+        library(f".subckt part a\n{element}\nR2 a 0 1k\n.ends").component("part")

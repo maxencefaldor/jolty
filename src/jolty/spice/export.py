@@ -18,7 +18,7 @@ import json
 import math
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Literal
 
 from pydantic import JsonValue, TypeAdapter
 
@@ -1390,6 +1390,41 @@ def vector(
         return f"i(l{id.lower()}_{label.removeprefix('current')})"
     source = _sense(instance) if label == "control" else element(instance, dialect)
     return f"i({source.lower()})"
+
+
+def node_voltages(
+    keyword: Literal[".ic", ".nodeset"],
+    circuit: ir.Circuit,
+    voltages: Mapping[str, float],
+    *,
+    subcircuits: Collection[str] = (),
+    dialect: Dialect = NGSPICE,
+) -> list[str]:
+    """The statement that gives each net of `voltages`, by path, its voltage in volts.
+
+    It is ``.ic``, a transient's initial conditions, or ``.nodeset``, an operating
+    point's nodesets, each net named as [`vector`][jolty.spice.export.vector] names it
+    for the netlist of `circuit` with `subcircuits` in the `dialect`; none without a
+    voltage.
+
+    Examples:
+        >>> from jolty import Builder, Role, circuit, devices
+        >>> from jolty.units import kohm
+        >>> c = Builder("rc")
+        >>> ground = c.port("ground", Role.GROUND)
+        >>> r = c.place(devices.resistor(1 * kohm), name="R1")
+        >>> c.connect(r.a, name="out")
+        >>> c.connect(r.b, ground)
+        >>> node_voltages(".ic", circuit(c.finish()), {"out": 0.5})
+        ['.ic v(out)=0.5']
+    """
+    if not voltages:
+        return []
+    written = " ".join(
+        f"{vector(circuit, Unknown(net, 'voltage'), subcircuits, dialect)}={volts!r}"
+        for net, volts in voltages.items()
+    )
+    return [f"{keyword} {written}"]
 
 
 def _waveform(spec: JsonValue, dialect: Dialect) -> str:

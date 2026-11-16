@@ -12,7 +12,7 @@ object, as ``waveform.dc`` names a source's DC level. A device may also state
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Literal, Self, override
+from typing import Annotated, Final, Literal, Self, override
 
 from pydantic import (
     AfterValidator,
@@ -22,6 +22,9 @@ from pydantic import (
     JsonValue,
     model_validator,
 )
+
+SEPARATOR: Final = "/"
+"""What separates the levels of a path, such as ``X1/R1``, which no name holds."""
 
 
 class _Model(BaseModel):
@@ -257,7 +260,7 @@ class Circuit(_Model):
         """The instance at `path`, such as ``X1/R1``, or None when there is none."""
         component = self.components.get(self.top)
         found = None
-        for id in path.split("/"):
+        for id in path.split(SEPARATOR):
             found = component.instance(id) if component is not None else None
             if found is None:
                 return None

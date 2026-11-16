@@ -52,6 +52,15 @@ type Method = Literal["trapezoidal", "gear2", "backward_euler"]
 backward Euler for the most damping."""
 
 
+def voltages(given: Mapping[str, Quantity], what: str) -> dict[str, float]:
+    """The voltage of each net `given` names, in volts, each checked as `what`.
+
+    Raises:
+        DimensionError: When one is not a voltage.
+    """
+    return {net: voltage.to(VOLTAGE, what) for net, voltage in given.items()}
+
+
 def recorded(record: Sequence[str] | None) -> tuple[str, ...] | None:
     """`record` as a tuple of patterns, or None when it is left out.
 
@@ -181,12 +190,27 @@ class Transient(Recorded):
     """The response over time, from the operating point at zero until `stop`.
 
     The analysis steps onto each of `breakpoints` exactly, besides the times it chooses.
+    Its `initial_conditions` give nets, by path such as ``out`` or ``amp/mid``, the
+    voltage they start from, as SPICE's ``.ic``: each is held there while the operating
+    point is solved, then left free. A net that voltage sources and inductors join to
+    the ground, or to a net named before it, is left to them, and its voltage there must
+    be the one given. Without its `operating_point`, as SPICE's ``UIC``, the transient
+    starts from its initial conditions alone, every other unknown at zero, so a circuit
+    starts from rest or from a state no DC solution has, such as an oscillator's kick.
+
+    Examples:
+        >>> from jolty.units import V, us
+        >>> started = Transient(10 * us, initial_conditions={"out": 1 * V})
+        >>> started.to_json()["transient"]["initial_conditions"]
+        {'out': 1.0}
     """
 
     stop: Quantity
     max_step: Quantity | None = None
     method: Method = "trapezoidal"
     breakpoints: Sequence[Quantity] = ()
+    initial_conditions: Mapping[str, Quantity] = field(default_factory=dict)
+    operating_point: bool = True
 
     def to_json(self) -> JsonValue:
         """The analysis in the engine's format."""
@@ -200,6 +224,12 @@ class Transient(Recorded):
             ]
         if self.max_step is not None:
             transient["max_step"] = self.max_step.to(TIME, "a transient's longest step")
+        if self.initial_conditions:
+            transient["initial_conditions"] = dict[str, JsonValue](
+                voltages(self.initial_conditions, "an initial condition")
+            )
+        if not self.operating_point:
+            transient["operating_point"] = False
         return {"transient": transient}
 
 
@@ -514,17 +544,27 @@ class Options:
     """Whether a transient measures where its time goes, into its statistics' profile;
     it changes no other result."""
     parallelism: Parallelism = field(default_factory=Parallelism)
+    nodesets: Mapping[str, Quantity] = field(default_factory=dict)
+    """The voltage each net named, by path, is held at while an operating point is
+    first solved from zero, then released and solved again from there, as SPICE's
+    ``.nodeset``: a guess that leads it to one solution of several. A net that voltage
+    sources and inductors join to the ground, or to a net named before it, is left to
+    them."""
 
     def to_json(self) -> dict[str, JsonValue]:
         """The options in the engine's format, without those left to defaults."""
         values: dict[str, JsonValue] = {
             setting.name: getattr(self, setting.name)
             for setting in fields(self)
-            if setting.name != "parallelism"
+            if setting.name not in {"parallelism", "nodesets"}
         }
         spread = self.parallelism.to_json()
         if spread:
             values["parallelism"] = spread
+        if self.nodesets:
+            values["nodesets"] = dict[str, JsonValue](
+                voltages(self.nodesets, "a nodeset")
+            )
         return {name: value for name, value in values.items() if value is not None}
 
 

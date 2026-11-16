@@ -730,7 +730,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `gate_source_overlap` | `0` | The gate-source overlap capacitance per width, in farads per meter; default 0. |
 | `junction_depth` |  | Level 3: the junction depth, `xj`, in meters, which a substrate doping turns into short channels' body effect; default 0. |
 | `junction_potential` | `0.8` | The bulk junctions' potential, `pb`, in volts; default 0.8. |
-| `lateral_diffusion` | `0` | The lateral diffusion, `ld`, by which the channel falls short of its drawn length at each end, in meters; default 0. |
+| `lateral_diffusion` | `0` | The lateral diffusion, `ld`, by which the channel falls short of its drawn length at each end, in meters, or past it where negative, as ngspice takes it; default 0. |
 | `length` | `0.0001` | The channel's drawn length, `l`, in meters; default 100 µm. |
 | `length_adjustment` |  | Level 3: the length the mask adds, `xl`, in meters; default 0. |
 | `level` | `1` | The model's level, 1 or 3; default 1. |
