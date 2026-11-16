@@ -25,10 +25,11 @@ SUPPLY = 3.3
 LENGTHS = (500, 5000, 50_000)
 """The fixtures' numbers of inverters."""
 
-MEMORY = 4.0
+MEMORY = 16.0
 """The gibibytes a chain's results may hold: the 350,004 unknowns of 50,000 inverters,
-each of whose transistors has three Meyer displacements of its own, at some 800 points,
-hold 2.1, more than the 2 the engine allows by default."""
+each of whose transistors has three Meyer displacements of its own, held 2.1 at some 800
+points on 15 November, and more than 4 since SPICE's charge tolerance took more steps;
+on 16 November they fitted in 16 on `cedar`."""
 
 
 def mos(channel: str) -> devices.Device:
