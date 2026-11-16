@@ -88,7 +88,7 @@ Each is read at its parameters' defaults, but a subcircuit whose defaults are a 
 A subcircuit whose defaults read a parameter nothing defines is read as the kit's first placement of it within another subcircuit places it, as GF180MCU's `nmos_3p3_sab` places `nplus_u_m1`, or, where none does, with each parameter that defaults to SPICE's length or width, `l` or `w`, at 10 µm, the size ngspice gives a resistor whose element and card give none, as GF180MCU's resistors and capacitors write their sizes.
 Its status is `native` where jolty reads every element, `verilog-a` where only Verilog-A models are left, which ngspice loads compiled through OSDI and jolty would compile into kernels, `neither` where a SPICE model jolty lacks is left, `unread` where only a placement the reader cannot read is, such as a subcircuit's multiplier, and `unvalued` where an element reads a parameter nothing gives a value.
 Of SG13G2's Verilog-A models, jolty's compiler compiles PSP 103's `psp103va`, `r3_cmc` and `mosvar` whole ([`tests/test_veriloga.py`](https://github.com/maxencefaldor/jolty/blob/main/tests/test_veriloga.py)), and stops at the MOM capacitors' `cap_cmomi` and `cap_cmomf`, whose `localparam` it does not read yet.
-At their typical corners, SKY130 has 244 of its 263 devices native, GF180MCU 19 of 72 and SG13G2 35 of 53, 14 more of whose are Verilog-A models:
+At their typical corners, SKY130 has 251 of its 263 devices native, GF180MCU 65 of 72 and SG13G2 36 of 53, 14 more of whose are Verilog-A models:
 
 ### SKY130
 
@@ -101,7 +101,7 @@ At their typical corners, SKY130 has 244 of its 263 devices native, GF180MCU 19 
 | native | BSIM4 4.5 (level 54); resistor whose value reads a voltage; diode (level 3) |  | 5: `sky130_fd_pr__nfet_20v0`, `sky130_fd_pr__nfet_20v0_reverse_iso`, `sky130_fd_pr__nfet_20v0_iso`, `sky130_fd_pr__nfet_20v0_zvt`, `sky130_fd_pr__nfet_20v0_nvt` |
 | neither | BSIM4 4.62 (level 54); resistor whose value reads a voltage; diode (level 3) | `sky130_fd_pr__pfet_20v0__base.0` is a BSIM4 card of version 4.62, whose equations ngspice runs another model for; jolty models version 4.5 | 1: `sky130_fd_pr__pfet_20v0` |
 | native | Gummel-Poon (level 1) |  | 4: `sky130_fd_pr__pnp_05v5_W0p68L0p68`, `sky130_fd_pr__pnp_05v5_W3p40L3p40`, `sky130_fd_pr__npn_05v5_W1p00L1p00`, `sky130_fd_pr__npn_05v5_W1p00L2p00` |
-| neither | Gummel-Poon (level 1); resistor; diode (level 3) | `sky130_fd_pr__model__parasitic__diode_ps2dn` is a diode of level 3; jolty models level 1 | 1: `sky130_fd_pr__npn_11v0_W1p00L1p00` |
+| native | Gummel-Poon (level 1); resistor; diode (level 3) |  | 1: `sky130_fd_pr__npn_11v0_W1p00L1p00` |
 | native | capacitor of a charge; capacitor; resistor whose value reads a voltage |  | 2: `sky130_fd_pr__cap_var_lvt`, `sky130_fd_pr__cap_var_hvt` |
 | native | resistor whose value reads a voltage |  | 1: `sky130_fd_pr__res_iso_pw` |
 | native | resistor; capacitor |  | 8: `sky130_fd_pr__cap_vpp_08p6x07p8_l1m1m2_noshield_o1`, `sky130_fd_pr__cap_vpp_04p4x04p6_m1m2_noshield_o1nhv`, `sky130_fd_pr__cap_vpp_04p4x04p6_m1m2_noshield_o1phv`, `sky130_fd_pr__cap_vpp_08p6x07p8_m1m2m3_shieldl1`, `sky130_fd_pr__cap_vpp_04p4x04p6_m1m2m3_shieldl1`, `sky130_fd_pr__cap_vpp_11p5x11p7_m1m2m3_shieldl1`, `sky130_fd_pr__cap_vpp_11p5x11p7_m1m4_noshield`, `sky130_fd_pr__cap_vpp_44p7x23p1_pol1m1m2m3m4m5_noshield` |
@@ -127,12 +127,12 @@ At their typical corners, SKY130 has 244 of its 263 devices native, GF180MCU 19 
 | Status | Models | First problem | Devices |
 | --- | --- | --- | --- |
 | native | diode (level 3); resistor whose value reads a voltage; BSIM4 4.5 (level 54) |  | 3: `nmos_3p3_sab`, `pmos_3p3_sab`, `nmos_6p0_sab` |
-| unvalued | diode (level 3); resistor whose value reads a voltage | no parameter is named `r_w` | 4: `nplus_u_m1`, `pplus_u_m1`, `nplus_u_m2`, `pplus_u_m2` |
+| native | diode (level 3); resistor whose value reads a voltage |  | 4: `nplus_u_m1`, `pplus_u_m1`, `nplus_u_m2`, `pplus_u_m2` |
 | neither | diode (level 3); resistor whose value reads a voltage; BSIM4 4.6 (level 54) | `pmos_6p0.0` is a BSIM4 card of version 4.6, whose equations ngspice runs another model for; jolty models version 4.5 | 1: `pmos_6p0_sab` |
 | neither | BSIM4 4.6 (level 54) | `nmos_6p0_nat.0` is a BSIM4 card of version 4.6, whose equations ngspice runs another model for; jolty models version 4.5 | 4: `nmos_6p0_nat`, `pmos_6p0`, `pmos_6p0` (model), `nmos_6p0_nat` (model) |
 | native | BSIM4 4.5 (level 54) |  | 6: `nmos_3p3`, `pmos_3p3`, `nmos_6p0`, `nmos_3p3` (model), `pmos_3p3` (model), `nmos_6p0` (model) |
 | native | Gummel-Poon (level 1) |  | 10: `vpnp_0p42x10`, `vpnp_0p42x5`, `vpnp_10x10`, `vpnp_5x5`, `vnpn_10x10`, `vnpn_5x5`, `vnpn_0p54x16`, `vnpn_0p54x8`, `vnpn_0p54x4`, `vnpn_0p54x2` |
-| neither | resistor's model card; diode (level 3); resistor whose value reads a voltage | `np_3p3` is a diode of level 3; jolty models level 1 | 5: `nplus_u`, `pplus_u`, `nplus_s`, `pplus_s`, `nwell` |
+| native | resistor's model card; diode (level 3); resistor whose value reads a voltage |  | 5: `nplus_u`, `pplus_u`, `nplus_s`, `pplus_s`, `nwell` |
 | native | resistor's model card; capacitor's model card |  | 9: `npolyf_u`, `ppolyf_u`, `npolyf_s`, `ppolyf_s`, `ppolyf_u_1k`, `ppolyf_u_2k`, `ppolyf_u_1k_6p0`, `ppolyf_u_2k_6p0`, `ppolyf_u_3k` |
 | native | resistor whose value reads a voltage |  | 7: `rm1`, `rm2`, `rm3`, `tm6k`, `tm9k`, `tm11k`, `tm30k` |
 | native | resistor |  | 1: `efuse` |
