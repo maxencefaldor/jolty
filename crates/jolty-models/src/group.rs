@@ -1976,8 +1976,7 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         for (memory, prepared) in self.memory.iter_mut().zip(&self.prepared) {
             *memory = prepared
                 .as_ref()
-                .map(|prepared| K::memory(&self.shape, prepared))
-                .unwrap_or_default();
+                .map_or_default(|prepared| K::memory(&self.shape, prepared));
         }
     }
 
