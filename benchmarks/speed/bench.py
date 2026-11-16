@@ -445,9 +445,12 @@ def settled(before: Median, now: Median) -> bool:
 def decided(before: Median, now: Median) -> str:
     """The verdict on `now` against `before`: "slower", "faster", or none.
 
-    A change is named only when the two intervals separate; "undecided" when they
-    neither separate nor resolve a change of `FLAGGED`.
+    A change is named only when the two intervals separate; "no interval" when either
+    has none, and "undecided" when they neither separate nor resolve a change of
+    `FLAGGED`.
     """
+    if before.resolution(now) is None:
+        return "no interval"
     if before.separated(now):
         return "slower" if now.value > before.value else "faster"
     return "" if settled(before, now) else "undecided"
@@ -1343,7 +1346,13 @@ def table(cells: Sequence[str], widths: Sequence[int]) -> str:
     ).rstrip()
 
 
-MARKS: Final = {"faster": "<", "slower": ">", "undecided": "?", "": ""}
+MARKS: Final = {
+    "faster": "<",
+    "slower": ">",
+    "undecided": "?",
+    "no interval": "?",
+    "": "",
+}
 """How a break-even's table marks each spread run's verdict against the serial run."""
 
 
