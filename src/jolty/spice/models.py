@@ -47,6 +47,7 @@ FLICKER: Final[Table] = {
 
 DIODE: Final[Table] = {
     "is": ("saturation_current", 1.0),
+    "js": ("saturation_current", 1.0),
     "n": ("emission_coefficient", 1.0),
     "rs": ("series_resistance", 1.0),
     "cjo": ("junction_capacitance", 1.0),
@@ -58,14 +59,126 @@ DIODE: Final[Table] = {
     "mj": ("grading_coefficient", 1.0),
     "fc": ("depletion_coefficient", 1.0),
     "tt": ("transit_time", 1.0),
+    "ikf": ("forward_knee_current", 1.0),
+    "ik": ("forward_knee_current", 1.0),
+    "ikr": ("reverse_knee_current", 1.0),
+    "isr": ("recombination_saturation_current", 1.0),
+    "nr": ("recombination_emission_coefficient", 1.0),
+    "jsw": ("sidewall_saturation_current", 1.0),
+    "isw": ("sidewall_saturation_current", 1.0),
+    "ns": ("sidewall_emission_coefficient", 1.0),
+    "rsw": ("sidewall_series_resistance", 1.0),
+    "cjp": ("sidewall_junction_capacitance", 1.0),
+    "cjsw": ("sidewall_junction_capacitance", 1.0),
+    "php": ("sidewall_junction_potential", 1.0),
+    "vjsw": ("sidewall_junction_potential", 1.0),
+    "mjsw": ("sidewall_grading_coefficient", 1.0),
+    "fcs": ("sidewall_depletion_coefficient", 1.0),
+    "ikp": ("sidewall_forward_knee_current", 1.0),
+    "jtun": ("tunneling_saturation_current", 1.0),
+    "jtunsw": ("sidewall_tunneling_saturation_current", 1.0),
+    "ntun": ("tunneling_emission_coefficient", 1.0),
+    "xtitun": ("tunneling_saturation_current_temperature_exponent", 1.0),
+    "keg": ("tunneling_energy_gap_factor", 1.0),
     "bv": ("breakdown_voltage", 1.0),
+    "vb": ("breakdown_voltage", 1.0),
+    "vrb": ("breakdown_voltage", 1.0),
+    "var": ("breakdown_voltage", 1.0),
     "ibv": ("breakdown_current", 1.0),
+    "ib": ("breakdown_current", 1.0),
     "nbv": ("breakdown_emission_coefficient", 1.0),
+    "nz": ("breakdown_emission_coefficient", 1.0),
     "tcv": ("breakdown_temperature_coefficient", 1.0),
+    "tbv1": ("breakdown_temperature_coefficient", 1.0),
+    "tlev": ("temperature_model", 1.0),
+    "tlevc": ("capacitance_temperature_model", 1.0),
     "eg": ("energy_gap", 1.0),
+    "gap1": ("energy_gap_alpha", 1.0),
+    "gap2": ("energy_gap_beta", 1.0),
     "xti": ("saturation_current_temperature_exponent", 1.0),
+    "cta": ("junction_capacitance_temperature_coefficient", 1.0),
+    "ctc": ("junction_capacitance_temperature_coefficient", 1.0),
+    "ctp": ("sidewall_junction_capacitance_temperature_coefficient", 1.0),
+    "tpb": ("junction_potential_temperature_coefficient", 1.0),
+    "tvj": ("junction_potential_temperature_coefficient", 1.0),
+    "tphp": ("sidewall_junction_potential_temperature_coefficient", 1.0),
+    "trs": ("series_resistance_temperature_coefficient", 1.0),
+    "trs1": ("series_resistance_temperature_coefficient", 1.0),
+    "trs2": ("series_resistance_quadratic_temperature_coefficient", 1.0),
+    "ttt1": ("transit_time_temperature_coefficient", 1.0),
+    "ttt2": ("transit_time_quadratic_temperature_coefficient", 1.0),
+    "tm1": ("grading_coefficient_temperature_coefficient", 1.0),
+    "tm2": ("grading_coefficient_quadratic_temperature_coefficient", 1.0),
     **FLICKER,
 }
+"""ngspice 47's diode, by every name it reads (``dio.c``, lines 48 to 147), but its
+geometry and its safe operating area, which `DIODE_GEOMETRY` and `DIODE_IGNORED`
+name."""
+
+DIODE_BY_AREA: Final = (
+    "is",
+    "js",
+    "cjo",
+    "cj0",
+    "cj",
+    "ikf",
+    "ik",
+    "ikr",
+    "isr",
+    "jtun",
+)
+"""A diode card's parameters of its bottom junction that its element's area and copies
+multiply (``diosetup.c``, lines 362 to 365; ``diotemp.c``, lines 120, 136 and 147); its
+series resistance, ``RS``, they divide (``diotemp.c``, line 254)."""
+
+DIODE_BY_PERIMETER: Final = ("jsw", "isw", "cjp", "cjsw", "ikp", "jtunsw")
+"""A diode card's parameters of its sidewall that its element's perimeter and copies
+multiply (``diosetup.c``, lines 364 and 366; ``diotemp.c``, lines 128 and 139); its
+series resistance, ``RSW``, they divide (``diotemp.c``, line 262)."""
+
+DIODE_KNEES: Final = frozenset(
+    name for name, (jolty, _) in DIODE.items() if jolty.endswith("knee_current")
+)
+"""A diode card's knee currents, each of which ngspice turns off below
+`SMALLEST_CURRENT`."""
+
+DIODE_SELECTORS: Final = frozenset({"tlev", "tlevc"})
+"""A diode card's selectors of its temperature equations, whole numbers."""
+
+DIODE_GEOMETRY: Final = {
+    "area": 1.0,
+    "pj": 0.0,
+    "lm": 0.0,
+    "lp": 0.0,
+    "wm": 0.0,
+    "wp": 0.0,
+    "xom": 1e4,
+    "xoi": 1e4,
+    "xm": 0.0,
+    "xp": 0.0,
+    "xw": 0.0,
+}
+"""A diode card's geometry and its defaults (``diosetup.c``, lines 183 to 188 and 281 to
+307): the area and perimeter factors its elements take unless they give their own, and
+level 3's metal and polysilicon over the bulk, the thicknesses of their oxides and
+their masks' offsets."""
+
+METAL_AND_POLY: Final = ("lm", "lp", "wm", "wp")
+"""The sizes of a level 3 diode's metal and polysilicon over its bulk, which an element
+gives or its card: jolty reads none but zero, which no open kit sizes otherwise."""
+
+DIODE_IGNORED: Final = frozenset(
+    {"fv_max", "bv_max", "id_max", "te_max", "pd_max", "d", "scalm"}
+)
+"""A diode card's parameters that change nothing ngspice computes: the safe operating
+area, which only its checks read; the flag ``D`` that names its type; and HSPICE's model
+scale ``SCALM``, which ngspice's diode does not have, and which ngspice ignores, as it
+ignores every parameter a model does not have (``inpgmod.c``, lines 157 to 191)."""
+
+SMALLEST_CURRENT: Final = 1e-28
+"""ngspice's ``epsmin`` (``cktinit.c``, line 98), the least saturation current a diode
+takes, and below which it turns a knee current off (``diosetup.c``, lines 110 to 130 and
+230)."""
 
 JFET: Final[Table] = {
     "vto": ("threshold_voltage", 1.0),
@@ -139,6 +252,70 @@ BIPOLAR: Final[Table] = {
     "eg": ("energy_gap", 1.0),
     "xti": ("saturation_current_temperature_exponent", 1.0),
     "xtb": ("beta_temperature_exponent", 1.0),
+    "nkf": ("high_injection_exponent", 1.0),
+    "nk": ("high_injection_exponent", 1.0),
+    "tbf1": ("forward_beta_temperature_coefficient", 1.0),
+    "tbf2": ("forward_beta_quadratic_temperature_coefficient", 1.0),
+    "tbr1": ("reverse_beta_temperature_coefficient", 1.0),
+    "tbr2": ("reverse_beta_quadratic_temperature_coefficient", 1.0),
+    "tikf1": ("forward_knee_current_temperature_coefficient", 1.0),
+    "tikf2": ("forward_knee_current_quadratic_temperature_coefficient", 1.0),
+    "tikr1": ("reverse_knee_current_temperature_coefficient", 1.0),
+    "tikr2": ("reverse_knee_current_quadratic_temperature_coefficient", 1.0),
+    "tvaf1": ("forward_early_voltage_temperature_coefficient", 1.0),
+    "tvaf2": ("forward_early_voltage_quadratic_temperature_coefficient", 1.0),
+    "tvar1": ("reverse_early_voltage_temperature_coefficient", 1.0),
+    "tvar2": ("reverse_early_voltage_quadratic_temperature_coefficient", 1.0),
+    "trb1": ("base_resistance_temperature_coefficient", 1.0),
+    "trb2": ("base_resistance_quadratic_temperature_coefficient", 1.0),
+    "trm1": ("min_base_resistance_temperature_coefficient", 1.0),
+    "trm2": ("min_base_resistance_quadratic_temperature_coefficient", 1.0),
+    "tirb1": ("base_resistance_current_temperature_coefficient", 1.0),
+    "tirb2": ("base_resistance_current_quadratic_temperature_coefficient", 1.0),
+    "trc1": ("collector_resistance_temperature_coefficient", 1.0),
+    "trc2": ("collector_resistance_quadratic_temperature_coefficient", 1.0),
+    "tre1": ("emitter_resistance_temperature_coefficient", 1.0),
+    "tre2": ("emitter_resistance_quadratic_temperature_coefficient", 1.0),
+    "tnf1": ("forward_emission_coefficient_temperature_coefficient", 1.0),
+    "tnf2": ("forward_emission_coefficient_quadratic_temperature_coefficient", 1.0),
+    "tnr1": ("reverse_emission_coefficient_temperature_coefficient", 1.0),
+    "tnr2": ("reverse_emission_coefficient_quadratic_temperature_coefficient", 1.0),
+    "tne1": ("base_emitter_leakage_emission_coefficient_temperature_coefficient", 1.0),
+    "tne2": (
+        "base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient",
+        1.0,
+    ),
+    "tnc1": (
+        "base_collector_leakage_emission_coefficient_temperature_coefficient",
+        1.0,
+    ),
+    "tnc2": (
+        "base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient",
+        1.0,
+    ),
+    "tns1": ("substrate_emission_coefficient_temperature_coefficient", 1.0),
+    "tns2": ("substrate_emission_coefficient_quadratic_temperature_coefficient", 1.0),
+    "titf1": ("transit_time_current_temperature_coefficient", 1.0),
+    "titf2": ("transit_time_current_quadratic_temperature_coefficient", 1.0),
+    "ttf1": ("forward_transit_time_temperature_coefficient", 1.0),
+    "ttf2": ("forward_transit_time_quadratic_temperature_coefficient", 1.0),
+    "ttr1": ("reverse_transit_time_temperature_coefficient", 1.0),
+    "ttr2": ("reverse_transit_time_quadratic_temperature_coefficient", 1.0),
+    "tmje1": ("base_emitter_grading_temperature_coefficient", 1.0),
+    "tmje2": ("base_emitter_grading_quadratic_temperature_coefficient", 1.0),
+    "tmjc1": ("base_collector_grading_temperature_coefficient", 1.0),
+    "tmjc2": ("base_collector_grading_quadratic_temperature_coefficient", 1.0),
+    "tmjs1": ("substrate_grading_temperature_coefficient", 1.0),
+    "tmjs2": ("substrate_grading_quadratic_temperature_coefficient", 1.0),
+    "cte": ("base_emitter_capacitance_temperature_coefficient", 1.0),
+    "ctc": ("base_collector_capacitance_temperature_coefficient", 1.0),
+    "cts": ("substrate_capacitance_temperature_coefficient", 1.0),
+    "tvje": ("base_emitter_potential_temperature_coefficient", 1.0),
+    "tvjc": ("base_collector_potential_temperature_coefficient", 1.0),
+    "tvjs": ("substrate_potential_temperature_coefficient", 1.0),
+    "trb": ("base_resistance_temperature_coefficient", 1.0),
+    "trc": ("collector_resistance_temperature_coefficient", 1.0),
+    "tre": ("emitter_resistance_temperature_coefficient", 1.0),
     **FLICKER,
 }
 
@@ -528,12 +705,45 @@ where a card gives it below that, and divides by the area."""
 VBIC_LEAST_RESISTANCE: Final = 0.01
 """The least resistance ngspice's VBIC takes from a card, in ohms, its ``R_MIN``."""
 
-BIPOLAR_INFINITE_AT_ZERO: Final = frozenset(
-    {"vaf", "va", "var", "vb", "ikf", "ik", "ikr", "irb", "vtf"}
+BIPOLAR_ABSENT_AT_ZERO: Final = frozenset(
+    {"vaf", "va", "var", "vb", "ikf", "ik", "ikr", "irb", "vtf", "iss"}
 )
 """A Gummel-Poon card's parameters that ngspice takes as infinite where they are 0:
 the Early voltages and knee currents (``bjttemp.c:83-99``), the base resistance's
-current (``bjtload.c:620``) and the transit time's voltage (``bjttemp.c:51-54``)."""
+current (``bjtload.c:620``) and the transit time's voltage (``bjttemp.c:51-54``); and
+the substrate's saturation current, whose junction then conducts the minimum
+conductance alone, as without one (``bjtload.c:487-499``)."""
+
+BIPOLAR_TEMPERATURE_MODELS: Final = {
+    "tlev": "temperature_model",
+    "tlevc": "capacitance_temperature_model",
+}
+"""A Gummel-Poon card's choices of how its parameters follow the temperature, each 0 or
+1, by their SPICE names: jolty's name of each. ngspice's ``TLEV`` 3, a power of each
+saturation current that does not commute with an element's area, jolty does not model,
+nor 2, for which ngspice computes no saturation current (``bjttemp.c:166-197``)."""
+
+BIPOLAR_POWER_COEFFICIENTS: Final = frozenset(
+    {"tis1", "tis2", "tise1", "tise2", "tisc1", "tisc2", "tiss1", "tiss2"}
+)
+"""The coefficients of ``TLEV`` 3's powers of the saturation currents, which change
+nothing ngspice computes at the ``TLEV`` 0 and 1 jolty models (``bjttemp.c:183-197``
+and ``250-253``)."""
+
+BIPOLAR_SATURATION_CURRENTS: Final = ("ibe", "ibc")
+"""A Gummel-Poon card's saturation currents of the base-emitter and base-collector
+junctions apart, which ngspice reads only where both are given, taking ``IS`` for both
+otherwise (``bjttemp.c:169-180``)."""
+
+BIPOLAR_UNDEFINED: Final = frozenset({"dcap", "gap1", "gap2", "cbcp", "cbep", "ccsp"})
+"""HSPICE's parameters of a Gummel-Poon card that ngspice 47's BJT does not define, its
+depletion capacitance's equation, its band gap's temperature coefficients and its
+external junctions' capacitances: ngspice reads past them, warning that each is an
+"unrecognized parameter", and the reader with it."""
+
+BIPOLAR_MAX_HIGH_INJECTION_EXPONENT: Final = 1.0
+"""The largest ``NKF`` ngspice takes: it limits one beyond to it, with a warning
+(``bjtsetup.c:332-338``)."""
 
 VBIC_INFINITE_AT_ZERO: Final = frozenset(
     {"vo", "v0", "vef", "ver", "ikf", "ikr", "ikp", "vtf", "vbbe"}
@@ -1034,19 +1244,7 @@ def _device(
     """
     match card.kind:
         case "d":
-            level = values.pop("level", 1.0)
-            if level != 1:
-                message = (
-                    f"`{card.name}` is a diode of level {level:g}; jolty models level 1"
-                )
-                raise statement.fail(message)
-            area = _area(instance, statement)
-            values = _area_scaled(
-                "diode", values, area, ("is", "cjo", "cj0", "cj"), ("rs",)
-            )
-            # ngspice multiplies the breakdown current by the multiplier, not the area.
-            values = _area_scaled("diode", values, instance.get("m", 1.0), ("ibv",), ())
-            made = Made("diode", _mapped(card, values, DIODE, statement))
+            made = Made("diode", _diode(card, values, instance, statement))
         case "npn" | "pnp":
             made = _bipolar_device(card, values, instance, statement)
         case "njf" | "pjf":
@@ -1075,6 +1273,100 @@ def _device(
             )
             raise statement.fail(message)
     return made
+
+
+def _diode(
+    card: ModelCard,
+    values: dict[str, float],
+    instance: Mapping[str, float],
+    statement: Statement,
+) -> dict[str, JsonValue]:
+    """A diode's parameters, from its model card of level 1 or 3 and its instance's.
+
+    As ngspice sizes it (``diosetup.c``, lines 313 to 366): its area and perimeter
+    factors are its element's, or its card's where the element gives neither a width
+    nor a length; at level 3, an element that gives both makes them its area and
+    perimeter, ``(W + XW) · (L + XW)`` and ``2 · (W + XW) + 2 · (L + XW)`` scaled by the
+    library's `scale`. The bottom junction's currents and capacitance are multiplied,
+    and its resistance divided, by its area times the element's copies `m`; the
+    sidewall's by its perimeter times them; and the breakdown current by its copies,
+    and at level 3 by its area too. ngspice multiplies a level 3 diode sized by its
+    width and length by its copies twice, once in its area (``diosetup.c``, line 336)
+    and again as every diode's (``diotemp.c``, line 120), where jolty multiplies once,
+    as the guide's departures state.
+
+    Raises:
+        SpiceError: When the card is of a level other than 1 and 3, a parameter has no
+            jolty counterpart, the element's area times its copies is not positive, or
+            it sizes a level 3 diode's metal or polysilicon over the bulk.
+    """
+    level = values.pop("level", 1.0)
+    if level not in {1.0, 3.0}:
+        message = f"`{card.name}` is a diode of level {level:g}; jolty models 1 and 3"
+        raise statement.fail(message)
+    geometric = level == 3  # noqa: PLR2004 - the level of the diode sized by its geometry
+    geometry = {
+        name: values.pop(name, default) for name, default in DIODE_GEOMETRY.items()
+    }
+    values = {
+        name: value for name, value in values.items() if name not in DIODE_IGNORED
+    }
+    if "tref" in values:
+        # ngspice's other name for the nominal temperature (`dio.c`, line 56).
+        values["tnom"] = values.pop("tref")
+    selectors = {
+        DIODE[name][0]: _whole(card, name, values.pop(name), statement)
+        for name in DIODE_SELECTORS & values.keys()
+    }
+    # A knee current below `SMALLEST_CURRENT` turns its effect off; a saturation current
+    # below it is raised to it.
+    values = {
+        name: value
+        for name, value in values.items()
+        if name not in DIODE_KNEES or value >= SMALLEST_CURRENT
+    }
+    for name in {"is", "js"} & values.keys():
+        values[name] = max(values[name], SMALLEST_CURRENT)
+    copies = instance.get("m", 1.0)
+    sized = "w" in instance or "l" in instance
+    area = instance.get("area", 1.0 if sized else geometry["area"])
+    perimeter = instance.get("pj", 0.0 if sized else geometry["pj"])
+    if geometric:
+        scale = instance.get("scale", 1.0)
+        if "w" in instance and "l" in instance:
+            width, length = (
+                instance["w"] + geometry["xw"],
+                instance["l"] + geometry["xw"],
+            )
+            area = width * length * scale**2
+            perimeter = (2 * width + 2 * length) * scale
+        sizes = {name: instance.get(name, geometry[name]) for name in METAL_AND_POLY}
+        if any(sizes.values()):
+            message = (
+                f"jolty reads no metal or polysilicon over a diode's bulk, which "
+                f"`{card.name}` sizes"
+            )
+            raise statement.fail(message)
+    bottom = _area(dict(instance) | {"area": area}, statement)
+    values = _area_scaled("diode", values, bottom, DIODE_BY_AREA, ("rs",))
+    sidewall = perimeter * copies
+    if sidewall > 0:
+        values = _area_scaled("diode", values, sidewall, DIODE_BY_PERIMETER, ("rsw",))
+    else:
+        # Without a perimeter the sidewall has no current nor charge, and ngspice's
+        # resistance to it no conductance (`diotemp.c`, line 262).
+        values = {
+            name: value
+            for name, value in values.items()
+            if name not in {*DIODE_BY_PERIMETER, "rsw"}
+        }
+    breakdown = copies * (area if geometric else 1.0)
+    values = _area_scaled("diode", values, breakdown, ("ibv", "ib"), ())
+    parameters: dict[str, JsonValue] = {
+        **_mapped(card, values, DIODE, statement),
+        **selectors,
+    }
+    return parameters
 
 
 def unmatched(card: ModelCard, parameter: str, statement: Statement) -> SpiceError:
@@ -1187,7 +1479,9 @@ def _bipolar(
 
     The transistor has a substrate, as in SPICE: an NPN is vertical and a PNP lateral,
     unless ``SUBS`` builds it otherwise. A parameter ngspice takes as infinite where
-    it is 0 is left out there, to the engine's infinite default.
+    it is 0 is left out there, to the engine's infinite default, as is what ngspice
+    reads past: HSPICE's parameters it does not define, ``TLEV`` 3's coefficients, and
+    a lone ``IBE`` or ``IBC``.
 
     Raises:
         SpiceError: When a parameter has no jolty counterpart.
@@ -1196,10 +1490,29 @@ def _bipolar(
     if construction not in CONSTRUCTIONS:
         message = f"`SUBS` is 1 or -1, not {construction!r}"
         raise statement.fail(message)
+    models: dict[str, JsonValue] = {}
+    for name, jolty in BIPOLAR_TEMPERATURE_MODELS.items():
+        if name in values:
+            level = _whole(card, name, values.pop(name), statement)
+            if level not in {0, 1}:
+                message = (
+                    f"`{card.name}` scales with the temperature as `{name.upper()}` "
+                    f"{level} says; jolty models 0 and 1"
+                )
+                raise statement.fail(message)
+            models[jolty] = level
+    given = [name for name in BIPOLAR_SATURATION_CURRENTS if name in values]
+    if len(given) == len(BIPOLAR_SATURATION_CURRENTS):
+        raise unmatched(card, given[0], statement)
+    for name in ("nkf", "nk"):
+        if name in values:
+            values[name] = min(values[name], BIPOLAR_MAX_HIGH_INJECTION_EXPONENT)
+    # ngspice reads `TREF` as `TNOM`, the later of the two given (`bjt.c`, line 83).
     values = {
-        name: value
+        "tnom" if name == "tref" else name: value
         for name, value in values.items()
-        if name not in BIPOLAR_INFINITE_AT_ZERO or value != 0
+        if (name not in BIPOLAR_ABSENT_AT_ZERO or value != 0)
+        and name not in {*BIPOLAR_UNDEFINED, *BIPOLAR_POWER_COEFFICIENTS, *given}
     }
     area = _area(instance, statement)
     multiplied = (
@@ -1212,6 +1525,7 @@ def _bipolar(
     return {
         "polarity": card.kind,
         "substrate": CONSTRUCTIONS[construction],
+        **models,
         **parameters,
     }
 

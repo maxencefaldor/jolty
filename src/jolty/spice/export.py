@@ -304,6 +304,7 @@ ELEMENTS = {
     "foundry_mosfet": Element("X", ("drain", "gate", "source", "bulk")),
     "behavioral_voltage_source": Element("B", ("positive", "negative")),
     "behavioral_current_source": Element("B", ("positive", "negative")),
+    "behavioral_capacitor": Element("C", ("positive", "negative")),
     "voltage_controlled_switch": Element("B", _CONTROLLED),
     "current_controlled_switch": Element("B", _CONTROLLED),
     "photocell": Element("B", ("a", "b", "light_positive", "light_negative")),
@@ -380,12 +381,17 @@ def _card_names(
     match model:
         case "diode":
             kind, names = "D", _spice(models.DIODE)
+            values, instance = _diode_sidewall(_diode_capacitances(values))
         case "jfet":
             channel = _defaulted(model, values)["channel"]
             kind, names = f"{channel}jf".upper(), _spice(models.JFET)
         case "bipolar_transistor":
             kind = str(_defaulted(model, values)["polarity"]).upper()
             names = _spice(models.BIPOLAR) | {"substrate": ("subs", 1.0)}
+            names |= {
+                jolty: (spice, 1.0)
+                for spice, jolty in models.BIPOLAR_TEMPERATURE_MODELS.items()
+            }
         case "mosfet":
             kind = f"{_defaulted(model, values)['channel']}mos".upper()
             names = _spice(models.MOSFET) | {
@@ -404,6 +410,77 @@ def _card_names(
             message = f"a {model} has no model card"
             raise _unwritable(message)
     return kind, names, instance, values
+
+
+_LINEAR_CAPACITANCES: Final = (
+    (
+        "junction_potential",
+        "junction_potential_temperature_coefficient",
+        "junction_capacitance",
+        "junction_capacitance_temperature_coefficient",
+    ),
+    (
+        "sidewall_junction_potential",
+        "sidewall_junction_potential_temperature_coefficient",
+        "sidewall_junction_capacitance",
+        "sidewall_junction_capacitance_temperature_coefficient",
+    ),
+)
+"""A diode's junctions' potentials and capacitances that its capacitance temperature
+model 1 moves linearly, each with its coefficient."""
+
+
+def _diode_capacitances(values: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """A diode's parameters, its linear capacitances' moved to start from 27 °C.
+
+    At capacitance temperature model 1, ngspice moves a junction's potential and
+    capacitance from 27 °C (``diotemp.c``, lines 93 to 95 and 109 to 111), and jolty
+    from the nominal temperature `Tn`, as the guide's departures state. ngspice computes
+    jolty's `φ - TPB · (T - Tn)` from `φ + TPB · (Tn - 27 °C)` and `TPB`, and its
+    `C · (1 + CTA · (T - Tn))` from `C · k` and `CTA / k`, with
+    `k = 1 + CTA · (27 °C - Tn)`.
+    """
+    defaulted = _defaulted("diode", values)
+    nominal = _number("diode", defaulted, "nominal_temperature")
+    shift = nominal - _core.REFERENCE_TEMPERATURE
+    if defaulted["capacitance_temperature_model"] != 1 or shift == 0:
+        return values
+    moved = dict(values)
+    for potential, falling, capacitance, coefficient in _LINEAR_CAPACITANCES:
+        fall = _number("diode", defaulted, falling)
+        slope = _number("diode", defaulted, coefficient)
+        if fall != 0:
+            moved[potential] = _number("diode", defaulted, potential) + fall * shift
+        if slope != 0:
+            factor = 1 - slope * shift
+            moved[capacitance] = _number("diode", defaulted, capacitance) * factor
+            moved[coefficient] = slope / factor
+    return moved
+
+
+_SIDEWALL: Final = frozenset(
+    jolty for jolty, _ in models.DIODE.values() if jolty.startswith("sidewall")
+)
+"""A diode's parameters of its sidewall junction."""
+
+
+def _diode_sidewall(
+    values: dict[str, JsonValue],
+) -> tuple[dict[str, JsonValue], dict[str, tuple[str, float]]]:
+    """A diode's parameters as its card writes them, and its element's names.
+
+    A diode with a sidewall junction is written with a perimeter of 1, ``PJ=1``, as its
+    sidewall's parameters are already its perimeter's, and with the sidewall's emission
+    coefficient, ``NS``, given: ngspice's sidewall of none shares the junction's in its
+    current but scales its saturation current with temperature by 1 instead
+    (``diotemp.c``, lines 123 to 129), and breaks down at a voltage of its own the
+    element never sets (``dioload.c``, line 452), as the guide's departures state.
+    """
+    if not _SIDEWALL & values.keys():
+        return values, {}
+    emission = _defaulted("diode", values)["emission_coefficient"]
+    written = {"sidewall_emission_coefficient": emission, **values, "perimeter": 1.0}
+    return written, {"perimeter": ("pj", 1.0)}
 
 
 def _model_card(
@@ -612,6 +689,7 @@ _EXPRESSED: Final = frozenset(
     {
         "behavioral_voltage_source",
         "behavioral_current_source",
+        "behavioral_capacitor",
         "voltage_controlled_switch",
         "current_controlled_switch",
         "photocell",
@@ -687,6 +765,7 @@ _UNMOVED: Final = frozenset(
         "current_controlled_voltage_source",
         "behavioral_voltage_source",
         "behavioral_current_source",
+        "behavioral_capacitor",
     }
 )
 """The devices whose own temperature changes nothing."""
@@ -826,10 +905,16 @@ def _device(
             kind, card, parameters = _model_card(model, values, dialect)
             lines.append(f".model M{instance.name} {kind}({card})")
             value = f"M{instance.name} {parameters}".rstrip()
-        case "behavioral_voltage_source" | "behavioral_current_source":
+        case (
+            "behavioral_voltage_source"
+            | "behavioral_current_source"
+            | "behavioral_capacitor"
+        ):
             expression, senses = _behavior(instance, ground)
             lines.extend(senses)
-            output = "V" if model == "behavioral_voltage_source" else "I"
+            # ngspice makes a capacitor of a charge `Q=` a current of its rate of
+            # change (`inpcom.c`, lines 6937 to 6950).
+            output = _BEHAVIORAL_OUTPUTS[model]
             value = f"{output}={{{expression}}}"
         case "voltage_controlled_switch" | "current_controlled_switch":
             nodes, value = _switch(instance, model, values, nodes.split(), lines)
@@ -860,6 +945,14 @@ def _device(
     lines.append(f"{element(instance, dialect)} {nodes} {value}{own}")
     return lines
 
+
+_BEHAVIORAL_OUTPUTS: Final = {
+    "behavioral_voltage_source": "V",
+    "behavioral_current_source": "I",
+    "behavioral_capacitor": "Q",
+}
+"""The keyword of each behavioral device's expression in SPICE: a source's voltage or
+current, or a capacitor's charge."""
 
 _KEYWORDED: Final = {"transmission_line": TRANSMISSION_LINE}
 """The elements SPICE writes the values of as keywords: each parameter by its SPICE

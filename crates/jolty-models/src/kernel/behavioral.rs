@@ -118,12 +118,14 @@ impl Behavior {
     }
 }
 
-/// The parameters of a [`BehavioralVoltageSource`] or a [`BehavioralCurrentSource`].
+/// The parameters of a [`BehavioralVoltageSource`], a [`BehavioralCurrentSource`] or a
+/// [`BehavioralCapacitor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BehavioralParameters {
-    /// What the source's output follows: an expression of the voltages of the terminals
-    /// it reads, of the currents through sensing ports of its own, and of time.
+    /// What the device's output follows, a capacitor's its charge: an expression of the
+    /// voltages of the terminals it reads, of the currents through sensing ports of its
+    /// own, and of time.
     #[schemars(with = "String")]
     pub expression: Behavior,
 }
@@ -136,6 +138,9 @@ pub struct BehavioralParameters {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BehavioralShape {
     rows: Vec<(usize, f64)>,
+    /// Whether the expression's value is a charge in its rows, and its derivatives
+    /// capacitances, as a capacitor's, rather than a current or a voltage.
+    stored: bool,
     reads: Vec<Read>,
     ports: Vec<CurrentBranch>,
     entries: Vec<Vec<(usize, f64)>>,
@@ -168,11 +173,12 @@ struct Room {
 
 impl BehavioralShape {
     /// The shape of a source of `behavior`, whose expression enters each of `rows` with
-    /// its factor, after `branch`, a voltage source's own, claimed in `layout`.
+    /// its factor, as a charge where it is `stored`, after `branch`, a voltage source's
+    /// own, claimed in `layout`.
     fn new(
         behavior: &Behavior,
         layout: &mut Layout,
-        (rows, branch): (Vec<(usize, f64)>, Option<CurrentBranch>),
+        (rows, stored, branch): (Vec<(usize, f64)>, bool, Option<CurrentBranch>),
     ) -> Self {
         let ports: Vec<CurrentBranch> = behavior
             .ports
@@ -211,6 +217,7 @@ impl BehavioralShape {
             .collect();
         Self {
             rows,
+            stored,
             reads,
             ports,
             entries,
@@ -237,11 +244,21 @@ impl BehavioralShape {
             stamp.mark_limited();
         }
         for &(row, factor) in &self.rows {
-            stamp.add_residual(row, R::constant(factor * value));
+            let value = R::constant(factor * value);
+            if self.stored {
+                stamp.add_charge(row, value);
+            } else {
+                stamp.add_residual(row, value);
+            }
         }
         for (entries, derivative) in self.entries.iter().zip(&room.gradient) {
             for &(entry, factor) in entries {
-                stamp.add_conductance(entry, R::constant(factor * derivative));
+                let derivative = R::constant(factor * derivative);
+                if self.stored {
+                    stamp.add_capacitance(entry, derivative);
+                } else {
+                    stamp.add_conductance(entry, derivative);
+                }
             }
         }
         for port in &self.ports {
@@ -330,7 +347,7 @@ impl Kernel for BehavioralCurrentSource {
         Ok(BehavioralShape::new(
             &parameters.expression,
             layout,
-            (rows, None),
+            (rows, false, None),
         ))
     }
 
@@ -395,7 +412,7 @@ impl Kernel for BehavioralVoltageSource {
         Ok(BehavioralShape::new(
             &parameters.expression,
             layout,
-            (rows, Some(branch)),
+            (rows, false, Some(branch)),
         ))
     }
 
@@ -415,6 +432,73 @@ impl Kernel for BehavioralVoltageSource {
             let voltage = branch.voltage(at);
             branch.add(at, stamp, R::constant(voltage));
         }
+        shape.add(expression, memory, at, stamp);
+    }
+
+    fn choices<R: Real>(
+        shape: &BehavioralShape,
+        expression: &Expression,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        found: &mut Vec<Choice>,
+    ) {
+        shape.choices(expression, memory, at, found);
+    }
+}
+
+/// A capacitor whose charge follows an expression of the voltages and currents it reads:
+/// see [`Behavior`].
+///
+/// It holds the expression's value as its charge, on `positive` against `negative`: its
+/// current, from `positive` through the capacitor to `negative`, is that charge's rate
+/// of change, and its capacitances are the expression's exact derivatives. Its charge is
+/// a function of what it reads, so it conserves charge. It is open at DC.
+#[derive(Debug, Clone, Copy)]
+pub struct BehavioralCapacitor;
+
+impl Kernel for BehavioralCapacitor {
+    const NAME: &'static str = "behavioral_capacitor";
+    type Parameters<R: Real> = BehavioralParameters;
+    type Shape = BehavioralShape;
+    type Prepared<R: Real> = Expression;
+    type Memory = BehavioralMemory;
+
+    fn interface<R: Real>(parameters: &BehavioralParameters) -> Interface {
+        parameters.expression.interface(BranchKind::Capacitive)
+    }
+
+    fn prepare<R: Real>(
+        parameters: &BehavioralParameters,
+        _: R,
+    ) -> Result<Expression, ParameterError> {
+        Ok(parameters.expression.expression.clone())
+    }
+
+    fn layout<R: Real>(
+        parameters: &BehavioralParameters,
+        _: &Expression,
+        layout: &mut Layout,
+    ) -> Result<BehavioralShape, ParameterError> {
+        let [positive, negative] = OUTPUT;
+        let rows = vec![(positive, 1.0), (negative, -1.0)];
+        Ok(BehavioralShape::new(
+            &parameters.expression,
+            layout,
+            (rows, true, None),
+        ))
+    }
+
+    fn memory<R: Real>(shape: &BehavioralShape, expression: &Expression) -> BehavioralMemory {
+        shape.memory(expression)
+    }
+
+    fn evaluate<R: Real>(
+        shape: &BehavioralShape,
+        expression: &Expression,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
         shape.add(expression, memory, at, stamp);
     }
 
@@ -480,6 +564,26 @@ mod tests {
     }
 
     #[test]
+    fn a_capacitor_holds_its_expression_as_its_charge() {
+        let mut bench = Bench::new::<BehavioralCapacitor>(&parameters(
+            "1e-12 * v(positive, negative) + 1e-13 * v(positive, negative) ^ 2",
+        ));
+        let evaluation = bench.evaluate(&[2.0, 0.5]);
+        let (charge, capacitance) = (1e-12 * 1.5 + 1e-13 * 2.25, 1e-12 + 2e-13 * 1.5);
+        assert_close(&evaluation.residual, &[0.0, 0.0]);
+        assert_close(&evaluation.charge, &[charge, -charge]);
+        assert_close(&evaluation.capacitance[0], &[capacitance, -capacitance]);
+        assert_close(&evaluation.conductance[0], &[0.0, 0.0]);
+        let interface = BehavioralCapacitor::interface::<f64>(
+            &serde_json::from_str(&parameters("1e-12 * v(a)")).expect("valid"),
+        );
+        assert_eq!(
+            interface.branches[0],
+            Branch::new(0, 1, BranchKind::Capacitive)
+        );
+    }
+
+    #[test]
     fn rejects_invalid_expressions() {
         let error = Bench::try_new::<BehavioralCurrentSource>(&parameters("1 +"))
             .expect_err("an invalid expression");
@@ -514,6 +618,11 @@ mod tests {
             assert_jacobians_match::<BehavioralVoltageSource>(
                 &parameters(expression),
                 &[p, n, a, b, s, s / 2.0, current / 3.0, current],
+            );
+            // A capacitor's capacitances are its charge's derivatives.
+            assert_jacobians_match::<BehavioralCapacitor>(
+                &parameters(expression),
+                &[p, n, a, b, s, s / 2.0, current],
             );
         }
     }

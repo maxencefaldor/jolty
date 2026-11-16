@@ -10,18 +10,24 @@
 
 // SPICE's reference temperature, 27 C, in kelvins.
 `define REFERENCE (`P_CELSIUS0 + 27)
-// Silicon's band gap at the temperature t, in electronvolts, as SPICE models it.
-`define BAND_GAP(t) (-((t) * 7.02e-4 * (t) / ((t) + 1108) - 1.16))
+// A band gap at the temperature t by Varshni's law, of gap g at 0 K, alpha a and beta b,
+// in electronvolts.
+`define VARSHNI(t, g, a, b) (-((t) * (a) * (t) / ((t) + (b)) - (g)))
 // How far a junction's built-in potential at the temperature t lies from the reference
-// temperature's, through silicon's band gap and intrinsic concentration: SPICE's pbfact.
-`define POTENTIAL_SHIFT(t) ((t) * `P_K / `P_Q * -2 * (ln((t) / `REFERENCE) * 1.5 + (-`BAND_GAP(t) / ((t) * (2 * `P_K)) + 1.1150877 / (2 * `P_K * `REFERENCE)) * `P_Q))
+// temperature's, through the band gap e there and the intrinsic concentration: SPICE's
+// pbfact.
+`define POTENTIAL_SHIFT(t, e) ((t) * `P_K / `P_Q * -2 * (ln((t) / `REFERENCE) * 1.5 + (-(e) / ((t) * (2 * `P_K)) + 1.1150877 / (2 * `P_K * `REFERENCE)) * `P_Q))
+// The smallest current a knee current softens, in amperes, ngspice's.
+`define KNEE_FLOOR 1e-18
 
 module diode(anode, cathode);
     inout anode, cathode;
-    electrical anode, cathode, junction;
+    electrical anode, cathode, junction, sidewall;
     // The series resistance's current, an unknown of its own below jolty's small
     // resistance.
     branch (anode, junction) junction_current;
+    // The sidewall's own series resistance's current alike.
+    branch (anode, sidewall) sidewall_current;
 
     (* desc = "The saturation current", units = "A" *)
     parameter real saturation_current = 1e-14 from (0:inf);
@@ -39,18 +45,82 @@ module diode(anode, cathode);
     parameter real depletion_coefficient = 0.5 from [0:1);
     (* desc = "The transit time", units = "s" *)
     parameter real transit_time = 0 from [0:inf);
+    (* desc = "The forward knee current; without it, none", units = "A" *)
+    parameter real forward_knee_current = 1 from (0:inf);
+    (* desc = "The reverse knee current; without it, none", units = "A" *)
+    parameter real reverse_knee_current = 1 from (0:inf);
+    (* desc = "The saturation current of the recombination; without it, none", units = "A" *)
+    parameter real recombination_saturation_current = 0 from [0:inf);
+    (* desc = "The recombination current's emission coefficient" *)
+    parameter real recombination_emission_coefficient = 2 from (0:inf);
+    (* desc = "The sidewall junction's saturation current", units = "A" *)
+    parameter real sidewall_saturation_current = 0 from [0:inf);
+    (* desc = "The sidewall junction's emission coefficient, the emission coefficient by default" *)
+    parameter real sidewall_emission_coefficient = emission_coefficient from (0:inf);
+    (* desc = "The sidewall junction's own series resistance; without it, the sidewall sits beside the junction", units = "ohms" *)
+    parameter real sidewall_series_resistance = 0 from [0:inf);
+    (* desc = "The sidewall junction's zero-bias capacitance", units = "F" *)
+    parameter real sidewall_junction_capacitance = 0 from [0:inf);
+    (* desc = "The sidewall junction's potential", units = "V" *)
+    parameter real sidewall_junction_potential = 1 from (0:inf);
+    (* desc = "The sidewall junction's grading coefficient" *)
+    parameter real sidewall_grading_coefficient = 0.33 from [0:1);
+    (* desc = "The fraction of the sidewall junction's potential above which its depletion capacitance is extended linearly" *)
+    parameter real sidewall_depletion_coefficient = 0.5 from [0:1);
+    (* desc = "The sidewall junction's forward knee current; without it, none", units = "A" *)
+    parameter real sidewall_forward_knee_current = 1 from (0:inf);
+    (* desc = "The tunneling saturation current", units = "A" *)
+    parameter real tunneling_saturation_current = 0 from [0:inf);
+    (* desc = "The sidewall's tunneling saturation current", units = "A" *)
+    parameter real sidewall_tunneling_saturation_current = 0 from [0:inf);
+    (* desc = "The tunneling current's emission coefficient" *)
+    parameter real tunneling_emission_coefficient = 30 from (0:inf);
+    (* desc = "The exponent of the temperature ratio in the tunneling saturation currents' scaling" *)
+    parameter real tunneling_saturation_current_temperature_exponent = 3;
+    (* desc = "The factor of the energy gap in the tunneling saturation currents' scaling" *)
+    parameter real tunneling_energy_gap_factor = 1;
     (* desc = "The reverse breakdown voltage; without it, the junction never breaks down", units = "V" *)
-    parameter real breakdown_voltage = 1 from (0:inf);
+    parameter real breakdown_voltage = 1 from [0:inf);
     (* desc = "The current at the breakdown voltage", units = "A" *)
-    parameter real breakdown_current = 1e-3 from (0:inf);
+    parameter real breakdown_current = 1e-3 from [0:inf);
     (* desc = "The breakdown emission coefficient, the emission coefficient by default" *)
     parameter real breakdown_emission_coefficient = emission_coefficient from (0:inf);
-    (* desc = "How fast the breakdown voltage falls with temperature", units = "V/K" *)
+    (* desc = "How fast the breakdown voltage falls with temperature, in V/K at temperature model 0 and 1/K at 1 and 2" *)
     parameter real breakdown_temperature_coefficient = 0;
-    (* desc = "The energy gap that scales the saturation current with temperature, silicon's by default", units = "V" *)
-    parameter real energy_gap = 1.11 from [0:inf);
-    (* desc = "The exponent of the temperature ratio in the saturation current's scaling" *)
+    (* desc = "How the saturation currents and the band gap follow the temperature, SPICE's TLEV" *)
+    parameter integer temperature_model = 0 from [0:2];
+    (* desc = "How the junction capacitances and potentials follow the temperature, SPICE's TLEVC" *)
+    parameter integer capacitance_temperature_model = 0 from [0:1];
+    (* desc = "The energy gap that scales the saturation currents with temperature, 1.11 by default, silicon's, and 1.16 at temperature model 2", units = "V" *)
+    // Its range is checked in the analog block: the compiler checks no range of a
+    // parameter whose default is conditional yet.
+    parameter real energy_gap = temperature_model == 2 ? 1.16 : 1.11;
+    (* desc = "Varshni's alpha of the energy gap at temperature model 2", units = "V/K" *)
+    parameter real energy_gap_alpha = 7.02e-4;
+    (* desc = "Varshni's beta of the energy gap at temperature model 2", units = "K" *)
+    parameter real energy_gap_beta = 1108 from [0:inf);
+    (* desc = "The exponent of the temperature ratio in the saturation currents' scaling" *)
     parameter real saturation_current_temperature_exponent = 3;
+    (* desc = "The junction capacitance's linear temperature coefficient at capacitance temperature model 1", units = "1/K" *)
+    parameter real junction_capacitance_temperature_coefficient = 0;
+    (* desc = "The sidewall junction capacitance's linear temperature coefficient at capacitance temperature model 1", units = "1/K" *)
+    parameter real sidewall_junction_capacitance_temperature_coefficient = 0;
+    (* desc = "How fast the junction potential falls with temperature at capacitance temperature model 1", units = "V/K" *)
+    parameter real junction_potential_temperature_coefficient = 0;
+    (* desc = "How fast the sidewall junction potential falls with temperature at capacitance temperature model 1", units = "V/K" *)
+    parameter real sidewall_junction_potential_temperature_coefficient = 0;
+    (* desc = "The series resistances' linear temperature coefficient", units = "1/K" *)
+    parameter real series_resistance_temperature_coefficient = 0;
+    (* desc = "The series resistances' quadratic temperature coefficient", units = "1/K^2" *)
+    parameter real series_resistance_quadratic_temperature_coefficient = 0;
+    (* desc = "The transit time's linear temperature coefficient", units = "1/K" *)
+    parameter real transit_time_temperature_coefficient = 0;
+    (* desc = "The transit time's quadratic temperature coefficient", units = "1/K^2" *)
+    parameter real transit_time_quadratic_temperature_coefficient = 0;
+    (* desc = "The grading coefficient's linear temperature coefficient", units = "1/K" *)
+    parameter real grading_coefficient_temperature_coefficient = 0;
+    (* desc = "The grading coefficient's quadratic temperature coefficient", units = "1/K^2" *)
+    parameter real grading_coefficient_quadratic_temperature_coefficient = 0;
     (* desc = "The temperature the parameters were measured at, 27 C by default", units = "K" *)
     parameter real nominal_temperature = `P_CELSIUS0 + 27 from (0:inf);
     (* desc = "The flicker noise coefficient KF" *)
@@ -58,11 +128,17 @@ module diode(anode, cathode);
     (* desc = "The power of the current in the flicker noise, AF" *)
     parameter real flicker_exponent = 1 from (0:inf);
 
-    real vt, saturation, slope, critical, intrinsic, potential, capacitance;
-    real threshold, charge_at_threshold, divisor, offset;
-    real breakdown_slope, unmatched, matched;
-    integer breakdown, iteration, settled;
-    real vd, id, e, ratio, qd;
+    real vt, nominal_vt, ratio, difference, activation_scale, gap0, alpha, beta, activation;
+    real resistances, resistance, sidewall_resistance, transit, grading;
+    real saturation, sidewall_saturation, slope, sidewall_slope, critical, sidewall_critical;
+    real recombination, recombination_slope, half_grading, tunneling_scaling, tunneling_slope;
+    real tunneling, sidewall_tunneling;
+    real intrinsic, potential, capacitance, threshold, charge_at_threshold, divisor, offset;
+    real sidewall_intrinsic, sidewall_potential, sidewall_capacitance, sidewall_threshold;
+    real sidewall_charge_at_threshold, sidewall_divisor, sidewall_offset;
+    real breakdown_slope, unmatched, matched, fall;
+    integer breaks, sidewall_breaks, separate, varying, iteration, settled;
+    real vd, vs, vr, id, isw, cube, remaining, qd, qs;
 
     // SPICE's limiting of a junction voltage's step from old to new, about the breakdown
     // voltage when the junction nears it: the new voltage itself when it needs none.
@@ -111,70 +187,209 @@ module diode(anode, cathode);
     analog begin
         if ($temperature <= 0)
             $error("a junction's temperature lies above 0 K, not at %g K", $temperature);
+        if (energy_gap < 0)
+            $error("energy_gap must be at least 0, not %g", energy_gap);
         vt = $temperature * `P_K / `P_Q;
-        saturation = saturation_current * exp((($temperature / nominal_temperature - 1) * energy_gap / vt + saturation_current_temperature_exponent * ln($temperature / nominal_temperature)) / emission_coefficient);
-        intrinsic = (junction_potential - `POTENTIAL_SHIFT(nominal_temperature)) / (nominal_temperature / `REFERENCE);
-        potential = intrinsic * ($temperature / `REFERENCE) + `POTENTIAL_SHIFT($temperature);
-        capacitance = junction_capacitance * (grading_coefficient * (($temperature - `REFERENCE) * 4e-4 - (potential - intrinsic) / intrinsic) + 1) / (grading_coefficient * ((nominal_temperature - `REFERENCE) * 4e-4 - (junction_potential - intrinsic) / intrinsic) + 1);
-        // ngspice holds the depletion threshold at or below the junction potential.
-        potential = min(potential, 1 / depletion_coefficient);
-        slope = emission_coefficient * vt;
-        critical = slope * ln(slope / (`M_SQRT2 * saturation));
-        threshold = depletion_coefficient * potential;
-        charge_at_threshold = potential * (1 - pow(1 - depletion_coefficient, 1 - grading_coefficient)) / (1 - grading_coefficient);
-        divisor = pow(1 - depletion_coefficient, grading_coefficient + 1);
-        offset = 1 - depletion_coefficient * (grading_coefficient + 1);
+        ratio = $temperature / nominal_temperature;
+        difference = $temperature - nominal_temperature;
+        separate = $param_given(sidewall_series_resistance);
+        resistances = (series_resistance_temperature_coefficient + series_resistance_quadratic_temperature_coefficient * difference) * difference + 1;
+        resistance = series_resistance * resistances;
+        sidewall_resistance = sidewall_series_resistance * resistances;
+        transit = (transit_time_temperature_coefficient + transit_time_quadratic_temperature_coefficient * difference) * difference + 1;
 
-        // ngspice moves the breakdown voltage so that the current there is the breakdown
-        // current, and leaves it where a breakdown current too small for the saturation
-        // current cannot be met.
-        breakdown = $param_given(breakdown_voltage);
+        // The band gap: Varshni's law of the energy gap at temperature model 2, which the
+        // saturation currents then follow too, and silicon's otherwise.
+        varying = temperature_model == 2;
+        if (varying != 0) begin
+            gap0 = energy_gap;
+            alpha = energy_gap_alpha;
+            beta = energy_gap_beta;
+            nominal_vt = nominal_temperature * `P_K / `P_Q;
+            activation = `VARSHNI(nominal_temperature, gap0, alpha, beta) / nominal_vt - `VARSHNI($temperature, gap0, alpha, beta) / vt;
+        end else begin
+            gap0 = 1.16;
+            alpha = 7.02e-4;
+            beta = 1108;
+            activation = (ratio - 1) * energy_gap / vt;
+        end
+        saturation = saturation_current * exp((1 * activation + saturation_current_temperature_exponent * ln(ratio)) / emission_coefficient);
+        sidewall_saturation = sidewall_saturation_current * exp((1 * activation + saturation_current_temperature_exponent * ln(ratio)) / sidewall_emission_coefficient);
+        grading = grading_coefficient * ((grading_coefficient_temperature_coefficient + grading_coefficient_quadratic_temperature_coefficient * difference) * difference + 1);
+
+        // The junctions' potentials and capacitances.
+        if (capacitance_temperature_model == 0) begin
+            intrinsic = (junction_potential - `POTENTIAL_SHIFT(nominal_temperature, `VARSHNI(nominal_temperature, gap0, alpha, beta))) / (nominal_temperature / `REFERENCE);
+            potential = intrinsic * ($temperature / `REFERENCE) + `POTENTIAL_SHIFT($temperature, `VARSHNI($temperature, gap0, alpha, beta));
+            capacitance = junction_capacitance * (grading * (($temperature - `REFERENCE) * 4e-4 - (potential - intrinsic) / intrinsic) + 1) / (grading * ((nominal_temperature - `REFERENCE) * 4e-4 - (junction_potential - intrinsic) / intrinsic) + 1);
+            sidewall_intrinsic = (sidewall_junction_potential - `POTENTIAL_SHIFT(nominal_temperature, `VARSHNI(nominal_temperature, gap0, alpha, beta))) / (nominal_temperature / `REFERENCE);
+            sidewall_potential = sidewall_intrinsic * ($temperature / `REFERENCE) + `POTENTIAL_SHIFT($temperature, `VARSHNI($temperature, gap0, alpha, beta));
+            sidewall_capacitance = sidewall_junction_capacitance * (sidewall_grading_coefficient * (($temperature - `REFERENCE) * 4e-4 - (sidewall_potential - sidewall_intrinsic) / sidewall_intrinsic) + 1) / (sidewall_grading_coefficient * ((nominal_temperature - `REFERENCE) * 4e-4 - (sidewall_junction_potential - sidewall_intrinsic) / sidewall_intrinsic) + 1);
+        end else begin
+            potential = junction_potential - junction_potential_temperature_coefficient * difference;
+            capacitance = junction_capacitance * (junction_capacitance_temperature_coefficient * difference + 1);
+            sidewall_potential = sidewall_junction_potential - sidewall_junction_potential_temperature_coefficient * difference;
+            sidewall_capacitance = sidewall_junction_capacitance * (sidewall_junction_capacitance_temperature_coefficient * difference + 1);
+        end
+        if (potential <= 0)
+            $error("junction_potential at the temperature must be positive, not %g", potential);
+        if (sidewall_potential <= 0)
+            $error("sidewall_junction_potential at the temperature must be positive, not %g", sidewall_potential);
+        threshold = depletion_coefficient * potential;
+        charge_at_threshold = potential * (1 - pow(1 - depletion_coefficient, 1 - grading)) / (1 - grading);
+        divisor = pow(1 - depletion_coefficient, grading + 1);
+        offset = 1 - depletion_coefficient * (grading + 1);
+        sidewall_threshold = sidewall_depletion_coefficient * sidewall_potential;
+        sidewall_charge_at_threshold = sidewall_potential * (1 - pow(1 - sidewall_depletion_coefficient, 1 - sidewall_grading_coefficient)) / (1 - sidewall_grading_coefficient);
+        sidewall_divisor = pow(1 - sidewall_depletion_coefficient, sidewall_grading_coefficient + 1);
+        sidewall_offset = 1 - sidewall_depletion_coefficient * (sidewall_grading_coefficient + 1);
+
+        slope = emission_coefficient * vt;
+        sidewall_slope = sidewall_emission_coefficient * vt;
+        // ngspice limits the junction and the sidewall beside it by their saturation
+        // currents' sum.
+        if (separate != 0) begin
+            critical = slope * ln(slope / (`M_SQRT2 * saturation));
+            sidewall_critical = sidewall_slope * ln(sidewall_slope / (`M_SQRT2 * sidewall_saturation));
+        end else
+            critical = slope * ln(slope / (`M_SQRT2 * (saturation + sidewall_saturation)));
+
+        // The recombination and tunneling currents' saturation currents.
+        if ($param_given(recombination_saturation_current)) begin
+            recombination = recombination_saturation_current * exp((1 * activation + saturation_current_temperature_exponent * ln(ratio)) / recombination_emission_coefficient);
+            recombination_slope = recombination_emission_coefficient * vt;
+            half_grading = grading * 0.5;
+        end
+        if (tunneling_saturation_current > 0 || sidewall_tunneling_saturation_current > 0) begin
+            tunneling_scaling = exp((tunneling_energy_gap_factor * activation + tunneling_saturation_current_temperature_exponent * ln(ratio)) / tunneling_emission_coefficient);
+            tunneling_slope = tunneling_emission_coefficient * vt;
+            tunneling = tunneling_saturation_current * tunneling_scaling;
+            sidewall_tunneling = sidewall_tunneling_saturation_current * tunneling_scaling;
+        end
+
+        // ngspice moves the breakdown voltage so that the current of the junction and the
+        // sidewall together there is the breakdown current, and leaves it where a
+        // breakdown current too small for their saturation current cannot be met.
+        breaks = $param_given(breakdown_voltage);
         breakdown_slope = breakdown_emission_coefficient * vt;
-        matched = breakdown_voltage - breakdown_temperature_coefficient * ($temperature - nominal_temperature);
-        if (breakdown != 0 && breakdown_current >= saturation * matched / vt) begin
+        fall = breakdown_temperature_coefficient * difference;
+        if (temperature_model == 0)
+            matched = breakdown_voltage - fall;
+        else
+            matched = breakdown_voltage * -(fall - 1);
+        if (breaks != 0 && breakdown_current >= (saturation + sidewall_saturation) * matched / vt) begin
             unmatched = matched;
-            matched = unmatched - breakdown_slope * ln(breakdown_current / saturation + 1);
+            matched = unmatched - breakdown_slope * ln(breakdown_current / (saturation + sidewall_saturation) + 1);
             iteration = 0;
             settled = 0;
             while (iteration < 25 && settled == 0) begin
-                matched = unmatched - breakdown_slope * ln(breakdown_current / saturation + 1 - matched / vt);
-                settled = abs(saturation * (exp((unmatched - matched) / breakdown_slope) - 1 + matched / vt) - breakdown_current) <= 1e-12 * breakdown_current;
+                matched = unmatched - breakdown_slope * ln(breakdown_current / (saturation + sidewall_saturation) + 1 - matched / vt);
+                settled = abs((saturation + sidewall_saturation) * (exp((unmatched - matched) / breakdown_slope) - 1 + matched / vt) - breakdown_current) <= 1e-12 * breakdown_current;
                 iteration = iteration + 1;
             end
         end
+        // A sidewall behind a resistance of its own does not break down.
+        sidewall_breaks = breaks != 0 && separate == 0;
 
         if (series_resistance == 0)
             V(anode, junction) <+ 0;
         else if (series_resistance < $simparam("small_resistance")) begin
-            V(junction_current) <+ series_resistance * I(junction_current);
-            V(junction_current) <+ white_noise(4 * `P_K * $temperature * abs(series_resistance), "series thermal");
+            V(junction_current) <+ resistance * I(junction_current);
+            V(junction_current) <+ white_noise(4 * `P_K * $temperature * abs(resistance), "series thermal");
         end else begin
-            I(anode, junction) <+ 1 / series_resistance * V(anode, junction);
-            I(anode, junction) <+ white_noise(4 * `P_K * $temperature * abs(1 / series_resistance), "series thermal");
+            I(anode, junction) <+ 1 / resistance * V(anode, junction);
+            I(anode, junction) <+ white_noise(4 * `P_K * $temperature * abs(1 / resistance), "series thermal");
         end
 
-        vd = $limit(V(junction, cathode), junction_limit, slope, critical, breakdown, matched, breakdown_slope);
-        if (breakdown != 0 && vd < -3 * slope && vd < -matched) begin
-            e = exp(-(matched + vd) / breakdown_slope);
-            id = -saturation * e;
-        end else if (vd >= -(slope * 3))
+        // The junction.
+        vd = $limit(V(junction, cathode), junction_limit, slope, critical, breaks, matched, breakdown_slope);
+        if (breaks != 0 && vd < -3 * slope && vd < -matched)
+            id = -saturation * exp(-(matched + vd) / breakdown_slope);
+        else if (vd >= -(slope * 3))
             id = saturation * (exp(vd / slope) - 1);
         else begin
-            ratio = slope * 3 / (vd * `M_E);
-            id = -saturation * (ratio * ratio * ratio + 1);
+            cube = slope * 3 / (vd * `M_E);
+            id = -saturation * (cube * cube * cube + 1);
         end
+        if ($param_given(recombination_saturation_current)) begin
+            if (vd >= slope * -3)
+                vr = vd;
+            else
+                vr = slope * -3;
+            remaining = -(vr / potential - 1);
+            id = id + recombination * (exp(vr / recombination_slope) - 1) * pow(remaining * remaining + 0.005, half_grading);
+        end
+        if (tunneling > 0)
+            id = id - tunneling * (exp(-vd / tunneling_slope) - 1);
+        if (vd >= -3 * slope) begin
+            if ($param_given(forward_knee_current) && id > `KNEE_FLOOR)
+                id = id / (sqrt(id / forward_knee_current) + 1);
+        end else if ($param_given(reverse_knee_current) && id < -`KNEE_FLOOR)
+            id = id / (sqrt(-id / reverse_knee_current) + 1);
         if (capacitance > 0) begin
             if (vd < threshold) begin
                 // 1 − (1 − v/φ)^(1−m) through jolty's `expm1` and `ln1p`, which keep its
                 // digits near zero volts, where the difference from 1 loses them.
-                qd = capacitance * potential * -expm1((1 - grading_coefficient) * ln1p(-(vd / potential))) / (1 - grading_coefficient);
+                qd = capacitance * potential * -expm1((1 - grading) * ln1p(-(vd / potential))) / (1 - grading);
             end else
-                qd = capacitance * (charge_at_threshold + (offset * (vd - threshold) + grading_coefficient / (potential * 2) * (vd * vd - threshold * threshold)) / divisor);
+                qd = capacitance * (charge_at_threshold + (offset * (vd - threshold) + grading / (potential * 2) * (vd * vd - threshold * threshold)) / divisor);
         end
-        I(junction, cathode) <+ id + $simparam("gmin") * vd;
-        I(junction, cathode) <+ ddt(qd + transit_time * id);
-        I(junction, cathode) <+ white_noise(2 * `P_Q * abs(id), "shot");
-        if (flicker_coefficient > 0)
-            I(junction, cathode) <+ flicker_noise(flicker_coefficient * pow(abs(id), flicker_exponent), 1, "flicker");
+
+        // The sidewall, at the junction's voltage unless it has a resistance of its own.
+        if (separate != 0) begin
+            vs = $limit(V(sidewall, cathode), junction_limit, sidewall_slope, sidewall_critical, 0, 0, 0);
+        end else begin
+            V(sidewall, junction) <+ 0;
+            vs = vd;
+        end
+        isw = 0;
+        if (sidewall_saturation > 0) begin
+            if (sidewall_breaks != 0 && vs < -3 * sidewall_slope && vs < -matched)
+                isw = -sidewall_saturation * exp(-(matched + vs) / breakdown_slope);
+            else if (vs >= -(sidewall_slope * 3))
+                isw = sidewall_saturation * (exp(vs / sidewall_slope) - 1);
+            else begin
+                cube = sidewall_slope * 3 / (vs * `M_E);
+                isw = -sidewall_saturation * (cube * cube * cube + 1);
+            end
+        end
+        if (sidewall_tunneling > 0)
+            isw = isw - sidewall_tunneling * (exp(-vs / tunneling_slope) - 1);
+        if ($param_given(sidewall_forward_knee_current) && isw > `KNEE_FLOOR)
+            isw = isw / (sqrt(isw / sidewall_forward_knee_current) + 1);
+        if (sidewall_capacitance > 0) begin
+            if (vs < sidewall_threshold)
+                qs = sidewall_capacitance * sidewall_potential * -expm1((1 - sidewall_grading_coefficient) * ln1p(-(vs / sidewall_potential))) / (1 - sidewall_grading_coefficient);
+            else
+                qs = sidewall_capacitance * (sidewall_charge_at_threshold + (sidewall_offset * (vs - sidewall_threshold) + sidewall_grading_coefficient / (sidewall_potential * 2) * (vs * vs - sidewall_threshold * sidewall_threshold)) / sidewall_divisor);
+        end
+
+        if (separate != 0) begin
+            I(junction, cathode) <+ id + $simparam("gmin") * vd;
+            I(junction, cathode) <+ ddt(qd + transit_time * transit * id);
+            I(junction, cathode) <+ white_noise(2 * `P_Q * abs(id), "shot");
+            if (flicker_coefficient > 0)
+                I(junction, cathode) <+ flicker_noise(flicker_coefficient * pow(abs(id), flicker_exponent), 1, "flicker");
+            if (sidewall_series_resistance == 0)
+                V(anode, sidewall) <+ 0;
+            else if (sidewall_series_resistance < $simparam("small_resistance")) begin
+                V(sidewall_current) <+ sidewall_resistance * I(sidewall_current);
+                V(sidewall_current) <+ white_noise(4 * `P_K * $temperature * abs(sidewall_resistance), "sidewall series thermal");
+            end else begin
+                I(anode, sidewall) <+ 1 / sidewall_resistance * V(anode, sidewall);
+                I(anode, sidewall) <+ white_noise(4 * `P_K * $temperature * abs(1 / sidewall_resistance), "sidewall series thermal");
+            end
+            I(sidewall, cathode) <+ isw + $simparam("gmin") * vs;
+            I(sidewall, cathode) <+ ddt(qs);
+            I(sidewall, cathode) <+ white_noise(2 * `P_Q * abs(isw), "sidewall shot");
+            if (flicker_coefficient > 0)
+                I(sidewall, cathode) <+ flicker_noise(flicker_coefficient * pow(abs(isw), flicker_exponent), 1, "sidewall flicker");
+        end else begin
+            I(junction, cathode) <+ id + isw + $simparam("gmin") * vd;
+            I(junction, cathode) <+ ddt(qd + qs + transit_time * transit * (id + isw));
+            I(junction, cathode) <+ white_noise(2 * `P_Q * abs(id + isw), "shot");
+            if (flicker_coefficient > 0)
+                I(junction, cathode) <+ flicker_noise(flicker_coefficient * pow(abs(id + isw), flicker_exponent), 1, "flicker");
+        end
     end
 endmodule

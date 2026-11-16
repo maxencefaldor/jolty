@@ -135,9 +135,21 @@ impl Flicker {
     /// Appends the flicker noise of `current` between `nodes` to `sources`, unless the
     /// coefficient is zero.
     pub(crate) fn add(self, nodes: [Node; 2], current: f64, sources: &mut Vec<NoiseSource>) {
+        self.add_named("flicker", nodes, current, sources);
+    }
+
+    /// Appends the flicker noise of `current` between `nodes`, named `name`, to `sources`,
+    /// unless the coefficient is zero.
+    pub(crate) fn add_named(
+        self,
+        name: &'static str,
+        nodes: [Node; 2],
+        current: f64,
+        sources: &mut Vec<NoiseSource>,
+    ) {
         if self.coefficient > 0.0 {
             sources.push(NoiseSource::flicker(
-                "flicker",
+                name,
                 nodes,
                 self.coefficient,
                 self.power,

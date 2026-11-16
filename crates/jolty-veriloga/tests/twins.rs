@@ -8,6 +8,7 @@
 mod common;
 
 use common::Worst;
+use jolty_models::Gradient;
 use jolty_models::testing::{Bench, Rig, numbers};
 use jolty_models::{Differentiable, Input, Kernel, Layout, REFERENCE_TEMPERATURE};
 use jolty_veriloga::kernels::{diode, resistor};
@@ -41,6 +42,24 @@ fn compare<H: Kernel, C: Kernel>(parameters: &str, points: &[Vec<f64>], worst: &
     numbers(&value, &mut Vec::new(), &mut paths);
     let (hand, compiled) = (Differentiable::<H>::new(), Differentiable::<C>::new());
     let (hand, compiled) = (Rig { model: &hand }, Rig { model: &compiled });
+    // The compiled kernel may claim entries it never stamps, where a variable that one
+    // shape's branch reads depends on a probe in another shape alone: the conductances
+    // are compared by their places in the matrix, an entry one claims alone zero.
+    let places = [hand.positions(&object), compiled.positions(&object)];
+    let mut union: Vec<(usize, usize)> = places.concat();
+    union.sort_unstable();
+    union.dedup();
+    let by_place = |found: &[Gradient], places: &[(usize, usize)]| -> Vec<Gradient> {
+        union
+            .iter()
+            .map(|place| {
+                places
+                    .iter()
+                    .position(|other| other == place)
+                    .map_or_else(Gradient::default, |slot| found[slot])
+            })
+            .collect()
+    };
     for path in paths {
         let parameter = path.join(".");
         let number = path
@@ -50,16 +69,20 @@ fn compare<H: Kernel, C: Kernel>(parameters: &str, points: &[Vec<f64>], worst: &
             .expect("a number");
         for x in points {
             let what = format!("{} {parameters} by {parameter} at {x:?}", H::NAME);
-            let a = hand
-                .exact(&object, &parameter, (x, None))
-                .expect("a twin by hand");
-            let b = compiled
-                .exact(&object, &parameter, (x, None))
-                .expect("a twin compiled");
+            let a = hand.exact(&object, &parameter, (x, None));
+            let b = compiled.exact(&object, &parameter, (x, None));
+            // A selector, such as a temperature model, an integer, has no derivative in
+            // either twin.
+            let (a, b) = match (a, b) {
+                (Some(a), Some(b)) => (a, b),
+                (None, None) => continue,
+                _ => panic!("{what}: a twin of one alone"),
+            };
+            let conductances = [by_place(&a[2], &places[0]), by_place(&b[2], &places[1])];
             for (kind, a, b) in [
                 ("residual", &a[0], &b[0]),
                 ("charge", &a[1], &b[1]),
-                ("conductance", &a[2], &b[2]),
+                ("conductance", &conductances[0], &conductances[1]),
             ] {
                 let values = a
                     .iter()
@@ -164,6 +187,49 @@ fn the_compiled_diode_is_its_hand_written_twin() {
         .map(|x| vec![x[0] + 0.01, 0.0, x[0], 0.02])
         .collect();
     compare::<jolty_models::Diode, diode::Diode>(small, &carried, &mut worst);
+    let parts = r#"{"saturation_current": 2e-14, "emission_coefficient": 1.3,
+        "junction_capacitance": 2e-12, "junction_potential": 0.8, "grading_coefficient": 0.4,
+        "depletion_coefficient": 0.6, "transit_time": 1e-9, "forward_knee_current": 1e-3,
+        "reverse_knee_current": 1e-9, "recombination_saturation_current": 3e-13,
+        "recombination_emission_coefficient": 1.8, "sidewall_saturation_current": 4e-15,
+        "sidewall_emission_coefficient": 1.1, "sidewall_junction_capacitance": 5e-13,
+        "sidewall_junction_potential": 0.6, "sidewall_grading_coefficient": 0.3,
+        "sidewall_depletion_coefficient": 0.4, "sidewall_forward_knee_current": 2e-4,
+        "tunneling_saturation_current": 1e-13, "sidewall_tunneling_saturation_current": 2e-14,
+        "tunneling_emission_coefficient": 20,
+        "tunneling_saturation_current_temperature_exponent": 2,
+        "tunneling_energy_gap_factor": 0.8, "breakdown_voltage": 5, "breakdown_current": 1e-3,
+        "breakdown_temperature_coefficient": 1e-3, "temperature_model": 2, "energy_gap": 1.17,
+        "energy_gap_alpha": 5e-4, "energy_gap_beta": 1000,
+        "saturation_current_temperature_exponent": 2.5,
+        "transit_time_temperature_coefficient": 1e-3,
+        "grading_coefficient_temperature_coefficient": 1e-3, "nominal_temperature": 290, "flicker_coefficient": 1e-12, "flicker_exponent": 1.5}"#;
+    compare::<jolty_models::Diode, diode::Diode>(parts, &junction, &mut worst);
+    let relative = parts.replace(r#""temperature_model": 2"#, r#""temperature_model": 1"#);
+    compare::<jolty_models::Diode, diode::Diode>(&relative, &junction, &mut worst);
+    let separate = parts.replace(
+        '{',
+        r#"{"series_resistance": 10, "sidewall_series_resistance": 40,
+        "series_resistance_temperature_coefficient": 2e-3, "capacitance_temperature_model": 1,
+        "junction_potential_temperature_coefficient": 2e-3,
+        "junction_capacitance_temperature_coefficient": 1e-3,
+        "sidewall_junction_potential_temperature_coefficient": 1e-3,
+        "sidewall_junction_capacitance_temperature_coefficient": 2e-3, "#,
+    );
+    let beside: Vec<Vec<f64>> = junction
+        .iter()
+        .map(|x| vec![x[0] + 0.02, 0.0, x[0], x[0] + 0.01])
+        .collect();
+    compare::<jolty_models::Diode, diode::Diode>(&separate, &beside, &mut worst);
+    let small = separate.replace(
+        r#""sidewall_series_resistance": 40"#,
+        r#""sidewall_series_resistance": 0.5"#,
+    );
+    let carried: Vec<Vec<f64>> = beside
+        .iter()
+        .map(|x| [x.as_slice(), &[0.02]].concat())
+        .collect();
+    compare::<jolty_models::Diode, diode::Diode>(&small, &carried, &mut worst);
 }
 
 #[test]
@@ -172,7 +238,7 @@ fn out_of_range_parameters_are_refused_as_by_hand() {
         r#"{"grading_coefficient": 1}"#,
         r#"{"saturation_current": -1}"#,
         r#"{"series_resistance": -1}"#,
-        r#"{"breakdown_voltage": 0}"#,
+        r#"{"breakdown_voltage": -1}"#,
     ] {
         let hand = Bench::try_at::<jolty_models::Diode>(parameters, 300.0)
             .map(|_| ())

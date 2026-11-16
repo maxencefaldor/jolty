@@ -29,7 +29,35 @@ pub const fn thermal_voltage(temperature: f64) -> f64 {
 
 /// Silicon's band gap at `temperature`, in electronvolts, as SPICE models it.
 pub(crate) fn band_gap<R: Real>(temperature: R) -> R {
-    -(temperature * 7.02e-4 * temperature / (temperature + 1108.0) - 1.16)
+    Varshni::silicon().at(temperature)
+}
+
+/// A band gap that follows Varshni's law, `Eg(T) = Eg(0) − α·T² / (T + β)`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Varshni<R: Real = f64> {
+    /// The gap at 0 K, `Eg(0)`, in electronvolts.
+    pub(crate) gap: R,
+    /// `α`, in electronvolts per kelvin.
+    pub(crate) alpha: R,
+    /// `β`, in kelvins.
+    pub(crate) beta: R,
+}
+
+impl<R: Real> Varshni<R> {
+    /// Silicon's band gap as SPICE models it, 1.16 eV at 0 K with `α` 7.02e-4 eV/K and
+    /// `β` 1108 K (ngspice's `diotemp.c`, lines 60 to 63, as its other junctions').
+    pub(crate) fn silicon() -> Self {
+        Self {
+            gap: R::constant(1.16),
+            alpha: R::constant(7.02e-4),
+            beta: R::constant(1108.0),
+        }
+    }
+
+    /// The gap at `temperature`, in kelvins.
+    pub(crate) fn at(self, temperature: R) -> R {
+        -(temperature * self.alpha * temperature / (temperature + self.beta) - self.gap)
+    }
 }
 
 /// The temperature a device is evaluated at, and the nominal temperature its parameters
@@ -109,12 +137,25 @@ impl<R: Real> Temperatures<R> {
     }
 
     /// A junction's built-in `potential` and zero-bias `capacitance`, of `grading`
-    /// coefficient, scaled to the device's temperature.
+    /// coefficient, scaled to the device's temperature through silicon's band gap.
     pub(crate) fn junction(self, potential: R, capacitance: R, grading: R) -> (R, R) {
+        self.junction_of(potential, capacitance, grading, Varshni::silicon())
+    }
+
+    /// A junction's built-in `potential` and zero-bias `capacitance`, of `grading`
+    /// coefficient, scaled to the device's temperature through the band `gap`, as
+    /// ngspice's diode scales them (`diotemp.c`, lines 73 to 91).
+    pub(crate) fn junction_of(
+        self,
+        potential: R,
+        capacitance: R,
+        grading: R,
+        gap: Varshni<R>,
+    ) -> (R, R) {
+        let shift = |temperature: R| potential_shift(temperature, gap.at(temperature));
         let nominal = self.nominal / REFERENCE_TEMPERATURE;
-        let intrinsic = (potential - potential_shift(self.nominal)) / nominal;
-        let scaled =
-            intrinsic * (self.actual / REFERENCE_TEMPERATURE) + potential_shift(self.actual);
+        let intrinsic = (potential - shift(self.nominal)) / nominal;
+        let scaled = intrinsic * (self.actual / REFERENCE_TEMPERATURE) + shift(self.actual);
         let stretch = |temperature: R, potential: R| {
             grading
                 * ((temperature - REFERENCE_TEMPERATURE) * 4e-4
@@ -129,9 +170,10 @@ impl<R: Real> Temperatures<R> {
 }
 
 /// How far a junction's built-in potential at `temperature` lies from the reference
-/// temperature's, through silicon's band gap and intrinsic concentration: SPICE's `pbfact`.
-fn potential_shift<R: Real>(temperature: R) -> R {
-    let gap = -band_gap(temperature) / (temperature * (2.0 * BOLTZMANN))
+/// temperature's, through the band gap there, `band_gap` in electronvolts, and the
+/// intrinsic concentration: SPICE's `pbfact`.
+fn potential_shift<R: Real>(temperature: R, band_gap: R) -> R {
+    let gap = -band_gap / (temperature * (2.0 * BOLTZMANN))
         + 1.115_087_7 / (2.0 * BOLTZMANN * REFERENCE_TEMPERATURE);
     temperature * BOLTZMANN / ELEMENTARY_CHARGE
         * -2.0

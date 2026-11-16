@@ -14,6 +14,8 @@ Examples:
     'limit((1000.0 * v(vc+, vc-)), (-0.001), 0.001)'
 """
 
+import functools
+import itertools
 import math
 import re
 from collections.abc import Callable, Mapping
@@ -441,6 +443,166 @@ jolty writes a function by its name, or by a template of its arguments. PSpice's
 ``TABLE`` within an expression is ngspice's ``pwl``, extended beyond its ends; a
 ``TABLE`` source's, made by [`library`][jolty.spice.library], is a ``rounded_table``.
 """
+
+
+def substituted(
+    expression: Expression, variable: Expression, replacement: Expression
+) -> Expression:
+    """`expression` with each occurrence of `variable` replaced by `replacement`."""
+
+    def within(part: Expression) -> Expression:
+        return substituted(part, variable, replacement)
+
+    match expression:
+        case _ if expression == variable:
+            return replacement
+        case Unary(operator, operand):
+            return Unary(operator, within(operand))
+        case Binary(operator, left, right):
+            return Binary(operator, within(left), within(right))
+        case Conditional(condition, then, otherwise):
+            return Conditional(within(condition), within(then), within(otherwise))
+        case Call(function, arguments):
+            return Call(function, tuple(map(within, arguments)))
+        case leaf:
+            return leaf
+
+
+type Polynomial = dict[int, float]
+"""A polynomial of one variable: each power's coefficient."""
+
+
+def _polynomial(  # noqa: C901, PLR0911 - one case per form a polynomial takes
+    expression: Expression, variable: Expression
+) -> Polynomial | None:
+    """`expression` as a polynomial of `variable`, if it is one of its numbers.
+
+    Sums, differences, products, quotients by a number and whole powers of polynomials
+    are polynomials; a whole power is SPICE's ``^`` or ``POW``, which keep a negative
+    base's sign at an odd power, as `_power` writes them.
+    """
+
+    def of(part: Expression) -> Polynomial | None:
+        return _polynomial(part, variable)
+
+    match expression:
+        case Number(value):
+            return {0: value}
+        case _ if expression == variable:
+            return {1: 1.0}
+        case Unary("-", operand):
+            found = of(operand)
+            return None if found is None else _scaled(found, -1.0)
+        case Unary("+", operand):
+            return of(operand)
+        case Binary("+" | "-" as operator, left, right):
+            first, second = of(left), of(right)
+            if first is None or second is None:
+                return None
+            sign = 1.0 if operator == "+" else -1.0
+            return _added(first, _scaled(second, sign))
+        case Binary("*", left, right):
+            first, second = of(left), of(right)
+            if first is None or second is None:
+                return None
+            return _multiplied(first, second)
+        case Binary("/", left, Number(divisor)) if divisor != 0:
+            found = of(left)
+            return None if found is None else _scaled(found, 1 / divisor)
+        case Binary("^", base, Number(power)) | Call("pow", (base, Number(power))) if (
+            power.is_integer() and power >= 0
+        ):
+            found = of(base)
+            if found is None:
+                return None
+            product: Polynomial = {0: 1.0}
+            for _ in range(int(power)):
+                product = _multiplied(product, found)
+            return product
+    return None
+
+
+def _scaled(polynomial: Polynomial, factor: float) -> Polynomial:
+    """`polynomial` times `factor`."""
+    return {power: coefficient * factor for power, coefficient in polynomial.items()}
+
+
+def _added(first: Polynomial, second: Polynomial) -> Polynomial:
+    """The sum of two polynomials."""
+    total = dict(first)
+    for power, coefficient in second.items():
+        total[power] = total.get(power, 0.0) + coefficient
+    return total
+
+
+def _multiplied(first: Polynomial, second: Polynomial) -> Polynomial:
+    """The product of two polynomials."""
+    product: Polynomial = {}
+    for (one, a), (other, b) in itertools.product(first.items(), second.items()):
+        product[one + other] = product.get(one + other, 0.0) + a * b
+    return product
+
+
+_ANTIDERIVATIVES: Final[dict[str, Callable[[Expression], Expression]]] = {
+    "exp": lambda argument: Call("exp", (argument,)),
+    "sinh": lambda argument: Call("cosh", (argument,)),
+    "cosh": lambda argument: Call("sinh", (argument,)),
+    "tanh": lambda argument: Call("ln", (Call("cosh", (argument,)),)),
+    "sin": lambda argument: Unary("-", Call("cos", (argument,))),
+    "cos": lambda argument: Call("sin", (argument,)),
+}
+"""The antiderivative of each function whose antiderivative is elementary and holds
+for every argument, of its argument."""
+
+
+def integral(  # noqa: C901, PLR0911 - one case per form the integral takes
+    expression: Expression, variable: Expression
+) -> Expression | None:
+    """An antiderivative of `expression` with respect to `variable`, in closed form.
+
+    `expression` holds numbers and `variable` alone, as one whose other terms are
+    evaluated does. A closed form is found where it is a sum of a polynomial of the
+    variable and of numbers times ``exp``, ``sinh``, ``cosh``, ``tanh``, ``sin`` or
+    ``cos`` of a linear function of it: each power integrated term by term, and each
+    function by its antiderivative over the line's slope; `None` where it is not.
+    """
+    polynomial = _polynomial(expression, variable)
+    if polynomial is not None:
+        terms: list[Expression] = []
+        for power, coefficient in sorted(polynomial.items()):
+            term: Expression = Number(coefficient / (power + 1))
+            for _ in range(power + 1):
+                term = Binary("*", term, variable)
+            terms.append(term)
+        return functools.reduce(lambda left, right: Binary("+", left, right), terms)
+
+    def of(part: Expression) -> Expression | None:
+        return integral(part, variable)
+
+    match expression:
+        case Unary("-" | "+" as operator, operand):
+            found = of(operand)
+            return None if found is None else Unary(operator, found)
+        case Binary("+" | "-" as operator, left, right):
+            first, second = of(left), of(right)
+            if first is None or second is None:
+                return None
+            return Binary(operator, first, second)
+        case Binary("*", Number() as factor, other) | Binary(
+            "*", other, Number() as factor
+        ):
+            found = of(other)
+            return None if found is None else Binary("*", factor, found)
+        case Binary("/", other, Number(divisor) as number) if divisor != 0:
+            found = of(other)
+            return None if found is None else Binary("/", found, number)
+        case Call(function, (argument,)) if function in _ANTIDERIVATIVES:
+            line = _polynomial(argument, variable)
+            if line is None or not set(line) <= {0, 1} or line.get(1, 0.0) == 0:
+                return None
+            antiderivative = _ANTIDERIVATIVES[function](argument)
+            return Binary("/", antiderivative, Number(line[1]))
+    return None
 
 
 def names(expression: Expression) -> set[str]:

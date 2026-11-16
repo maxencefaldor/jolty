@@ -15,9 +15,20 @@ from typing import Final
 
 import numpy as np
 import pytest
+from pydantic import JsonValue
 
 from differential import SKIP, closest, compare
-from jolty import Builder, Component, Role, Simulation, component, devices, ir, results
+from jolty import (
+    Builder,
+    Component,
+    Role,
+    Simulation,
+    _core,
+    component,
+    devices,
+    ir,
+    results,
+)
 from jolty.plan import (
     TIGHT,
     Ac,
@@ -336,6 +347,114 @@ def test_an_sg13g2_transistor_reads_its_transit_time_where_it_runs(
     compare(gains[hot.value], spice, unknown, scale=scale, tolerance=AGREEMENT)
     away = np.abs(gains[celsius(27).value] - spice).max() / scale
     assert away > 1000 * AGREEMENT
+
+
+BIPOLARS: Final = (
+    (sky130.KIT, "sky130_fd_pr__npn_05v5_W1p00L1p00", 1.0),
+    (sky130.KIT, "sky130_fd_pr__pnp_05v5_W0p68L0p68", -1.0),
+    (gf180mcu.KIT, "vnpn_10x10", 1.0),
+    (gf180mcu.KIT, "vpnp_0p42x10", -1.0),
+    (sg13g2.KIT, "pnpMPA", -1.0),
+)
+"""A Gummel-Poon transistor of each kit and polarity, and the sign of its polarity:
+SKY130's of `TLEV` 0 and `TLEVC` 0 with HSPICE's coefficients of nearly every
+parameter, its card's `TREF` 30 °C; GF180MCU's of `TLEVC` 1, `NKF` 0.4 and their own
+coefficients of `BF` and `IKF`, `TREF` 25 °C; SG13G2's of `TRM1` and `TRC1`."""
+
+BIPOLAR_TEMPERATURES: Final = (-40.0, 27.0, 125.0)
+"""The degrees Celsius each of `BIPOLARS` runs at: the ends of the kits' range and the
+reference between."""
+
+CONSTANTS: Final = 1 - ngspice.same_kelvins(1.0)
+"""How far ngspice's Boltzmann constant over the elementary charge, CODATA 2014's, lies
+below jolty's, relative to it, 3.4e-7: at the same kelvins, ngspice's thermal voltage
+lies that far below jolty's, so each exponent of a junction's current it computes, its
+voltage over the thermal voltage and its saturation current's `(T/Tn - 1)·Eg/Vt`, lies
+that far above jolty's, and the currents part by `CONSTANTS` times their sum."""
+
+SPICE_THERMAL_VOLTAGE: Final = ("Gummel-Poon",)
+"""The models whose thermal voltage both engines compute with their own constants, so
+that at the same kelvins their currents part by `CONSTANTS` times their exponents, as
+`junction_tolerance` bounds them."""
+
+
+def junction_tolerance(voltage: float, temperature: float) -> float:
+    """How closely a junction's current agrees with ngspice's, relative to its size.
+
+    Within `AGREEMENT`, beside `CONSTANTS` times the junction's exponents at the same
+    kelvins, `temperature`: its `voltage`, in volts, over the thermal voltage, and its
+    saturation current's, which stays below that wherever the energy gap times
+    `|T/Tn - 1|` stays below the voltage, as it does for the kits' gaps of 1.17 to
+    1.19 V and their `TREF`s of 25 to 30 °C, where it is at most 0.40 V from -40 to
+    125 °C and 0.012 V at 27 °C; so at most twice the first.
+    """
+    thermal_voltage = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
+    return AGREEMENT + CONSTANTS * 2 * voltage / thermal_voltage
+
+
+@SKIP
+@pytest.mark.parametrize(
+    ("kit", "name", "sign"), BIPOLARS, ids=[b[1] for b in BIPOLARS]
+)
+def test_a_kits_bipolar_transistor_follows_the_temperature_as_in_ngspice(
+    kept: Settings, kit: kits.Kit, name: str, sign: float
+) -> None:
+    """A kit's Gummel-Poon transistor, its base swept at each of `BIPOLAR_TEMPERATURES`.
+
+    Its collector held 1.5 V from its emitter and its base swept from 0.4 to 0.9 V, its
+    other pins grounded, both in its polarity's sign, its collector's and its base's
+    currents are compared with ngspice's, which reads the same kit at the same corner,
+    at the same kelvins, within `junction_tolerance` of the drive's 0.9 V: every
+    temperature coefficient its card gives acts away from its card's `TREF`.
+    """
+    library = kits.read(kit, settings=kept)
+    part = library.component(name)
+    collector, base, *grounded = part.definition.ports
+
+    @component
+    def gummel_at(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        drive = c.place(devices.voltage_source(sign * 0.4 * V), name="VB")
+        held = c.place(devices.voltage_source(sign * 1.5 * V), name="VC")
+        placed = c.place(part, name="X1")
+        c.connect(drive.positive, placed[base.name], name="base")
+        c.connect(held.positive, placed[collector.name], name="collector")
+        c.connect(
+            drive.negative,
+            held.negative,
+            *(placed[port.name] for port in grounded),
+            ground,
+        )
+
+    pins = " 0" * sum(port.role == Role.SIGNAL for port in grounded)
+    deck = [
+        "* gummel",
+        *NOMINAL.get(kit.name, ()),
+        f"VB base 0 {sign * 0.4!r}",
+        f"VC collector 0 {sign * 1.5!r}",
+        f"X1 collector base{pins} {name}",
+    ]
+    root = kits.root(kit, kept)
+    for degrees in BIPOLAR_TEMPERATURES:
+        temperature = celsius(degrees)
+        simulation = Simulation(gummel_at(), temperature=temperature)
+        swept = linear(sign * 0.4 * V, sign * 0.9 * V, 26)
+        sweep = simulation.run(DcSweep("VB", swept), TIGHT)
+        raw = ngspice.run(
+            deck,
+            f"dc VB {sign * 0.4!r} {sign * 0.9!r} {sign * 0.02!r}",
+            libraries=tuple(root / path for path in kit.includes),
+            sections=tuple((root / path, section) for path, section in kit.typical),
+            compatibility=kit.compatibility,
+            temperature=ngspice.same_kelvins(temperature.value),
+        )
+        for source in ("VB", "VC"):
+            unknown = results.Unknown(f"{source}:current", "current")
+            spice = raw.real(f"i({source.casefold()})")
+            found = sweep.values[:, simulation.unknowns.index(unknown)]
+            scale = float(np.abs(spice).max())
+            tolerance = junction_tolerance(0.9, temperature.value)
+            compare(found, spice, unknown, scale=scale, tolerance=tolerance)
 
 
 SKY130_CAPACITORS: Final = ("tt", "ll", "hh")
@@ -851,6 +970,60 @@ which SKY130's `res_high_po` resistors raise.
 `test_sky130_transistors_admittances_agree_with_ngspice` compares BSIM4's with the body
 at the source."""
 
+DEPARTED: Final = {
+    "pnpMPA": "its area, 2, by which ngspice multiplies its reverse saturation current "
+    "twice",
+    **dict.fromkeys(
+        (
+            "npolyf_u",
+            "ppolyf_u",
+            "npolyf_s",
+            "ppolyf_s",
+            "ppolyf_u_1k",
+            "ppolyf_u_2k",
+            "ppolyf_u_1k_6p0",
+            "ppolyf_u_2k_6p0",
+            "ppolyf_u_3k",
+        ),
+        "its body's resistance, which ngspice takes from its length, its line's first "
+        "expression",
+    ),
+}
+"""The native devices whose currents at `DRIVE` depart from ngspice's, as the guide's
+departures state, and why: SG13G2's `pnpMPA`, whose collector at `DRIVE` biases its
+base-collector junction forward, and whose base sweep
+`test_a_kits_bipolar_transistor_follows_the_temperature_as_in_ngspice` compares; and
+GF180MCU's poly resistors, whose body, a resistor whose value reads a voltage, writes
+its length and width before its value, where ngspice takes the first expression in
+braces on the line as its resistance (`inpcom.c`, line 6841), its length in meters."""
+
+LAGGED: Final = "capacitor whose value reads a voltage"
+"""The capacitor whose current ngspice delays by `CAPACITANCE_LAG`."""
+
+CAPACITANCE_LAG: Final = 1e-9 * 1e-6
+"""The time constant, in seconds, by which ngspice 47 delays the current of a
+capacitor whose value reads a voltage: it differentiates the capacitor's voltage
+through 1e-9 Ω into 1 µF (`inpcom.c`, lines 6968 to 6977), so its admittance is
+`jωC / (1 + jωτ)`, 6.3e-4 of itself away from `jωC` at 100 GHz, a departure the guide
+states."""
+
+
+def lagged(part: Component) -> tuple[str, ...]:
+    """The behavioral capacitors `part` holds that ngspice delays, by name.
+
+    Each joins the part's first pin to another, so that its current, which ngspice
+    delays, is part of the current into the first pin, unchanged in the rest.
+    """
+    first, *rest = (port.name for port in part.definition.ports)
+    names = []
+    for instance in part.definition.instances:
+        if instance.of == ir.DeviceOf(model="behavioral_capacitor"):
+            assert instance.terminals["positive"] == first
+            assert instance.terminals["negative"] in rest
+            names.append(instance.name)
+    return tuple(names)
+
+
 DRIVE: Final = 0.5
 """The volts each native device's first pin is held at, its others grounded, in
 `test_every_native_device_agrees_with_ngspice`: within every device's ratings, and
@@ -860,6 +1033,69 @@ FLOOR: Final = 2 * ngspice.CURRENT_TOLERANCE
 """How far apart two currents the engines find may lie however small they are: each
 engine's Newton iteration stops once its step on a current lies within its absolute
 tolerance, so the two lie within twice it."""
+
+JUNCTION: Final = (1 - ngspice.same_kelvins(1.0)) * (
+    DRIVE / (_core.BOLTZMANN * _core.REFERENCE_TEMPERATURE / _core.ELEMENTARY_CHARGE)
+    + 1
+)
+"""How far apart a junction's current at `DRIVE` lies in the two engines at the same
+kelvins, relative to it, beyond `AGREEMENT`, 6.9e-6. The kits' tests run ngspice at the
+same kelvins, where BSIM4, which computes its thermal voltage with constants of its own,
+agrees; there the two engines' thermal voltages differ by 3.4e-7 of themselves, as their
+Boltzmann constants and elementary charges do (the guide's departures), and so does a
+junction's exponent, `v / (n·Vt)` less its saturation current's activation,
+`(T/Tn - 1) · Eg / (n·Vt)`: the first at most `DRIVE / Vt` at 27 °C, 19.3, and the
+second under 1, 0.5 at most at the kits' nominal temperatures of 25 °C to 30 °C."""
+
+
+def operating_point_departed(parameters: Mapping[str, JsonValue]) -> bool:
+    """Whether a diode of `parameters` departs from ngspice's at its operating point.
+
+    A sidewall without its own emission coefficient shares the junction's, and so does
+    its saturation current's temperature scaling in jolty, where ngspice scales it by an
+    emission coefficient of 1, as the guide's departures state: the two part away from
+    the nominal temperature where the junction's is not 1, as GF180MCU's `nwp_3p3`,
+    measured at 25 °C, by 3.3e-4 of its current at 27 °C.
+    """
+    nominal = parameters.get("nominal_temperature", _core.REFERENCE_TEMPERATURE)
+    return (
+        parameters.get("sidewall_saturation_current", 0.0) != 0.0
+        and "sidewall_emission_coefficient" not in parameters
+        and parameters.get("emission_coefficient", 1.0) != 1.0
+        and nominal != _core.REFERENCE_TEMPERATURE
+    )
+
+
+def response_departed(parameters: Mapping[str, JsonValue]) -> bool:
+    """Whether a diode of `parameters` departs from ngspice's in its frequency response.
+
+    It departs where its operating point does, `operating_point_departed`; where it
+    recombines, as ngspice computes the recombination's conductance inexactly, and from
+    it the diffusion capacitance, as SG13G2's `dperim`, whose susceptance it moves by
+    1.4%; and where its capacitance temperature model is 1 and its nominal temperature
+    not 27 °C, as SKY130's 30 °C and GF180MCU's 25 °C, as ngspice moves its junctions'
+    potentials and capacitances from 27 °C rather than from it, by 0.3% to 1.4% of
+    SKY130's diodes' admittances at 27 °C. The guide's departures state each.
+    """
+    nominal = parameters.get("nominal_temperature", _core.REFERENCE_TEMPERATURE)
+    return (
+        operating_point_departed(parameters)
+        or "recombination_saturation_current" in parameters
+        or (
+            parameters.get("capacitance_temperature_model") == 1
+            and nominal != _core.REFERENCE_TEMPERATURE
+        )
+    )
+
+
+def diodes(part: Component) -> list[Mapping[str, JsonValue]]:
+    """The parameters of every diode `part` holds, in any of its components."""
+    found = [
+        instance.parameters
+        for instance in part.definition.instances
+        if instance.of == ir.DeviceOf(model="diode")
+    ]
+    return found + [each for child in part.children for each in diodes(child)]
 
 
 @SKIP
@@ -872,7 +1108,12 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
     volts of each device's own, which senses its current, its other pins grounded; each
     device's current is compared at the operating point and from 1 kHz to 100 GHz with
     ngspice's, which reads the same libraries and places the same subcircuits, at the
-    same kelvins, but for the frequency response of a device of `AC_DEPARTED`.
+    same kelvins, but for the frequency response of a device of `AC_DEPARTED`, the
+    devices `DEPARTED` names, and what of a diode's departs from ngspice's,
+    `operating_point_departed` and `response_departed`; a diode's within `JUNCTION`
+    more, a Gummel-Poon transistor's within `junction_tolerance`, and a device's of
+    `LAGGED` capacitors with their currents delayed by `CAPACITANCE_LAG`, as ngspice's
+    are.
     """
     library = kits.read(kit, settings=kept)
     native = {
@@ -904,9 +1145,17 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
             senses.append(sense.positive)
         c.connect(source.positive, *senses, name="drive")
 
+    delayed = {
+        number: tuple(f"X{number}{ir.SEPARATOR}{each}" for each in lagged(part))
+        for number, (name, part) in enumerate(driven.items())
+        if LAGGED in native[name].models
+    }
     simulation = Simulation(bench())
     point = simulation.run(OperatingPoint(), TIGHT)
-    response = simulation.run(Ac("V0", decade(1 * kHz, 100 * GHz, 1)), TIGHT)
+    record = [path for paths in delayed.values() for path in paths]
+    frequencies = decade(1 * kHz, 100 * GHz, 1)
+    response = simulation.run(Ac("V0", frequencies, record=record), TIGHT)
+    lag = 2j * np.pi * response.frequencies * CAPACITANCE_LAG
     root = kits.root(kit, kept)
     deck = [
         f"* every native device of {kit.name}",
@@ -938,19 +1187,135 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
         column = simulation.unknowns.index(
             results.Unknown(f"A{number}:current", "current")
         )
+        if name in DEPARTED:
+            continue
+        held = diodes(driven[name])
+        models = native[name].models
+        tolerance = (
+            junction_tolerance(DRIVE, celsius(27).value)
+            if any(model.startswith(SPICE_THERMAL_VOLTAGE) for model in models)
+            else AGREEMENT
+        ) + (JUNCTION if held else 0.0)
         found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
-        assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR + summed, (
-            name,
-            summed,
-        )
-        if any(model.startswith(AC_DEPARTED) for model in native[name].models):
+        if not any(operating_point_departed(each) for each in held):
+            assert abs(found - spice) <= tolerance * abs(spice) + FLOOR + summed, (
+                name,
+                summed,
+            )
+        if any(model.startswith(AC_DEPARTED) for model in models) or any(
+            response_departed(each) for each in held
+        ):
             continue
         spice_ac = raw_response.vectors[f"i(va{number})"]
+        found_ac = response.values[:, column] - sum(
+            (response.current(path, "positive") * lag / (1 + lag))
+            for path in delayed.get(number, ())
+        )
         np.testing.assert_allclose(
-            response.values[:, column],
+            found_ac,
             spice_ac,
             rtol=0,
-            atol=AGREEMENT * float(np.abs(spice_ac).max()) + FLOOR,
+            atol=tolerance * float(np.abs(spice_ac).max()) + FLOOR,
+        )
+
+
+CHARGED: Final = ("capacitor of a charge", LAGGED)
+"""The capacitors jolty reads as behavioral capacitors: of a charge, and of a value
+that reads their voltage, integrated into one."""
+
+BIASES: Final = (-2.0, -1.0, 0.0, 1.0, 2.0)
+"""The volts across each capacitor of `CHARGED` in
+`test_a_kits_charged_capacitors_follow_their_bias_as_in_ngspice`: within the kits' 3.3 V
+and 5 V devices' ratings, and across the varactors' 2.3 V."""
+
+
+@SKIP
+@pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
+def test_a_kits_charged_capacitors_follow_their_bias_as_in_ngspice(
+    kept: Settings, kit: kits.Kit
+) -> None:
+    """Each native device of a capacitor of `CHARGED`, its admittance at each bias.
+
+    A copy of each device at each of `BIASES` is driven at 1 MHz through a source of no
+    volts of its own, its other pins grounded, and its current compared with ngspice's,
+    which reads the same kit, a `LAGGED` capacitor's delayed by `CAPACITANCE_LAG`, as in
+    `test_every_native_device_agrees_with_ngspice`: so the capacitance across the bias,
+    the derivative of the charge jolty integrates, is ngspice's.
+    """
+    library = kits.read(kit, settings=kept)
+    charged = {
+        device.name: device
+        for device in kits.inventory(kit, settings=kept)
+        if device.status == "native"
+        and device.kind == "subcircuit"
+        and any(model in CHARGED for model in device.models)
+    }
+    placed = [
+        (name, bias, library.component(name, **device.parameters))
+        for name, device in charged.items()
+        for bias in BIASES
+    ]
+    if not placed:
+        return  # The kit has none, as SG13G2.
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(0 * V), name="V0")
+        c.connect(source.negative, ground)
+        holds = []
+        for number, (_, bias, part) in enumerate(placed):
+            held = c.place(devices.voltage_source(bias * V), name=f"B{number}")
+            sense = c.place(devices.voltage_source(0 * V), name=f"A{number}")
+            device = c.place(part, name=f"X{number}")
+            first, *rest = part.definition.ports
+            holds.append(held.negative)
+            c.connect(held.positive, sense.positive, name=f"b{number}")
+            c.connect(sense.negative, device[first.name], name=f"n{number}")
+            c.connect(*(device[port.name] for port in rest), ground)
+        c.connect(source.positive, *holds, name="drive")
+
+    delayed = {
+        number: tuple(f"X{number}{ir.SEPARATOR}{each}" for each in lagged(part))
+        for number, (name, _, part) in enumerate(placed)
+        if LAGGED in charged[name].models
+    }
+    simulation = Simulation(bench())
+    record = [path for paths in delayed.values() for path in paths]
+    response = simulation.run(Ac("V0", [1 * MHz], record=record), TIGHT)
+    lag = 2j * np.pi * response.frequencies * CAPACITANCE_LAG
+    deck = [f"* charged capacitors of {kit.name}", *NOMINAL.get(kit.name, ())]
+    deck.append("V0 drive 0 0 ac 1")
+    for number, (name, bias, part) in enumerate(placed):
+        pins = sum(port.role == Role.SIGNAL for port in part.definition.ports)
+        given = "".join(
+            f" {key}={value!r}" for key, value in charged[name].parameters.items()
+        )
+        deck += [
+            f"VB{number} b{number} drive {bias!r}",
+            f"VA{number} b{number} n{number} 0",
+            f"X{number} n{number}{' 0' * (pins - 1)} {name}{given}",
+        ]
+    root = kits.root(kit, kept)
+    raw = ngspice.run(
+        deck,
+        "ac lin 1 1meg 1meg",
+        libraries=tuple(root / path for path in kit.includes),
+        sections=tuple((root / path, section) for path, section in kit.typical),
+        compatibility=kit.compatibility,
+        temperature=ngspice.same_kelvins(celsius(27).value),
+    )
+    for number in range(len(placed)):
+        column = simulation.unknowns.index(
+            results.Unknown(f"A{number}:current", "current")
+        )
+        found = response.values[:, column] - sum(
+            (response.current(path, "positive") * lag / (1 + lag))
+            for path in delayed.get(number, ())
+        )
+        spice = raw.vectors[f"i(va{number})"]
+        np.testing.assert_allclose(
+            found, spice, rtol=0, atol=AGREEMENT * float(np.abs(spice).max()) + FLOOR
         )
 
 
@@ -960,21 +1325,23 @@ QUOTED: Final = re.compile(r"=\s*\"")
 guide's departures state: SKY130's `res_generic_po`'s narrowing, 0.56% of its
 resistance."""
 
-CARDS: Final = {"r": "R", "c": "C"}
+CARDS: Final = {"r": "R", "c": "C", "d": "D"}
 """The types of model cards a bare element places in
-`test_every_native_card_agrees_with_ngspice`, SPICE3's resistor's and capacitor's: the
-letter of each one's element."""
+`test_every_native_card_agrees_with_ngspice`, SPICE3's resistor's and capacitor's and
+the diode's: the letter of each one's element."""
 
 
 @SKIP
 @pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
 def test_every_native_card_agrees_with_ngspice(kept: Settings, kit: kits.Kit) -> None:
-    """Each resistor's and capacitor's card the inventory finds native, as ngspice's.
+    """Each resistor's, capacitor's and diode's native card, as ngspice's.
 
     A bare element of each, which takes its value from its card's geometry and
     defaults, is driven as `test_every_native_device_agrees_with_ngspice` drives a
     device, at the operating point and from 1 kHz to 100 GHz; but for a card of a
-    value in double quotes outside braces, `QUOTED`, which ngspice drops.
+    value in double quotes outside braces, `QUOTED`, which ngspice drops, and what of a
+    diode's departs from ngspice's, `operating_point_departed` and
+    `response_departed`.
     """
     library = kits.read(kit, settings=kept)
     cards = [
@@ -1030,12 +1397,124 @@ def test_every_native_card_agrees_with_ngspice(kept: Settings, kit: kits.Kit) ->
         compatibility=kit.compatibility,
         temperature=ngspice.same_kelvins(celsius(27).value),
     )
-    for number in range(len(cards)):
+    held = {
+        instance.name: instance.parameters
+        for instance in bare.definition.instances
+        if instance.of == ir.DeviceOf(model="diode")
+    }
+    for number, (_, letter) in enumerate(cards):
         column = simulation.unknowns.index(
             results.Unknown(f"A{number}:current", "current")
         )
+        diode = held.get(f"{letter}{number}")
+        tolerance = AGREEMENT + (JUNCTION if diode is not None else 0.0)
         found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
-        assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
+        if diode is None or not operating_point_departed(diode):
+            assert abs(found - spice) <= tolerance * abs(spice) + FLOOR
+        if diode is not None and response_departed(diode):
+            continue
+        spice_ac = raw_response.vectors[f"i(va{number})"]
+        np.testing.assert_allclose(
+            response.values[:, column],
+            spice_ac,
+            rtol=0,
+            atol=tolerance * float(np.abs(spice_ac).max()) + FLOOR,
+        )
+
+
+EVERY_PART: Final = (
+    (
+        ".model sized d level=3 js=1e-2 n=1.3 rs=2e-10 cj=1e-3 vj=0.8 m=0.4 fc=0.6"
+        " tt=1e-9 ikf=1e9 ikr=1e3 jsw=1e-9 ns=1.1 cjsw=1e-10 php=0.6 mjsw=0.3 fcs=0.4"
+        " ikp=1e2 jtun=5e-2 jtunsw=1e-9 ntun=20 xtitun=2 keg=0.8 bv=5 ibv=1e-3"
+        " tcv=1e-3 tlev=2 eg=1.17 gap1=5e-4 gap2=1000 xti=2.5 trs=2e-3 trs2=1e-5"
+        " ttt1=1e-3 ttt2=1e-6 tm1=1e-3 tm2=1e-6 tlevc=1 cta=1e-3 ctp=2e-3 tpb=2e-3"
+        " tphp=1e-3"
+    ),
+    (
+        ".model behind d is=1e-14 n=1.1 rs=5 cjo=1e-12 jsw=2e-15 ns=1.4 rsw=40"
+        " cjsw=2e-13 ikf=1e-2 jtunsw=1e-15 bv=7 ibv=1e-4 nbv=1.5 tcv=2e-4 tlev=1"
+        " trs=1e-3 xti=2"
+    ),
+    (
+        ".model recombining d is=1e-14 rs=10 isr=1e-12 nr=2.2 m=0.35 vj=0.7 jsw=1e-15"
+        " ikr=1e-9 bv=8 ibv=1e-6"
+    ),
+)
+"""Cards of every part of ngspice's diode: one of level 3 sized by its width and length,
+its sidewall beside its junction, with knees, tunneling, `TLEV` 2 and `TLEVC` 1 at the
+default nominal temperature, 27 °C, where ngspice's capacitances are the model's; one
+whose sidewall lies behind a resistance of its own, at `TLEV` 1; and one that
+recombines, whose conductance ngspice computes inexactly, and whose sidewall, without
+`NS`, ngspice breaks down at a voltage it never sets, as the guide's departures state,
+which breaks down beyond the sweep."""
+
+EVERY_ELEMENT: Final = (
+    "D0 n0 0 sized w=1u l=2u",
+    "D1 n1 0 behind pj=1",
+    "D2 n2 0 recombining pj=1",
+)
+"""An element of each card of `EVERY_PART`, on nodes `n0` to `n2`."""
+
+
+@SKIP
+@pytest.mark.parametrize("hot", [False, True], ids=["27C", "85C"])
+def test_a_diode_of_every_part_agrees_with_ngspice(hot: bool) -> None:  # noqa: FBT001 - a parameter of the test
+    """Each diode of `EVERY_PART`, read as ngspice reads it, as ngspice's.
+
+    Each is driven as `test_every_native_device_agrees_with_ngspice` drives a device,
+    through a source of no volts of its own: its current swept from 6 V of reverse bias,
+    through its breakdown, to 0.75 V forward, each point within twice the relative
+    tolerance and the relative tolerance more, and its admittance from 1 kHz to 100 GHz
+    at 0.5 V, but for the recombining one's, whose conductance ngspice computes
+    inexactly; at 27 °C and at 85 °C, where ngspice's thermal voltage is jolty's, and so
+    its nominal temperature.
+    """
+    temperature = celsius(85 if hot else 27)
+    library = Library(temperature.value)
+    library.read(
+        "\n".join([*EVERY_PART, ".subckt every n0 n1 n2", *EVERY_ELEMENT, ".ends", ""]),
+        "every.lib",
+    )
+    part = library.component("every")
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(DRIVE * V), name="V0")
+        placed = c.place(part, name="X0")
+        c.connect(source.negative, placed["ground"], ground)
+        senses = []
+        for number in range(len(EVERY_ELEMENT)):
+            sense = c.place(devices.voltage_source(0 * V), name=f"A{number}")
+            c.connect(sense.negative, placed[f"n{number}"], name=f"n{number}")
+            senses.append(sense.positive)
+        c.connect(source.positive, *senses, name="drive")
+
+    simulation = Simulation(bench(), temperature=temperature)
+    sweep = simulation.run(DcSweep("V0", linear(-6 * V, 0.75 * V, 28)), TIGHT)
+    response = simulation.run(Ac("V0", decade(1 * kHz, 100 * GHz, 1)), TIGHT)
+    deck = ["* every part of a diode", *EVERY_PART, f"V0 drive 0 {DRIVE!r} ac 1"]
+    for number, element in enumerate(EVERY_ELEMENT):
+        deck += [f"VA{number} drive n{number} 0", element]
+    raw_sweep, raw_response = ngspice.runs(
+        deck,
+        ("dc V0 -6 0.75 0.25", "ac dec 1 1k 100g"),
+        temperature=temperature.value,
+    )
+    for number in range(len(EVERY_ELEMENT)):
+        column = simulation.unknowns.index(
+            results.Unknown(f"A{number}:current", "current")
+        )
+        found, spice = sweep.values[:, column], raw_sweep.real(f"i(va{number})")
+        # In breakdown, ngspice's current carries its breakdown voltage's match too,
+        # within its relative tolerance of the breakdown current (`diotemp.c`, lines 230
+        # to 238), where jolty matches it to rounding.
+        np.testing.assert_allclose(
+            found, spice, rtol=AGREEMENT + ngspice.RELATIVE_TOLERANCE, atol=FLOOR
+        )
+        if number == len(EVERY_ELEMENT) - 1:
+            continue  # The recombining diode's conductance departs.
         spice_ac = raw_response.vectors[f"i(va{number})"]
         np.testing.assert_allclose(
             response.values[:, column],

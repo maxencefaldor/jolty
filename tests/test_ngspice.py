@@ -218,6 +218,90 @@ def zener_clamp(c: Builder) -> None:
 
 
 @component
+def junction_parts(c: Builder) -> None:
+    """Two diodes of every part of ngspice's but its inexact recombination, on `out`.
+
+    A source drives `out` through 1 kΩ. The recombination is left out, as ngspice
+    computes its conductance inexactly, as the guide's departures state. One's sidewall
+    sits beside its junction, with knees, tunneling, the band gap of Varshni's law and
+    linear capacitances measured at 30 °C, which the exporter writes from 27 °C, where
+    ngspice moves them from; the other's sidewall sits behind a resistance of its own.
+    """
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(0.7 * V), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    beside = c.place(
+        devices.diode(
+            saturation_current=20 * fA,
+            emission_coefficient=1.3,
+            series_resistance=10 * ohm,
+            junction_capacitance=2 * pF,
+            junction_potential=0.8 * V,
+            grading_coefficient=0.4,
+            depletion_coefficient=0.6,
+            transit_time=1 * ns,
+            forward_knee_current=1 * mA,
+            reverse_knee_current=1 * nA,
+            sidewall_saturation_current=4 * fA,
+            sidewall_emission_coefficient=1.1,
+            sidewall_junction_capacitance=0.5 * pF,
+            sidewall_junction_potential=0.6 * V,
+            sidewall_grading_coefficient=0.3,
+            sidewall_depletion_coefficient=0.4,
+            sidewall_forward_knee_current=0.2 * mA,
+            tunneling_saturation_current=0.1 * pA,
+            sidewall_tunneling_saturation_current=20 * fA,
+            tunneling_emission_coefficient=20,
+            tunneling_saturation_current_temperature_exponent=2,
+            tunneling_energy_gap_factor=0.8,
+            breakdown_voltage=5 * V,
+            breakdown_current=1 * mA,
+            breakdown_temperature_coefficient=1e-3 / K,
+            temperature_model=2,
+            energy_gap=1.17 * V,
+            energy_gap_alpha=0.5 * mV / K,
+            energy_gap_beta=1000 * K,
+            saturation_current_temperature_exponent=2.5,
+            capacitance_temperature_model=1,
+            junction_potential_temperature_coefficient=2 * mV / K,
+            junction_capacitance_temperature_coefficient=1e-3 / K,
+            sidewall_junction_potential_temperature_coefficient=1 * mV / K,
+            sidewall_junction_capacitance_temperature_coefficient=2e-3 / K,
+            series_resistance_temperature_coefficient=2e-3 / K,
+            transit_time_temperature_coefficient=1e-3 / K,
+            grading_coefficient_temperature_coefficient=1e-3 / K,
+            nominal_temperature=celsius(30),
+            flicker_coefficient=1e-14,
+            flicker_exponent=1.2,
+        ),
+        name="D1",
+    )
+    behind = c.place(
+        devices.diode(
+            saturation_current=10 * fA,
+            emission_coefficient=1.1,
+            series_resistance=5 * ohm,
+            junction_capacitance=1 * pF,
+            forward_knee_current=10 * mA,
+            sidewall_saturation_current=2 * fA,
+            sidewall_emission_coefficient=1.4,
+            sidewall_series_resistance=40 * ohm,
+            sidewall_junction_capacitance=0.2 * pF,
+            breakdown_voltage=7 * V,
+            breakdown_current=0.1 * mA,
+            breakdown_emission_coefficient=1.5,
+            breakdown_temperature_coefficient=2e-4 / K,
+            temperature_model=1,
+            flicker_coefficient=1e-14,
+        ),
+        name="D2",
+    )
+    c.connect(source.positive, resistor.a, name="in")
+    c.connect(resistor.b, beside.anode, behind.anode, name="out")
+    c.connect(beside.cathode, behind.cathode, source.negative, ground)
+
+
+@component
 def rectifier(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     mains = Sine(offset=0 * V, amplitude=5 * V, frequency=1 * kHz, phase=0.3)
@@ -1061,6 +1145,31 @@ def cmos_inverter(c: Builder) -> None:
 
 
 @component
+def varactor(c: Builder) -> None:
+    """A sine through 1 kΩ onto a behavioral capacitor of a varactor's charge.
+
+    Its charge, ``1 pC/V · v + 0.5 pC · tanh(2 v / V)``, holds a capacitance of 2 pF at
+    0 V, falling to 1 pF far from it; 100 kΩ across it gives its node a DC path.
+    """
+    ground = c.port("ground", Role.GROUND)
+    signal = Sine(
+        offset=0.5 * V, amplitude=2 * V, frequency=10 * MHz, phase=math.pi / 2
+    )
+    source = c.place(devices.voltage_source(signal), name="V1")
+    series = c.place(devices.resistor(1 * kohm), name="R1")
+    charged = c.place(
+        devices.behavioral_capacitor(
+            "1e-12 * v(positive, negative) + 5e-13 * tanh(2 * v(positive, negative))"
+        ),
+        name="C1",
+    )
+    shunt = c.place(devices.resistor(100 * kohm), name="R2")
+    c.connect(source.positive, series.a, name="in")
+    c.connect(series.b, charged.positive, shunt.a, name="out")
+    c.connect(source.negative, charged.negative, shunt.b, ground)
+
+
+@component
 def behavioral(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     signal = Sine(
@@ -1620,6 +1729,7 @@ def flickering(c: Builder) -> None:
         divider,
         clipper,
         zener_clamp,
+        junction_parts,
         amplifier,
         rectifier,
         jfet_stage,
@@ -1706,6 +1816,7 @@ TEMPERATURES = {"cold": celsius(-40), "hot": celsius(125)}
     [
         clipper,
         zener_clamp,
+        junction_parts,
         jfet_stage,
         p_jfet_follower,
         bjt_stage,
@@ -1738,6 +1849,7 @@ def test_operating_points_agree_across_temperatures(
     ("top", "source", "levels"),
     [
         (zener_clamp, "V1", linear(-12 * V, 2 * V, 141)),
+        (junction_parts, "V1", linear(-12 * V, 2 * V, 141)),
         (jfet_curves, "V2", linear(-2 * V, 6 * V, 81)),
         (pnp_mirror, "V1", linear(0 * V, 12 * V, 61)),
         (mosfet_curves, "V1", linear(-1 * V, 5 * V, 61)),
@@ -1773,7 +1885,8 @@ def test_dc_sweeps_agree_across_temperatures(
 
 @pytest.mark.parametrize("temperature", TEMPERATURES.values(), ids=TEMPERATURES.keys())
 @pytest.mark.parametrize(
-    "top", [bjt_amplifier, nmos_stage, power_stage, drifting, drifting_apart]
+    "top",
+    [bjt_amplifier, nmos_stage, power_stage, drifting, drifting_apart, junction_parts],
 )
 def test_ac_responses_agree_across_temperatures(
     top: Callable[[], Component], temperature: Quantity
@@ -1887,6 +2000,7 @@ def test_dc_sweeps_agree(
         cmos_inverter,
         power_stage,
         behavioral,
+        varactor,
         switched,
         current_switched,
         transformer,
@@ -1923,6 +2037,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
         (level_three_stage, "V1"),
         (power_stage, "V1"),
         (flickering, "V1"),
+        (junction_parts, "V1"),
     ],
 )
 def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
@@ -2038,6 +2153,7 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
         (power_stage, 20 * us, 20 * ns),
         (vdmos_buck, 16 * us, 10 * ns),
         (behavioral, 300 * us, 0.5 * us),
+        (varactor, 200 * ns, 0.2 * ns),
         (switched, 200 * us, 0.2 * us),
         (current_switched, 200 * us, 0.2 * us),
         (curved, 3 * ms, 2 * us),
