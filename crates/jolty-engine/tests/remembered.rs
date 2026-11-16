@@ -331,7 +331,7 @@ fn a_dc_sweep_leaves_the_operating_point_to_the_analyses_after_it() {
         Analysis::DcSweep(DcSweep {
             source: "V1".to_owned(),
             parameter: None,
-            levels,
+            values: levels,
         })
     };
     let own = sweep(vec![1.0, 1.5, 2.0]);

@@ -271,7 +271,7 @@ def command(analysis: Analysis, flat: ir.Circuit) -> str:
     match analysis:
         case OperatingPoint():
             return "op"
-        case DcSweep(source=source, levels=levels):
+        case DcSweep(source=source, values=levels):
             given = [level.to(VOLTAGE, "a level") for level in levels]
             step = (given[-1] - given[0]) / (len(given) - 1)
             element = export.element(_instance(top, source))

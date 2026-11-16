@@ -32,7 +32,7 @@ pub struct DcSweep {
     pub parameter: Option<String>,
     /// The levels, in volts or amperes for a source, or the values of the parameter in SI
     /// base units, in sweep order.
-    pub levels: Vec<f64>,
+    pub values: Vec<f64>,
 }
 
 /// The operating points of a DC sweep.
@@ -46,7 +46,7 @@ pub struct DcSweepResult {
     /// Whether the levels of a source are voltages or currents; none for a parameter.
     pub nature: Option<Nature>,
     /// The levels, or the values of the parameter.
-    pub levels: Vec<f64>,
+    pub swept: Vec<f64>,
     /// The value of every unknown at each level.
     pub values: Vec<Vec<f64>>,
     /// What the devices its options record did at each level: the current into each
@@ -85,18 +85,18 @@ impl Simulator {
         options.parallelism.confined(|| {
             self.solvable()?;
             self.prepare(options)?;
-            if sweep.levels.is_empty() {
+            if sweep.values.is_empty() {
                 return Err(SimulationError::InvalidAnalysis(
                     "a DC sweep needs at least one level".to_owned(),
                 ));
             }
-            if let Some(level) = sweep.levels.iter().find(|level| !level.is_finite()) {
+            if let Some(level) = sweep.values.iter().find(|level| !level.is_finite()) {
                 return Err(SimulationError::InvalidAnalysis(format!(
                     "a DC sweep's levels must be finite, not {level:?}"
                 )));
             }
             let swept = self.swept(sweep)?;
-            let result = self.sweep_levels(swept, &sweep.levels, options);
+            let result = self.sweep_levels(swept, &sweep.values, options);
             self.hold(swept, None)?;
             let points = result?;
             let mut values = Vec::with_capacity(points.len());
@@ -114,7 +114,7 @@ impl Simulator {
                     .parameter
                     .is_none()
                     .then(|| self.source_nature(swept.device)),
-                levels: sweep.levels.clone(),
+                swept: sweep.values.clone(),
                 values,
                 observations,
                 logic,

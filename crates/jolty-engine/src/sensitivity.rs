@@ -436,8 +436,8 @@ impl Simulator {
         result: &crate::DcSweepResult,
         options: &Options,
     ) -> Result<Vec<Vec<Vec<f64>>>, SimulationError> {
-        let mut found = Vec::with_capacity(result.levels.len());
-        for (&level, x) in result.levels.iter().zip(&result.values) {
+        let mut found = Vec::with_capacity(result.swept.len());
+        for (&level, x) in result.swept.iter().zip(&result.values) {
             self.hold(swept, Some(level))?;
             for twin in twins.iter_mut().filter(|twin| twin.device == swept.device) {
                 twin.fixed = match swept.held {

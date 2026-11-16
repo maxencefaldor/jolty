@@ -425,7 +425,7 @@ def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
     assert isinstance(swept.result, results.DcSweepResult)
     np.testing.assert_allclose(
         swept.derivative("out", "R1", "resistance"),
-        -swept.result.levels * lower / (upper + lower) ** 2,
+        -swept.result.swept * lower / (upper + lower) ** 2,
         rtol=1e-6,
     )
     np.testing.assert_allclose(
@@ -732,8 +732,8 @@ def test_a_periodic_transient_finds_the_steady_state_at_once() -> None:
 def test_a_dc_sweep_solves_each_level() -> None:
     simulation = Simulation(divider(0 * V, 1 * kohm, 1 * kohm))
     sweep = simulation.run(DcSweep("V1", linear(-1 * V, 1 * V, 5)))
-    np.testing.assert_allclose(sweep.levels, [-1, -0.5, 0, 0.5, 1])
-    np.testing.assert_allclose(sweep.voltage("out"), sweep.levels / 2, atol=1e-12)
+    np.testing.assert_allclose(sweep.swept, [-1, -0.5, 0, 0.5, 1])
+    np.testing.assert_allclose(sweep.voltage("out"), sweep.swept / 2, atol=1e-12)
 
 
 def test_a_diode_conducts_forward_and_blocks_in_reverse() -> None:

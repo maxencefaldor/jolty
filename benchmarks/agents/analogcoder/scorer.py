@@ -707,8 +707,8 @@ def adder(_: int, made: Component, problem: Problem, levels: Levels) -> list[str
     swept = Simulation(circuit(bench(made, problem, drives))).run(
         DcSweep("VIN1", linear(rest * V, (rest + STEP) * V, 51))
     )
-    expected = rest - (swept.levels - rest) - ADDEND
-    return _tracked(swept.levels, swept.voltage("vout"), expected, rest, "vin1")
+    expected = rest - (swept.swept - rest) - ADDEND
+    return _tracked(swept.swept, swept.voltage("vout"), expected, rest, "vin1")
 
 
 def subtractor(_: int, made: Component, problem: Problem, levels: Levels) -> list[str]:
@@ -723,8 +723,8 @@ def subtractor(_: int, made: Component, problem: Problem, levels: Levels) -> lis
     swept = Simulation(circuit(bench(made, problem, drives))).run(
         DcSweep("VIN1", linear((rest - low) * V, (rest - high) * V, 11))
     )
-    expected = rest - swept.levels
-    return _tracked(swept.levels, swept.voltage("vout"), expected, 0.0, "vin1")
+    expected = rest - swept.swept
+    return _tracked(swept.swept, swept.voltage("vout"), expected, 0.0, "vin1")
 
 
 def _tracked(
@@ -758,8 +758,8 @@ def schmitt(_: int, made: Component, problem: Problem, __: Levels) -> list[str]:
         swept = Simulation(circuit(bench(made, problem, drives))).run(
             DcSweep("VIN", linear(start * V, stop * V, 51))
         )
-        order = np.argsort(swept.levels)
-        inputs, output = swept.levels[order], swept.voltage("vout")[order]
+        order = np.argsort(swept.swept)
+        inputs, output = swept.swept[order], swept.voltage("vout")[order]
         high = np.flatnonzero(output > SUPPLY / 2)
         if not high.size:
             return [f"vout stays below 2.5 V as vin {direction}"]

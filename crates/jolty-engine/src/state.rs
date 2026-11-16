@@ -447,7 +447,7 @@ mod tests {
         let analyses: Vec<Analysis> = [
             json!({"transient": {"stop": 2e-6}}),
             json!("operating_point"),
-            json!({"dc_sweep": {"source": "V1", "levels": [0.0, 0.5]}}),
+            json!({"dc_sweep": {"source": "V1", "values": [0.0, 0.5]}}),
         ]
         .into_iter()
         .map(|analysis| serde_json::from_value(analysis).unwrap())

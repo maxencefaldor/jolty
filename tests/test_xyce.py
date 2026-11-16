@@ -247,7 +247,7 @@ def test_dc_sweeps_agree(
 ) -> None:
     simulation = Simulation(top())
     sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
     step = (last - first) / (len(levels) - 1)
     found = xyce.run(_lines(simulation), f".dc V{source} {first!r} {last!r} {step!r}")
     allowance = _allowance(simulation, sweep.values, REFERENCE)

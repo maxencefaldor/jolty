@@ -99,7 +99,7 @@ fn numbers_of(outcome: &AnalysisResult, numbers: &mut Vec<u64>) {
             }
         }
         AnalysisResult::DcSweep(sweep) => {
-            reals(&sweep.levels, numbers);
+            reals(&sweep.swept, numbers);
             for row in &sweep.values {
                 reals(row, numbers);
             }
@@ -481,7 +481,7 @@ fn a_run_reset_to_other_values_equals_one_made_for_them() {
     assert_ne!(before, expected, "the values make a difference");
     // A DC sweep holds a source away from its level; the reset releases it.
     let sweep: Analysis =
-        serde_json::from_value(json!({"dc_sweep": {"source": "V1", "levels": [-0.1, 0.0, 0.1]}}))
+        serde_json::from_value(json!({"dc_sweep": {"source": "V1", "values": [-0.1, 0.0, 0.1]}}))
             .expect("a sweep");
     run(&mut reused, &[sweep], &options);
     reused

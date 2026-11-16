@@ -215,7 +215,7 @@ class DcSweepReport(_Model):
     )
     first: float = Field(description="The first level, in SI base units.")
     last: float = Field(description="The last level, in SI base units.")
-    levels: int = Field(description="Levels the sweep solved.")
+    swept: int = Field(description="Values the sweep solved.")
     extents: tuple[Extent, ...]
     activities: tuple[Activity, ...] = ()
     unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
@@ -231,7 +231,7 @@ class DcSweepReport(_Model):
             first, last = format_si(self.first, unit), format_si(self.last, unit)
         head = (
             f"{self.name}: DC sweep of {swept} from {first} to {last} "
-            f"in {self.levels} levels"
+            f"in {self.swept} levels"
         )
         lines = _extents(self.extents) + _activities(self.activities)
         return _join(head, lines, self.unlisted)
@@ -928,9 +928,9 @@ def report(
                 source=result.source,
                 nature=result.nature,
                 parameter=result.parameter,
-                first=float(result.levels[0]),
-                last=float(result.levels[-1]),
-                levels=len(result.levels),
+                first=float(result.swept[0]),
+                last=float(result.swept[-1]),
+                swept=len(result.swept),
                 extents=_extents_of(unknowns, result.values[:, :max_unknowns]),
                 activities=tuple(
                     _activity(net, result.logic_level(net)) for net in nets
@@ -1177,7 +1177,7 @@ def _sensitivities(
         case results.OperatingPointResult() as point:
             of, points, strategy, unit = "operating_point", 1, point.strategy, ""
         case results.DcSweepResult() as sweep:
-            of, points, strategy = "dc_sweep", len(sweep.levels), None
+            of, points, strategy = "dc_sweep", len(sweep.swept), None
             unit = "" if sweep.nature is None else _SYMBOLS[sweep.nature]
         case results.AcResult() as response:
             of, points, unit = "ac", len(response.frequencies), "Hz"
@@ -1250,7 +1250,7 @@ def _axis(
     """The levels, frequencies or times of `result`."""
     match result:
         case results.DcSweepResult():
-            return result.levels
+            return result.swept
         case results.AcResult():
             return result.frequencies
         case results.TransientResult():

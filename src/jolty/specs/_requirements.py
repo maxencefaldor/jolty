@@ -139,7 +139,7 @@ def _engine(measure: _core.Measure, result: results.AnalysisResult) -> float:
         case results.OperatingPointsResult():
             value = measure.read_operating_points(len(result.points))
         case results.DcSweepResult():
-            value = measure.read_dc_sweep(_real(result.levels), _real(result.values))
+            value = measure.read_dc_sweep(_real(result.swept), _real(result.values))
         case results.TransientResult():
             value = measure.read_transient(_real(result.times), _real(result.values))
         case results.AcResult():

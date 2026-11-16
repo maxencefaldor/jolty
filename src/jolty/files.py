@@ -19,7 +19,7 @@ the arrays of each analysis under keys such as ``step.times``, ``step.values``,
 devices outside their domains. Its header also states the results'
 [`Provenance`][jolty.files.Provenance]: the jolty, the build and the platform that
 simulated them, and the digests of the circuit and the plan they are of. The header is
-in version 14 of the format, which holds that provenance and the regions of operation
+in version 15 of the format, which holds that provenance and the regions of operation
 each recorded transistor's model distinguishes; a file of another version is not
 read.
 
@@ -380,7 +380,7 @@ class Provenance(BaseModel):
 
 class _Header(_Names):
     format: Literal["jolty-results"] = "jolty-results"
-    version: Literal[14] = 14
+    version: Literal[15] = 15
     provenance: Provenance
     recordings: tuple[_Recording, ...] = ()
     analyses: dict[str, _Entry]
@@ -672,7 +672,7 @@ def _save(
             recording = _indexed(recordings, result.recording)
             return _OperatingPointResult(strategy=result.strategy, recording=recording)
         case results.DcSweepResult():
-            arrays[f"{name}.levels"] = result.levels
+            arrays[f"{name}.swept"] = result.swept
             arrays[f"{name}.values"] = result.values
             arrays[f"{name}.logic"] = result.logic
             arrays.update(_observed_arrays(name, result))
@@ -842,7 +842,7 @@ def _load(
                 unknowns,
                 source,
                 nature,
-                data[f"{name}.levels"],
+                data[f"{name}.swept"],
                 data[f"{name}.values"],
                 nets,
                 data[f"{name}.logic"],
@@ -1095,7 +1095,7 @@ class Batch:
 
 class _Traces(_Model):
     analysis: str
-    along: Literal["point", "level", "frequency", "time"]
+    along: Literal["point", "swept", "frequency", "time"]
     unknowns: tuple[results.Unknown, ...]
     source: str | None = None
     nature: results.Nature | None = None
@@ -1234,7 +1234,7 @@ class _Batch(_Columns):
 
 class _Batches(_Model):
     format: Literal["jolty-batches"] = "jolty-batches"
-    version: Literal[3] = 3
+    version: Literal[4] = 4
     batches: dict[str, _Batch]
 
 

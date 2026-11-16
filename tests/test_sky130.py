@@ -189,7 +189,7 @@ def test_an_inverter_switches_in_ngspice() -> None:
     assert np.all(np.diff(transfer) <= 1e-9)
     assert transfer[0] == pytest.approx(1.8, abs=1e-3)
     assert transfer[-1] == pytest.approx(0, abs=1e-3)
-    threshold = np.interp(0.9, transfer[::-1], sweep.levels[::-1])
+    threshold = np.interp(0.9, transfer[::-1], sweep.swept[::-1])
     assert 0.6 < threshold < 1.2
     transient = simulation.run(Transient(stop=10 * ns, max_step=0.05 * ns))
     assert transient.statistics.accepted == len(transient.times)

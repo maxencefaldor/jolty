@@ -82,7 +82,7 @@ fn measures_read_a_point_a_sweep_and_a_transient() {
 
     let sweep = run(
         &mut simulator,
-        &json!({"dc_sweep": {"source": "V1", "levels": [3.0, 1.0, 2.0]}}),
+        &json!({"dc_sweep": {"source": "V1", "values": [3.0, 1.0, 2.0]}}),
     );
     let jolty_engine::AnalysisResult::DcSweep(swept) = &sweep else {
         panic!("a sweep")
@@ -504,7 +504,7 @@ impl Numbers {
             0 => AnalysisResult::OperatingPoint(self.real.first().map_or(&[], Vec::as_slice)),
             1 => AnalysisResult::OperatingPoints(self.count),
             2 => AnalysisResult::DcSweep {
-                levels: &self.points,
+                swept: &self.points,
                 values: real,
             },
             3 => AnalysisResult::Transient {

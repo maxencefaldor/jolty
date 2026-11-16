@@ -563,7 +563,7 @@ pub(crate) fn outcome_to_python(
             result.set_item("source", sweep.source)?;
             result.set_item("parameter", sweep.parameter)?;
             result.set_item("nature", sweep.nature.map(quantity_name))?;
-            result.set_item("levels", PyArray1::from_vec(py, sweep.levels))?;
+            result.set_item("swept", PyArray1::from_vec(py, sweep.swept))?;
             result.set_item("values", stacked(py, sweep.values)?)?;
             add_observations(&result, sweep.observations)?;
             let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();

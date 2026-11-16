@@ -337,9 +337,9 @@ def _steps(
     levels = result.logic_level(net)
     edges = np.concatenate(
         [
-            result.levels[:1],
-            (result.levels[1:] + result.levels[:-1]) / 2,
-            result.levels[-1:],
+            result.swept[:1],
+            (result.swept[1:] + result.swept[:-1]) / 2,
+            result.swept[-1:],
         ]
     )
     return edges, np.append(levels, levels[-1])
@@ -510,13 +510,13 @@ def envelope(name: str, traces: results.Traces) -> Figure:
         for each in axes:
             each.set_xscale("log")
     unit = {"time": "s", "frequency": "Hz"}.get(traces.along, "")
-    if traces.along == "level" and traces.nature is not None:
+    if traces.along == "swept" and traces.nature is not None:
         unit = _UNITS[traces.nature]
     axes[-1].xaxis.set_major_formatter(EngFormatter(unit=unit, sep=" "))
     along = {
         "time": "time",
         "frequency": "frequency",
-        "level": f"{traces.source} {traces.parameter or traces.nature}",
+        "swept": f"{traces.source} {traces.parameter or traces.nature}",
         "point": "",
     }[traces.along]
     axes[-1].set_xlabel(along, color=MUTED)
@@ -586,7 +586,7 @@ def _abscissa(result: Plotted) -> tuple[results.Real, str]:
             return result.times, "s"
         case results.DcSweepResult():
             unit = "" if result.nature is None else _UNITS[result.nature]
-            return result.levels, unit
+            return result.swept, unit
         case results.AcResult() | results.StabilityResult() | results.NoiseResult():
             return result.frequencies, "Hz"
         case results.PoleZeroResult():

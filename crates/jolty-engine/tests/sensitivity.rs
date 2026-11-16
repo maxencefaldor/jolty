@@ -283,7 +283,7 @@ fn sensitivities_along_a_sweep_match_finite_differences() {
     let sweep = Differentiated::DcSweep(DcSweep {
         source: "V1".to_owned(),
         parameter: None,
-        levels: (0..=10).map(|step| f64::from(step) * 0.5).collect(),
+        values: (0..=10).map(|step| f64::from(step) * 0.5).collect(),
     });
     let names = assert_matches(&diode(), &["a", "V1:current"], &sweep, 1e-5);
     assert_eq!(names[0], "V1.waveform.dc");

@@ -90,7 +90,7 @@ def errors(made: Component, board: Board) -> list[float]:
     swept = board.simulation(circuit(bench(made)), SUPPLIES).run(
         DcSweep("IIN", linear(0 * A, 200 * uA, 41))
     )
-    found = [_error(swept.levels, np.abs(swept.current("VM")))]
+    found = [_error(swept.swept, np.abs(swept.current("VM")))]
     for frequency in FREQUENCIES:
         period = 1 / frequency
         waveforms = board.simulation(circuit(bench(made, frequency)), SUPPLIES).run(

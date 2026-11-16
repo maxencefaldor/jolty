@@ -282,13 +282,13 @@ impl Measure {
     /// What the measure reads of a DC sweep's `levels` and `values`, one row per level.
     fn read_dc_sweep(
         &self,
-        levels: &Bound<'_, PyArray1<f64>>,
+        swept: &Bound<'_, PyArray1<f64>>,
         values: &Bound<'_, PyArray2<f64>>,
     ) -> PyResult<f64> {
-        let levels = levels.readonly();
+        let swept = swept.readonly();
         let values = values.readonly();
         self.read(&AnalysisResult::DcSweep {
-            levels: &slice(&levels),
+            swept: &slice(&swept),
             values: &Rows(values.as_array()),
         })
     }

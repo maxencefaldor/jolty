@@ -256,7 +256,7 @@ def _commands(
     match analysis:
         case OperatingPoint():
             return ["op"], None, ""
-        case DcSweep(source=source, levels=levels):
+        case DcSweep(source=source, values=levels):
             values = [level.value for level in levels]
             step = values[1] - values[0] if len(values) > 1 else 1.0
             element = _element(circuit, source)
@@ -458,8 +458,8 @@ def _result(
             )
         case results.DcSweepResult():
             sweep = raw.vectors.get("v(v-sweep)")
-            levels = jolty.levels if sweep is None else sweep.real
-            levels = jolty.levels if len(levels) != len(table) else levels
+            levels = jolty.swept if sweep is None else sweep.real
+            levels = jolty.swept if len(levels) != len(table) else levels
             return results.DcSweepResult(
                 jolty.unknowns, jolty.source, jolty.nature, levels, table.real
             )
@@ -700,7 +700,7 @@ def _trace(
             magnitude = np.abs(result.values[:, column])
             return result.frequencies, 20 * np.log10(np.maximum(magnitude, 1e-300))
         case results.DcSweepResult():
-            return result.levels, result.values[:, column].real
+            return result.swept, result.values[:, column].real
         case results.TransientResult():
             return result.times, result.values[:, column].real
     return np.empty(0), np.empty(0)

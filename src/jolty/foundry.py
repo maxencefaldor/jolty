@@ -207,7 +207,7 @@ class _Deck:
             unknowns=self.unknowns(),
             source=sweep.source,
             nature=nature,
-            levels=levels,
+            swept=levels,
             values=values,
         )
 
@@ -485,7 +485,7 @@ def _sweep(
     """
     found, nature = _source(flat, sweep.source)
     dimension = VOLTAGE if nature == "voltage" else CURRENT
-    given = [level.to(dimension, "a sweep level") for level in sweep.levels]
+    given = [level.to(dimension, "a sweep level") for level in sweep.values]
     levels = np.array(given)
     if len(levels) < 2:  # noqa: PLR2004 - a sweep's first and last levels
         message = "ngspice sweeps a source through two levels or more"

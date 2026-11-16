@@ -24,11 +24,11 @@ from jolty.units import FREQUENCY, TIME, Dimension, Quantity, finite
 class Dc:
     """A constant level."""
 
-    level: Quantity
+    value: Quantity
 
-    def to_json(self, level: Dimension) -> JsonValue:
-        """The waveform in the circuit format, its levels checked against `level`."""
-        return {"dc": self.level.to(level, "a DC level")}
+    def to_json(self, dimension: Dimension) -> JsonValue:
+        """The waveform in the circuit format, checked against `dimension`."""
+        return {"dc": self.value.to(dimension, "a DC level")}
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,11 +43,11 @@ class Pulse:
     delay: Quantity = field(default_factory=lambda: Quantity(0.0, TIME))
     period: Quantity | None = None
 
-    def to_json(self, level: Dimension) -> JsonValue:
-        """The waveform in the circuit format, its levels checked against `level`."""
+    def to_json(self, dimension: Dimension) -> JsonValue:
+        """The waveform in the circuit format, checked against `dimension`."""
         pulse: dict[str, JsonValue] = {
-            "initial": self.initial.to(level, "a pulse's initial level"),
-            "pulsed": self.pulsed.to(level, "a pulse's pulsed level"),
+            "initial": self.initial.to(dimension, "a pulse's initial level"),
+            "pulsed": self.pulsed.to(dimension, "a pulse's pulsed level"),
             "delay": self.delay.to(TIME, "a pulse's delay"),
             "rise": self.rise.to(TIME, "a pulse's rise"),
             "fall": self.fall.to(TIME, "a pulse's fall"),
@@ -74,12 +74,12 @@ class Sine:
     damping: Quantity = field(default_factory=lambda: Quantity(0.0, FREQUENCY))
     phase: float = 0.0
 
-    def to_json(self, level: Dimension) -> JsonValue:
-        """The waveform in the circuit format, its levels checked against `level`."""
+    def to_json(self, dimension: Dimension) -> JsonValue:
+        """The waveform in the circuit format, checked against `dimension`."""
         return {
             "sine": {
-                "offset": self.offset.to(level, "a sine's offset"),
-                "amplitude": self.amplitude.to(level, "a sine's amplitude"),
+                "offset": self.offset.to(dimension, "a sine's offset"),
+                "amplitude": self.amplitude.to(dimension, "a sine's amplitude"),
                 "frequency": self.frequency.to(FREQUENCY, "a sine's frequency"),
                 "delay": self.delay.to(TIME, "a sine's delay"),
                 "damping": self.damping.to(FREQUENCY, "a sine's damping"),
@@ -94,10 +94,10 @@ class Piecewise:
 
     points: Sequence[tuple[Quantity, Quantity]]
 
-    def to_json(self, level: Dimension) -> JsonValue:
-        """The waveform in the circuit format, its levels checked against `level`."""
+    def to_json(self, dimension: Dimension) -> JsonValue:
+        """The waveform in the circuit format, checked against `dimension`."""
         points: list[JsonValue] = [
-            [time.to(TIME, "a point's time"), value.to(level, "a point's level")]
+            [time.to(TIME, "a point's time"), value.to(dimension, "a point's level")]
             for time, value in self.points
         ]
         return {"piecewise": {"points": points}}

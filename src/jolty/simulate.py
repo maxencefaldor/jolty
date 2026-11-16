@@ -889,16 +889,16 @@ class Simulation:
         A parameter's levels are all of the dimension of the first.
         """
         if sweep.parameter is not None:
-            return sweep.levels[0].dimension if sweep.levels else DIMENSIONLESS
+            return sweep.values[0].dimension if sweep.values else DIMENSIONLESS
         match self.circuit.find(sweep.source):
             case ir.Instance(of=ir.DeviceOf(model="current_source")):
                 return CURRENT
             case ir.Instance(of=ir.DeviceOf(model="voltage_source")):
                 return VOLTAGE
-        if not sweep.levels:
+        if not sweep.values:
             return VOLTAGE
         # Not an independent source: the engine reports it, whatever the levels.
-        return sweep.levels[0].dimension
+        return sweep.values[0].dimension
 
     def _result(
         self, outcome: _core.AnalysisResult, recording: results.Recording
@@ -918,7 +918,7 @@ class Simulation:
                     unknowns,
                     outcome["source"],
                     outcome["nature"],
-                    outcome["levels"],
+                    outcome["swept"],
                     outcome["values"],
                     nets,
                     outcome["logic"],
@@ -1779,9 +1779,9 @@ class _Columns:
                 self.causes[mask, place] = self.told(reason)
 
 
-_ALONG: Final[dict[type, Literal["point", "level", "frequency", "time"]]] = {
+_ALONG: Final[dict[type, Literal["point", "swept", "frequency", "time"]]] = {
     OperatingPoint: "point",
-    DcSweep: "level",
+    DcSweep: "swept",
     Ac: "frequency",
     Transient: "time",
 }
@@ -1791,7 +1791,7 @@ _ALONG: Final[dict[type, Literal["point", "level", "frequency", "time"]]] = {
 def _points(analysis: Analysis) -> int:
     """How many points a batch traces `analysis` along."""
     match analysis:
-        case DcSweep(levels=levels):
+        case DcSweep(values=levels):
             return len(levels)
         case Ac(frequencies=frequencies):
             return len(frequencies)
@@ -1806,7 +1806,7 @@ def _axis(analysis: Analysis, simulation: Simulation) -> results.Real:
         case DcSweep():
             level = simulation._level(analysis)  # noqa: SLF001 - one simulation's own
             return np.array(
-                [value.to(level, "a sweep level") for value in analysis.levels]
+                [value.to(level, "a sweep level") for value in analysis.values]
             )
         case Ac(frequencies=frequencies):
             return np.array([each.to(FREQUENCY, "a frequency") for each in frequencies])

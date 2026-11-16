@@ -144,15 +144,15 @@ class DcSweep(Recorded):
     """
 
     source: str
-    levels: Sequence[Quantity]
+    values: Sequence[Quantity]
     parameter: str | None = None
 
-    def to_json(self, level: Dimension) -> JsonValue:
-        """The analysis in the engine's format, its levels checked against `level`."""
-        levels: list[JsonValue] = [
-            value.to(level, "a sweep level") for value in self.levels
+    def to_json(self, dimension: Dimension) -> JsonValue:
+        """The analysis in the engine's format, checked against `dimension`."""
+        values: list[JsonValue] = [
+            value.to(dimension, "a sweep level") for value in self.values
         ]
-        sweep: dict[str, JsonValue] = {"source": self.source, "levels": levels}
+        sweep: dict[str, JsonValue] = {"source": self.source, "values": values}
         if self.parameter is not None:
             sweep["parameter"] = self.parameter
         return {"dc_sweep": sweep}

@@ -351,7 +351,7 @@ enum Points {
     /// An operating point's one point.
     Point,
     /// A DC sweep's levels, of which there are so many.
-    Levels(usize),
+    Swept(usize),
     /// A small-signal response's frequencies, of which there are so many.
     Frequencies(usize),
     /// The times of a transient, its values interpolated linearly between the times it
@@ -366,7 +366,7 @@ impl Points {
     fn from_analysis(analysis: &Analysis) -> PyResult<Self> {
         Ok(match analysis {
             Analysis::OperatingPoint => Self::Point,
-            Analysis::DcSweep(sweep) => Self::Levels(sweep.levels.len()),
+            Analysis::DcSweep(sweep) => Self::Swept(sweep.values.len()),
             Analysis::Ac(response) => Self::Frequencies(response.frequencies.len()),
             Analysis::Transient(transient) => Self::Times(transient.breakpoints.clone()),
             _ => {
@@ -381,7 +381,7 @@ impl Points {
     fn len(&self) -> usize {
         match self {
             Self::Point => 1,
-            Self::Levels(count) | Self::Frequencies(count) => *count,
+            Self::Swept(count) | Self::Frequencies(count) => *count,
             Self::Times(times) => times.len(),
         }
     }
@@ -635,7 +635,7 @@ fn trace(outcome: &Run, traces: &Traced) -> Vec<Complex64> {
         (jolty_engine::AnalysisResult::OperatingPoint(point), Points::Point) => {
             put(0, &|column| real(&point.values, column));
         }
-        (jolty_engine::AnalysisResult::DcSweep(sweep), Points::Levels(_)) => {
+        (jolty_engine::AnalysisResult::DcSweep(sweep), Points::Swept(_)) => {
             for (level, values) in sweep.values.iter().enumerate() {
                 put(level, &|column| real(values, column));
             }

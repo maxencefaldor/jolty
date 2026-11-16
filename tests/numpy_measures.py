@@ -915,7 +915,7 @@ def _traced(
             axis = _Axis(result.times, TIME, "time")
         case results.DcSweepResult():
             along = VOLTAGE if result.nature == "voltage" else CURRENT
-            axis = _Axis(result.levels, along, f"level of {result.source}")
+            axis = _Axis(result.swept, along, f"level of {result.source}")
         case _:
             message = f"{what} reads a transient or a DC sweep, not {_kind(result)}"
             raise MeasureError(message)

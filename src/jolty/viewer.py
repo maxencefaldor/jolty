@@ -193,10 +193,10 @@ def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | 
         case results.OperatingPointResult():
             return "operating_point", np.zeros(1), "", ""
         case results.DcSweepResult() if result.parameter is not None:
-            return "dc_sweep", result.levels, f"{result.source} {result.parameter}", ""
+            return "dc_sweep", result.swept, f"{result.source} {result.parameter}", ""
         case results.DcSweepResult():
             unit = "A" if result.nature == "current" else "V"
-            return "dc_sweep", result.levels, f"{result.source} level", unit
+            return "dc_sweep", result.swept, f"{result.source} level", unit
         case results.TransientResult():
             return "transient", result.times, "time", "s"
         case results.AcResult():

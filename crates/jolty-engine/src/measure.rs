@@ -304,8 +304,8 @@ pub enum AnalysisResult<'a> {
     OperatingPoints(usize),
     /// A DC sweep: its source's levels, and the unknowns' values at each.
     DcSweep {
-        /// The levels.
-        levels: &'a [f64],
+        /// The values swept.
+        swept: &'a [f64],
         /// The values, one row per level.
         values: &'a dyn Table<f64>,
     },
@@ -374,7 +374,7 @@ impl<'a> From<&'a OperatingPointResult> for AnalysisResult<'a> {
 impl<'a> From<&'a DcSweepResult> for AnalysisResult<'a> {
     fn from(sweep: &'a DcSweepResult) -> Self {
         Self::DcSweep {
-            levels: &sweep.levels,
+            swept: &sweep.swept,
             values: &sweep.values,
         }
     }
@@ -983,7 +983,7 @@ fn traced<'a>(
 ) -> Result<(Cow<'a, [f64]>, Vec<f64>), MeasureError> {
     let (points, table) = match *results {
         AnalysisResult::Transient { times, values } => (times, values),
-        AnalysisResult::DcSweep { levels, values } if !transient => (levels, values),
+        AnalysisResult::DcSweep { swept, values } if !transient => (swept, values),
         _ => return Err(MeasureError::Kind),
     };
     let mut values = signal.trace(table)?;

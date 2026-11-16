@@ -1674,7 +1674,7 @@ def test_dc_sweeps_agree_across_temperatures(
 ) -> None:
     simulation = Simulation(top(), temperature)
     sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
     step = (last - first) / (len(levels) - 1)
     command = f"dc V{source} {first!r} {last!r} {step!r}"
     raw = ngspice.run(
@@ -1762,7 +1762,7 @@ def test_dc_sweeps_agree(
 ) -> None:
     simulation = Simulation(top())
     sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
     step = (last - first) / (len(levels) - 1)
     command = f"dc V{source} {first!r} {last!r} {step!r}"
     raw = ngspice.run(netlist(simulation.circuit), command)
@@ -2024,7 +2024,7 @@ def test_vendors_cards_sweep_as_in_ngspice(
     read = spice.load(vendor_cards).component(part)
     simulation = Simulation(power_curves(read, sign, _PINS))
     sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
     step = (last - first) / (len(levels) - 1)
     command = f"dc V{source} {first!r} {last!r} {step!r}"
     raw = ngspice.run(netlist(simulation.circuit), command, libraries=(vendor_cards,))
@@ -2245,7 +2245,7 @@ def _bsim3_sweep(
 ) -> None:
     """Asserts a DC sweep of `source` over `levels` agrees with ngspice's."""
     sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
     step = (last - first) / (len(levels) - 1)
     command = f"dc V{source} {first!r} {last!r} {step!r}"
     raw = ngspice.run(netlist(simulation.circuit), command, temperature=kelvins)
@@ -2533,7 +2533,7 @@ def test_published_bsim3_cards_sweep_as_in_ngspice(
     bounds = (-1.0, 3.3) if source == "V2" else (-0.5, 3.3)
     levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 87)
     sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
     step = (last - first) / (len(levels) - 1)
     raw = ngspice.run(
         netlist(simulation.circuit),
@@ -2596,7 +2596,7 @@ def test_binned_bsim3_cards_sweep_as_in_ngspice(
     bounds = (-1.0, 3.3) if source == "V2" else (-0.5, 3.3)
     levels = linear(bounds[0] * V, bounds[1] * V, 87)
     sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
     step = (last - first) / (len(levels) - 1)
     raw = ngspice.run(
         netlist(simulation.circuit),
@@ -2773,7 +2773,7 @@ def test_vbic_curves_agree(polarity: str, source: str, temperature: Quantity) ->
     bounds = (0.2, 1.0) if source == "V1" else (-0.5, 3.0)
     levels = linear(sign * bounds[0] * V, sign * bounds[1] * V, 81)
     sweep = simulation.run(DcSweep(source, levels), TIGHT)
-    first, last = float(sweep.levels[0]), float(sweep.levels[-1])
+    first, last = float(sweep.swept[0]), float(sweep.swept[-1])
     step = (last - first) / (len(levels) - 1)
     command = f"dc V{source} {first!r} {last!r} {step!r}"
     raw = ngspice.run(

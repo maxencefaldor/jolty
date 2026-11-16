@@ -656,7 +656,7 @@ class DcSweepResult(_Devices[Real], _Watched):
     """The path of the swept instance, such as ``V1``."""
     nature: Nature | None
     """Whether the levels are voltages or currents; None for a parameter's."""
-    levels: Real
+    swept: Real
     values: Real
     nets: tuple[str, ...] = ()
     """The logic nets, in the order of `logic`'s columns."""
@@ -1229,7 +1229,7 @@ class Traces:
 
     analysis: str
     """The analysis, by name."""
-    along: Literal["point", "level", "frequency", "time"]
+    along: Literal["point", "swept", "frequency", "time"]
     """What the points are."""
     axis: Real
     """Each point: a level, a frequency or a time; none at an operating point."""

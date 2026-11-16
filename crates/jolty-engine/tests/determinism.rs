@@ -999,7 +999,7 @@ fn a_chain_of_levels_is_the_dc_sweep_of_them() {
     .expect("a batch");
     let (found, _) = run_on(&batch, &grid, &only(0..grid.len()), 4);
     let sweep: Analysis =
-        serde_json::from_value(json!({"dc_sweep": {"source": "V1", "levels": levels}}))
+        serde_json::from_value(json!({"dc_sweep": {"source": "V1", "values": levels}}))
             .expect("a sweep");
     let mut simulator =
         Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
@@ -1077,7 +1077,7 @@ fn within_tolerance(found: f64, expected: f64) -> bool {
 fn a_sweep_of_a_kernels_number_evaluates_each_value() {
     let elaborated = shared(&forward_diode());
     let sweep: Analysis = serde_json::from_value(json!({"dc_sweep": {
-        "source": "D1", "parameter": "saturation_current", "levels": SATURATION_CURRENTS,
+        "source": "D1", "parameter": "saturation_current", "values": SATURATION_CURRENTS,
     }}))
     .expect("a sweep");
     let mut simulator =

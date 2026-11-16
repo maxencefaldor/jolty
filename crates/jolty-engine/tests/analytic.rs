@@ -313,7 +313,7 @@ fn a_dc_sweep_traces_the_diode_curve() {
     let sweep = DcSweep {
         source: "V1".to_owned(),
         parameter: None,
-        levels: levels.clone(),
+        values: levels.clone(),
     };
     let options = Options {
         relative_tolerance: 1e-9,
@@ -361,7 +361,7 @@ fn a_dc_sweep_steps_any_number_of_a_device() {
     let sweep = DcSweep {
         source: "R1".to_owned(),
         parameter: Some("resistance".to_owned()),
-        levels: levels.clone(),
+        values: levels.clone(),
     };
     let result = simulator.dc_sweep(&sweep, &Options::default()).unwrap();
     assert_eq!(
@@ -409,7 +409,7 @@ fn a_dc_sweep_cannot_change_the_unknowns_of_its_device() {
     let sweep = |levels: Vec<f64>, parameter: &str| DcSweep {
         source: "R1".to_owned(),
         parameter: Some(parameter.to_owned()),
-        levels,
+        values: levels,
     };
     // Below 1 Ω, a resistor carries its current as an unknown of its own.
     let crossed = simulator.dc_sweep(&sweep(vec![10.0, 0.5], "resistance"), &Options::default());
@@ -1319,7 +1319,7 @@ fn analyses_name_what_they_cannot_find() {
     let missing = DcSweep {
         source: "V9".to_owned(),
         parameter: None,
-        levels: vec![1.0],
+        values: vec![1.0],
     };
     assert_eq!(
         simulator.dc_sweep(&missing, &options),
@@ -1764,7 +1764,7 @@ fn a_circuit_of_a_foundrys_device_elaborates_but_no_analysis_solves_it() {
         Analysis::DcSweep(DcSweep {
             source: "V1".to_owned(),
             parameter: None,
-            levels: vec![0.0, 1.8],
+            values: vec![0.0, 1.8],
         }),
         Analysis::Ac(Ac {
             source: "V1".to_owned(),
