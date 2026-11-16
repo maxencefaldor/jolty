@@ -17,8 +17,8 @@ Simulate it with `jolty simulate examples/timer_555.py`.
 
 | Requirement | jolty |
 | --- | --- |
-| frequency of out from 500 µs in run ≥ 6.664 kHz and ≤ 7.076 kHz | 6.73241 kHz, passed |
-| maximum of timing from 500 µs in run ≥ 5.9 V and ≤ 6.1 V | 6.00839 V, passed |
+| frequency of out from 500 µs in run ≥ 6.664 kHz and ≤ 7.076 kHz | 6.7325 kHz, passed |
+| maximum of timing from 500 µs in run ≥ 5.9 V and ≤ 6.1 V | 6.0084 V, passed |
 
 ## Checked in closed form
 

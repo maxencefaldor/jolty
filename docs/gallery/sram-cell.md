@@ -17,10 +17,10 @@ Simulate it with `jolty simulate examples/sram_cell.py`.
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| X1/q at 9 ns in write ≥ 3.29 V and ≤ 3.31 V | 3.3 V, passed | 3.3 V, passed | 6.7e-16 |
-| X1/q_bar at 9 ns in write ≥ -10 mV and ≤ 10 mV | 12.2891 nV, passed | 12.2891 nV, passed | 2.4e-07 |
-| X1/q at 19 ns in write ≥ -10 mV and ≤ 10 mV | 12.2891 nV, passed | 12.2891 nV, passed | 1.3e-07 |
-| X1/q_bar at 19 ns in write ≥ 3.29 V and ≤ 3.31 V | 3.3 V, passed | 3.3 V, passed | 6.7e-16 |
+| X1/q at 9 ns in write ≥ 3.29 V and ≤ 3.31 V | 3.3 V, passed | 3.3 V, passed | 4.6e-15 |
+| X1/q_bar at 9 ns in write ≥ -10 mV and ≤ 10 mV | 12.2891 nV, passed | 12.2891 nV, passed | 1.3e-07 |
+| X1/q at 19 ns in write ≥ -10 mV and ≤ 10 mV | 12.2891 nV, passed | 12.2891 nV, passed | 5.2e-08 |
+| X1/q_bar at 19 ns in write ≥ 3.29 V and ≤ 3.31 V | 3.3 V, passed | 3.3 V, passed | 1.3e-16 |
 
 ## Replicated in ngspice
 
@@ -29,9 +29,7 @@ A transient compares each of ngspice's points with jolty's waveform within one o
 
 | Analysis | Voltages | Largest deviation | Currents | Largest deviation |
 | --- | --- | --- | --- | --- |
-| `write` | 6 | 6.4e-05 | 4 | 0.88 % |
-
-ngspice could not finish `write` with tolerances as tight as jolty's, so it ran with its own defaults.
+| `write` | 6 | 0.22 % | 4 | 4.5 % |
 
 ![The replication in ngspice](../images/gallery/sram_cell.write.replication.png)
 

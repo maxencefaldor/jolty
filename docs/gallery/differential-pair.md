@@ -16,7 +16,7 @@ Simulate it with `jolty simulate examples/differential_pair.py`.
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
 | left relative to right in op ≥ -1 mV and ≤ 1 mV | 0 V, passed | 888.178 aV, passed | 1e+02 % |
-| right relative to left at 200 mV in transfer ≥ 9.85 V and ≤ 10.05 V | 9.91669 V, passed | 9.91669 V, passed | 1.3e-11 |
+| right relative to left at 200 mV in transfer ≥ 9.85 V and ≤ 10.05 V | 9.91669 V, passed | 9.91669 V, passed | 5.9e-12 |
 | right relative to left at -200 mV in transfer ≥ -10.05 V and ≤ -9.85 V | -9.91686 V, passed | -9.91686 V, passed | 2.4e-11 |
 
 ## Replicated in ngspice

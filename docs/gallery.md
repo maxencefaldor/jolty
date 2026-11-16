@@ -13,7 +13,7 @@ Passive and active filters, their responses in closed form.
 
 -   ![RC low-pass filter, its schematic](images/gallery/rc_filter.schematic.png)
 
-    **[RC low-pass filter](gallery/rc-filter.md)** · 4/4 specs · ngspice within 9.0e-16
+    **[RC low-pass filter](gallery/rc-filter.md)** · 4/4 specs · ngspice within 4.6e-16
 
     A first-order RC low-pass filter: its step response and its frequency response.
 
@@ -21,7 +21,7 @@ Passive and active filters, their responses in closed form.
 
 -   ![Series RLC band-pass, its schematic](images/gallery/rlc_bandpass.schematic.png)
 
-    **[Series RLC band-pass](gallery/rlc-bandpass.md)** · 3/3 specs · ngspice within 5.4e-04
+    **[Series RLC band-pass](gallery/rlc-bandpass.md)** · 3/3 specs · ngspice within 5.2e-04
 
     A series RLC band-pass filter, its output across the resistor.
 
@@ -29,7 +29,7 @@ Passive and active filters, their responses in closed form.
 
 -   ![Fifth-order Butterworth ladder, its schematic](images/gallery/butterworth_ladder.schematic.png)
 
-    **[Fifth-order Butterworth ladder](gallery/butterworth-ladder.md)** · 5/5 specs · ngspice within 2.2e-09
+    **[Fifth-order Butterworth ladder](gallery/butterworth-ladder.md)** · 5/5 specs · ngspice within 7.3e-06
 
     A fifth-order Butterworth low-pass filter: an LC ladder between two 50 Ω ends.
 
@@ -45,7 +45,7 @@ Passive and active filters, their responses in closed form.
 
 -   ![Sallen-Key low-pass, its schematic](images/gallery/sallen_key.schematic.png)
 
-    **[Sallen-Key low-pass](gallery/sallen-key.md)** · 4/4 specs · ngspice within 2.3e-08
+    **[Sallen-Key low-pass](gallery/sallen-key.md)** · 4/4 specs · ngspice within 2.5e-06
 
     A unity-gain Sallen-Key low-pass filter: the second-order Butterworth response.
 
@@ -61,7 +61,7 @@ Transistors and op-amps, biased and amplifying.
 
 -   ![Inverting amplifier, its schematic](images/gallery/inverting_amplifier.schematic.png)
 
-    **[Inverting amplifier](gallery/inverting-amplifier.md)** · 3/3 specs · ngspice within 1.2e-04
+    **[Inverting amplifier](gallery/inverting-amplifier.md)** · 3/3 specs · ngspice within 4.4e-05
 
     An inverting amplifier: a gain of -10 set by two resistors around an op-amp.
 
@@ -69,7 +69,7 @@ Transistors and op-amps, biased and amplifying.
 
 -   ![Instrumentation amplifier, its schematic](images/gallery/instrumentation_amplifier.schematic.png)
 
-    **[Instrumentation amplifier](gallery/instrumentation-amplifier.md)** · 4/4 specs · ngspice within 2.6e-13
+    **[Instrumentation amplifier](gallery/instrumentation-amplifier.md)** · 4/4 specs · ngspice within 1.1e-12
 
     A three-op-amp instrumentation amplifier: a gain of 10.09 that rejects common mode.
 
@@ -109,7 +109,7 @@ Transistors and op-amps, biased and amplifying.
 
 -   ![Bandgap reference, its schematic](images/gallery/bandgap_reference.schematic.png)
 
-    **[Bandgap reference](gallery/bandgap-reference.md)** · 1/1 specs · ngspice within 1.5e-11
+    **[Bandgap reference](gallery/bandgap-reference.md)** · 1/1 specs · ngspice within 8.1e-12
 
     A bandgap voltage reference: two transistors' base-emitter voltages cancelling drift.
 
@@ -181,7 +181,7 @@ Rectifiers, regulators and switching converters.
 
 -   ![Half-wave rectifier, its schematic](images/gallery/rectifier.schematic.png)
 
-    **[Half-wave rectifier](gallery/rectifier.md)** · 0/0 specs · ngspice within 7.2e-05
+    **[Half-wave rectifier](gallery/rectifier.md)** · 0/0 specs · ngspice within 9.9e-05
 
     A half-wave rectifier: a diode charging a smoothing capacitor from a 50 Hz sine.
 
@@ -197,7 +197,7 @@ Rectifiers, regulators and switching converters.
 
 -   ![Cockcroft-Walton multiplier, its schematic](images/gallery/voltage_multiplier.schematic.png)
 
-    **[Cockcroft-Walton multiplier](gallery/voltage-multiplier.md)** · 1/1 specs · ngspice within 1.5e-04
+    **[Cockcroft-Walton multiplier](gallery/voltage-multiplier.md)** · 1/1 specs · ngspice within 0.2 %
 
     A three-stage Cockcroft-Walton multiplier: six diodes and six capacitors.
 
@@ -205,7 +205,7 @@ Rectifiers, regulators and switching converters.
 
 -   ![Buck converter, its schematic](images/gallery/buck_converter.schematic.png)
 
-    **[Buck converter](gallery/buck-converter.md)** · 3/3 specs · ngspice within 5.0e-04
+    **[Buck converter](gallery/buck-converter.md)** · 3/3 specs · ngspice within 4.7e-04
 
     A buck converter: a switch, a diode and an LC filter stepping 12 V down to 6 V.
 
@@ -213,7 +213,7 @@ Rectifiers, regulators and switching converters.
 
 -   ![Boost converter, its schematic](images/gallery/boost_converter.schematic.png)
 
-    **[Boost converter](gallery/boost-converter.md)** · 1/1 specs · ngspice within 5.9e-04
+    **[Boost converter](gallery/boost-converter.md)** · 1/1 specs · ngspice within 2.5e-04
 
     A boost converter: an inductor charged by a switch and dumped through a diode.
 
@@ -229,7 +229,7 @@ CMOS at transistor level, and logic at event speed beside analog circuits.
 
 -   ![CMOS inverter, its schematic](images/gallery/cmos_inverter.schematic.png)
 
-    **[CMOS inverter](gallery/cmos-inverter.md)** · 3/3 specs · ngspice within 4.5e-04
+    **[CMOS inverter](gallery/cmos-inverter.md)** · 3/3 specs · ngspice within 3.0e-04
 
     The CMOS inverter: its transfer curve, its switching threshold, its edges.
 
@@ -237,7 +237,7 @@ CMOS at transistor level, and logic at event speed beside analog circuits.
 
 -   ![Six-transistor SRAM cell, its schematic](images/gallery/sram_cell.schematic.png)
 
-    **[Six-transistor SRAM cell](gallery/sram-cell.md)** · 4/4 specs · ngspice within 3.5e-04
+    **[Six-transistor SRAM cell](gallery/sram-cell.md)** · 4/4 specs · ngspice within 0.22 %
 
     A six-transistor SRAM cell: two cross-coupled inverters and two access transistors.
 
