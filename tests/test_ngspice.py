@@ -44,8 +44,10 @@ from jolty import (
     Stability,
     TransferFunction,
     Transient,
+    _core,
     component,
     devices,
+    files,
     results,
     spice,
 )
@@ -2096,6 +2098,77 @@ def test_nodesets_lead_both_to_one_operating_point(nodeset: float | None) -> Non
         # The root of v = 2 tanh(v) of the nodeset's sign, 1.915 V away from zero.
         assert found * nodeset > 0
         assert abs(found) > 1.9
+
+
+@pytest.mark.parametrize("binary", [False, True], ids=["ascii", "binary"])
+def test_raw_files_read_back_as_ngspices_own(tmp_path: Path, *, binary: bool) -> None:
+    """Results written as SPICE's raw file read back as computed, and as ngspice's.
+
+    A divider's operating point and an RC's response and step read back exactly; the
+    response's file has the vectors ngspice's raw file of the same run has, written in
+    the same format, and agrees with them within 1e-6, the Newton tolerance.
+    """
+    rc = Simulation(low_pass())
+    analyses = {
+        "op": Simulation(divider()).run(OperatingPoint(), TIGHT),
+        "bode": rc.run(Ac("V1", decade(1 * kHz, 1 * MHz, 2)), TIGHT),
+        "step": rc.run(Transient(stop=4 * us, max_step=10 * ns), TIGHT),
+    }
+    path = tmp_path / "jolty.raw"
+    files.save_raw(path, analyses, binary=binary)
+    ours = ngspice.read(path.read_bytes())
+    assert [plot.plot for plot in ours] == [
+        "Operating Point",
+        "AC Analysis",
+        "Transient Analysis",
+    ]
+    for plot, result in zip(ours, analyses.values(), strict=True):
+        assert isinstance(
+            result,
+            results.OperatingPointResult | results.AcResult | results.TransientResult,
+        )
+        points = len(next(iter(plot.vectors.values())))
+        table = np.asarray(result.values).reshape(points, -1)
+        for column, unknown in enumerate(result.unknowns):
+            written = plot.vectors[ngspice_name(unknown)]
+            np.testing.assert_array_equal(written, table[:, column])
+    filetype = "binary" if binary else "ascii"
+    temperature = ngspice.option_temperature(_core.REFERENCE_TEMPERATURE)
+    executed = ngspice.execute(
+        [
+            *netlist(rc.circuit, excited="V1"),
+            ngspice.OPTIONS,
+            f".options temp={temperature!r} tnom={temperature!r}",
+            ".control",
+            f"set filetype={filetype}",
+            "set appendwrite",
+            "ac dec 2 1k 1meg",
+            f"write {ngspice.VALUES} all",
+            ".endc",
+            ".end",
+        ]
+    )
+    assert executed.values is not None
+    (theirs,) = ngspice.read(executed.values)
+    (_, bode, _) = ours
+    response = analyses["bode"]
+    # ngspice steps each frequency from the last by the decade's ratio, gathering an
+    # ulp a step, where jolty's are each the nearest float to the exact frequency.
+    np.testing.assert_allclose(
+        theirs.real("frequency"), bode.real("frequency"), rtol=1e-14, atol=0
+    )
+    for unknown in response.unknowns:
+        theirs_vector = theirs.vectors[vector(rc.circuit, unknown)]
+        scale = float(np.max(np.abs(theirs_vector)))
+        ours_vector = bode.vectors[ngspice_name(unknown)]
+        compare(ours_vector, theirs_vector, unknown, scale=scale, tolerance=1e-6)
+
+
+def ngspice_name(unknown: results.Unknown) -> str:
+    """The name ngspice's raw reader gives the vector of `unknown`."""
+    if unknown.nature == "current":
+        return f"i({unknown.name.removesuffix(':current').lower()})"
+    return f"v({unknown.name.lower()})"
 
 
 VENDOR_CARDS: Final = """\

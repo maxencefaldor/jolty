@@ -161,9 +161,9 @@ class Executed:
     seconds: float
     """Its time from its start to its exit, by the wall clock, writing the deck left
     out."""
-    values: str | None
-    """The file of values the deck writes, `VALUES`, as text, or None if it wrote
-    none."""
+    values: bytes | None
+    """The file of values the deck writes, `VALUES`, ASCII or binary, or None if it
+    wrote none."""
 
 
 VALUES: Final = "result.raw"
@@ -241,7 +241,7 @@ def execute(
             raise NgspiceTimeoutError(message) from None
         seconds = time.perf_counter() - started
         values = directory / VALUES
-        written = values.read_text(encoding="utf-8") if values.is_file() else None
+        written = values.read_bytes() if values.is_file() else None
     return Executed(done.stdout + done.stderr, done.returncode, seconds, written)
 
 
@@ -334,40 +334,114 @@ def runs(
     return tuple(replace(result, seconds=executed.seconds) for result in found)
 
 
-def read(text: str, printed: str = "") -> tuple[Result, ...]:
-    """Each plot of the ASCII raw file `text`, with what ngspice `printed` as it ran.
+def read(data: str | bytes, printed: str = "") -> tuple[Result, ...]:
+    """Each plot of the raw file `data`, with what ngspice `printed` as it ran.
 
-    A plot begins at its title; ngspice writes one per ``write`` of a deck whose
-    ``filetype`` is ``ascii``, appending each to the last with ``appendwrite``.
+    The file is SPICE's raw format, ASCII, as text or bytes, or binary, as bytes, its
+    numbers little-endian doubles: each plot a header, from its ``Title:`` to its
+    ``Values:`` or ``Binary:``, then its points, as many as its ``No. Points:`` says,
+    each a value of every variable, a complex one's real part then its imaginary.
+    ngspice writes a plot per ``write``, each appended to the last with
+    ``appendwrite``.
+
+    Raises:
+        JoltyError: When a plot's header lacks what it must state, or its values end
+            short of its points.
     """
-    plots = re.split(r"^(?=Title:)", text, flags=re.MULTILINE)
-    return tuple(_read_raw(plot, printed) for plot in plots if plot.strip())
+    raw = data.encode() if isinstance(data, str) else data
+    plots: list[Result] = []
+    position = raw.find(b"Title:")
+    while 0 <= position < len(raw):
+        found = _VALUES.search(raw, position)
+        if found is None:
+            message = "a raw file's plot has no `Values:` or `Binary:`"
+            raise JoltyError(message)
+        plot, names, points, complex_values = _header(
+            raw[position : found.start()].decode()
+        )
+        width = len(names) * (2 if complex_values else 1)
+        if found[1] == b"Binary":
+            count = points * width
+            table = np.frombuffer(raw, "<f8", count, found.end()).reshape(-1, width)
+            position = found.end() + 8 * count
+        else:
+            table, position = _ascii(raw, found.end(), points, width)
+        values = (
+            table[:, 0::2] + 1j * table[:, 1::2] if complex_values else table + 0j
+        ).astype(np.complex128)
+        plots.append(
+            Result(
+                plot,
+                {name: values[:, column] for column, name in enumerate(names)},
+                printed,
+            )
+        )
+        position = raw.find(b"Title:", position)
+    return tuple(plots)
 
 
-def _read_raw(text: str, printed: str) -> Result:
-    header, values = text.split("Values:\n")
-    names = []
+_VALUES: Final = re.compile(rb"^(Values|Binary):[ \t]*\r?\n", re.MULTILINE)
+"""The line that ends a raw file's plot's header, saying how its values are written."""
+
+
+def _header(header: str) -> tuple[str, list[str], int, bool]:
+    """A plot's name, its vectors' names, its points and whether they are complex.
+
+    Raises:
+        JoltyError: When the header does not state its points.
+    """
+    names: list[str] = []
     plot = ""
+    points: int | None = None
+    complex_values = False
     within = False
     for line in header.splitlines():
         if line.startswith("Plotname:"):
             plot = line.removeprefix("Plotname:").strip()
+        elif line.startswith("Flags:"):
+            complex_values = "complex" in line.casefold()
+        elif line.startswith("No. Points:"):
+            points = int(line.removeprefix("No. Points:"))
         elif line.startswith("Variables:"):
             within = True
-        elif within:
+        elif within and line.strip():
             names.append(_spice_name(line.split()[1].lower()))
-    # Each point starts with its index, a bare integer; values always have an exponent.
-    numbers = [
-        complex(*map(float, token.split(","))) if "," in token else complex(token)
-        for token in values.split()
-        if not token.isdigit()
-    ]
-    table = np.array(numbers).reshape(-1, len(names))
-    return Result(
-        plot,
-        {name: table[:, column] for column, name in enumerate(names)},
-        printed,
-    )
+    if points is None:
+        message = f"a raw file's plot `{plot}` states no `No. Points:`"
+        raise JoltyError(message)
+    return plot, names, points, complex_values
+
+
+def _ascii(
+    raw: bytes, start: int, points: int, width: int
+) -> tuple[npt.NDArray[np.float64], int]:
+    """The `points` an ASCII plot's values write from `start`, and where they end.
+
+    Each point is its index, a bare integer, then each variable's value, ``re,im`` for
+    a complex one; the table has `width` columns, a complex value's parts two.
+
+    Raises:
+        JoltyError: When the values end short of the points.
+    """
+    numbers: list[float] = []
+    position = start
+    for _ in range(points):
+        index = _TOKEN.search(raw, position)
+        position = len(raw) if index is None else index.end()
+        row: list[float] = []
+        while len(row) < width:
+            token = _TOKEN.search(raw, position)
+            if token is None:
+                message = f"a raw file's values end short of its {points} points"
+                raise JoltyError(message)
+            position = token.end()
+            row.extend(float(part) for part in token[0].split(b","))
+        numbers.extend(row)
+    return np.array(numbers, dtype=np.float64).reshape(points, width), position
+
+
+_TOKEN: Final = re.compile(rb"\S+")
+"""A word of an ASCII raw file's values: a point's index, or a value."""
 
 
 _SCALES: Final = frozenset({"time", "frequency"})
