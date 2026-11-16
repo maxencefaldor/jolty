@@ -666,6 +666,24 @@ def behavioral_current_source(expression: str) -> Device:
     return device("behavioral_current_source", {"expression": expression})
 
 
+def behavioral_capacitor(expression: str) -> Device:
+    """A capacitor whose charge, on ``positive`` against ``negative``, is `expression`.
+
+    The expression, in coulombs, and the terminals are a behavioral voltage source's.
+    The capacitor's current, from ``positive`` through it to ``negative``, is the
+    charge's rate of change, and its capacitances are the expression's exact
+    derivatives; its charge is a function of what it reads, so it conserves charge.
+
+    Raises:
+        ValueError: When `expression` is not an expression.
+
+    Examples:
+        >>> behavioral_capacitor("1e-12 * tanh(v(positive, negative))").terminals
+        ('positive', 'negative')
+    """
+    return device("behavioral_capacitor", {"expression": expression})
+
+
 def voltage_controlled_switch(
     *,
     on_resistance: Quantity | None = None,
@@ -1130,7 +1148,7 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
     return device("jfet", parameters)
 
 
-def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 parameters
+def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 95 parameters
     *,
     polarity: Literal["npn", "pnp"] | None = None,
     saturation_current: Quantity | None = None,
@@ -1174,6 +1192,66 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
     energy_gap: Quantity | None = None,
     saturation_current_temperature_exponent: float | None = None,
     beta_temperature_exponent: float | None = None,
+    temperature_model: Literal[0, 1] | None = None,
+    capacitance_temperature_model: Literal[0, 1] | None = None,
+    high_injection_exponent: float | None = None,
+    forward_beta_temperature_coefficient: Quantity | None = None,
+    forward_beta_quadratic_temperature_coefficient: Quantity | None = None,
+    reverse_beta_temperature_coefficient: Quantity | None = None,
+    reverse_beta_quadratic_temperature_coefficient: Quantity | None = None,
+    forward_knee_current_temperature_coefficient: Quantity | None = None,
+    forward_knee_current_quadratic_temperature_coefficient: Quantity | None = None,
+    reverse_knee_current_temperature_coefficient: Quantity | None = None,
+    reverse_knee_current_quadratic_temperature_coefficient: Quantity | None = None,
+    forward_early_voltage_temperature_coefficient: Quantity | None = None,
+    forward_early_voltage_quadratic_temperature_coefficient: Quantity | None = None,
+    reverse_early_voltage_temperature_coefficient: Quantity | None = None,
+    reverse_early_voltage_quadratic_temperature_coefficient: Quantity | None = None,
+    base_resistance_temperature_coefficient: Quantity | None = None,
+    base_resistance_quadratic_temperature_coefficient: Quantity | None = None,
+    min_base_resistance_temperature_coefficient: Quantity | None = None,
+    min_base_resistance_quadratic_temperature_coefficient: Quantity | None = None,
+    base_resistance_current_temperature_coefficient: Quantity | None = None,
+    base_resistance_current_quadratic_temperature_coefficient: Quantity | None = None,
+    collector_resistance_temperature_coefficient: Quantity | None = None,
+    collector_resistance_quadratic_temperature_coefficient: Quantity | None = None,
+    emitter_resistance_temperature_coefficient: Quantity | None = None,
+    emitter_resistance_quadratic_temperature_coefficient: Quantity | None = None,
+    forward_emission_coefficient_temperature_coefficient: Quantity | None = None,
+    forward_emission_coefficient_quadratic_temperature_coefficient: Quantity
+    | None = None,
+    reverse_emission_coefficient_temperature_coefficient: Quantity | None = None,
+    reverse_emission_coefficient_quadratic_temperature_coefficient: Quantity
+    | None = None,
+    base_emitter_leakage_emission_coefficient_temperature_coefficient: Quantity
+    | None = None,
+    base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient: Quantity  # noqa: E501 - the coefficient named in full, as the glossary names coefficients
+    | None = None,
+    base_collector_leakage_emission_coefficient_temperature_coefficient: Quantity
+    | None = None,
+    base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient: Quantity  # noqa: E501 - the coefficient named in full, as the glossary names coefficients
+    | None = None,
+    substrate_emission_coefficient_temperature_coefficient: Quantity | None = None,
+    substrate_emission_coefficient_quadratic_temperature_coefficient: Quantity
+    | None = None,
+    transit_time_current_temperature_coefficient: Quantity | None = None,
+    transit_time_current_quadratic_temperature_coefficient: Quantity | None = None,
+    forward_transit_time_temperature_coefficient: Quantity | None = None,
+    forward_transit_time_quadratic_temperature_coefficient: Quantity | None = None,
+    reverse_transit_time_temperature_coefficient: Quantity | None = None,
+    reverse_transit_time_quadratic_temperature_coefficient: Quantity | None = None,
+    base_emitter_grading_temperature_coefficient: Quantity | None = None,
+    base_emitter_grading_quadratic_temperature_coefficient: Quantity | None = None,
+    base_collector_grading_temperature_coefficient: Quantity | None = None,
+    base_collector_grading_quadratic_temperature_coefficient: Quantity | None = None,
+    substrate_grading_temperature_coefficient: Quantity | None = None,
+    substrate_grading_quadratic_temperature_coefficient: Quantity | None = None,
+    base_emitter_capacitance_temperature_coefficient: Quantity | None = None,
+    base_collector_capacitance_temperature_coefficient: Quantity | None = None,
+    substrate_capacitance_temperature_coefficient: Quantity | None = None,
+    base_emitter_potential_temperature_coefficient: Quantity | None = None,
+    base_collector_potential_temperature_coefficient: Quantity | None = None,
+    substrate_potential_temperature_coefficient: Quantity | None = None,
     nominal_temperature: Quantity | None = None,
     flicker_coefficient: float | None = None,
     flicker_exponent: float | None = None,
@@ -1199,8 +1277,15 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
 
     Away from the nominal temperature, the saturation currents scale with the energy
     gap and the temperature exponent; the betas scale by their temperature exponent,
-    and the junctions' potentials and capacitances follow silicon's band gap, as in
-    ngspice.
+    ``(T/Tn)^XTB`` where ``temperature_model`` is 0, SPICE's ``TLEV``, and
+    ``1 + XTB · ΔT`` where it is 1; and the junctions' potentials and capacitances
+    follow silicon's band gap where ``capacitance_temperature_model``, ``TLEVC``, is 0,
+    and their own coefficients linearly where it is 1, as in ngspice. Each parameter
+    with a ``_temperature_coefficient`` and a ``_quadratic_temperature_coefficient``,
+    HSPICE's ``TRC1`` and ``TRC2`` and kin, scales by ``1 + c1 · ΔT + c2 · ΔT²``; a
+    beta given either scales by them instead of by its exponent.
+    ``high_injection_exponent``, SPICE's ``NKF``, bends the base charge's high
+    injection term, ``(1 + 4 · q2)^NKF``.
 
     Its resistances make thermal noise, and its collector and base currents shot noise;
     with a flicker coefficient ``KF``, its base current ``Ib`` also makes flicker noise
@@ -1243,6 +1328,206 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
             "substrate_potential": (substrate_potential, VOLTAGE),
             "energy_gap": (energy_gap, VOLTAGE),
             "nominal_temperature": (nominal_temperature, TEMPERATURE),
+            "forward_beta_temperature_coefficient": (
+                forward_beta_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "forward_beta_quadratic_temperature_coefficient": (
+                forward_beta_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "reverse_beta_temperature_coefficient": (
+                reverse_beta_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "reverse_beta_quadratic_temperature_coefficient": (
+                reverse_beta_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "forward_knee_current_temperature_coefficient": (
+                forward_knee_current_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "forward_knee_current_quadratic_temperature_coefficient": (
+                forward_knee_current_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "reverse_knee_current_temperature_coefficient": (
+                reverse_knee_current_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "reverse_knee_current_quadratic_temperature_coefficient": (
+                reverse_knee_current_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "forward_early_voltage_temperature_coefficient": (
+                forward_early_voltage_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "forward_early_voltage_quadratic_temperature_coefficient": (
+                forward_early_voltage_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "reverse_early_voltage_temperature_coefficient": (
+                reverse_early_voltage_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "reverse_early_voltage_quadratic_temperature_coefficient": (
+                reverse_early_voltage_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "base_resistance_temperature_coefficient": (
+                base_resistance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "base_resistance_quadratic_temperature_coefficient": (
+                base_resistance_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "min_base_resistance_temperature_coefficient": (
+                min_base_resistance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "min_base_resistance_quadratic_temperature_coefficient": (
+                min_base_resistance_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "base_resistance_current_temperature_coefficient": (
+                base_resistance_current_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "base_resistance_current_quadratic_temperature_coefficient": (
+                base_resistance_current_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "collector_resistance_temperature_coefficient": (
+                collector_resistance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "collector_resistance_quadratic_temperature_coefficient": (
+                collector_resistance_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "emitter_resistance_temperature_coefficient": (
+                emitter_resistance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "emitter_resistance_quadratic_temperature_coefficient": (
+                emitter_resistance_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "forward_emission_coefficient_temperature_coefficient": (
+                forward_emission_coefficient_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "forward_emission_coefficient_quadratic_temperature_coefficient": (
+                forward_emission_coefficient_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "reverse_emission_coefficient_temperature_coefficient": (
+                reverse_emission_coefficient_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "reverse_emission_coefficient_quadratic_temperature_coefficient": (
+                reverse_emission_coefficient_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "base_emitter_leakage_emission_coefficient_temperature_coefficient": (
+                base_emitter_leakage_emission_coefficient_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient": (  # noqa: E501 - the coefficient named in full, as the glossary names coefficients
+                base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "base_collector_leakage_emission_coefficient_temperature_coefficient": (
+                base_collector_leakage_emission_coefficient_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient": (  # noqa: E501 - the coefficient named in full, as the glossary names coefficients
+                base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "substrate_emission_coefficient_temperature_coefficient": (
+                substrate_emission_coefficient_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "substrate_emission_coefficient_quadratic_temperature_coefficient": (
+                substrate_emission_coefficient_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "transit_time_current_temperature_coefficient": (
+                transit_time_current_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "transit_time_current_quadratic_temperature_coefficient": (
+                transit_time_current_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "forward_transit_time_temperature_coefficient": (
+                forward_transit_time_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "forward_transit_time_quadratic_temperature_coefficient": (
+                forward_transit_time_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "reverse_transit_time_temperature_coefficient": (
+                reverse_transit_time_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "reverse_transit_time_quadratic_temperature_coefficient": (
+                reverse_transit_time_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "base_emitter_grading_temperature_coefficient": (
+                base_emitter_grading_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "base_emitter_grading_quadratic_temperature_coefficient": (
+                base_emitter_grading_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "base_collector_grading_temperature_coefficient": (
+                base_collector_grading_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "base_collector_grading_quadratic_temperature_coefficient": (
+                base_collector_grading_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "substrate_grading_temperature_coefficient": (
+                substrate_grading_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "substrate_grading_quadratic_temperature_coefficient": (
+                substrate_grading_quadratic_temperature_coefficient,
+                PER_KELVIN_SQUARED,
+            ),
+            "base_emitter_capacitance_temperature_coefficient": (
+                base_emitter_capacitance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "base_collector_capacitance_temperature_coefficient": (
+                base_collector_capacitance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "substrate_capacitance_temperature_coefficient": (
+                substrate_capacitance_temperature_coefficient,
+                PER_KELVIN,
+            ),
+            "base_emitter_potential_temperature_coefficient": (
+                base_emitter_potential_temperature_coefficient,
+                VOLTS_PER_KELVIN,
+            ),
+            "base_collector_potential_temperature_coefficient": (
+                base_collector_potential_temperature_coefficient,
+                VOLTS_PER_KELVIN,
+            ),
+            "substrate_potential_temperature_coefficient": (
+                substrate_potential_temperature_coefficient,
+                VOLTS_PER_KELVIN,
+            ),
         },
         {
             "forward_beta": forward_beta,
@@ -1267,10 +1552,16 @@ def bipolar_transistor(  # noqa: PLR0913 - the Gummel-Poon model has 42 paramete
                 saturation_current_temperature_exponent
             ),
             "beta_temperature_exponent": beta_temperature_exponent,
+            "high_injection_exponent": high_injection_exponent,
             "flicker_coefficient": flicker_coefficient,
             "flicker_exponent": flicker_exponent,
         },
-        {"polarity": polarity, "substrate": substrate},
+        {
+            "polarity": polarity,
+            "substrate": substrate,
+            "temperature_model": temperature_model,
+            "capacitance_temperature_model": capacitance_temperature_model,
+        },
     )
     return device("bipolar_transistor", parameters)
 

@@ -167,9 +167,10 @@ c.connect(amplifier.inp, name="signal")
 A source's terminals are `positive` and `negative`, then each terminal its expression reads, then `p_positive` and `p_negative` for each port `p`.
 A port, as a current-controlled source's control port, is a short circuit whose current, from `p_positive` to `p_negative`, it adds to the unknowns as `B1:p` for a source `B1`.
 A behavioral voltage source adds its own current to the unknowns as a voltage source does.
+`behavioral_capacitor(expression)` holds an expression, in coulombs, as its charge on `positive` against `negative`, its current that charge's rate of change, as Verilog-A's `I(p, n) <+ ddt(q)`; its charge is a function of what it reads, so it conserves charge, and its capacitances are the expression's derivatives.
 The engine takes every derivative of the expression exactly, so Newton's iterations and frequency responses see the expression's true slope.
 
-Written for ngspice, a behavioral source's expression is read into its tree and written in ngspice's language, every operation in parentheses, so ngspice computes what jolty does: ngspice groups `^` to the left and raises a negative number's magnitude, so a power is written with ngspice's `pow`, or `pwr` for an odd constant exponent, which keeps the base's sign; `limit` is written with `min` and `max`, ngspice's own `limit` being another function; and a table, which ngspice's behavioral sources lack, is written as the choice between its segments' lines and its corners' parabolas.
+Written for ngspice, a behavioral capacitor is a capacitor of the charge `Q=`, which ngspice makes the current of the charge's rate of change, and a behavioral source's expression, a capacitor's too, is read into its tree and written in ngspice's language, every operation in parentheses, so ngspice computes what jolty does: ngspice groups `^` to the left and raises a negative number's magnitude, so a power is written with ngspice's `pow`, or `pwr` for an odd constant exponent, which keeps the base's sign; `limit` is written with `min` and `max`, ngspice's own `limit` being another function; and a table, which ngspice's behavioral sources lack, is written as the choice between its segments' lines and its corners' parabolas.
 
 ## Switches
 
@@ -417,7 +418,12 @@ Every parameter is optional; an Early voltage, knee current or transit-time volt
 | `substrate_capacitance`, `substrate_potential`, `substrate_grading` | `CJS`, `VJS`, `MJS` | F, V, none | 0, 0.75 V, 0 |
 | `energy_gap` | `EG` | V | 1.11 V, silicon's |
 | `saturation_current_temperature_exponent`, `beta_temperature_exponent` | `XTI`, `XTB` | none | 3, 0 |
-| `nominal_temperature` | `TNOM` | K | 27 °C |
+| `temperature_model`, `capacitance_temperature_model` | `TLEV`, `TLEVC` | 0 or 1 | 0, 0 |
+| `high_injection_exponent` | `NKF` | none | 0.5 |
+| `<parameter>_temperature_coefficient`, `<parameter>_quadratic_temperature_coefficient` | `TBF1`, `TBF2`, `TRC1`, `TRC2` and kin | 1/K, 1/K² | none for the betas, 0 for others |
+| `base_emitter_capacitance_temperature_coefficient` and the collector's and substrate's | `CTE`, `CTC`, `CTS` | 1/K | 0 |
+| `base_emitter_potential_temperature_coefficient` and the collector's and substrate's | `TVJE`, `TVJC`, `TVJS` | V/K | 0 |
+| `nominal_temperature` | `TNOM`, `TREF` | K | 27 °C |
 | `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 
 A base, collector or emitter resistance adds an internal node to the unknowns, as `Q1:base`, `Q1:collector` or `Q1:emitter` for a transistor `Q1`; one below 1 Ω, the base's at its minimum, adds its current too, as `Q1:base_current`, `Q1:collector_current` or `Q1:emitter_current`, as a small resistor does.
@@ -430,7 +436,12 @@ A transistor built `"vertical"` or `"lateral"` has a fourth terminal, `substrate
 The junction conducts the minimum conductance, as ngspice's does, and a diode's current given a substrate saturation current; its depletion capacitance grows linearly in forward bias.
 The substrate parameters need a substrate.
 
-Away from the nominal temperature, the saturation currents scale with the energy gap as a diode's, the leakage currents with their own emission coefficients; the betas scale as `(T/Tn)^XTB`, dividing the leakage currents too, and the junctions' potentials and capacitances follow silicon's band gap, as in ngspice.
+Away from the nominal temperature, the saturation currents scale with the energy gap as a diode's, the leakage currents with their own emission coefficients; the betas scale as `(T/Tn)^XTB` where `temperature_model` is 0, and as `1 + XTB·ΔT` where it is 1, dividing the leakage currents too; and the junctions' potentials and capacitances follow silicon's band gap where `capacitance_temperature_model` is 0, and where it is 1 their own coefficients, each capacitance by `1 + CTE·ΔT` and each potential falling by `TVJE·ΔT`, as ngspice 47's `bjttemp.c` scales them.
+HSPICE's coefficients scale each other parameter by `1 + c1·ΔT + c2·ΔT²`: the Early voltages, `TVAF1` and `TVAF2`, `TVAR1` and `TVAR2`; the knee currents, `TIKF1`, `TIKR1` and their second; the resistances, `TRB1`, `TRM1`, `TRC1` and `TRE1`, and the base resistance's current, `TIRB1`; the emission coefficients, `TNF1`, `TNR1`, `TNE1`, `TNC1` and `TNS1`, the leakage currents scaled by their nominal ones; the transit times and the transit time's current, `TTF1`, `TTR1` and `TITF1`; and the grading coefficients, `TMJE1`, `TMJC1` and `TMJS1`, at most 0.999, where ngspice limits them.
+A beta given `TBF1` or `TBF2`, `TBR1` or `TBR2`, scales by them alone, `XTB` still dividing the leakage currents; the excess phase's delay keeps the nominal transit time, as ngspice's does.
+`TLEV` 3, which raises each saturation current to a power of the temperature that does not commute with an element's area, is refused by name, as is 2, for which ngspice computes no saturation current; the reader reads past 3's coefficients, `TIS1` to `TISS2`, which change nothing at 0 or 1.
+`high_injection_exponent`, `NKF`, sets the base charge's high injection, `qb = q1·(1 + (1 + 4·q2)^NKF)/2`, a square root by default; a card's beyond 1 is read as 1, as ngspice limits it.
+The SPICE reader reads past what ngspice's BJT does not define, HSPICE's `DCAP`, `GAP1`, `GAP2`, `CBCP`, `CBEP` and `CCSP`, and a lone `IBE` or `IBC`, which ngspice reads only together; both together are refused by name.
 
 In a [noise analysis](simulation.md#noise), the resistances make thermal noise, the base resistance at its bias, the collector current shot noise, and the base current `Ib` shot noise and flicker noise of `KF·|Ib|^AF/f`, as in ngspice.
 

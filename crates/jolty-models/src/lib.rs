@@ -43,9 +43,13 @@ pub use evaluation::{Contributions, Input};
 pub use group::{Alone, Block, Changed, Groups, Instance, Runs, Tasks, TooLarge, Twin};
 pub use jolty_expressions::Choice;
 pub use kernel::behavioral::{
-    Behavior, BehavioralCurrentSource, BehavioralParameters, BehavioralVoltageSource,
+    Behavior, BehavioralCapacitor, BehavioralCurrentSource, BehavioralParameters,
+    BehavioralVoltageSource,
 };
-pub use kernel::bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
+pub use kernel::bjt::{
+    BipolarCapacitanceTemperatureModel, BipolarTemperatureModel, BipolarTransistor,
+    BipolarTransistorParameters, Polarity,
+};
 pub use kernel::bsim3::{Bsim3, Bsim3Parameters, Charges, Mobility, NoiseModel};
 pub use kernel::bsim4::{
     BodyResistance, Bsim4, Bsim4Parameters, DrainSourceResistance, FlickerNoise, GateResistance,
@@ -124,6 +128,7 @@ impl Library {
     #[must_use]
     pub fn standard() -> Self {
         let mut library = Self::default();
+        library.add(Differentiable::<BehavioralCapacitor>::new());
         library.add(Differentiable::<BehavioralCurrentSource>::new());
         library.add(Differentiable::<BehavioralVoltageSource>::new());
         library.add(Thermal::<BipolarTransistor>::new());
@@ -234,6 +239,10 @@ mod tests {
                 "arcs": [{"input": "a", "before": "0", "output": "y",
                     "delay": [[1e-9]], "transition": [[1e-10]]}]}}});
         vec![
+            (
+                "behavioral_capacitor",
+                json!({"expression": "1e-12 * v(positive, negative) + 1e-13 * tanh(v(a))"}),
+            ),
             (
                 "behavioral_current_source",
                 json!({"expression": "1e-3 * v(a, b) + i(p)"}),
@@ -496,6 +505,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "behavioral_capacitor",
                 "behavioral_current_source",
                 "behavioral_voltage_source",
                 "bipolar_transistor",
