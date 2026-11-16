@@ -197,9 +197,10 @@ pub struct SparseLu<T: Scalar> {
     factored: Vec<T>,
     /// Whether the factors are those of `factored`.
     current: bool,
-    /// The last matrix condensed, for an ordering that condenses, and what its solves read
-    /// of the unknowns eliminated.
-    condensed: (Vec<T>, Saved<T>),
+    /// What the eliminations made of the last matrix condensed, for an ordering that
+    /// condenses, the kept unknowns' matrix first, and what its solves read of the unknowns
+    /// eliminated.
+    condensed: Saved<T>,
     /// The solves' workspace.
     workspace: Workspace<T>,
     statistics: Work,
@@ -214,7 +215,7 @@ pub struct Workspace<T: Scalar> {
     /// Each node's, for the blocks dissected, made at the first solve.
     dissected: Vec<Vec<Scratch<T>>>,
     /// The kept unknowns' right-hand side and solution, for an ordering that condenses,
-    /// made at the first solve.
+    /// then what its solves keep of the unknowns eliminated, made at the first solve.
     kept: Vec<T>,
 }
 
@@ -243,7 +244,7 @@ impl<T: Scalar> SparseLu<T> {
             ordering,
             factored: Vec::new(),
             current: false,
-            condensed: (Vec::new(), Saved::new()),
+            condensed: Saved::new(),
             workspace: Workspace::new(dimension),
             statistics: Work::default(),
         }
@@ -383,15 +384,14 @@ impl<T: Scalar> SparseLu<T> {
             self.ordering.pattern().len(),
             "one value per stored position"
         );
-        let (condensed, saved) = &mut self.condensed;
         let values = match self.ordering.condensation() {
-            Some(condensation) => {
-                if let Err(error) = condensation.condense(values, condensed, saved) {
+            Some(condensation) => match condensation.condense(values, &mut self.condensed) {
+                Ok(kept) => kept,
+                Err(error) => {
                     self.current = false;
                     return Err(error);
                 }
-                condensed.as_slice()
-            }
+            },
             None => values,
         };
         let unchanged = self.factored.len() == values.len()
@@ -425,7 +425,7 @@ impl<T: Scalar> SparseLu<T> {
                 ordering: &self.ordering,
                 numeric: &self.numeric,
                 values: &self.factored,
-                saved: &self.condensed.1,
+                saved: &self.condensed,
                 threads: self.threads,
             },
             workspace: &mut self.workspace,
@@ -592,10 +592,10 @@ impl<T: Scalar> Shared<'_, T> {
             return finite_on(rhs, self.threads);
         };
         let mut kept = std::mem::take(&mut workspace.kept);
-        kept.resize(dimension, T::ZERO);
+        kept.resize(condensation.solved(), T::ZERO);
         condensation.reduce(self.saved, (rhs, transposed), &mut kept);
-        self.solve_factored(&mut kept, workspace, transposed);
-        condensation.expand(self.saved, (&kept, transposed), rhs);
+        self.solve_factored(&mut kept[..dimension], workspace, transposed);
+        condensation.expand(self.saved, (&mut kept, transposed), rhs);
         workspace.kept = kept;
         finite_on(rhs, self.threads)
     }

@@ -763,15 +763,15 @@ mod tests {
         )
     }
 
-    /// The sparse solver eliminates a MOSFET's three displacements before it factors, so
-    /// it factors the circuit's other unknowns alone: 504 of the 3,504 of the chain of 500
-    /// inverters, as ngspice's matrix holds, and 17 of the buck's 23, its switches' series
-    /// resistances' nodes and currents among them.
+    /// The sparse solver eliminates a MOSFET's three displacements before it factors, and
+    /// the currents through its series resistances below 1 Ω, so it factors the circuit's
+    /// nodes alone, as ngspice's matrix holds them: 504 of the 3,504 unknowns of the chain
+    /// of 500 inverters, and 13 of the buck's 23, its switches' internal nodes among them.
     #[test]
-    fn the_solver_factors_all_but_the_displacements() {
+    fn the_solver_factors_the_nodes_alone() {
         let circuits =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed/circuits");
-        for (name, unknowns, factored) in [("inverter_chain_500", 3_504, 504), ("buck", 23, 17)] {
+        for (name, unknowns, factored) in [("inverter_chain_500", 3_504, 504), ("buck", 23, 13)] {
             let text = fs::read_to_string(circuits.join(format!("{name}.json"))).expect("a file");
             let circuit = Circuit::from_json(&text).expect("a circuit");
             let simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())

@@ -273,6 +273,19 @@ impl Series {
     /// A series `resistance` from `terminal`, and the node behind it: an internal node
     /// labelled `label` when the resistance is positive, else the terminal's own. The
     /// current through a small one is a local unknown labelled `current`.
+    ///
+    /// That current's [pivot](Layout::pivot) is its entry in the internal node's row, −1:
+    /// its column holds besides only 1 in the terminal's row and `−R` in its own, `R`
+    /// below [`SMALL_RESISTANCE`], 1 Ω, where the resistance is laid out, in the
+    /// conductances and in every `G + αC` and `G + jωC` alike, as no charge reads the
+    /// current. So the solver eliminates the current by the internal node's row, which
+    /// leaves the terminal's row the sum of both nodes' currents, as a resistance stamped
+    /// as a conductance would, and the current's own equation in the internal node's
+    /// place, so that `1/R` stands on no diagonal still. A device at another temperature
+    /// keeps the form its resistance took, which may grow past 1 Ω there: its pivot stays
+    /// within the solver's threshold, a tenth of its column's largest, up to 10 Ω. A
+    /// resistance whose value follows a voltage, which nothing bounds, claims none, as
+    /// [`Series::varying`] withdraws it.
     pub(crate) fn behind<R: Real>(
         layout: &mut Layout,
         terminal: usize,
@@ -287,6 +300,7 @@ impl Series {
         let series = if value < SMALL_RESISTANCE {
             let branch = CurrentBranch::new(layout, current, [terminal, inner]);
             let row = branch.unknown();
+            layout.pivot(inner, row);
             Self::Current(branch, layout.entry(row, row))
         } else {
             Self::Conductance(Pair::new(layout, terminal, inner))
@@ -324,12 +338,17 @@ impl Series {
     }
 
     /// Claims the entries through which the resistance's current depends on the voltage of
-    /// `plus` over `minus`, two local unknowns, which its value follows.
+    /// `plus` over `minus`, two local unknowns, which its value follows, and withdraws the
+    /// pivot of a current of its own, as the value, which may grow past 1 Ω, no longer
+    /// keeps the pivot its column's largest.
     pub(crate) fn varying(&self, layout: &mut Layout, (plus, minus): (usize, usize)) -> Varying {
         let rows = match self {
             Self::None => [NOWHERE; 2],
             Self::Conductance(Pair(nodes)) => [nodes.node(POSITIVE), nodes.node(NEGATIVE)],
-            Self::Current(branch, _) => [branch.current, NOWHERE],
+            Self::Current(branch, _) => {
+                layout.unpivot(branch.current);
+                [branch.current, NOWHERE]
+            }
         };
         let mut claim = |row: usize| {
             if row == NOWHERE {

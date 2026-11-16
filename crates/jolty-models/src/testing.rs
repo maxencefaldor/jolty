@@ -175,8 +175,9 @@ impl Bench {
         self.unknowns.iter().map(|unknown| unknown.nature).collect()
     }
 
-    /// The unknowns the device's layout claims [pivoted](crate::Layout::pivoted).
-    pub(crate) fn pivoted(&self) -> &[usize] {
+    /// The row and the column of each pivot the device's layout
+    /// [claims](crate::Layout::pivot).
+    pub(crate) fn pivoted(&self) -> &[(usize, usize)] {
         self.groups.pivoted()
     }
 
