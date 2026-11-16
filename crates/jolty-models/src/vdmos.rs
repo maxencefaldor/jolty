@@ -254,10 +254,10 @@ pub struct VdmosParameters<R: Real = f64> {
     pub nominal_temperature: R,
     /// How fast the threshold voltage moves with temperature, `TCVTH` or `VTOTC`, in volts
     /// per kelvin; default 0.
-    pub threshold_temperature_coefficient: R,
+    pub threshold_voltage_temperature_coefficient: R,
     /// The exponent of the temperature ratio that scales the transconductance parameter,
     /// `MU` or `BEX`; default −1.5.
-    pub transconductance_temperature_exponent: R,
+    pub transconductance_parameter_temperature_exponent: R,
     /// The subthreshold slope's linear temperature coefficient, `TKSUBTHRES1`, per kelvin;
     /// default 0.
     pub subthreshold_slope_temperature_coefficient: R,
@@ -335,8 +335,8 @@ impl<R: Real> Default for VdmosParameters<R> {
             energy_gap: R::constant(1.11),
             saturation_current_temperature_exponent: R::constant(3.0),
             nominal_temperature: R::constant(REFERENCE_TEMPERATURE),
-            threshold_temperature_coefficient: zero,
-            transconductance_temperature_exponent: R::constant(-1.5),
+            threshold_voltage_temperature_coefficient: zero,
+            transconductance_parameter_temperature_exponent: R::constant(-1.5),
             subthreshold_slope_temperature_coefficient: zero,
             subthreshold_slope_quadratic_temperature_coefficient: zero,
             drain_resistance_temperature_exponent: None,
@@ -740,7 +740,7 @@ impl<R: Real> VdmosParameters<R> {
                 .unwrap_or(R::constant(15.0 + 5.0 * sign)),
         )?;
         let threshold = self.threshold_voltage.unwrap_or(R::constant(3.0 * sign))
-            + self.threshold_temperature_coefficient * temperatures.difference();
+            + self.threshold_voltage_temperature_coefficient * temperatures.difference();
         let slope = ParameterError::positive("subthreshold_slope", self.subthreshold_slope)?
             * temperatures.polynomial(
                 self.subthreshold_slope_temperature_coefficient,
@@ -757,7 +757,7 @@ impl<R: Real> VdmosParameters<R> {
                 * multiplier
                 * temperatures
                     .ratio()
-                    .pow(self.transconductance_temperature_exponent),
+                    .pow(self.transconductance_parameter_temperature_exponent),
             threshold: threshold * sign,
             lambda: self.channel_length_modulation,
             theta: ParameterError::non_negative("mobility_modulation", self.mobility_modulation)?,
@@ -1261,8 +1261,8 @@ mod tests {
 
     #[test]
     fn parameter_gradients_are_exact() {
-        let temperature = r#""nominal_temperature": 290, "threshold_temperature_coefficient": -4e-3,
-            "transconductance_temperature_exponent": -1.3,
+        let temperature = r#""nominal_temperature": 290, "threshold_voltage_temperature_coefficient": -4e-3,
+            "transconductance_parameter_temperature_exponent": -1.3,
             "subthreshold_slope_temperature_coefficient": 2e-3,
             "subthreshold_slope_quadratic_temperature_coefficient": 1e-6,
             "drain_resistance_temperature_coefficient": 3e-3,
@@ -1309,7 +1309,7 @@ mod tests {
     #[test]
     fn a_heated_transistor_is_the_transistor_at_its_temperature() {
         let model = crate::Thermal::<Vdmos>::new();
-        let warm = r#""nominal_temperature": 290, "threshold_temperature_coefficient": -4e-3,
+        let warm = r#""nominal_temperature": 290, "threshold_voltage_temperature_coefficient": -4e-3,
             "drain_resistance_temperature_coefficient": 3e-3,
             "source_resistance_temperature_coefficient": 2e-3,
             "body_resistance_temperature_coefficient": 4e-3, "#;

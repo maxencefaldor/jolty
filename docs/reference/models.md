@@ -638,7 +638,6 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `beta_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the transconductance parameter; default 0. |
 | `channel` | `n` | The channel; default `n`. One of `n`, `p`. |
 | `channel_length_modulation` | `0` | The channel-length modulation, `λ`, per volt; default 0. |
 | `depletion_coefficient` | `0.5` | The fraction of the junction potential above which the depletion capacitance is extended linearly, below 1; default 0.5. |
@@ -657,9 +656,10 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
 | `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
-| `threshold_temperature_coefficient` | `0` | How fast the threshold voltage rises with temperature, in volts per kelvin; default 0. |
 | `threshold_voltage` | `-2` | The threshold voltage, `vto`, in volts; default −2. |
+| `threshold_voltage_temperature_coefficient` | `0` | How fast the threshold voltage rises with temperature, in volts per kelvin; default 0. |
 | `transconductance_parameter` | `0.0001` | The transconductance parameter, `β`, in amperes per square volt; default 1e-4. |
+| `transconductance_parameter_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the transconductance parameter; default 0. |
 
 ## `logic_cell`
 
@@ -964,10 +964,10 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
 | `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
-| `threshold_temperature_coefficient` | `0` | How fast the threshold voltage moves with temperature, `TCVTH` or `VTOTC`, in volts per kelvin; default 0. |
 | `threshold_voltage` |  | The threshold voltage, `VTO`, in volts; default 3 for an n-channel and −3 for a p-channel, an IRF540's and an IRF9540's. |
+| `threshold_voltage_temperature_coefficient` | `0` | How fast the threshold voltage moves with temperature, `TCVTH` or `VTOTC`, in volts per kelvin; default 0. |
 | `transconductance_parameter` |  | The transconductance parameter, `KP`, in amperes per square volt; default 20 for an n-channel and 10 for a p-channel. |
-| `transconductance_temperature_exponent` | `-1.5` | The exponent of the temperature ratio that scales the transconductance parameter, `MU` or `BEX`; default −1.5. |
+| `transconductance_parameter_temperature_exponent` | `-1.5` | The exponent of the temperature ratio that scales the transconductance parameter, `MU` or `BEX`; default −1.5. |
 | `transit_time` | `0` | The body diode's transit time, `TT`, in seconds; default 0. |
 | `triode_conductance_multiplier` | `1` | The factor on the drain-source voltage below saturation, `MTRIODE`; default 1. |
 

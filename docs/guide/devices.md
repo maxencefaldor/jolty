@@ -317,8 +317,8 @@ Every parameter is optional:
 | `saturation_current` | `IS` | A | 10 fA |
 | `depletion_coefficient` | `FC` | none | 0.5 |
 | `doping_tail` | `B` | none | 1, the plain square law |
-| `threshold_temperature_coefficient` | `VTOTC`, or `−TCV` | V/K | 0 |
-| `beta_temperature_exponent` | `BEX` | none | 0 |
+| `threshold_voltage_temperature_coefficient` | `VTOTC`, or `−TCV` | V/K | 0 |
+| `transconductance_parameter_temperature_exponent` | `BEX` | none | 0 |
 | `energy_gap` | `EG` | V | 1.11 V, silicon's |
 | `saturation_current_temperature_exponent` | `XTI` | none | 0 |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
@@ -553,8 +553,8 @@ Every parameter is optional:
 | `breakdown_current`, `breakdown_emission_coefficient` | `IBV`, `NBV` | A, none | 0.1 nA, 1 |
 | `energy_gap`, `saturation_current_temperature_exponent` | `EG`, `XTI` | V, none | 1.11 V, 3 |
 | `nominal_temperature` | `TNOM` | K | 27 °C |
-| `threshold_temperature_coefficient` | `TCVTH`, `VTOTC` | V/K | 0 |
-| `transconductance_temperature_exponent` | `MU`, `BEX` | none | −1.5 |
+| `threshold_voltage_temperature_coefficient` | `TCVTH`, `VTOTC` | V/K | 0 |
+| `transconductance_parameter_temperature_exponent` | `MU`, `BEX` | none | −1.5 |
 | `subthreshold_slope_temperature_coefficient`, `subthreshold_slope_quadratic_temperature_coefficient` | `TKSUBTHRES1`, `TKSUBTHRES2` | K⁻¹, K⁻² | 0 |
 | `drain_resistance_temperature_exponent` | `TEXP0` | none | none: the drain's coefficients |
 | `drain_resistance_temperature_coefficient`, `drain_resistance_quadratic_temperature_coefficient` | `TRD1`, `TRD2` | K⁻¹, K⁻² | 0 |

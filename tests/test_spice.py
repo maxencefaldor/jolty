@@ -532,8 +532,8 @@ def test_a_vdmos_card_reads_as_ngspice_reads_it() -> None:
         "gate_resistance": 3.0,
         "threshold_voltage": -4.0,
         "subthreshold_slope": 0.12,
-        "threshold_temperature_coefficient": -2e-3,
-        "transconductance_temperature_exponent": -1.2,
+        "threshold_voltage_temperature_coefficient": -2e-3,
+        "transconductance_parameter_temperature_exponent": -1.2,
         "grading_coefficient": 0.4,
         "channel": "p",
     }
@@ -541,8 +541,8 @@ def test_a_vdmos_card_reads_as_ngspice_reads_it() -> None:
         "drain_resistance": 0.044,
         "quasi_saturation_resistance": 0.5,
         "quasi_saturation_voltage": 20.0,
-        "threshold_temperature_coefficient": -3e-3,
-        "transconductance_temperature_exponent": -1.4,
+        "threshold_voltage_temperature_coefficient": -3e-3,
+        "transconductance_parameter_temperature_exponent": -1.4,
         "multiplier": 2.0,
         "channel": "n",
     }

@@ -66,8 +66,8 @@ def jfet_source() -> devices.Device:
         gate_source_capacitance=2.06 * pF,
         gate_drain_capacitance=2.16 * pF,
         saturation_current=181.3e-15 * A,
-        threshold_temperature_coefficient=-2.5e-3 * V / K,
-        beta_temperature_exponent=-0.5,
+        threshold_voltage_temperature_coefficient=-2.5e-3 * V / K,
+        transconductance_parameter_temperature_exponent=-0.5,
     )
 
 

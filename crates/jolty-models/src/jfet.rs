@@ -166,10 +166,10 @@ pub struct JfetParameters<R: Real = f64> {
     pub doping_tail: R,
     /// How fast the threshold voltage rises with temperature, in volts per kelvin;
     /// default 0.
-    pub threshold_temperature_coefficient: R,
+    pub threshold_voltage_temperature_coefficient: R,
     /// The exponent of the temperature ratio that scales the transconductance parameter;
     /// default 0.
-    pub beta_temperature_exponent: R,
+    pub transconductance_parameter_temperature_exponent: R,
     /// The energy gap that scales the saturation current with temperature, in volts;
     /// default 1.11, silicon's.
     pub energy_gap: R,
@@ -200,8 +200,8 @@ impl<R: Real> Default for JfetParameters<R> {
             saturation_current: R::constant(1e-14),
             depletion_coefficient: R::constant(0.5),
             doping_tail: R::constant(1.0),
-            threshold_temperature_coefficient: R::constant(0.0),
-            beta_temperature_exponent: R::constant(0.0),
+            threshold_voltage_temperature_coefficient: R::constant(0.0),
+            transconductance_parameter_temperature_exponent: R::constant(0.0),
             energy_gap: R::constant(1.11),
             saturation_current_temperature_exponent: R::constant(0.0),
             nominal_temperature: R::constant(REFERENCE_TEMPERATURE),
@@ -521,8 +521,8 @@ impl<R: Real> JfetParameters<R> {
             saturation_current,
             depletion_coefficient,
             doping_tail,
-            threshold_temperature_coefficient,
-            beta_temperature_exponent,
+            threshold_voltage_temperature_coefficient,
+            transconductance_parameter_temperature_exponent,
             energy_gap,
             saturation_current_temperature_exponent,
             nominal_temperature,
@@ -566,9 +566,11 @@ impl<R: Real> JfetParameters<R> {
             thermal_voltage: vt,
             channel: DrainCurrent {
                 beta: transconductance_parameter
-                    * temperatures.ratio().pow(beta_temperature_exponent),
+                    * temperatures
+                        .ratio()
+                        .pow(transconductance_parameter_temperature_exponent),
                 threshold: threshold_voltage
-                    + threshold_temperature_coefficient * temperatures.difference(),
+                    + threshold_voltage_temperature_coefficient * temperatures.difference(),
                 lambda: channel_length_modulation,
                 tail: doping_tail,
                 tail_factor: if tail_excess.value() == 0.0 {
@@ -616,7 +618,7 @@ mod tests {
             "source_resistance": 5, "gate_source_capacitance": 2e-12,
             "gate_drain_capacitance": 1e-12, "junction_potential": 0.9,
             "saturation_current": 2e-14, "depletion_coefficient": 0.4, "doping_tail": 0.8,
-            "threshold_temperature_coefficient": -2e-3, "beta_temperature_exponent": -1.5,
+            "threshold_voltage_temperature_coefficient": -2e-3, "transconductance_parameter_temperature_exponent": -1.5,
             "energy_gap": 1.2, "saturation_current_temperature_exponent": 2,
             "nominal_temperature": 290}"#;
         for [drain, gate] in [[3.0, 0.0], [0.5, -0.5], [-0.5, -0.2], [-3.0, 0.1]] {
@@ -690,8 +692,8 @@ mod tests {
     fn a_heated_jfet_is_the_jfet_at_its_temperature() {
         let model = crate::Thermal::<Jfet>::new();
         let every = r#"{"transconductance_parameter": 1e-3, "drain_resistance": 10,
-            "gate_source_capacitance": 2e-12, "threshold_temperature_coefficient": -2e-3,
-            "beta_temperature_exponent": -1.5, "saturation_current_temperature_exponent": 2}"#;
+            "gate_source_capacitance": 2e-12, "threshold_voltage_temperature_coefficient": -2e-3,
+            "transconductance_parameter_temperature_exponent": -1.5, "saturation_current_temperature_exponent": 2}"#;
         let heated = every.replace('{', r#"{"thermal": true, "#);
         let mut bench = Bench::of(&model, &heated, REFERENCE_TEMPERATURE).expect("valid");
         for rise in [0.0, 30.0] {

@@ -917,8 +917,8 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
     saturation_current: Quantity | None = None,
     depletion_coefficient: float | None = None,
     doping_tail: float | None = None,
-    threshold_temperature_coefficient: Quantity | None = None,
-    beta_temperature_exponent: float | None = None,
+    threshold_voltage_temperature_coefficient: Quantity | None = None,
+    transconductance_parameter_temperature_exponent: float | None = None,
     energy_gap: Quantity | None = None,
     saturation_current_temperature_exponent: float | None = None,
     nominal_temperature: Quantity | None = None,
@@ -963,8 +963,8 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
             "gate_drain_capacitance": (gate_drain_capacitance, CAPACITANCE),
             "junction_potential": (junction_potential, VOLTAGE),
             "saturation_current": (saturation_current, CURRENT),
-            "threshold_temperature_coefficient": (
-                threshold_temperature_coefficient,
+            "threshold_voltage_temperature_coefficient": (
+                threshold_voltage_temperature_coefficient,
                 VOLTS_PER_KELVIN,
             ),
             "energy_gap": (energy_gap, VOLTAGE),
@@ -973,7 +973,9 @@ def jfet(  # noqa: PLR0913 - the SPICE JFET model has seventeen parameters
         {
             "depletion_coefficient": depletion_coefficient,
             "doping_tail": doping_tail,
-            "beta_temperature_exponent": beta_temperature_exponent,
+            "transconductance_parameter_temperature_exponent": (
+                transconductance_parameter_temperature_exponent
+            ),
             "saturation_current_temperature_exponent": (
                 saturation_current_temperature_exponent
             ),
@@ -1709,8 +1711,8 @@ def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
     energy_gap: Quantity | None = None,
     saturation_current_temperature_exponent: float | None = None,
     nominal_temperature: Quantity | None = None,
-    threshold_temperature_coefficient: Quantity | None = None,
-    transconductance_temperature_exponent: float | None = None,
+    threshold_voltage_temperature_coefficient: Quantity | None = None,
+    transconductance_parameter_temperature_exponent: float | None = None,
     subthreshold_slope_temperature_coefficient: Quantity | None = None,
     subthreshold_slope_quadratic_temperature_coefficient: Quantity | None = None,
     drain_resistance_temperature_exponent: float | None = None,
@@ -1787,8 +1789,8 @@ def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
             "breakdown_current": (breakdown_current, CURRENT),
             "energy_gap": (energy_gap, VOLTAGE),
             "nominal_temperature": (nominal_temperature, TEMPERATURE),
-            "threshold_temperature_coefficient": (
-                threshold_temperature_coefficient,
+            "threshold_voltage_temperature_coefficient": (
+                threshold_voltage_temperature_coefficient,
                 VOLTS_PER_KELVIN,
             ),
             "subthreshold_slope_temperature_coefficient": (
@@ -1842,8 +1844,8 @@ def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
             "saturation_current_temperature_exponent": (
                 saturation_current_temperature_exponent
             ),
-            "transconductance_temperature_exponent": (
-                transconductance_temperature_exponent
+            "transconductance_parameter_temperature_exponent": (
+                transconductance_parameter_temperature_exponent
             ),
             "drain_resistance_temperature_exponent": (
                 drain_resistance_temperature_exponent
