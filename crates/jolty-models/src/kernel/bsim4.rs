@@ -1195,7 +1195,11 @@ mod tests {
                     "prwg": 0.2, "prwb": -0.1, "rdwmin": 10, "rswmin": 8, "rsh": 5,
                     "drain_squares": 2, "source_squares": 1.5"#
             );
-            let parameters = with(SHORT, &models);
+            // The substrate current's `e^(−β0/ΔV)` curves so sharply, as `(β0/ΔV²)²`, and
+            // kinks where `ΔV = β0/34`, that central differences of the body's conductance
+            // err by up to 4e-3 of it: `substrate_current_jacobians_match_finite_differences`
+            // checks it where the drain is well past saturation.
+            let parameters = with(SHORT, &models).replace(r#""alpha0": 1e-6, "#, "");
             let parameters = if p { p_channel(&parameters) } else { parameters };
             let sign = if p { -1.0 } else { 1.0 };
             let bulk = drain.min(0.0) - reverse;
@@ -1208,6 +1212,24 @@ mod tests {
                 x.extend([0.9, 1.0, 1.1].map(|share| sign * bulk * share));
             }
             assert_jacobians_match::<Bsim4>(&parameters, &x);
+        }
+    }
+
+    #[test]
+    fn substrate_current_jacobians_match_finite_differences() {
+        for external in [0, 1] {
+            let models = format!(
+                r#""drain_source_resistance_model": {external}, "rsh": 5,
+                "drain_squares": 2, "source_squares": 1.5"#
+            );
+            let n = with(SHORT, &models);
+            for (parameters, sign) in [(p_channel(&n), -1.0), (n, 1.0)] {
+                for [drain, gate] in [[1.8, 1.0], [-1.8, 1.2]] {
+                    let x = [drain, gate, 0.0, drain.min(0.0) - 0.3, 0.95 * drain, 0.01]
+                        .map(|value| sign * value);
+                    assert_jacobians_match::<Bsim4>(&parameters, &x);
+                }
+            }
         }
     }
 
