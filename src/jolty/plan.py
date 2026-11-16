@@ -248,12 +248,15 @@ class Sensitivity:
     Each output is an unknown by name, a voltage such as ``out`` or a current such as
     ``V1:current``. The derivatives are taken at the operating point, or at each point
     of the analysis `of`: each level of a DC sweep and each frequency of a small-signal
-    response, where one solve per output serves every parameter, however many, and each
-    time of a transient, which carries each parameter's derivatives along its steps.
+    response, where one solve per output serves every parameter, however many, each
+    time of a transient, which carries each parameter's derivatives along its steps, and
+    each point of a periodic steady state's period, at its fraction of the period, the
+    state the period starts from moving so that it still repeats, and an oscillator's
+    period with it.
     """
 
     outputs: Sequence[str]
-    of: DcSweep | Ac | Transient | None = None
+    of: DcSweep | Ac | Transient | PeriodicSteadyState | None = None
 
     def to_json(self, level: Dimension = VOLTAGE) -> JsonValue:
         """The analysis in the engine's format.
@@ -266,7 +269,7 @@ class Sensitivity:
                 of: JsonValue = "operating_point"
             case DcSweep():
                 of = self.of.to_json(level)
-            case Ac() | Transient():
+            case Ac() | Transient() | PeriodicSteadyState():
                 of = self.of.to_json()
         return {"sensitivity": {"outputs": outputs, "of": of}}
 

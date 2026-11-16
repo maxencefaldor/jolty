@@ -1020,6 +1020,7 @@ class Simulation:
                     parameters,
                     derivatives,
                     differentiated,
+                    outcome["period_derivatives"],
                 )
             case "transfer_function":
                 return results.TransferFunctionResult(

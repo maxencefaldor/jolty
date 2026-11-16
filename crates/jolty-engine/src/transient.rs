@@ -22,6 +22,9 @@ use crate::{
     Strategy, Work,
 };
 
+/// The steps of a run its longest step is by default a fraction of: SPICE's longest step,
+/// a fiftieth of the run (ngspice 47's `traninit.c`, lines 26 to 34).
+pub(crate) const STEPS_PER_RUN: f64 = 50.0;
 /// The first step after the start or a breakpoint, as a fraction of the shorter of the step
 /// before and the gap to the next breakpoint, so a short waveform segment takes several steps.
 const RESTART_FRACTION: f64 = 0.1;
@@ -549,7 +552,7 @@ impl Simulator {
         let longest = if self.elaborated.unknowns.is_empty() {
             transient.stop
         } else {
-            transient.max_step.unwrap_or(transient.stop / 50.0)
+            transient.max_step.unwrap_or(transient.stop / STEPS_PER_RUN)
         };
         if transient.stop <= 0.0 || longest <= 0.0 {
             return Err(SimulationError::InvalidAnalysis(format!(

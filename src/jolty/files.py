@@ -145,6 +145,10 @@ class _SensitivityResult(_Model):
     kind: Literal["sensitivity"] = "sensitivity"
     outputs: tuple[str, ...]
     parameters: tuple[tuple[str, str], ...]
+    period: bool = Field(
+        default=False,
+        description="Whether the arrays hold an oscillator's period's derivatives.",
+    )
     result: _Entry
 
 
@@ -802,12 +806,15 @@ def _save_linear(
                 [parameter.value for parameter in result.parameters], dtype=float
             )
             arrays[f"{name}.derivatives"] = result.derivatives
+            if result.period_derivatives is not None:
+                arrays[f"{name}.period_derivatives"] = result.period_derivatives
             return _SensitivityResult(
                 outputs=result.outputs,
                 parameters=tuple(
                     (parameter.instance, parameter.name)
                     for parameter in result.parameters
                 ),
+                period=result.period_derivatives is not None,
                 result=_save(f"{name}.result", result.result, arrays, recordings),
             )
         case results.StabilityResult():
@@ -970,7 +977,7 @@ def _load_linear(
                 ),
             )
         case _SensitivityResult(
-            outputs=outputs, parameters=named, result=differentiated
+            outputs=outputs, parameters=named, period=period, result=differentiated
         ):
             parameters = tuple(
                 results.Parameter(instance, parameter, float(value))
@@ -994,7 +1001,12 @@ def _load_linear(
                 )
                 raise JoltyError(message)
             return results.SensitivityResult(
-                unknowns, outputs, parameters, data[f"{name}.derivatives"], found
+                unknowns,
+                outputs,
+                parameters,
+                data[f"{name}.derivatives"],
+                found,
+                data[f"{name}.period_derivatives"] if period else None,
             )
         case _StabilityResult(probe=probe, found=found, recording=recording):
             point = f"{name}.operating_point"

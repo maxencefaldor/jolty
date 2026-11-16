@@ -2,6 +2,7 @@
 """Oscillators' periodic steady states against long transients."""
 
 import importlib
+import math
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -15,13 +16,14 @@ from jolty import (
     Options,
     PeriodicSteadyState,
     Role,
+    Sensitivity,
     Simulation,
     Transient,
     component,
     devices,
     results,
 )
-from jolty.units import V, ns, ps
+from jolty.units import F, H, V, ns, ps
 
 EXAMPLES: Final = Path(__file__).parent.parent / "examples"
 """The examples, which import each other's modules from their folder."""
@@ -101,3 +103,39 @@ def test_a_ring_oscillator_runs_at_a_long_transients_settled_period() -> None:
         steady, mean, spread = _periods(relative_tolerance, 5e-12)
         error = abs(mean / reference - 1) + spread
         assert abs(steady / reference - 1) <= error, relative_tolerance
+
+
+def test_an_oscillators_period_moves_with_its_tank_as_it_scales() -> None:
+    """A tank's period scales with time, L and C alike: L ∂T/∂L + C ∂T/∂C = T.
+
+    Its conductance feeds it inside the circle of radius 1 V, in volts and its impedance
+    times its current, and drains it outside, so the equations, with that impedance
+    held, are unchanged when time, L and C scale alike. The derivatives meet it as far
+    as Newton's iterates meet each step's equations: to 7e-10 at the default relative
+    tolerance, 1e-3, and to 1.8e-13 at 1e-6, held to 1e-12.
+    """
+    inductance, capacitance = 1e-6, 1e-9
+    impedance = math.sqrt(inductance / capacitance)
+    expression = (
+        f"-{0.2 / impedance!r} * v(x) * (1 - (v(x) ^ 2 + ({impedance!r} * i(p)) ^ 2))"
+    )
+
+    @component
+    def tank(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        capacitor = c.place(devices.capacitor(capacitance * F), name="C1")
+        inductor = c.place(devices.inductor(inductance * H), name="L1")
+        regulation = c.place(devices.behavioral_current_source(expression), name="B1")
+        c.connect(capacitor.a, inductor.a, regulation.positive, regulation.x, name="t")
+        c.connect(inductor.b, regulation.p_positive, name="l")
+        c.connect(capacitor.b, regulation.negative, regulation.p_negative, ground)
+
+    found = Simulation(tank()).run(
+        Sensitivity(["t"], of=PeriodicSteadyState()),
+        Options(relative_tolerance=1e-6),
+    )
+    assert isinstance(found.result, results.PeriodicSteadyStateResult)
+    scaled = inductance * found.period_derivative(
+        "L1", "inductance"
+    ) + capacitance * found.period_derivative("C1", "capacitance")
+    assert abs(scaled / found.result.period - 1) <= 1e-12

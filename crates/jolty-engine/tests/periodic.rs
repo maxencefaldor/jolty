@@ -4,8 +4,8 @@
 use std::f64::consts::TAU;
 
 use jolty_engine::{
-    Analysis, AnalysisResult, Conditions, Method, Options, PeriodicSteadyState,
-    PeriodicSteadyStateResult, SimulationError, Simulator, Transient, TransientResult,
+    Analysis, AnalysisResult, Conditions, Differentiated, Method, Options, PeriodicSteadyState,
+    PeriodicSteadyStateResult, Sensitivity, SimulationError, Simulator, Transient, TransientResult,
 };
 use jolty_ir::Circuit;
 use jolty_models::Library;
@@ -362,11 +362,15 @@ fn a_circuit_with_logic_has_no_periodic_steady_state_here() {
 }
 
 /// A tank of `inductance` and `capacitance` whose conductance `−g (1 − r² / a²)`, for
-/// the radius `r² = v² + (z i)²` of its state, `z` the tank's impedance, feeds it inside
-/// the circle of radius `a` and drains it outside: on the circle it is lossless, so the
-/// orbit is that circle, its period exactly `2π √(LC)`.
-fn regulated_tank((inductance, capacitance): (f64, f64), conductance: f64, radius: f64) -> Value {
-    let impedance = (inductance / capacitance).sqrt();
+/// the radius `r² = v² + (z i)²` of its state and an `impedance` `z`, feeds it inside the
+/// circle of radius `a` and drains it outside: where `z` is the tank's own, `√(L/C)`, the
+/// tank is lossless on the circle, so the orbit is that circle, its period exactly
+/// `2π √(LC)`.
+fn regulated_tank(
+    (inductance, capacitance): (f64, f64),
+    (conductance, impedance): (f64, f64),
+    radius: f64,
+) -> Value {
     let expression = format!(
         "-{conductance:e} * v(x) * (1 - (v(x) ^ 2 + ({impedance:e} * i(p)) ^ 2) / {:e})",
         radius * radius
@@ -393,7 +397,11 @@ fn an_oscillating_tank_finds_its_period_and_its_amplitude() {
         relative_tolerance: 1e-6,
         ..Options::default()
     };
-    let mut simulator = simulator(&regulated_tank((inductance, capacitance), g, radius));
+    let mut simulator = simulator(&regulated_tank(
+        (inductance, capacitance),
+        (g, impedance),
+        radius,
+    ));
     let found = steady(&mut simulator, (None, TAU / omega / 100.0), &options);
     // From where the transient settled, Newton's steps square the mismatch, 6e4
     // tolerances of the current after the first period and 50 after the second.
@@ -468,7 +476,7 @@ fn an_oscillator_that_no_mode_starts_says_so() {
 
 #[test]
 fn an_oscillators_period_is_found_so_it_has_no_times_to_step_onto() {
-    let mut simulator = simulator(&regulated_tank((1e-6, 1e-9), 6e-3, 1.0));
+    let mut simulator = simulator(&regulated_tank((1e-6, 1e-9), (6e-3, 31.6), 1.0));
     let analysis = PeriodicSteadyState {
         breakpoints: vec![1e-7],
         ..PeriodicSteadyState::default()
@@ -510,5 +518,80 @@ fn a_latch_that_its_growing_mode_tips_never_returns_and_says_so() {
             assert!((ran - time).abs() <= 1e-12 * time, "{ran} against {time}");
         }
         other => panic!("an unsettled oscillation, not {other}"),
+    }
+}
+
+#[test]
+fn an_oscillating_tanks_period_moves_with_its_inductance_and_capacitance_exactly() {
+    // The tank's equations are unchanged when time, L and C scale alike, the conductance
+    // reading the radius through an impedance of its own, so the period scales with them:
+    // L ∂T/∂L + C ∂T/∂C = T, for the steps of the discrete period too, each a fixed
+    // fraction of it, to the rounding of the tangents and the bordered solve, 256 ε here,
+    // held to 1e-12. With a truncation tolerance no step's error reaches, every run takes
+    // those fractions, so central differences of the period, each run settling and
+    // shooting afresh, measure the same derivatives: to a square root's truncation, δ²/8
+    // of the derivative for steps of δ, the period going as √L and √C to leading order,
+    // twice that held, and to the period's resolution, its 1e-10 tolerance over δ.
+    let (inductance, capacitance): (f64, f64) = (1e-6, 1e-9);
+    let impedance = (inductance / capacitance).sqrt();
+    let regulation = (0.2 / impedance, impedance);
+    let options = Options {
+        relative_tolerance: 1e-10,
+        voltage_tolerance: 1e-13,
+        current_tolerance: 1e-16,
+        truncation_tolerance: f64::INFINITY,
+        ..Options::default()
+    };
+    let analysis = PeriodicSteadyState::default();
+    let period = |tank: (f64, f64)| {
+        simulator(&regulated_tank(tank, regulation, 1.0))
+            .periodic_steady_state(&analysis, &options)
+            .expect("the tank oscillates")
+            .period
+    };
+    let mut simulator = simulator(&regulated_tank((inductance, capacitance), regulation, 1.0));
+    let sensitivity = Sensitivity {
+        outputs: vec!["t".to_owned()],
+        of: Differentiated::PeriodicSteadyState(analysis.clone()),
+    };
+    let found = simulator
+        .sensitivity(&sensitivity, &options)
+        .expect("the period's sensitivities");
+    let AnalysisResult::PeriodicSteadyState(steady) = found.result.as_ref() else {
+        panic!("a periodic steady state, not {:?}", found.result);
+    };
+    let derivatives = found
+        .period_derivatives
+        .expect("an oscillator's period moves");
+    let by = |instance: &str| {
+        let index = found
+            .parameters
+            .iter()
+            .position(|parameter| parameter.instance == instance)
+            .expect("the parameter");
+        derivatives[index]
+    };
+    let (by_inductance, by_capacitance) = (by("L1"), by("C1"));
+    let scaled = inductance * by_inductance + capacitance * by_capacitance;
+    assert!(
+        (scaled / steady.period - 1.0).abs() < 1e-12,
+        "{scaled} against {}",
+        steady.period
+    );
+    let step: f64 = 1e-3;
+    let resolution = options.relative_tolerance / step;
+    let differences = [
+        (period((inductance * (1.0 + step), capacitance))
+            - period((inductance * (1.0 - step), capacitance)))
+            / (2.0 * step * inductance),
+        (period((inductance, capacitance * (1.0 + step)))
+            - period((inductance, capacitance * (1.0 - step))))
+            / (2.0 * step * capacitance),
+    ];
+    for (exact, finite) in [by_inductance, by_capacitance].into_iter().zip(differences) {
+        assert!(
+            (exact / finite - 1.0).abs() <= step.powi(2) / 4.0 + resolution,
+            "{exact} against {finite}"
+        );
     }
 }

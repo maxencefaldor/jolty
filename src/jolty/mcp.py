@@ -82,7 +82,9 @@ solution, such as a latch's states, read with jolty.specs.solutions, DcSweep(sou
 values), Ac(source, frequencies) with decade(start, stop, per_decade), Transient(stop,
 max_step, method), Sensitivity(outputs, of=None): the derivative of each output unknown
 with respect to every number of every device's parameters at the operating point, or
-at each level, frequency or time of the DcSweep, Ac or Transient given as of, and
+at each level, frequency or time of the DcSweep, Ac, Transient or PeriodicSteadyState
+given as of, an oscillator's period's too, read with period_derivative(instance,
+parameter), and
 Stability(probe, frequencies): the loop gain through a 0 V voltage source in series
 with a feedback loop, its positive terminal toward the side the signal enters, read
 with jolty.specs.phase_margin, gain_margin and crossover, and Noise(output,

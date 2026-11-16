@@ -632,6 +632,12 @@ pub(crate) fn outcome_to_python(
                     result.set_item("derivatives", cube(py, points)?)?;
                 }
             }
+            result.set_item(
+                "period_derivatives",
+                sensitivities
+                    .period_derivatives
+                    .map(|derivatives| PyArray1::from_vec(py, derivatives)),
+            )?;
             result.set_item("result", outcome_to_python(py, *sensitivities.result)?)?;
         }
         AnalysisResult::Stability(loop_gain) => {

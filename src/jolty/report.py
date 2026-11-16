@@ -655,18 +655,24 @@ class OutputSensitivity(_Model):
     )
 
 
-type Differentiated = Literal["operating_point", "dc_sweep", "ac", "transient"]
+type Differentiated = Literal[
+    "operating_point", "dc_sweep", "ac", "transient", "periodic_steady_state"
+]
 """The analysis a sensitivity analysis differentiates."""
 
 _ALONG: Final[dict[Differentiated, str]] = {
     "dc_sweep": "along a DC sweep at {points} levels",
     "ac": "over a response at {points} frequencies",
     "transient": "over a transient at {points} times",
+    "periodic_steady_state": "over a periodic steady state's period at {points} times",
 }
 
 
 class SensitivityReport(_Model):
-    """Sensitivities at the operating point, or along a sweep, a response or time."""
+    """Sensitivities at the operating point, or along a sweep, a response or time.
+
+    Along a periodic steady state's period, too, and an oscillator's period's.
+    """
 
     kind: Literal["sensitivity"] = "sensitivity"
     name: str
@@ -687,6 +693,16 @@ class SensitivityReport(_Model):
         description="Parameters the derivatives are with respect to."
     )
     outputs: tuple[OutputSensitivity, ...]
+    period: float | None = Field(
+        default=None,
+        description="An oscillator's period, in seconds, whose derivatives "
+        "period_derivatives lists; null for any other analysis.",
+    )
+    period_derivatives: tuple[Derivative, ...] = Field(
+        default=(),
+        description="An oscillator's period's derivative with respect to the first "
+        "parameters, in the circuit's order.",
+    )
     unlisted: int = Field(description="Parameters left out of each output's list.")
 
     def describe(self) -> str:
@@ -715,6 +731,20 @@ class SensitivityReport(_Model):
                     self._derivative(each),
                 ]
                 for each in output.derivatives
+            ]
+            lines.extend(f"  {row}" for row in _table(rows))
+            if self.unlisted:
+                lines.append(f"      ... and {self.unlisted} more in the results file")
+        if self.period is not None:
+            lines.append(f"  period = {format_si(self.period, 's')}")
+            rows = [
+                [
+                    each.instance,
+                    each.parameter,
+                    f"at {each.value!r}",
+                    repr(each.derivative),
+                ]
+                for each in self.period_derivatives
             ]
             lines.extend(f"  {row}" for row in _table(rows))
             if self.unlisted:
@@ -1299,8 +1329,29 @@ def _sensitivities(
         case results.AcResult() as response:
             of, points, unit = "ac", len(response.frequencies), "Hz"
             point = response.operating_point
+        case results.PeriodicSteadyStateResult() as waveforms:
+            of, points, unit = "periodic_steady_state", len(waveforms.times), "s"
         case results.TransientResult() as waveforms:
             of, points, unit = "transient", len(waveforms.times), "s"
+    period = None
+    period_derivatives: tuple[Derivative, ...] = ()
+    if result.period_derivatives is not None and isinstance(
+        result.result, results.PeriodicSteadyStateResult
+    ):
+        period = result.result.period
+        period_derivatives = tuple(
+            Derivative(
+                instance=parameter.instance,
+                parameter=parameter.name,
+                value=parameter.value,
+                derivative=float(derivative),
+            )
+            for parameter, derivative in zip(
+                result.parameters[:listed_parameters],
+                result.period_derivatives,
+                strict=False,
+            )
+        )
     return SensitivityReport(
         name=name,
         of=of,
@@ -1312,6 +1363,8 @@ def _sensitivities(
         outputs=tuple(
             _output(result, output, listed_parameters) for output in result.outputs
         ),
+        period=period,
+        period_derivatives=period_derivatives,
         unlisted=len(result.parameters) - listed_parameters,
     )
 

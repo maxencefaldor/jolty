@@ -115,6 +115,7 @@ class SensitivityResult(TypedDict):
     parameters: list[tuple[str, str]]
     values: npt.NDArray[np.float64]
     derivatives: npt.NDArray[np.float64] | npt.NDArray[np.complex128]
+    period_derivatives: npt.NDArray[np.float64] | None
     result: AnalysisResult
 
 class StabilityResult(TypedDict):

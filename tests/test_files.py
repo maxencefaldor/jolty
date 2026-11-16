@@ -160,6 +160,21 @@ def every_kind() -> dict[str, results.AnalysisResult]:
             np.array([[-2e-4, 0.4]]),
             point,
         ),
+        "tuning": results.SensitivityResult(
+            UNKNOWNS,
+            ("out",),
+            (PARAMETER,),
+            np.array([[[0.0]], [[1.0]], [[0.5]]]),
+            results.PeriodicSteadyStateResult(
+                UNKNOWNS,
+                np.array([0.0, 5e-7, 1e-6]),
+                np.ones((3, 2)),
+                STATISTICS,
+                period=1e-6,
+                periods=3,
+            ),
+            np.array([2e-10]),
+        ),
         "over": results.SensitivityResult(
             UNKNOWNS,
             ("out",),

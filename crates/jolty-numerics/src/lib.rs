@@ -9,7 +9,8 @@
 //! however many threads gather them; [`reduce`] sums many terms in one fixed order on any
 //! number of threads; [`integration`] holds the formulas that turn charges
 //! into currents over a time step; and [`generalized_eigenvalues`] finds a dense matrix pencil's eigenvalues by the QZ algorithm,
-//! and [`solve_in_range`] solves a small dense system, regular or not.
+//! and [`solve_in_range`] solves a small dense system, regular or not, and
+//! [`solve_each_in_range`] many right-hand sides of one.
 
 mod dense;
 mod gather;
@@ -19,7 +20,7 @@ mod pattern;
 mod pencil;
 pub mod reduce;
 
-pub use dense::solve_in_range;
+pub use dense::{solve_each_in_range, solve_in_range};
 pub use gather::{Fold, GatherMap, UNMAPPED};
 pub use lu::{
     Condensation, Dissecting, Factors, LinearError, Ordering, Scalar, Shared, SparseLu, Work,

@@ -215,6 +215,35 @@ def test_sensitivities_along_an_analysis_state_where_each_is_largest() -> None:
     assert (derivative.derivative, derivative.at) == (-2.0, 1e-6)
 
 
+def test_an_oscillators_sensitivities_state_its_period_s_derivatives() -> None:
+    times = np.array([0.0, 5e-7, 1e-6])
+    statistics = results.Statistics("direct", 2, 0, 0, 4)
+    steady = results.PeriodicSteadyStateResult(
+        UNKNOWNS, times, np.zeros((3, 3)), statistics, period=1e-6, periods=3
+    )
+    parameter = results.Parameter("C1", "capacitance", 1e-9)
+    tuning = results.SensitivityResult(
+        UNKNOWNS,
+        ("out",),
+        (parameter,),
+        np.array([[[0.5]], [[-2.0]], [[1.0]]]),
+        steady,
+        np.array([5e2]),
+    )
+    summary = report.report("tuning", tuning, max_unknowns=5)
+    assert isinstance(summary, report.SensitivityReport)
+    assert (summary.of, summary.period) == ("periodic_steady_state", 1e-6)
+    assert summary.describe() == (
+        "tuning: derivatives with respect to 1 parameters over a periodic steady "
+        "state's period at 3 times\n"
+        "  out\n"
+        "    C1  capacitance  at 1e-09  largest -2.0 at 500 ns\n"
+        "  period = 1 µs\n"
+        "    C1  capacitance  at 1e-09  500.0"
+    )
+    assert tuning.period_derivative("C1", "capacitance") == 5e2
+
+
 def test_a_failure_says_why() -> None:
     failure = report.FailureReport(
         name="step", error="the time step fell below 1e-18 s"

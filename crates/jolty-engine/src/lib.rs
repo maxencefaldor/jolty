@@ -600,6 +600,14 @@ pub enum SimulationError {
          oscillation starts from it"
     )]
     NoGrowingMode,
+    /// An oscillator's shooting found a state every period repeats because nothing moves:
+    /// its operating point, not an oscillation.
+    #[error(
+        "shooting found a state that does not move: no unknown changes by its tolerance as \
+         the period changes by its relative tolerance, so it is an equilibrium the \
+         oscillation left, not an oscillation"
+    )]
+    Stationary,
     /// An oscillator's transient from its operating point did not stop growing.
     #[error(
         "the oscillation from the operating point, kicked along its fastest-growing mode, \

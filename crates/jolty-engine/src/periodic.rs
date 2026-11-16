@@ -45,7 +45,10 @@
 //! that grows fastest, the smallest step off the operating point the analysis resolves,
 //! the transient runs until the oscillation stops growing, its returns to the hyperplane
 //! through the operating point across the kick coming no further apart than the returns
-//! before them. Shooting starts from the last return, its period the time since the one
+//! before them, which were apart by more than their tolerance. It runs in stretches, each
+//! twice as long as the one before, which restart its integration and so are compared
+//! only within themselves, each step at most a fiftieth of the period the returns before
+//! it show. Shooting starts from the last return, its period the time since the one
 //! before.
 
 use std::f64::consts::TAU;
@@ -56,7 +59,7 @@ use serde::Deserialize;
 
 use crate::newton::{NAMED_UNKNOWNS, add_product, step_matrix};
 use crate::options::NUMBERS_PER_GIB;
-use crate::transient::{Carried, Tangent};
+use crate::transient::{Carried, STEPS_PER_RUN, Tangent};
 use crate::{
     OperatingPointResult, Options, SimulationError, Simulator, Strategy, Transient, TransientResult,
 };
@@ -156,6 +159,74 @@ impl Monodromy {
     }
 }
 
+/// What a period shooting simulated carried to its end, and the scales shooting measures it
+/// in.
+pub(crate) struct Shot {
+    monodromy: Monodromy,
+    /// Each unknown's tolerance at the period's start and end.
+    tolerances: Vec<f64>,
+    /// The period's own scale, its relative tolerance of it.
+    scale: f64,
+}
+
+impl Shot {
+    /// The system Newton's step solves, each unknown in units of its tolerance, by columns:
+    /// `S⁻¹ (Φ − I) S`, bordered, for an oscillator, by the flow `c = S⁻¹ ∂φ/∂T s_T`, the
+    /// period in units of its own scale `s_T`, as a column and as the phase condition's
+    /// row; with the unknowns' tolerances `S` and an oscillator's period's scale.
+    pub(crate) fn system(self) -> (Vec<f64>, Vec<f64>, Option<f64>) {
+        let Self {
+            monodromy,
+            tolerances,
+            scale,
+        } = self;
+        let Monodromy {
+            tangents,
+            at,
+            stretch,
+        } = monodromy;
+        drop(tangents);
+        let flow: Option<Vec<f64>> = stretch.map(|stretch| {
+            stretch
+                .at
+                .iter()
+                .zip(&tolerances)
+                .map(|(derivative, tolerance)| derivative * scale / tolerance)
+                .collect()
+        });
+        let rows = tolerances.len() + usize::from(flow.is_some());
+        let mut matrix = Vec::with_capacity(rows * rows);
+        for (column, (derivatives, scale)) in at.into_iter().zip(&tolerances).enumerate() {
+            for (row, (derivative, tolerance)) in derivatives.iter().zip(&tolerances).enumerate() {
+                let identity = if row == column { 1.0 } else { 0.0 };
+                matrix.push((derivative - identity) * scale / tolerance);
+            }
+            if let Some(flow) = &flow {
+                matrix.push(flow[column]);
+            }
+        }
+        let scale = flow.as_ref().map(|flow| {
+            matrix.extend(flow);
+            matrix.push(0.0);
+            scale
+        });
+        (matrix, tolerances, scale)
+    }
+
+    /// Whether an oscillator's orbit moves: whether a change of its period by its scale
+    /// moves the period's end, by the flow there, by more than an unknown's tolerance. An
+    /// orbit that does not is the operating point, which every period repeats.
+    fn moves(&self) -> bool {
+        self.monodromy.stretch.as_ref().is_some_and(|stretch| {
+            stretch
+                .at
+                .iter()
+                .zip(&self.tolerances)
+                .any(|(derivative, tolerance)| (derivative * self.scale).abs() > *tolerance)
+        })
+    }
+}
+
 impl Simulator {
     /// One period of the periodic steady state: of a circuit driven by sources of the
     /// analysis's period, found by shooting from the operating point, or of an oscillator,
@@ -168,7 +239,8 @@ impl Simulator {
     /// shooting does not carry, or an oscillator's analysis with times to step onto;
     /// [`SimulationError::TooMuchMemory`] when its dense matrices would hold more than the
     /// options' `max_memory`; [`SimulationError::NoGrowingMode`] and
-    /// [`SimulationError::Unsettled`] when an oscillator does not start or settle;
+    /// [`SimulationError::Unsettled`] when an oscillator does not start or settle,
+    /// [`SimulationError::Stationary`] when its shooting converges onto its operating point;
     /// [`SimulationError::NoSteadyState`] when the periods do not converge; and the errors
     /// of [`Simulator::transient`] and [`Simulator::growing_modes`], each period's results
     /// holding what the dense matrices leave of the memory.
@@ -179,56 +251,67 @@ impl Simulator {
     ) -> Result<PeriodicSteadyStateResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
-            if !self.elaborated.logic.nets.is_empty() {
-                return Err(SimulationError::InvalidAnalysis(
-                    "a periodic steady state is found for circuits without logic".to_owned(),
-                ));
-            }
-            if analysis.period.is_none() && !analysis.breakpoints.is_empty() {
-                return Err(SimulationError::InvalidAnalysis(
-                    "an oscillator's period is found, not given, so its periodic steady state \
-                     has no times to step onto"
-                        .to_owned(),
-                ));
-            }
-            options.check()?;
-            let reading = self.read_meter(options.profile);
-            let rows = self.elaborated.unknowns.len() + usize::from(analysis.period.is_none());
-            let size = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
-            let dense = DENSE_MATRICES * size * size;
-            options.hold("periodic steady state", rows, dense)?;
-            let period_options = Options {
-                max_memory: options.max_memory - dense / NUMBERS_PER_GIB,
-                ..options.clone()
-            };
-            let point = self.operating_point(options)?;
-            let strategy = point.strategy;
-            let (start, period) = match analysis.period {
-                Some(period) => (point.values, period),
-                None => self.settled(analysis, &point, &period_options)?,
-            };
-            let mut found = self.shoot(
-                analysis,
-                (start, strategy),
-                (period, analysis.period.is_none()),
-                &period_options,
-            )?;
-            let statistics = &mut found.waveforms.statistics;
-            (statistics.work, statistics.profile) = self.metered_since(&reading);
-            Ok(found)
+            Ok(self.shot_steady_state(analysis, options)?.0)
         })
     }
 
+    /// One period of the periodic steady state, as [`Simulator::periodic_steady_state`]
+    /// finds it, and what that period carried: its derivatives with respect to its start
+    /// and, for an oscillator, to its period.
+    pub(crate) fn shot_steady_state(
+        &mut self,
+        analysis: &PeriodicSteadyState,
+        options: &Options,
+    ) -> Result<(PeriodicSteadyStateResult, Shot), SimulationError> {
+        if !self.elaborated.logic.nets.is_empty() {
+            return Err(SimulationError::InvalidAnalysis(
+                "a periodic steady state is found for circuits without logic".to_owned(),
+            ));
+        }
+        if analysis.period.is_none() && !analysis.breakpoints.is_empty() {
+            return Err(SimulationError::InvalidAnalysis(
+                "an oscillator's period is found, not given, so its periodic steady state \
+                 has no times to step onto"
+                    .to_owned(),
+            ));
+        }
+        options.check()?;
+        let reading = self.read_meter(options.profile);
+        let rows = self.elaborated.unknowns.len() + usize::from(analysis.period.is_none());
+        let size = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
+        let dense = DENSE_MATRICES * size * size;
+        options.hold("periodic steady state", rows, dense)?;
+        let period_options = Options {
+            max_memory: options.max_memory - dense / NUMBERS_PER_GIB,
+            ..options.clone()
+        };
+        let point = self.operating_point(options)?;
+        let strategy = point.strategy;
+        let (start, period) = match analysis.period {
+            Some(period) => (point.values, period),
+            None => self.settled(analysis, &point, &period_options)?,
+        };
+        let (mut found, shot) = self.shoot(
+            analysis,
+            (start, strategy),
+            (period, analysis.period.is_none()),
+            &period_options,
+        )?;
+        let statistics = &mut found.waveforms.statistics;
+        (statistics.work, statistics.profile) = self.metered_since(&reading);
+        Ok((found, shot))
+    }
+
     /// The periods of `analysis` from `start` and how the operating point it came from
-    /// was found, the first `period` long, until one repeats; `oscillator` says whether
-    /// the period is an unknown too.
+    /// was found, the first `period` long, until one repeats, and what that one carried;
+    /// `oscillator` says whether the period is an unknown too.
     fn shoot(
         &mut self,
         analysis: &PeriodicSteadyState,
         (mut start, strategy): (Vec<f64>, Strategy),
         (mut period, oscillator): (f64, bool),
         options: &Options,
-    ) -> Result<PeriodicSteadyStateResult, SimulationError> {
+    ) -> Result<(PeriodicSteadyStateResult, Shot), SimulationError> {
         let unknowns = start.len();
         let mut mismatches = Vec::new();
         let mut simulated = 0;
@@ -256,64 +339,38 @@ impl Simulator {
                 .zip(&tolerances)
                 .map(|((start, end), tolerance)| (start - end).abs() / tolerance)
                 .collect();
-            if mismatches.iter().all(|&mismatch| mismatch <= 1.0) {
-                return Ok(PeriodicSteadyStateResult {
-                    period,
-                    periods,
-                    waveforms,
-                });
-            }
-            // (Φ − I) Δ = x₀ − φ(x₀), each unknown in units of its tolerance:
-            // S⁻¹ (Φ − I) S · S⁻¹ Δ = S⁻¹ (x₀ − φ(x₀)), Φ stored by columns; bordered, for
-            // an oscillator, by the flow c = S⁻¹ ∂φ/∂T s_T, the period in units of its own
-            // relative tolerance s_T, as a column and as the phase condition's row.
-            let Monodromy {
-                tangents,
-                at,
-                stretch,
-            } = monodromy;
-            drop(tangents);
-            let scale = options.relative_tolerance * period;
-            let flow: Option<Vec<f64>> = stretch.map(|stretch| {
-                stretch
-                    .at
-                    .iter()
-                    .zip(&tolerances)
-                    .map(|(derivative, tolerance)| derivative * scale / tolerance)
-                    .collect()
-            });
-            let rows = unknowns + usize::from(flow.is_some());
-            let mut matrix = Vec::with_capacity(rows * rows);
-            for (column, (derivatives, scale)) in at.into_iter().zip(&tolerances).enumerate() {
-                for (row, (derivative, tolerance)) in
-                    derivatives.iter().zip(&tolerances).enumerate()
-                {
-                    let identity = if row == column { 1.0 } else { 0.0 };
-                    matrix.push((derivative - identity) * scale / tolerance);
-                }
-                if let Some(flow) = &flow {
-                    matrix.push(flow[column]);
-                }
-            }
-            if let Some(flow) = &flow {
-                matrix.extend(flow);
-                matrix.push(0.0);
-            }
             let mut step: Vec<f64> = start
                 .iter()
                 .zip(end)
                 .zip(&tolerances)
                 .map(|((start, end), tolerance)| (start - end) / tolerance)
                 .collect();
-            if flow.is_some() {
+            let shot = Shot {
+                monodromy,
+                tolerances,
+                scale: options.relative_tolerance * period,
+            };
+            if mismatches.iter().all(|&mismatch| mismatch <= 1.0) {
+                if oscillator && !shot.moves() {
+                    return Err(SimulationError::Stationary);
+                }
+                let found = PeriodicSteadyStateResult {
+                    period,
+                    periods,
+                    waveforms,
+                };
+                return Ok((found, shot));
+            }
+            if oscillator {
                 step.push(0.0);
             }
+            let (matrix, tolerances, scale) = shot.system();
             solve_in_range(&matrix, &mut step, (options.relative_tolerance, 1.0))
                 .map_err(|error| self.state.solver.name(error))?;
             for ((value, step), tolerance) in start.iter_mut().zip(&step).zip(&tolerances) {
                 *value += step * tolerance;
             }
-            if let Some(&stretched) = step.get(unknowns) {
+            if let (Some(&stretched), Some(scale)) = (step.get(unknowns), scale) {
                 period += stretched * scale;
                 if period <= 0.0 {
                     break;
@@ -363,12 +420,16 @@ impl Simulator {
         let (mut time, mut length) = (0.0, TAU / mode.pole.norm());
         let mut returns = Returns::default();
         for _ in 0..MOST_PERIODS {
+            // A stretch's steps are at most a fiftieth of the period the returns before it
+            // show, as a period's own are, or of the stretch while none shows one.
+            let shown = returns.apart.map(|(period, _)| period / STEPS_PER_RUN);
             let stretch = Transient {
                 stop: length,
-                max_step: analysis.max_step,
+                max_step: analysis.max_step.or(shown),
                 method: analysis.method,
                 breakpoints: Vec::new(),
             };
+            returns.restart();
             let begun = Some((state, point.strategy));
             let waveforms = self.transient_with(&stretch, options, begun, Carried::Nothing)?;
             let points = waveforms.times.iter().zip(&waveforms.values);
@@ -556,9 +617,14 @@ struct Returns {
     /// The time between the last two returns, and the largest distance between their
     /// states, each unknown in units of its tolerance at the last.
     apart: Option<(f64, f64)>,
+    /// Whether the last two returns are of the stretch running.
+    compared: bool,
     /// Whether a return has come no further from the one before than that one from its
-    /// own: the oscillation stopped growing. Within tolerance of each other is no sign of
-    /// it, as every return is while the oscillation grows from a kick of one tolerance.
+    /// own, which was beyond their tolerance: the oscillation grew past what the analysis
+    /// resolves, and stopped growing. Returns within tolerance of each other show neither,
+    /// as every return is while the oscillation grows from a kick of one tolerance, the
+    /// error of each step's own Newton iteration making them come nearer or further by
+    /// chance.
     settled: bool,
 }
 
@@ -574,17 +640,60 @@ impl Returns {
                 .zip(tolerances)
                 .map(|((to, from), tolerance)| (to - from).abs() / tolerance)
                 .fold(0.0, f64::max);
-            self.settled |= self.apart.is_some_and(|(_, apart)| distance <= apart);
+            let apart = self.apart.filter(|_| self.compared);
+            self.settled |= apart.is_some_and(|(_, apart)| apart > 1.0 && distance <= apart);
             self.apart = Some((time - before, distance));
+            self.compared = true;
         }
         self.last = Some((time, state));
+    }
+
+    /// Starts a stretch of transient, which restarts its integration with backward Euler's
+    /// steps, damping the oscillation a little: a return is compared only with those of
+    /// its own stretch, from the second on, and the time between the last two returns
+    /// before stays until two of the new stretch replace it.
+    fn restart(&mut self) {
+        self.last = None;
+        self.compared = false;
     }
 
     /// The last return's state and the time since the one before, once the oscillation
     /// stopped growing.
     fn settled(&self) -> Option<(Vec<f64>, f64)> {
-        let (_, state) = self.last.as_ref().filter(|_| self.settled)?;
+        let (_, state) = self
+            .last
+            .as_ref()
+            .filter(|_| self.settled && self.compared)?;
         let (period, _) = self.apart?;
         Some((state.clone(), period))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A shot of an oscillator's period, `T` = 1 s, whose end moves with the period by
+    /// `flow`, each unknown's tolerance 1.
+    fn shot(flow: Vec<f64>) -> Shot {
+        let unknowns = flow.len();
+        let mut monodromy = Monodromy::stretched(1.0);
+        if let Some(stretch) = &mut monodromy.stretch {
+            stretch.at = flow;
+        }
+        Shot {
+            monodromy,
+            tolerances: vec![1.0; unknowns],
+            scale: 1e-3,
+        }
+    }
+
+    #[test]
+    fn an_orbit_moves_when_its_period_moves_an_unknown_past_its_tolerance() {
+        // A change of the period by its scale, 1e-3, moves the end by 1e-3 times the
+        // flow: past a tolerance of 1 only where the flow passes 1e3.
+        assert!(shot(vec![0.0, 2e3]).moves());
+        assert!(!shot(vec![1e3, -1e3]).moves());
+        assert!(!shot(vec![0.0, 0.0]).moves());
     }
 }

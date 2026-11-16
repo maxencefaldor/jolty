@@ -887,7 +887,10 @@ class SensitivityResult(_Watched):
     `derivatives` has one row per output and one column per parameter, in SI base
     units, at an operating point. Along a DC sweep, over a response or over time, it has
     one such matrix per level, frequency or time of `result`, first, as `result`'s own
-    values have one row per point; a response's are the derivatives of its phasors.
+    values have one row per point; a response's are the derivatives of its phasors, and
+    a periodic steady state's are at each point's fraction of the period. For an
+    oscillator's periodic steady state, `period_derivatives` holds its period's
+    derivative with respect to each parameter.
 
     Examples:
         >>> point = OperatingPointResult(
@@ -914,6 +917,9 @@ class SensitivityResult(_Watched):
     derivatives: Real | Complex
     result: OperatingPointResult | DcSweepResult | AcResult | TransientResult
     """The result of the analysis differentiated."""
+    period_derivatives: Real | None = None
+    """For an oscillator's periodic steady state, its period's derivative with respect
+    to each parameter, in their order; None otherwise."""
 
     def derivative(
         self, output: str, instance: str, parameter: str
@@ -925,11 +931,29 @@ class SensitivityResult(_Watched):
         Raises:
             KeyError: When the analysis has no such output or parameter.
         """
+        found = self.derivatives[
+            ..., self._row(output), self._column(instance, parameter)
+        ]
+        return float(found) if found.ndim == 0 else found
+
+    def period_derivative(self, instance: str, parameter: str) -> float:
+        """The derivative of an oscillator's period with respect to `parameter`.
+
+        The parameter is `instance`'s, and the derivative in seconds per its SI unit.
+
+        Raises:
+            KeyError: When the analysis has no such parameter, or differentiates no
+                oscillator's period.
+        """
+        if self.period_derivatives is None:
+            message = "the analysis differentiates no oscillator's period"
+            raise KeyError(message)
+        return float(self.period_derivatives[self._column(instance, parameter)])
+
+    def _column(self, instance: str, parameter: str) -> int:
         labels = [f"{found.instance} {found.name}" for found in self.parameters]
         missing = "the analysis has no parameter"
-        index = _find(labels, f"{instance} {parameter}", missing)
-        found = self.derivatives[..., self._row(output), index]
-        return float(found) if found.ndim == 0 else found
+        return _find(labels, f"{instance} {parameter}", missing)
 
     def gradient(self, output: str) -> Real | Complex:
         """The derivative of `output` with respect to each parameter, in their order.
