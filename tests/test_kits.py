@@ -928,12 +928,21 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
         compatibility=kit.compatibility,
         temperature=ngspice.same_kelvins(celsius(27).value),
     )
+    # One node joins every device's current: ngspice's solve rounds each sensed
+    # current by as much as that sum rounds, at most (n - 1)·ε of its terms' sizes
+    # (Higham, Accuracy and Stability of Numerical Algorithms, 2002, §4.2), as a
+    # capacitor's, which carries none at DC, shows on x86: 2.4e-14 A.
+    sensed = [abs(raw_point.real(f"i(va{number})")[0]) for number in range(len(driven))]
+    summed = (len(sensed) - 1) * np.finfo(float).eps * sum(sensed)
     for number, name in enumerate(driven):
         column = simulation.unknowns.index(
             results.Unknown(f"A{number}:current", "current")
         )
         found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
-        assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
+        assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR + summed, (
+            name,
+            summed,
+        )
         if any(model.startswith(AC_DEPARTED) for model in native[name].models):
             continue
         spice_ac = raw_response.vectors[f"i(va{number})"]
