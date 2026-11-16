@@ -208,3 +208,27 @@ The runs of `inverter_chain_50000` took 17 minutes on 12 cores of an Apple M2 Ma
 It prints each run's time, its speed-up against the serial run and against the spread run on one thread, and its results' fingerprint, the first 16 hexadecimal digits of the SHA-256 of their arrays.
 The spread runs must find the bits of the serial run, or it stops, unless the circuit has more unknowns than the least of the interiors' break-evens, so that its ordering may dissect a block, otherwise on each number of threads.
 The results file holds the serial time as the fixture's own, `python/<fixture>`, each spread time as `python/<fixture>/spread on <n> threads`, and the fingerprints.
+
+Measured by `scripts/bench --scale inverter_chain_5000 rc_mesh_300 --threads "[1,2,4,8,16,32,64]"` on `cedar` on 16 November 2026 from 07:28 to 07:45 UTC, while the load average, the measurement's own threads included, was 1.1 to 9.9 on its 64 threads:
+
+| Fixture | Threads | Time | Against serial | Against 1 thread | Results | Load |
+| --- | --- | --- | --- | --- | --- | --- |
+| `inverter_chain_5000` | serially | 117.2 s | | | `d6b1ef5206419ac1` | 1.19 |
+| `inverter_chain_5000` | 1 | 119.1 s | 0.98 | 1.00 | `d6b1ef5206419ac1` | 1.14 |
+| `inverter_chain_5000` | 2 | 120.4 s | 0.97 | 0.99 | `d6b1ef5206419ac1` | 1.13 |
+| `inverter_chain_5000` | 4 | 77.59 s | 1.51 | 1.54 | `d6b1ef5206419ac1` | 1.18 |
+| `inverter_chain_5000` | 8 | 64.29 s | 1.82 | 1.85 | `d6b1ef5206419ac1` | 1.92 |
+| `inverter_chain_5000` | 16 | 57.87 s | 2.02 | 2.06 | `d6b1ef5206419ac1` | 3.48 |
+| `inverter_chain_5000` | 32 | 60.04 s | 1.95 | 1.98 | `d6b1ef5206419ac1` | 5.04 |
+| `inverter_chain_5000` | 64 | 121.5 s | 0.96 | 0.98 | `d6b1ef5206419ac1` | 9.87 |
+| `rc_mesh_300` | serially | 46.73 s | | | `4998e669da8acfba` | 2.28 |
+| `rc_mesh_300` | 1 | 47.2 s | 0.99 | 1.00 | `4998e669da8acfba` | 1.70 |
+| `rc_mesh_300` | 2 | 15.18 s | 3.08 | 3.11 | `54b9ddd5b34d2b45` | 1.33 |
+| `rc_mesh_300` | 4 | 12.3 s | 3.80 | 3.84 | `e9b2d729b36516e9` | 1.41 |
+| `rc_mesh_300` | 8 | 10.31 s | 4.53 | 4.58 | `40d3afc4e97cf08b` | 1.90 |
+| `rc_mesh_300` | 16 | 8.528 s | 5.48 | 5.53 | `40d3afc4e97cf08b` | 2.07 |
+| `rc_mesh_300` | 32 | 7.971 s | 5.86 | 5.92 | `40d3afc4e97cf08b` | 2.13 |
+| `rc_mesh_300` | 64 | 8.693 s | 5.38 | 5.43 | `53418f756c62322e` | 4.52 |
+
+The chain found the serial run's bits on every number of threads; it spread its devices on 4 to 32 threads, from the break-evens on 4 and 8, and nothing on 1, 2 or 64, where no size measured paid, so on 64 it ran as serially.
+The mesh found the serial run's bits on one thread, ordered by the minimum degree, and other last digits on each number of threads whose break-even of the interiors differs, the same on 8, 16 and 32, which take 8's; it ran 5.86 times as fast on 32 threads as serially, its dissection doing it all, as its devices are linear and its work on each unknown spreads on no number.
