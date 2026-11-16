@@ -6,7 +6,7 @@
 //! device as the level before left it: each operating point starts from the one before,
 //! as a chain of runs does from one run to the next.
 
-use jolty_models::{BranchKind, Level, Nature};
+use jolty_models::{BranchKind, LogicLevel, Nature};
 use serde::Deserialize;
 
 use crate::newton::Mode;
@@ -54,7 +54,7 @@ pub struct DcSweepResult {
     /// variables.
     pub observations: Observations,
     /// The level of every logic net at each level.
-    pub logic: Vec<Vec<Level>>,
+    pub logic: Vec<Vec<LogicLevel>>,
 }
 
 /// What a sweep sweeps: what it holds, the device whose instance it prepares again, and

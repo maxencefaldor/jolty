@@ -85,9 +85,9 @@ pub use junction::{BOLTZMANN, ELEMENTARY_CHARGE, REFERENCE_TEMPERATURE, thermal_
 pub use kernel::parts::SMALL_RESISTANCE;
 pub use kernel::{Kernel, Layout, Local, Stamp};
 pub use logic::{
-    Change, Domain, Electrical, ElectricalParameters, FixedTiming, Level, Logic, LogicCell,
-    LogicCellParameters, LogicModel, LogicSource, LogicSourceParameters, MAX_INPUTS, NativeLogic,
-    NativeLogicModel, OutputParameters, Pins, Stimulus, Timing, TimingParameters,
+    Change, Domain, Electrical, ElectricalParameters, FixedTiming, Logic, LogicCell,
+    LogicCellParameters, LogicLevel, LogicModel, LogicSource, LogicSourceParameters, MAX_INPUTS,
+    NativeLogic, NativeLogicModel, OutputParameters, Pins, Stimulus, Timing, TimingParameters,
 };
 pub use memristor::{
     CurrentControlledMemristor, CurrentControlledMemristorParameters, MemristorLaw,

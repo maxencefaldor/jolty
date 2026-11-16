@@ -1,6 +1,6 @@
 //! The logic partition of a circuit, and the event scheduler that simulates it.
 //!
-//! Logic nets hold a [`Level`] rather than a voltage. The scheduler keeps, for every source of
+//! Logic nets hold a [`LogicLevel`] rather than a voltage. The scheduler keeps, for every source of
 //! a logic net, the level it drives and the change it has pending, and processes changes in
 //! time order: each one may change its net's level, which every logic input on the net reads
 //! and every connect element's driver follows. A logic device's output follows its inputs
@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BinaryHeap};
 
 use std::sync::Arc;
 
-use jolty_models::{Change, Input, Level, Logic, Node, Pins, Stimulus};
+use jolty_models::{Change, Input, Logic, LogicLevel, Node, Pins, Stimulus};
 
 use crate::elaborate::Location;
 use crate::elaborated::Template;
@@ -219,8 +219,8 @@ impl LogicSystem {
     }
 
     /// The level of `net` from its sources' levels.
-    fn resolve(&self, net: usize, drives: &[DriveState]) -> Level {
-        Level::resolve(self.sources[net].iter().map(|&drive| drives[drive].level))
+    fn resolve(&self, net: usize, drives: &[DriveState]) -> LogicLevel {
+        LogicLevel::resolve(self.sources[net].iter().map(|&drive| drives[drive].level))
     }
 
     /// Whether a logic driver follows `net` into the analog circuit.
@@ -235,7 +235,7 @@ struct Scheduled {
     time: f64,
     sequence: u64,
     drive: usize,
-    level: Level,
+    level: LogicLevel,
     transition: f64,
     /// Whether the change is a device's own, which inputs never cancel.
     stimulus: bool,
@@ -266,9 +266,9 @@ impl Ord for Scheduled {
 /// What one source of a net drives now, and the change it has pending.
 #[derive(Debug, Clone, Copy)]
 struct DriveState {
-    level: Level,
+    level: LogicLevel,
     /// The time, level and sequence number of the pending change.
-    pending: Option<(f64, Level, u64)>,
+    pending: Option<(f64, LogicLevel, u64)>,
     /// The time of the last change and its transition, since the logic last settled.
     changed: Option<(f64, f64)>,
 }
@@ -281,7 +281,7 @@ impl DriveState {
         match self.changed {
             Some((at, transition)) if transition > 0.0 => {
                 let swung = (0.5 + (time - at) / transition).clamp(0.0, 1.0);
-                if self.level == Level::High {
+                if self.level == LogicLevel::High {
                     swung
                 } else {
                     1.0 - swung
@@ -298,7 +298,7 @@ pub(crate) struct Command {
     pub(crate) time: f64,
     /// The driver's index among the system's drivers.
     pub(crate) driver: usize,
-    pub(crate) level: Level,
+    pub(crate) level: LogicLevel,
     pub(crate) transition: f64,
 }
 
@@ -308,7 +308,7 @@ pub(crate) struct Crossing {
     pub(crate) time: f64,
     /// The detector's index among the system's detectors.
     pub(crate) detector: usize,
-    pub(crate) level: Level,
+    pub(crate) level: LogicLevel,
     pub(crate) transition: f64,
 }
 
@@ -328,18 +328,18 @@ pub(crate) struct Checkpoint {
 /// The state of the logic nets during an analysis.
 #[derive(Debug, Clone)]
 pub(crate) struct Events {
-    levels: Vec<Level>,
+    levels: Vec<LogicLevel>,
     /// The transition of each net's last change.
     transitions: Vec<f64>,
     drives: Vec<DriveState>,
     queue: BinaryHeap<Reverse<Scheduled>>,
     sequence: u64,
     /// Each net's changes since the analysis began: the time and the new level.
-    traces: Vec<Vec<(f64, Level)>>,
+    traces: Vec<Vec<(f64, LogicLevel)>>,
     /// The changes logic drivers must follow, not yet applied.
     commands: Vec<Command>,
     /// The level each logic driver was last told to follow.
-    driven: Vec<Level>,
+    driven: Vec<LogicLevel>,
     /// The capacitance each net's outputs drive, in farads.
     loads: Vec<f64>,
     /// Where the devices were used outside their domains, by device and bound.
@@ -350,11 +350,11 @@ impl Events {
     /// Every net and source unknown, with nothing pending.
     pub(crate) fn new(logic: &LogicSystem) -> Self {
         Self {
-            levels: vec![Level::Unknown; logic.nets.len()],
+            levels: vec![LogicLevel::Unknown; logic.nets.len()],
             transitions: vec![0.0; logic.nets.len()],
             drives: vec![
                 DriveState {
-                    level: Level::Unknown,
+                    level: LogicLevel::Unknown,
                     pending: None,
                     changed: None,
                 };
@@ -364,7 +364,7 @@ impl Events {
             sequence: 0,
             traces: vec![Vec::new(); logic.nets.len()],
             commands: Vec::new(),
-            driven: vec![Level::Unknown; logic.drivers.len()],
+            driven: vec![LogicLevel::Unknown; logic.drivers.len()],
             loads: logic.nets.iter().map(|net| net.load).collect(),
             excursions: BTreeMap::new(),
         }
@@ -373,10 +373,10 @@ impl Events {
     /// Forgets everything an analysis left, as [`Events::new`] makes them for `logic`,
     /// keeping the buffers.
     pub(crate) fn reset(&mut self, logic: &LogicSystem) {
-        self.levels.fill(Level::Unknown);
+        self.levels.fill(LogicLevel::Unknown);
         self.transitions.fill(0.0);
         self.drives.fill(DriveState {
-            level: Level::Unknown,
+            level: LogicLevel::Unknown,
             pending: None,
             changed: None,
         });
@@ -386,7 +386,7 @@ impl Events {
             trace.clear();
         }
         self.commands.clear();
-        self.driven.fill(Level::Unknown);
+        self.driven.fill(LogicLevel::Unknown);
         self.loads.clear();
         self.loads.extend(logic.nets.iter().map(|net| net.load));
         self.excursions.clear();
@@ -431,17 +431,17 @@ impl Events {
     }
 
     /// Each logic net's level.
-    pub(crate) fn levels(&self) -> &[Level] {
+    pub(crate) fn levels(&self) -> &[LogicLevel] {
         &self.levels
     }
 
     /// The level each logic driver was last told to follow.
-    pub(crate) fn driven(&self) -> &[Level] {
+    pub(crate) fn driven(&self) -> &[LogicLevel] {
         &self.driven
     }
 
     /// Each detector's level.
-    pub(crate) fn detector_levels(&self, logic: &LogicSystem) -> Vec<Level> {
+    pub(crate) fn detector_levels(&self, logic: &LogicSystem) -> Vec<LogicLevel> {
         self.drives[logic.first_detector..]
             .iter()
             .map(|drive| drive.level)
@@ -451,7 +451,7 @@ impl Events {
     /// Settles the logic at DC, with the detectors at `detectors`: every device's outputs
     /// take the levels its inputs give at once, until nothing changes. A source that keeps
     /// changing, as in a loop that oscillates, becomes unknown. Clears every pending change.
-    pub(crate) fn settle(&mut self, logic: &LogicSystem, detectors: &[Level]) {
+    pub(crate) fn settle(&mut self, logic: &LogicSystem, detectors: &[LogicLevel]) {
         self.queue.clear();
         for drive in &mut self.drives {
             drive.pending = None;
@@ -471,7 +471,7 @@ impl Events {
             inputs.clear();
             inputs.extend(placed.inputs.iter().map(|&net| self.levels[net]));
             outputs.clear();
-            outputs.resize(placed.outputs.len(), Level::Unknown);
+            outputs.resize(placed.outputs.len(), LogicLevel::Unknown);
             placed.device.levels(&inputs, &mut outputs);
             for (output, &level) in outputs.iter().enumerate() {
                 let drive = logic.output_drive(device, output);
@@ -480,7 +480,7 @@ impl Events {
                 }
                 changes[drive] += 1;
                 self.drives[drive].level = if changes[drive] > SETTLE_CHANGES {
-                    Level::Unknown
+                    LogicLevel::Unknown
                 } else {
                     level
                 };
@@ -507,7 +507,7 @@ impl Events {
 
     /// The logic drivers whose level differs from the one they were last told, each with
     /// its net's level now, marked as told.
-    pub(crate) fn retarget(&mut self, logic: &LogicSystem) -> Vec<(usize, Level)> {
+    pub(crate) fn retarget(&mut self, logic: &LogicSystem) -> Vec<(usize, LogicLevel)> {
         let mut changed = Vec::new();
         for (driver, &(_, net)) in logic.drivers.iter().enumerate() {
             let level = self.levels[net];
@@ -543,7 +543,14 @@ impl Events {
         }
     }
 
-    fn push(&mut self, time: f64, drive: usize, level: Level, transition: f64, stimulus: bool) {
+    fn push(
+        &mut self,
+        time: f64,
+        drive: usize,
+        level: LogicLevel,
+        transition: f64,
+        stimulus: bool,
+    ) {
         self.sequence += 1;
         self.queue.push(Reverse(Scheduled {
             time,
@@ -641,14 +648,14 @@ impl Events {
         logic: &LogicSystem,
         device: usize,
         input: usize,
-        before: Level,
+        before: LogicLevel,
         time: f64,
     ) {
         let placed = &logic.devices[device];
-        let inputs: Vec<Level> = placed.inputs.iter().map(|&net| self.levels[net]).collect();
+        let inputs: Vec<LogicLevel> = placed.inputs.iter().map(|&net| self.levels[net]).collect();
         let mut previous = inputs.clone();
         previous[input] = before;
-        let mut outputs = vec![Level::Unknown; placed.outputs.len()];
+        let mut outputs = vec![LogicLevel::Unknown; placed.outputs.len()];
         placed.device.levels(&inputs, &mut outputs);
         let change = Change {
             before: &previous,
@@ -684,7 +691,7 @@ impl Events {
             // change has less to swing, and crosses sooner.
             let leaves = time + timing.delay - timing.transition / 2.0;
             let swing = match (level, state.level) {
-                (Level::Low | Level::High, Level::Low | Level::High) => {
+                (LogicLevel::Low | LogicLevel::High, LogicLevel::Low | LogicLevel::High) => {
                     (state.fraction(leaves) - 0.5).abs().min(0.5) * timing.transition
                 }
                 _ => timing.transition / 2.0,
@@ -721,18 +728,18 @@ impl Events {
     }
 
     /// Each net's changes since the analysis began.
-    pub(crate) fn traces(&self) -> &[Vec<(f64, Level)>] {
+    pub(crate) fn traces(&self) -> &[Vec<(f64, LogicLevel)>] {
         &self.traces
     }
 }
 
 /// The level a detector reads from its `margin` above the threshold, keeping `held` at the
 /// threshold itself.
-pub(crate) fn detected(margin: f64, held: Level) -> Level {
+pub(crate) fn detected(margin: f64, held: LogicLevel) -> LogicLevel {
     if margin > 0.0 {
-        Level::High
+        LogicLevel::High
     } else if margin < 0.0 {
-        Level::Low
+        LogicLevel::Low
     } else {
         held
     }
@@ -744,7 +751,7 @@ pub(crate) fn detected(margin: f64, held: Level) -> Level {
 pub(crate) fn crossing(
     sense: impl Fn(&Input<'_>) -> Option<(f64, f64)>,
     detector: usize,
-    held: Level,
+    held: LogicLevel,
     (start, before): (f64, &[f64]),
     (end, after): (f64, &[f64]),
 ) -> Option<Crossing> {

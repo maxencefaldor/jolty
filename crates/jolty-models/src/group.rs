@@ -41,7 +41,7 @@ use rayon::prelude::*;
 use crate::device::lift;
 use crate::surroundings::Own;
 use crate::{
-    Binding, Choice, Contributions, Gradient, Input, Kernel, Layout, Level, Local, Node,
+    Binding, Choice, Contributions, Gradient, Input, Kernel, Layout, Local, LogicLevel, Node,
     NoiseSource, ParameterError, Real, Regions, Stamp, Unknown,
 };
 
@@ -230,7 +230,7 @@ pub(crate) trait Kind: Send + Sync + 'static {
     fn excite(shape: &Self::Shape, stamp: &mut Stamp<'_>);
 
     /// As [`Kernel::drive`].
-    fn drive(memory: &mut Self::Memory, ramp: (f64, Level, f64)) -> Option<f64>;
+    fn drive(memory: &mut Self::Memory, ramp: (f64, LogicLevel, f64)) -> Option<f64>;
 
     /// As [`Kernel::driven`].
     fn driven(shape: &Self::Shape) -> Option<usize>;
@@ -348,7 +348,7 @@ impl<K: Kernel> Kind for K {
         K::excite(shape, stamp);
     }
 
-    fn drive(memory: &mut K::Memory, ramp: (f64, Level, f64)) -> Option<f64> {
+    fn drive(memory: &mut K::Memory, ramp: (f64, LogicLevel, f64)) -> Option<f64> {
         K::drive(memory, ramp)
     }
 
@@ -1225,7 +1225,7 @@ impl Runs {
         &mut self,
         groups: &Groups,
         device: usize,
-        ramp: (f64, Level, f64),
+        ramp: (f64, LogicLevel, f64),
     ) -> Option<f64> {
         let (group, member) = groups.place(device)?;
         self.groups.get_mut(group)?.drive(member, ramp)
@@ -1657,7 +1657,7 @@ trait GroupRun: fmt::Debug + Send {
 
     /// Starts the instance `member`, if it is a logic driver, on the ramp `ramp`, and
     /// returns when it settles.
-    fn drive(&mut self, member: usize, ramp: (f64, Level, f64)) -> Option<f64>;
+    fn drive(&mut self, member: usize, ramp: (f64, LogicLevel, f64)) -> Option<f64>;
 
     /// The circuit's unknown of the current through the instance `member` of `group`, if
     /// it is a logic driver.
@@ -1844,7 +1844,7 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         residual
     }
 
-    fn drive(&mut self, member: usize, ramp: (f64, Level, f64)) -> Option<f64> {
+    fn drive(&mut self, member: usize, ramp: (f64, LogicLevel, f64)) -> Option<f64> {
         K::drive(self.memory.get_mut(member)?, ramp)
     }
 

@@ -1,7 +1,7 @@
 //! Logic devices, which an event scheduler simulates, and the elements that join them to the
 //! analog circuit.
 //!
-//! A logic device reads the [`Level`]s of its input nets and drives its output nets to new
+//! A logic device reads the [`LogicLevel`]s of its input nets and drives its output nets to new
 //! levels after delays. Its pins join logic nets, which hold a level rather than a voltage,
 //! so the engine jumps from one change to the next instead of integrating. Where a logic pin
 //! joins an electrical net, the engine places a connect element between them: a
@@ -26,7 +26,7 @@ pub const MAX_INPUTS: usize = 16;
 
 /// The level of a logic net.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-pub enum Level {
+pub enum LogicLevel {
     /// A logic 0: the ground.
     #[serde(rename = "0")]
     Low,
@@ -39,7 +39,7 @@ pub enum Level {
     Unknown,
 }
 
-impl Level {
+impl LogicLevel {
     /// The level of `bit`.
     #[must_use]
     pub const fn from_bool(bit: bool) -> Self {
@@ -47,7 +47,7 @@ impl Level {
     }
 
     /// The fraction of the supply a driver outputs at the level: 0, 1, or one half for
-    /// [`Level::Unknown`].
+    /// [`LogicLevel::Unknown`].
     #[must_use]
     pub const fn fraction(self) -> f64 {
         match self {
@@ -58,7 +58,7 @@ impl Level {
     }
 
     /// The level of a net whose drivers drive `levels`: theirs if they all agree, and
-    /// [`Level::Unknown`] if they disagree or there are none.
+    /// [`LogicLevel::Unknown`] if they disagree or there are none.
     #[must_use]
     pub fn resolve(levels: impl IntoIterator<Item = Self>) -> Self {
         let mut levels = levels.into_iter();
@@ -73,7 +73,7 @@ impl Level {
     }
 }
 
-impl fmt::Display for Level {
+impl fmt::Display for LogicLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Low => "0",
@@ -87,7 +87,7 @@ impl fmt::Display for Level {
 #[derive(Debug, Clone, Copy)]
 pub struct Change<'a> {
     /// Every input's level before the change.
-    pub before: &'a [Level],
+    pub before: &'a [LogicLevel],
     /// The input that changed.
     pub input: usize,
     /// The input's transition: the time its edge takes to swing from ground to supply, in
@@ -114,7 +114,7 @@ pub struct Stimulus {
     /// The output that changes.
     pub output: usize,
     /// The new level.
-    pub level: Level,
+    pub level: LogicLevel,
     /// The output's transition, in seconds.
     pub transition: f64,
 }
@@ -125,11 +125,11 @@ pub trait Logic: fmt::Debug + Send + Sync {
     fn pins(&self) -> Pins;
 
     /// Writes the levels the outputs settle at when the inputs hold `inputs`.
-    fn levels(&self, inputs: &[Level], outputs: &mut [Level]);
+    fn levels(&self, inputs: &[LogicLevel], outputs: &mut [LogicLevel]);
 
     /// When and how fast `output` reaches `level` after `change`, while driving a load of
     /// `load` farads.
-    fn timing(&self, change: &Change<'_>, output: usize, level: Level, load: f64) -> Timing;
+    fn timing(&self, change: &Change<'_>, output: usize, level: LogicLevel, load: f64) -> Timing;
 
     /// Appends the changes the device makes on its own in `(0, stop]`, in time order.
     fn stimuli(&self, stop: f64, stimuli: &mut Vec<Stimulus>) {
@@ -432,7 +432,7 @@ struct Tables {
 /// One arc's tables, and the level its output reaches.
 #[derive(Debug)]
 struct Arc {
-    level: Level,
+    level: LogicLevel,
     delay: Vec<Vec<f64>>,
     transition: Vec<Vec<f64>>,
 }
@@ -503,7 +503,7 @@ impl Tables {
                 )));
             }
             let arc_tables = Arc {
-                level: Level::from_bool(table[after]),
+                level: LogicLevel::from_bool(table[after]),
                 delay: arc.delay,
                 transition: arc.transition,
             };
@@ -537,16 +537,16 @@ impl Tables {
     /// The timing of `output` reaching `level` after `change`. A change from inputs some of
     /// which are unknown has no arc of its own, and takes the earliest of the output's arcs
     /// that reach the level, or of all its arcs for an unknown level.
-    fn timing(&self, change: &Change<'_>, output: usize, level: Level, load: f64) -> Timing {
+    fn timing(&self, change: &Change<'_>, output: usize, level: LogicLevel, load: f64) -> Timing {
         let count = change.before.len();
         let row = change
             .before
             .iter()
             .enumerate()
             .try_fold(0, |row, (index, level)| match level {
-                Level::High => Some(row | 1 << (count - 1 - index)),
-                Level::Low => Some(row),
-                Level::Unknown => None,
+                LogicLevel::High => Some(row | 1 << (count - 1 - index)),
+                LogicLevel::Low => Some(row),
+                LogicLevel::Unknown => None,
             });
         if let Some(arc) = row.and_then(|row| self.arcs.get(&(change.input, row, output))) {
             return self.at(arc, change.slew, load);
@@ -554,7 +554,7 @@ impl Tables {
         self.arcs
             .iter()
             .filter(|((_, _, arc_output), arc)| {
-                *arc_output == output && (level == Level::Unknown || arc.level == level)
+                *arc_output == output && (level == LogicLevel::Unknown || arc.level == level)
             })
             .map(|(_, arc)| self.at(arc, change.slew, load))
             .min_by(|a, b| a.delay.total_cmp(&b.delay))
@@ -598,16 +598,16 @@ fn bracket(points: &[f64], value: f64) -> (usize, f64) {
 impl LogicCell {
     /// The level of `table` at `inputs`, known only if every level the unknown inputs could
     /// take gives the same.
-    fn level(table: &[bool], inputs: &[Level]) -> Level {
+    fn level(table: &[bool], inputs: &[LogicLevel]) -> LogicLevel {
         let count = inputs.len();
         let mut known = 0;
         let mut unknown = Vec::new();
         for (index, level) in inputs.iter().enumerate() {
             let bit = 1 << (count - 1 - index);
             match level {
-                Level::High => known |= bit,
-                Level::Low => {}
-                Level::Unknown => unknown.push(bit),
+                LogicLevel::High => known |= bit,
+                LogicLevel::Low => {}
+                LogicLevel::Unknown => unknown.push(bit),
             }
         }
         let first = table[known];
@@ -620,9 +620,9 @@ impl LogicCell {
             table[row] == first
         });
         if agree {
-            Level::from_bool(first)
+            LogicLevel::from_bool(first)
         } else {
-            Level::Unknown
+            LogicLevel::Unknown
         }
     }
 }
@@ -738,19 +738,19 @@ impl Logic for LogicCell {
         self.pins.clone()
     }
 
-    fn levels(&self, inputs: &[Level], outputs: &mut [Level]) {
+    fn levels(&self, inputs: &[LogicLevel], outputs: &mut [LogicLevel]) {
         for (output, table) in outputs.iter_mut().zip(&self.tables) {
             *output = Self::level(table, inputs);
         }
     }
 
-    fn timing(&self, change: &Change<'_>, output: usize, level: Level, load: f64) -> Timing {
+    fn timing(&self, change: &Change<'_>, output: usize, level: LogicLevel, load: f64) -> Timing {
         match &self.timing {
             CellTiming::Fixed(timing) => Timing {
                 delay: match level {
-                    Level::High => timing.rise,
-                    Level::Low => timing.fall,
-                    Level::Unknown => timing.rise.min(timing.fall),
+                    LogicLevel::High => timing.rise,
+                    LogicLevel::Low => timing.fall,
+                    LogicLevel::Unknown => timing.rise.min(timing.fall),
                 },
                 transition: timing.transition,
             },
@@ -789,10 +789,10 @@ fn check_names(pins: &Pins) -> Result<(), ParameterError> {
 #[serde(deny_unknown_fields)]
 pub struct LogicSourceParameters {
     /// The level at time zero.
-    pub initial: Level,
+    pub initial: LogicLevel,
     /// Each later change: its time, in seconds, and the new level, in time order.
     #[serde(default)]
-    pub changes: Vec<(f64, Level)>,
+    pub changes: Vec<(f64, LogicLevel)>,
     /// The edges' transition, the time each takes to swing from ground to supply, in
     /// seconds.
     pub transition: f64,
@@ -835,11 +835,11 @@ impl Logic for LogicSource {
         }
     }
 
-    fn levels(&self, _: &[Level], outputs: &mut [Level]) {
+    fn levels(&self, _: &[LogicLevel], outputs: &mut [LogicLevel]) {
         outputs[0] = self.parameters.initial;
     }
 
-    fn timing(&self, _: &Change<'_>, _: usize, _: Level, _: f64) -> Timing {
+    fn timing(&self, _: &Change<'_>, _: usize, _: LogicLevel, _: f64) -> Timing {
         Timing {
             delay: 0.0,
             transition: self.parameters.transition,
@@ -883,7 +883,7 @@ mod tests {
 
     #[test]
     fn a_cell_follows_its_truth_table_and_knows_what_unknowns_cannot_change() {
-        use Level::{High, Low, Unknown};
+        use LogicLevel::{High, Low, Unknown};
         let nand = nand();
         let mut output = [Unknown];
         for (inputs, expected) in [
@@ -904,7 +904,7 @@ mod tests {
     fn a_fixed_timing_rises_and_falls_with_its_own_delays() {
         let nand = nand();
         let change = Change {
-            before: &[Level::Low, Level::High],
+            before: &[LogicLevel::Low, LogicLevel::High],
             input: 0,
             slew: 1e-9,
         };
@@ -912,9 +912,12 @@ mod tests {
             delay,
             transition: 5e-10,
         };
-        assert_eq!(nand.timing(&change, 0, Level::High, 0.0), timing(2e-9));
-        assert_eq!(nand.timing(&change, 0, Level::Low, 0.0), timing(1e-9));
-        assert_eq!(nand.timing(&change, 0, Level::Unknown, 0.0), timing(1e-9));
+        assert_eq!(nand.timing(&change, 0, LogicLevel::High, 0.0), timing(2e-9));
+        assert_eq!(nand.timing(&change, 0, LogicLevel::Low, 0.0), timing(1e-9));
+        assert_eq!(
+            nand.timing(&change, 0, LogicLevel::Unknown, 0.0),
+            timing(1e-9)
+        );
     }
 
     #[test]
@@ -993,32 +996,32 @@ mod tests {
         let cell = characterized();
         assert_eq!(cell.pins().names(), ["a", "y", "vdd", "vss"]);
         let falling = Change {
-            before: &[Level::Low],
+            before: &[LogicLevel::Low],
             input: 0,
             slew: 2e-11,
         };
-        let timing = cell.timing(&falling, 0, Level::Low, 1e-15);
+        let timing = cell.timing(&falling, 0, LogicLevel::Low, 1e-15);
         assert_close(&[timing.delay, timing.transition], &[1.2e-11, 2.5e-11]);
         // Beyond the tables, the timing holds their edge.
-        let timing = cell.timing(&falling, 0, Level::Low, 5e-15);
+        let timing = cell.timing(&falling, 0, LogicLevel::Low, 5e-15);
         assert_close(&[timing.delay], &[1.3e-11]);
         let rising = Change {
-            before: &[Level::High],
+            before: &[LogicLevel::High],
             ..falling
         };
-        let timing = cell.timing(&rising, 0, Level::High, 0.0);
+        let timing = cell.timing(&rising, 0, LogicLevel::High, 0.0);
         assert_close(&[timing.delay], &[2.1e-11]);
         // From an unknown input, the earliest arc to the level, or to any level.
         let unknown = Change {
-            before: &[Level::Unknown],
+            before: &[LogicLevel::Unknown],
             ..falling
         };
         assert_close(
-            &[cell.timing(&unknown, 0, Level::High, 0.0).delay],
+            &[cell.timing(&unknown, 0, LogicLevel::High, 0.0).delay],
             &[2.1e-11],
         );
         assert_close(
-            &[cell.timing(&unknown, 0, Level::Unknown, 0.0).delay],
+            &[cell.timing(&unknown, 0, LogicLevel::Unknown, 0.0).delay],
             &[1.1e-11],
         );
     }
@@ -1064,9 +1067,9 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let mut output = [Level::Unknown];
+        let mut output = [LogicLevel::Unknown];
         source.levels(&[], &mut output);
-        assert_eq!(output, [Level::Low]);
+        assert_eq!(output, [LogicLevel::Low]);
         let mut stimuli = Vec::new();
         source.stimuli(2e-9, &mut stimuli);
         assert_eq!(
@@ -1074,7 +1077,7 @@ mod tests {
             [Stimulus {
                 time: 1e-9,
                 output: 0,
-                level: Level::High,
+                level: LogicLevel::High,
                 transition: 1e-10
             }]
         );

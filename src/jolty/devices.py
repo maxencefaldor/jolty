@@ -13,6 +13,7 @@ Examples:
 """
 
 import json
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
@@ -2388,9 +2389,9 @@ def logic_source(
         [[1e-09, '1'], [2e-09, '0']]
     """
     parameters: dict[str, JsonValue] = {
-        "initial": _written(initial),
+        "initial": format_logic_level(initial),
         "changes": [
-            [time.to(TIME, "a change's time"), _written(level)]
+            [time.to(TIME, "a change's time"), format_logic_level(level)]
             for time, level in changes
         ],
         "transition": transition.to(TIME, "a transition"),
@@ -2398,9 +2399,18 @@ def logic_source(
     return device("logic_source", parameters)
 
 
-def _written(level: LogicLevel) -> str:
-    """A logic level as the engine writes it: ``0``, ``1`` or ``x``."""
-    return "x" if level is None else str(level)
+def format_logic_level(level: LogicLevel | float) -> str:
+    """A logic level as the engine writes it: ``0``, ``1`` or ``x``.
+
+    A result holds a level as a number, NaN where it is unknown.
+
+    Examples:
+        >>> [format_logic_level(level) for level in (0, 1, None, 1.0, math.nan)]
+        ['0', '1', 'x', '1', 'x']
+    """
+    if level is None or math.isnan(level):
+        return "x"
+    return str(int(level))
 
 
 def device(model: str, parameters: dict[str, JsonValue]) -> Device:

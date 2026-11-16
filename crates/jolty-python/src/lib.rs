@@ -19,7 +19,7 @@ use jolty_engine::{
     OperatingPointResult, Options, PoleZeroResult, Record, Statistics,
 };
 use jolty_ir::Circuit;
-use jolty_models::{Level, Library, Model, Nature, ParameterError};
+use jolty_models::{Library, LogicLevel, Model, Nature, ParameterError};
 use numpy::{Element, PyArray1, PyArray2, PyArray3, PyArrayMethods};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
@@ -587,7 +587,7 @@ pub(crate) fn outcome_to_python(
             add_observations(&result, waveforms.observations)?;
             let traces = PyList::empty(py);
             for trace in waveforms.logic {
-                let (times, levels): (Vec<f64>, Vec<Level>) = trace.into_iter().unzip();
+                let (times, levels): (Vec<f64>, Vec<LogicLevel>) = trace.into_iter().unzip();
                 traces.append((
                     PyArray1::from_vec(py, times),
                     PyArray1::from_vec(py, numbers(&levels)),
@@ -787,13 +787,13 @@ fn stacked(py: Python<'_>, rows: Vec<Vec<f64>>) -> PyResult<Bound<'_, PyArray2<f
 }
 
 /// Logic levels as numbers: 0, 1, and NaN for an unknown level.
-fn numbers(levels: &[Level]) -> Vec<f64> {
+fn numbers(levels: &[LogicLevel]) -> Vec<f64> {
     levels
         .iter()
         .map(|level| match level {
-            Level::Low => 0.0,
-            Level::High => 1.0,
-            Level::Unknown => f64::NAN,
+            LogicLevel::Low => 0.0,
+            LogicLevel::High => 1.0,
+            LogicLevel::Unknown => f64::NAN,
         })
         .collect()
 }

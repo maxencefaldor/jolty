@@ -96,7 +96,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use jolty_ir::{Circuit, Name, Parameters};
-use jolty_models::{Level, Library, Node, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
+use jolty_models::{Library, LogicLevel, Node, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
 use serde::Deserialize;
 
 pub use ac::{Ac, AcResult};
@@ -385,7 +385,7 @@ impl Simulator {
     fn drive(
         &mut self,
         element: usize,
-        (time, level, transition): (f64, Level, f64),
+        (time, level, transition): (f64, LogicLevel, f64),
     ) -> Option<f64> {
         let groups = &self.elaborated.groups;
         self.state

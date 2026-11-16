@@ -232,7 +232,7 @@ impl Bench {
 
     /// Starts the device, a logic driver, on a `(time, level, transition)` ramp, and
     /// returns when it settles.
-    pub(crate) fn drive(&mut self, ramp: (f64, crate::Level, f64)) -> Option<f64> {
+    pub(crate) fn drive(&mut self, ramp: (f64, crate::LogicLevel, f64)) -> Option<f64> {
         self.runs.drive(&self.groups, 0, ramp)
     }
 

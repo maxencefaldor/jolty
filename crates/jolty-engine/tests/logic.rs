@@ -7,7 +7,7 @@ use jolty_engine::{
     TransientResult, Work,
 };
 use jolty_ir::Circuit;
-use jolty_models::{Level, Library};
+use jolty_models::{Library, LogicLevel};
 use serde_json::{Value, json};
 
 /// A device instance: its name, model, parameters, and the net of each terminal.
@@ -82,7 +82,7 @@ fn transient(stop: f64) -> Transient {
 
 #[test]
 fn logic_settles_at_dc_and_follows_its_sources_after_each_delay() {
-    use Level::{High, Low, Unknown};
+    use LogicLevel::{High, Low, Unknown};
     let circuit = circuit(&[
         (
             "A",
@@ -113,7 +113,7 @@ fn logic_settles_at_dc_and_follows_its_sources_after_each_delay() {
     let mut simulator = simulator(&circuit);
     assert_eq!(simulator.unknowns(), []);
     let point = simulator.operating_point(&Options::default()).unwrap();
-    let levels: Vec<(&str, Level)> = simulator
+    let levels: Vec<(&str, LogicLevel)> = simulator
         .logic_nets()
         .iter()
         .map(|net| net.name.as_str())
@@ -166,7 +166,7 @@ fn a_pulse_shorter_than_a_delay_never_passes() {
         .unwrap();
     assert_eq!(
         waveforms.logic[net(&simulator, "y")],
-        [(0.0, Level::Low), (5e-9, Level::High)]
+        [(0.0, LogicLevel::Low), (5e-9, LogicLevel::High)]
     );
 }
 
@@ -310,7 +310,7 @@ fn an_inverter_and_an_rc_oscillate_at_their_closed_form_period() {
 /// it would oscillate, so its nets settle unknown.
 #[test]
 fn a_ring_that_would_oscillate_at_dc_settles_unknown() {
-    use Level::{High, Low, Unknown};
+    use LogicLevel::{High, Low, Unknown};
     let circuit = circuit(&[
         (
             "VDD",
@@ -428,8 +428,8 @@ fn logic_nets_name_what_drives_and_reads_them() {
     );
     // Two sources that disagree leave their net unknown.
     let point = simulator.operating_point(&Options::default()).unwrap();
-    assert_eq!(point.logic[net(&simulator, "a")], Level::Unknown);
-    assert_eq!(point.logic[net(&simulator, "y")], Level::Unknown);
+    assert_eq!(point.logic[net(&simulator, "a")], LogicLevel::Unknown);
+    assert_eq!(point.logic[net(&simulator, "y")], LogicLevel::Unknown);
 }
 
 /// A circuit whose top places `X1`, an instance of `cell`: a resistor from its supply to

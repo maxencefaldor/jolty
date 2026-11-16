@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use jolty_models::{Input, Level};
+use jolty_models::{Input, LogicLevel};
 use jolty_numerics::integration::{
     Bound, CONSTANT_STEP, Formula, Method, divided_difference, longest_at,
 };
@@ -78,7 +78,7 @@ pub struct TransientResult {
     pub observations: Observations,
     /// Each logic net's changes: its level at time zero, then each time it changes, in
     /// seconds, and its new level.
-    pub logic: Vec<Vec<(f64, Level)>>,
+    pub logic: Vec<Vec<(f64, LogicLevel)>>,
     /// How the analysis went.
     pub statistics: Statistics,
 }

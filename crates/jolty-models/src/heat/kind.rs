@@ -24,8 +24,8 @@ use super::{Heating, LOWEST_TEMPERATURE, MOST_TEMPERATURE_STEP};
 use crate::device::lift;
 use crate::group::Kind;
 use crate::{
-    Choice, Gradient, Hyper, Kernel, Layout, Level, Local, Nature, NoiseSource, ParameterError,
-    Regions, Stamp,
+    Choice, Gradient, Hyper, Kernel, Layout, Local, LogicLevel, Nature, NoiseSource,
+    ParameterError, Regions, Stamp,
 };
 
 /// The instances of the kernel `K` that heat.
@@ -511,7 +511,7 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         }
     }
 
-    fn drive(memory: &mut Self::Memory, ramp: (f64, Level, f64)) -> Option<f64> {
+    fn drive(memory: &mut Self::Memory, ramp: (f64, LogicLevel, f64)) -> Option<f64> {
         K::drive(&mut memory.inner, ramp)
     }
 

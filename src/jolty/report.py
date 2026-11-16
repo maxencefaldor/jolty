@@ -21,6 +21,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from jolty import results, specs
+from jolty.devices import LogicLevel, format_logic_level
 from jolty.specs import Spread, Verdict, Yield
 from jolty.units import format_si
 
@@ -76,11 +77,7 @@ class Extent(_Model):
     last: float
 
 
-type LogicLevel = Literal[0, 1] | None
-"""A logic level: 0, 1, or null when unknown."""
-
-
-class Level(_Model):
+class NetLevel(_Model):
     """The level of one logic net."""
 
     net: str
@@ -121,7 +118,7 @@ class OperatingPointReport(_Model):
         "junction_gmin_stepping, source_stepping or pseudo_transient."
     )
     values: tuple[Value, ...]
-    levels: tuple[Level, ...] = ()
+    levels: tuple[NetLevel, ...] = ()
     unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
     transistors: tuple[Transistor, ...] = Field(
         default=(),
@@ -138,7 +135,9 @@ class OperatingPointReport(_Model):
         rows = [
             [value.unknown, _shown(value.value, value.nature)] for value in self.values
         ]
-        rows.extend([level.net, _written(level.level)] for level in self.levels)
+        rows.extend(
+            [level.net, format_logic_level(level.level)] for level in self.levels
+        )
         head = f"{self.name}: operating point, found by {strategy}"
         text = _join(head, _table(rows), self.unlisted)
         if not self.transistors:
@@ -906,7 +905,7 @@ def report(
                 )
             )
             levels = tuple(
-                Level(net=net, level=_level(float(level)))
+                NetLevel(net=net, level=_level(float(level)))
                 for net, level in zip(nets, result.logic, strict=False)
             )
             transistors = _transistors(result)
@@ -929,7 +928,9 @@ def report(
                 last=float(result.levels[-1]),
                 levels=len(result.levels),
                 extents=_extents_of(unknowns, result.values[:, :max_unknowns]),
-                activities=tuple(_activity(net, result.level(net)) for net in nets),
+                activities=tuple(
+                    _activity(net, result.logic_level(net)) for net in nets
+                ),
                 unlisted=unlisted,
             )
         case results.AcResult():
@@ -954,7 +955,7 @@ def report(
                 periods=result.statistics.periods,
                 extents=_extents_of(unknowns, result.values[:, :max_unknowns]),
                 activities=tuple(
-                    _activity(net, result.level(net).levels) for net in nets
+                    _activity(net, result.logic_level(net).levels) for net in nets
                 ),
                 unlisted=unlisted,
             )
@@ -1275,10 +1276,6 @@ def _level(level: float) -> LogicLevel:
     return 1 if level else 0
 
 
-def _written(level: LogicLevel) -> str:
-    return "x" if level is None else str(level)
-
-
 def _activity(net: str, levels: results.Real) -> Activity:
     """What the logic net `net` did over `levels`, its successive levels."""
     known = np.nan_to_num(levels, nan=-1.0)
@@ -1297,9 +1294,9 @@ def _activities(activities: tuple[Activity, ...]) -> list[str]:
     rows = [
         [
             activity.net,
-            _written(activity.first),
+            format_logic_level(activity.first),
             str(activity.changes),
-            _written(activity.last),
+            format_logic_level(activity.last),
         ]
         for activity in activities
     ]

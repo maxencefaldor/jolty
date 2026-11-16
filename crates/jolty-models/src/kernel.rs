@@ -32,7 +32,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::{Choice, Interface, Level, Nature, NoiseSource, ParameterError, Real, Regions};
+use crate::{Choice, Interface, LogicLevel, Nature, NoiseSource, ParameterError, Real, Regions};
 
 /// A device model computed one instance at a time, as a pure function of the instance's
 /// prepared parameters, its memory and its local unknowns.
@@ -223,7 +223,7 @@ pub trait Kernel: Send + Sync + 'static {
     /// `None`, and nothing done, for an instance that drives no logic.
     fn drive(
         memory: &mut Self::Memory,
-        (time, level, transition): (f64, Level, f64),
+        (time, level, transition): (f64, LogicLevel, f64),
     ) -> Option<f64> {
         let _ = (memory, time, level, transition);
         None

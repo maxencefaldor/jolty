@@ -1043,7 +1043,7 @@ def _changes(
     supply.
     """
     if net in result.nets:
-        trace = result.level(net)
+        trace = result.logic_level(net)
         return list(zip(trace.times.tolist(), trace.levels.tolist(), strict=True))
     voltage, times = result.voltage(net), result.times
     above = voltage > supply / 2
@@ -1061,15 +1061,11 @@ def _levels(result: AnalysisResult, net: str, supply: float) -> list[float]:
         case results.OperatingPointResult() | results.DcSweepResult() if (
             net in result.nets
         ):
-            return [float(level) for level in np.atleast_1d(result.level(net))]
+            return [float(level) for level in np.atleast_1d(result.logic_level(net))]
         case results.OperatingPointResult() | results.DcSweepResult():
             above = np.atleast_1d(result.voltage(net)) > supply / 2
             return [float(level) for level in above]
     return []
-
-
-def _written(level: float) -> str:
-    return {0.0: "0", 1.0: "1"}.get(level, "x")
 
 
 def _differs(
@@ -1077,12 +1073,12 @@ def _differs(
 ) -> list[str]:
     """Where `modeled`'s levels and `circuit`'s differ, at the first such point."""
     for index, (model, own) in enumerate(zip(modeled, circuit, strict=True)):
-        if _written(model) != _written(own):
+        if devices.format_logic_level(model) != devices.format_logic_level(own):
             at = "" if len(modeled) == 1 else f" at level {index + 1} of the sweep"
             return [
                 (
-                    f"{what} is {_written(own)} in its circuit and {_written(model)} "
-                    f"in its model{at}"
+                    f"{what} is {devices.format_logic_level(own)} in its circuit "
+                    f"and {devices.format_logic_level(model)} in its model{at}"
                 )
             ]
     return []
@@ -1101,12 +1097,12 @@ def _diverges(
     for (model_time, model_level), (circuit_time, circuit_level) in zip(
         modeled, circuit, strict=False
     ):
-        level = _written(model_level)
-        if level != _written(circuit_level):
+        level = devices.format_logic_level(model_level)
+        if level != devices.format_logic_level(circuit_level):
             at = format_si(min(model_time, circuit_time), "s")
             yield (
-                f"{what} is {_written(circuit_level)} in its circuit and {level} in "
-                f"its model at {at}"
+                f"{what} is {devices.format_logic_level(circuit_level)} in its "
+                f"circuit and {level} in its model at {at}"
             )
             return
         if abs(model_time - circuit_time) > allowed:

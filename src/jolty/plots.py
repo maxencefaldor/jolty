@@ -329,12 +329,12 @@ def _steps(
     between the source's levels.
     """
     if isinstance(result, results.TransientResult):
-        trace = result.level(net)
+        trace = result.logic_level(net)
         return (
             np.append(trace.times, result.times[-1]),
             np.append(trace.levels, trace.levels[-1]),
         )
-    levels = result.level(net)
+    levels = result.logic_level(net)
     edges = np.concatenate(
         [
             result.levels[:1],

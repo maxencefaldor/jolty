@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
-use jolty_models::{Input, Level, Nature};
+use jolty_models::{Input, LogicLevel, Nature};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
@@ -65,7 +65,7 @@ pub struct OperatingPointResult {
     /// and the charge it holds, and the recorded devices' derivatives and variables.
     pub observation: Observation,
     /// The level of every logic net, in the simulator's order.
-    pub logic: Vec<Level>,
+    pub logic: Vec<LogicLevel>,
     /// The strategy that found the solution.
     pub strategy: Strategy,
 }
@@ -560,7 +560,7 @@ impl Simulator {
         self.state.events = Events::new(&self.elaborated.logic);
         for index in 0..self.elaborated.logic.drivers.len() {
             let element = self.elaborated.logic.drivers[index].0;
-            self.drive(element, (0.0, Level::Unknown, 0.0));
+            self.drive(element, (0.0, LogicLevel::Unknown, 0.0));
         }
     }
 
@@ -629,10 +629,10 @@ impl Simulator {
         options: &Options,
     ) -> Result<OperatingPointResult, SimulationError> {
         let detectors = self.elaborated.logic.detectors.len();
-        let mut previous = vec![Level::Unknown; detectors];
+        let mut previous = vec![LogicLevel::Unknown; detectors];
         let mut unsettled = vec![false; detectors];
         for round in 0.. {
-            let mut levels: Vec<Level> = self
+            let mut levels: Vec<LogicLevel> = self
                 .elaborated
                 .logic
                 .detectors
@@ -643,8 +643,8 @@ impl Simulator {
                         .state
                         .runs
                         .sense(&self.elaborated.groups, element, &input);
-                    sensed.map_or(Level::Unknown, |(margin, _)| {
-                        detected(margin, Level::Unknown)
+                    sensed.map_or(LogicLevel::Unknown, |(margin, _)| {
+                        detected(margin, LogicLevel::Unknown)
                     })
                 })
                 .collect();
@@ -652,7 +652,7 @@ impl Simulator {
             {
                 *unsettled |= round >= SETTLE_ROUNDS && level != before;
                 if *unsettled {
-                    *level = Level::Unknown;
+                    *level = LogicLevel::Unknown;
                 }
             }
             self.state.events.settle(&self.elaborated.logic, &levels);

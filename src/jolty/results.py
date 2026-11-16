@@ -593,7 +593,7 @@ class OperatingPointResult(_Devices[float], _Watched):
     variables: Real = field(default_factory=_none)
     """Each recorded variable's value, in SI base units."""
 
-    def level(self, net: str) -> float:
+    def logic_level(self, net: str) -> float:
         """The level of the logic net `net`: 0, 1, or NaN when unknown."""
         return float(self.logic[net_column(self.nets, net)])
 
@@ -678,7 +678,7 @@ class DcSweepResult(_Devices[Real], _Watched):
     """The parameter swept, by its path among the instance's, such as ``resistance``;
     None for a source's level."""
 
-    def level(self, net: str) -> Real:
+    def logic_level(self, net: str) -> Real:
         """The level of the logic net `net` at each level: 0, 1, or NaN when unknown."""
         return self.logic[:, net_column(self.nets, net)]
 
@@ -822,7 +822,7 @@ class TransientResult(_Devices[Real], _Watched):
     variables: Real = field(default_factory=_no_rows)
     """Each recorded variable's value at each time, one row per time."""
 
-    def level(self, net: str) -> LogicTrace:
+    def logic_level(self, net: str) -> LogicTrace:
         """The level of the logic net `net` over time."""
         return self.logic[net_column(self.nets, net)]
 

@@ -73,20 +73,20 @@ def test_logic_settles_then_follows_each_change_after_its_delay() -> None:
     assert simulation.nets == ("a", "b", "n", "y")
     assert simulation.devices == 4
     point = simulation.run(OperatingPoint())
-    assert [point.level(net) for net in simulation.nets] == [0.0, 1.0, 1.0, 0.0]
+    assert [point.logic_level(net) for net in simulation.nets] == [0.0, 1.0, 1.0, 0.0]
     waveforms = simulation.run(Transient(stop=10 * ns))
-    assert waveforms.level("n").times.tolist() == pytest.approx([0, 2e-9])
-    assert waveforms.level("y").times.tolist() == pytest.approx([0, 4e-9])
-    assert waveforms.level("y").levels.tolist() == [0.0, 1.0]
+    assert waveforms.logic_level("n").times.tolist() == pytest.approx([0, 2e-9])
+    assert waveforms.logic_level("y").times.tolist() == pytest.approx([0, 4e-9])
+    assert waveforms.logic_level("y").levels.tolist() == [0.0, 1.0]
     with pytest.raises(KeyError, match="no logic net named 'z'"):
-        waveforms.level("z")
+        waveforms.logic_level("z")
 
 
 def test_a_logic_pin_joins_an_electrical_net_through_a_connect_element() -> None:
     simulation = Simulation(inverter())
     assert simulation.nets == ("U1:a", "U1:y")
     waveforms = simulation.run(Transient(stop=5 * ns))
-    assert waveforms.level("U1:a").times.tolist() == pytest.approx([0, 1.5e-9])
+    assert waveforms.logic_level("U1:a").times.tolist() == pytest.approx([0, 1.5e-9])
     out = waveforms.voltage("out")
     falling = np.flatnonzero((out[:-1] > 0.9) & (out[1:] <= 0.9))[0]
     times = waveforms.times
@@ -108,13 +108,13 @@ def test_unknown_levels_read_as_nan() -> None:
         c.connect(gate.y, name="y")
 
     point = Simulation(floating()).run(OperatingPoint())
-    assert math.isnan(point.level("y"))
+    assert math.isnan(point.logic_level("y"))
 
 
 def test_a_sweep_settles_the_logic_at_each_level() -> None:
     simulation = Simulation(inverter())
     sweep = simulation.run(DcSweep("V1", [0 * V, 1.8 * V]))
-    assert sweep.level("U1:y").tolist() == [1.0, 0.0]
+    assert sweep.logic_level("U1:y").tolist() == [1.0, 0.0]
     assert sweep.voltage("out").tolist() == pytest.approx([1.8, 0.0])
 
 
@@ -132,7 +132,7 @@ def test_results_files_keep_the_logic() -> None:
     assert isinstance(point, results.OperatingPointResult)
     assert point.nets == simulation.nets
     assert isinstance(step, results.TransientResult)
-    assert step.level("y").times.tolist() == pytest.approx([0, 4e-9])
+    assert step.logic_level("y").times.tolist() == pytest.approx([0, 4e-9])
 
 
 def test_reports_and_plots_state_the_logic() -> None:

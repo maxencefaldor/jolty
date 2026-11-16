@@ -73,9 +73,9 @@ At the operating point, the logic and the analog circuit settle each other until
 Every result holds the logic nets' levels beside its unknowns, and `level(net)` reads them, as a number: `0`, `1`, or NaN for unknown.
 
 ```python
-point.level("carry")  # a float
-sweep.level("carry")  # an array, one level per level of the source
-trace = waveforms.level("carry")  # a Trace
+point.logic_level("carry")  # a float
+sweep.logic_level("carry")  # an array, one level per level of the source
+trace = waveforms.logic_level("carry")  # a LogicTrace
 changes = trace.times, trace.levels  # the level at time zero, then each change
 sampled = trace.at(times)  # the level at each of times
 ```

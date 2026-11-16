@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::parts as kernel_parts;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Level, Local, ParameterError, Real, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Local, LogicLevel, ParameterError, Real, Stamp,
 };
 
 /// The parameters of a logic driver: none.
@@ -62,7 +62,7 @@ pub struct Ramp {
 impl Default for Ramp {
     /// At the unknown level's fraction, before the logic drives it.
     fn default() -> Self {
-        let unknown = Level::Unknown.fraction();
+        let unknown = LogicLevel::Unknown.fraction();
         Self {
             start: 0.0,
             from: unknown,
@@ -142,7 +142,7 @@ impl Kernel for LogicDriver {
         stamp.add_conductance(current_supply, R::constant(-fraction));
     }
 
-    fn drive(ramp: &mut Ramp, (time, level, transition): (f64, Level, f64)) -> Option<f64> {
+    fn drive(ramp: &mut Ramp, (time, level, transition): (f64, LogicLevel, f64)) -> Option<f64> {
         let from = ramp.fraction(time);
         let to = level.fraction();
         *ramp = Ramp {
@@ -244,15 +244,15 @@ mod tests {
     fn a_driver_ramps_between_ground_and_supply() {
         let mut bench = Bench::new::<LogicDriver>("{}");
         assert_eq!(bench.unknowns(), ["n0", "n1", "n2", "device:current"]);
-        bench.drive((0.0, Level::Low, 0.0));
-        let settles = bench.drive((1.0, Level::High, 2.0)).expect("a driver");
+        bench.drive((0.0, LogicLevel::Low, 0.0));
+        let settles = bench.drive((1.0, LogicLevel::High, 2.0)).expect("a driver");
         assert_close(&[settles], &[3.0]);
         // Halfway up the ramp, the output holds half of the 5 V from ground at 1 V.
         let x = [3.0, 6.0, 1.0, 0.0];
         let evaluation = bench.evaluate_with(&Input::new(&x, Some(2.0), 0.0));
         assert!((evaluation.residual[3] - (2.0 - 0.5 * 5.0)).abs() < 1e-12);
         // Driven back down from halfway, it takes half the transition.
-        let settles = bench.drive((2.0, Level::Low, 2.0)).expect("a driver");
+        let settles = bench.drive((2.0, LogicLevel::Low, 2.0)).expect("a driver");
         assert_close(&[settles], &[3.0]);
     }
 
