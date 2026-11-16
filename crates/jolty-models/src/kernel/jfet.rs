@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::kernel::junction::{
-    Depletion, Temperatures, critical_voltage, depletion_charge, junction_current, limit_gate,
-    limit_junction,
+    Depletion, Temperatures, critical_voltage, depletion_charge_with_capacitance,
+    junction_current_with_slope, limit_gate, limit_junction,
 };
 use crate::kernel::parts::{self, Bias, Nodes, Series, series_value};
 use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
@@ -419,7 +419,7 @@ impl Kernel for Jfet {
             ),
             (INNER_DRAIN, vgd, beyond_drain, prepared.gate_drain.as_ref()),
         ] {
-            let (current, conductance) = junction_current(
+            let (current, conductance) = junction_current_with_slope(
                 voltage,
                 prepared.saturation_current,
                 prepared.thermal_voltage,
@@ -428,7 +428,7 @@ impl Kernel for Jfet {
             let current = current + at.gmin * voltage + conductance * delta;
             nodes.current(stamp, GATE, inner, current * sign);
             nodes.conductance(stamp, (GATE, inner), (GATE, inner), conductance);
-            let (charge, capacitance) = depletion_charge(depletion, voltage);
+            let (charge, capacitance) = depletion_charge_with_capacitance(depletion, voltage);
             nodes.charge(stamp, GATE, inner, (charge + capacitance * delta) * sign);
             nodes.capacitance(stamp, (GATE, inner), (GATE, inner), capacitance);
         }

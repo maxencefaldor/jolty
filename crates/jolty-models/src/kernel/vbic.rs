@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kernel::dual::Dual;
 use crate::kernel::junction::{Temperatures, below_one, critical_voltage, limit_junction};
-use crate::kernel::parts::{self, Nodes, Oriented, Pair, Series};
+use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Series};
 use crate::kernel::region::Bipolar;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
@@ -609,7 +609,7 @@ impl<R: Real> Depletion<R> {
         let complement = -(grading - 1.0);
         // P · (1 − (1 − v / P)^(1 − M)) / (1 − M), the power law's charge.
         let law = |voltage: Dual<R, N>| {
-            -(power(-(voltage.divide(potential) - 1.0), complement) - 1.0)
+            -((-(voltage.divide(potential) - 1.0)).pow(complement) - 1.0)
                 .scale(potential / complement)
         };
         if smoothing.value() <= 0.0 {
@@ -663,7 +663,8 @@ impl<R: Real> Depletion<R> {
                 let offset = voltage.plus(shift);
                 let edge = (offset - root(offset)) * 0.5 - Dual::constant(shift);
                 let below = |edge: Dual<R, N>| {
-                    -power(-(edge.divide(potential) - 1.0), complement)
+                    -(-(edge.divide(potential) - 1.0))
+                        .pow(complement)
                         .scale(potential / complement)
                 };
                 let slope = (-(limit - 1.0)).pow(-grading);
@@ -671,17 +672,6 @@ impl<R: Real> Depletion<R> {
             }
         }
     }
-}
-
-/// `base^exponent`, `exponent` a number the variables do not move.
-fn power<R: Real, const N: usize>(base: Dual<R, N>, exponent: R) -> Dual<R, N> {
-    let value = base.value;
-    base.chain((value.pow(exponent), exponent * value.pow(exponent - 1.0)))
-}
-
-/// The natural logarithm.
-fn logarithm<R: Real, const N: usize>(value: Dual<R, N>) -> Dual<R, N> {
-    value.chain((value.value.ln(), value.value.recip()))
 }
 
 /// What a transistor's temperature sets of its currents and charges.
@@ -888,7 +878,8 @@ impl<R: Real> Core<R> {
                 let across = -(vbci.plus(-avalanche.potential));
                 let depleted = ((across * across + 0.01).sqrt() + across) * 0.5;
                 let factor = depleted.scale(avalanche.coefficient)
-                    * (-power(depleted, avalanche.grading - 1.0)
+                    * (-depleted
+                        .pow(avalanche.grading - 1.0)
                         .scale(avalanche.exponent_coefficient))
                     .exp();
                 ibcj - (itzf - itzr - ibcj) * factor
@@ -953,8 +944,8 @@ impl<R: Real> Core<R> {
         let q2 = ifi.scale(knee_forward) + iri.scale(knee_reverse);
         let rolloff = transport.rolloff;
         let qb = match transport.form {
-            BaseCharge::Vbic => (q1 + power(power(q1, rolloff.recip()) + q2 * 4.0, rolloff)) * 0.5,
-            BaseCharge::GummelPoon => q1 * (power(q2 * 4.0 + 1.0, rolloff) + 1.0) * 0.5,
+            BaseCharge::Vbic => (q1 + (q1.pow(rolloff.recip()) + q2 * 4.0).pow(rolloff)) * 0.5,
+            BaseCharge::GummelPoon => q1 * ((q2 * 4.0 + 1.0).pow(rolloff) + 1.0) * 0.5,
         };
         TransportState { ifi, iri, q1, qb }
     }
@@ -1005,7 +996,7 @@ impl<R: Real> Core<R> {
         let kbci = (self.exponential(vbci, one).scale(collector.doping) + 1.0).sqrt();
         let kbcx = (self.exponential(vbcx, one).scale(collector.doping) + 1.0).sqrt();
         let ratio = (kbci + 1.0) / (kbcx + 1.0);
-        let iohm = (vrci + (kbci - kbcx - logarithm(ratio)).scale(self.thermal_voltage))
+        let iohm = (vrci + (kbci - kbcx - ratio.ln()).scale(self.thermal_voltage))
             .divide(collector.resistance);
         let velocity = collector.inverse_saturation;
         let derf = iohm.scale(velocity * collector.resistance)
@@ -1901,11 +1892,14 @@ impl Kernel for Vbic {
             qbep,
             qbcp,
         } = branches;
-        added.current(stamp, (BI, EI), ibe);
-        added.current(stamp, (BX, EI), ibex);
+        // Every derivative among the stamped nodes is summed here, and written once.
+        let mut derivatives = Derivatives::new();
+        let sums = &mut derivatives;
+        added.add_current(stamp, sums, (BI, EI), ibe);
+        added.add_current(stamp, sums, (BX, EI), ibex);
         match &shape.excess {
             Some(excess) => {
-                added.current(stamp, (CI, EI), -itzr);
+                added.add_current(stamp, sums, (CI, EI), -itzr);
                 excess.add(
                     (&shape.stamp, &bias),
                     (itzf, prepared.delay, sign),
@@ -1913,21 +1907,22 @@ impl Kernel for Vbic {
                     stamp,
                 );
             }
-            None => added.current(stamp, (CI, EI), itzf - itzr),
+            None => added.add_current(stamp, sums, (CI, EI), itzf - itzr),
         }
-        added.current(stamp, (BI, CI), ibc);
-        added.current(stamp, (BX, BP), ibep);
-        added.current(stamp, (CX, CI), irci);
-        added.current(stamp, (BX, BI), irbi);
-        added.current(stamp, (BP, CX), irbp);
-        added.current(stamp, (SI, BP), ibcp);
-        added.current(stamp, (BX, SI), iccp);
-        added.charge(stamp, (BI, EI), qbe);
-        added.charge(stamp, (BX, EI), qbex);
-        added.charge(stamp, (BI, CI), qbc);
-        added.charge(stamp, (BI, CX), qbcx);
-        added.charge(stamp, (BX, BP), qbep);
-        added.charge(stamp, (SI, BP), qbcp);
+        added.add_current(stamp, sums, (BI, CI), ibc);
+        added.add_current(stamp, sums, (BX, BP), ibep);
+        added.add_current(stamp, sums, (CX, CI), irci);
+        added.add_current(stamp, sums, (BX, BI), irbi);
+        added.add_current(stamp, sums, (BP, CX), irbp);
+        added.add_current(stamp, sums, (SI, BP), ibcp);
+        added.add_current(stamp, sums, (BX, SI), iccp);
+        added.add_charge(stamp, sums, (BI, EI), qbe);
+        added.add_charge(stamp, sums, (BX, EI), qbex);
+        added.add_charge(stamp, sums, (BI, CI), qbc);
+        added.add_charge(stamp, sums, (BI, CX), qbcx);
+        added.add_charge(stamp, sums, (BX, BP), qbep);
+        added.add_charge(stamp, sums, (SI, BP), qbcp);
+        derivatives.stamp(&shape.stamp, stamp);
     }
 
     fn variable_names() -> &'static [&'static str] {

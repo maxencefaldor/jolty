@@ -13,7 +13,7 @@ use crate::kernel::dual::Dual;
 use crate::kernel::jfet::Channel;
 use crate::kernel::junction::{Depletion, Temperatures, below_one, limit_channel};
 use crate::kernel::mosfet::{DEFAULT_OXIDE_THICKNESS, OXIDE_PERMITTIVITY};
-use crate::kernel::parts::{self, Nodes, Oriented, Pair, Series, Varying};
+use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Pair, Series, Varying};
 use crate::kernel::region::SATURATION_MARGIN;
 use crate::noise::Flicker;
 use crate::{
@@ -632,11 +632,16 @@ impl Kernel for Vdmos {
             bias: &bias,
             variables: VARIABLES,
         };
-        added.current(stamp, (INNER_DRAIN, INNER_SOURCE), conduction.current);
+        // Every derivative among the stamped nodes is summed here, and written once.
+        let mut derivatives = Derivatives::new();
+        let sums = &mut derivatives;
+        added.add_current(stamp, sums, (INNER_DRAIN, INNER_SOURCE), conduction.current);
         let gate = &prepared.gate;
         let gate_drain = gate.drain_charge(vgs - vds);
-        added.charge(stamp, (INNER_GATE, INNER_SOURCE), vgs.scale(gate.source));
-        added.charge(stamp, (INNER_GATE, INNER_DRAIN), gate_drain);
+        let gate_source = vgs.scale(gate.source);
+        added.add_charge(stamp, sums, (INNER_GATE, INNER_SOURCE), gate_source);
+        added.add_charge(stamp, sums, (INNER_GATE, INNER_DRAIN), gate_drain);
+        derivatives.stamp(&shape.stamp, stamp);
         let body = prepared.body.add(
             &shape.body,
             prepared.transit_time,

@@ -8,7 +8,7 @@
 
 use super::channel::Operating;
 use super::prepare::{Core, Junction, Junctions, Overlaps};
-use super::{Charges, D, DELTA, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP, ln};
+use super::{Charges, D, DELTA, EPSSI, EXP_THRESHOLD, MAX_EXP, MIN_EXP};
 use crate::Real;
 
 /// The intrinsic charges on the gate, the bulk and the drain, in the frame where the drain
@@ -113,7 +113,7 @@ impl<R: Real> Core<R> {
         } else if vgst_nvt.value.value() < -EXP_THRESHOLD {
             t0 * (1.0 + MIN_EXP).ln()
         } else {
-            t0 * ln(vgst_nvt.exp() + 1.0)
+            t0 * (vgst_nvt.exp() + 1.0).ln()
         };
         Cv {
             vds,
@@ -381,7 +381,7 @@ impl<R: Real> Core<R> {
             )
         };
         let t1 = vgsteff.plus(t0 * 2.0);
-        let delta_phi = ln((t1 * vgsteff).divide(denominator) + 1.0).scale(vtm);
+        let delta_phi = ((t1 * vgsteff).divide(denominator) + 1.0).ln().scale(vtm);
         let t0 = vgsteff - delta_phi - 0.001;
         let t1 = (t0 * t0 + vgsteff * 0.004).sqrt();
         let vgdp = (t0 + t1) * 0.5;
@@ -394,7 +394,7 @@ impl<R: Real> Core<R> {
         } else {
             (vgsteff + 1.0e-20).divide(tox)
         };
-        let tmp = (ln(t0) * 0.7).exp();
+        let tmp = (t0.ln() * 0.7).exp();
         let tcen = D::number(1.9e-9) / (tmp + 1.0);
         let cox_wl_cen = effective(tcen);
 
@@ -511,7 +511,7 @@ impl<R: Real> Junctions<R> {
                     let sarg = if root {
                         arg.sqrt().recip()
                     } else {
-                        (ln(arg).scale(-grading)).exp()
+                        (arg.ln().scale(-grading)).exp()
                     };
                     charge = charge
                         + (-(arg * sarg) + 1.0).scale(potential * capacitance / (-grading + 1.0));

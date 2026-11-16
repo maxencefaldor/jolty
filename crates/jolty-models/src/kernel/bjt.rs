@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::kernel::junction::{
-    Depletion, Temperatures, below_one, critical_voltage, depletion_charge, junction_current,
-    limit_junction,
+    Depletion, Temperatures, below_one, critical_voltage, depletion_charge_with_capacitance,
+    junction_current_with_slope, limit_junction,
 };
 use crate::kernel::parts::SMALL_RESISTANCE;
 use crate::kernel::parts::{self, CurrentBranch, Nodes, Series, series_value};
@@ -348,13 +348,13 @@ impl<R: Real> Junctions<R> {
         let zero = R::constant(0.0);
         let leakage = |voltage, current: R, slope| {
             if current.value() > 0.0 {
-                junction_current(voltage, current, slope)
+                junction_current_with_slope(voltage, current, slope)
             } else {
                 (zero, zero)
             }
         };
-        let forward = junction_current(vbe, self.saturation_current, self.forward_slope);
-        let reverse = junction_current(vbc, self.saturation_current, self.reverse_slope);
+        let forward = junction_current_with_slope(vbe, self.saturation_current, self.forward_slope);
+        let reverse = junction_current_with_slope(vbc, self.saturation_current, self.reverse_slope);
         let emitter_leakage = leakage(vbe, self.emitter_leakage, self.emitter_leakage_slope);
         let collector_leakage = leakage(vbc, self.collector_leakage, self.collector_leakage_slope);
         let base = [
@@ -686,7 +686,8 @@ impl<R: Real> Charges<R> {
             cross = transit * (voltage_term - modulated * dqb[1]) / qb;
             current = modulated;
         }
-        let (charge, capacitance) = depletion_charge(self.base_emitter.as_ref(), vbe);
+        let (charge, capacitance) =
+            depletion_charge_with_capacitance(self.base_emitter.as_ref(), vbe);
         (
             transit * current + charge,
             transit * conductance + capacitance,
@@ -697,7 +698,8 @@ impl<R: Real> Charges<R> {
     /// The internal base-collector charge and its capacitance.
     fn base_collector(&self, vbc: f64, state: &State<R>) -> (R, R) {
         let (current, conductance) = state.ideal[1];
-        let (charge, capacitance) = depletion_charge(self.base_collector.as_ref(), vbc);
+        let (charge, capacitance) =
+            depletion_charge_with_capacitance(self.base_collector.as_ref(), vbc);
         (
             self.reverse_transit_time * current + charge,
             self.reverse_transit_time * conductance + capacitance,
@@ -740,14 +742,14 @@ impl<R: Real> SubstrateJunction<R> {
         let beyond = applied - voltage;
         let zero = R::constant(0.0);
         let (current, conductance) = self.diode.map_or((zero, zero), |(saturation, slope)| {
-            junction_current(voltage, saturation, slope)
+            junction_current_with_slope(voltage, saturation, slope)
         });
         let (current, conductance) = (current + at.gmin * voltage, conductance + at.gmin);
         let pair = (0, 1);
         nodes.current(stamp, 0, 1, (current + conductance * beyond) * self.sign);
         nodes.conductance(stamp, pair, pair, conductance);
         if let Some(depletion) = &self.depletion {
-            let (charge, capacitance) = depletion.evaluate(voltage);
+            let (charge, capacitance) = depletion_charge_with_capacitance(Some(depletion), voltage);
             nodes.charge(stamp, 0, 1, (charge + capacitance * beyond) * self.sign);
             nodes.capacitance(stamp, pair, pair, capacitance);
         }
@@ -1402,7 +1404,7 @@ impl<R: Real> Added<'_, R> {
         nodes.capacitance(stamp, BASE_COLLECTOR, BASE_COLLECTOR, capacitance);
         let external = sign * (nodes.voltage(at, OUTER_BASE) - nodes.voltage(at, INNER_COLLECTOR));
         let (charge, capacitance) =
-            depletion_charge(charges.external_base_collector.as_ref(), external);
+            depletion_charge_with_capacitance(charges.external_base_collector.as_ref(), external);
         let pair = (OUTER_BASE, INNER_COLLECTOR);
         nodes.charge(stamp, OUTER_BASE, INNER_COLLECTOR, charge * sign);
         nodes.capacitance(stamp, pair, pair, capacitance);

@@ -27,7 +27,7 @@ use self::prepare::{Junction, Junctions};
 use crate::kernel::dual::Dual;
 use crate::kernel::jfet::Channel;
 use crate::kernel::junction::{limit_channel, limit_junction};
-use crate::kernel::parts::{self, Nodes, Oriented, Series};
+use crate::kernel::parts::{self, Derivatives, Nodes, Oriented, Series};
 use crate::kernel::region::{OVERDRIVE, SATURATION_MARGIN};
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, REGION,
@@ -66,12 +66,6 @@ const VT0: f64 = 1.380_648_52e-23 * 300.15 / 1.602_176_620_8e-19;
 /// A number and its derivatives with respect to a transistor's gate-source, drain-source
 /// and bulk-source voltages.
 type D<R> = Dual<R, 3>;
-
-/// The natural logarithm of `x`, with its derivatives.
-fn ln<R: Real>(x: D<R>) -> D<R> {
-    let value = x.value;
-    x.chain((value.ln(), value.recip()))
-}
 
 /// `n` for an n-channel and `p` for a p-channel.
 pub(crate) const fn by_channel(channel: Channel, n: f64, p: f64) -> f64 {
@@ -572,29 +566,27 @@ impl Kernel for Bsim3 {
             bias: &bias,
             variables: VARIABLES,
         };
+        // Every derivative among the stamped nodes is summed here, and written once. Each
+        // term is added on a line of its own: added in a loop, its sums left the registers.
+        let mut derivatives = Derivatives::new();
+        let sums = &mut derivatives;
         // `b3ld.c` multiplies every current and charge of one copy, `gmin`'s too, by `m`.
-        let copies = prepared.multiplier;
+        let copies = |value: D<R>| value.scale(prepared.multiplier);
         let (from, substrate) = terminals.substrate;
-        let [drain_junction, source_junction] = terminals.junctions;
-        for (pair, current) in [
-            ((INNER_DRAIN, INNER_SOURCE), terminals.channel),
-            ((from, BULK), substrate),
-            ((BULK, INNER_DRAIN), drain_junction),
-            ((BULK, INNER_SOURCE), source_junction),
-        ] {
-            added.current(stamp, pair, current.scale(copies));
-        }
-        let [gate, bulk, drain] = terminals.charges;
-        let [drain_depletion, source_depletion] = terminals.depletions;
-        for (pair, charge) in [
-            ((GATE, INNER_SOURCE), gate),
-            ((BULK, INNER_SOURCE), bulk),
-            ((INNER_DRAIN, INNER_SOURCE), drain),
-            ((BULK, INNER_DRAIN), drain_depletion),
-            ((BULK, INNER_SOURCE), source_depletion),
-        ] {
-            added.charge(stamp, pair, charge.scale(copies));
-        }
+        let [channel, substrate] = [terminals.channel, substrate].map(copies);
+        let [drain_junction, source_junction] = terminals.junctions.map(copies);
+        let [gate, bulk, drain] = terminals.charges.map(copies);
+        let [drain_depletion, source_depletion] = terminals.depletions.map(copies);
+        added.add_current(stamp, sums, (INNER_DRAIN, INNER_SOURCE), channel);
+        added.add_current(stamp, sums, (from, BULK), substrate);
+        added.add_current(stamp, sums, (BULK, INNER_DRAIN), drain_junction);
+        added.add_current(stamp, sums, (BULK, INNER_SOURCE), source_junction);
+        added.add_charge(stamp, sums, (GATE, INNER_SOURCE), gate);
+        added.add_charge(stamp, sums, (BULK, INNER_SOURCE), bulk);
+        added.add_charge(stamp, sums, (INNER_DRAIN, INNER_SOURCE), drain);
+        added.add_charge(stamp, sums, (BULK, INNER_DRAIN), drain_depletion);
+        added.add_charge(stamp, sums, (BULK, INNER_SOURCE), source_depletion);
+        derivatives.stamp(&shape.stamp, stamp);
     }
 
     /// The zero-bias threshold, which a transistor's first step is limited from, moves
