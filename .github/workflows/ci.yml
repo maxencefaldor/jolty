@@ -42,6 +42,10 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
+      - name: Install cargo-nextest, which runs the Rust tests
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
       - name: Check
         run: scripts/check rust
 

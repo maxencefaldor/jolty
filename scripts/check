@@ -28,7 +28,10 @@ check_rust() {
     # The crates of Cargo.lock against RustSec's advisories, fetched afresh: a known
     # vulnerability fails; an unmaintained, unsound or yanked crate is printed.
     cargo audit
-    cargo test --workspace --locked
+    # Each test in a process of its own, every crate's at once; nextest runs no doctests,
+    # which cargo's own runner does.
+    cargo nextest run --workspace --locked
+    cargo test --workspace --doc --locked
 }
 
 check_python() {
