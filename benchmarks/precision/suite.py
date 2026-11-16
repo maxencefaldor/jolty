@@ -242,7 +242,7 @@ def _found(result: results.AnalysisResult, reads: Sequence[str]) -> Found:
     match result:
         case (
             results.TransientResult(times=points)
-            | results.DcSweepResult(levels=points)
+            | results.DcSweepResult(swept=points)
             | results.AcResult(frequencies=points)
         ):
             values = {

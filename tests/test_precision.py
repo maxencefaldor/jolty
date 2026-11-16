@@ -11,6 +11,7 @@ from mpmath import mp, mpf
 
 from differential import SKIP, SKIP_XYCE
 from jolty import _core
+from jolty.plan import DcSweep
 
 PRECISION = Path(__file__).parent.parent / "benchmarks" / "precision"
 
@@ -330,3 +331,21 @@ def test_xyce_runs_a_fixture_and_scores_it() -> None:
     # Xyce's trapezoidal steps, its default, are at most a fiftieth of the run, as
     # jolty's and ngspice's are: an error of at most about 8e-4 of the 1 V swing.
     assert 3 < mixed.digits < mixed.limit
+
+
+def test_jolty_s_sweep_is_scored_at_its_levels() -> None:
+    from fixtures import fixtures  # noqa: PLC0415 - importable only once the path holds it
+    from suite import (  # noqa: PLC0415 - importable only once the path holds it
+        DEFAULTS,
+        Prepared,
+        Setting,
+        run_jolty,
+    )
+
+    prepared = Prepared.of(fixtures()["diode"])
+    sweep = prepared.fixture.analysis
+    assert isinstance(sweep, DcSweep)
+    ran = run_jolty(prepared, Setting("defaults", DEFAULTS["relative_tolerance"]), 1)
+    np.testing.assert_array_equal(
+        ran.found.points, [each.value for each in sweep.values]
+    )
