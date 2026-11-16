@@ -11,7 +11,7 @@ use jolty_ir::{
 use jolty_models::{
     Interface, Kernel, Library, Logic, LogicDriver, LogicDriverParameters, LogicModel, Model,
     Nature, Node, Pins, Specification, ThresholdDetector, ThresholdDetectorParameters, Unknown,
-    UnknownInfo,
+    UnknownIndex,
 };
 
 use crate::Substitute;
@@ -562,15 +562,15 @@ fn mixed_domains(nets: &[NetRecord]) -> impl Iterator<Item = ElaborationProblem>
 /// and those a thermal terminal joins temperatures above the ambient, in the order they
 /// were first met, and the others logic nets. Returns the nodes' unknowns, the classes, and
 /// the logic partition with its nets.
-fn classify(nets: &[NetRecord], ground: String) -> (Vec<UnknownInfo>, Classes<'_>, LogicSystem) {
+fn classify(nets: &[NetRecord], ground: String) -> (Vec<Unknown>, Classes<'_>, LogicSystem) {
     let mut unknowns = Vec::new();
     let mut nodes: Vec<Node> = vec![None; nets.len()];
     let mut logic: Vec<Option<usize>> = vec![None; nets.len()];
     let mut partition = LogicSystem::default();
     for (index, net) in nets.iter().enumerate() {
         if net.electrical || net.thermal.is_some() {
-            nodes[index] = Some(Unknown::new(unknowns.len()));
-            unknowns.push(UnknownInfo {
+            nodes[index] = Some(UnknownIndex::new(unknowns.len()));
+            unknowns.push(Unknown {
                 name: net.name.clone(),
                 nature: if net.electrical {
                     Nature::Voltage
@@ -1330,7 +1330,7 @@ mod tests {
             .collect();
         assert_eq!(names, ["X1/mid", "mid", "X2/mid"]);
         let nodes: Vec<&[Node]> = system.devices.iter().map(Placed::nodes).collect();
-        let [first, second, third] = [0, 1, 2].map(|index| Some(Unknown::new(index)));
+        let [first, second, third] = [0, 1, 2].map(|index| Some(UnknownIndex::new(index)));
         assert_eq!(
             nodes,
             [

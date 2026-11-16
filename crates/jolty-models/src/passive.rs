@@ -267,7 +267,7 @@ impl Kernel for Resistor {
                 (
                     NoiseSource::thermal_in_series(
                         "thermal",
-                        crate::Unknown::new(branch.unknown()),
+                        crate::UnknownIndex::new(branch.unknown()),
                         resistance,
                         temperature,
                     ),
@@ -277,7 +277,10 @@ impl Kernel for Resistor {
         };
         sources.push(thermal);
         let (a, b) = TERMINALS;
-        let terminals = [Some(crate::Unknown::new(a)), Some(crate::Unknown::new(b))];
+        let terminals = [
+            Some(crate::UnknownIndex::new(a)),
+            Some(crate::UnknownIndex::new(b)),
+        ];
         prepared.flicker.add(terminals, current, sources);
     }
 }
@@ -657,7 +660,7 @@ impl Kernel for CoupledInductors {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Unknown;
+    use crate::UnknownIndex;
     use crate::testing::{
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
         thermal,
@@ -910,14 +913,14 @@ mod tests {
         let noise = source(&sources, "thermal");
         assert_eq!(
             noise.equations,
-            [Some(Unknown::new(0)), Some(Unknown::new(1))]
+            [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(1))]
         );
         assert_close(&[noise.density(1.0)], &[thermal(1e-3)]);
         // A small one's is a voltage in series with its current, and a short makes none.
         let small = Bench::new::<Resistor>(r#"{"resistance": 0.5}"#);
         let sources = small.noise(&[1.0, 0.0, 2.0]);
         let noise = source(&sources, "thermal");
-        assert_eq!(noise.equations, [Some(Unknown::new(2)), None]);
+        assert_eq!(noise.equations, [Some(UnknownIndex::new(2)), None]);
         assert_close(&[noise.density(1.0)], &[thermal(0.5)]);
         let bent = Bench::new::<Resistor>(r#"{"resistance": 1000, "voltage_coefficient": 0.1}"#);
         let sources = bent.noise(&[2.0, 0.0]);
@@ -935,7 +938,7 @@ mod tests {
         let flicker = source(&sources, "flicker");
         assert_eq!(
             flicker.equations,
-            [Some(Unknown::new(0)), Some(Unknown::new(1))]
+            [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(1))]
         );
         assert_close(&[flicker.density(10.0)], &[1e-12 * 4e-6 / 10.0]);
         // A small one's current is its own unknown, and its flicker noise still across it.
@@ -944,7 +947,7 @@ mod tests {
         let flicker = source(&sources, "flicker");
         assert_eq!(
             flicker.equations,
-            [Some(Unknown::new(0)), Some(Unknown::new(1))]
+            [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(1))]
         );
         assert_close(&[flicker.density(1.0)], &[2e-12]);
         assert!(

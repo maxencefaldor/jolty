@@ -24,7 +24,7 @@ use crate::noise::Flicker;
 use crate::region::Bipolar;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
-    REFERENCE_TEMPERATURE, Real, Regions, Stamp, Unknown,
+    REFERENCE_TEMPERATURE, Real, Regions, Stamp, UnknownIndex,
 };
 
 /// The doping order of a bipolar transistor.
@@ -1205,7 +1205,7 @@ impl Kernel for BipolarTransistor {
                 ),
                 BaseForm::Current(current) => NoiseSource::thermal_in_series(
                     "base thermal",
-                    Unknown::new(current.branch.unknown()),
+                    UnknownIndex::new(current.branch.unknown()),
                     resistance,
                     temperature,
                 ),
@@ -1429,7 +1429,7 @@ mod tests {
         Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match,
         assert_switches_where_margin_vanishes, source, thermal,
     };
-    use crate::{ELEMENTARY_CHARGE, Unknown, thermal_voltage};
+    use crate::{ELEMENTARY_CHARGE, UnknownIndex, thermal_voltage};
 
     const THERMAL_VOLTAGE: f64 = thermal_voltage(REFERENCE_TEMPERATURE);
 
@@ -1902,7 +1902,7 @@ mod tests {
         );
         assert_eq!(
             source(&sources, "base thermal").equations,
-            [Some(Unknown::new(base_current)), None]
+            [Some(UnknownIndex::new(base_current)), None]
         );
     }
 

@@ -96,7 +96,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use jolty_ir::{Circuit, Name, Parameters};
-use jolty_models::{Library, LogicLevel, Node, REFERENCE_TEMPERATURE, Unknown, UnknownInfo};
+use jolty_models::{Library, LogicLevel, Node, REFERENCE_TEMPERATURE, Unknown, UnknownIndex};
 use serde::Deserialize;
 
 pub use ac::{Ac, AcResult};
@@ -395,7 +395,7 @@ impl Simulator {
 
     /// The unknowns, in the order of every solution's values.
     #[must_use]
-    pub fn unknowns(&self) -> &[UnknownInfo] {
+    pub fn unknowns(&self) -> &[Unknown] {
         &self.elaborated.unknowns
     }
 
@@ -472,12 +472,12 @@ impl Simulator {
     /// The unknown named `name`: a net's path such as `amplifier/mid`, or an instance's path
     /// and label such as `V1:current`.
     #[must_use]
-    pub fn unknown(&self, name: &str) -> Option<Unknown> {
+    pub fn unknown(&self, name: &str) -> Option<UnknownIndex> {
         self.elaborated
             .unknowns
             .iter()
             .position(|unknown| unknown.name == name)
-            .map(Unknown::new)
+            .map(UnknownIndex::new)
     }
 }
 

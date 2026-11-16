@@ -7,7 +7,7 @@ mod cases;
 use crate::{
     BOLTZMANN, Binding, Contributions, Gradient, Groups, Input, Kernel, Model, Native, Nature,
     Node, NoiseSource, ParameterError, REFERENCE_TEMPERATURE, REGION, Regions, Runs, Unknown,
-    UnknownInfo,
+    UnknownIndex,
 };
 
 /// One device whose terminals each connect to an unknown of their own, its instance in a
@@ -17,7 +17,7 @@ pub(crate) struct Bench {
     groups: Groups,
     runs: Runs,
     pattern: Pattern,
-    unknowns: Vec<UnknownInfo>,
+    unknowns: Vec<Unknown>,
     /// The names of the variables the device computes.
     variables: &'static [&'static str],
     /// The regions of operation the device's equations distinguish.
@@ -41,14 +41,14 @@ fn grouped(
     model: &dyn Model,
     parameters: &jolty_ir::Parameters,
     temperature: f64,
-) -> Result<(Groups, Runs, Pattern, Vec<UnknownInfo>), ParameterError> {
+) -> Result<(Groups, Runs, Pattern, Vec<Unknown>), ParameterError> {
     let specification = model.read(parameters)?;
     let terminals = specification.interface().terminals.len();
     let nodes: Vec<Node> = (0..terminals)
-        .map(|index| Some(Unknown::new(index)))
+        .map(|index| Some(UnknownIndex::new(index)))
         .collect();
-    let mut unknowns: Vec<UnknownInfo> = (0..terminals)
-        .map(|index| UnknownInfo {
+    let mut unknowns: Vec<Unknown> = (0..terminals)
+        .map(|index| Unknown {
             name: format!("n{index}"),
             nature: Nature::Voltage,
         })

@@ -61,7 +61,7 @@ use std::sync::Arc;
 pub use behavioral::{
     Behavior, BehavioralCurrentSource, BehavioralParameters, BehavioralVoltageSource,
 };
-pub use binding::{Binding, Nature, Node, Unknown, UnknownInfo};
+pub use binding::{Binding, Nature, Node, Unknown, UnknownIndex};
 pub use bjt::{BipolarTransistor, BipolarTransistorParameters, Polarity};
 pub use bsim3::{Bsim3, Bsim3Parameters, Charges, Mobility, NoiseModel};
 pub use connect::{

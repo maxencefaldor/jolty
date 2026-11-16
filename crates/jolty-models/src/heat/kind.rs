@@ -449,7 +449,7 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         K::noise(&shape.inner, heated, &at.remapped(&map), sources);
         for source in sources.iter_mut().skip(start) {
             source.equations = source.equations.map(|equation| {
-                equation.map(|local| crate::Unknown::new(shape.outer(local.index())))
+                equation.map(|local| crate::UnknownIndex::new(shape.outer(local.index())))
             });
         }
     }

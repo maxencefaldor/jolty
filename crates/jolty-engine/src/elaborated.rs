@@ -19,7 +19,7 @@ use jolty_ir::{Circuit, Name, Parameters};
 use jolty_models::{
     Binding, Groups, Instance, Interface, Library, LogicDriver, LogicDriverParameters, Model,
     Nature, Node, ParameterError, REFERENCE_TEMPERATURE, Regions, Runs, Specification,
-    ThresholdDetector, ThresholdDetectorParameters, Unknown, UnknownInfo,
+    ThresholdDetector, ThresholdDetectorParameters, Unknown, UnknownIndex,
 };
 use jolty_numerics::{Condensation, Entry, Ordering, Pattern, PatternBuilder};
 use serde_json::Value;
@@ -52,7 +52,7 @@ pub struct Structure {
 /// [`Values`] makes devices of its own, and every thread shares it.
 #[derive(Debug)]
 pub struct Elaborated {
-    pub(crate) unknowns: Vec<UnknownInfo>,
+    pub(crate) unknowns: Vec<Unknown>,
     pub(crate) devices: Vec<Placed>,
     pub(crate) logic: LogicSystem,
     /// The name of the reference node: the top component's ground port.
@@ -71,7 +71,7 @@ pub struct Elaborated {
     pub(crate) natures: Vec<Nature>,
     /// The diagonal entry of every node voltage's equation, where gmin stepping adds a
     /// conductance to the reference.
-    pub(crate) node_diagonals: Vec<(Unknown, Entry)>,
+    pub(crate) node_diagonals: Vec<(UnknownIndex, Entry)>,
     /// The groups of the instances of kernels, which every run evaluates together, and the
     /// devices of no kernel, which it evaluates one by one.
     pub(crate) groups: Groups,
@@ -301,7 +301,7 @@ impl StructureKey {
 /// and the regions they number.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Layout {
-    internals: Vec<UnknownInfo>,
+    internals: Vec<Unknown>,
     entries: Vec<(usize, usize)>,
     variables: &'static [&'static str],
     regions: Regions,
@@ -332,9 +332,9 @@ impl Index {
 /// What binding devices one after another builds: the unknowns, the entries they claim, the
 /// devices placed, and the groups of their instances, with their numbers prepared.
 pub(crate) struct Binder {
-    unknowns: Vec<UnknownInfo>,
+    unknowns: Vec<Unknown>,
     builder: PatternBuilder,
-    node_diagonals: Vec<(Unknown, Entry)>,
+    node_diagonals: Vec<(UnknownIndex, Entry)>,
     placed: Vec<Placed>,
     groups: Groups,
     runs: Runs,
@@ -343,11 +343,11 @@ pub(crate) struct Binder {
 
 /// What a [`Binder`] built, once every device is bound.
 pub(crate) struct Bound {
-    pub(crate) unknowns: Vec<UnknownInfo>,
+    pub(crate) unknowns: Vec<Unknown>,
     pub(crate) placed: Vec<Placed>,
     pub(crate) devices: Devices,
     groups: Groups,
-    node_diagonals: Vec<(Unknown, Entry)>,
+    node_diagonals: Vec<(UnknownIndex, Entry)>,
     pattern: Arc<Pattern>,
     condensation: Arc<Condensation>,
     ordering: Arc<Ordering>,
@@ -358,10 +358,10 @@ pub(crate) struct Bound {
 impl Binder {
     /// A binder of devices at `temperature`, in kelvins, after the node voltages `nodes`,
     /// whose diagonal entries it claims first.
-    pub(crate) fn new(nodes: Vec<UnknownInfo>, temperature: f64) -> Self {
+    pub(crate) fn new(nodes: Vec<Unknown>, temperature: f64) -> Self {
         let mut builder = PatternBuilder::new();
         let node_diagonals = (0..nodes.len())
-            .map(|index| (Unknown::new(index), builder.entry(index, index)))
+            .map(|index| (UnknownIndex::new(index), builder.entry(index, index)))
             .collect();
         Self {
             unknowns: nodes,
@@ -556,7 +556,7 @@ impl Elaborated {
 
     /// The unknowns, in the order of every solution's values.
     #[must_use]
-    pub fn unknowns(&self) -> &[UnknownInfo] {
+    pub fn unknowns(&self) -> &[Unknown] {
         &self.unknowns
     }
 

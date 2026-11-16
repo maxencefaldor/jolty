@@ -2,9 +2,9 @@ use jolty_numerics::{Entry, PatternBuilder};
 
 /// A node voltage or branch current the engine solves for, by its index in the solution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Unknown(usize);
+pub struct UnknownIndex(usize);
 
-impl Unknown {
+impl UnknownIndex {
     /// The unknown at `index` in the solution vector.
     #[must_use]
     pub const fn new(index: usize) -> Self {
@@ -20,7 +20,7 @@ impl Unknown {
 
 /// Where a terminal connects: an unknown node voltage, or `None` for the reference node,
 /// whose voltage is zero and which has no equation.
-pub type Node = Option<Unknown>;
+pub type Node = Option<UnknownIndex>;
 
 /// What an unknown measures, and so what its equation balances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -58,7 +58,7 @@ impl Nature {
 
 /// The name and quantity of an unknown.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct UnknownInfo {
+pub struct Unknown {
     /// The unknown's name: a net's path, or an instance's path and a label, such as `V1:current`.
     pub name: String,
     /// What the unknown measures.
@@ -75,7 +75,7 @@ pub struct Binding<'a> {
     terminals: &'a [Node],
     /// The index of the first of `unknowns`, as if they began there.
     first: usize,
-    unknowns: &'a mut Vec<UnknownInfo>,
+    unknowns: &'a mut Vec<Unknown>,
     pattern: &'a mut PatternBuilder,
 }
 
@@ -85,7 +85,7 @@ impl<'a> Binding<'a> {
     pub fn new(
         path: &'a str,
         terminals: &'a [Node],
-        unknowns: &'a mut Vec<UnknownInfo>,
+        unknowns: &'a mut Vec<Unknown>,
         pattern: &'a mut PatternBuilder,
     ) -> Self {
         Self::numbered(path, terminals, (0, unknowns), pattern)
@@ -97,7 +97,7 @@ impl<'a> Binding<'a> {
     pub const fn numbered(
         path: &'a str,
         terminals: &'a [Node],
-        (first, unknowns): (usize, &'a mut Vec<UnknownInfo>),
+        (first, unknowns): (usize, &'a mut Vec<Unknown>),
         pattern: &'a mut PatternBuilder,
     ) -> Self {
         Self {
@@ -122,12 +122,12 @@ impl<'a> Binding<'a> {
     }
 
     /// Adds an internal unknown, named after the instance and `label`.
-    pub fn internal(&mut self, label: &str, nature: Nature) -> Unknown {
-        self.unknowns.push(UnknownInfo {
+    pub fn internal(&mut self, label: &str, nature: Nature) -> UnknownIndex {
+        self.unknowns.push(Unknown {
             name: format!("{}:{label}", self.path),
             nature,
         });
-        Unknown(self.first + self.unknowns.len() - 1)
+        UnknownIndex(self.first + self.unknowns.len() - 1)
     }
 
     /// Claims the matrix entry at `row` and `column`, or none when either is the reference.

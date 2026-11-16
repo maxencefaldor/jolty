@@ -6,7 +6,7 @@
 
 use super::{Layout, Local, Stamp};
 use crate::dual::Dual;
-use crate::{Nature, NoiseSource, Real, Unknown};
+use crate::{Nature, NoiseSource, Real, UnknownIndex};
 
 /// The resistance below which a resistance carries its current as an unknown, in ohms.
 ///
@@ -56,8 +56,8 @@ impl<const N: usize> Nodes<N> {
     }
 
     /// The equation of the node at `index`, as a noise source names a local unknown's.
-    pub(crate) fn equation(&self, index: usize) -> Option<Unknown> {
-        self.nodes.get(index).map(|&local| Unknown::new(local))
+    pub(crate) fn equation(&self, index: usize) -> Option<UnknownIndex> {
+        self.nodes.get(index).map(|&local| UnknownIndex::new(local))
     }
 
     /// The voltage of the node at `index`.
@@ -147,7 +147,7 @@ impl Pair {
 
     /// The positive and the negative local unknown, as a noise source's equations name
     /// them.
-    pub(crate) fn equations(&self) -> [Option<Unknown>; 2] {
+    pub(crate) fn equations(&self) -> [Option<UnknownIndex>; 2] {
         [self.0.equation(POSITIVE), self.0.equation(NEGATIVE)]
     }
 
@@ -395,7 +395,7 @@ impl Series {
             }
             Self::Current(branch, _) => NoiseSource::thermal_in_series(
                 name,
-                Unknown::new(branch.unknown()),
+                UnknownIndex::new(branch.unknown()),
                 value.value(),
                 temperature,
             ),

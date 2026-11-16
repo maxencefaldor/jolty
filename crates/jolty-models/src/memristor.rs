@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::kernel::parts;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
-    Real, Stamp, Unknown,
+    Real, Stamp, UnknownIndex,
 };
 
 /// How a memristor's resistance follows its state `x`, from its on resistance at 0 to its
@@ -323,7 +323,10 @@ impl MemristorShape {
         let [positive, negative] = POSITIVE_NEGATIVE;
         sources.push(NoiseSource::thermal(
             "thermal",
-            [Some(Unknown::new(positive)), Some(Unknown::new(negative))],
+            [
+                Some(UnknownIndex::new(positive)),
+                Some(UnknownIndex::new(negative)),
+            ],
             conductance.value(),
             prepared.temperature,
         ));

@@ -141,7 +141,7 @@ impl Simulator {
     fn output_of(&mut self, analysis: &TransferFunction) -> Result<Output, SimulationError> {
         let found = |name: &str| {
             self.unknown(name)
-                .map(jolty_models::Unknown::index)
+                .map(jolty_models::UnknownIndex::index)
                 .ok_or_else(|| SimulationError::UnknownOutput(name.to_owned()))
         };
         let index = found(&analysis.output)?;
@@ -215,7 +215,7 @@ impl Simulator {
                 .get(terminal)
                 .copied()
                 .flatten()
-                .map(jolty_models::Unknown::index)
+                .map(jolty_models::UnknownIndex::index)
         })
     }
 }

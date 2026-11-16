@@ -42,7 +42,7 @@ use crate::device::lift;
 use crate::surroundings::Own;
 use crate::{
     Binding, Choice, Contributions, Gradient, Input, Kernel, Layout, Local, LogicLevel, Node,
-    NoiseSource, ParameterError, Real, Regions, Stamp, Unknown,
+    NoiseSource, ParameterError, Real, Regions, Stamp, UnknownIndex,
 };
 
 /// The parameters of an instance of some kernel, read, as an [`Instance`] holds them.
@@ -711,7 +711,7 @@ impl Groups {
                 .pivots()
                 .iter()
                 .filter_map(|&local| node(local))
-                .map(Unknown::index),
+                .map(UnknownIndex::index),
         );
         let group = &mut self.kernels[index];
         let device = self.places.len();
@@ -1234,7 +1234,7 @@ impl Runs {
     /// The unknown of the current through the instance the device `device` is, if it is a
     /// logic driver, whose equation holds its voltage.
     #[must_use]
-    pub fn driven(&self, groups: &Groups, device: usize) -> Option<Unknown> {
+    pub fn driven(&self, groups: &Groups, device: usize) -> Option<UnknownIndex> {
         let (group, member) = groups.place(device)?;
         self.groups
             .get(group)?
@@ -1661,7 +1661,7 @@ trait GroupRun: fmt::Debug + Send {
 
     /// The circuit's unknown of the current through the instance `member` of `group`, if
     /// it is a logic driver.
-    fn driven(&self, member: usize, group: &Group) -> Option<Unknown>;
+    fn driven(&self, member: usize, group: &Group) -> Option<UnknownIndex>;
 
     /// How far the input of the instance `member` of `group`, if it is a logic input's
     /// detector, lies above its threshold at `input`, and its supply's swing there.
@@ -1812,7 +1812,7 @@ impl<K: Kind> GroupRun for KernelRun<K> {
                 equation.and_then(|local| {
                     map.get(local.index())
                         .filter(|&&unknown| unknown != UNMAPPED)
-                        .map(|&unknown| Unknown::new(unknown as usize))
+                        .map(|&unknown| UnknownIndex::new(unknown as usize))
                 })
             });
         }
@@ -1848,10 +1848,10 @@ impl<K: Kind> GroupRun for KernelRun<K> {
         K::drive(self.memory.get_mut(member)?, ramp)
     }
 
-    fn driven(&self, member: usize, group: &Group) -> Option<Unknown> {
+    fn driven(&self, member: usize, group: &Group) -> Option<UnknownIndex> {
         let local = K::driven(&self.shape)?;
         let &unknown = group.map_of(member)?.get(local)?;
-        (unknown != UNMAPPED).then(|| Unknown::new(unknown as usize))
+        (unknown != UNMAPPED).then(|| UnknownIndex::new(unknown as usize))
     }
 
     fn sense(&self, member: usize, group: &Group, input: &Input<'_>) -> Option<(f64, f64)> {

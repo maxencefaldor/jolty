@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::kernel::parts::CurrentBranch;
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, NoiseSource, ParameterError, Real, Stamp,
-    Unknown,
+    UnknownIndex,
 };
 
 /// The law by which a switch's control moves its resistance, PSpice's, as the PSpice A/D
@@ -218,7 +218,10 @@ impl Kernel for VoltageControlledSwitch {
         let (conductance, _) = prepared.law.conductance(control);
         sources.push(NoiseSource::thermal(
             "thermal",
-            [Some(Unknown::new(positive)), Some(Unknown::new(negative))],
+            [
+                Some(UnknownIndex::new(positive)),
+                Some(UnknownIndex::new(negative)),
+            ],
             conductance.value(),
             prepared.temperature,
         ));
@@ -359,7 +362,10 @@ impl Kernel for CurrentControlledSwitch {
         let [positive, negative, ..] = TERMINALS;
         sources.push(NoiseSource::thermal(
             "thermal",
-            [Some(Unknown::new(positive)), Some(Unknown::new(negative))],
+            [
+                Some(UnknownIndex::new(positive)),
+                Some(UnknownIndex::new(negative)),
+            ],
             conductance.value(),
             prepared.temperature,
         ));

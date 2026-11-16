@@ -168,7 +168,7 @@ pub trait Kernel: Send + Sync + 'static {
 
     /// Appends an instance's noise at `at`, the operating point a noise analysis linearizes
     /// about, to `sources`, each source's equations those of local unknowns: the one at
-    /// local index `i` as `Unknown::new(i)`. None for a noiseless instance.
+    /// local index `i` as `UnknownIndex::new(i)`. None for a noiseless instance.
     fn noise<R: Real>(
         shape: &Self::Shape,
         prepared: &Self::Prepared<R>,

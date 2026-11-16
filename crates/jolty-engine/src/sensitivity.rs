@@ -29,7 +29,7 @@
 //! what the circuit does.
 
 use jolty_ir::numbers;
-use jolty_models::{Gradient, Input, Unknown};
+use jolty_models::{Gradient, Input, UnknownIndex};
 use jolty_numerics::Complex64;
 use jolty_numerics::integration::Formula;
 use serde::Deserialize;
@@ -190,7 +190,7 @@ fn dense(sparse: impl Iterator<Item = (usize, Gradient)>, dimension: usize) -> V
 /// The direct method's state along a transient: each parameter's derivatives of the
 /// charges, and the outputs' derivatives at every accepted point.
 pub(crate) struct Forward {
-    outputs: Vec<Unknown>,
+    outputs: Vec<UnknownIndex>,
     twins: Vec<Twin>,
     tangents: Vec<Tangent>,
     found: Vec<Vec<Vec<f64>>>,
@@ -376,7 +376,7 @@ impl Simulator {
     /// `x`, by the adjoint method.
     fn adjoint(
         &mut self,
-        outputs: &[Unknown],
+        outputs: &[UnknownIndex],
         twins: &mut [Twin],
         x: &[f64],
         options: &Options,
@@ -430,7 +430,7 @@ impl Simulator {
     /// its instance is made of: a number the sweep holds moves nothing.
     fn along_sweep(
         &mut self,
-        outputs: &[Unknown],
+        outputs: &[UnknownIndex],
         twins: &mut [Twin],
         (swept, sweep): (Swept, &DcSweep),
         result: &crate::DcSweepResult,
@@ -458,7 +458,7 @@ impl Simulator {
     /// The derivatives of the outputs' phasors in `response` at each of its frequencies.
     fn over_frequency(
         &mut self,
-        outputs: &[Unknown],
+        outputs: &[UnknownIndex],
         twins: &mut [Twin],
         response: &crate::AcResult,
         options: &Options,

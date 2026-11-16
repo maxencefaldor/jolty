@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Branch, BranchKind, Interface, Kernel, Layout, Local, Nature, NoiseSource, ParameterError,
-    Real, Stamp, Unknown,
+    Real, Stamp, UnknownIndex,
 };
 
 /// The illuminance, in lux, below which a photocell's response to light rounds off to
@@ -233,7 +233,7 @@ impl Kernel for Photocell {
         let conductance = prepared.dark_conductance + prepared.conductance * response;
         sources.push(NoiseSource::thermal(
             "thermal",
-            [Some(Unknown::new(a)), Some(Unknown::new(b))],
+            [Some(UnknownIndex::new(a)), Some(UnknownIndex::new(b))],
             conductance.value(),
             prepared.temperature,
         ));

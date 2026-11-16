@@ -2,7 +2,7 @@
 
 use std::f64::consts::TAU;
 
-use jolty_models::{Contributions, Nature, Unknown};
+use jolty_models::{Contributions, Nature, UnknownIndex};
 use jolty_numerics::Complex64;
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -125,7 +125,7 @@ impl Simulator {
         &self,
         output: &str,
         reference: Option<&str>,
-    ) -> Result<(Option<Unknown>, Option<Unknown>, Nature), SimulationError> {
+    ) -> Result<(Option<UnknownIndex>, Option<UnknownIndex>, Nature), SimulationError> {
         let found = self.node(output)?;
         let base = reference.map(|name| self.node(name)).transpose()?.flatten();
         if found == base {
@@ -133,7 +133,7 @@ impl Simulator {
                 "the output `{output}` is taken over itself"
             )));
         }
-        let nature = |node: Option<Unknown>| {
+        let nature = |node: Option<UnknownIndex>| {
             node.map_or(Nature::Voltage, |unknown| {
                 self.elaborated.unknowns[unknown.index()].nature
             })
@@ -151,7 +151,7 @@ impl Simulator {
     }
 
     /// The node or unknown named `name`: none for the reference node.
-    fn node(&self, name: &str) -> Result<Option<Unknown>, SimulationError> {
+    fn node(&self, name: &str) -> Result<Option<UnknownIndex>, SimulationError> {
         if name == self.reference() {
             return Ok(None);
         }

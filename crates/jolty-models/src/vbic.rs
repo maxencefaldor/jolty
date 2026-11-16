@@ -2670,7 +2670,10 @@ mod tests {
         let base_shot = source(&sources, "base shot");
         assert_eq!(
             base_shot.equations,
-            [Some(crate::Unknown::new(bi)), Some(crate::Unknown::new(ei))]
+            [
+                Some(crate::UnknownIndex::new(bi)),
+                Some(crate::UnknownIndex::new(ei))
+            ]
         );
         let flicker = source(&sources, "flicker");
         let base_current = flicker.flicker / 1e-14;

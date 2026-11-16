@@ -1,7 +1,7 @@
 //! The noise devices make: random excitations of the circuit's equations, each with its
 //! one-sided power spectral density, as SPICE models them.
 
-use crate::{BOLTZMANN, ELEMENTARY_CHARGE, Node, ParameterError, Real, Unknown};
+use crate::{BOLTZMANN, ELEMENTARY_CHARGE, Node, ParameterError, Real, UnknownIndex};
 
 /// A random excitation of the circuit's equations, whose one-sided power spectral density
 /// is `white + flicker / f^exponent` at the frequency `f`: a current between two nodes, in
@@ -45,7 +45,7 @@ impl NoiseSource {
     #[must_use]
     pub fn thermal_in_series(
         name: &'static str,
-        branch: Unknown,
+        branch: UnknownIndex,
         resistance: f64,
         temperature: f64,
     ) -> Self {
@@ -153,13 +153,13 @@ mod tests {
 
     #[test]
     fn densities_follow_their_laws() {
-        let nodes = [Some(Unknown::new(0)), None];
+        let nodes = [Some(UnknownIndex::new(0)), None];
         let thermal = NoiseSource::thermal("thermal", nodes, 1e-3, 300.0);
         assert!((thermal.density(1.0) - 4.0 * BOLTZMANN * 300.0 * 1e-3).abs() < 1e-35);
         let shot = NoiseSource::shot("shot", nodes, -1e-3);
         assert!((shot.density(1e6) - 2.0 * ELEMENTARY_CHARGE * 1e-3).abs() < 1e-35);
-        let series = NoiseSource::thermal_in_series("thermal", Unknown::new(1), 50.0, 300.0);
-        assert_eq!(series.equations, [Some(Unknown::new(1)), None]);
+        let series = NoiseSource::thermal_in_series("thermal", UnknownIndex::new(1), 50.0, 300.0);
+        assert_eq!(series.equations, [Some(UnknownIndex::new(1)), None]);
         assert!((series.density(1.0) - 4.0 * BOLTZMANN * 300.0 * 50.0).abs() < 1e-30);
         let flicker = NoiseSource::flicker("flicker", nodes, 1e-16, 2.0, 1e-3);
         assert!((flicker.density(10.0) - 1e-23).abs() < 1e-36);
