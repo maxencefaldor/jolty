@@ -386,7 +386,7 @@ class Verdict(BaseModel):
         )
 
 
-class Values(BaseModel):
+class SummaryStatistics(BaseModel):
     """The values a requirement read over samples, in SI base units."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -398,12 +398,12 @@ class Values(BaseModel):
         description="The values' mean; null when it is not a number, as when some "
         "values are infinities of either sign."
     )
-    deviation: float | None = Field(
+    standard_deviation: float | None = Field(
         description="The values' standard deviation; null when some value is infinite."
     )
 
     @classmethod
-    def of(cls, numbers: npt.NDArray[np.float64], unit: str) -> Values:
+    def of(cls, numbers: npt.NDArray[np.float64], unit: str) -> SummaryStatistics:
         """The least, the greatest, the mean and the deviation of `numbers`.
 
         An infinity among them is their mean, unless one of each sign is, and leaves
@@ -412,16 +412,16 @@ class Values(BaseModel):
         finite = np.isfinite(numbers)
         infinities = {float(number) for number in numbers[~finite]}
         if finite.all():
-            mean, deviation = float(numbers.mean()), float(numbers.std())
+            mean, standard_deviation = float(numbers.mean()), float(numbers.std())
         else:
             mean = infinities.pop() if len(infinities) == 1 else None
-            deviation = None
+            standard_deviation = None
         return cls(
             unit=unit,
             minimum=float(numbers.min()),
             maximum=float(numbers.max()),
             mean=mean,
-            deviation=deviation,
+            standard_deviation=standard_deviation,
         )
 
 
@@ -433,7 +433,7 @@ class Spread(BaseModel):
     requirement: str = Field(description="The requirement, in words.")
     measured: int = Field(description="Samples on which it was measured.")
     passing: int = Field(description="Samples on which it passed, if marginally.")
-    values: Values | None = Field(
+    values: SummaryStatistics | None = Field(
         default=None, description="The values read; null when none was."
     )
 
@@ -449,12 +449,13 @@ class Spread(BaseModel):
             _format(self.values.minimum, unit),
             _format(self.values.maximum, unit),
         )
-        mean, deviation = (
+        mean, standard_deviation = (
             "undefined" if value is None else _format(value, unit)
-            for value in (self.values.mean, self.values.deviation)
+            for value in (self.values.mean, self.values.standard_deviation)
         )
         return (
-            f"{head}{missing}; read {low} to {high}, mean {mean}, deviation {deviation}"
+            f"{head}{missing}; read {low} to {high}, mean {mean}, "
+            f"standard deviation {standard_deviation}"
         )
 
 
@@ -523,7 +524,7 @@ def _spread(requirement: Requirement, verdicts: Sequence[Verdict]) -> Spread:
     stated = Spread(requirement=str(requirement), measured=len(read), passing=passing)
     if not read:
         return stated
-    values = Values.of(np.array([value for value, _ in read]), read[0][1])
+    values = SummaryStatistics.of(np.array([value for value, _ in read]), read[0][1])
     return stated.model_copy(update={"values": values})
 
 
@@ -672,7 +673,7 @@ def _spread_of(requirement: Requirement, judged: Judged) -> Spread:
         return stated
     first = int(np.argmax(measured))
     unit = judged.units[int(judged.origin[first])]
-    values = Values.of(judged.value[measured], unit)
+    values = SummaryStatistics.of(judged.value[measured], unit)
     return stated.model_copy(update={"values": values})
 
 

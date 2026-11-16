@@ -224,8 +224,8 @@ def test_a_response_of_exactly_nothing_reads_minus_infinite_decibels() -> None:
     spreads, _ = spread(specs, [(notch,), (passing,)])
     assert spreads[0].values is not None
     assert (spreads[0].values.minimum, spreads[0].values.mean) == (-math.inf, -math.inf)
-    assert spreads[0].values.deviation is None
-    assert spreads[0].describe(2).endswith("mean -inf dB, deviation undefined")
+    assert spreads[0].values.standard_deviation is None
+    assert spreads[0].describe(2).endswith("mean -inf dB, standard deviation undefined")
 
 
 def test_the_phase_margin_of_an_integrator_with_a_pole_at_unity() -> None:

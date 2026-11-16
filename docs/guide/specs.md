@@ -88,7 +88,7 @@ For a divider of a 1 % uniform resistor over a 1 % normal one, with `value("op",
 
 ```text
 monte carlo: 1000 samples of 2 toleranced parameters, seed 1; 0 failed
-  out in op ≥ 2.485 V and ≤ 2.515 V: 947 of 1000 pass; read 2.477 V to 2.521 V, mean 2.5 V, deviation 8.277 mV
+  out in op ≥ 2.485 V and ≤ 2.515 V: 947 of 1000 pass; read 2.477 V to 2.521 V, mean 2.5 V, standard deviation 8.277 mV
   yield: 947 of 1000, 94.7 % (95 % interval 93.13 to 95.93 %), which reaches the target 90 %
 ```
 
