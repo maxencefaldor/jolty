@@ -304,6 +304,7 @@ ELEMENTS = {
     "foundry_mosfet": Element("X", ("drain", "gate", "source", "bulk")),
     "behavioral_voltage_source": Element("B", ("positive", "negative")),
     "behavioral_current_source": Element("B", ("positive", "negative")),
+    "behavioral_capacitor": Element("C", ("positive", "negative")),
     "voltage_controlled_switch": Element("B", _CONTROLLED),
     "current_controlled_switch": Element("B", _CONTROLLED),
     "photocell": Element("B", ("a", "b", "light_positive", "light_negative")),
@@ -616,6 +617,7 @@ _EXPRESSED: Final = frozenset(
     {
         "behavioral_voltage_source",
         "behavioral_current_source",
+        "behavioral_capacitor",
         "voltage_controlled_switch",
         "current_controlled_switch",
         "photocell",
@@ -691,6 +693,7 @@ _UNMOVED: Final = frozenset(
         "current_controlled_voltage_source",
         "behavioral_voltage_source",
         "behavioral_current_source",
+        "behavioral_capacitor",
     }
 )
 """The devices whose own temperature changes nothing."""
@@ -830,10 +833,16 @@ def _device(
             kind, card, parameters = _model_card(model, values, dialect)
             lines.append(f".model M{instance.name} {kind}({card})")
             value = f"M{instance.name} {parameters}".rstrip()
-        case "behavioral_voltage_source" | "behavioral_current_source":
+        case (
+            "behavioral_voltage_source"
+            | "behavioral_current_source"
+            | "behavioral_capacitor"
+        ):
             expression, senses = _behavior(instance, ground)
             lines.extend(senses)
-            output = "V" if model == "behavioral_voltage_source" else "I"
+            # ngspice makes a capacitor of a charge `Q=` a current of its rate of
+            # change (`inpcom.c`, lines 6937 to 6950).
+            output = _BEHAVIORAL_OUTPUTS[model]
             value = f"{output}={{{expression}}}"
         case "voltage_controlled_switch" | "current_controlled_switch":
             nodes, value = _switch(instance, model, values, nodes.split(), lines)
@@ -864,6 +873,14 @@ def _device(
     lines.append(f"{element(instance, dialect)} {nodes} {value}{own}")
     return lines
 
+
+_BEHAVIORAL_OUTPUTS: Final = {
+    "behavioral_voltage_source": "V",
+    "behavioral_current_source": "I",
+    "behavioral_capacitor": "Q",
+}
+"""The keyword of each behavioral device's expression in SPICE: a source's voltage or
+current, or a capacitor's charge."""
 
 _KEYWORDED: Final = {"transmission_line": TRANSMISSION_LINE}
 """The elements SPICE writes the values of as keywords: each parameter by its SPICE

@@ -167,9 +167,10 @@ c.connect(amplifier.inp, name="signal")
 A source's terminals are `positive` and `negative`, then each terminal its expression reads, then `p_positive` and `p_negative` for each port `p`.
 A port, as a current-controlled source's control port, is a short circuit whose current, from `p_positive` to `p_negative`, it adds to the unknowns as `B1:p` for a source `B1`.
 A behavioral voltage source adds its own current to the unknowns as a voltage source does.
+`behavioral_capacitor(expression)` holds an expression, in coulombs, as its charge on `positive` against `negative`, its current that charge's rate of change, as Verilog-A's `I(p, n) <+ ddt(q)`; its charge is a function of what it reads, so it conserves charge, and its capacitances are the expression's derivatives.
 The engine takes every derivative of the expression exactly, so Newton's iterations and frequency responses see the expression's true slope.
 
-Written for ngspice, a behavioral source's expression is read into its tree and written in ngspice's language, every operation in parentheses, so ngspice computes what jolty does: ngspice groups `^` to the left and raises a negative number's magnitude, so a power is written with ngspice's `pow`, or `pwr` for an odd constant exponent, which keeps the base's sign; `limit` is written with `min` and `max`, ngspice's own `limit` being another function; and a table, which ngspice's behavioral sources lack, is written as the choice between its segments' lines and its corners' parabolas.
+Written for ngspice, a behavioral capacitor is a capacitor of the charge `Q=`, which ngspice makes the current of the charge's rate of change, and a behavioral source's expression, a capacitor's too, is read into its tree and written in ngspice's language, every operation in parentheses, so ngspice computes what jolty does: ngspice groups `^` to the left and raises a negative number's magnitude, so a power is written with ngspice's `pow`, or `pwr` for an odd constant exponent, which keeps the base's sign; `limit` is written with `min` and `max`, ngspice's own `limit` being another function; and a table, which ngspice's behavioral sources lack, is written as the choice between its segments' lines and its corners' parabolas.
 
 ## Switches
 

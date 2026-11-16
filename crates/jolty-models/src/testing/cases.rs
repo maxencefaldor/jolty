@@ -154,6 +154,11 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
         &[1.0, 0.0, 0.7, 0.3, 0.0, 0.0, 2e-3],
     ),
     (
+        "behavioral_capacitor",
+        r#"{"expression": "1e-12 * v(positive, negative) + 1e-13 * tanh(v(a, b))"}"#,
+        &[1.0, 0.0, 0.7, 0.3],
+    ),
+    (
         "current_source",
         r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 1e-3,
                 "rise": 1e-9, "fall": 1e-9, "width": 1e-6, "period": 1e-5}}}"#,

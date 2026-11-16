@@ -47,10 +47,12 @@ from jolty.spice.expressions import (
     Voltage,
     evaluate,
     inlined,
+    integral,
     names,
     nominal,
     number,
     parse,
+    substituted,
     translate,
 )
 from jolty.spice.models import ModelCard
@@ -1619,8 +1621,9 @@ def _needed(translation: _Translation, statement: Statement) -> str:
 
     A card's model is named by its type and level, and its version where it gives one,
     such as ``BSIM4 4.5 (level 54)``; an ``N`` element's is the Verilog-A module its
-    card names; an element of no card is named by its kind, and a placed subcircuit
-    needs nothing of its own, its elements' models being stated apart.
+    card names; an element of no card is named by its kind, a capacitor of a charge
+    ``Q`` and one whose value reads a voltage so, and a placed subcircuit needs nothing
+    of its own, its elements' models being stated apart.
     """
     letter = _letter(statement)
     if letter == "x":
@@ -1637,6 +1640,8 @@ def _needed(translation: _Translation, statement: Statement) -> str:
     )
     if found is None:
         kind = _ELEMENT_KINDS.get(letter, f"element `{letter.upper()}`")
+        if letter == "c" and "q" in _keywords(words)[1]:
+            return f"{kind} of a charge"
         reads = any("v(" in word.casefold() for word in words)
         return f"{kind} whose value reads a voltage" if reads else kind
     if letter == "n":
@@ -1810,10 +1815,11 @@ def _passive(
 
     def translated(translation: _Translation, statement: Statement) -> None:
         positional, assigned = _keywords(tokens(statement.text))
+        stored = frozenset({"q"}) if model == "capacitor" else frozenset()
         _check_keywords(
             statement,
             assigned,
-            frozenset({letter, "m", "tc", "temp", "dtemp", *drifts, *sized}),
+            frozenset({letter, "m", "tc", "temp", "dtemp", *drifts, *sized, *stored}),
         )
         if len(positional) < 3:  # noqa: PLR2004 - a name and two nodes
             message = "an element joins two nodes"
@@ -1822,13 +1828,12 @@ def _passive(
         card, values = _card_and_values(translation, rest, {kind, letter} & _CARDS)
         if letter in assigned:
             values.extend(assigned[letter])
+        if _behaves(translation, statement, (a, b), values, assigned):
+            return
         geometric = card is not None and card.kind in models.GEOMETRIC
         if len(values) > 1 or not (values or geometric):
             message = f"a {model} has one value"
             raise statement.fail(message)
-        if values and _reads_unknowns(written := translation.parse(values[0])):
-            _value_of_voltage(translation, statement, (a, b), written, assigned)
-            return
         own = {
             name: translation.value(words[0])
             for name, words in assigned.items()
@@ -1873,6 +1878,39 @@ def _passive(
     return translated
 
 
+def _behaves(
+    translation: _Translation,
+    statement: Statement,
+    nodes: tuple[str, str],
+    values: Sequence[str],
+    assigned: Mapping[str, list[str]],
+) -> bool:
+    """Whether the passive element is a behavioral device, which it is then read as.
+
+    It is one where it is a capacitor of a charge, ``Q``, or where its value reads a
+    voltage or a current: a capacitor holding its value's integral as its charge, a
+    resistor a behavioral current.
+
+    Raises:
+        SpiceError: When it gives more than one charge, or cannot be read so.
+    """
+    charged = assigned.get("q")
+    if charged is not None:
+        if len(charged) != 1:
+            message = "a capacitor's charge `Q` is one expression"
+            raise statement.fail(message)
+        charge = translation.parse(charged[0])
+    elif values and _unknowns(written := translation.parse(values[0])):
+        if _letter(statement) != "c":
+            _value_of_voltage(translation, statement, nodes, written, assigned)
+            return True
+        charge = _charge(translation, statement, nodes, written)
+    else:
+        return False
+    _charge_of_voltage(translation, statement, nodes, charge, assigned)
+    return True
+
+
 def _card_and_values(
     translation: _Translation, words: Sequence[str], kinds: set[str]
 ) -> tuple[ModelCard | None, list[str]]:
@@ -1906,8 +1944,8 @@ def _value_of_voltage(
     for it, which jolty does not read.
 
     Raises:
-        SpiceError: When the element is a capacitor or an inductor, which jolty reads
-            not yet so, or gives a coefficient but its temperature's.
+        SpiceError: When the element is an inductor, which jolty reads not yet so, or
+            gives a coefficient but its temperature's.
     """
     if _letter(statement) != "r":
         kind = _ELEMENT_KINDS[_letter(statement)]
@@ -1937,7 +1975,142 @@ def _value_of_voltage(
         Binary("/", Voltage(nodes[0], nodes[1]), resistance),
         Number(copies / factor),
     )
-    _behavioral(translation, statement, "current", nodes, current)
+    _behavioral(translation, statement, "behavioral_current_source", nodes, current)
+
+
+def _charge(
+    translation: _Translation,
+    statement: Statement,
+    nodes: tuple[str, str],
+    capacitance: Expression,
+) -> Expression:
+    """The charge of a capacitor whose `capacitance` reads its voltage: its integral.
+
+    ngspice makes such a capacitor a behavioral current, ``m · C(v) · dv/dt``
+    (``inpcom.c``, lines 6895 to 6905 and 6958 to 6983), of which the charge
+    ``Q(v) = ∫₀ᵛ C(u) du`` is the integral; read so, the capacitor conserves charge,
+    its capacitance exactly ``C``. Every term of the capacitance that reads no voltage
+    is evaluated first, then the charge integrated in closed form, as
+    [`integral`][jolty.spice.expressions.integral] finds it. ngspice's resistance of
+    1e15 Ω across the capacitor, which keeps a node it alone joins from floating
+    (line 6978), is left out.
+
+    Raises:
+        SpiceError: When the capacitance reads another voltage or a current, which
+            make no charge, or has no integral in closed form.
+    """
+    own = Voltage(*nodes)
+    written = _of_own_voltage(_folded(translation, capacitance), nodes)
+    found = None if written is None else integral(written, own)
+    if found is None:
+        reason = "another voltage or a current" if written is None else "no integral"
+        message = (
+            f"jolty reads no capacitor whose value reads {reason}, as its charge, "
+            "the value's integral over its voltage, needs in closed form"
+        )
+        raise statement.fail(message)
+    zero = evaluate(substituted(found, own, Number(0.0)), {})
+    return Binary("-", found, Number(zero))
+
+
+def _folded(translation: _Translation, expression: Expression) -> Expression:
+    """`expression` with each part that reads no voltage or current evaluated."""
+    if not _unknowns(expression):
+        return Number(evaluate(expression, translation.scope, translation.draw))
+
+    def within(part: Expression) -> Expression:
+        return _folded(translation, part)
+
+    match expression:
+        case Unary(operator, operand):
+            return Unary(operator, within(operand))
+        case Binary(operator, left, right):
+            return Binary(operator, within(left), within(right))
+        case Conditional(condition, then, otherwise):
+            return Conditional(within(condition), within(then), within(otherwise))
+        case Call(function, arguments):
+            return Call(function, tuple(map(within, arguments)))
+        case leaf:
+            return leaf
+
+
+def _unknowns(expression: Expression) -> set[Voltage | Current]:
+    """The voltages and currents `expression` reads."""
+    match expression:
+        case Voltage() | Current():
+            return {expression}
+        case Unary(_, operand):
+            return _unknowns(operand)
+        case Binary(_, left, right):
+            return _unknowns(left) | _unknowns(right)
+        case Conditional(condition, then, otherwise):
+            return _unknowns(condition) | _unknowns(then) | _unknowns(otherwise)
+        case Call(_, arguments):
+            found: set[Voltage | Current] = set()
+            for argument in arguments:
+                found |= _unknowns(argument)
+            return found
+        case _:
+            return set()
+
+
+def _of_own_voltage(
+    expression: Expression, nodes: tuple[str, str]
+) -> Expression | None:
+    """`expression` reading the voltage of `nodes` as ``V(a, b)``, if it reads no other.
+
+    ``V(b, a)`` is its negation, and ``V(a)`` it where `b` is the ground, ``0``.
+    """
+    a, b = (node.casefold() for node in nodes)
+    own = Voltage(*nodes)
+    written = expression
+    for unknown in _unknowns(expression):
+        if not isinstance(unknown, Voltage):
+            return None
+        ends = (unknown.positive.casefold(), (unknown.negative or "0").casefold())
+        if ends not in {(a, b), (b, a)}:
+            return None
+        replacement = own if ends == (a, b) else Unary("-", own)
+        written = substituted(written, unknown, replacement)
+    return written
+
+
+def _charge_of_voltage(
+    translation: _Translation,
+    statement: Statement,
+    nodes: tuple[str, str],
+    charge: Expression,
+    assigned: Mapping[str, list[str]],
+) -> None:
+    """A capacitor whose `charge` is an expression of voltages, a behavioral capacitor.
+
+    ngspice makes a capacitor of a charge ``Q=`` a behavioral current, ``m · dQ/dt``
+    (``inpcom.c``, lines 6937 to 6950), and one whose value reads a voltage one of its
+    charge's rate of change too, as [`_charge`][jolty.spice.library._charge] integrates
+    it; its copies `m`, its subcircuit's multiplier's too, multiply the charge, and its
+    own temperature, which ngspice does not carry over, changes nothing.
+
+    Raises:
+        SpiceError: When the element gives temperature or voltage coefficients, or a
+            size, which jolty does not read of such a capacitor.
+    """
+    unread = sorted(
+        {"tc", "tc1", "tc2", "vc1", "vc2", "w", "l", "scale"} & assigned.keys()
+    )
+    if unread:
+        message = (
+            f"jolty reads no `{unread[0].upper()}` of a capacitor whose value reads a "
+            "voltage or a current"
+        )
+        raise statement.fail(message)
+    own = {
+        name: translation.value(words[0])
+        for name, words in assigned.items()
+        if name == "m" and words
+    }
+    copies = translation.multiplied(own).get("m", 1.0)
+    held = charge if copies == 1 else Binary("*", charge, Number(copies))
+    _behavioral(translation, statement, "behavioral_capacitor", nodes, held)
 
 
 def _valued(
@@ -1987,22 +2160,6 @@ def _valued(
 _CARDS: Final = frozenset({"res", "cap", "ind", *models.GEOMETRIC})
 """The types of the model cards of a resistor, capacitor or inductor jolty reads:
 PSpice's ``RES``, ``CAP`` and ``IND``, and SPICE3's ``R`` and ``C``."""
-
-
-def _reads_unknowns(expression: Expression) -> bool:
-    """Whether `expression` reads a voltage or a current."""
-    match expression:
-        case Voltage() | Current():
-            return True
-        case Unary(_, operand):
-            return _reads_unknowns(operand)
-        case Binary(_, left, right):
-            return _reads_unknowns(left) or _reads_unknowns(right)
-        case Conditional(condition, then, otherwise):
-            return any(map(_reads_unknowns, (condition, then, otherwise)))
-        case Call(_, arguments):
-            return any(map(_reads_unknowns, arguments))
-    return False
 
 
 def _temperatures(given: Mapping[str, float]) -> dict[str, JsonValue]:
@@ -2569,7 +2726,8 @@ def _controlled(output: str) -> Callable[[_Translation, Statement], None]:
         else:
             message = "jolty reads a controlled source's gain, POLY, VALUE or TABLE"
             raise statement.fail(message)
-        _behavioral(translation, statement, output, (positive, negative), expression)
+        model = f"behavioral_{output}_source"
+        _behavioral(translation, statement, model, (positive, negative), expression)
 
     return translated
 
@@ -2686,11 +2844,11 @@ def _split_group(word: str) -> list[str]:
 def _behavioral(
     translation: _Translation,
     statement: Statement,
-    output: str,
+    model: str,
     nodes: tuple[str, str],
     expression: Expression,
 ) -> None:
-    """A behavioral source of `output` between `nodes`, following `expression`.
+    """A behavioral device of `model` between `nodes`, following `expression`.
 
     Each node it reads is a terminal of its own, and each source whose current it reads
     a port in series with that source.
@@ -2722,9 +2880,7 @@ def _behavioral(
         return ports[key]
 
     text = translate(expression, translation.scope, node, current)
-    translation.add(
-        statement, f"behavioral_{output}_source", {"expression": text}, terminals
-    )
+    translation.add(statement, model, {"expression": text}, terminals)
 
 
 def _identifier(name: str, taken: set[str]) -> str:
@@ -2764,7 +2920,8 @@ def _arbitrary(translation: _Translation, statement: Statement) -> None:
         )
         raise statement.fail(message)
     expression = translation.parse(written)
-    _behavioral(translation, statement, output, (positive, negative), expression)
+    model = f"behavioral_{output}_source"
+    _behavioral(translation, statement, model, (positive, negative), expression)
 
 
 def _switch(translation: _Translation, statement: Statement) -> None:

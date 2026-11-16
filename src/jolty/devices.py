@@ -666,6 +666,24 @@ def behavioral_current_source(expression: str) -> Device:
     return device("behavioral_current_source", {"expression": expression})
 
 
+def behavioral_capacitor(expression: str) -> Device:
+    """A capacitor whose charge, on ``positive`` against ``negative``, is `expression`.
+
+    The expression, in coulombs, and the terminals are a behavioral voltage source's.
+    The capacitor's current, from ``positive`` through it to ``negative``, is the
+    charge's rate of change, and its capacitances are the expression's exact
+    derivatives; its charge is a function of what it reads, so it conserves charge.
+
+    Raises:
+        ValueError: When `expression` is not an expression.
+
+    Examples:
+        >>> behavioral_capacitor("1e-12 * tanh(v(positive, negative))").terminals
+        ('positive', 'negative')
+    """
+    return device("behavioral_capacitor", {"expression": expression})
+
+
 def voltage_controlled_switch(
     *,
     on_resistance: Quantity | None = None,

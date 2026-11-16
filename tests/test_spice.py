@@ -13,6 +13,7 @@ import pytest
 from pydantic import JsonValue
 
 from jolty import (
+    Ac,
     Builder,
     Component,
     DimensionError,
@@ -30,6 +31,7 @@ from jolty import (
     results,
     spice,
 )
+from jolty.plan import TIGHT
 from jolty.spice import models, sky130
 from jolty.spice.export import netlist
 from jolty.spice.expressions import evaluate, number, parse, translate
@@ -40,6 +42,7 @@ from jolty.units import (
     A,
     C,
     H,
+    Hz,
     J,
     K,
     V,
@@ -454,6 +457,112 @@ def test_a_bipolar_transistors_temperature_terms_are_written_back() -> None:
     read = library(f"{card}\n.subckt a c\n{element.replace('QQ1', 'Q1', 1)}\n.ends")
     (instance,) = read.component("a").definition.instances
     assert instance.parameters == {**given, "polarity": "npn", "substrate": "vertical"}
+
+
+def admittance(part: Component, bias: float, frequency: float) -> complex:
+    """The current into `part`'s first pin, its second grounded, per volt at AC.
+
+    The first pin is held at `bias` volts.
+    """
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(bias * V), name="V1")
+        placed = c.place(part, name="X1")
+        first, second, *_ = part.definition.ports
+        c.connect(source.positive, placed[first.name], name="in")
+        c.connect(source.negative, placed[second.name], ground)
+
+    simulation = Simulation(bench())
+    response = simulation.run(Ac("V1", [frequency * Hz]), TIGHT)
+    column = simulation.unknowns.index(results.Unknown("V1:current", "current"))
+    return -complex(response.values[0, column])
+
+
+CHARGED: Final = {
+    "q='1e-12 * v(p, n) + 1e-13 * v(p, n) * v(p, n)' m=2": (
+        lambda v: 2 * (1e-12 + 2e-13 * v)
+    ),
+    "c='1e-12 * (1 + 0.1 * v(p, n) + 0.01 * v(p, n) ^ 2) * k' dtemp=5": (
+        lambda v: 2e-12 * (1 + 0.1 * v + 0.01 * v**2)
+    ),
+    "c='k * 1e-12 * (1 + 0.5 * tanh(2 * v(p, n) - 1))'": (
+        lambda v: 2e-12 * (1 + 0.5 * math.tanh(2 * v - 1))
+    ),
+    "c='1e-12 * (exp(-v(n, p)) + cosh(v(p, n) / 2) - sin(3 * v(p, n)))'": (
+        lambda v: 1e-12 * (math.exp(v) + math.cosh(v / 2) - math.sin(3 * v))
+    ),
+}
+"""Capacitors of a charge and of a value that reads their voltage, by what their lines
+give, and the capacitance each should have at a voltage: the charge's derivative, or
+the value, times the copies `m`; `k` is the subcircuit's parameter, 2."""
+
+
+@pytest.mark.parametrize("given", CHARGED)
+def test_a_capacitor_of_a_charge_holds_it_as_a_behavioral_capacitor(given: str) -> None:
+    """Its admittance at a bias is `jωC` of the capacitance there, its charge's slope.
+
+    A value that reads the capacitor's voltage is integrated in closed form into its
+    charge, so its slope is the value itself; at DC no current flows. The tolerance,
+    1e-9 of the admittance, is the engine's Newton tolerance at most, far above the
+    closed forms' rounding.
+    """
+    parts = library(f".subckt cap p n k=2\nC1 p n {given}\n.ends")
+    part = parts.component("cap")
+    (instance,) = part.definition.instances
+    assert instance.of == ir.DeviceOf(model="behavioral_capacitor")
+    frequency = 1e6
+    for bias in (-1.5, 0.0, 0.7):
+        expected = 2j * math.pi * frequency * CHARGED[given](bias)
+        assert admittance(part, bias, frequency) == pytest.approx(expected, rel=1e-9)
+
+
+def test_a_grounded_capacitors_value_reads_its_node_as_its_voltage() -> None:
+    """`V(p)` of a capacitor from `p` to the ground is its voltage, as `V(p, 0)`."""
+    parts = library(".subckt cap p\nC1 p 0 c='1e-12 * (2 + v(p))'\n.ends")
+    part = parts.component("cap")
+    expected = 2j * math.pi * 1e6 * 1e-12 * (2 + 0.5)
+    assert admittance(part, 0.5, 1e6) == pytest.approx(expected, rel=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("given", "refusal"),
+    [
+        ("c='1e-12 * v(x)'", "reads another voltage or a current"),
+        ("c='1e-12 * abs(v(p, n))'", "reads no integral"),
+        ("c='1e-12 * tanh(v(p, n) * v(p, n))'", "reads no integral"),
+        ("q='1e-12 * v(p, n)' tc1=1e-3", "jolty reads no `TC1` of a capacitor"),
+        ("q='1e-12 * v(p, n)' q='2'", "a capacitor's charge `Q` is one expression"),
+    ],
+)
+def test_a_capacitor_jolty_cannot_charge_is_refused(given: str, refusal: str) -> None:
+    parts = library(f".subckt cap p n x\nC1 p n {given}\n.ends")
+    with pytest.raises(SpiceError, match=re.escape(refusal)):
+        parts.component("cap")
+
+
+def test_a_behavioral_capacitor_is_written_back_as_a_charge() -> None:
+    """The exporter writes its charge `Q=`, which reads back as the same capacitor."""
+    charge = "1e-12 * v(positive, negative) + 5e-13 * tanh(2 * v(positive, negative))"
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        placed = c.place(devices.behavioral_capacitor(charge), name="B1")
+        c.connect(source.positive, placed.positive, name="p")
+        c.connect(source.negative, placed.negative, ground)
+
+    lines = netlist(circuit(bench()))
+    element = next(line for line in lines if line.startswith("CB1"))
+    assert element.startswith("CB1 p 0 Q={")
+    read = library(f".subckt a p\n{element.replace('CB1', 'C1', 1)}\n.ends")
+    capacitance = 1e-12 + 5e-13 * 2 * (1 - math.tanh(2 * 0.3) ** 2)
+    expected = 2j * math.pi * 1e6 * capacitance
+    assert admittance(read.component("a"), 0.3, 1e6) == pytest.approx(
+        expected, rel=1e-9
+    )
 
 
 def test_a_table_source_holds_beyond_its_ends() -> None:

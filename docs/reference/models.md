@@ -4,11 +4,19 @@ Each model a device can be, as the engine defines it, and every parameter a devi
 A parameter within another is named by its path, its keys joined by dots and `*` standing for each entry of a list, such as `waveform.pulse.rise` or `windings.*.inductance`; of the parameters of one shape, such as `waveform.dc` and `waveform.pulse`, a device gives one.
 Values are in SI base units, as the circuit format holds them, while the functions of `jolty.devices` that place each model take [quantities with units](../guide/units.md).
 
+## `behavioral_capacitor`
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `expression` | required | What the device's output follows, a capacitor's its charge: an expression of the voltages of the terminals it reads, of the currents through sensing ports of its own, and of time. |
+| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+
 ## `behavioral_current_source`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `expression` | required | What the source's output follows: an expression of the voltages of the terminals it reads, of the currents through sensing ports of its own, and of time. |
+| `expression` | required | What the device's output follows, a capacitor's its charge: an expression of the voltages of the terminals it reads, of the currents through sensing ports of its own, and of time. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
 
@@ -16,7 +24,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `expression` | required | What the source's output follows: an expression of the voltages of the terminals it reads, of the currents through sensing ports of its own, and of time. |
+| `expression` | required | What the device's output follows, a capacitor's its charge: an expression of the voltages of the terminals it reads, of the currents through sensing ports of its own, and of time. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
 

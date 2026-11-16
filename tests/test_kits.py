@@ -996,6 +996,33 @@ GF180MCU's poly resistors, whose body, a resistor whose value reads a voltage, w
 its length and width before its value, where ngspice takes the first expression in
 braces on the line as its resistance (`inpcom.c`, line 6841), its length in meters."""
 
+LAGGED: Final = "capacitor whose value reads a voltage"
+"""The capacitor whose current ngspice delays by `CAPACITANCE_LAG`."""
+
+CAPACITANCE_LAG: Final = 1e-9 * 1e-6
+"""The time constant, in seconds, by which ngspice 47 delays the current of a
+capacitor whose value reads a voltage: it differentiates the capacitor's voltage
+through 1e-9 Ω into 1 µF (`inpcom.c`, lines 6968 to 6977), so its admittance is
+`jωC / (1 + jωτ)`, 6.3e-4 of itself away from `jωC` at 100 GHz, a departure the guide
+states."""
+
+
+def lagged(part: Component) -> tuple[str, ...]:
+    """The behavioral capacitors `part` holds that ngspice delays, by name.
+
+    Each joins the part's first pin to another, so that its current, which ngspice
+    delays, is part of the current into the first pin, unchanged in the rest.
+    """
+    first, *rest = (port.name for port in part.definition.ports)
+    names = []
+    for instance in part.definition.instances:
+        if instance.of == ir.DeviceOf(model="behavioral_capacitor"):
+            assert instance.terminals["positive"] == first
+            assert instance.terminals["negative"] in rest
+            names.append(instance.name)
+    return tuple(names)
+
+
 DRIVE: Final = 0.5
 """The volts each native device's first pin is held at, its others grounded, in
 `test_every_native_device_agrees_with_ngspice`: within every device's ratings, and
@@ -1018,7 +1045,9 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
     device's current is compared at the operating point and from 1 kHz to 100 GHz with
     ngspice's, which reads the same libraries and places the same subcircuits, at the
     same kelvins, but for the frequency response of a device of `AC_DEPARTED` and the
-    devices `DEPARTED` names, a junction's within `junction_tolerance`.
+    devices `DEPARTED` names, a junction's within `junction_tolerance`, and a device's
+    of `LAGGED` capacitors with their currents delayed by `CAPACITANCE_LAG`, as
+    ngspice's are.
     """
     library = kits.read(kit, settings=kept)
     native = {
@@ -1050,9 +1079,17 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
             senses.append(sense.positive)
         c.connect(source.positive, *senses, name="drive")
 
+    delayed = {
+        number: tuple(f"X{number}{ir.SEPARATOR}{each}" for each in lagged(part))
+        for number, (name, part) in enumerate(driven.items())
+        if LAGGED in native[name].models
+    }
     simulation = Simulation(bench())
     point = simulation.run(OperatingPoint(), TIGHT)
-    response = simulation.run(Ac("V0", decade(1 * kHz, 100 * GHz, 1)), TIGHT)
+    record = [path for paths in delayed.values() for path in paths]
+    frequencies = decade(1 * kHz, 100 * GHz, 1)
+    response = simulation.run(Ac("V0", frequencies, record=record), TIGHT)
+    lag = 2j * np.pi * response.frequencies * CAPACITANCE_LAG
     root = kits.root(kit, kept)
     deck = [
         f"* every native device of {kit.name}",
@@ -1091,11 +1128,115 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
         if any(model.startswith(AC_DEPARTED) for model in models):
             continue
         spice_ac = raw_response.vectors[f"i(va{number})"]
+        found_ac = response.values[:, column] - sum(
+            (response.current(path, "positive") * lag / (1 + lag))
+            for path in delayed.get(number, ())
+        )
         np.testing.assert_allclose(
-            response.values[:, column],
+            found_ac,
             spice_ac,
             rtol=0,
             atol=AGREEMENT * float(np.abs(spice_ac).max()) + FLOOR,
+        )
+
+
+CHARGED: Final = ("capacitor of a charge", LAGGED)
+"""The capacitors jolty reads as behavioral capacitors: of a charge, and of a value
+that reads their voltage, integrated into one."""
+
+BIASES: Final = (-2.0, -1.0, 0.0, 1.0, 2.0)
+"""The volts across each capacitor of `CHARGED` in
+`test_a_kits_charged_capacitors_follow_their_bias_as_in_ngspice`: within the kits' 3.3 V
+and 5 V devices' ratings, and across the varactors' 2.3 V."""
+
+
+@SKIP
+@pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
+def test_a_kits_charged_capacitors_follow_their_bias_as_in_ngspice(
+    kept: Settings, kit: kits.Kit
+) -> None:
+    """Each native device of a capacitor of `CHARGED`, its admittance at each bias.
+
+    A copy of each device at each of `BIASES` is driven at 1 MHz through a source of no
+    volts of its own, its other pins grounded, and its current compared with ngspice's,
+    which reads the same kit, a `LAGGED` capacitor's delayed by `CAPACITANCE_LAG`, as in
+    `test_every_native_device_agrees_with_ngspice`: so the capacitance across the bias,
+    the derivative of the charge jolty integrates, is ngspice's.
+    """
+    library = kits.read(kit, settings=kept)
+    charged = {
+        device.name: device
+        for device in kits.inventory(kit, settings=kept)
+        if device.status == "native"
+        and device.kind == "subcircuit"
+        and any(model in CHARGED for model in device.models)
+    }
+    placed = [
+        (name, bias, library.component(name, **device.parameters))
+        for name, device in charged.items()
+        for bias in BIASES
+    ]
+    if not placed:
+        return  # The kit has none, as SG13G2.
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(0 * V), name="V0")
+        c.connect(source.negative, ground)
+        holds = []
+        for number, (_, bias, part) in enumerate(placed):
+            held = c.place(devices.voltage_source(bias * V), name=f"B{number}")
+            sense = c.place(devices.voltage_source(0 * V), name=f"A{number}")
+            device = c.place(part, name=f"X{number}")
+            first, *rest = part.definition.ports
+            holds.append(held.negative)
+            c.connect(held.positive, sense.positive, name=f"b{number}")
+            c.connect(sense.negative, device[first.name], name=f"n{number}")
+            c.connect(*(device[port.name] for port in rest), ground)
+        c.connect(source.positive, *holds, name="drive")
+
+    delayed = {
+        number: tuple(f"X{number}{ir.SEPARATOR}{each}" for each in lagged(part))
+        for number, (name, _, part) in enumerate(placed)
+        if LAGGED in charged[name].models
+    }
+    simulation = Simulation(bench())
+    record = [path for paths in delayed.values() for path in paths]
+    response = simulation.run(Ac("V0", [1 * MHz], record=record), TIGHT)
+    lag = 2j * np.pi * response.frequencies * CAPACITANCE_LAG
+    deck = [f"* charged capacitors of {kit.name}", *NOMINAL.get(kit.name, ())]
+    deck.append("V0 drive 0 0 ac 1")
+    for number, (name, bias, part) in enumerate(placed):
+        pins = sum(port.role == Role.SIGNAL for port in part.definition.ports)
+        given = "".join(
+            f" {key}={value!r}" for key, value in charged[name].parameters.items()
+        )
+        deck += [
+            f"VB{number} b{number} drive {bias!r}",
+            f"VA{number} b{number} n{number} 0",
+            f"X{number} n{number}{' 0' * (pins - 1)} {name}{given}",
+        ]
+    root = kits.root(kit, kept)
+    raw = ngspice.run(
+        deck,
+        "ac lin 1 1meg 1meg",
+        libraries=tuple(root / path for path in kit.includes),
+        sections=tuple((root / path, section) for path, section in kit.typical),
+        compatibility=kit.compatibility,
+        temperature=ngspice.same_kelvins(celsius(27).value),
+    )
+    for number in range(len(placed)):
+        column = simulation.unknowns.index(
+            results.Unknown(f"A{number}:current", "current")
+        )
+        found = response.values[:, column] - sum(
+            (response.current(path, "positive") * lag / (1 + lag))
+            for path in delayed.get(number, ())
+        )
+        spice = raw.vectors[f"i(va{number})"]
+        np.testing.assert_allclose(
+            found, spice, rtol=0, atol=AGREEMENT * float(np.abs(spice).max()) + FLOOR
         )
 
 

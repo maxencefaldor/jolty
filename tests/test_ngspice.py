@@ -1061,6 +1061,31 @@ def cmos_inverter(c: Builder) -> None:
 
 
 @component
+def varactor(c: Builder) -> None:
+    """A sine through 1 kΩ onto a behavioral capacitor of a varactor's charge.
+
+    Its charge, ``1 pC/V · v + 0.5 pC · tanh(2 v / V)``, holds a capacitance of 2 pF at
+    0 V, falling to 1 pF far from it; 100 kΩ across it gives its node a DC path.
+    """
+    ground = c.port("ground", Role.GROUND)
+    signal = Sine(
+        offset=0.5 * V, amplitude=2 * V, frequency=10 * MHz, phase=math.pi / 2
+    )
+    source = c.place(devices.voltage_source(signal), name="V1")
+    series = c.place(devices.resistor(1 * kohm), name="R1")
+    charged = c.place(
+        devices.behavioral_capacitor(
+            "1e-12 * v(positive, negative) + 5e-13 * tanh(2 * v(positive, negative))"
+        ),
+        name="C1",
+    )
+    shunt = c.place(devices.resistor(100 * kohm), name="R2")
+    c.connect(source.positive, series.a, name="in")
+    c.connect(series.b, charged.positive, shunt.a, name="out")
+    c.connect(source.negative, charged.negative, shunt.b, ground)
+
+
+@component
 def behavioral(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     signal = Sine(
@@ -1887,6 +1912,7 @@ def test_dc_sweeps_agree(
         cmos_inverter,
         power_stage,
         behavioral,
+        varactor,
         switched,
         current_switched,
         transformer,
@@ -2038,6 +2064,7 @@ def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
         (power_stage, 20 * us, 20 * ns),
         (vdmos_buck, 16 * us, 10 * ns),
         (behavioral, 300 * us, 0.5 * us),
+        (varactor, 200 * ns, 0.2 * ns),
         (switched, 200 * us, 0.2 * us),
         (current_switched, 200 * us, 0.2 * us),
         (curved, 3 * ms, 2 * us),
