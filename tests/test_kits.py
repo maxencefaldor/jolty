@@ -17,7 +17,17 @@ import numpy as np
 import pytest
 
 from differential import SKIP, closest, compare
-from jolty import Builder, Component, Role, Simulation, component, devices, ir, results
+from jolty import (
+    Builder,
+    Component,
+    Role,
+    Simulation,
+    _core,
+    component,
+    devices,
+    ir,
+    results,
+)
 from jolty.plan import (
     TIGHT,
     Ac,
@@ -336,6 +346,114 @@ def test_an_sg13g2_transistor_reads_its_transit_time_where_it_runs(
     compare(gains[hot.value], spice, unknown, scale=scale, tolerance=AGREEMENT)
     away = np.abs(gains[celsius(27).value] - spice).max() / scale
     assert away > 1000 * AGREEMENT
+
+
+BIPOLARS: Final = (
+    (sky130.KIT, "sky130_fd_pr__npn_05v5_W1p00L1p00", 1.0),
+    (sky130.KIT, "sky130_fd_pr__pnp_05v5_W0p68L0p68", -1.0),
+    (gf180mcu.KIT, "vnpn_10x10", 1.0),
+    (gf180mcu.KIT, "vpnp_0p42x10", -1.0),
+    (sg13g2.KIT, "pnpMPA", -1.0),
+)
+"""A Gummel-Poon transistor of each kit and polarity, and the sign of its polarity:
+SKY130's of `TLEV` 0 and `TLEVC` 0 with HSPICE's coefficients of nearly every
+parameter, its card's `TREF` 30 °C; GF180MCU's of `TLEVC` 1, `NKF` 0.4 and their own
+coefficients of `BF` and `IKF`, `TREF` 25 °C; SG13G2's of `TRM1` and `TRC1`."""
+
+BIPOLAR_TEMPERATURES: Final = (-40.0, 27.0, 125.0)
+"""The degrees Celsius each of `BIPOLARS` runs at: the ends of the kits' range and the
+reference between."""
+
+CONSTANTS: Final = 1 - ngspice.same_kelvins(1.0)
+"""How far ngspice's Boltzmann constant over the elementary charge, CODATA 2014's, lies
+below jolty's, relative to it, 3.4e-7: at the same kelvins, ngspice's thermal voltage
+lies that far below jolty's, so each exponent of a junction's current it computes, its
+voltage over the thermal voltage and its saturation current's `(T/Tn - 1)·Eg/Vt`, lies
+that far above jolty's, and the currents part by `CONSTANTS` times their sum."""
+
+SPICE_THERMAL_VOLTAGE: Final = ("Gummel-Poon",)
+"""The models whose thermal voltage both engines compute with their own constants, so
+that at the same kelvins their currents part by `CONSTANTS` times their exponents, as
+`junction_tolerance` bounds them."""
+
+
+def junction_tolerance(voltage: float, temperature: float) -> float:
+    """How closely a junction's current agrees with ngspice's, relative to its size.
+
+    Within `AGREEMENT`, beside `CONSTANTS` times the junction's exponents at the same
+    kelvins, `temperature`: its `voltage`, in volts, over the thermal voltage, and its
+    saturation current's, which stays below that wherever the energy gap times
+    `|T/Tn - 1|` stays below the voltage, as it does for the kits' gaps of 1.17 to
+    1.19 V and their `TREF`s of 25 to 30 °C, where it is at most 0.40 V from -40 to
+    125 °C and 0.012 V at 27 °C; so at most twice the first.
+    """
+    thermal_voltage = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
+    return AGREEMENT + CONSTANTS * 2 * voltage / thermal_voltage
+
+
+@SKIP
+@pytest.mark.parametrize(
+    ("kit", "name", "sign"), BIPOLARS, ids=[b[1] for b in BIPOLARS]
+)
+def test_a_kits_bipolar_transistor_follows_the_temperature_as_in_ngspice(
+    kept: Settings, kit: kits.Kit, name: str, sign: float
+) -> None:
+    """A kit's Gummel-Poon transistor, its base swept at each of `BIPOLAR_TEMPERATURES`.
+
+    Its collector held 1.5 V from its emitter and its base swept from 0.4 to 0.9 V, its
+    other pins grounded, both in its polarity's sign, its collector's and its base's
+    currents are compared with ngspice's, which reads the same kit at the same corner,
+    at the same kelvins, within `junction_tolerance` of the drive's 0.9 V: every
+    temperature coefficient its card gives acts away from its card's `TREF`.
+    """
+    library = kits.read(kit, settings=kept)
+    part = library.component(name)
+    collector, base, *grounded = part.definition.ports
+
+    @component
+    def gummel_at(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        drive = c.place(devices.voltage_source(sign * 0.4 * V), name="VB")
+        held = c.place(devices.voltage_source(sign * 1.5 * V), name="VC")
+        placed = c.place(part, name="X1")
+        c.connect(drive.positive, placed[base.name], name="base")
+        c.connect(held.positive, placed[collector.name], name="collector")
+        c.connect(
+            drive.negative,
+            held.negative,
+            *(placed[port.name] for port in grounded),
+            ground,
+        )
+
+    pins = " 0" * sum(port.role == Role.SIGNAL for port in grounded)
+    deck = [
+        "* gummel",
+        *NOMINAL.get(kit.name, ()),
+        f"VB base 0 {sign * 0.4!r}",
+        f"VC collector 0 {sign * 1.5!r}",
+        f"X1 collector base{pins} {name}",
+    ]
+    root = kits.root(kit, kept)
+    for degrees in BIPOLAR_TEMPERATURES:
+        temperature = celsius(degrees)
+        simulation = Simulation(gummel_at(), temperature=temperature)
+        swept = linear(sign * 0.4 * V, sign * 0.9 * V, 26)
+        sweep = simulation.run(DcSweep("VB", swept), TIGHT)
+        raw = ngspice.run(
+            deck,
+            f"dc VB {sign * 0.4!r} {sign * 0.9!r} {sign * 0.02!r}",
+            libraries=tuple(root / path for path in kit.includes),
+            sections=tuple((root / path, section) for path, section in kit.typical),
+            compatibility=kit.compatibility,
+            temperature=ngspice.same_kelvins(temperature.value),
+        )
+        for source in ("VB", "VC"):
+            unknown = results.Unknown(f"{source}:current", "current")
+            spice = raw.real(f"i({source.casefold()})")
+            found = sweep.values[:, simulation.unknowns.index(unknown)]
+            scale = float(np.abs(spice).max())
+            tolerance = junction_tolerance(0.9, temperature.value)
+            compare(found, spice, unknown, scale=scale, tolerance=tolerance)
 
 
 SKY130_CAPACITORS: Final = ("tt", "ll", "hh")
@@ -851,6 +969,33 @@ which SKY130's `res_high_po` resistors raise.
 `test_sky130_transistors_admittances_agree_with_ngspice` compares BSIM4's with the body
 at the source."""
 
+DEPARTED: Final = {
+    "pnpMPA": "its area, 2, by which ngspice multiplies its reverse saturation current "
+    "twice",
+    **dict.fromkeys(
+        (
+            "npolyf_u",
+            "ppolyf_u",
+            "npolyf_s",
+            "ppolyf_s",
+            "ppolyf_u_1k",
+            "ppolyf_u_2k",
+            "ppolyf_u_1k_6p0",
+            "ppolyf_u_2k_6p0",
+            "ppolyf_u_3k",
+        ),
+        "its body's resistance, which ngspice takes from its length, its line's first "
+        "expression",
+    ),
+}
+"""The native devices whose currents at `DRIVE` depart from ngspice's, as the guide's
+departures state, and why: SG13G2's `pnpMPA`, whose collector at `DRIVE` biases its
+base-collector junction forward, and whose base sweep
+`test_a_kits_bipolar_transistor_follows_the_temperature_as_in_ngspice` compares; and
+GF180MCU's poly resistors, whose body, a resistor whose value reads a voltage, writes
+its length and width before its value, where ngspice takes the first expression in
+braces on the line as its resistance (`inpcom.c`, line 6841), its length in meters."""
+
 DRIVE: Final = 0.5
 """The volts each native device's first pin is held at, its others grounded, in
 `test_every_native_device_agrees_with_ngspice`: within every device's ratings, and
@@ -872,7 +1017,8 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
     volts of each device's own, which senses its current, its other pins grounded; each
     device's current is compared at the operating point and from 1 kHz to 100 GHz with
     ngspice's, which reads the same libraries and places the same subcircuits, at the
-    same kelvins, but for the frequency response of a device of `AC_DEPARTED`.
+    same kelvins, but for the frequency response of a device of `AC_DEPARTED` and the
+    devices `DEPARTED` names, a junction's within `junction_tolerance`.
     """
     library = kits.read(kit, settings=kept)
     native = {
@@ -932,9 +1078,17 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
         column = simulation.unknowns.index(
             results.Unknown(f"A{number}:current", "current")
         )
+        if name in DEPARTED:
+            continue
         found, spice = point.values[column], raw_point.real(f"i(va{number})")[0]
-        assert abs(found - spice) <= AGREEMENT * abs(spice) + FLOOR
-        if any(model.startswith(AC_DEPARTED) for model in native[name].models):
+        models = native[name].models
+        tolerance = (
+            junction_tolerance(DRIVE, celsius(27).value)
+            if any(model.startswith(SPICE_THERMAL_VOLTAGE) for model in models)
+            else AGREEMENT
+        )
+        assert abs(found - spice) <= tolerance * abs(spice) + FLOOR
+        if any(model.startswith(AC_DEPARTED) for model in models):
             continue
         spice_ac = raw_response.vectors[f"i(va{number})"]
         np.testing.assert_allclose(

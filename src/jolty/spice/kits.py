@@ -22,12 +22,14 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Final, Literal
 
 from jolty import _core
 from jolty.errors import JoltyError
 from jolty.settings import Settings
+from jolty.spice import models
 from jolty.spice.download import fetch
+from jolty.spice.expressions import Name
 from jolty.spice.library import SIZES, VERILOG_A, Library, Use
 from jolty.spice.ngspice import Compatibility
 
@@ -204,7 +206,11 @@ class Device:
     """Each element it holds, the model it needs, and why jolty cannot read it."""
     parameters: Mapping[str, float] = field(default_factory=dict)
     """The parameters it is read with, its defaults but these: a subcircuit's length
-    and width, `l` and `w`, where its defaults are a size no bin holds."""
+    and width, `l` and `w`, where its defaults are a size no bin holds; or, where its
+    defaults read a parameter nothing defines, those the first placement of it within
+    another subcircuit gives, or its size, where a parameter defaults to SPICE's length
+    or width, `l` or `w`, at the size ngspice gives a resistor that gives none, 10 µm
+    square."""
 
     @property
     def models(self) -> tuple[str, ...]:
@@ -231,6 +237,16 @@ class Device:
         return "unvalued" if problems else "native"
 
 
+_DEFAULT_SIZES: Final = {
+    "l": models.DEFAULT_RESISTOR_LENGTH,
+    "w": models.DEFAULT_WIDTH,
+}
+"""The length and the width, in meters, ngspice gives a resistor whose element and card
+give none, 10 µm each: the size the inventory reads a subcircuit at whose parameters
+default to SPICE's length and width, `l` and `w`, that nothing defines, as GF180MCU's
+resistors and capacitors do."""
+
+
 def inventory(
     kit: Kit,
     sections: Sequence[Section] | None = None,
@@ -244,7 +260,11 @@ def inventory(
     defaults are a size that no bin of a MOSFET it holds holds, but that gives its
     length `l` and width `w`, is read again at the middle of that model's first bin,
     in the units of the library's `scale`, and is stated so where every bin it selects
-    then holds its size.
+    then holds its size. A subcircuit whose defaults read a parameter nothing defines
+    is read again as the first placement of it within another subcircuit places it, or,
+    where none does, with each of its parameters that defaults to `l` or `w` at the size
+    ngspice gives a resistor that gives none, 10 µm square, in the units of the
+    library's `scale`, and is stated so where it then reads every parameter.
 
     Raises:
         DownloadError: When a file cannot be downloaded, or its digest is wrong.
@@ -253,13 +273,53 @@ def inventory(
         SpiceError: When a file holds what jolty cannot read.
     """
     library = read(kit, sections, settings=settings)
+    subcircuits = [_subcircuit(library, name) for name in library.subcircuits]
+    placements: dict[str, Mapping[str, float]] = {}
+    for device in subcircuits:
+        for use in device.uses:
+            if use.placed is not None:
+                placed, parameters = use.placed
+                placements.setdefault(placed.casefold(), parameters)
     return (
-        *(_subcircuit(library, name) for name in library.subcircuits),
+        *(_valued(library, device, placements) for device in subcircuits),
         *(
             Device(name, "model", (library.survey_model(name),))
             for name in library.models
         ),
     )
+
+
+def _valued(
+    library: Library, device: Device, placements: Mapping[str, Mapping[str, float]]
+) -> Device:
+    """`device`, read again with values for parameters it reads that nothing defines.
+
+    It is read as `placements` place it, by subcircuit, or else with each parameter that
+    defaults to SPICE's length or width at `_DEFAULT_SIZES`, in the units of the
+    library's `scale`; and stated so where it then reads every parameter.
+    """
+    if device.status != "unvalued":
+        return device
+    subcircuit = library.subcircuit(device.name)
+    if subcircuit is None:
+        return device
+    parameters = placements.get(device.name.casefold())
+    if parameters is None:
+        defined = library.values()
+        scale = library.options.get("scale", 1.0)
+        parameters = {
+            parameter: _DEFAULT_SIZES[default.name] / scale
+            for parameter, default in subcircuit.defaults.items()
+            if isinstance(default, Name)
+            and default.name in _DEFAULT_SIZES
+            and default.name not in defined
+        }
+    if not parameters:
+        return device
+    uses = library.survey(device.name, **parameters)
+    if any(use.problem is not None and use.undefined is not None for use in uses):
+        return device
+    return Device(device.name, "subcircuit", uses, parameters)
 
 
 def _subcircuit(library: Library, name: str) -> Device:

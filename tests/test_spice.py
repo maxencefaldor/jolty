@@ -372,6 +372,90 @@ def test_a_bipolar_parameter_infinite_at_zero_reads_as_infinite(name: str) -> No
     assert point.current("V1") < 0
 
 
+def test_a_bipolar_card_reads_hspices_temperature_terms_as_ngspice_does() -> None:
+    """`TREF`, `TLEV`, `TLEVC`, `NKF` and the coefficients, and what ngspice reads past.
+
+    ngspice reads `TREF` as `TNOM`, a lone `IBC` not at all, HSPICE's `DCAP` and kin
+    nowhere, and `TLEV` 3's coefficients only at `TLEV` 3 (`bjttemp.c:166-197`); it
+    limits `NKF` to 1 (`bjtsetup.c:332-338`), and takes an `ISS` of 0 as none.
+    """
+    parts = library(
+        ".model q pnp tref=25 tlev=1 tlevc=1 nkf=1.2 trc1=-0.01 trc2=3e-5 tbf1=6e-3\n"
+        "+ cte=1e-3 tvje=2e-3 tis1=1 tise2=1 ibc=0 dcap=2 gap1=0 cbcp=0 iss=0 rc=10\n"
+        ".subckt one c b\nQ1 c b 0 q\n.ends"
+    )
+    (transistor,) = parts.component("one").definition.instances
+    assert transistor.parameters == {
+        "polarity": "pnp",
+        "substrate": "lateral",
+        "temperature_model": 1,
+        "capacitance_temperature_model": 1,
+        "nominal_temperature": pytest.approx(298.15),
+        "high_injection_exponent": 1.0,
+        "collector_resistance_temperature_coefficient": -0.01,
+        "collector_resistance_quadratic_temperature_coefficient": 3e-5,
+        "forward_beta_temperature_coefficient": 6e-3,
+        "base_emitter_capacitance_temperature_coefficient": 1e-3,
+        "base_emitter_potential_temperature_coefficient": 2e-3,
+        "collector_resistance": 10.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("given", "refusal"),
+    [
+        ("tlev=3", "as `TLEV` 3 says; jolty models 0 and 1"),
+        ("tlevc=2", "as `TLEVC` 2 says; jolty models 0 and 1"),
+        ("ibe=1e-16 ibc=2e-16", "no counterpart to `IBE`"),
+    ],
+)
+def test_a_bipolar_card_jolty_does_not_model_is_refused_by_name(
+    given: str, refusal: str
+) -> None:
+    parts = library(f".model q npn {given}\n.subckt one c b\nQ1 c b 0 q\n.ends")
+    with pytest.raises(SpiceError, match=re.escape(refusal)):
+        parts.component("one")
+
+
+def test_a_bipolar_transistors_temperature_terms_are_written_back() -> None:
+    """The exporter writes `TLEV`, `TLEVC` and the coefficients, which read back."""
+    given = {
+        "temperature_model": 1,
+        "capacitance_temperature_model": 1,
+        "high_injection_exponent": 0.4,
+        "collector_resistance": 10.0,
+        "collector_resistance_temperature_coefficient": -0.01,
+        "collector_resistance_quadratic_temperature_coefficient": 3e-5,
+        "base_emitter_potential_temperature_coefficient": 2e-3,
+    }
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        supply = c.place(devices.voltage_source(5 * V), name="V1")
+        transistor = c.place(
+            devices.bipolar_transistor(
+                temperature_model=1,
+                capacitance_temperature_model=1,
+                high_injection_exponent=0.4,
+                collector_resistance=10 * ohm,
+                collector_resistance_temperature_coefficient=-0.01 / K,
+                collector_resistance_quadratic_temperature_coefficient=3e-5 / K**2,
+                base_emitter_potential_temperature_coefficient=2e-3 * V / K,
+            ),
+            name="Q1",
+        )
+        c.connect(supply.positive, transistor.collector, transistor.base, name="c")
+        c.connect(supply.negative, transistor.emitter, ground)
+
+    lines = netlist(circuit(bench()))
+    card = next(line for line in lines if line.startswith(".model"))
+    element = next(line for line in lines if line.startswith("QQ1"))
+    read = library(f"{card}\n.subckt a c\n{element.replace('QQ1', 'Q1', 1)}\n.ends")
+    (instance,) = read.component("a").definition.instances
+    assert instance.parameters == {**given, "polarity": "npn", "substrate": "vertical"}
+
+
 def test_a_table_source_holds_beyond_its_ends() -> None:
     parts = library(".subckt clamp in out\nE1 out 0 TABLE {V(in)} = (0,0) (1,2)\n.ends")
     part = parts.component("clamp")

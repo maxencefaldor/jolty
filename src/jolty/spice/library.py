@@ -95,6 +95,8 @@ class Use:
     middle: tuple[float, float] | None = None
     """The length and the width, in meters, at the middle of the first bin of the model
     it names, if it cannot be translated as no bin holds its size."""
+    placed: tuple[str, Mapping[str, float]] | None = None
+    """The subcircuit it places and the parameters it gives it, if it places one."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,10 +469,11 @@ class Library:
 
         It is read as [`component`][jolty.spice.Library.component] reads it, with the
         `parameters` given, and each element states the model it needs and, where jolty
-        cannot translate it, why. A placed subcircuit needs no model of its own, and
-        states a problem of its placement, such as a parameter its subcircuit lacks; a
-        problem of the subcircuit's own definitions, such as a parameter it cannot
-        evaluate, is stated as a use of no element.
+        cannot translate it, why. A placed subcircuit needs no model of its own: it
+        states the parameters its placement gives it, and a problem of its placement,
+        such as a parameter its subcircuit lacks; a problem of the subcircuit's own
+        definitions, such as a parameter it cannot evaluate, is stated as a use of no
+        element.
         """
         uses: list[Use] = []
         built, self._built, self._uses = self._built, {}, uses
@@ -575,6 +578,9 @@ class Library:
         subcircuit that has no parameter of that name multiplies every element it
         holds, as [`MULTIPLIED`][jolty.spice.library.MULTIPLIED] says.
         """
+        if self.surveying and drawing.path:
+            # A survey states each placement within, and what it gives.
+            self.use(Use(drawing.path, "", placed=(subcircuit.name, dict(given))))
         multiplier = 1.0
         if "m" in given and "m" not in subcircuit.defaults:
             multiplier = given["m"]

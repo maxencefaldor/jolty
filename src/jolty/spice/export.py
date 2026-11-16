@@ -386,6 +386,10 @@ def _card_names(
         case "bipolar_transistor":
             kind = str(_defaulted(model, values)["polarity"]).upper()
             names = _spice(models.BIPOLAR) | {"substrate": ("subs", 1.0)}
+            names |= {
+                jolty: (spice, 1.0)
+                for spice, jolty in models.BIPOLAR_TEMPERATURE_MODELS.items()
+            }
         case "mosfet":
             kind = f"{_defaulted(model, values)['channel']}mos".upper()
             names = _spice(models.MOSFET) | {
