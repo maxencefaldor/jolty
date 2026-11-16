@@ -336,7 +336,8 @@ pub struct MosfetParameters<R: Real = f64> {
     /// Level 3: the gate field's degradation of the mobility, `theta`, per volt;
     /// default 0.
     pub mobility_modulation: Option<R>,
-    /// Level 3: the saturation field factor, `kappa`; default 0.2.
+    /// Level 3: the saturation field factor, `kappa`; default 0.2, and 0 for no channel
+    /// shortening, as ngspice reads it.
     pub saturation_field_factor: Option<R>,
     /// Level 3: the width lost to diffusion at each side, `wd`, in meters; default 0.
     pub width_narrowing: Option<R>,
@@ -1307,7 +1308,7 @@ impl<R: Real> MosfetParameters<R> {
                 * SILICON_PERMITTIVITY
                 / (oxide * geometry.single_width),
             mobility_modulation: non_negative("mobility_modulation", self.mobility_modulation)?,
-            saturation_field_factor: ParameterError::positive(
+            saturation_field_factor: ParameterError::non_negative(
                 "saturation_field_factor",
                 self.saturation_field_factor.unwrap_or(R::constant(0.2)),
             )?,
